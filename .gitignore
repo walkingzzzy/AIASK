@@ -43,12 +43,12 @@ env/
 logs/
 *.log
 
-# 数据文件
+# 数据文件 - 不提交大型数据库文件
 data/*.db
 data/*.bin
-data/user_profiles/
-*.sqlite
-*.sqlite3
+# data/user_profiles/
+# *.sqlite
+# *.sqlite3
 
 # 测试覆盖率
 htmlcov/
