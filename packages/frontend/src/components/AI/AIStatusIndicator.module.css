@@ -1,0 +1,235 @@
+.statusCard {
+  background: var(--bg-secondary, #1a1a2e);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border-color, #333);
+}
+
+.statusCard.success {
+  border-left: 4px solid #4caf50;
+}
+
+.statusCard.warning {
+  border-left: 4px solid #ff9800;
+}
+
+.statusCard.error {
+  border-left: 4px solid #f44336;
+}
+
+.statusCard.loading {
+  border-left: 4px solid #2196f3;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  gap: 8px;
+}
+
+.icon {
+  font-size: 16px;
+}
+
+.title {
+  flex: 1;
+  font-weight: 500;
+  color: var(--text-primary, #fff);
+}
+
+.status {
+  font-size: 12px;
+  color: var(--text-secondary, #aaa);
+}
+
+.expandIcon {
+  font-size: 10px;
+  color: var(--text-secondary, #aaa);
+}
+
+.details {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color, #333);
+}
+
+.serviceRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.serviceName {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary, #fff);
+  font-size: 14px;
+}
+
+.serviceIcon {
+  font-size: 16px;
+}
+
+.serviceStatus {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.serviceStatus.ok {
+  background: rgba(76, 175, 80, 0.2);
+  color: #4caf50;
+}
+
+.serviceStatus.notOk {
+  background: rgba(255, 152, 0, 0.2);
+  color: #ff9800;
+}
+
+.serviceMessage {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  padding: 4px 0 8px 28px;
+  line-height: 1.4;
+}
+
+.recommendations {
+  margin-top: 12px;
+  padding: 8px;
+  background: rgba(33, 150, 243, 0.1);
+  border-radius: 4px;
+}
+
+.recommendationsTitle {
+  font-size: 12px;
+  color: #2196f3;
+  margin-bottom: 4px;
+}
+
+.recommendations ul {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: var(--text-secondary, #aaa);
+}
+
+.recommendations li {
+  margin: 4px 0;
+}
+
+.lastChecked {
+  margin-top: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-secondary, #666);
+}
+
+.refreshButton {
+  background: none;
+  border: 1px solid var(--border-color, #444);
+  color: var(--text-secondary, #aaa);
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.refreshButton:hover {
+  background: var(--bg-hover, #333);
+}
+
+.refreshButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.errorMessage {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(244, 67, 54, 0.1);
+  border-radius: 4px;
+  color: #f44336;
+  font-size: 12px;
+}
+
+/* Compact Mode Styles */
+.compactIndicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  cursor: pointer;
+  position: relative;
+  transition: transform 0.2s;
+}
+
+.compactIndicator:hover {
+  transform: scale(1.1);
+}
+
+.compactIndicator.success {
+  background: rgba(76, 175, 80, 0.2);
+}
+
+.compactIndicator.warning {
+  background: rgba(255, 152, 0, 0.2);
+}
+
+.compactIndicator.error {
+  background: rgba(244, 67, 54, 0.2);
+}
+
+.compactIndicator.loading {
+  background: rgba(33, 150, 243, 0.2);
+}
+
+.compactIndicator .icon {
+  font-size: 14px;
+}
+
+.tooltip {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: 8px;
+  z-index: 1000;
+}
+
+.tooltipContent {
+  background: var(--bg-primary, #0f0f1a);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 6px;
+  padding: 12px;
+  min-width: 180px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.tooltipContent strong {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text-primary, #fff);
+}
+
+.tooltipContent .serviceStatus {
+  display: flex;
+  justify-content: space-between;
+  margin: 4px 0;
+  font-size: 12px;
+}
+
+.tooltipContent .ok {
+  color: #4caf50;
+}
+
+.tooltipContent .notOk {
+  color: #ff9800;
+}

@@ -1,0 +1,158 @@
+.container {
+  padding: 16px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding: 16px;
+  background: linear-gradient(135deg, #1a1f2e 0%, #2d3748 100%);
+  border-radius: 12px;
+  border: 1px solid #30363d;
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.achievementList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.achievementCard {
+  background: #161b22;
+  border: 1px solid #30363d;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.achievementCard:hover {
+  border-color: #58a6ff;
+  transform: translateX(4px);
+}
+
+.achievementCard.unlocked {
+  background: linear-gradient(135deg, rgba(82, 196, 26, 0.1) 0%, rgba(82, 196, 26, 0.05) 100%);
+}
+
+.achievementContent {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.achievementIcon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 2px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  background: #21262d;
+  flex-shrink: 0;
+}
+
+.achievementInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.achievementName {
+  display: flex;
+  align-items: center;
+  margin-bottom: 2px;
+}
+
+.achievementProgress {
+  margin-top: 4px;
+}
+
+.achievementValue {
+  font-size: 12px;
+  font-weight: bold;
+}
+
+/* Compact mode */
+.compactContainer {
+  padding: 12px;
+  background: #161b22;
+  border-radius: 8px;
+  border: 1px solid #30363d;
+}
+
+.compactHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.compactBadges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.compactBadge {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  background: #21262d;
+}
+
+.compactMore {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #30363d;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+/* Modal */
+.modal :global(.ant-modal-content) {
+  background: #161b22;
+  border: 1px solid #30363d;
+}
+
+.modalContent {
+  text-align: center;
+  padding: 20px;
+}
+
+.modalIcon {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  border: 3px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 36px;
+  background: #21262d;
+  margin: 0 auto;
+}
+
+.modalReward {
+  margin-top: 16px;
+  padding: 12px;
+  background: rgba(255, 215, 0, 0.1);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 215, 0, 0.3);
+}

@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(python:*)",
+      "Bash(done)",
+      "Bash(mkdir:*)",
+      "Bash(npm install:*)",
+      "Bash(source:*)",
+      "Bash(pip install:*)",
+      "Bash(python3:*)",
+      "Bash(ls:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(git push:*)",
+      "Bash(tree:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv run python:*)",
+      "Bash(PYTHONPATH=packages/core:$PYTHONPATH uv run python:*)",
+      "Bash(bash:*)",
+      "Bash(curl:*)",
+      "Bash(sqlite3:*)",
+      "Bash(cat:*)",
+      "Bash(chmod:*)",
+      "Bash(npm run build)"
+    ]
+  }
+}

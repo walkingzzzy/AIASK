@@ -1,0 +1,40 @@
+.container {
+  display: flex;
+  align-items: center;
+  padding: 16px;
+  background: linear-gradient(135deg, rgba(88, 166, 255, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%);
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+
+.container.compact {
+  padding: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.avatar {
+  background: linear-gradient(135deg, #58a6ff 0%, #8b5cf6 100%);
+  flex-shrink: 0;
+}
+
+.content {
+  margin-left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.greeting {
+  font-size: 15px;
+  color: #e6edf3;
+  line-height: 1.5;
+}
+
+.compact .greeting {
+  font-size: 13px;
+}
+
+.streak {
+  font-size: 12px;
+  color: #8b949e;
+}

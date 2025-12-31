@@ -1,0 +1,158 @@
+/* 顶部导航栏样式 */
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 16px;
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+}
+
+/* 搜索框 */
+.searchWrapper {
+  position: relative;
+}
+
+.searchDropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  width: 280px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: #1c2128;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  margin-top: 4px;
+}
+
+.searchItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.searchItem:hover {
+  background: #262c36;
+}
+
+.stockCode {
+  font-family: 'SF Mono', monospace;
+  font-size: 13px;
+  color: #58a6ff;
+  min-width: 60px;
+}
+
+.stockName {
+  font-size: 13px;
+  color: #e6edf3;
+  flex: 1;
+}
+
+.addBtn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8b949e;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.addBtn:hover {
+  color: #58a6ff;
+  background: rgba(88, 166, 255, 0.15);
+}
+
+.searchLoading,
+.noResult {
+  padding: 20px;
+  text-align: center;
+  color: #6e7681;
+  font-size: 13px;
+}
+
+/* 大盘指数 */
+.indexBar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.indexItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.indexName {
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.indexPrice {
+  font-family: 'SF Mono', 'Roboto Mono', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.indexChange {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-family: 'SF Mono', monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.up {
+  color: #f85149;
+}
+
+.down {
+  color: #3fb950;
+}
+
+/* 时间显示 */
+.timeWrapper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tradeStatus {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(139, 148, 158, 0.15);
+  color: #8b949e;
+}
+
+.tradeStatus.trading {
+  background: rgba(248, 81, 73, 0.15);
+  color: #f85149;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.time {
+  font-family: 'SF Mono', monospace;
+  font-size: 14px;
+  color: #e6edf3;
+  font-variant-numeric: tabular-nums;
+  min-width: 70px;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}

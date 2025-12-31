@@ -1,0 +1,307 @@
+"""
+FastAPI后端服务
+为Tauri桌面应用提供API接口
+"""
+import asyncio
+import os
+import time
+import logging
+from collections import defaultdict
+from typing import Dict, Any, List
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+
+from packages.api.config import (
+    get_cors_origins, ALLOWED_HEADERS, ALLOWED_METHODS,
+    RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS,
+    RATE_LIMIT_CLEANUP_INTERVAL, IS_PRODUCTION, API_VERSION, DATABASE_PATH
+)
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# ==================== 模块状态跟踪 ====================
+
+MODULE_STATUS: Dict[str, Dict[str, Any]] = {}
+
+
+def _try_import(module_name: str, import_func):
+    """尝试导入模块并记录状态"""
+    try:
+        result = import_func()
+        MODULE_STATUS[module_name] = {"available": True, "error": None}
+        return result
+    except (ImportError, SyntaxError) as e:
+        MODULE_STATUS[module_name] = {"available": False, "error": str(e)}
+        logger.warning(f"模块 {module_name} 导入失败: {e}")
+        return None
+
+
+# 预加载核心模块状态
+_try_import("StockDataService", lambda: __import__("packages.core.services.stock_data_service", fromlist=["StockDataService"]))
+_try_import("CallAuctionAnalyzer", lambda: __import__("packages.core.call_auction.auction_analyzer", fromlist=["CallAuctionAnalyzer"]))
+
+
+def get_module_status_summary() -> Dict[str, Any]:
+    """获取模块状态摘要"""
+    available = [k for k, v in MODULE_STATUS.items() if v["available"]]
+    unavailable = [k for k, v in MODULE_STATUS.items() if not v["available"]]
+    return {
+        "total": len(MODULE_STATUS),
+        "available": len(available),
+        "unavailable": len(unavailable),
+        "available_modules": available,
+        "unavailable_modules": {k: MODULE_STATUS[k]["error"] for k in unavailable}
+    }
+
+
+# ==================== 请求限流（带清理） ====================
+
+class RateLimiter:
+    """带自动清理的请求限流器"""
+    
+    def __init__(self, max_requests: int = 100, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests: Dict[str, List[float]] = defaultdict(list)
+        self._last_cleanup = time.time()
+    
+    def is_allowed(self, client_id: str) -> bool:
+        now = time.time()
+        self._maybe_cleanup(now)
+        window_start = now - self.window_seconds
+        self.requests[client_id] = [t for t in self.requests[client_id] if t > window_start]
+        if len(self.requests[client_id]) >= self.max_requests:
+            return False
+        self.requests[client_id].append(now)
+        return True
+    
+    def get_remaining(self, client_id: str) -> int:
+        now = time.time()
+        window_start = now - self.window_seconds
+        current = len([t for t in self.requests[client_id] if t > window_start])
+        return max(0, self.max_requests - current)
+    
+    def _maybe_cleanup(self, now: float):
+        """定期清理过期记录"""
+        if now - self._last_cleanup > RATE_LIMIT_CLEANUP_INTERVAL:
+            self._cleanup()
+            self._last_cleanup = now
+    
+    def _cleanup(self):
+        """清理所有过期记录"""
+        now = time.time()
+        window_start = now - self.window_seconds
+        expired_keys = []
+        for client_id, timestamps in self.requests.items():
+            self.requests[client_id] = [t for t in timestamps if t > window_start]
+            if not self.requests[client_id]:
+                expired_keys.append(client_id)
+        for key in expired_keys:
+            del self.requests[key]
+        if expired_keys:
+            logger.debug(f"清理了 {len(expired_keys)} 个过期限流记录")
+
+
+rate_limiter = RateLimiter(max_requests=RATE_LIMIT_MAX_REQUESTS, window_seconds=RATE_LIMIT_WINDOW_SECONDS)
+
+
+# ==================== 生命周期管理 ====================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    logger.info("API服务启动中...")
+    # 启动时初始化
+    try:
+        from packages.api.routes.realtime import start_realtime_push
+        start_realtime_push()
+    except Exception as e:
+        logger.warning(f"实时推送启动失败: {e}")
+    
+    yield
+    
+    # 关闭时清理
+    logger.info("API服务关闭中...")
+    try:
+        from packages.api.routes.realtime import stop_realtime_push
+        stop_realtime_push()
+    except Exception:
+        pass
+
+
+# ==================== FastAPI应用 ====================
+
+app = FastAPI(
+    title="A股智能分析API",
+    description="为桌面应用提供股票分析服务",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_cors_origins(),
+    allow_credentials=True,
+    allow_methods=ALLOWED_METHODS,
+    allow_headers=ALLOWED_HEADERS,
+)
+
+
+# ==================== 全局异常处理 ====================
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """请求验证错误处理"""
+    return JSONResponse(
+        status_code=422,
+        content={"success": False, "error": "请求参数验证失败", "details": exc.errors() if not IS_PRODUCTION else None}
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """全局异常处理"""
+    logger.error(f"未处理异常: {exc}", exc_info=True)
+    error_msg = "服务器内部错误" if IS_PRODUCTION else str(exc)
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "error": error_msg}
+    )
+
+
+# ==================== 中间件 ====================
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """请求限流中间件"""
+    client_ip = request.client.host if request.client else "unknown"
+    
+    if not request.url.path.startswith(f"/api/{API_VERSION}/health"):
+        if not rate_limiter.is_allowed(client_ip):
+            return JSONResponse(
+                status_code=429,
+                content={"success": False, "error": "请求过于频繁，请稍后再试", "retry_after": 60}
+            )
+    
+    response = await call_next(request)
+    response.headers["X-RateLimit-Remaining"] = str(rate_limiter.get_remaining(client_ip))
+    response.headers["X-RateLimit-Limit"] = str(rate_limiter.max_requests)
+    return response
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """请求日志中间件"""
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    logger.info(f"{request.method} {request.url.path} - Status: {response.status_code} - Time: {process_time:.3f}s")
+    return response
+
+
+# ==================== 注册路由 ====================
+
+from packages.api.routes.valuation import router as valuation_router
+from packages.api.routes.watchlist import router as watchlist_router
+from packages.api.routes.insight import router as insight_router
+from packages.api.routes.user_profile import router as user_profile_router
+from packages.api.routes.ai_chat import router as ai_chat_router
+from packages.api.routes.decision import router as decision_router
+from packages.api.routes.realtime import router as realtime_router
+from packages.api.routes.backtest import router as backtest_router
+from packages.api.routes.research import router as research_router
+from packages.api.routes.stock import router as stock_router
+from packages.api.routes.ai_score import router as ai_score_router
+from packages.api.routes.sentiment import router as sentiment_router
+from packages.api.routes.limit_up import router as limit_up_router
+from packages.api.routes.margin import router as margin_router
+from packages.api.routes.block_trade import router as block_trade_router
+from packages.api.routes.dragon_tiger import router as dragon_tiger_router
+from packages.api.routes.portfolio import router as portfolio_router
+from packages.api.routes.risk_monitor import router as risk_monitor_router
+from packages.api.routes.screener import router as screener_router
+from packages.api.routes.data_center import router as data_center_router
+from packages.api.routes.call_auction import router as call_auction_router
+from packages.api.routes.nlp_query import router as nlp_query_router
+
+# 使用版本前缀注册路由
+PREFIX = f"/api/{API_VERSION}"
+app.include_router(valuation_router, prefix=PREFIX)
+app.include_router(watchlist_router, prefix=PREFIX)
+app.include_router(insight_router, prefix=PREFIX)
+app.include_router(user_profile_router, prefix=PREFIX)
+app.include_router(ai_chat_router, prefix=PREFIX)
+app.include_router(decision_router, prefix=PREFIX)
+app.include_router(realtime_router, prefix=PREFIX)
+app.include_router(backtest_router, prefix=PREFIX)
+app.include_router(research_router, prefix=PREFIX)
+app.include_router(stock_router, prefix=PREFIX)
+app.include_router(ai_score_router, prefix=PREFIX)
+app.include_router(sentiment_router, prefix=PREFIX)
+app.include_router(limit_up_router, prefix=PREFIX)
+app.include_router(margin_router, prefix=PREFIX)
+app.include_router(block_trade_router, prefix=PREFIX)
+app.include_router(dragon_tiger_router, prefix=PREFIX)
+app.include_router(portfolio_router, prefix=PREFIX)
+app.include_router(risk_monitor_router, prefix=PREFIX)
+app.include_router(screener_router, prefix=PREFIX)
+app.include_router(data_center_router, prefix=PREFIX)
+app.include_router(call_auction_router, prefix=PREFIX)
+app.include_router(nlp_query_router, prefix=PREFIX)
+
+
+# ==================== 基础路由 ====================
+
+@app.get("/")
+async def root():
+    """API根路径"""
+    return {
+        "name": "A股智能分析API",
+        "version": "1.0.0",
+        "api_version": API_VERSION,
+        "status": "running",
+        "modules_available": get_module_status_summary()["available"]
+    }
+
+
+@app.get(f"/api/{API_VERSION}/health")
+async def health_check():
+    """健康检查（含数据库连接检查）"""
+    summary = get_module_status_summary()
+    
+    # 检查数据库连接
+    db_status = "unknown"
+    try:
+        from packages.api.dependencies import get_user_db
+        db = get_user_db()
+        db.get_watchlist()  # 简单查询测试
+        db_status = "connected"
+    except Exception as e:
+        db_status = f"error: {str(e)}" if not IS_PRODUCTION else "error"
+    
+    return {
+        "status": "healthy" if db_status == "connected" else "degraded",
+        "database": db_status,
+        "modules": summary,
+        "using_mock_data": summary["unavailable"] > 0
+    }
+
+
+@app.get(f"/api/{API_VERSION}/modules")
+async def get_modules_status():
+    """获取模块状态详情"""
+    return {"success": True, "data": get_module_status_summary()}
+
+
+# ==================== 启动入口 ====================
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
