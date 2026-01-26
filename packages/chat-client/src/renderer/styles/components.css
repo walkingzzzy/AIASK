@@ -1,0 +1,475 @@
+/**
+ * 股票AI智能助手 - 高级组件样式
+ * 参考 AetherTrade 设计风格
+ */
+
+/* ==================== 高级股票卡片 ==================== */
+
+.stock-card-advanced {
+  background: linear-gradient(
+    135deg,
+    var(--bg-secondary) 0%,
+    rgba(44, 44, 46, 0.8) 100%
+  );
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  padding: var(--space-4);
+  position: relative;
+  overflow: hidden;
+}
+
+.stock-card-advanced::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--gradient-accent);
+  opacity: 0.5;
+}
+
+.stock-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: var(--space-3);
+}
+
+.stock-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.stock-symbol {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.stock-symbol .company {
+  color: var(--text-secondary);
+  font-weight: var(--font-normal);
+}
+
+.stock-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.stock-price-large {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
+}
+
+.stock-price-large .price {
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+  font-feature-settings: 'tnum';
+  letter-spacing: -0.02em;
+}
+
+.stock-price-large .change {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.stock-price-large .change.positive {
+  color: var(--success);
+}
+
+.stock-price-large .change.negative {
+  color: var(--danger);
+}
+
+/* 迷你图表区域 */
+.stock-mini-chart {
+  height: 60px;
+  margin: var(--space-3) 0;
+  background: linear-gradient(
+    180deg,
+    rgba(102, 126, 234, 0.1) 0%,
+    transparent 100%
+  );
+  border-radius: var(--radius-md);
+  position: relative;
+  overflow: hidden;
+}
+
+.stock-mini-chart canvas,
+.stock-mini-chart svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* ==================== 右侧上下文面板（增强版） ==================== */
+
+.context-panel-enhanced {
+  width: var(--context-panel-width);
+  background: var(--bg-primary);
+  border-left: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.context-panel-enhanced .panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.context-panel-enhanced .panel-title {
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.context-panel-enhanced .price-badge {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.context-panel-enhanced .price-value {
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  font-feature-settings: 'tnum';
+}
+
+.context-panel-enhanced .price-change {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+}
+
+.context-panel-enhanced .price-change.up {
+  color: var(--success);
+  background: var(--success-bg);
+}
+
+.context-panel-enhanced .price-change.down {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.context-panel-enhanced .stock-name {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+}
+
+/* 主图表区域 */
+.main-chart-area {
+  flex: 1;
+  padding: var(--space-4);
+  min-height: 200px;
+}
+
+.main-chart-area canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* 指标网格 */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.metric-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  text-align: center;
+}
+
+.metric-card .metric-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-1);
+}
+
+.metric-card .metric-value {
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  font-feature-settings: 'tnum';
+}
+
+.metric-card .metric-chart {
+  height: 40px;
+  margin-top: var(--space-2);
+}
+
+/* ==================== 增强输入区域 ==================== */
+
+.input-area-enhanced {
+  padding: var(--space-4) var(--space-5);
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.input-container {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: 800px;
+  margin: 0 auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-2xl);
+  padding: var(--space-2) var(--space-3);
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.input-container:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+}
+
+.input-icon-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--duration-fast) var(--ease-out);
+  flex-shrink: 0;
+}
+
+.input-icon-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.input-field {
+  flex: 1;
+  min-height: 40px;
+  padding: var(--space-2);
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  font-family: inherit;
+  line-height: var(--leading-normal);
+  resize: none;
+}
+
+.input-field::placeholder {
+  color: var(--text-quaternary);
+}
+
+.input-field:focus {
+  outline: none;
+}
+
+.input-send-btn {
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: var(--accent);
+  color: white;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--duration-fast) var(--ease-out);
+  flex-shrink: 0;
+}
+
+.input-send-btn:hover {
+  background: var(--accent-hover);
+  transform: scale(1.05);
+}
+
+.input-send-btn:active {
+  transform: scale(0.98);
+}
+
+.input-send-btn:disabled {
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ==================== 紧凑侧边栏 ==================== */
+
+.sidebar-compact {
+  width: 220px;
+  background: var(--bg-primary);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-compact .sidebar-header {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sidebar-compact .sidebar-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+}
+
+.sidebar-compact .session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+
+.sidebar-compact .session-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-1);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+}
+
+.sidebar-compact .session-item:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.sidebar-compact .session-item.active {
+  background: rgba(102, 126, 234, 0.15);
+  color: var(--accent);
+  border-left: 2px solid var(--accent);
+}
+
+/* ==================== 消息气泡（参考图风格） ==================== */
+
+.message-user-green {
+  background: linear-gradient(
+    135deg,
+    rgba(52, 199, 89, 0.9) 0%,
+    rgba(48, 209, 88, 0.8) 100%
+  ) !important;
+  border: none !important;
+}
+
+.message-ai-dark {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border-subtle) !important;
+}
+
+/* AI 消息中的内嵌卡片 */
+.ai-inline-card {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  margin: var(--space-2) 0;
+}
+
+.ai-inline-card .card-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-2);
+}
+
+.ai-inline-card .card-content {
+  font-size: var(--text-base);
+  color: var(--text-primary);
+}
+
+/* ==================== 工具调用状态 ==================== */
+
+.tool-calling {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin: var(--space-2) 0;
+}
+
+.tool-calling .tool-icon {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ==================== 快捷操作按钮（紧凑版） ==================== */
+
+.quick-actions-compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+}
+
+.quick-action-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+}
+
+.quick-action-pill:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border-light);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+
+.quick-action-pill .icon {
+  font-size: 16px;
+}

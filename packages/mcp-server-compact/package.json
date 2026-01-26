@@ -1,0 +1,48 @@
+{
+    "name": "@aiask/mcp-server-compact",
+    "version": "1.0.0",
+    "description": "AIASK A-Share Analysis Compact Server",
+    "main": "dist/index.js",
+    "type": "module",
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsx watch src/index.ts",
+        "start": "node dist/index.js",
+        "start:http": "MCP_TRANSPORT=http node dist/index.js",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:coverage": "vitest run --coverage",
+        "clean": "rm -rf dist",
+        "db:optimize": "tsx scripts/optimize-database.ts",
+        "db:analyze": "tsx scripts/analyze-database.ts",
+        "db:migrate": "tsx scripts/migrate-advanced-tables.ts",
+        "init-db": "tsx scripts/init-database.ts",
+        "init-db-full": "tsx scripts/init-database-full.ts",
+        "quick-warmup": "npm run build && node dist/scripts/quick-warmup.js"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.0.0",
+        "axios": "^1.7.0",
+        "better-sqlite3": "^11.0.0",
+        "bottleneck": "^2.19.5",
+        "dotenv": "^17.2.3",
+        "node-cache": "^5.1.2",
+        "pg": "^8.17.2",
+        "technicalindicators": "^3.1.0",
+        "winston": "^3.11.0",
+        "zod": "^3.23.0",
+        "zod-to-json-schema": "^3.25.1"
+    },
+    "devDependencies": {
+        "@types/better-sqlite3": "^7.6.10",
+        "@types/node": "^20.19.30",
+        "@types/pg": "^8.16.0",
+        "@vitest/coverage-v8": "^2.1.9",
+        "tsx": "^4.15.0",
+        "typescript": "^5.5.0",
+        "vitest": "^2.0.0"
+    },
+    "engines": {
+        "node": ">=20.0.0"
+    }
+}

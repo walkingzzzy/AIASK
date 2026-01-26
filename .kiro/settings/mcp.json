@@ -1,0 +1,61 @@
+{
+  "mcpServers": {
+    "aiask-stock-compact": {
+      "command": "node",
+      "args": [
+        "/Users/mac/Desktop/股票MCP/packages/mcp-server-compact/dist/index.js"
+      ],
+      "disabled": true,
+      "autoApprove": [
+        "available_tools",
+        "search_tools",
+        "get_realtime_quote",
+        "get_kline_data",
+        "get_financial_summary",
+        "get_historical_financials",
+        "get_historical_valuation",
+        "portfolio_manager",
+        "screener_manager",
+        "technical_analysis_manager",
+        "backtest_manager",
+        "sentiment_manager",
+        "quant_manager",
+        "get_realtime_quotes",
+        "get_stock_info",
+        "search_stocks",
+        "get_market_blocks",
+        "get_available_categories",
+        "list_skills",
+        "get_factor_library"
+      ]
+    },
+    "akshare-mcp": {
+      "command": "/Users/mac/Desktop/股票MCP/packages/akshare-mcp/.venv/bin/python",
+      "args": [
+        "-m",
+        "akshare_mcp.server"
+      ],
+      "cwd": "/Users/mac/Desktop/股票MCP/packages/akshare-mcp",
+      "env": {
+        "TUSHARE_TOKEN": "e01ec90ddc36b88b6911be4e702d507540ee7adaaa53a9fd455f056d",
+        "HTTP_PROXY": "",
+        "HTTPS_PROXY": "",
+        "http_proxy": "",
+        "https_proxy": "",
+        "ALL_PROXY": "",
+        "all_proxy": "",
+        "NO_PROXY": "*",
+        "no_proxy": "*"
+      },
+      "disabled": true,
+      "autoApprove": [
+        "get_stock_list",
+        "get_realtime_quote",
+        "get_batch_quotes",
+        "get_north_fund",
+        "get_financials",
+        "get_kline"
+      ]
+    }
+  }
+}

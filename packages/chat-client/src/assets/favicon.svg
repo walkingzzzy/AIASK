@@ -1,0 +1,40 @@
+<svg width="32" height="32" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="faviconGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8B5CF6" />
+      <stop offset="50%" stop-color="#667EEA" />
+      <stop offset="100%" stop-color="#5E8AFA" />
+    </linearGradient>
+    <filter id="faviconGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="4" result="blur"/>
+      <feFlood flood-color="#8B5CF6" flood-opacity="0.6" result="color"/>
+      <feComposite in="color" in2="blur" operator="in" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- 等腰三角形外轮廓 -->
+  <path 
+    d="M 50 10 L 85 80 L 70 80 L 50 35 L 30 80 L 15 80 Z" 
+    fill="url(#faviconGradient)"
+    filter="url(#faviconGlow)"
+  />
+  
+  <!-- 负空间箭头 -->
+  <path 
+    d="M 38 60 L 62 60 L 58 68 L 42 68 Z" 
+    fill="#0F1419"
+    opacity="0.95"
+  />
+  
+  <!-- 顶部高光 -->
+  <path 
+    d="M 50 10 L 60 30 L 50 25 L 40 30 Z" 
+    fill="white"
+    opacity="0.2"
+  />
+</svg>
