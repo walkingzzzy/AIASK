@@ -140,7 +140,7 @@ const delayBetweenStocks = 500;
 
 ### 增量更新
 
-当前的 `data-sync.ts` 和 `data-warmup.ts` 只同步基础数据（日线K线和财务数据）。
+当前的 `data-sync.ts` 和 `data-warmup.ts` 只同步基础数据（日线K线和财务数据），数据入口统一走 akshare-mcp。
 
 **高级数据需要定期重新运行 `init-database-full.ts`**，或者创建专门的同步脚本。
 
@@ -157,8 +157,8 @@ const delayBetweenStocks = 500;
 ## 🚨 注意事项
 
 ### 1. 数据源限制
-- 东方财富、新浪、腾讯等数据源有访问频率限制
-- 如果IP被封，脚本会自动切换到备用数据源
+- 业务层仅通过 akshare-mcp 统一访问数据源
+- akshare-mcp 会自动处理多源回退与限流，但仍可能受外部接口限制
 - 建议在非交易时间（晚上）运行大批量下载
 
 ### 2. 磁盘空间

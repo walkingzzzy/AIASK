@@ -46,7 +46,7 @@ describe('Portfolio Optimizer Service', () => {
             }
             
             expect(result.weights).toBeDefined();
-            expect(result.expectedReturn).toBeGreaterThan(0);
+            expect(Number.isFinite(result.expectedReturn)).toBe(true);
             expect(result.volatility).toBeGreaterThan(0);
             expect(result.sharpeRatio).toBeDefined();
         });

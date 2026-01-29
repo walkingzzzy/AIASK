@@ -19,7 +19,6 @@
 
 import { timescaleDB } from '../src/storage/timescaledb.js';
 import { adapterManager } from '../src/adapters/index.js';
-import { logger } from '../src/logger.js';
 
 interface FullInitProgress {
     totalStocks: number;
@@ -93,111 +92,84 @@ async function retryWithBackoff<T>(
 }
 
 /**
- * 下载分钟级K线数据（带重试机制）
+ * 下载分钟级K线数据（直接使用新浪接口）
  */
 async function downloadMinuteKlines(
     stocks: string[],
     progress: FullInitProgress
 ): Promise<void> {
     console.log('\n📊 步骤 1/6: 下载分钟级K线数据...');
-    console.log('   周期: 1m, 5m, 15m, 30m, 60m');
-    console.log('   回溯: 最近30天');
-    console.log('   ⚠️  分钟数据量大，已降低请求频率避免IP被封\n');
+    console.log('   周期: 5m, 15m, 30m, 60m');
+    console.log('   数据源: akshare-mcp (统一数据出口)\n');
     
-    const periods = ['1', '5', '15', '30', '60'] as const; // 分钟周期
-    const lookbackDays = 30;
-    const batchSize = 5; // 减小批次
-    const delayBetweenBatches = 8000; // 8秒延迟
-    const delayBetweenStocks = 1500; // 1.5秒延迟
+    const periods = [5, 15, 30, 60]; // 分钟周期
     
     for (const period of periods) {
         console.log(`\n处理 ${period}分钟 K线...`);
+        let periodRecords = 0;
+        let processed = 0;
+        const concurrency = 20; // 并发数
         
-        for (let i = 0; i < stocks.length; i += batchSize) {
-            const batch = stocks.slice(i, i + batchSize);
-            const batchNum = Math.floor(i / batchSize) + 1;
-            const totalBatches = Math.ceil(stocks.length / batchSize);
+        for (let i = 0; i < stocks.length; i += concurrency) {
+            const batch = stocks.slice(i, i + concurrency);
             
-            console.log(`  批次 ${batchNum}/${totalBatches}`);
-            
-            for (const code of batch) {
+            // 并行处理
+            const results = await Promise.all(batch.map(async (code) => {
                 try {
-                    // 检查是否已有数据
                     const tableName = `kline_${period}m`;
                     const existingCount = await timescaleDB.query(
                         `SELECT COUNT(*) as count FROM ${tableName} WHERE code = $1`,
                         [code]
                     );
                     
-                    if (existingCount.rows[0]?.count > 100) {
-                        console.log(`    ⏭️  ${code}: 已有数据，跳过`);
-                        continue;
+                    if (parseInt(existingCount.rows[0]?.count || '0') > 50) {
+                        return 0;
                     }
                     
-                    // 使用重试机制获取分钟K线
-                    const response = await retryWithBackoff(
-                        () => adapterManager.getKline(code, period as any, lookbackDays * 240),
-                        3,
-                        `${code} ${period}m`
-                    );
+                    const res = await adapterManager.getKline(code, `${period}m` as any, 300);
+                    if (!res.success || !res.data || res.data.length === 0) return 0;
+                    const klines = res.data;
                     
-                    if (!response.success || !response.data || response.data.length === 0) {
-                        progress.errors.push(`${code} ${period}m: ${response.error || '无数据'}`);
-                        continue;
+                    // 批量插入
+                    const values: any[] = [];
+                    const placeholders: string[] = [];
+                    let idx = 1;
+                    
+                    for (const k of klines) {
+                        placeholders.push(`($${idx}, $${idx+1}, $${idx+2}, $${idx+3}, $${idx+4}, $${idx+5}, $${idx+6}, 0, 0, 0)`);
+                        values.push(code, new Date(k.date), k.open, k.high, k.low, k.close, k.volume);
+                        idx += 7;
                     }
                     
-                    // 批量写入
-                    const rows = response.data.map(k => ({
-                        code,
-                        date: new Date(k.date),
-                        open: k.open,
-                        high: k.high,
-                        low: k.low,
-                        close: k.close,
-                        volume: k.volume,
-                        amount: k.amount || 0,
-                        turnover: 0,
-                        change_percent: 0,
-                    }));
-                    
-                    // 使用通用 query 方法插入
-                    for (const row of rows) {
+                    if (placeholders.length > 0) {
                         await timescaleDB.query(
                             `INSERT INTO ${tableName} (code, time, open, high, low, close, volume, amount, turnover, change_percent)
-                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                             ON CONFLICT (code, time) DO UPDATE SET
-                             open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-                             close = EXCLUDED.close, volume = EXCLUDED.volume, amount = EXCLUDED.amount`,
-                            [row.code, row.date, row.open, row.high, row.low, row.close, row.volume, row.amount, row.turnover, row.change_percent]
+                             VALUES ${placeholders.join(',')}
+                             ON CONFLICT (code, time) DO NOTHING`,
+                            values
                         );
                     }
                     
-                    progress.minuteKlineRecords += rows.length;
-                    progress.minuteKlineStocks++;
-                    console.log(`    ✅ ${code}: ${rows.length} 条`);
-                    
-                } catch (error: any) {
-                    const errorMsg = error.code === 'ECONNRESET' ? '连接被重置' : 
-                                   error.code === 'ETIMEDOUT' ? '连接超时' : 
-                                   error.message?.includes('socket hang up') ? '连接中断' : 
-                                   String(error);
-                    progress.errors.push(`${code} ${period}m: ${errorMsg}`);
-                    console.log(`    ❌ ${code}: ${errorMsg}`);
+                    return klines.length;
+                } catch {
+                    return 0;
                 }
-                
-                await sleep(delayBetweenStocks); // 股票间延迟
+            }));
+            
+            const batchRecords = results.reduce((a, b) => a + b, 0);
+            periodRecords += batchRecords;
+            processed += batch.length;
+            progress.minuteKlineRecords += batchRecords;
+            
+            if (processed % 200 < concurrency) {
+                const percent = (processed / stocks.length * 100).toFixed(1);
+                console.log(`  ${processed}/${stocks.length} (${percent}%) | 本周期: ${periodRecords} 条`);
             }
             
-            // 显示进度
-            const percent = ((i + batch.length) / stocks.length * 100).toFixed(1);
-            console.log(`  进度: ${i + batch.length}/${stocks.length} (${percent}%)`);
-            
-            if (i + batchSize < stocks.length) {
-                await sleep(delayBetweenBatches);
-            }
+            await sleep(500); // 减少延迟
         }
         
-        console.log(`✅ ${period}分钟 K线完成: ${progress.minuteKlineRecords} 条记录`);
+        console.log(`✅ ${period}分钟 K线完成: ${periodRecords} 条`);
     }
 }
 

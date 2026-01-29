@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import re
@@ -15,6 +16,8 @@ from ..utils import (
     normalize_code,
     ok,
     pick_value,
+    parse_date_input,
+    parse_numeric,
     safe_float,
     safe_int,
 )
@@ -59,6 +62,7 @@ def _parse_timeout_list(env_key: str, default: list[float]) -> list[float]:
 _QUOTE_TIMEOUTS = _parse_timeout_list("AKSHARE_QUOTE_TIMEOUTS", [15.0, 45.0])
 _KLINE_TIMEOUTS = _parse_timeout_list("AKSHARE_KLINE_TIMEOUTS", [20.0, 60.0])
 _MINUTE_BATCH_LIMIT = int(os.getenv("AKSHARE_MINUTE_BATCH_LIMIT", "12"))
+_BATCH_FALLBACK_LIMIT = int(os.getenv("AKSHARE_BATCH_FALLBACK_LIMIT", "60"))
 
 
 _spot_lock = Lock()
@@ -425,6 +429,162 @@ def _get_quote_tencent(code: str) -> Optional[dict]:
     except Exception:
         return None
 
+def _build_exchange_code(code: str) -> str:
+    symbol = normalize_code(code)
+    if symbol.startswith(("0", "3")):
+        return f"sz{symbol}"
+    return f"sh{symbol}"
+
+def _get_order_book_sina_direct(code: str) -> Optional[dict]:
+    """Sina 直连：五档盘口"""
+    try:
+        symbol = normalize_code(code)
+        sina_code = _build_exchange_code(symbol)
+        url = f"http://hq.sinajs.cn/list={sina_code}"
+        headers = {"Referer": "https://finance.sina.com.cn/"}
+        resp = requests.get(url, headers=headers, timeout=5)
+        text = resp.text
+        if "=" not in text or '="' not in text:
+            return None
+
+        content = text.split('="', 1)[1].strip('";\n')
+        if not content:
+            return None
+
+        parts = content.split(",")
+        if len(parts) < 30:
+            return None
+
+        bids: list[dict] = []
+        asks: list[dict] = []
+        bid_volume_idx = [10, 12, 14, 16, 18]
+        bid_price_idx = [11, 13, 15, 17, 19]
+        ask_volume_idx = [20, 22, 24, 26, 28]
+        ask_price_idx = [21, 23, 25, 27, 29]
+
+        for i in range(5):
+            bid_price = parse_numeric(parts[bid_price_idx[i]]) if bid_price_idx[i] < len(parts) else None
+            bid_volume = parse_numeric(parts[bid_volume_idx[i]]) if bid_volume_idx[i] < len(parts) else None
+            if bid_price is not None or bid_volume is not None:
+                bids.append({"price": bid_price or 0, "volume": int(bid_volume or 0)})
+
+            ask_price = parse_numeric(parts[ask_price_idx[i]]) if ask_price_idx[i] < len(parts) else None
+            ask_volume = parse_numeric(parts[ask_volume_idx[i]]) if ask_volume_idx[i] < len(parts) else None
+            if ask_price is not None or ask_volume is not None:
+                asks.append({"price": ask_price or 0, "volume": int(ask_volume or 0)})
+
+        if not bids and not asks:
+            return None
+
+        return {
+            "code": symbol,
+            "bids": bids,
+            "asks": asks,
+            "timestamp": int(time.time() * 1000),
+        }
+    except Exception:
+        return None
+
+def _get_order_book_tencent_direct(code: str) -> Optional[dict]:
+    """Tencent 直连：五档盘口"""
+    try:
+        symbol = normalize_code(code)
+        qt_code = _build_exchange_code(symbol)
+        url = f"http://qt.gtimg.cn/q={qt_code}"
+        resp = requests.get(url, timeout=5)
+        text = resp.text
+        if "=" not in text or '="' not in text:
+            return None
+
+        content = text.split('="', 1)[1].strip('";\n')
+        if not content:
+            return None
+
+        parts = content.split("~")
+        if len(parts) < 29:
+            return None
+
+        bids: list[dict] = []
+        asks: list[dict] = []
+        bid_price_idx = [9, 11, 13, 15, 17]
+        bid_volume_idx = [10, 12, 14, 16, 18]
+        ask_price_idx = [19, 21, 23, 25, 27]
+        ask_volume_idx = [20, 22, 24, 26, 28]
+
+        for i in range(5):
+            bid_price = parse_numeric(parts[bid_price_idx[i]]) if bid_price_idx[i] < len(parts) else None
+            bid_volume = parse_numeric(parts[bid_volume_idx[i]]) if bid_volume_idx[i] < len(parts) else None
+            if bid_price is not None or bid_volume is not None:
+                bids.append({"price": bid_price or 0, "volume": int(bid_volume or 0)})
+
+            ask_price = parse_numeric(parts[ask_price_idx[i]]) if ask_price_idx[i] < len(parts) else None
+            ask_volume = parse_numeric(parts[ask_volume_idx[i]]) if ask_volume_idx[i] < len(parts) else None
+            if ask_price is not None or ask_volume is not None:
+                asks.append({"price": ask_price or 0, "volume": int(ask_volume or 0)})
+
+        if not bids and not asks:
+            return None
+
+        return {
+            "code": symbol,
+            "bids": bids,
+            "asks": asks,
+            "timestamp": int(time.time() * 1000),
+        }
+    except Exception:
+        return None
+
+def _get_trade_details_tencent_direct(code: str, limit: int) -> Optional[list[dict]]:
+    """Tencent 直连：成交明细"""
+    try:
+        symbol = normalize_code(code)
+        qt_code = _build_exchange_code(symbol)
+        url = f"http://stock.gtimg.cn/data/index.php?appn=detail&action=data&c={qt_code}&p=1"
+        resp = requests.get(url, timeout=5)
+        text = resp.text
+        if '"' not in text:
+            return None
+
+        start = text.find('"')
+        end = text.rfind('"')
+        if start < 0 or end <= start:
+            return None
+
+        content = text[start + 1:end]
+        if not content:
+            return None
+
+        items = [item for item in content.split("|") if item]
+        if not items:
+            return None
+
+        details: list[dict] = []
+        for item in items[-limit:]:
+            parts = item.split("/")
+            if len(parts) < 7:
+                continue
+            time_str = parts[1]
+            price = parse_numeric(parts[2]) or 0
+            volume = int(parse_numeric(parts[4]) or 0)
+            direction_raw = str(parts[6]).strip().upper()
+            direction = "neutral"
+            if direction_raw == "B":
+                direction = "buy"
+            elif direction_raw == "S":
+                direction = "sell"
+            details.append(
+                {
+                    "time": time_str,
+                    "price": price,
+                    "volume": volume,
+                    "direction": direction,
+                }
+            )
+
+        return details if details else None
+    except Exception:
+        return None
+
 @cached(ttl=5.0)  # 5s cache for real-time quotes
 def get_realtime_quote(stock_code: str) -> dict:
     """
@@ -571,6 +731,8 @@ def get_batch_quotes(stock_codes: list[str]) -> dict:
 
         spot_df: Optional[pd.DataFrame] = None
         spot_cached = False
+        spot_unavailable = False
+        fallback_enabled = len(codes) <= _BATCH_FALLBACK_LIMIT
 
         use_minute = len(codes) <= _MINUTE_BATCH_LIMIT
         for code in codes:
@@ -603,6 +765,7 @@ def get_batch_quotes(stock_codes: list[str]) -> dict:
                     spot_df, spot_cached = _get_spot_indexed()
                 except Exception:
                     spot_df = None
+                    spot_unavailable = True
 
             if spot_df is not None and code in spot_df.index:
                 row = spot_df.loc[code]
@@ -622,7 +785,34 @@ def get_batch_quotes(stock_codes: list[str]) -> dict:
                     )
                     continue
 
-            daily = _get_daily_quote(code, name)
+            if fallback_enabled:
+                fallback = data_source.get_realtime_quote(code)
+                if fallback:
+                    if not fallback.get("name") and name:
+                        fallback["name"] = name
+                    quotes.append(fallback)
+                    continue
+
+                fallback = _get_quote_sina(code)
+                if fallback:
+                    if not fallback.get("name") and name:
+                        fallback["name"] = name
+                    quotes.append(fallback)
+                    continue
+
+                fallback = _get_quote_tencent(code)
+                if fallback:
+                    if not fallback.get("name") and name:
+                        fallback["name"] = name
+                    quotes.append(fallback)
+                    continue
+
+            daily = None
+            if not spot_unavailable:
+                try:
+                    daily = _get_daily_quote(code, name)
+                except Exception:
+                    daily = None
             if daily is not None:
                 quotes.append(daily)
                 continue
@@ -770,6 +960,349 @@ def _process_kline_akshare(df: pd.DataFrame, code: str) -> list[dict]:
     return results
 
 
+def _parse_order_book_df(df: pd.DataFrame, code: str) -> Optional[dict]:
+    if df is None or df.empty:
+        return None
+
+    bids: list[dict] = []
+    asks: list[dict] = []
+
+    if "item" in df.columns and "value" in df.columns:
+        mapping = {str(row.get("item", "")).strip(): row.get("value") for _, row in df.iterrows()}
+
+        def pick_price(keys: list[str]) -> Optional[float]:
+            for key in keys:
+                if key in mapping:
+                    val = parse_numeric(mapping.get(key))
+                    if val is not None:
+                        return val
+            return None
+
+        def pick_volume(keys: list[str]) -> Optional[int]:
+            for key in keys:
+                if key in mapping:
+                    val = parse_numeric(mapping.get(key))
+                    if val is not None:
+                        return int(val)
+            return None
+
+        for i in range(1, 6):
+            price = pick_price([f"买{i}", f"买{i}价", f"买{i}价格"])
+            volume = pick_volume([f"买{i}量", f"买{i}手", f"买{i}数量"])
+            if price is not None or volume is not None:
+                bids.append({"price": price or 0, "volume": volume or 0})
+
+            price = pick_price([f"卖{i}", f"卖{i}价", f"卖{i}价格"])
+            volume = pick_volume([f"卖{i}量", f"卖{i}手", f"卖{i}数量"])
+            if price is not None or volume is not None:
+                asks.append({"price": price or 0, "volume": volume or 0})
+    else:
+        row = df.iloc[0].to_dict()
+        for i in range(1, 6):
+            bid_price = parse_numeric(pick_value(pd.Series(row), [f"买{i}价", f"买{i}", f"bid{i}"]))
+            bid_volume = parse_numeric(pick_value(pd.Series(row), [f"买{i}量", f"buy{i}"]))
+            if bid_price is not None or bid_volume is not None:
+                bids.append({"price": bid_price or 0, "volume": int(bid_volume or 0)})
+
+            ask_price = parse_numeric(pick_value(pd.Series(row), [f"卖{i}价", f"卖{i}", f"ask{i}"]))
+            ask_volume = parse_numeric(pick_value(pd.Series(row), [f"卖{i}量", f"sell{i}"]))
+            if ask_price is not None or ask_volume is not None:
+                asks.append({"price": ask_price or 0, "volume": int(ask_volume or 0)})
+
+    if not bids and not asks:
+        return None
+
+    return {
+        "code": code,
+        "bids": bids,
+        "asks": asks,
+        "timestamp": int(time.time() * 1000),
+    }
+
+
+def _parse_trade_direction(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "neutral"
+    if "买" in text:
+        return "buy"
+    if "卖" in text:
+        return "sell"
+    return "neutral"
+
+
+@cached(ttl=5.0)
+def get_order_book(stock_code: str) -> dict:
+    """
+    获取五档盘口数据
+    """
+    limiter = get_limiter("quote", max_calls=10, period=1.0)
+    limiter.acquire()
+
+    code = normalize_code(stock_code)
+    df = None
+    for func_name, args in (
+        ("stock_bid_ask_em", {"symbol": code}),
+        ("stock_bid_ask_em", {"code": code}),
+        ("stock_bid_ask_sina", {"symbol": code}),
+    ):
+        func = getattr(ak, func_name, None)
+        if not func:
+            continue
+        try:
+            df = func(**args)
+        except Exception:
+            df = None
+        parsed = _parse_order_book_df(df, code)
+        if parsed:
+            return ok(parsed)
+
+    for direct_fetch in (_get_order_book_sina_direct, _get_order_book_tencent_direct):
+        parsed = direct_fetch(code)
+        if parsed:
+            return ok(parsed)
+
+    return fail(f"未获取到 {code} 的盘口数据 (尝试源: AkShare, Sina, Tencent)")
+
+
+@cached(ttl=5.0)
+def get_trade_details(stock_code: str, limit: int = 20) -> dict:
+    """
+    获取成交明细
+    """
+    limiter = get_limiter("quote", max_calls=10, period=1.0)
+    limiter.acquire()
+
+    code = normalize_code(stock_code)
+    limit = int(limit) if int(limit or 0) > 0 else 20
+    df = None
+    for func_name, args in (
+        ("stock_intraday_em", {"symbol": code}),
+        ("stock_intraday_sina", {"symbol": code}),
+        ("stock_intraday_em", {"code": code}),
+    ):
+        func = getattr(ak, func_name, None)
+        if not func:
+            continue
+        try:
+            df = func(**args)
+        except Exception:
+            df = None
+        if df is not None and not df.empty:
+            break
+
+    if df is None or df.empty:
+        direct = _get_trade_details_tencent_direct(code, limit)
+        if direct:
+            return ok(direct)
+        return fail(f"未获取到 {code} 的成交明细数据 (尝试源: AkShare, Tencent)")
+
+    df = df.tail(limit)
+    records: list[dict] = []
+    for _, row in df.iterrows():
+        records.append(
+            {
+                "time": str(pick_value(row, ["时间", "成交时间", "time"]) or ""),
+                "price": parse_numeric(pick_value(row, ["成交价", "价格", "price"])) or 0,
+                "volume": int(parse_numeric(pick_value(row, ["成交量", "数量", "volume"])) or 0),
+                "direction": _parse_trade_direction(pick_value(row, ["买卖盘性质", "性质", "direction"])),
+            }
+        )
+
+    return ok(records)
+
+
+@cached(ttl=60.0)
+def get_limit_up_stocks(date: str = "") -> dict:
+    """
+    获取涨停板数据
+    """
+    limiter = get_limiter("quote", max_calls=5, period=1.0)
+    limiter.acquire()
+
+    target_date = parse_date_input(date) if date else datetime.now().date()
+    date_str = target_date.strftime("%Y%m%d") if target_date else ""
+    func = getattr(ak, "stock_zt_pool_em", None)
+    if not func:
+        return fail("当前环境不支持涨停板数据接口")
+
+    try:
+        df = func(date=date_str) if date_str else func()
+    except Exception as e:
+        return fail(e)
+
+    if df is None or df.empty:
+        return ok([])
+
+    results: list[dict] = []
+    for _, row in df.iterrows():
+        results.append(
+            {
+                "code": normalize_code(pick_value(row, ["代码", "股票代码", "code"]) or ""),
+                "name": str(pick_value(row, ["名称", "股票简称", "name"]) or ""),
+                "price": parse_numeric(pick_value(row, ["最新价", "收盘价", "price"])) or 0,
+                "changePercent": parse_numeric(pick_value(row, ["涨跌幅", "涨幅", "changePercent"])) or 0,
+                "limitUpPrice": parse_numeric(pick_value(row, ["涨停价", "涨停价格", "limit_up"])) or 0,
+                "firstLimitTime": str(pick_value(row, ["首次封板时间", "首次封板", "first_time"]) or ""),
+                "lastLimitTime": str(pick_value(row, ["最后封板时间", "最后封板", "last_time"]) or ""),
+                "openTimes": int(parse_numeric(pick_value(row, ["开板次数", "开板", "open_times"])) or 0),
+                "continuousDays": int(parse_numeric(pick_value(row, ["连板数", "连续涨停天数", "boards"])) or 0),
+                "turnoverRate": parse_numeric(pick_value(row, ["换手率", "turnover"])) or 0,
+                "marketCap": parse_numeric(pick_value(row, ["最新市值", "流通市值", "市值", "market_cap"])) or 0,
+                "industry": str(pick_value(row, ["所属行业", "行业", "industry"]) or ""),
+                "concept": str(pick_value(row, ["所属概念", "概念", "concept"]) or ""),
+            }
+        )
+
+    return ok(results)
+
+
+@cached(ttl=60.0)
+def get_limit_up_statistics(date: str = "") -> dict:
+    """
+    获取涨停统计数据
+    """
+    res = get_limit_up_stocks(date)
+    if not res.get("success"):
+        return res
+    data = res.get("data") or []
+    total = len(data)
+
+    def count_boards(target: int) -> int:
+        return sum(1 for item in data if int(item.get("continuousDays", 0)) == target)
+
+    higher = sum(1 for item in data if int(item.get("continuousDays", 0)) >= 4)
+    failed = sum(1 for item in data if int(item.get("openTimes", 0)) > 0)
+    denom = total + failed
+    success_rate = (total / denom) * 100 if denom > 0 else 0
+
+    return ok(
+        {
+            "date": (parse_date_input(date) or datetime.now().date()).isoformat(),
+            "totalLimitUp": total,
+            "firstBoard": count_boards(1),
+            "secondBoard": count_boards(2),
+            "thirdBoard": count_boards(3),
+            "higherBoard": higher,
+            "failedBoard": failed,
+            "limitDown": 0,
+            "successRate": round(success_rate, 2),
+        }
+    )
+
+
+def _parse_minute_period(period: str) -> Optional[int]:
+    raw = str(period or "").strip().lower()
+    if raw.endswith("m"):
+        raw = raw[:-1]
+    try:
+        minutes = int(raw)
+    except ValueError:
+        return None
+    if minutes in (1, 5, 15, 30, 60):
+        return minutes
+    return None
+
+
+def _get_minute_kline_from_akshare(code: str, minutes: int, limit: int) -> list[dict]:
+    try:
+        df = _run_with_retry(
+            lambda: ak.stock_zh_a_hist_min_em(symbol=code, period=str(minutes), adjust=""),
+            _KLINE_TIMEOUTS,
+        )
+    except Exception:
+        return []
+    if df is None or df.empty:
+        return []
+    df = df.tail(int(limit))
+    results = []
+    for _, row in df.iterrows():
+        ts = row.get("时间") or row.get("日期") or row.get("time") or row.get("date")
+        date_str = str(ts)[:19]
+        results.append(
+            {
+                "date": date_str,
+                "open": safe_float(row.get("开盘") or row.get("open")),
+                "close": safe_float(row.get("收盘") or row.get("close")),
+                "high": safe_float(row.get("最高") or row.get("high")),
+                "low": safe_float(row.get("最低") or row.get("low")),
+                "volume": safe_int(row.get("成交量") or row.get("volume")),
+                "amount": safe_float(row.get("成交额") or row.get("amount")),
+                "source": "akshare_minute",
+            }
+        )
+    return results
+
+
+def _get_minute_kline_from_sina(code: str, minutes: int, limit: int) -> list[dict]:
+    try:
+        if code.startswith("6") or code.startswith("68"):
+            symbol = f"sh{code}"
+        elif code.startswith("8") or code.startswith("4"):
+            symbol = f"bj{code}"
+        else:
+            symbol = f"sz{code}"
+
+        url = (
+            "https://quotes.sina.cn/cn/api/jsonp_v2.php/"
+            f"data=/CN_MarketDataService.getKLineData?symbol={symbol}&scale={minutes}&ma=no&datalen={limit}"
+        )
+        resp = requests.get(
+            url,
+            headers={
+                "Referer": "https://finance.sina.com.cn",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=15,
+        )
+        payload = resp.text or ""
+        match = re.search(r"\(\[([\s\S]*?)\]\)", payload)
+        if not match:
+            return []
+        klines = json.loads(f"[{match.group(1)}]")
+        results = []
+        for item in klines:
+            results.append(
+                {
+                    "date": str(item.get("day") or "")[:19],
+                    "open": safe_float(item.get("open")),
+                    "close": safe_float(item.get("close")),
+                    "high": safe_float(item.get("high")),
+                    "low": safe_float(item.get("low")),
+                    "volume": safe_int(item.get("volume")),
+                    "amount": safe_float(item.get("amount")),
+                    "source": "sina",
+                }
+            )
+        return results
+    except Exception:
+        return []
+
+
+@cached(ttl=60.0)  # 1分钟缓存，分钟级数据刷新更频繁
+def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> dict:
+    """
+    获取分钟K线数据
+    """
+    limiter = get_limiter("kline", max_calls=5, period=1.0)
+    limiter.acquire()
+
+    code = normalize_code(stock_code)
+    minutes = _parse_minute_period(period)
+    if minutes is None:
+        return fail("period 必须为 1m/5m/15m/30m/60m")
+
+    results = _get_minute_kline_from_akshare(code, minutes, limit)
+    if not results:
+        results = _get_minute_kline_from_sina(code, minutes, limit)
+
+    if not results:
+        return fail(f"所有数据源均无法获取 {code} 的{minutes}分钟K线数据")
+
+    validated_results = [validate_kline(item) for item in results]
+    return ok(validated_results)
+
+
 def get_index_quote(index_code: str) -> dict:
     """
     获取指数实时行情
@@ -823,4 +1356,9 @@ def register(mcp):
     mcp.tool()(get_realtime_quote)
     mcp.tool()(get_batch_quotes)
     mcp.tool()(get_kline)
+    mcp.tool()(get_minute_kline)
+    mcp.tool()(get_order_book)
+    mcp.tool()(get_trade_details)
+    mcp.tool()(get_limit_up_stocks)
+    mcp.tool()(get_limit_up_statistics)
     mcp.tool()(get_index_quote)

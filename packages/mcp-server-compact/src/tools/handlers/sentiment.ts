@@ -9,14 +9,75 @@ export const sentimentManagerTool: ToolDefinition = {
     category: 'market_sentiment',
     inputSchema: managerSchema,
     tags: ['sentiment', 'manager'],
-    dataSource: 'real',
+    dataSource: 'calculated_estimate',
 };
+
+async function buildMarketBreadthMetrics() {
+    const assumptions: string[] = [];
+    const [limitStatsRes, sectorFlowRes, klineRes] = await Promise.all([
+        adapterManager.getLimitUpStatistics(),
+        adapterManager.getSectorFlow(50),
+        adapterManager.getKline('000001', '101', 60),
+    ]);
+
+    const limitStats = limitStatsRes.success && limitStatsRes.data
+        ? limitStatsRes.data
+        : { totalLimitUp: 0, limitDown: 0 };
+    if (!limitStatsRes.success) {
+        assumptions.push('涨跌停统计获取失败，使用0作为新高/新低占位');
+    }
+
+    const sectors = sectorFlowRes.success && sectorFlowRes.data ? sectorFlowRes.data : [];
+    let advances = 1;
+    let declines = 1;
+    if (sectors.length > 0) {
+        advances = sectors.filter((s: any) => (s.changePercent || 0) > 0).length;
+        declines = sectors.filter((s: any) => (s.changePercent || 0) < 0).length;
+        assumptions.push('使用板块涨跌家数近似市场宽度');
+    } else {
+        assumptions.push('板块数据为空，使用最小宽度占位');
+    }
+
+    const bars = klineRes.success && klineRes.data ? klineRes.data : [];
+    const volumes = bars.map((b: any) => b.volume).filter((v: any) => Number.isFinite(v));
+    const volumeRatio = volumes.length >= 20
+        ? volumes[volumes.length - 1] / (volumes.slice(-20).reduce((a: any, b: any) => a + b, 0) / 20)
+        : 1;
+    if (volumes.length < 20) {
+        assumptions.push('指数成交量样本不足，成交量比率使用默认值1');
+    }
+
+    const returns = bars.length >= 2
+        ? bars.slice(1).map((b, i) => {
+            const prev = bars[i].close;
+            return prev > 0 ? (b.close - prev) / prev : 0;
+        })
+        : [];
+    const avgReturn = returns.length > 0 ? returns.reduce((a: any, b: any) => a + b, 0) / returns.length : 0;
+    const variance = returns.length > 1
+        ? returns.reduce((a: any, b: any) => a + (b - avgReturn) ** 2, 0) / (returns.length - 1)
+        : 0;
+    const volatility = Math.sqrt(variance) * 100;
+    if (returns.length < 2) {
+        assumptions.push('指数波动率样本不足，波动率使用默认值1');
+    }
+
+    return {
+        advances,
+        declines,
+        newHighs: limitStats.totalLimitUp || 0,
+        newLows: limitStats.limitDown || 0,
+        volumeRatio: Number.isFinite(volumeRatio) ? volumeRatio : 1,
+        volatility: Number.isFinite(volatility) ? volatility : 1,
+        assumptions,
+    };
+}
 
 export const sentimentManagerHandler: ToolHandler = async (params: any) => {
     const { action, code } = params;
-    if (!code) return { success: false, error: 'Missing code parameter' };
 
     if (action === 'analyze_sentiment' || action === 'analyze') {
+        if (!code) return { success: false, error: 'Missing code parameter' };
         const quoteRes = await adapterManager.getRealtimeQuote(code);
         const klineRes = await adapterManager.getKline(code, '101', 60);
 
@@ -71,36 +132,25 @@ export const sentimentManagerHandler: ToolHandler = async (params: any) => {
 
     // ===== 恐惧贪婪指数 =====
     if (action === 'fear_greed_index' || action === 'fear_greed') {
-        // 由于缺乏完整的市场宽度数据，使用简化的估算
-        const indexCodes = ['000001', '399001'];
-        const [quotesRes, limitStatsRes] = await Promise.all([
-            adapterManager.getBatchQuotes(indexCodes),
-            adapterManager.getLimitUpStatistics()
-        ]);
-
-        const indices = quotesRes.success && quotesRes.data ? quotesRes.data : [];
-        const limitStats = limitStatsRes.success && limitStatsRes.data ? limitStatsRes.data : { totalLimitUp: 0, limitDown: 0 };
-
-        // 估算上涨/下跌家数 (基于涨跌停比例放大)
-        const totalEstimated = 5000;
-        const limitRatio = limitStats.totalLimitUp / (limitStats.totalLimitUp + limitStats.limitDown + 1);
-        const advances = Math.floor(limitRatio * totalEstimated); // 这是一个粗略估算
-        const declines = totalEstimated - advances;
-
-        // 估算波动率 (基于指数涨跌幅绝对值)
-        const avgChange = indices.length > 0 ? indices.reduce((sum, i) => sum + Math.abs(i.changePercent), 0) / indices.length : 1;
-
+        const marketMetrics = await buildMarketBreadthMetrics();
         const marketData = {
-            advances,
-            declines,
-            newHighs: limitStats.totalLimitUp, // 用涨停数暂代新高
-            newLows: limitStats.limitDown, // 用跌停数暂代新低
-            volumeRatio: 1, // 暂无成交量比率
-            volatility: avgChange
+            advances: marketMetrics.advances,
+            declines: marketMetrics.declines,
+            newHighs: marketMetrics.newHighs,
+            newLows: marketMetrics.newLows,
+            volumeRatio: marketMetrics.volumeRatio,
+            volatility: marketMetrics.volatility,
         };
 
         const result = SentimentServices.calculateFearGreedIndex(marketData);
-        return { success: true, data: result };
+        return {
+            success: true,
+            data: {
+                ...result,
+                dataSource: 'calculated_estimate',
+                assumptions: marketMetrics.assumptions
+            }
+        };
     }
 
     // ===== 情绪趋势 =====
@@ -111,7 +161,13 @@ export const sentimentManagerHandler: ToolHandler = async (params: any) => {
             success: true,
             data: {
                 message: '历史情绪趋势数据暂未积累',
-                current: await sentimentManagerHandler({ action: 'fear_greed_index' }).then((res: any) => res.data)
+                current: await sentimentManagerHandler({ action: 'fear_greed_index' }).then((res: any) => res.data),
+                isSimulated: true,
+                dataSource: 'simulated',
+                assumptions: [
+                    '暂无历史情绪时间序列，返回当前指标作为占位',
+                    '趋势判断不代表真实市场情绪演变'
+                ]
             }
         };
     }

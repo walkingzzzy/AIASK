@@ -11,14 +11,107 @@ export const backtestManagerTool: ToolDefinition = {
     category: 'backtest',
     inputSchema: managerSchema,
     tags: ['backtest', 'strategy', 'simulation', 'optimization'],
-    dataSource: 'real'
+    dataSource: 'simulated'
 };
+
+function rebuildTradeProfits(trades: any[]) {
+    const assumptions: string[] = [
+        '利润按平均成本法从交易序列重算',
+        '手续费/滑点按交易记录字段扣减'
+    ];
+    let hasMissingPosition = false;
+    let hasInvalidTrade = false;
+
+    const indexed = trades.map((t, i) => ({ t, i }));
+    indexed.sort((a, b) => {
+        const ta = Date.parse(a.t.trade_date || a.t.tradeDate || a.t.date || '') || 0;
+        const tb = Date.parse(b.t.trade_date || b.t.tradeDate || b.t.date || '') || 0;
+        if (ta === tb) return a.i - b.i;
+        return ta - tb;
+    });
+
+    const positions = new Map<string, { qty: number; avgCost: number }>();
+    const mappedTrades = indexed.map(({ t }) => {
+        const action = String(t.action || '').toLowerCase() as 'buy' | 'sell';
+        const code = String(t.stock_code || t.stockCode || t.code || '');
+        const price = Number(t.price || 0);
+        const quantity = Number(t.shares ?? t.quantity ?? 0);
+        const fee = Number(t.fee || 0);
+        const slippage = Number(t.slippage || 0);
+        const amount = Number(t.net_value ?? t.amount ?? price * quantity);
+        const date = String(t.trade_date || t.tradeDate || t.date || '');
+
+        if (!code || !price || !quantity || (action !== 'buy' && action !== 'sell')) {
+            hasInvalidTrade = true;
+            return {
+                date,
+                code,
+                action,
+                price,
+                quantity,
+                amount,
+            };
+        }
+
+        const position = positions.get(code) || { qty: 0, avgCost: 0 };
+
+        if (action === 'buy') {
+            const totalCost = position.avgCost * position.qty;
+            const tradeCost = price * quantity + fee + slippage;
+            const newQty = position.qty + quantity;
+            const newAvgCost = newQty > 0 ? (totalCost + tradeCost) / newQty : 0;
+            positions.set(code, { qty: newQty, avgCost: newAvgCost });
+            return { date, code, action, price, quantity, amount };
+        }
+
+        const availableQty = position.qty;
+        let costBasis = 0;
+        if (availableQty <= 0) {
+            hasMissingPosition = true;
+            costBasis = price * quantity;
+        } else if (quantity > availableQty) {
+            hasMissingPosition = true;
+            const extraQty = quantity - availableQty;
+            costBasis = position.avgCost * availableQty + price * extraQty;
+        } else {
+            costBasis = position.avgCost * quantity;
+        }
+
+        const proceeds = price * quantity - fee - slippage;
+        const profit = proceeds - costBasis;
+        const profitPercent = costBasis > 0 ? profit / costBasis : undefined;
+
+        const remainingQty = Math.max(availableQty - quantity, 0);
+        positions.set(code, { qty: remainingQty, avgCost: remainingQty > 0 ? position.avgCost : 0 });
+
+        return {
+            date,
+            code,
+            action,
+            price,
+            quantity,
+            amount,
+            profit,
+            profitPercent,
+        };
+    });
+
+    if (hasMissingPosition) {
+        assumptions.push('卖出数量超过持仓时，超出部分按零利润处理');
+    }
+    if (hasInvalidTrade) {
+        assumptions.push('存在无法解析的交易记录，已跳过利润计算');
+    }
+
+    return { mappedTrades, assumptions };
+}
 
 export const backtestManagerHandler: ToolHandler = async (params: any) => {
     const {
         action, code, codes, startDate, endDate,
         initialCapital = 100000, strategy = 'buy_and_hold',
         shortPeriod, longPeriod, lookback, threshold,
+        maxHoldingDays, sellSignal,
         commission = 0.0003, slippage = 0.001, backtestId, limit = 10,
         paramRanges, runs // For advanced features
     } = params;
@@ -56,7 +149,8 @@ export const backtestManagerHandler: ToolHandler = async (params: any) => {
 
         const runParams = {
             initialCapital, commission, slippage,
-            shortPeriod, longPeriod, lookback, threshold
+            shortPeriod, longPeriod, lookback, threshold,
+            maxHoldingDays, sellSignal
         };
 
         const { result, trades, equityCurve } = BacktestService.runBacktest(stockCodes[0], klines, strategy, runParams);
@@ -126,7 +220,12 @@ export const backtestManagerHandler: ToolHandler = async (params: any) => {
                     date: e.date,
                     value: Math.round(e.value)
                 })),
-                note: `完整数据已保存，ID: ${resultId}。使用 action=get 查看详情`
+                note: `完整数据已保存，ID: ${resultId}。使用 action=get 查看详情`,
+                dataSource: 'simulated',
+                assumptions: [
+                    '回测基于历史K线回放，不代表真实撮合与流动性约束',
+                    '交易成本使用固定费率/滑点参数进行估算'
+                ]
             }
         };
     }
@@ -163,7 +262,12 @@ export const backtestManagerHandler: ToolHandler = async (params: any) => {
                     params: r.params,
                     metric: parseFloat(r.metric.toFixed(4))
                 })),
-                note: '仅显示前5个最佳结果'
+                note: '仅显示前5个最佳结果',
+                dataSource: 'simulated',
+                assumptions: [
+                    '参数优化基于历史样本回测结果',
+                    '未进行稳健性或交易成本敏感性校验'
+                ]
             }
         };
     }
@@ -179,56 +283,19 @@ export const backtestManagerHandler: ToolHandler = async (params: any) => {
         const result = await timescaleDB.getBacktestResultById(backtestId);
         const capital = result ? result.initialCapital : initialCapital;
 
-        // Map stored trades back to BacktestTrade if needed, or update monteCarlo signature
-        // Monte Carlo needs objects with 'profit'. Sqlite trades don't have explicit profit field stored? 
-        // Wait, Sqlite table has net_value etc. but not profit.
-        // Actually, Monte Carlo function in service expects BacktestTrade[].
-        // But Sqlite trades are different.
-        // I need to reconstruct profit from Sqlite trades or update Monte Carlo.
-        // For now, cast or mapping.
-
-        const serviceTrades: any[] = trades.map((t: any) => ({
-            ...t,
-            code: t.stockCode,
-            quantity: t.shares,
-            amount: t.netValue,
-            date: t.tradeDate,
-            // logic to calc profit? 
-            // Simplification: Monte Carlo only needs profit array.
-            // If sqlite trades don't store profit, we can't do MC easily without recalculating.
-            // BUT wait, `saveBacktestResult` has profit factors etc.
-            // `backtest_trades` table schema separate.
-            // Let's modify MonteCarlo to accept number[] profits directly, easier?
-            // Or map here properly.
-            // The error was: 'profit' does not exist on type '{ id... }'.
-            // I'll try to cast to any for now to pass compilation if runtime object has it? 
-            // No, sqlite trade object definitely doesn't have 'profit' key based on the error.
-        }));
-
-        // Actually, I should recalculate profit for sell trades.
-        // Or assume the service function accepts raw numbers.
-        // Current definition: monteCarloSimulation(trades: BacktestTrade[]...)
-
-        // Strategy: map to conform to BacktestTrade interface as much as possible
-        // But profit is missing.
-        // I will map it with profit=0 as placeholder to fix type error, though logic might be flawed for loaded trades.
-        // Ideally, I should persist 'profit' in backtest_trades table.
-
-        const mappedServiceTrades = trades.map((t: any) => ({
-            date: t.tradeDate,
-            code: t.stockCode,
-            action: t.action as 'buy' | 'sell',
-            price: t.price,
-            quantity: t.shares,
-            amount: t.netValue,
-            profit: 0 // Placeholder, MC will fail if this is 0. 
-        }));
-
-        const simResult = BacktestService.monteCarloSimulation(mappedServiceTrades, capital, runs || 1000);
+        const { mappedTrades, assumptions } = rebuildTradeProfits(trades);
+        const simResult = BacktestService.monteCarloSimulation(mappedTrades, capital, runs || 1000);
 
         return {
             success: true,
-            data: simResult
+            data: {
+                ...simResult,
+                isSimulated: true,
+                dataSource: 'simulated',
+                assumptions: [
+                    '蒙特卡洛基于历史交易利润的随机重排',
+                ].concat(assumptions)
+            }
         };
     }
 
@@ -260,7 +327,13 @@ export const backtestManagerHandler: ToolHandler = async (params: any) => {
                         period: r.period,
                         params: r.params,
                         return: (r.return * 100).toFixed(2) + '%'
-                    }))
+                    })),
+                    isSimulated: true,
+                    dataSource: 'simulated',
+                    assumptions: [
+                        '训练/测试窗口为历史滑动分段，不代表真实实盘执行',
+                        '参数选择存在样本期偏差与过拟合风险'
+                    ]
                 }
             };
         } catch (e) {
@@ -298,7 +371,12 @@ export const backtestManagerHandler: ToolHandler = async (params: any) => {
                 wins: Math.round(result.tradesCount * (result.winRate || 0)),
                 losses: Math.round(result.tradesCount * (1 - (result.winRate || 0)))
             },
-            note: `权益曲线已采样至${equitySample.length}个点`
+            note: `权益曲线已采样至${equitySample.length}个点`,
+            dataSource: 'simulated',
+            assumptions: [
+                '报告基于历史回测结果汇总',
+                '指标未包含实盘交易冲击与资金约束'
+            ]
         };
 
         return { success: true, data: report };

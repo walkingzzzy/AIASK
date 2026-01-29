@@ -15,9 +15,53 @@ from ..utils import (
     parse_date_input,
     safe_float,
     safe_int,
+    pick_value,
 )
 
 _RETRY_SLEEP_SECONDS = float(os.getenv("AKSHARE_RETRY_SLEEP_SECONDS", "0.5"))
+
+
+def _map_news_rows(rows: list[dict]) -> list[dict]:
+    results: list[dict] = []
+    for row in rows:
+        title = pick_value(row, ["title", "标题", "新闻标题", "公告标题"])
+        time_val = pick_value(row, ["time", "发布时间", "公告日期", "日期", "发布时间"])
+        source = pick_value(row, ["source", "来源", "来源网站", "媒体名称"])
+        url = pick_value(row, ["url", "链接", "网址", "新闻链接"])
+        if not title and not url:
+            continue
+        results.append(
+            {
+                "title": str(title or ""),
+                "time": format_period(time_val),
+                "source": str(source or ""),
+                "url": str(url or ""),
+            }
+        )
+    return results
+
+
+def _try_akshare_news_functions(code: str, limit: int) -> list[dict]:
+    candidates = [
+        ("stock_news_em", {"symbol": code}),
+        ("stock_news_em", {"code": code}),
+        ("stock_news", {"symbol": code}),
+    ]
+    for func_name, kwargs in candidates:
+        func = getattr(ak, func_name, None)
+        if not func:
+            continue
+        try:
+            df = func(**kwargs)
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+        rows = df.head(limit).fillna("").to_dict(orient="records")
+        mapped = _map_news_rows(rows)
+        if mapped:
+            return mapped
+    return []
 
 
 @cached(ttl=1800.0)  # 30分钟缓存，公告数据相对稳定
@@ -397,6 +441,60 @@ def get_profit_forecast(symbol: str = "") -> dict:
         return fail(f"系统错误: {e}")
 
 
+@cached(ttl=1800.0)  # 30分钟缓存
+def get_stock_news(stock_code: str, limit: int = 20) -> dict:
+    """
+    获取个股新闻列表（优先使用 AkShare 内置接口，失败则回退公告）
+    """
+    limiter = get_limiter("news", rate=3.0)
+    limiter.acquire()
+
+    try:
+        code = normalize_code(stock_code)
+        limit = int(limit) if int(limit or 0) > 0 else 20
+
+        items = _try_akshare_news_functions(code, limit)
+        if items:
+            return ok(items[:limit])
+
+        # 回退：使用公告数据充当新闻
+        end_date = date.today()
+        start_date = end_date - timedelta(days=30)
+        fallback = get_stock_notices(
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            types=["全部"],
+            stock_code=code,
+        )
+        if fallback.get("success") and fallback.get("data"):
+            events = fallback["data"].get("events", [])
+            mapped = _map_news_rows(events)
+            if mapped:
+                return ok(mapped[:limit])
+
+        return fail(f"未获取到 {code} 的新闻数据")
+    except Exception as e:
+        return fail(e)
+
+
+@cached(ttl=1800.0)
+def get_market_news(limit: int = 20) -> dict:
+    """
+    获取市场新闻（如不可用则返回失败）
+    """
+    limiter = get_limiter("news", rate=3.0)
+    limiter.acquire()
+
+    try:
+        limit = int(limit) if int(limit or 0) > 0 else 20
+        items = _try_akshare_news_functions("", limit)
+        if items:
+            return ok(items[:limit])
+        return fail("市场新闻暂不可用")
+    except Exception as e:
+        return fail(e)
+
+
 def register(mcp):
     mcp.tool()(get_stock_notices)
     mcp.tool()(get_stock_research)
@@ -404,3 +502,5 @@ def register(mcp):
     mcp.tool()(get_analyst_ranking)
     mcp.tool()(get_research_reports)
     mcp.tool()(get_profit_forecast)
+    mcp.tool()(get_stock_news)
+    mcp.tool()(get_market_news)

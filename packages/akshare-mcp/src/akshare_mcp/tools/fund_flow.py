@@ -31,6 +31,7 @@ from ..core.rate_limiter import get_limiter
 
 _NORTH_FUND_STALE_DAYS = int(os.getenv("NORTH_FUND_STALE_DAYS", "5"))
 _NORTH_FUND_DAILY_QUOTA = float(os.getenv("NORTH_FUND_DAILY_QUOTA", "52000000000"))
+_NORTH_FUND_FAST_MODE = os.getenv("NORTH_FUND_FAST_MODE", "0").lower() in {"1", "true", "yes", "y"}
 _HKEX_DAILY_STAT_URL = os.getenv(
     "HKEX_DAILY_STAT_URL",
     "https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_{date}e.js",
@@ -64,6 +65,20 @@ def _format_date(d: date) -> str:
     return d.strftime("%Y-%m-%d")
 
 
+def _fetch_eastmoney_datacenter(params: dict[str, Any]) -> list[dict]:
+    url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://data.eastmoney.com/",
+    }
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=15)
+        payload = resp.json() if resp.status_code == 200 else {}
+        return payload.get("result", {}).get("data", []) or []
+    except Exception:
+        return []
+
+
 def _north_fund_is_valid(results: list[dict], stale_days: int) -> bool:
     if not results:
         return False
@@ -82,6 +97,17 @@ def _north_fund_is_valid(results: list[dict], stale_days: int) -> bool:
         if (date.today() - latest).days > stale_days:
             return False
     return True
+
+
+def _north_fund_has_flow(results: list[dict]) -> bool:
+    if not results:
+        return False
+    return any(
+        (r.get("shConnect") not in (None, 0))
+        or (r.get("szConnect") not in (None, 0))
+        or (r.get("total") not in (None, 0))
+        for r in results
+    )
 
 
 def _tushare_pick_multiplier(
@@ -509,30 +535,38 @@ def get_north_fund(days: int = 30) -> dict:
 
         # 尝试多个数据源，按优先级排序
         sources_status = []
+        stale_candidates: list[tuple[str, list[dict]]] = []
 
-        # 1. Tushare (Token required)
-        results = _north_fund_from_tushare(days)
-        if _north_fund_is_valid(results, _NORTH_FUND_STALE_DAYS):
-            return ok({"items": results, "source": "tushare"})
-        sources_status.append("tushare: skipped/invalid")
+        if _NORTH_FUND_FAST_MODE:
+            source_chain = [
+                ("akshare_em", _north_fund_from_akshare),
+                ("em_summary", _north_fund_from_em_summary),
+            ]
+        else:
+            source_chain = [
+                ("tushare", _north_fund_from_tushare),
+                ("hkex", _north_fund_from_hkex),
+                ("akshare_em", _north_fund_from_akshare),
+                ("em_summary", _north_fund_from_em_summary),
+            ]
 
-        # 2. HKEX (Official source)
-        results = _north_fund_from_hkex(days)
-        if _north_fund_is_valid(results, _NORTH_FUND_STALE_DAYS):
-            return ok({"items": results, "source": "hkex"})
-        sources_status.append("hkex: invalid/stale")
+        for name, fetcher in source_chain:
+            results = fetcher(days)
+            if _north_fund_is_valid(results, _NORTH_FUND_STALE_DAYS):
+                return ok({"items": results, "source": name})
+            if _north_fund_has_flow(results):
+                stale_candidates.append((name, results))
+            sources_status.append(f"{name}: invalid/stale")
 
-        # 3. AkShare (EastMoney Hist)
-        results = _north_fund_from_akshare(days)
-        if _north_fund_is_valid(results, _NORTH_FUND_STALE_DAYS):
-            return ok({"items": results, "source": "akshare_em"})
-        sources_status.append("akshare: invalid/stale")
+        if stale_candidates:
+            def latest_date(rows: list[dict]) -> Optional[date]:
+                return max((_parse_date(r.get("date")) for r in rows), default=None)
 
-        # 4. EastMoney Summary (Realtime/Recent)
-        results = _north_fund_from_em_summary(days)
-        if _north_fund_is_valid(results, _NORTH_FUND_STALE_DAYS):
-            return ok({"items": results, "source": "em_summary"})
-        sources_status.append("em_summary: invalid/stale")
+            best_source, best_rows = max(
+                stale_candidates,
+                key=lambda item: latest_date(item[1]) or date.min
+            )
+            return ok({"items": best_rows, "source": f"{best_source}_stale", "stale": True})
 
         return fail(f"北向资金数据不可用: 所有数据源均失效或数据过期 ({'; '.join(sources_status)})")
     except Exception as e:
@@ -799,9 +833,48 @@ def _check_lhb_exists(date_str: str) -> bool:
         return False
 
 
-def get_margin_data() -> dict:
-    """获取市场融资融券数据"""
+def get_margin_data(stock_code: str = "", days: int = 30) -> dict:
+    """获取融资融券明细数据（支持单只股票或市场摘要）"""
     try:
+        limiter = get_limiter("fund_flow", max_calls=3, period=1.0)
+        limiter.acquire()
+
+        days = int(days) if int(days or 0) > 0 else 30
+        params: dict[str, Any] = {
+            "sortColumns": "DATE",
+            "sortTypes": -1,
+            "pageSize": min(max(days, 1), 200),
+            "pageNumber": 1,
+            "reportName": "RPTA_WEB_RZRQ_GGMX",
+            "columns": "DATE,SCODE,SECNAME,RZYE,RZMRE,RZCHE,RQYE,RQMCL,RQCHL,RZRQYE",
+        }
+
+        if stock_code:
+            code = normalize_code(stock_code)
+            params["filter"] = f'(SCODE="{code}")'
+
+        items = _fetch_eastmoney_datacenter(params)
+        results: list[dict] = []
+        for item in items:
+            results.append(
+                {
+                    "date": str(item.get("DATE", "")).split(" ")[0],
+                    "code": normalize_code(item.get("SCODE") or stock_code),
+                    "name": str(item.get("SECNAME") or ""),
+                    "marginBalance": parse_numeric(item.get("RZYE")),
+                    "marginBuy": parse_numeric(item.get("RZMRE")),
+                    "marginRepay": parse_numeric(item.get("RZCHE")),
+                    "shortBalance": parse_numeric(item.get("RQYE")),
+                    "shortSell": parse_numeric(item.get("RQMCL")),
+                    "shortRepay": parse_numeric(item.get("RQCHL")),
+                    "totalBalance": parse_numeric(item.get("RZRQYE")),
+                }
+            )
+
+        if results:
+            return ok(results)
+
+        # 回退：市场级摘要
         def scale_margin(val: Any) -> Optional[float]:
             num = parse_numeric(val)
             return num * 1e8 if num is not None else None
@@ -809,32 +882,244 @@ def get_margin_data() -> dict:
         df = ak.stock_margin_account_info()
         if df is not None and not df.empty:
             row = df.iloc[-1]
-            return ok(
-                {
-                    "date": str(row.get("日期", "")),
-                    "marginBalance": scale_margin(row.get("融资余额")),
-                    "marginBuy": scale_margin(row.get("融资买入额")),
-                    "marginRepay": None,
-                    "shortBalance": scale_margin(row.get("融券余额")),
-                    "shortSell": scale_margin(row.get("融券卖出额")),
-                    "shortRepay": None,
-                }
-            )
+            summary = {
+                "date": str(row.get("日期", "")),
+                "code": normalize_code(stock_code) if stock_code else "",
+                "name": "",
+                "marginBalance": scale_margin(row.get("融资余额")),
+                "marginBuy": scale_margin(row.get("融资买入额")),
+                "marginRepay": None,
+                "shortBalance": scale_margin(row.get("融券余额")),
+                "shortSell": scale_margin(row.get("融券卖出额")),
+                "shortRepay": None,
+                "totalBalance": None,
+            }
+            return ok([summary])
 
         df = ak.stock_margin_sse(start_date="20010106", end_date=datetime.now().strftime("%Y%m%d"))
         if df is None or df.empty:
             return fail("未获取到融资融券数据")
 
         row = df.iloc[-1]
+        summary = {
+            "date": str(row.get("信用交易日期", "")),
+            "code": normalize_code(stock_code) if stock_code else "",
+            "name": "",
+            "marginBalance": safe_float(row.get("融资余额")),
+            "marginBuy": safe_float(row.get("融资买入额")),
+            "marginRepay": safe_float(row.get("融资偿还额")),
+            "shortBalance": safe_float(row.get("融券余量")),
+            "shortSell": safe_float(row.get("融券卖出量")),
+            "shortRepay": safe_float(row.get("融券偿还量")),
+            "totalBalance": None,
+        }
+        return ok([summary])
+    except Exception as e:
+        return fail(e)
+
+
+def get_margin_ranking(top_n: int = 20, sort_by: str = "balance") -> dict:
+    """获取融资融券排行"""
+    try:
+        limiter = get_limiter("fund_flow", max_calls=3, period=1.0)
+        limiter.acquire()
+
+        top_n = int(top_n) if int(top_n or 0) > 0 else 20
+        sort_map = {"balance": "RZRQYE", "buy": "RZMRE", "sell": "RQMCL"}
+        sort_column = sort_map.get(sort_by, "RZRQYE")
+
+        latest = _fetch_eastmoney_datacenter(
+            {
+                "sortColumns": "DATE",
+                "sortTypes": -1,
+                "pageSize": 1,
+                "pageNumber": 1,
+                "reportName": "RPTA_WEB_RZRQ_GGMX",
+                "columns": "DATE",
+            }
+        )
+        if not latest:
+            return ok([])
+        latest_date = latest[0].get("DATE")
+        if not latest_date:
+            return ok([])
+
+        items = _fetch_eastmoney_datacenter(
+            {
+                "sortColumns": sort_column,
+                "sortTypes": -1,
+                "pageSize": top_n,
+                "pageNumber": 1,
+                "reportName": "RPTA_WEB_RZRQ_GGMX",
+                "columns": "DATE,SCODE,SECNAME,RZYE,RZMRE,RQMCL,RZRQYE",
+                "filter": f"(DATE='{latest_date}')",
+            }
+        )
+        results = []
+        for item in items:
+            results.append(
+                {
+                    "date": str(item.get("DATE", "")).split(" ")[0],
+                    "code": normalize_code(item.get("SCODE")),
+                    "name": str(item.get("SECNAME") or ""),
+                    "marginBalance": parse_numeric(item.get("RZYE")),
+                    "marginBuy": parse_numeric(item.get("RZMRE")),
+                    "shortSell": parse_numeric(item.get("RQMCL")),
+                    "totalBalance": parse_numeric(item.get("RZRQYE")),
+                }
+            )
+        return ok(results)
+    except Exception as e:
+        return fail(e)
+
+
+def get_block_trades(date: str = "", stock_code: str = "", limit: int = 500) -> dict:
+    """获取大宗交易数据"""
+    try:
+        limiter = get_limiter("fund_flow", max_calls=3, period=1.0)
+        limiter.acquire()
+
+        target = date or datetime.now().strftime("%Y-%m-%d")
+        params: dict[str, Any] = {
+            "sortColumns": "TRADE_DATE,SECURITY_CODE",
+            "sortTypes": "-1,1",
+            "pageSize": min(max(int(limit), 1), 1000),
+            "pageNumber": 1,
+            "reportName": "RPT_BLOCKTRADE_DETAILSNEW",
+            "columns": "TRADE_DATE,SECURITY_CODE,SECURITY_NAME_ABBR,DEAL_PRICE,DEAL_AMOUNT,DEAL_AMT,PREMIUM_RATIO,BUYER_NAME,SELLER_NAME",
+            "filter": f"(TRADE_DATE='{target}')",
+        }
+        if stock_code:
+            code = normalize_code(stock_code)
+            params["filter"] = f"(TRADE_DATE='{target}')(SECURITY_CODE=\"{code}\")"
+
+        items = _fetch_eastmoney_datacenter(params)
+        results = []
+        for item in items:
+            results.append(
+                {
+                    "date": str(item.get("TRADE_DATE", "")).split(" ")[0],
+                    "code": normalize_code(item.get("SECURITY_CODE")),
+                    "name": str(item.get("SECURITY_NAME_ABBR") or ""),
+                    "price": parse_numeric(item.get("DEAL_PRICE")) or 0,
+                    "volume": parse_numeric(item.get("DEAL_AMOUNT")) or 0,
+                    "amount": parse_numeric(item.get("DEAL_AMT")) or 0,
+                    "premium": parse_numeric(item.get("PREMIUM_RATIO")) or 0,
+                    "buyer": str(item.get("BUYER_NAME") or ""),
+                    "seller": str(item.get("SELLER_NAME") or ""),
+                }
+            )
+        return ok(results)
+    except Exception as e:
+        return fail(e)
+
+
+def get_north_fund_holding(stock_code: str) -> dict:
+    """获取单只股票北向资金持股"""
+    try:
+        code = normalize_code(stock_code)
+        items = _fetch_eastmoney_datacenter(
+            {
+                "sortColumns": "TRADE_DATE",
+                "sortTypes": -1,
+                "pageSize": 2,
+                "pageNumber": 1,
+                "reportName": "RPT_MUTUAL_HOLDSTOCKNORTH_STA",
+                "columns": "TRADE_DATE,SECURITY_CODE,SECURITY_NAME,HOLD_SHARES,HOLD_MARKET_CAP,HOLD_SHARES_RATIO",
+                "filter": f'(SECURITY_CODE="{code}")',
+            }
+        )
+        if not items:
+            return ok({"shares": 0, "ratio": 0, "change": 0})
+        latest = items[0]
+        prev = items[1] if len(items) > 1 else None
+        latest_shares = parse_numeric(latest.get("HOLD_SHARES")) or 0
+        prev_shares = parse_numeric(prev.get("HOLD_SHARES")) if prev else 0
         return ok(
             {
-                "date": str(row.get("信用交易日期", "")),
-                "marginBalance": safe_float(row.get("融资余额")),
-                "marginBuy": safe_float(row.get("融资买入额")),
-                "marginRepay": safe_float(row.get("融资偿还额")),
-                "shortBalance": safe_float(row.get("融券余量")),
-                "shortSell": safe_float(row.get("融券卖出量")),
-                "shortRepay": safe_float(row.get("融券偿还量")),
+                "shares": latest_shares,
+                "ratio": parse_numeric(latest.get("HOLD_SHARES_RATIO")) or 0,
+                "change": latest_shares - (prev_shares or 0),
+            }
+        )
+    except Exception as e:
+        return fail(e)
+
+
+def get_north_fund_top(top_n: int = 20) -> dict:
+    """获取北向资金持股排行"""
+    try:
+        top_n = int(top_n) if int(top_n or 0) > 0 else 20
+        items = _fetch_eastmoney_datacenter(
+            {
+                "sortColumns": "HOLD_MARKET_CAP",
+                "sortTypes": -1,
+                "pageSize": top_n,
+                "pageNumber": 1,
+                "reportName": "RPT_MUTUAL_HOLDSTOCKNORTH_STA",
+                "columns": "SECURITY_CODE,SECURITY_NAME,HOLD_SHARES,HOLD_MARKET_CAP,HOLD_SHARES_RATIO",
+            }
+        )
+        results = []
+        for item in items:
+            results.append(
+                {
+                    "code": normalize_code(item.get("SECURITY_CODE")),
+                    "name": str(item.get("SECURITY_NAME") or ""),
+                    "shares": parse_numeric(item.get("HOLD_SHARES")) or 0,
+                    "ratio": parse_numeric(item.get("HOLD_SHARES_RATIO")) or 0,
+                    "marketCap": parse_numeric(item.get("HOLD_MARKET_CAP")) or 0,
+                }
+            )
+        return ok(results)
+    except Exception as e:
+        return fail(e)
+
+
+def get_stock_fund_flow(stock_code: str) -> dict:
+    """获取个股资金流向（主力/大单/中单/小单）"""
+    try:
+        limiter = get_limiter("fund_flow", max_calls=3, period=1.0)
+        limiter.acquire()
+
+        code = normalize_code(stock_code)
+        market = "1" if code.startswith("6") else "0"
+        secid = f"{market}.{code}"
+        url = "https://push2.eastmoney.com/api/qt/stock/fflow/kline/get"
+        resp = requests.get(
+            url,
+            params={
+                "secid": secid,
+                "klt": 101,
+                "fields1": "f1,f2,f3",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62",
+                "lmt": 1,
+            },
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        data = resp.json().get("data", {}) if resp.status_code == 200 else {}
+        klines = data.get("klines") or []
+        if not klines:
+            return fail("未获取到资金流向数据")
+        parts = str(klines[-1]).split(",")
+        # 格式: 日期,主力净流入,小单净流入,中单净流入,大单净流入,超大单净流入
+        main_inflow = parse_numeric(parts[1]) or 0
+        small_inflow = parse_numeric(parts[2]) or 0
+        middle_inflow = parse_numeric(parts[3]) or 0
+        large_inflow = parse_numeric(parts[4]) or 0
+        super_large_inflow = parse_numeric(parts[5]) or 0
+
+        return ok(
+            {
+                "code": code,
+                "name": str(data.get("name") or ""),
+                "mainNetInflow": main_inflow,
+                "mainInflowPercent": 0,
+                "superLargeNetInflow": super_large_inflow,
+                "largeNetInflow": large_inflow,
+                "middleNetInflow": middle_inflow,
+                "smallNetInflow": small_inflow,
             }
         )
     except Exception as e:
@@ -847,3 +1132,8 @@ def register(mcp):
     mcp.tool()(get_concept_fund_flow)
     mcp.tool()(get_dragon_tiger)
     mcp.tool()(get_margin_data)
+    mcp.tool()(get_margin_ranking)
+    mcp.tool()(get_block_trades)
+    mcp.tool()(get_north_fund_holding)
+    mcp.tool()(get_north_fund_top)
+    mcp.tool()(get_stock_fund_flow)

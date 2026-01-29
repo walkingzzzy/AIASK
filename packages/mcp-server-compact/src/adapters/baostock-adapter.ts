@@ -23,7 +23,7 @@ export class BaostockAdapter implements QuoteAdapter {
             timeout: config.timeout,
             headers: { 'Content-Type': 'application/json' },
         });
-        this.baseUrl = BAOSTOCK_CONFIG.PROXY_URL || undefined;
+        this.baseUrl = BAOSTOCK_CONFIG.BASE_URL || undefined;
     }
 
     async isAvailable(): Promise<boolean> {
@@ -74,7 +74,7 @@ export class BaostockAdapter implements QuoteAdapter {
     private async post<T>(path: string, payload: Record<string, unknown>): Promise<T> {
         const baseUrl = this.resolveBaseUrl();
         if (!baseUrl) {
-            throw new Error('Baostock 代理未配置，请设置 BAOSTOCK_PROXY_URL');
+            throw new Error('Baostock 服务未配置，请设置 BAOSTOCK_BASE_URL');
         }
 
         const response = await this.client.post(`${baseUrl}${path}`, payload);
@@ -82,7 +82,7 @@ export class BaostockAdapter implements QuoteAdapter {
 
         if (data && typeof data === 'object') {
             if (data.success === false) {
-                throw new Error(data.error || 'Baostock 代理返回错误');
+                throw new Error(data.error || 'Baostock 服务返回错误');
             }
             if ('data' in data) {
                 return data.data as T;
@@ -93,7 +93,7 @@ export class BaostockAdapter implements QuoteAdapter {
     }
 
     private resolveBaseUrl(): string | undefined {
-        const envUrl = String(process.env.BAOSTOCK_PROXY_URL || '').trim();
+        const envUrl = String(process.env.BAOSTOCK_BASE_URL || '').trim();
         if (envUrl) {
             this.baseUrl = envUrl;
         }

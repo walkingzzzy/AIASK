@@ -10,15 +10,15 @@ import { marketAPI } from '../adapters/eastmoney/market-api.js';
 import { getStockInfo, searchStocks } from '../storage/stock-info.js';
 import { getDailyBars, getDailyBarsByDateRange } from '../storage/kline-data.js';
 
-// ========== get_realtime_quotes ==========
+// ========== get_batch_quotes ==========
 
 const getRealtimeQuotesSchema = z.object({
     codes: z.array(z.string()).describe('股票代码列表，如 ["000001", "600519"]'),
 });
 
 const getRealtimeQuotesTool: ToolDefinition = {
-    name: 'get_realtime_quotes',
-    description: '获取指定股票的实时行情数据',
+    name: 'get_batch_quotes',
+    description: '批量获取指定股票的实时行情数据',
     category: 'market_data',
     inputSchema: getRealtimeQuotesSchema,
     tags: ['core', 'market'],

@@ -8,20 +8,14 @@
  * - 返回结果附加质量信息
  */
 
-import { eastMoneyAdapter, EastMoneyAdapter } from './eastmoney-adapter.js';
-import { sinaAdapter, SinaAdapter } from './sina-adapter.js';
 import { akShareAdapter, AKShareAdapter } from './akshare-adapter.js';
-import { tushareAdapter, TushareAdapter } from './tushare-adapter.js';
-import { baostockAdapter, BaostockAdapter } from './baostock-adapter.js';
-import { windAdapter, WindAdapter } from './wind-adapter.js';
 import { callAkshareMcpTool } from './akshare-mcp-client.js';
 import { cache, CacheAdapter } from './cache-adapter.js';
 import { rateLimiter } from './rate-limiter.js';
-import { sinaAPI } from './sina/sina-api.js';
-import { tencentAPI } from './tencent/tencent-api.js';
 import { dataValidator } from '../services/data-validator.js';
 import { toFriendlyError } from '../services/error-mapper.js';
 import { CACHE_TTL, DATA_SOURCE_PRIORITY } from '../config/constants.js';
+import { searchStocks as searchStocksFromDb, type StockInfo as DbStockInfo } from '../storage/stock-info.js';
 import type {
     RealtimeQuote, KlineData, DragonTiger, NorthFund, SectorData, KlinePeriod, FinancialData,
     OrderBook, TradeDetail, LimitUpStock, LimitUpStatistics, MarginData, BlockTrade,
@@ -29,11 +23,14 @@ import type {
 } from '../types/stock.js';
 import type { DataSource, ApiResponse, QuoteAdapter, FundamentalAdapter, MarketAdapter } from '../types/adapters.js';
 
-type AnyAdapter = EastMoneyAdapter | SinaAdapter | AKShareAdapter | TushareAdapter | BaostockAdapter | WindAdapter;
+type AnyAdapter = AKShareAdapter;
 type CachedPayload<T> = { data: T; source: DataSource; asOf: string };
 
 const AKSHARE_MCP_HEALTH_TTL_MS = 30_000;
 let akshareMcpHealthCache: { value: boolean; checkedAt: number } | null = null;
+const NORTH_FUND_DAILY_QUOTA = 52_000_000_000; // 520 亿（元）
+const NORTH_FUND_MIN_FLOW = 50_000_000; // 0.5 亿（元）
+const NORTH_FUND_SCALE_CANDIDATES = [1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e2, 1e3, 1e4, 1e6, 1e8];
 
 async function checkAkshareMcpHealth(): Promise<boolean> {
     const now = Date.now();
@@ -52,6 +49,90 @@ async function checkAkshareMcpHealth(): Promise<boolean> {
     }
 }
 
+function median(values: number[]): number {
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    if (sorted.length === 0) return 0;
+    return sorted.length % 2 === 0
+        ? (sorted[mid - 1] + sorted[mid]) / 2
+        : sorted[mid];
+}
+
+function formatScale(scale: number): string {
+    if (scale === 1) return '1';
+    const exp = Math.round(Math.log10(scale));
+    if (Number.isFinite(exp) && Math.abs(scale - Math.pow(10, exp)) < 1e-12) {
+        return `1e${exp}`;
+    }
+    return String(scale);
+}
+
+function normalizeNorthFundUnits(data: NorthFund[]): { data: NorthFund[]; scale: number } {
+    const totals = data.map(item => Math.abs(item.total || 0)).filter(v => v > 0);
+    if (totals.length === 0) {
+        return { data, scale: 1 };
+    }
+
+    const base = median(totals);
+    const targetMin = NORTH_FUND_MIN_FLOW;
+    const targetMax = NORTH_FUND_DAILY_QUOTA * 1.2;
+    let chosen = 1;
+
+    for (const scale of NORTH_FUND_SCALE_CANDIDATES) {
+        const scaled = base * scale;
+        if (scaled >= targetMin && scaled <= targetMax) {
+            chosen = scale;
+            break;
+        }
+    }
+
+    if (chosen === 1) {
+        return { data, scale: 1 };
+    }
+
+    return {
+        data: data.map(item => ({
+            ...item,
+            shConnect: item.shConnect * chosen,
+            szConnect: item.szConnect * chosen,
+            total: item.total * chosen,
+            cumulative: item.cumulative * chosen,
+        })),
+        scale: chosen,
+    };
+}
+
+function normalizeMarket(value: string | null | undefined, code: string): 'SSE' | 'SZSE' {
+    const raw = String(value || '').toUpperCase();
+    if (raw.includes('SSE') || raw.includes('SH') || raw.includes('沪')) return 'SSE';
+    if (raw.includes('SZSE') || raw.includes('SZ') || raw.includes('深')) return 'SZSE';
+    return code.startsWith('6') ? 'SSE' : 'SZSE';
+}
+
+function formatListDate(value: unknown): string {
+    if (!value) return '';
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+        return value.toISOString().slice(0, 10);
+    }
+    const text = String(value);
+    return text.length >= 10 ? text.slice(0, 10) : text;
+}
+
+function mapDbStockInfo(item: DbStockInfo): StockInfo {
+    return {
+        code: String(item.code),
+        name: String(item.name || ''),
+        market: normalizeMarket(item.market, String(item.code)),
+        industry: String(item.industry || ''),
+        sector: String(item.sector || ''),
+        listDate: formatListDate(item.listDate),
+        totalShares: 0,
+        floatShares: 0,
+        marketCap: 0,
+        floatMarketCap: 0,
+    };
+}
+
 /**
  * 适配器管理器
  */
@@ -60,13 +141,8 @@ export class AdapterManager {
 
     constructor() {
         this.adapters = new Map();
-        // 注册适配器
-        this.adapters.set('eastmoney', eastMoneyAdapter);
-        this.adapters.set('sina', sinaAdapter);
+        // 仅注册 akshare-mcp 统一数据出口
         this.adapters.set('akshare', akShareAdapter);
-        this.adapters.set('tushare', tushareAdapter);
-        this.adapters.set('baostock', baostockAdapter);
-        this.adapters.set('wind', windAdapter);
     }
 
     /**
@@ -123,66 +199,6 @@ export class AdapterManager {
                 lastError = String(error);
                 continue;
             }
-        }
-
-        // Tier 3: Direct HTTP Fallback (Sina/Tencent)
-        try {
-            console.warn(`[AdapterManager] All primary sources failed for ${code}, trying Sina fallback...`);
-            const sinaRes = await sinaAPI.getQuote(code);
-            if (sinaRes) {
-                // Adapt to RealtimeQuote
-                // Sina API returns simplified data
-                return {
-                    success: true,
-                    data: {
-                        code: sinaRes.code,
-                        name: sinaRes.name,
-                        price: sinaRes.price,
-                        change: sinaRes.price - (sinaRes.open > 0 ? sinaRes.open : sinaRes.price), // Approx
-                        changePercent: 0, // Calc if needed
-                        open: sinaRes.open,
-                        high: sinaRes.high,
-                        low: sinaRes.low,
-                        preClose: 0, // Sina API may lack this in simple parsing
-                        volume: sinaRes.volume,
-                        amount: sinaRes.amount,
-                        turnoverRate: 0,
-                        timestamp: Date.now(),
-                        // time: sinaRes.time || new Date().toISOString() // RealtimeQuote usually uses timestamp number
-                    } as RealtimeQuote,
-                    source: 'sina'
-                };
-            }
-        } catch (e) {
-            console.warn('Sina fallback failed:', e);
-        }
-
-        try {
-            console.warn(`[AdapterManager] Trying Tencent fallback...`);
-            const tencentRes = await tencentAPI.getQuote(code);
-            if (tencentRes) {
-                return {
-                    success: true,
-                    data: {
-                        code: tencentRes.code,
-                        name: tencentRes.name,
-                        price: tencentRes.price,
-                        change: tencentRes.change,
-                        changePercent: tencentRes.changePercent,
-                        open: tencentRes.open,
-                        high: tencentRes.high,
-                        low: tencentRes.low,
-                        preClose: tencentRes.prevClose,
-                        volume: tencentRes.volume,
-                        amount: tencentRes.amount,
-                        turnoverRate: 0,
-                        timestamp: Date.now(), // Parse tencentRes.time '20230517150000' if needed
-                    } as RealtimeQuote,
-                    source: 'tencent'
-                };
-            }
-        } catch (e) {
-            console.warn('Tencent fallback failed:', e);
         }
 
         return { success: false, error: lastError || `无法从所有数据源获取 ${code} 的行情数据，请检查网络连接或稍后重试` };
@@ -323,22 +339,29 @@ export class AdapterManager {
      * 搜索股票
      */
     async searchStocks(keyword: string): Promise<ApiResponse<StockInfo[]>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
-        if (!adapter || !('searchStocks' in adapter)) {
-            // Fallback to minimal search if adapter doesn't support it directly
-            // For now return empty or error
-            return { success: false, error: '搜索功能暂不可用' };
-        }
         try {
-            const data = await adapter.searchStocks(keyword);
-            return { success: true, data, source: 'eastmoney' };
+            const fallback = await searchStocksFromDb(keyword);
+            if (fallback.length > 0) {
+                return {
+                    success: true,
+                    data: fallback.map(mapDbStockInfo),
+                    source: 'database',
+                    quality: {
+                        valid: true,
+                        asOf: new Date().toISOString(),
+                        degraded: true,
+                        degradeReason: '仅数据库检索结果',
+                    },
+                };
+            }
         } catch (error) {
-            return { success: false, error: toFriendlyError('eastmoney', error, '搜索功能暂不可用，请稍后重试') };
+            console.warn('[AdapterManager] searchStocks fallback failed:', error);
         }
+        return { success: false, error: '搜索功能暂不可用（仅支持数据库检索）' };
     }
 
     /**
-     * 获取财务数据 (优先使用 EastMoney/Tushare)
+     * 获取财务数据 (优先使用 akshare-mcp)
      */
     async getFinancials(code: string): Promise<ApiResponse<FinancialData>> {
         const sources = DATA_SOURCE_PRIORITY.FINANCIAL;
@@ -373,17 +396,7 @@ export class AdapterManager {
      * 获取估值指标（从实时行情和财务数据计算或获取）
      */
     async getValuationMetrics(code: string): Promise<ApiResponse<ValuationData>> {
-        // 简单实现：尝试从 Tushare 获取，或者组合 RealtimeQuote + Financials
-        // 这里暂时返回未实现，或者如果有 adapter 支持则调用
-        const adapter = this.adapters.get('tushare') as TushareAdapter | undefined;
-        if (adapter && await adapter.isAvailable()) {
-            try {
-                const data = await adapter.getValuationMetrics(code);
-                return { success: true, data, source: 'tushare' };
-            } catch (e) {
-                console.warn('Tushare valuation failed:', e);
-            }
-        }
+        // 当前仅保留 akshare-mcp 统一入口，估值指标暂未接入
         return { success: false, error: '估值指标暂不可用' };
     }
 
@@ -391,22 +404,19 @@ export class AdapterManager {
      * 获取个股资金流向
      */
     async getFundFlow(code: string): Promise<ApiResponse<FundFlow>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
+        const adapter = this.adapters.get('akshare') as AKShareAdapter | undefined;
         if (adapter && 'getFundFlow' in adapter) {
             try {
                 const data = await adapter.getFundFlow(code);
                 if (!data) {
                     return { success: false, error: '未找到该股票的资金流向数据' };
                 }
-                // 使用 as FundFlow 断言，因为 data 非空且结构匹配（虽然多了些字段）
-                // 实际上 stockFundFlow 包含 FundFlow 所需字段吗？
-                // FundFlow 类型定义在 types/stock.ts
-                return { success: true, data: data as FundFlow, source: 'eastmoney' };
+                return { success: true, data, source: 'akshare' };
             } catch (e) {
-                return { success: false, error: toFriendlyError('eastmoney', e, '资金流向暂不可用，请稍后重试') };
+                return { success: false, error: toFriendlyError('akshare', e, '资金流向暂不可用，请稍后重试') };
             }
         }
-        return { success: false, error: '资金流向暂不可用' };
+        return { success: false, error: '资金流向暂不可用：akshare-mcp 未就绪' };
     }
 
     /**
@@ -416,7 +426,7 @@ export class AdapterManager {
         const sources = DATA_SOURCE_PRIORITY.DRAGON_TIGER;
 
         for (const source of sources) {
-            const adapter = this.adapters.get(source as DataSource) as EastMoneyAdapter | undefined;
+            const adapter = this.adapters.get(source as DataSource) as MarketAdapter | undefined;
             if (!adapter || !('getDragonTiger' in adapter)) continue;
 
             try {
@@ -428,7 +438,7 @@ export class AdapterManager {
             }
         }
 
-        return { success: false, error: '无法获取龙虎榜数据，请检查网络连接或稍后重试' };
+        return { success: false, error: '无法获取龙虎榜数据，请检查 akshare-mcp 服务是否可用' };
     }
 
     /**
@@ -464,13 +474,18 @@ export class AdapterManager {
 
             try {
                 const data = await adapter.getNorthFund(days);
+                const normalized = normalizeNorthFundUnits(data);
+                const normalizedData = normalized.data;
+                if (normalized.scale !== 1) {
+                    warnings.push(`北向资金单位归一化: scale=${formatScale(normalized.scale)}`);
+                }
 
                 // 北向资金数据校验
-                const validation = dataValidator.validateNorthFund(data);
+                const validation = dataValidator.validateNorthFund(normalizedData);
 
                 if (validation.valid) {
                     const payload: CachedPayload<NorthFund[]> = {
-                        data,
+                        data: normalizedData,
                         source: source as DataSource,
                         asOf: new Date().toISOString(),
                     };
@@ -478,7 +493,7 @@ export class AdapterManager {
                     cache.set(staleKey, payload, CACHE_TTL.NORTH_FUND_STALE);
                     return {
                         success: true,
-                        data,
+                        data: normalizedData,
                         source: source as DataSource,
                         quality: {
                             valid: true,
@@ -523,7 +538,7 @@ export class AdapterManager {
 
         return {
             success: false,
-            error: toFriendlyError('eastmoney', warnings.join('; '), '北向资金暂不可用，请稍后重试。'),
+            error: toFriendlyError('akshare', warnings.join('; '), '北向资金暂不可用，请稍后重试。'),
         };
     }
 
@@ -531,7 +546,7 @@ export class AdapterManager {
      * 获取板块资金流向
      */
     async getSectorFlow(topN: number): Promise<ApiResponse<SectorData[]>> {
-        const sources = DATA_SOURCE_PRIORITY.SECTOR_FLOW ?? ['eastmoney'];
+        const sources = DATA_SOURCE_PRIORITY.SECTOR_FLOW ?? ['akshare'];
         const warnings: string[] = [];
         const cacheKey = CacheAdapter.generateKey('sectorflow', 'aggregate', topN.toString());
         const staleKey = CacheAdapter.generateKey('sectorflow', 'aggregate', 'stale', topN.toString());
@@ -555,7 +570,7 @@ export class AdapterManager {
         }
 
         for (const source of sources) {
-            const adapter = this.adapters.get(source as DataSource) as EastMoneyAdapter | undefined;
+            const adapter = this.adapters.get(source as DataSource) as MarketAdapter | undefined;
             if (!adapter || !('getSectorFlow' in adapter)) continue;
 
             try {
@@ -609,7 +624,7 @@ export class AdapterManager {
 
         return {
             success: false,
-            error: `板块资金流向功能暂不可用：${warnings.join('；') || '未找到可用的数据适配器'}`,
+            error: `板块资金流向功能暂不可用：${warnings.join('；') || '未找到可用的 akshare-mcp 适配器'}`,
         };
     }
 
@@ -617,16 +632,16 @@ export class AdapterManager {
      * 获取五档盘口数据
      */
     async getOrderBook(code: string): Promise<ApiResponse<OrderBook>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
-        if (!adapter) {
-            return { success: false, error: '盘口数据功能暂不可用：未找到可用的数据适配器' };
+        const adapter = this.adapters.get('akshare') as AKShareAdapter | undefined;
+        if (!adapter || !('getOrderBook' in adapter)) {
+            return { success: false, error: '盘口数据暂不可用：akshare-mcp 未就绪' };
         }
 
         try {
             const data = await adapter.getOrderBook(code);
-            return { success: true, data, source: 'eastmoney' };
+            return { success: true, data, source: 'akshare' };
         } catch (error) {
-            return { success: false, error: toFriendlyError('eastmoney', error, '盘口数据暂不可用，请稍后重试') };
+            return { success: false, error: toFriendlyError('akshare', error, '盘口数据暂不可用，请稍后重试') };
         }
     }
 
@@ -634,16 +649,16 @@ export class AdapterManager {
      * 获取成交明细
      */
     async getTradeDetails(code: string, limit: number = 20): Promise<ApiResponse<TradeDetail[]>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
-        if (!adapter) {
-            return { success: false, error: '成交明细功能暂不可用：未找到可用的数据适配器' };
+        const adapter = this.adapters.get('akshare') as AKShareAdapter | undefined;
+        if (!adapter || !('getTradeDetails' in adapter)) {
+            return { success: false, error: '成交明细暂不可用：akshare-mcp 未就绪' };
         }
 
         try {
             const data = await adapter.getTradeDetails(code, limit);
-            return { success: true, data, source: 'eastmoney' };
+            return { success: true, data, source: 'akshare' };
         } catch (error) {
-            return { success: false, error: toFriendlyError('eastmoney', error, '成交明细暂不可用，请稍后重试') };
+            return { success: false, error: toFriendlyError('akshare', error, '成交明细暂不可用，请稍后重试') };
         }
     }
 
@@ -651,16 +666,16 @@ export class AdapterManager {
      * 获取涨停板数据
      */
     async getLimitUpStocks(date?: string): Promise<ApiResponse<LimitUpStock[]>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
-        if (!adapter) {
-            return { success: false, error: '涨停板数据功能暂不可用：未找到可用的数据适配器' };
+        const adapter = this.adapters.get('akshare') as AKShareAdapter | undefined;
+        if (!adapter || !('getLimitUpStocks' in adapter)) {
+            return { success: false, error: '涨停板数据暂不可用：akshare-mcp 未就绪' };
         }
 
         try {
             const data = await adapter.getLimitUpStocks(date);
-            return { success: true, data, source: 'eastmoney' };
+            return { success: true, data, source: 'akshare' };
         } catch (error) {
-            return { success: false, error: toFriendlyError('eastmoney', error, '涨停板数据暂不可用，请稍后重试') };
+            return { success: false, error: toFriendlyError('akshare', error, '涨停板数据暂不可用，请稍后重试') };
         }
     }
 
@@ -668,16 +683,16 @@ export class AdapterManager {
      * 获取涨停统计
      */
     async getLimitUpStatistics(date?: string): Promise<ApiResponse<LimitUpStatistics>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
-        if (!adapter) {
-            return { success: false, error: '涨停统计功能暂不可用：未找到可用的数据适配器' };
+        const adapter = this.adapters.get('akshare') as AKShareAdapter | undefined;
+        if (!adapter || !('getLimitUpStatistics' in adapter)) {
+            return { success: false, error: '涨停统计暂不可用：akshare-mcp 未就绪' };
         }
 
         try {
             const data = await adapter.getLimitUpStatistics(date);
-            return { success: true, data, source: 'eastmoney' };
+            return { success: true, data, source: 'akshare' };
         } catch (error) {
-            return { success: false, error: toFriendlyError('eastmoney', error, '涨停统计暂不可用，请稍后重试') };
+            return { success: false, error: toFriendlyError('akshare', error, '涨停统计暂不可用，请稍后重试') };
         }
     }
 
@@ -685,16 +700,16 @@ export class AdapterManager {
      * 获取两融数据
      */
     async getMarginData(code?: string): Promise<ApiResponse<MarginData[]>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
-        if (!adapter) {
-            return { success: false, error: '两融数据功能暂不可用：未找到可用的数据适配器' };
+        const adapter = this.adapters.get('akshare') as AKShareAdapter | undefined;
+        if (!adapter || !('getMarginData' in adapter)) {
+            return { success: false, error: '两融数据功能暂不可用：akshare-mcp 未就绪' };
         }
 
         try {
             const data = await adapter.getMarginData(code);
-            return { success: true, data, source: 'eastmoney' };
+            return { success: true, data, source: 'akshare' };
         } catch (error) {
-            return { success: false, error: toFriendlyError('eastmoney', error, '两融数据暂不可用，请稍后重试') };
+            return { success: false, error: toFriendlyError('akshare', error, '两融数据暂不可用，请稍后重试') };
         }
     }
 
@@ -713,16 +728,16 @@ export class AdapterManager {
         shortSell: number;
         totalBalance: number;
     }>>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
+        const adapter = this.adapters.get('akshare') as AKShareAdapter | undefined;
         if (!adapter || !('getMarginRanking' in adapter)) {
-            return { success: false, error: '融资融券排行功能暂不可用：未找到可用的数据适配器' };
+            return { success: false, error: '融资融券排行功能暂不可用：akshare-mcp 未就绪' };
         }
 
         try {
             const data = await adapter.getMarginRanking(topN, sortBy);
-            return { success: true, data, source: 'eastmoney' };
+            return { success: true, data, source: 'akshare' };
         } catch (error) {
-            return { success: false, error: toFriendlyError('eastmoney', error, '融资融券排行暂不可用，请稍后重试') };
+            return { success: false, error: toFriendlyError('akshare', error, '融资融券排行暂不可用，请稍后重试') };
         }
     }
 
@@ -730,16 +745,16 @@ export class AdapterManager {
      * 获取大宗交易数据
      */
     async getBlockTrades(date?: string, code?: string): Promise<ApiResponse<BlockTrade[]>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
-        if (!adapter) {
-            return { success: false, error: '大宗交易数据功能暂不可用：未找到可用的数据适配器' };
+        const adapter = this.adapters.get('akshare') as AKShareAdapter | undefined;
+        if (!adapter || !('getBlockTrades' in adapter)) {
+            return { success: false, error: '大宗交易数据功能暂不可用：akshare-mcp 未就绪' };
         }
 
         try {
             const data = await adapter.getBlockTrades(date, code);
-            return { success: true, data, source: 'eastmoney' };
+            return { success: true, data, source: 'akshare' };
         } catch (error) {
-            return { success: false, error: toFriendlyError('eastmoney', error, '大宗交易数据暂不可用，请稍后重试') };
+            return { success: false, error: toFriendlyError('akshare', error, '大宗交易数据暂不可用，请稍后重试') };
         }
     }
 
@@ -747,16 +762,16 @@ export class AdapterManager {
      * 获取北向资金持股
      */
     async getNorthFundHolding(code: string): Promise<ApiResponse<{ shares: number; ratio: number; change: number }>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
-        if (!adapter) {
-            return { success: false, error: '北向资金持股功能暂不可用：未找到可用的数据适配器' };
+        const adapter = this.adapters.get('akshare') as AKShareAdapter | undefined;
+        if (!adapter || !('getNorthFundHolding' in adapter)) {
+            return { success: false, error: '北向资金持股功能暂不可用：akshare-mcp 未就绪' };
         }
 
         try {
             const data = await adapter.getNorthFundHolding(code);
-            return { success: true, data, source: 'eastmoney' };
+            return { success: true, data, source: 'akshare' };
         } catch (error) {
-            return { success: false, error: toFriendlyError('eastmoney', error, '北向资金持股暂不可用，请稍后重试') };
+            return { success: false, error: toFriendlyError('akshare', error, '北向资金持股暂不可用，请稍后重试') };
         }
     }
 
@@ -764,16 +779,16 @@ export class AdapterManager {
      * 获取北向资金持股排名
      */
     async getNorthFundTop(topN: number): Promise<ApiResponse<Array<{ code: string; name: string; shares: number; ratio: number; marketCap: number }>>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
-        if (!adapter) {
-            return { success: false, error: '北向资金排名功能暂不可用：未找到可用的数据适配器' };
+        const adapter = this.adapters.get('akshare') as AKShareAdapter | undefined;
+        if (!adapter || !('getNorthFundTop' in adapter)) {
+            return { success: false, error: '北向资金排名功能暂不可用：akshare-mcp 未就绪' };
         }
 
         try {
             const data = await adapter.getNorthFundTop(topN);
-            return { success: true, data, source: 'eastmoney' };
+            return { success: true, data, source: 'akshare' };
         } catch (error) {
-            return { success: false, error: toFriendlyError('eastmoney', error, '北向资金排名暂不可用，请稍后重试') };
+            return { success: false, error: toFriendlyError('akshare', error, '北向资金排名暂不可用，请稍后重试') };
         }
     }
 
@@ -781,16 +796,16 @@ export class AdapterManager {
      * 获取股票新闻
      */
     async getStockNews(code: string, limit: number = 10): Promise<ApiResponse<Array<{ title: string; time: string; source: string; url: string }>>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
-        if (!adapter) {
-            return { success: false, error: '股票新闻功能暂不可用：未找到可用的数据适配器' };
+        const adapter = this.adapters.get('akshare') as AKShareAdapter | undefined;
+        if (!adapter || !('getStockNews' in adapter)) {
+            return { success: false, error: '股票新闻功能暂不可用：akshare-mcp 未就绪' };
         }
 
         try {
             const data = await adapter.getStockNews(code, limit);
-            return { success: true, data, source: 'eastmoney' };
+            return { success: true, data, source: 'akshare' };
         } catch (error) {
-            return { success: false, error: toFriendlyError('eastmoney', error, '股票新闻暂不可用，请稍后重试') };
+            return { success: false, error: toFriendlyError('akshare', error, '股票新闻暂不可用，请稍后重试') };
         }
     }
 
@@ -798,16 +813,16 @@ export class AdapterManager {
      * 获取市场快讯
      */
     async getMarketNews(limit: number = 20): Promise<ApiResponse<Array<{ title: string; time: string; content: string }>>> {
-        const adapter = this.adapters.get('eastmoney') as EastMoneyAdapter | undefined;
-        if (!adapter) {
-            return { success: false, error: '市场快讯功能暂不可用：未找到可用的数据适配器' };
+        const adapter = this.adapters.get('akshare') as AKShareAdapter | undefined;
+        if (!adapter || !('getMarketNews' in adapter)) {
+            return { success: false, error: '市场快讯功能暂不可用：akshare-mcp 未就绪' };
         }
 
         try {
             const data = await adapter.getMarketNews(limit);
-            return { success: true, data, source: 'eastmoney' };
+            return { success: true, data, source: 'akshare' };
         } catch (error) {
-            return { success: false, error: toFriendlyError('eastmoney', error, '市场快讯暂不可用，请稍后重试') };
+            return { success: false, error: toFriendlyError('akshare', error, '市场快讯暂不可用，请稍后重试') };
         }
     }
 
@@ -822,11 +837,7 @@ export class AdapterManager {
                 results[source] = await checkAkshareMcpHealth();
                 continue;
             }
-            try {
-                results[source] = await adapter.isAvailable();
-            } catch {
-                results[source] = false;
-            }
+            results[source] = false;
         }
 
         return results as Record<DataSource, boolean>;

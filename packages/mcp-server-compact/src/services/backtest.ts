@@ -5,6 +5,7 @@
 
 import { BacktestResult, BacktestTrade, KlineData } from '../types/stock.js';
 import * as TechnicalServices from './technical-analysis.js';
+import { existsSync } from 'fs';
 
 export interface BacktestParams {
     initialCapital: number;
@@ -14,6 +15,8 @@ export interface BacktestParams {
     longPeriod?: number;
     lookback?: number;
     threshold?: number;
+    maxHoldingDays?: number;
+    sellSignal?: 'kdj_overbought' | 'time_limit' | 'both';
 }
 
 export interface SimulationResult {
@@ -35,12 +38,24 @@ export function runBacktest(
     strategy: string,
     params: BacktestParams
 ): { result: BacktestResult; trades: BacktestTrade[]; equityCurve: Array<{ date: string; value: number; cash: number; shares: number; close: number }> } {
-    const { initialCapital, commission, slippage } = params;
+    const { initialCapital, commission, slippage, maxHoldingDays, sellSignal } = params;
     const closes = klines.map((k: any) => k.close);
+    const highs = klines.map((k: any) => k.high);
+    const lows = klines.map((k: any) => k.low);
     const signals: Array<{ date: string; signal: 'buy' | 'sell' | 'hold'; price: number }> = [];
+    const useKdjSell = sellSignal === 'kdj_overbought' || sellSignal === 'both';
+    const kdj = useKdjSell ? TechnicalServices.calculateKDJ(highs, lows, closes) : null;
+    const kdjOffset = kdj ? klines.length - kdj.k.length : 0;
+
+    const calculateHoldingDays = (startDate: string, endDate: string) => {
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+        const diff = end.getTime() - start.getTime();
+        return Math.floor(diff / (24 * 60 * 60 * 1000));
+    };
 
     // 1. 生成信号
-    if (strategy === 'buy_and_hold') {
+    if (strategy === 'buy_and_hold' || strategy === 'custom') {
         if (klines.length > 0) {
             signals.push({ date: klines[0].date, signal: 'buy', price: klines[0].close });
         }
@@ -109,54 +124,102 @@ export function runBacktest(
     // 2. 执行交易
     let cash = initialCapital;
     let shares = 0;
+    let entryDate: string | null = null;
     const trades: BacktestTrade[] = [];
     const equityCurve: Array<{ date: string; value: number; cash: number; shares: number; close: number }> = [];
 
     // 按天遍历，处理当日信号并记录权益
     for (let i = 0; i < klines.length; i++) {
         const k = klines[i];
-        const signal = signals.find(s => s.date === k.date);
+        let forcedSell = false;
+        if (shares > 0) {
+            if (maxHoldingDays && entryDate) {
+                const holdingDays = calculateHoldingDays(entryDate, k.date);
+                if (holdingDays >= maxHoldingDays) {
+                    forcedSell = true;
+                }
+            }
 
-        if (signal) {
-            if (signal.signal === 'buy' && cash > 0) {
-                const buyPrice = signal.price * (1 + slippage);
-                const maxShares = Math.floor(cash / (buyPrice * (1 + commission)));
-                if (maxShares > 0) {
-                    const cost = maxShares * buyPrice * (1 + commission);
-                    shares += maxShares;
-                    cash -= cost;
+            if (!forcedSell && useKdjSell && kdj) {
+                const kdjIndex = i - kdjOffset;
+                if (kdjIndex >= 0 && kdjIndex < kdj.k.length) {
+                    const currentK = kdj.k[kdjIndex];
+                    const currentJ = kdj.j[kdjIndex];
+                    if (currentK > 80 || currentJ > 80) {
+                        forcedSell = true;
+                    }
+                }
+            }
+        }
+
+        if (forcedSell && shares > 0) {
+            const sellPrice = k.close * (1 - slippage);
+            const revenue = shares * sellPrice * (1 - commission);
+
+            const lastBuy = trades.filter((t: any) => t.action === 'buy').pop();
+            const buyPrice = lastBuy ? lastBuy.price : sellPrice;
+            const profit = revenue - (shares * buyPrice * (1 + commission));
+
+            trades.push({
+                date: k.date,
+                code,
+                action: 'sell',
+                price: sellPrice,
+                quantity: shares,
+                amount: revenue,
+                profit,
+                profitPercent: profit / (shares * buyPrice * (1 + commission))
+            });
+
+            cash += revenue;
+            shares = 0;
+            entryDate = null;
+        } else {
+            const signal = signals.find(s => s.date === k.date);
+
+            if (signal) {
+                if (signal.signal === 'buy' && cash > 0) {
+                    const buyPrice = signal.price * (1 + slippage);
+                    const maxShares = Math.floor(cash / (buyPrice * (1 + commission)));
+                    if (maxShares > 0) {
+                        const cost = maxShares * buyPrice * (1 + commission);
+                        shares += maxShares;
+                        cash -= cost;
+                        entryDate = k.date;
+                        trades.push({
+                            date: k.date,
+                            code,
+                            action: 'buy',
+                            price: buyPrice,
+                            quantity: maxShares,
+                            amount: cost
+                        });
+                    }
+                } else if (signal.signal === 'sell' && shares > 0) {
+                    const sellPrice = signal.price * (1 - slippage);
+                    const revenue = shares * sellPrice * (1 - commission);
+
+                    // 计算本次交易盈亏 (简化：假设全部卖出对应最近的买入)
+                    // 实际应根据 FIFO 或加权平均计算，这里简化处理
+                    const lastBuy = trades.filter((t: any) => t.action === 'buy').pop();
+                    const buyPrice = lastBuy ? lastBuy.price : sellPrice;
+                    const profit = revenue - (shares * buyPrice * (1 + commission));
+
                     trades.push({
                         date: k.date,
                         code,
-                        action: 'buy',
-                        price: buyPrice,
-                        quantity: maxShares,
-                        amount: cost
+                        action: 'sell',
+                        price: sellPrice,
+                        quantity: shares,
+                        amount: revenue,
+                        profit,
+                        profitPercent: profit / (shares * buyPrice * (1 + commission))
                     });
+
+                    cash += revenue;
+                    shares = 0;
+                    entryDate = null;
                 }
-            } else if (signal.signal === 'sell' && shares > 0) {
-                const sellPrice = signal.price * (1 - slippage);
-                const revenue = shares * sellPrice * (1 - commission);
-
-                // 计算本次交易盈亏 (简化：假设全部卖出对应最近的买入)
-                // 实际应根据 FIFO 或加权平均计算，这里简化处理
-                const lastBuy = trades.filter((t: any) => t.action === 'buy').pop();
-                const buyPrice = lastBuy ? lastBuy.price : sellPrice;
-                const profit = revenue - (shares * buyPrice * (1 + commission));
-
-                trades.push({
-                    date: k.date,
-                    code,
-                    action: 'sell',
-                    price: sellPrice,
-                    quantity: shares,
-                    amount: revenue,
-                    profit,
-                    profitPercent: profit / (shares * buyPrice * (1 + commission))
-                });
-
-                cash += revenue;
-                shares = 0;
             }
         }
 
@@ -341,6 +404,14 @@ export async function optimizeParametersParallel(
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
     const workerPath = path.join(__dirname, 'backtest-worker.js');
+    const distWorkerPath = path.resolve(__dirname, '../../dist/src/services/backtest-worker.js');
+    const resolvedWorkerPath = existsSync(workerPath)
+        ? workerPath
+        : (existsSync(distWorkerPath) ? distWorkerPath : null);
+
+    if (!resolvedWorkerPath) {
+        return optimizeParameters(code, klines, strategy, baseParams, paramRanges);
+    }
 
     // 创建 Workers
     const workers: Array<Promise<any>> = [];
@@ -353,7 +424,7 @@ export async function optimizeParametersParallel(
         if (chunk.length === 0) continue;
 
         const workerPromise = new Promise((resolve, reject) => {
-            const worker = new Worker(workerPath, {
+            const worker = new Worker(resolvedWorkerPath, {
                 workerData: {
                     code,
                     klines,

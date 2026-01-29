@@ -64,22 +64,25 @@ export function calculateHealthScore(
  */
 function calculateProfitabilityScore(financials: FinancialData): number {
     let score = 50; // 基础分
+    const roe = financials.roe ?? 0;
+    const netProfitMargin = financials.netProfitMargin ?? 0;
+    const roa = financials.roa ?? 0;
 
     // ROE 评分 (15% 以上优秀)
-    if (financials.roe > 20) score += 25;
-    else if (financials.roe > 15) score += 20;
-    else if (financials.roe > 10) score += 10;
-    else if (financials.roe < 5) score -= 10;
+    if (roe > 20) score += 25;
+    else if (roe > 15) score += 20;
+    else if (roe > 10) score += 10;
+    else if (roe < 5) score -= 10;
 
     // 净利率评分
-    if (financials.netProfitMargin > 20) score += 15;
-    else if (financials.netProfitMargin > 10) score += 10;
-    else if (financials.netProfitMargin > 5) score += 5;
-    else if (financials.netProfitMargin < 0) score -= 20;
+    if (netProfitMargin > 20) score += 15;
+    else if (netProfitMargin > 10) score += 10;
+    else if (netProfitMargin > 5) score += 5;
+    else if (netProfitMargin < 0) score -= 20;
 
     // ROA 评分
-    if (financials.roa > 10) score += 10;
-    else if (financials.roa > 5) score += 5;
+    if (roa > 10) score += 10;
+    else if (roa > 5) score += 5;
 
     return Math.max(0, Math.min(100, score));
 }
@@ -89,11 +92,12 @@ function calculateProfitabilityScore(financials: FinancialData): number {
  */
 function calculateLiquidityScore(financials: FinancialData): number {
     let score = 50;
+    const currentRatio = financials.currentRatio ?? 0;
 
     // 流动比率评分 (2左右最佳)
-    if (financials.currentRatio >= 2 && financials.currentRatio <= 3) score += 30;
-    else if (financials.currentRatio >= 1.5) score += 20;
-    else if (financials.currentRatio >= 1) score += 10;
+    if (currentRatio >= 2 && currentRatio <= 3) score += 30;
+    else if (currentRatio >= 1.5) score += 20;
+    else if (currentRatio >= 1) score += 10;
     else score -= 20;
 
     return Math.max(0, Math.min(100, score));
@@ -104,11 +108,12 @@ function calculateLiquidityScore(financials: FinancialData): number {
  */
 function calculateLeverageScore(financials: FinancialData): number {
     let score = 50;
+    const debtRatio = financials.debtRatio ?? 0;
 
     // 资产负债率评分 (低于50%较好)
-    if (financials.debtRatio < 30) score += 30;
-    else if (financials.debtRatio < 50) score += 20;
-    else if (financials.debtRatio < 70) score += 0;
+    if (debtRatio < 30) score += 30;
+    else if (debtRatio < 50) score += 20;
+    else if (debtRatio < 70) score += 0;
     else score -= 20;
 
     return Math.max(0, Math.min(100, score));
@@ -119,12 +124,13 @@ function calculateLeverageScore(financials: FinancialData): number {
  */
 function calculateEfficiencyScore(financials: FinancialData): number {
     let score = 50;
+    const grossProfitMargin = financials.grossProfitMargin ?? 0;
 
     // 毛利率评分
-    if (financials.grossProfitMargin > 40) score += 25;
-    else if (financials.grossProfitMargin > 30) score += 15;
-    else if (financials.grossProfitMargin > 20) score += 5;
-    else if (financials.grossProfitMargin < 10) score -= 10;
+    if (grossProfitMargin > 40) score += 25;
+    else if (grossProfitMargin > 30) score += 15;
+    else if (grossProfitMargin > 20) score += 5;
+    else if (grossProfitMargin < 10) score -= 10;
 
     return Math.max(0, Math.min(100, score));
 }

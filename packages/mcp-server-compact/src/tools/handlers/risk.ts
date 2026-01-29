@@ -1,5 +1,6 @@
 import { ToolHandler, ToolDefinition } from '../../types/tools.js';
 import { managerSchema } from '../parameters.js';
+import { adapterManager } from '../../adapters/index.js';
 import * as RiskServices from '../../services/risk-model.js';
 
 export const riskManagerTool: ToolDefinition = {
@@ -7,8 +8,42 @@ export const riskManagerTool: ToolDefinition = {
     description: '风险管理',
     category: 'portfolio_management',
     inputSchema: managerSchema,
-    dataSource: 'real'
+    dataSource: 'calculated_estimate'
 };
+
+async function buildMarketContext() {
+    const assumptions: string[] = [];
+    const [sectorFlowRes, klineRes] = await Promise.all([
+        adapterManager.getSectorFlow(50),
+        adapterManager.getKline('000001', '101', 60),
+    ]);
+
+    const sectors = sectorFlowRes.success && sectorFlowRes.data ? sectorFlowRes.data : [];
+    let advances = 1;
+    let declines = 1;
+    if (sectors.length > 0) {
+        advances = sectors.filter((s: any) => (s.changePercent || 0) > 0).length;
+        declines = sectors.filter((s: any) => (s.changePercent || 0) < 0).length;
+        assumptions.push('市场宽度使用板块涨跌家数近似');
+    } else {
+        assumptions.push('板块数据不可用，市场宽度使用最小占位值');
+    }
+
+    const bars = klineRes.success && klineRes.data ? klineRes.data : [];
+    const volumes = bars.map((b: any) => b.volume).filter((v: any) => Number.isFinite(v));
+    const volumeRatio = volumes.length >= 20
+        ? volumes[volumes.length - 1] / (volumes.slice(-20).reduce((a: any, b: any) => a + b, 0) / 20)
+        : 1;
+    if (volumes.length < 20) {
+        assumptions.push('成交量样本不足，成交量比率使用默认值1');
+    }
+
+    return {
+        marketBreadth: { advances, declines },
+        volumeRatio: Number.isFinite(volumeRatio) ? volumeRatio : 1,
+        assumptions,
+    };
+}
 
 export const riskManagerHandler: ToolHandler = async (params: any) => {
     const { action, stocks, weights, code, confidence } = params;
@@ -17,7 +52,22 @@ export const riskManagerHandler: ToolHandler = async (params: any) => {
     if (action === 'calculate_risk' && stocks && weights) {
         const report = await RiskServices.generateRiskReport(stocks, weights);
         if ('error' in report) return { success: false, error: report.error };
-        return { success: true, data: report };
+        const stressTests = Array.isArray(report.stressTests)
+            ? report.stressTests.map((s: any) => ({ ...s, isSimulated: true }))
+            : report.stressTests;
+        return {
+            success: true,
+            data: {
+                ...report,
+                stressTests,
+                dataSource: 'calculated_estimate',
+                assumptions: [
+                    'Barra因子暴露为简化估算（固定因子占比）',
+                    '压力测试使用预设情景冲击，不含流动性与相关性二阶效应',
+                    '行业暴露基于静态行业映射'
+                ]
+            }
+        };
     }
 
     // ===== VaR 分析 =====
@@ -110,7 +160,22 @@ export const riskManagerHandler: ToolHandler = async (params: any) => {
             { name: '流动性危机', volumeDrop: -0.5, portfolioImpact: `${(-10 * avgVolatility * 100).toFixed(1)}%` },
             { name: '行业冲击', sectorDrop: -0.2, portfolioImpact: `${(-7 * beta).toFixed(1)}%` },
         ];
-        return { success: true, data: { scenarios, avgVolatility: `${(avgVolatility * 100).toFixed(2)}%`, analyzedAt: new Date().toISOString(), dataSource: 'real_calculation' } };
+        const marketContext = await buildMarketContext();
+        return {
+            success: true,
+            data: {
+                scenarios,
+                avgVolatility: `${(avgVolatility * 100).toFixed(2)}%`,
+                analyzedAt: new Date().toISOString(),
+                marketContext,
+                isSimulated: true,
+                dataSource: 'simulated',
+                assumptions: [
+                    '压力情景为固定冲击，收益影响采用线性近似',
+                    '组合Beta简化为1.0，未建模个股差异'
+                ].concat(marketContext.assumptions)
+            }
+        };
     }
 
     // ===== 相关性分析 =====
@@ -189,7 +254,11 @@ export const riskManagerHandler: ToolHandler = async (params: any) => {
                 recommendations: targetStocks.length < 5
                     ? ['增加股票数量提高分散化', '考虑跨行业配置']
                     : ['保持当前分散化水平'],
-                dataSource: 'real_calculation',
+                dataSource: 'calculated_estimate',
+                assumptions: [
+                    '组合Beta使用简化假设（未引入市场指数回归）',
+                    '行业集中度按持仓数量粗略估计'
+                ],
             },
         };
     }

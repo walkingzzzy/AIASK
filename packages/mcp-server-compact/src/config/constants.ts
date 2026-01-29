@@ -66,14 +66,14 @@ export const CACHE_TTL = {
     DEFAULT: 300,
 } as const;
 
-// 数据源优先级
+// 数据源优先级（业务层仅通过 akshare-mcp 统一访问数据）
 export const DATA_SOURCE_PRIORITY = {
-    REALTIME: ['eastmoney', 'sina'],
-    KLINE: ['eastmoney', 'sina', 'tushare', 'baostock', 'wind'], // 移除 akshare，连接不稳定
-    FINANCIAL: ['eastmoney', 'tushare', 'wind', 'sina'], // 移除 akshare
-    DRAGON_TIGER: ['eastmoney'],
-    NORTH_FUND: ['eastmoney', 'tushare', 'sina'], // 移除 akshare
-    SECTOR_FLOW: ['eastmoney'],
+    REALTIME: ['akshare'],
+    KLINE: ['akshare'],
+    FINANCIAL: ['akshare'],
+    DRAGON_TIGER: ['akshare'],
+    NORTH_FUND: ['akshare'],
+    SECTOR_FLOW: ['akshare'],
 } as const;
 
 // Tushare API 配置
@@ -82,22 +82,22 @@ export const TUSHARE_CONFIG = {
     TOKEN: process.env.TUSHARE_TOKEN || 'e01ec90ddc36b88b6911be4e702d507540ee7adaaa53a9fd455f056d',
 } as const;
 
-// AKShare 代理服务配置
+// AKShare 服务配置
 export const AKSHARE_CONFIG = {
-    PROXY_URL: process.env.AKSHARE_PROXY_URL || 'http://localhost:8080',
+    BASE_URL: process.env.AKSHARE_BASE_URL || 'http://localhost:8080',
     ENABLED: process.env.AKSHARE_ENABLED === 'true',
 } as const;
 
 // Baostock 配置
 export const BAOSTOCK_CONFIG = {
     ENABLED: process.env.BAOSTOCK_ENABLED === 'true',
-    PROXY_URL: process.env.BAOSTOCK_PROXY_URL || '',
+    BASE_URL: process.env.BAOSTOCK_BASE_URL || '',
 } as const;
 
 // Wind 配置
 export const WIND_CONFIG = {
     ENABLED: process.env.WIND_ENABLED === 'true',
-    PROXY_URL: process.env.WIND_PROXY_URL || '',
+    BASE_URL: process.env.WIND_BASE_URL || '',
 } as const;
 
 // 数据校验规则

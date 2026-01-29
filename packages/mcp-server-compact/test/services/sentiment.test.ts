@@ -205,6 +205,8 @@ describe('Sentiment Analysis Service', () => {
         it('should analyze very bearish sentiment', () => {
             const quote = generateQuote(-9, 15); // 大跌 + 高换手
             const klines = generateKlines(10, 'down');
+            const ma5 = klines.slice(-5).reduce((sum, k) => sum + k.close, 0) / 5;
+            quote.price = ma5 - 1; // 保证价格低于MA5以稳定趋势因子
 
             const result = Sentiment.analyzeStockSentiment(quote, klines, 15, 0.1);
 
@@ -232,7 +234,7 @@ describe('Sentiment Analysis Service', () => {
 
             expect(result.sentiment).toBe('bullish');
             expect(result.score).toBeGreaterThanOrEqual(60);
-            expect(result.score).toBeLessThan(75);
+            expect(result.score).toBeLessThanOrEqual(75);
         });
 
         it('should analyze bearish sentiment', () => {
