@@ -5,15 +5,25 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import * as PortfolioOptimizer from '../../src/services/portfolio-optimizer.js';
-import { insertDailyBar } from '../../src/storage/kline-data.js';
+import { batchUpsertDailyBars } from '../../src/storage/kline-data.js';
 
 describe('Portfolio Optimizer Service - Extended Tests', () => {
     // 准备测试数据
-    beforeAll(() => {
+    beforeAll(async () => {
         // 为测试股票插入模拟K线数据
         const stocks = ['TEST001', 'TEST002', 'TEST003', 'TEST004'];
         const startDate = new Date('2023-01-01');
         const days = 120;
+        const bars: Array<{
+            code: string;
+            date: string;
+            open: number;
+            high: number;
+            low: number;
+            close: number;
+            volume: number;
+            amount: number;
+        }> = [];
 
         stocks.forEach((code, stockIndex) => {
             let price = 10 + stockIndex * 3; // 不同股票不同起始价格
@@ -28,28 +38,30 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 const change = (Math.random() - 0.5) * volatility + trend;
                 price = price * (1 + change);
                 
-                try {
-                    insertDailyBar({
-                        code,
-                        date: date.toISOString().slice(0, 10),
-                        open: price * 0.995,
-                        high: price * 1.015,
-                        low: price * 0.985,
-                        close: price,
-                        volume: Math.floor(Math.random() * 2000000) + 500000,
-                        amount: price * (Math.floor(Math.random() * 2000000) + 500000),
-                    });
-                } catch (error) {
-                    // 忽略重复插入错误
-                }
+                bars.push({
+                    code,
+                    date: date.toISOString().slice(0, 10),
+                    open: price * 0.995,
+                    high: price * 1.015,
+                    low: price * 0.985,
+                    close: price,
+                    volume: Math.floor(Math.random() * 2000000) + 500000,
+                    amount: price * (Math.floor(Math.random() * 2000000) + 500000),
+                });
             }
         });
-    });
+
+        try {
+            await batchUpsertDailyBars(bars);
+        } catch {
+            // 忽略重复或数据库写入错误
+        }
+    }, 30000);
 
     describe('calculateCovarianceMatrix - Extended', () => {
         it('should validate covariance matrix properties', async () => {
             const stocks = ['TEST001', 'TEST002', 'TEST003'];
-            const result = PortfolioOptimizer.calculateCovarianceMatrix(stocks, 100);
+            const result = await PortfolioOptimizer.calculateCovarianceMatrix(stocks, 100);
 
             if ('error' in result) {
                 console.log('Skipping test due to missing data:', result.error);
@@ -87,8 +99,8 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
         it('should handle different lookback periods', async () => {
             const stocks = ['TEST001', 'TEST002'];
             
-            const result30 = PortfolioOptimizer.calculateCovarianceMatrix(stocks, 30);
-            const result90 = PortfolioOptimizer.calculateCovarianceMatrix(stocks, 90);
+            const result30 = await PortfolioOptimizer.calculateCovarianceMatrix(stocks, 30);
+            const result90 = await PortfolioOptimizer.calculateCovarianceMatrix(stocks, 90);
 
             if (!('error' in result30) && !('error' in result90)) {
                 // 不同回看期应该产生不同的结果
@@ -100,14 +112,14 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
     describe('optimizeMeanVariance - Extended', () => {
         it('should produce valid portfolio metrics', async () => {
             const stocks = ['TEST001', 'TEST002', 'TEST003'];
-            const covMatrix = PortfolioOptimizer.calculateCovarianceMatrix(stocks, 90);
+            const covMatrix = await PortfolioOptimizer.calculateCovarianceMatrix(stocks, 90);
 
             if ('error' in covMatrix) {
                 console.log('Skipping test due to missing data:', covMatrix.error);
                 return;
             }
 
-            const result = PortfolioOptimizer.optimizeMeanVariance(covMatrix);
+            const result = await PortfolioOptimizer.optimizeMeanVariance(covMatrix);
 
             if ('error' in result) {
                 console.log('Skipping test:', result.error);
@@ -138,7 +150,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 ],
             };
 
-            const result = PortfolioOptimizer.optimizeMeanVariance(covMatrix);
+            const result = await PortfolioOptimizer.optimizeMeanVariance(covMatrix);
 
             if (!('error' in result)) {
                 // 高相关性应该导致较低的分散化比率
@@ -169,7 +181,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 ],
             };
 
-            const result = PortfolioOptimizer.blackLittermanOptimize(config);
+            const result = await PortfolioOptimizer.blackLittermanOptimize(config);
 
             if ('error' in result) {
                 console.log('Skipping test due to missing data:', result.error);
@@ -196,8 +208,8 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 riskAversion: 4.0,
             };
 
-            const result1 = PortfolioOptimizer.blackLittermanOptimize(config1);
-            const result2 = PortfolioOptimizer.blackLittermanOptimize(config2);
+            const result1 = await PortfolioOptimizer.blackLittermanOptimize(config1);
+            const result2 = await PortfolioOptimizer.blackLittermanOptimize(config2);
 
             if (!('error' in result1) && !('error' in result2)) {
                 // 不同的风险厌恶系数应该产生不同的结果
@@ -212,7 +224,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 tau: 0.1,
             };
 
-            const result = PortfolioOptimizer.blackLittermanOptimize(config);
+            const result = await PortfolioOptimizer.blackLittermanOptimize(config);
 
             if (!('error' in result)) {
                 expect(result.weights).toBeDefined();
@@ -229,7 +241,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 targetVolatility: 0.15,
             };
 
-            const result = PortfolioOptimizer.optimizePortfolio(config);
+            const result = await PortfolioOptimizer.optimizePortfolio(config);
 
             if ('error' in result) {
                 console.log('Skipping test due to missing data:', result.error);
@@ -253,7 +265,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 riskBudgets: [1/3, 1/3, 1/3],
             };
 
-            const result = PortfolioOptimizer.optimizePortfolio(config);
+            const result = await PortfolioOptimizer.optimizePortfolio(config);
 
             if (!('error' in result)) {
                 expect(result.weights).toBeDefined();
@@ -267,7 +279,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 riskBudgets: [2, 3], // 不归一化
             };
 
-            const result = PortfolioOptimizer.optimizePortfolio(config);
+            const result = await PortfolioOptimizer.optimizePortfolio(config);
 
             if (!('error' in result)) {
                 const totalWeight = Object.values(result.weights).reduce((a, b) => a + b, 0);
@@ -283,7 +295,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 stocks,
                 method: 'equal_weight',
             };
-            const result = PortfolioOptimizer.optimizePortfolio(config);
+            const result = await PortfolioOptimizer.optimizePortfolio(config);
 
             if ('error' in result) {
                 console.log('Skipping test due to missing data:', result.error);
@@ -302,7 +314,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 stocks,
                 method: 'equal_weight',
             };
-            const result = PortfolioOptimizer.optimizePortfolio(config);
+            const result = await PortfolioOptimizer.optimizePortfolio(config);
 
             if ('error' in result) {
                 console.log('Skipping test due to missing data:', result.error);
@@ -331,7 +343,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 ],
             };
 
-            const result = PortfolioOptimizer.optimizeMeanVariance(covMatrix);
+            const result = await PortfolioOptimizer.optimizeMeanVariance(covMatrix);
             
             // 应该能处理或返回错误
             expect(result).toBeDefined();
@@ -351,7 +363,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 ],
             };
 
-            const result = PortfolioOptimizer.optimizeMeanVariance(covMatrix);
+            const result = await PortfolioOptimizer.optimizeMeanVariance(covMatrix);
             
             if (!('error' in result)) {
                 // 完全负相关应该产生高分散化比率（或至少>=1）
@@ -373,7 +385,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 ],
             };
 
-            const result = PortfolioOptimizer.optimizeMeanVariance(covMatrix);
+            const result = await PortfolioOptimizer.optimizeMeanVariance(covMatrix);
             
             if (!('error' in result)) {
                 expect(result.volatility).toBeGreaterThan(50); // 高波动率
@@ -387,7 +399,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 riskBudgets: [0.5, 0.5], // 长度不匹配
             };
 
-            const result = PortfolioOptimizer.optimizePortfolio(config);
+            const result = await PortfolioOptimizer.optimizePortfolio(config);
             
             // 应该返回错误或自动处理
             expect(result).toBeDefined();
@@ -399,7 +411,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
                 views: [],
             };
 
-            const result = PortfolioOptimizer.blackLittermanOptimize(config);
+            const result = await PortfolioOptimizer.blackLittermanOptimize(config);
 
             if (!('error' in result)) {
                 // 无观点应该返回市场均衡权重
@@ -413,7 +425,7 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
             const stocks = ['TEST001', 'TEST002', 'TEST003', 'TEST004'];
             const startTime = Date.now();
 
-            const result = PortfolioOptimizer.calculateCovarianceMatrix(stocks, 100);
+            const result = await PortfolioOptimizer.calculateCovarianceMatrix(stocks, 100);
 
             const executionTime = Date.now() - startTime;
 
@@ -424,14 +436,14 @@ describe('Portfolio Optimizer Service - Extended Tests', () => {
 
         it('should optimize portfolio efficiently', async () => {
             const stocks = ['TEST001', 'TEST002', 'TEST003'];
-            const covMatrix = PortfolioOptimizer.calculateCovarianceMatrix(stocks, 90);
+            const covMatrix = await PortfolioOptimizer.calculateCovarianceMatrix(stocks, 90);
 
             if ('error' in covMatrix) {
                 return;
             }
 
             const startTime = Date.now();
-            const result = PortfolioOptimizer.optimizeMeanVariance(covMatrix);
+            const result = await PortfolioOptimizer.optimizeMeanVariance(covMatrix);
             const executionTime = Date.now() - startTime;
 
             if (!('error' in result)) {

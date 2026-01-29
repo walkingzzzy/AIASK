@@ -13,25 +13,6 @@ from typing import Any, Optional
 import pandas as pd
 
 SOURCE_NAME = "akshare"
-_PROXY_ENV_KEYS = (
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "ALL_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "all_proxy",
-)
-
-
-def disable_env_proxy_if_needed() -> None:
-    """强制禁用代理，避免 AKShare 连接国内数据源时出现代理错误"""
-    if os.getenv("AKSHARE_MCP_KEEP_PROXY", "").strip().lower() in {"1", "true", "yes"}:
-        return
-    # 强制清除所有代理环境变量
-    for key in _PROXY_ENV_KEYS:
-        os.environ.pop(key, None)
-    os.environ["NO_PROXY"] = "*"
-    os.environ["no_proxy"] = "*"
 
 
 def now_iso() -> str:

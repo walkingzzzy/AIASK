@@ -56,6 +56,51 @@ export const technicalAnalysisManagerHandler: ToolHandler = async (params: any) 
         };
     }
 
+    if (action === 'check_macd_signal' || action === 'macd_buy_signal') {
+        const macd = TechnicalServices.calculateMACD(closes);
+        if (macd.histogram.length < 2) {
+            return { success: false, error: 'MACD数据不足' };
+        }
+        const lastHist = macd.histogram[macd.histogram.length - 1];
+        const prevHist = macd.histogram[macd.histogram.length - 2];
+        const isBuySignal = lastHist > 0 && prevHist <= 0;
+
+        return {
+            success: true,
+            data: {
+                code,
+                signal: isBuySignal ? 'buy' : 'hold',
+                macd: macd.macd[macd.macd.length - 1],
+                macdSignal: macd.signal[macd.signal.length - 1],
+                histogram: lastHist,
+                confirmed: isBuySignal,
+            }
+        };
+    }
+
+    if (action === 'check_kdj_signal' || action === 'kdj_sell_signal') {
+        const kdj = TechnicalServices.calculateKDJ(highs, lows, closes);
+        if (kdj.k.length === 0) {
+            return { success: false, error: 'KDJ数据不足' };
+        }
+        const currentK = kdj.k[kdj.k.length - 1];
+        const currentD = kdj.d[kdj.d.length - 1];
+        const currentJ = kdj.j[kdj.j.length - 1];
+        const isOverbought = currentK > 80 || currentJ > 80;
+
+        return {
+            success: true,
+            data: {
+                code,
+                signal: isOverbought ? 'sell' : 'hold',
+                k: currentK,
+                d: currentD,
+                j: currentJ,
+                overbought: isOverbought,
+            }
+        };
+    }
+
     if (action === 'check_patterns') {
         const patterns = PatternServices.detectAllPatterns(klines);
         // Filter only detected patterns to keep output clean
@@ -236,5 +281,5 @@ export const technicalAnalysisManagerHandler: ToolHandler = async (params: any) 
         };
     }
 
-    return { success: false, error: `Unknown action: ${action}. Supported: calculate_indicators, check_patterns, calculate_support_resistance, detect_divergence, multi_timeframe_analysis, generate_technical_report` };
+    return { success: false, error: `Unknown action: ${action}. Supported: calculate_indicators, check_macd_signal, check_kdj_signal, check_patterns, calculate_support_resistance, detect_divergence, multi_timeframe_analysis, generate_technical_report` };
 };

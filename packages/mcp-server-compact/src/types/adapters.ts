@@ -7,7 +7,7 @@ import type { RealtimeQuote, KlineData, StockInfo, FinancialData, DragonTiger, N
 /**
  * 数据源类型
  */
-export type DataSource = 'akshare' | 'eastmoney' | 'sina' | 'xueqiu' | 'tushare' | 'baostock' | 'wind' | 'tencent';
+export type DataSource = 'akshare' | 'eastmoney' | 'sina' | 'xueqiu' | 'tushare' | 'baostock' | 'wind' | 'tencent' | 'database';
 
 /**
  * 适配器基础接口

@@ -20,14 +20,18 @@ export interface KlineRow {
 export interface FinancialsRow {
     code: string;
     report_date: string;
-    revenue: number;
-    net_profit: number;
-    gross_margin: number;
-    net_margin: number;
-    debt_ratio: number;
-    current_ratio: number;
-    eps: number;
-    roe: number;
+    revenue: number | null;
+    net_profit: number | null;
+    gross_margin: number | null;
+    net_margin: number | null;
+    debt_ratio: number | null;
+    current_ratio: number | null;
+    eps: number | null;
+    roe: number | null;
+    bvps?: number | null;
+    roa?: number | null;
+    revenue_growth?: number | null;
+    profit_growth?: number | null;
     [key: string]: any;
 }
 
@@ -44,6 +48,7 @@ export class TimescaleDBAdapter {
             port: parseInt(process.env.DB_PORT || '5432', 10),
             max: 20, // Connection pool size
             idleTimeoutMillis: 30000,
+            connectionTimeoutMillis: parseInt(process.env.DB_CONNECT_TIMEOUT_MS || '10000', 10),
         });
 
         this.pool.on('error', (err, client) => {
@@ -106,6 +111,8 @@ export class TimescaleDBAdapter {
                     current_ratio  DOUBLE PRECISION,
                     eps            DOUBLE PRECISION,
                     roe            DOUBLE PRECISION,
+                    bvps           DOUBLE PRECISION,
+                    roa            DOUBLE PRECISION,
                     revenue_growth DOUBLE PRECISION,
                     profit_growth  DOUBLE PRECISION,
                     updated_at     TIMESTAMPTZ DEFAULT NOW(),
@@ -117,6 +124,8 @@ export class TimescaleDBAdapter {
             try {
                 await client.query('ALTER TABLE financials ADD COLUMN IF NOT EXISTS revenue_growth DOUBLE PRECISION;');
                 await client.query('ALTER TABLE financials ADD COLUMN IF NOT EXISTS profit_growth DOUBLE PRECISION;');
+                await client.query('ALTER TABLE financials ADD COLUMN IF NOT EXISTS bvps DOUBLE PRECISION;');
+                await client.query('ALTER TABLE financials ADD COLUMN IF NOT EXISTS roa DOUBLE PRECISION;');
             } catch (e) {
                 console.warn('Migration columns might already exist:', e);
             }
@@ -184,6 +193,16 @@ export class TimescaleDBAdapter {
             if (checkHyperQuotes.rowCount === 0) {
                 await client.query(`SELECT create_hypertable('stock_quotes', 'time'); `);
                 console.log('Created hypertable: stock_quotes');
+            }
+
+            // Add unique constraint for ON CONFLICT to work (if not exists)
+            try {
+                await client.query(`
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_quotes_time_code 
+                    ON stock_quotes (time, code);
+                `);
+            } catch (e) {
+                // Index might already exist
             }
 
 
@@ -430,10 +449,11 @@ export class TimescaleDBAdapter {
                 );
             `);
 
-            console.log("TimescaleDB initialized successfully.");
+            // MCP 服务器通过 stdio 通信，不能输出非 JSON 消息
+            // 初始化成功，静默处理
 
         } catch (err) {
-            console.error("Failed to initialize TimescaleDB:", err);
+            // 初始化失败时抛出错误，但不输出到 stdio（避免 JSON 解析错误）
             throw err;
         } finally {
             client.release();
@@ -497,8 +517,8 @@ export class TimescaleDBAdapter {
         const query = `
             INSERT INTO financials(
                 code, report_date, revenue, net_profit, gross_margin, net_margin,
-                debt_ratio, current_ratio, eps, roe, revenue_growth, profit_growth
-            ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                debt_ratio, current_ratio, eps, roe, bvps, roa, revenue_growth, profit_growth
+            ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             ON CONFLICT(code, report_date) DO UPDATE SET
             revenue = EXCLUDED.revenue,
                 net_profit = EXCLUDED.net_profit,
@@ -508,6 +528,8 @@ export class TimescaleDBAdapter {
                 current_ratio = EXCLUDED.current_ratio,
                 eps = EXCLUDED.eps,
                 roe = EXCLUDED.roe,
+                bvps = EXCLUDED.bvps,
+                roa = EXCLUDED.roa,
                 revenue_growth = EXCLUDED.revenue_growth,
                 profit_growth = EXCLUDED.profit_growth,
                 updated_at = NOW();
@@ -518,6 +540,7 @@ export class TimescaleDBAdapter {
                 data.code, data.report_date, data.revenue, data.net_profit,
                 data.gross_margin, data.net_margin, data.debt_ratio,
                 data.current_ratio, data.eps, data.roe,
+                data.bvps ?? null, data.roa ?? null,
                 data.revenue_growth, data.profit_growth
             ]);
             return true;
@@ -541,8 +564,8 @@ export class TimescaleDBAdapter {
             const query = `
                 INSERT INTO financials(
                 code, report_date, revenue, net_profit, gross_margin, net_margin,
-                debt_ratio, current_ratio, eps, roe, revenue_growth, profit_growth
-            ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                debt_ratio, current_ratio, eps, roe, bvps, roa, revenue_growth, profit_growth
+            ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 ON CONFLICT(code, report_date) DO UPDATE SET
             revenue = EXCLUDED.revenue,
                 net_profit = EXCLUDED.net_profit,
@@ -552,6 +575,8 @@ export class TimescaleDBAdapter {
                 current_ratio = EXCLUDED.current_ratio,
                 eps = EXCLUDED.eps,
                 roe = EXCLUDED.roe,
+                bvps = EXCLUDED.bvps,
+                roa = EXCLUDED.roa,
                 revenue_growth = EXCLUDED.revenue_growth,
                 profit_growth = EXCLUDED.profit_growth,
                 updated_at = NOW();
@@ -563,6 +588,7 @@ export class TimescaleDBAdapter {
                         data.code, data.report_date, data.revenue, data.net_profit,
                         data.gross_margin, data.net_margin, data.debt_ratio,
                         data.current_ratio, data.eps, data.roe,
+                        data.bvps ?? null, data.roa ?? null,
                         data.revenue_growth, data.profit_growth
                     ]);
                     inserted++;

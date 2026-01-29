@@ -217,7 +217,7 @@ export async function syncFinancials(codes: string[] | null): Promise<SyncResult
 
                 // Validate financial data completeness
                 const completenessCheck = checkDataCompleteness([data], [
-                    'code', 'reportDate', 'eps', 'roe', 'revenue', 'netProfit'
+                    'code', 'reportDate', 'eps', 'roe'
                 ]);
 
                 if (completenessCheck.completenessRate < 1) {
@@ -232,13 +232,19 @@ export async function syncFinancials(codes: string[] | null): Promise<SyncResult
                 }
 
                 // Validate numeric fields
+                const optionalValidation = (value: number | null | undefined, field: string, options: any) => {
+                    if (value === null || value === undefined) return null;
+                    return validateNumericData(value, field, options);
+                };
+
                 const validations = [
-                    validateNumericData(data.roe, 'roe', { min: -100, max: 100, allowNegative: true }),
-                    validateNumericData(data.grossProfitMargin, 'grossProfitMargin', { min: -100, max: 100, allowNegative: true }),
-                    validateNumericData(data.netProfitMargin, 'netProfitMargin', { min: -100, max: 100, allowNegative: true }),
-                    validateNumericData(data.debtRatio, 'debtRatio', { min: 0, max: 1000, allowNegative: false }),
-                    validateNumericData(data.currentRatio, 'currentRatio', { min: 0, max: 100, allowNegative: false }),
-                ];
+                    validateNumericData(data.eps, 'eps', { min: -100, max: 100, allowNegative: true, allowZero: true }),
+                    validateNumericData(data.roe, 'roe', { min: -100, max: 100, allowNegative: true, allowZero: true }),
+                    optionalValidation(data.grossProfitMargin, 'grossProfitMargin', { min: -100, max: 100, allowNegative: true }),
+                    optionalValidation(data.netProfitMargin, 'netProfitMargin', { min: -100, max: 100, allowNegative: true }),
+                    optionalValidation(data.debtRatio, 'debtRatio', { min: 0, max: 1000, allowNegative: false }),
+                    optionalValidation(data.currentRatio, 'currentRatio', { min: 0, max: 100, allowNegative: false }),
+                ].filter(Boolean) as Array<{ valid: boolean; error?: string }>;
 
                 const invalidFields = validations.filter(v => !v.valid);
                 if (invalidFields.length > 0) {
@@ -256,14 +262,18 @@ export async function syncFinancials(codes: string[] | null): Promise<SyncResult
                 const success = await timescaleDB.upsertFinancials({
                     code: data.code,
                     report_date: data.reportDate,
-                    eps: data.eps,
-                    roe: data.roe,
-                    gross_margin: data.grossProfitMargin,
-                    net_margin: data.netProfitMargin,
-                    debt_ratio: data.debtRatio,
-                    current_ratio: data.currentRatio,
-                    revenue: data.revenue,
-                    net_profit: data.netProfit
+                    eps: data.eps ?? null,
+                    roe: data.roe ?? null,
+                    bvps: data.bvps ?? null,
+                    roa: data.roa ?? null,
+                    gross_margin: data.grossProfitMargin ?? null,
+                    net_margin: data.netProfitMargin ?? null,
+                    debt_ratio: data.debtRatio ?? null,
+                    current_ratio: data.currentRatio ?? null,
+                    revenue: data.revenue ?? null,
+                    net_profit: data.netProfit ?? null,
+                    revenue_growth: data.revenueGrowth ?? null,
+                    profit_growth: data.netProfitGrowth ?? null
                 });
 
                 if (success) {

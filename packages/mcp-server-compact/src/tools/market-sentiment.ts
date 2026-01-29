@@ -19,7 +19,7 @@ const getSentimentAnalysisTool: ToolDefinition = {
     category: 'market_sentiment',
     inputSchema: getSentimentAnalysisSchema,
     tags: ['sentiment', 'analysis'],
-    dataSource: 'real',
+    dataSource: 'calculated',
 };
 
 const getSentimentAnalysisHandler: ToolHandler<z.infer<typeof getSentimentAnalysisSchema>> = async (params) => {
@@ -57,7 +57,7 @@ const calculateFearGreedTool: ToolDefinition = {
     category: 'market_sentiment',
     inputSchema: calculateFearGreedSchema,
     tags: ['sentiment', 'market'],
-    dataSource: 'real',
+    dataSource: 'calculated_estimate',
 };
 
 const calculateFearGreedHandler: ToolHandler<z.infer<typeof calculateFearGreedSchema>> = async () => {
@@ -106,7 +106,14 @@ const calculateFearGreedHandler: ToolHandler<z.infer<typeof calculateFearGreedSc
 
     return {
         success: true,
-        data: index,
+        data: {
+            ...index,
+            dataSource: 'calculated_estimate',
+            assumptions: [
+                '使用板块涨跌家数近似市场宽度',
+                '成交量比率基于上证指数近60日量能估算'
+            ]
+        },
         source: 'calculated',
     };
 };

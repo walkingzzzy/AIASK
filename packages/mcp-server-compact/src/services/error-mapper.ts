@@ -11,6 +11,7 @@ const SOURCE_LABELS: Record<DataSource, string> = {
     baostock: 'Baostock',
     wind: 'Wind',
     tencent: '腾讯财经',
+    database: '本地数据库',
 };
 
 const NETWORK_PATTERNS = [

@@ -45,7 +45,6 @@ export const tradingDataManagerHandler: ToolHandler = async (params: any) => {
 
     // ===== 北向资金持股 =====
     if (action === 'get_north_fund_holding' || action === 'north_holding') {
-        // 通过获取个股北向资金数据
         const targetCodes = codes ? (Array.isArray(codes) ? codes : codes.split(',')) : null;
 
         if (!targetCodes || targetCodes.length === 0) {
@@ -54,7 +53,7 @@ export const tradingDataManagerHandler: ToolHandler = async (params: any) => {
 
         const results = await Promise.all(
             targetCodes.map(async (c: string) => {
-                const res = await adapterManager.getFundFlow(c);
+                const res = await adapterManager.getNorthFundHolding(c);
                 return {
                     code: c,
                     success: res.success,
@@ -67,8 +66,9 @@ export const tradingDataManagerHandler: ToolHandler = async (params: any) => {
             .filter((r: any) => r.success && r.data)
             .map((r: any) => ({
                 code: r.code,
-                mainNetInflow: r.data?.mainNetInflow,
-                superLargeInflow: r.data?.superLargeInflow,
+                shares: r.data?.shares,
+                ratio: r.data?.ratio,
+                change: r.data?.change,
             }));
 
         return {
@@ -82,7 +82,19 @@ export const tradingDataManagerHandler: ToolHandler = async (params: any) => {
 
     // ===== 北向资金排行 =====
     if (action === 'get_north_fund_top' || action === 'north_top') {
-        return { success: false, error: '北向资金排行真实数据源未接入' };
+        const res = await adapterManager.getNorthFundTop(topN);
+        if (!res.success || !res.data) {
+            return { success: false, error: res.error || '获取北向资金排行失败' };
+        }
+
+        return {
+            success: true,
+            data: {
+                ranking: res.data,
+                count: res.data.length,
+                source: res.source,
+            },
+        };
     }
 
     // ===== 个股资金流向 =====

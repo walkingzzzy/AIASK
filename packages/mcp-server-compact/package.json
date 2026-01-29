@@ -17,7 +17,9 @@
         "db:analyze": "tsx scripts/analyze-database.ts",
         "db:migrate": "tsx scripts/migrate-advanced-tables.ts",
         "init-db": "tsx scripts/init-database.ts",
+        "init-db-free": "tsx scripts/init-database-free.ts",
         "init-db-full": "tsx scripts/init-database-full.ts",
+        "supplement-data": "tsx scripts/supplement-data.ts",
         "quick-warmup": "npm run build && node dist/scripts/quick-warmup.js"
     },
     "dependencies": {

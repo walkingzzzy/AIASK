@@ -23,7 +23,7 @@ export class WindAdapter implements QuoteAdapter, FundamentalAdapter {
             timeout: config.timeout,
             headers: { 'Content-Type': 'application/json' },
         });
-        this.baseUrl = WIND_CONFIG.PROXY_URL || undefined;
+        this.baseUrl = WIND_CONFIG.BASE_URL || undefined;
     }
 
     async isAvailable(): Promise<boolean> {
@@ -80,7 +80,7 @@ export class WindAdapter implements QuoteAdapter, FundamentalAdapter {
 
     private async post<T>(path: string, payload: Record<string, unknown>): Promise<T> {
         if (!this.baseUrl) {
-            throw new Error('Wind 代理未配置，请设置 WIND_PROXY_URL');
+            throw new Error('Wind 服务未配置，请设置 WIND_BASE_URL');
         }
 
         const response = await this.client.post(`${this.baseUrl}${path}`, payload);
@@ -88,7 +88,7 @@ export class WindAdapter implements QuoteAdapter, FundamentalAdapter {
 
         if (data && typeof data === 'object') {
             if (data.success === false) {
-                throw new Error(data.error || 'Wind 代理返回错误');
+                throw new Error(data.error || 'Wind 服务返回错误');
             }
             if ('data' in data) {
                 return data.data as T;

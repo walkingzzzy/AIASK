@@ -3,6 +3,7 @@ import { managerSchema } from '../parameters.js';
 import { adapterManager } from '../../adapters/index.js';
 import { screenStocks } from '../../storage/screener-data.js';
 import { NLPQueryParser } from '../../services/nlp-query-parser.js';
+import { checkIsST } from '../../utils/limit-rules.js';
 
 const nlpParser = new NLPQueryParser();
 
@@ -16,7 +17,7 @@ export const screenerManagerTool: ToolDefinition = {
 };
 
 export const screenerManagerHandler: ToolHandler = async (params: any) => {
-    const { action, query, conditions, limit = 10 } = params; // 默认从20降到10
+    const { action, query, conditions, limit = 10, sortBy, sortOrder, excludeST, excludeSTAR, excludeChiNext } = params; // 默认从20降到10
     // 数据库筛选条件
     const { peMin, peMax, pbMin, pbMax, roeMin, roeMax, grossMarginMin, netMarginMin, revenueGrowthMin, profitGrowthMin, marketCapMin, marketCapMax, sector } = params;
 
@@ -64,18 +65,38 @@ export const screenerManagerHandler: ToolHandler = async (params: any) => {
     if (action === 'screen' || action === 'filter' || action === 'screening') {
         // 使用 NLP 解析自然语言查询
         let parsedConditions = conditions;
+        let realtimeConditions = conditions;
+        let parsedSortBy: { field: string; order: 'asc' | 'desc' } | undefined;
+        const nlpExcludeFlags = { excludeST: false, excludeSTAR: false, excludeChiNext: false };
         let nlpDbCriteria: any = {};
         let nlpSector: string | undefined;
 
         if (query && !conditions) {
             const parsed = nlpParser.parseQuery(query);
             parsedConditions = parsed.conditions;
+            parsedSortBy = parsed.sortBy;
+            realtimeConditions = parsed.conditions.filter((cond: any) => {
+                return cond.category !== 'fundamental' && !['exclude_st', 'exclude_star', 'exclude_chinext'].includes(cond.field);
+            });
 
             // 从NLP解析结果中提取数据库筛选条件
             for (const cond of parsed.conditions) {
                 if (cond.category === 'fundamental') {
                     const field = cond.field;
                     const value = cond.value as number;
+
+                    if (field === 'exclude_st') {
+                        nlpExcludeFlags.excludeST = Boolean(cond.value);
+                        continue;
+                    }
+                    if (field === 'exclude_star') {
+                        nlpExcludeFlags.excludeSTAR = Boolean(cond.value);
+                        continue;
+                    }
+                    if (field === 'exclude_chinext') {
+                        nlpExcludeFlags.excludeChiNext = Boolean(cond.value);
+                        continue;
+                    }
 
                     // 映射NLP字段到数据库筛选参数
                     if (field === 'pe') {
@@ -137,6 +158,44 @@ export const screenerManagerHandler: ToolHandler = async (params: any) => {
             }
         });
 
+        const effectiveExcludeST = excludeST ?? nlpExcludeFlags.excludeST;
+        const effectiveExcludeSTAR = excludeSTAR ?? nlpExcludeFlags.excludeSTAR;
+        const effectiveExcludeChiNext = excludeChiNext ?? nlpExcludeFlags.excludeChiNext;
+        const effectiveSortBy = sortBy ?? parsedSortBy?.field;
+        const effectiveSortOrder = sortOrder ?? parsedSortBy?.order ?? 'desc';
+        const sortDirection = effectiveSortOrder === 'asc' ? 1 : -1;
+
+        const quoteFieldAliases: Record<string, string> = {
+            change_pct: 'changePercent',
+            turnover_rate: 'turnoverRate',
+            changePercent: 'changePercent',
+            turnoverRate: 'turnoverRate',
+        };
+
+        const dbFieldAliases: Record<string, string> = {
+            market_cap: 'marketCap',
+            revenue_growth: 'revenueGrowth',
+            profit_growth: 'profitGrowth',
+            gross_margin: 'grossMargin',
+            net_margin: 'netMargin',
+        };
+
+        const resolveQuoteField = (field?: string) => field ? (quoteFieldAliases[field] || field) : undefined;
+        const resolveDbField = (field?: string) => field ? (dbFieldAliases[field] || field) : undefined;
+        const quoteFields = new Set(['amount', 'volume', 'price', 'changePercent', 'turnoverRate']);
+        const quoteConditions = Array.isArray(realtimeConditions)
+            ? realtimeConditions.filter((cond: any) => {
+                const field = resolveQuoteField(cond.field);
+                return field !== undefined && quoteFields.has(field);
+            })
+            : [];
+
+        const shouldExcludeCode = (code: string) => {
+            if (effectiveExcludeSTAR && code.startsWith('688')) return true;
+            if (effectiveExcludeChiNext && code.startsWith('300')) return true;
+            return false;
+        };
+
         // 检查是否有任何有效的筛选条件
         const hasFundamentalCriteria = Object.keys(finalCriteria).length > 0;
 
@@ -145,14 +204,37 @@ export const screenerManagerHandler: ToolHandler = async (params: any) => {
         if (hasFundamentalCriteria) {
             // 使用数据库筛选
             const dbResults = await screenStocks(finalCriteria, 100);
-            candidateCodes = dbResults.map((r: any) => r.code);
+            let filteredDbResults = dbResults.filter((r: any) => {
+                if (shouldExcludeCode(r.code)) return false;
+                if (effectiveExcludeST && checkIsST(r.name)) return false;
+                return true;
+            });
 
-            // 如果数据库有结果，直接返回
-            if (dbResults.length > 0) {
+            if (effectiveSortBy) {
+                const dbSortField = resolveDbField(effectiveSortBy);
+                if (dbSortField) {
+                    filteredDbResults = [...filteredDbResults].sort((a: any, b: any) => {
+                        const aVal = Number(a[dbSortField] ?? 0);
+                        const bVal = Number(b[dbSortField] ?? 0);
+                        return (aVal - bVal) * sortDirection;
+                    });
+                }
+            }
+
+            candidateCodes = filteredDbResults.map((r: any) => r.code).filter((code: string) => !shouldExcludeCode(code));
+
+            const quoteSortField = resolveQuoteField(effectiveSortBy);
+            const needsRealtime = Boolean(
+                (quoteSortField && quoteFields.has(quoteSortField)) ||
+                quoteConditions.length > 0
+            );
+
+            // 如果数据库有结果且不需要实时行情，直接返回
+            if (filteredDbResults.length > 0 && !needsRealtime) {
                 return {
                     success: true,
                     data: {
-                        results: dbResults.slice(0, limit).map((r: any) => ({
+                        results: filteredDbResults.slice(0, limit).map((r: any) => ({
                             code: r.code,
                             name: r.name,
                             pe: r.pe,
@@ -160,8 +242,8 @@ export const screenerManagerHandler: ToolHandler = async (params: any) => {
                             roe: r.roe,
                             sector: r.sector,
                         })),
-                        total: dbResults.length,
-                        displayed: Math.min(dbResults.length, limit),
+                        total: filteredDbResults.length,
+                        displayed: Math.min(filteredDbResults.length, limit),
                         criteria: finalCriteria,
                         parsedConditions,
                         source: 'database',
@@ -177,7 +259,7 @@ export const screenerManagerHandler: ToolHandler = async (params: any) => {
             const candidates = new Set<string>();
             if (limitUp.success && limitUp.data) limitUp.data.forEach((s: any) => candidates.add(s.code));
             if (dragon.success && dragon.data) dragon.data.forEach((s: any) => candidates.add(s.code));
-            candidateCodes = Array.from(candidates).slice(0, 100);
+            candidateCodes = Array.from(candidates).filter((code: string) => !shouldExcludeCode(code)).slice(0, 100);
         }
 
         if (candidateCodes.length === 0) {
@@ -191,11 +273,16 @@ export const screenerManagerHandler: ToolHandler = async (params: any) => {
         }
 
         // 根据技术条件筛选
-        let results = quotesRes.data;
-        if (parsedConditions && parsedConditions.length > 0) {
-            for (const cond of parsedConditions) {
+        let results = quotesRes.data.filter((q: any) => {
+            if (shouldExcludeCode(q.code)) return false;
+            if (effectiveExcludeST && checkIsST(q.name)) return false;
+            return true;
+        });
+        if (quoteConditions.length > 0) {
+            for (const cond of quoteConditions) {
+                const field = resolveQuoteField(cond.field);
                 results = results.filter((q: any) => {
-                    const fieldValue = q[cond.field] ?? q.changePercent ?? q.turnoverRate;
+                    const fieldValue = field ? q[field] : undefined;
                     if (fieldValue === undefined) return true;
                     if (cond.operator === '>') return fieldValue > cond.value;
                     if (cond.operator === '<') return fieldValue < cond.value;
@@ -205,6 +292,15 @@ export const screenerManagerHandler: ToolHandler = async (params: any) => {
                     return true;
                 });
             }
+        }
+
+        const quoteSortField = resolveQuoteField(effectiveSortBy);
+        if (quoteSortField && quoteFields.has(quoteSortField)) {
+            results = [...results].sort((a: any, b: any) => {
+                const aVal = Number(a[quoteSortField] ?? 0);
+                const bVal = Number(b[quoteSortField] ?? 0);
+                return (aVal - bVal) * sortDirection;
+            });
         }
 
         return {

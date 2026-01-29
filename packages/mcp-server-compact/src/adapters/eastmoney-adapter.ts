@@ -102,9 +102,8 @@ export class EastMoneyAdapter implements QuoteAdapter, MarketAdapter {
     // ========== Missing / Stubbed Methods ==========
 
     async searchStocks(keyword: string) {
-        // Simple stub or use quoteAPI if possible (quoteAPI doesn't expose search currently)
-        // Returning empty array as fallback, relying on storage search
-        return [];
+        // 东方财富接口暂未封装搜索能力，明确降级由上层处理
+        throw new Error('eastmoney.searchStocks 未实现');
     }
 
     async getFundFlow(code: string) {
@@ -112,27 +111,27 @@ export class EastMoneyAdapter implements QuoteAdapter, MarketAdapter {
     }
 
     async getSectorFundFlow(days: number) {
-        return [];
+        throw new Error('eastmoney.getSectorFundFlow 未实现');
     }
 
     async getStockFundFlow(code: string) {
-        return undefined;
+        return fundFlowAPI.getStockFundFlow(code);
     }
 
     async getOrderBook(code: string) {
-        return undefined; // L2 data not supported
+        return quoteAPI.getOrderBook(code);
     }
 
     async getTradeDetails(code: string, limit?: number) {
-        return []; // L2 tick data not supported
+        return quoteAPI.getTradeDetails(code, limit);
     }
 
     async getStockNews(code: string, limit: number) {
-        return [];
+        throw new Error('eastmoney.getStockNews 未实现');
     }
 
     async getMarketNews(limit: number) {
-        return [];
+        throw new Error('eastmoney.getMarketNews 未实现');
     }
 }
 

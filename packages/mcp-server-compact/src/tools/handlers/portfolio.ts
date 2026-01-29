@@ -12,8 +12,42 @@ export const portfolioManagerTool: ToolDefinition = {
     category: 'portfolio_management',
     inputSchema: managerSchema,
     tags: ['portfolio', 'manager', 'position'],
-    dataSource: 'real',
+    dataSource: 'calculated_estimate',
 };
+
+async function buildMarketContext() {
+    const assumptions: string[] = [];
+    const [sectorFlowRes, klineRes] = await Promise.all([
+        adapterManager.getSectorFlow(50),
+        adapterManager.getKline('000001', '101', 60),
+    ]);
+
+    const sectors = sectorFlowRes.success && sectorFlowRes.data ? sectorFlowRes.data : [];
+    let advances = 1;
+    let declines = 1;
+    if (sectors.length > 0) {
+        advances = sectors.filter((s: any) => (s.changePercent || 0) > 0).length;
+        declines = sectors.filter((s: any) => (s.changePercent || 0) < 0).length;
+        assumptions.push('市场宽度使用板块涨跌家数近似');
+    } else {
+        assumptions.push('板块数据不可用，市场宽度使用最小占位值');
+    }
+
+    const bars = klineRes.success && klineRes.data ? klineRes.data : [];
+    const volumes = bars.map((b: any) => b.volume).filter((v: any) => Number.isFinite(v));
+    const volumeRatio = volumes.length >= 20
+        ? volumes[volumes.length - 1] / (volumes.slice(-20).reduce((a: any, b: any) => a + b, 0) / 20)
+        : 1;
+    if (volumes.length < 20) {
+        assumptions.push('成交量样本不足，成交量比率使用默认值1');
+    }
+
+    return {
+        marketBreadth: { advances, declines },
+        volumeRatio: Number.isFinite(volumeRatio) ? volumeRatio : 1,
+        assumptions,
+    };
+}
 
 export const portfolioManagerHandler: ToolHandler = async (params: any) => {
     const { action, code, name, quantity, costPrice, stocks, weights, method, targetVolatility, riskBudgets, benchmark } = params;
@@ -161,11 +195,23 @@ export const portfolioManagerHandler: ToolHandler = async (params: any) => {
 
         // 精简返回数据：移除相关性矩阵等大型数据
         const { correlationMatrix, covarianceMatrix, ...essentialData } = report as any;
+        if (Array.isArray((essentialData as any).stressTests)) {
+            (essentialData as any).stressTests = (essentialData as any).stressTests.map((s: any) => ({
+                ...s,
+                isSimulated: true
+            }));
+        }
         return {
             success: true,
             data: {
                 ...essentialData,
-                note: '已省略相关性矩阵以减少数据量'
+                note: '已省略相关性矩阵以减少数据量',
+                dataSource: 'calculated_estimate',
+                assumptions: [
+                    'Barra因子暴露为简化估算（固定因子占比）',
+                    '压力测试使用预设情景冲击，不含流动性与相关性二阶效应',
+                    '行业暴露基于静态行业映射'
+                ]
             }
         };
     }
@@ -199,7 +245,21 @@ export const portfolioManagerHandler: ToolHandler = async (params: any) => {
             const portfolioLoss = (weightList as number[]).reduce((sum, w) => sum + w * s.marketDrop, 0);
             return { scenario: s.name, portfolioLoss: (portfolioLoss * 100).toFixed(2) + '%' };
         });
-        return { success: true, data: { stressTest: results, note: '基于历史相关性的简化压力测试' } };
+        const marketContext = await buildMarketContext();
+        return {
+            success: true,
+            data: {
+                stressTest: results,
+                note: '基于历史相关性的简化压力测试',
+                marketContext,
+                isSimulated: true,
+                dataSource: 'simulated',
+                assumptions: [
+                    '情景冲击为固定跌幅，未模拟相关性二阶效应',
+                    '组合损失采用线性加权近似'
+                ].concat(marketContext.assumptions)
+            }
+        };
     }
 
     // ===== 每日盈亏跟踪 =====

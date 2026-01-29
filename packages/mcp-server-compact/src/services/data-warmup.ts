@@ -124,16 +124,18 @@ export async function warmupCoreStocks(config: WarmupConfig = {}): Promise<Warmu
                         await timescaleDB.upsertFinancials({
                             code,
                             report_date: financialResponse.data.reportDate,
-                            revenue: financialResponse.data.revenue,
-                            net_profit: financialResponse.data.netProfit,
-                            gross_margin: financialResponse.data.grossProfitMargin,
-                            net_margin: financialResponse.data.netProfitMargin,
-                            debt_ratio: financialResponse.data.debtRatio,
-                            current_ratio: financialResponse.data.currentRatio,
-                            eps: financialResponse.data.eps,
-                            roe: financialResponse.data.roe,
-                            revenue_growth: financialResponse.data.revenueGrowth,
-                            profit_growth: financialResponse.data.netProfitGrowth,
+                            revenue: financialResponse.data.revenue ?? null,
+                            net_profit: financialResponse.data.netProfit ?? null,
+                            gross_margin: financialResponse.data.grossProfitMargin ?? null,
+                            net_margin: financialResponse.data.netProfitMargin ?? null,
+                            debt_ratio: financialResponse.data.debtRatio ?? null,
+                            current_ratio: financialResponse.data.currentRatio ?? null,
+                            eps: financialResponse.data.eps ?? null,
+                            roe: financialResponse.data.roe ?? null,
+                            bvps: financialResponse.data.bvps ?? null,
+                            roa: financialResponse.data.roa ?? null,
+                            revenue_growth: financialResponse.data.revenueGrowth ?? null,
+                            profit_growth: financialResponse.data.netProfitGrowth ?? null,
                         });
                         result.financialRecords++;
                         logger.info(`${code}: 写入财务数据`);

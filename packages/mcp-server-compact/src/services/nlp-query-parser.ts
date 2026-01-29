@@ -72,6 +72,7 @@ const KEYWORD_MAPPINGS: Record<string, { category: QueryCondition['category']; f
 
     // 成交量
     '换手率': { category: 'market', field: 'turnover_rate', defaultOperator: '>' },
+    '成交额': { category: 'market', field: 'amount', defaultOperator: '>' },
     '成交量': { category: 'market', field: 'volume', defaultOperator: '>' },
     '放量': { category: 'market', field: 'volume_ratio', defaultOperator: '>' },
     '缩量': { category: 'market', field: 'volume_ratio', defaultOperator: '<' },
@@ -168,34 +169,41 @@ export class NLPQueryParser {
             explanations.push(`识别条件: ${c.field} ${c.operator} ${c.value}`);
         });
 
-        // 3. 提取技术指标条件
+        // 3. 提取布尔条件（排除ST/科创/创业）
+        const booleanConditions = this.extractBooleanConditions(normalizedQuery);
+        conditions.push(...booleanConditions);
+        booleanConditions.forEach((c: any) => {
+            explanations.push(`识别条件: ${c.field} = ${String(c.value)}`);
+        });
+
+        // 4. 提取技术指标条件
         const technicalConditions = this.extractTechnicalConditions(normalizedQuery);
         conditions.push(...technicalConditions);
         technicalConditions.forEach((c: any) => {
             explanations.push(`识别技术条件: ${c.field} = ${c.value}`);
         });
 
-        // 4. 提取资金流向条件
+        // 5. 提取资金流向条件
         const fundFlowConditions = this.extractFundFlowConditions(normalizedQuery);
         conditions.push(...fundFlowConditions);
         fundFlowConditions.forEach((c: any) => {
             explanations.push(`识别资金条件: ${c.field} ${c.operator} ${c.value}`);
         });
 
-        // 5. 提取特殊条件（涨停、连板等）
+        // 6. 提取特殊条件（涨停、连板等）
         const specialConditions = this.extractSpecialConditions(normalizedQuery);
         conditions.push(...specialConditions);
         specialConditions.forEach((c: any) => {
             explanations.push(`识别特殊条件: ${c.field} = ${c.value}`);
         });
 
-        // 6. 确定排序方式
+        // 7. 确定排序方式
         const sortBy = this.extractSortBy(normalizedQuery);
         if (sortBy) {
             explanations.push(`排序方式: ${sortBy.field} ${sortBy.order}`);
         }
 
-        // 7. 确定逻辑关系
+        // 8. 确定逻辑关系
         const logic = this.determineLogic(normalizedQuery);
         explanations.push(`条件逻辑: ${logic === 'and' ? '且' : '或'}`);
 
@@ -351,6 +359,45 @@ export class NLPQueryParser {
                     confidence: 0.7,
                 });
             }
+        }
+
+        return conditions;
+    }
+
+    /**
+     * 提取布尔条件
+     */
+    private extractBooleanConditions(query: string): QueryCondition[] {
+        const conditions: QueryCondition[] = [];
+
+        if (query.includes('非st')) {
+            conditions.push({
+                category: 'fundamental',
+                field: 'exclude_st',
+                operator: '=',
+                value: true,
+                confidence: 0.9,
+            });
+        }
+
+        if (query.includes('非科创')) {
+            conditions.push({
+                category: 'fundamental',
+                field: 'exclude_star',
+                operator: '=',
+                value: true,
+                confidence: 0.9,
+            });
+        }
+
+        if (query.includes('非创业')) {
+            conditions.push({
+                category: 'fundamental',
+                field: 'exclude_chinext',
+                operator: '=',
+                value: true,
+                confidence: 0.9,
+            });
         }
 
         return conditions;
@@ -588,22 +635,32 @@ export class NLPQueryParser {
      * 提取排序方式
      */
     private extractSortBy(query: string): { field: string; order: 'asc' | 'desc' } | undefined {
-        const sortPatterns = [
-            { pattern: /按(.+?)排序/, extract: true },
-            { pattern: /(.+?)最高/, field: null, order: 'desc' as const },
-            { pattern: /(.+?)最低/, field: null, order: 'asc' as const },
-        ];
-
         // 默认排序映射
         const fieldMappings: Record<string, string> = {
             '涨幅': 'change_pct',
             '市值': 'market_cap',
             '换手率': 'turnover_rate',
             '成交量': 'volume',
+            '成交额': 'amount',
+            '价格': 'price',
             '市盈率': 'pe',
             '股息率': 'dividend_yield',
             'roe': 'roe',
         };
+
+        const directionalMatch = query.match(/(成交额|成交量|涨幅|市值|换手率|价格)(由|从)(小到大|大到小)/);
+        if (directionalMatch) {
+            const fieldName = directionalMatch[1];
+            const order = directionalMatch[3] === '小到大' ? 'asc' : 'desc';
+            const field = fieldMappings[fieldName] || fieldName;
+            return { field, order };
+        }
+
+        const sortPatterns = [
+            { pattern: /按(.+?)排序/, extract: true },
+            { pattern: /(.+?)最高/, field: null, order: 'desc' as const },
+            { pattern: /(.+?)最低/, field: null, order: 'asc' as const },
+        ];
 
         for (const { pattern, order } of sortPatterns) {
             const match = query.match(pattern);

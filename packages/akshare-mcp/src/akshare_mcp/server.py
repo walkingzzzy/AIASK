@@ -11,11 +11,6 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from .utils import disable_env_proxy_if_needed
-
-# 禁用代理（如果需要）- 在导入工具前执行，防止工具模块初始化时读取代理配置
-disable_env_proxy_if_needed()
-
 from .tools import (
     market,
     finance,

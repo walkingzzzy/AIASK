@@ -117,7 +117,7 @@ export const fundamentalAnalysisManagerHandler: ToolHandler = async (params: any
         const f = financialRes.data;
         // 简化的杜邦拆解
         // Ensure properties exist, use fallbacks or correct field names based on src/types/stock.ts updates
-        const netProfitMargin = f.netProfitMargin || 0;
+        const netProfitMargin = f.netProfitMargin ?? 0;
         const assetTurnover = f.assetTurnover || 0.5;
         const equityMultiplier = f.leverage || 1.5;
         const roe = netProfitMargin * assetTurnover * equityMultiplier;
@@ -143,8 +143,8 @@ export const fundamentalAnalysisManagerHandler: ToolHandler = async (params: any
         if (!financialRes.success || !financialRes.data) return { success: false, error: '无法获取财务数据' };
 
         // 简化的格雷厄姆成长公式
-        const eps = financialRes.data.eps || 0.5;
-        const growthRate = financialRes.data.revenueGrowth || 10;
+        const eps = financialRes.data.eps ?? 0.5;
+        const growthRate = financialRes.data.revenueGrowth ?? 10;
         // V = EPS * (8.5 + 2g)
         const intrinsicValue = eps * (8.5 + 2 * growthRate);
 
@@ -179,17 +179,17 @@ export const fundamentalAnalysisManagerHandler: ToolHandler = async (params: any
                 metrics: {
                     valuation: valRes.success ? valRes.data : {},
                     profitability: {
-                        roe: financialRes.data.roe,
-                        grossMargin: financialRes.data.grossProfitMargin
+                        roe: financialRes.data.roe ?? null,
+                        grossMargin: financialRes.data.grossProfitMargin ?? null
                     },
                     growth: {
-                        revenueGrowth: financialRes.data.revenueGrowth,
-                        profitGrowth: financialRes.data.netProfitGrowth
+                        revenueGrowth: financialRes.data.revenueGrowth ?? null,
+                        profitGrowth: financialRes.data.netProfitGrowth ?? null
                     }
                 },
                 highlights: [
-                    financialRes.data.roe > 15 ? '高ROE' : 'ROE一般',
-                    (financialRes.data.revenueGrowth || 0) > 20 ? '高增长' : '增长平稳'
+                    (financialRes.data.roe ?? 0) > 15 ? '高ROE' : 'ROE一般',
+                    (financialRes.data.revenueGrowth ?? 0) > 20 ? '高增长' : '增长平稳'
                 ]
             }
         };

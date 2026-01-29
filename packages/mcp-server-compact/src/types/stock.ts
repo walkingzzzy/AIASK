@@ -95,21 +95,21 @@ export interface StockInfo {
 export interface FinancialData {
     code: StockCode;
     reportDate: string;
-    revenue: number;
-    netProfit: number;
-    grossProfitMargin: number;
-    netProfitMargin: number;
-    roe: number;
-    roa: number;
-    debtRatio: number;
-    currentRatio: number;
-    eps: number;
-    bvps: number;
+    revenue: number | null;
+    netProfit: number | null;
+    grossProfitMargin: number | null;
+    netProfitMargin: number | null;
+    roe: number | null;
+    roa: number | null;
+    debtRatio: number | null;
+    currentRatio: number | null;
+    eps: number | null;
+    bvps: number | null;
     // 扩展字段
     assetTurnover?: number;
     leverage?: number;
-    revenueGrowth?: number;
-    netProfitGrowth?: number;
+    revenueGrowth?: number | null;
+    netProfitGrowth?: number | null;
 }
 
 /**

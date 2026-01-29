@@ -144,11 +144,12 @@ export const LEGACY_ALIASES: Record<string, ToolAlias> = {
     'get_daily_block_trade': { newTool: 'trading_data_manager', injectedParams: { action: 'daily_block_trade' } },
     'get_margin_ranking': { newTool: 'trading_data_manager', injectedParams: { action: 'margin_ranking' } },
     'get_market_margin': { newTool: 'trading_data_manager', injectedParams: { action: 'market_margin' } },
-    'get_north_fund_flow': { newTool: 'get_fund_flow' }, // Generalized
+    'get_north_fund_flow': { newTool: 'get_north_fund' }, // 修正：指向正确的 AKShare MCP 工具
     'get_north_fund_holding': { newTool: 'trading_data_manager', injectedParams: { action: 'north_fund_holding' } },
     'get_north_fund_top': { newTool: 'trading_data_manager', injectedParams: { action: 'north_fund_top' } },
     'get_stock_block_trade': { newTool: 'trading_data_manager', injectedParams: { action: 'stock_block_trade' } },
     'get_stock_margin': { newTool: 'trading_data_manager', injectedParams: { action: 'stock_margin' } },
+    'get_realtime_quotes': { newTool: 'get_batch_quotes' }, // 添加：向后兼容别名
 
     // SECTOR_ROTATION
     'analyze_sector_rotation': { newTool: 'sector_manager', injectedParams: { action: 'rotation' } },

@@ -20,9 +20,11 @@ const config = loadConfig();
 
 // 初始化数据库
 timescaleDB.initialize().then(() => {
-    console.error("TimescaleDB initialized");
+    // MCP 服务器通过 stdio 通信，不能输出非 JSON 消息
+    // 初始化成功，静默处理
 }).catch(err => {
-    console.error("Failed to initialize TimescaleDB", err);
+    // 初始化失败时退出，但不输出到 stdio（避免 JSON 解析错误）
+    // 错误会通过 MCP 协议返回给客户端
     process.exit(1);
 });
 
@@ -184,11 +186,12 @@ if (ENABLE_LEGACY_ALIASES) {
 async function main() {
     // 启动 Server
     await server.connect(new StdioServerTransport());
-    console.error("MCP Server Compact started on stdio");
+    // MCP 服务器通过 stdio 通信，不能输出非 JSON 消息
+    // 服务器已启动，静默处理
 }
 
 main().catch(error => {
-    console.error("Fatal error:", error);
+    // 致命错误时退出，但不输出到 stdio（避免 JSON 解析错误）
     process.exit(1);
 });
 

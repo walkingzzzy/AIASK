@@ -11,6 +11,8 @@ export interface FinancialData {
     reportPeriod: string;
     eps: number | null;
     roe: number | null;
+    bvps: number | null;
+    roa: number | null;
     grossMargin: number | null;
     netMargin: number | null;
     debtRatio: number | null;
@@ -49,6 +51,8 @@ function mapRowToFinancialData(row: any): FinancialData {
         reportPeriod: row.report_date instanceof Date ? row.report_date.toISOString().split('T')[0] : row.report_date,
         eps: row.eps,
         roe: row.roe,
+        bvps: row.bvps,
+        roa: row.roa,
         grossMargin: row.gross_margin,
         netMargin: row.net_margin,
         debtRatio: row.debt_ratio,
@@ -102,6 +106,8 @@ export async function upsertFinancialData(data: {
     reportPeriod: string;
     eps?: number;
     roe?: number;
+    bvps?: number;
+    roa?: number;
     grossMargin?: number;
     netMargin?: number;
     debtRatio?: number;
@@ -117,16 +123,18 @@ export async function upsertFinancialData(data: {
     const row: FinancialsRow = {
         code: data.code,
         report_date: data.reportPeriod,
-        revenue: data.totalRevenue || 0,
-        net_profit: data.netProfit || 0,
-        gross_margin: data.grossMargin || 0,
-        net_margin: data.netMargin || 0,
-        debt_ratio: data.debtRatio || 0,
-        current_ratio: data.currentRatio || 0,
-        eps: data.eps || 0,
-        roe: data.roe || 0,
-        revenue_growth: data.revenueGrowth || 0,
-        profit_growth: data.profitGrowth || 0
+        revenue: data.totalRevenue ?? null,
+        net_profit: data.netProfit ?? null,
+        gross_margin: data.grossMargin ?? null,
+        net_margin: data.netMargin ?? null,
+        debt_ratio: data.debtRatio ?? null,
+        current_ratio: data.currentRatio ?? null,
+        eps: data.eps ?? null,
+        roe: data.roe ?? null,
+        bvps: data.bvps ?? null,
+        roa: data.roa ?? null,
+        revenue_growth: data.revenueGrowth ?? null,
+        profit_growth: data.profitGrowth ?? null
     };
     return timescaleDB.upsertFinancials(row);
 }
@@ -139,6 +147,8 @@ export async function batchUpsertFinancialData(dataList: Array<{
     reportPeriod: string;
     eps?: number;
     roe?: number;
+    bvps?: number;
+    roa?: number;
     grossMargin?: number;
     netMargin?: number;
     debtRatio?: number;
@@ -154,16 +164,18 @@ export async function batchUpsertFinancialData(dataList: Array<{
     const rows: FinancialsRow[] = dataList.map(data => ({
         code: data.code,
         report_date: data.reportPeriod,
-        revenue: data.totalRevenue || 0,
-        net_profit: data.netProfit || 0,
-        gross_margin: data.grossMargin || 0,
-        net_margin: data.netMargin || 0,
-        debt_ratio: data.debtRatio || 0,
-        current_ratio: data.currentRatio || 0,
-        eps: data.eps || 0,
-        roe: data.roe || 0,
-        revenue_growth: data.revenueGrowth || 0,
-        profit_growth: data.profitGrowth || 0
+        revenue: data.totalRevenue ?? null,
+        net_profit: data.netProfit ?? null,
+        gross_margin: data.grossMargin ?? null,
+        net_margin: data.netMargin ?? null,
+        debt_ratio: data.debtRatio ?? null,
+        current_ratio: data.currentRatio ?? null,
+        eps: data.eps ?? null,
+        roe: data.roe ?? null,
+        bvps: data.bvps ?? null,
+        roa: data.roa ?? null,
+        revenue_growth: data.revenueGrowth ?? null,
+        profit_growth: data.profitGrowth ?? null
     }));
 
     // Adapter needs batch method? I created `batchUpsertFinancials` in previous step?

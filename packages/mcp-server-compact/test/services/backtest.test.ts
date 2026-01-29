@@ -39,6 +39,31 @@ function generateMockKlines(days: number, startPrice: number = 100): KlineData[]
     return klines;
 }
 
+function generateTrendKlines(days: number): KlineData[] {
+    const klines: KlineData[] = [];
+    const startDate = new Date('2023-01-01');
+    let price = 100;
+
+    for (let i = 0; i < days; i++) {
+        const date = new Date(startDate);
+        date.setDate(date.getDate() + i);
+        price += 1;
+        const close = price;
+        klines.push({
+            code: '000001',
+            date: date.toISOString().slice(0, 10),
+            open: close,
+            high: close,
+            low: close * 0.98,
+            close,
+            volume: 1000000,
+            amount: close * 1000000,
+        });
+    }
+
+    return klines;
+}
+
 describe('Backtest Service', () => {
     const mockKlines = generateMockKlines(100);
     const baseParams: BacktestService.BacktestParams = {
@@ -118,6 +143,33 @@ describe('Backtest Service', () => {
             expect(result.winRate).toBeGreaterThanOrEqual(0);
             expect(result.winRate).toBeLessThanOrEqual(1);
             expect(result.profitFactor).toBeGreaterThanOrEqual(0);
+        });
+
+        it('should force sell by max holding days', () => {
+            const trendKlines = generateTrendKlines(10);
+            const { trades } = BacktestService.runBacktest(
+                '000001',
+                trendKlines,
+                'buy_and_hold',
+                { ...baseParams, maxHoldingDays: 5 }
+            );
+
+            const sellTrades = trades.filter(t => t.action === 'sell');
+            expect(sellTrades.length).toBe(1);
+            expect(sellTrades[0].date).toBe(trendKlines[5].date);
+        });
+
+        it('should sell when KDJ is overbought', () => {
+            const trendKlines = generateTrendKlines(30);
+            const { trades } = BacktestService.runBacktest(
+                '000001',
+                trendKlines,
+                'buy_and_hold',
+                { ...baseParams, sellSignal: 'kdj_overbought' }
+            );
+
+            const sellTrades = trades.filter(t => t.action === 'sell');
+            expect(sellTrades.length).toBeGreaterThan(0);
         });
     });
 
