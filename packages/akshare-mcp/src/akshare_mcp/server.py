@@ -1,10 +1,6 @@
 """
-AKShare MCP Server
-提供A股实时行情、K线、财务数据、北向资金等数据服务
-
-Real-only 原则：
-- 不返回任何模拟/占位数据；缺数据/异常直接返回 success=false
-- 所有工具统一返回结构：{success, data, error, source, cached, timestamp}
+AKShare MCP Server v2
+提供完整的A股量化分析服务
 """
 
 from __future__ import annotations
@@ -12,24 +8,41 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from .tools import (
-    market,
-    finance,
-    fund_flow,
-    macro,
-    news,
-    options,
+    market, finance, fund_flow, macro, news, options,
+    technical, backtest, portfolio, valuation, decision,
+    search, semantic, data_warmup, alerts,
+    vector, skills, quant, sentiment, market_blocks,
 )
-mcp = FastMCP("AKShare Stock Data Server")
+from .tools import managers_complete as managers
+from .tools import managers_extended
 
+mcp = FastMCP("AKShare Stock Data Server v2")
 
-
-# 注册工具
 market.register(mcp)
 finance.register(mcp)
 fund_flow.register(mcp)
 macro.register(mcp)
 news.register(mcp)
 options.register(mcp)
+technical.register(mcp)
+backtest.register(mcp)
+portfolio.register(mcp)
+valuation.register(mcp)
+decision.register(mcp)
+search.register(mcp)
+semantic.register(mcp)
+data_warmup.register(mcp)
+alerts.register(mcp)
+managers.register(mcp)
+managers_extended.register(mcp)  # 注册扩展的19个managers
+vector.register(mcp)
+skills.register(mcp)
+quant.register(mcp)
+sentiment.register(mcp)
+
+# 注册市场板块工具
+mcp.tool()(market_blocks.get_market_blocks)
+mcp.tool()(market_blocks.get_block_stocks)
 
 
 def main() -> None:

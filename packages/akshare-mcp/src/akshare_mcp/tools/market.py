@@ -38,7 +38,7 @@ _SPOT_TTL_SECONDS = float(os.getenv("AKSHARE_SPOT_TTL_SECONDS", "2"))
 _INDEX_SPOT_TTL_SECONDS = float(os.getenv("AKSHARE_INDEX_SPOT_TTL_SECONDS", "5"))
 _STOCK_LIST_TTL_SECONDS = float(os.getenv("AKSHARE_STOCK_LIST_TTL_SECONDS", "86400"))
 _STOCK_LIST_STALE_SECONDS = float(os.getenv("AKSHARE_STOCK_LIST_STALE_SECONDS", "604800"))
-_SPOT_TIMEOUT_SECONDS = float(os.getenv("AKSHARE_SPOT_TIMEOUT_SECONDS", "45"))
+_SPOT_TIMEOUT_SECONDS = float(os.getenv("AKSHARE_SPOT_TIMEOUT_SECONDS", "15"))  # 缩短超时时间，快速失败
 _INDEX_TIMEOUT_SECONDS = float(os.getenv("AKSHARE_INDEX_TIMEOUT_SECONDS", "45"))
 _SPOT_STALE_SECONDS = float(os.getenv("AKSHARE_SPOT_STALE_SECONDS", "30"))
 _INDEX_STALE_SECONDS = float(os.getenv("AKSHARE_INDEX_STALE_SECONDS", "60"))
@@ -59,7 +59,7 @@ def _parse_timeout_list(env_key: str, default: list[float]) -> list[float]:
     return timeouts or default
 
 
-_QUOTE_TIMEOUTS = _parse_timeout_list("AKSHARE_QUOTE_TIMEOUTS", [15.0, 45.0])
+_QUOTE_TIMEOUTS = _parse_timeout_list("AKSHARE_QUOTE_TIMEOUTS", [8.0, 15.0])  # 缩短超时时间，快速降级
 _KLINE_TIMEOUTS = _parse_timeout_list("AKSHARE_KLINE_TIMEOUTS", [20.0, 60.0])
 _MINUTE_BATCH_LIMIT = int(os.getenv("AKSHARE_MINUTE_BATCH_LIMIT", "12"))
 _BATCH_FALLBACK_LIMIT = int(os.getenv("AKSHARE_BATCH_FALLBACK_LIMIT", "60"))
@@ -588,7 +588,13 @@ def _get_trade_details_tencent_direct(code: str, limit: int) -> Optional[list[di
 @cached(ttl=5.0)  # 5s cache for real-time quotes
 def get_realtime_quote(stock_code: str) -> dict:
     """
-    获取单只股票实时行情
+    获取单只股票实时行情（优化版）
+    
+    优化特性：
+    - 优先使用单只股票接口，避免获取全市场数据
+    - 快速降级机制（AkShare -> DataSource -> Sina -> Tencent）
+    - 超时控制，避免长时间等待
+    - 数据验证
     """
     # Rate limiting
     limiter = get_limiter("quote", max_calls=10, period=1.0)
@@ -597,34 +603,36 @@ def get_realtime_quote(stock_code: str) -> dict:
     try:
         code = normalize_code(stock_code)
 
-        # 1. Try AkShare (EastMoney)
+        # 1. Try AkShare (优化版：优先单只股票接口)
         try:
             res = _get_realtime_quote_akshare(code)
-        except Exception:
+        except (TimeoutError, RuntimeError, Exception) as e:
+            print(f"AkShare quote failed for {code}: {e}", file=sys.stderr)
             res = None
         if res:
             # Validate data
             validated = validate_quote(res)
             return ok(validated, cached=False)
 
-        # 1.5 Try DataSource (Tushare / eFinance)
+        # 2. Try DataSource (Tushare / eFinance) - 快速失败
         print(f"AkShare quote failed for {code}, trying DataSource (Tushare/eFinance)...", file=sys.stderr)
-        res = data_source.get_realtime_quote(code)
-        if res:
-            validated = validate_quote(res)
-            return ok(validated, cached=False)
+        try:
+            res = data_source.get_realtime_quote(code)
+            if res:
+                validated = validate_quote(res)
+                return ok(validated, cached=False)
+        except Exception as e:
+            print(f"DataSource quote failed for {code}: {e}", file=sys.stderr)
 
-        print(f"AkShare quote failed for {code}, trying Sina...", file=sys.stderr)
-
-        # 2. Try Sina
+        # 3. Try Sina (快速降级，超时3秒)
+        print(f"Trying Sina for {code}...", file=sys.stderr)
         res = _get_quote_sina(code)
         if res:
             validated = validate_quote(res)
             return ok(validated, cached=False)
 
-        print(f"Sina quote failed for {code}, trying Tencent...", file=sys.stderr)
-
-        # 3. Try Tencent
+        # 4. Try Tencent (最后降级，超时3秒)
+        print(f"Sina failed for {code}, trying Tencent...", file=sys.stderr)
         res = _get_quote_tencent(code)
         if res:
             validated = validate_quote(res)
@@ -635,39 +643,53 @@ def get_realtime_quote(stock_code: str) -> dict:
         return fail(e)
 
 def _get_realtime_quote_akshare(code: str) -> Optional[dict]:
+    """
+    从AkShare获取实时行情（优化版：优先单只股票接口）
+    
+    策略：
+    1. 优先尝试分钟K线（最快，单只股票）
+    2. 降级到日K线（单只股票）
+    3. 最后尝试全市场数据（如果前两者都失败）
+    """
     name_map = _get_name_map()
     name = name_map.get(code, "")
     
-    # ... (Original logic extracted to helper) ...
-    # Simplified adaptation of original logic:
-    
-    minute_error: Optional[Exception] = None
-    minute_data = None
-    
+    # 策略1: 优先尝试分钟K线（最快，单只股票）
     try:
         minute = _get_minute_quote(code)
-        snapshot = _get_daily_snapshot(code)
-        prev_close = snapshot.get("prev_close")
-        change, change_pct = _calc_change(minute.get("price"), prev_close)
-        minute_data = {
-            "code": code,
-            "name": name,
-            "price": minute.get("price"),
-            "change": change,
-            "changePercent": change_pct,
-            "open": _coalesce_price(minute.get("open"), snapshot.get("open")),
-            "high": _coalesce_price(minute.get("high"), snapshot.get("high")),
-            "low": _coalesce_price(minute.get("low"), snapshot.get("low")),
-            "preClose": prev_close,
-            "volume": minute.get("volume"),
-            "amount": minute.get("amount"),
-            "time": minute.get("time"),
-            "source": "akshare_minute"
-        }
-        return minute_data
-    except Exception:
-        pass
+        if minute and minute.get("price"):
+            snapshot = _get_daily_snapshot(code)
+            prev_close = snapshot.get("prev_close")
+            change, change_pct = _calc_change(minute.get("price"), prev_close)
+            return {
+                "code": code,
+                "name": name,
+                "price": minute.get("price"),
+                "change": change,
+                "changePercent": change_pct,
+                "open": _coalesce_price(minute.get("open"), snapshot.get("open")),
+                "high": _coalesce_price(minute.get("high"), snapshot.get("high")),
+                "low": _coalesce_price(minute.get("low"), snapshot.get("low")),
+                "preClose": prev_close,
+                "volume": minute.get("volume"),
+                "amount": minute.get("amount"),
+                "time": minute.get("time"),
+                "source": "akshare_minute"
+            }
+    except (TimeoutError, RuntimeError, Exception) as e:
+        # 超时或失败时继续尝试下一个策略
+        print(f"Minute quote failed for {code}: {e}", file=sys.stderr)
 
+    # 策略2: 尝试日K线（单只股票）
+    try:
+        daily = _get_daily_quote(code, name)
+        if daily and daily.get("price"):
+            daily["source"] = "akshare_daily"
+            return daily
+    except (TimeoutError, RuntimeError, Exception) as e:
+        print(f"Daily quote failed for {code}: {e}", file=sys.stderr)
+
+    # 策略3: 降级到全市场数据（较慢，但数据完整）
     try:
         df, cached = _get_spot_indexed()
         if code in df.index:
@@ -690,16 +712,8 @@ def _get_realtime_quote_akshare(code: str) -> Optional[dict]:
                     "turnoverRate": safe_float(pick_value(r, ["换手率"])),
                     "source": "akshare_spot"
                 }
-    except Exception:
-        pass
-
-    try:
-        daily = _get_daily_quote(code, name)
-        if daily:
-            daily["source"] = "akshare_daily"
-            return daily
-    except Exception:
-        pass
+    except (TimeoutError, RuntimeError, Exception) as e:
+        print(f"Spot market failed for {code}: {e}", file=sys.stderr)
         
     return None
 
@@ -1362,3 +1376,101 @@ def register(mcp):
     mcp.tool()(get_limit_up_stocks)
     mcp.tool()(get_limit_up_statistics)
     mcp.tool()(get_index_quote)
+    
+    # 兼容Node.js版本的工具
+    mcp.tool()(get_kline_data)
+    mcp.tool()(get_batch_quotes_compat)
+
+
+
+def get_kline_data(
+    code: str,
+    period: str = "daily",
+    start_date: str = None,
+    end_date: str = None,
+    limit: int = 30,
+    adjust: str = ""
+) -> dict:
+    """
+    获取K线数据（兼容Node.js版本）
+    
+    Args:
+        code: 股票代码
+        period: 周期 (daily/weekly/monthly/1m/5m/15m/30m/60m)
+        start_date: 开始日期 (YYYY-MM-DD)
+        end_date: 结束日期 (YYYY-MM-DD)
+        limit: 数量限制
+        adjust: 复权类型 (''不复权/'qfq'前复权/'hfq'后复权)
+    """
+    # 周期映射：Node.js使用数字代码
+    period_map = {
+        'daily': 'daily',
+        'weekly': 'weekly',
+        'monthly': 'monthly',
+        '101': 'daily',
+        '102': 'weekly',
+        '103': 'monthly',
+        '1m': '1',
+        '5m': '5',
+        '15m': '15',
+        '30m': '30',
+        '60m': '60',
+    }
+    
+    mapped_period = period_map.get(period, period)
+    
+    # 如果指定了日期范围，需要特殊处理
+    if start_date or end_date:
+        limiter = get_limiter("kline", max_calls=5, period=1.0)
+        limiter.acquire()
+        
+        code_normalized = normalize_code(code)
+        
+        try:
+            # 使用AkShare获取指定日期范围的数据
+            df = ak.stock_zh_a_hist(
+                symbol=code_normalized,
+                period=mapped_period,
+                start_date=start_date.replace('-', '') if start_date else None,
+                end_date=end_date.replace('-', '') if end_date else None,
+                adjust=adjust or "qfq"
+            )
+            
+            if df is None or df.empty:
+                return fail(f'No kline data for {code}')
+            
+            results = _process_kline_akshare(df, code_normalized)
+            validated_results = [validate_kline(item) for item in results]
+            
+            return ok(validated_results)
+            
+        except Exception as e:
+            return fail(f'Failed to get kline data: {str(e)}')
+    
+    # 没有日期范围，使用原有的get_kline逻辑
+    return get_kline(code, mapped_period, limit)
+
+
+
+def get_batch_quotes_compat(codes: list[str]) -> dict:
+    """
+    批量获取股票实时行情（兼容Node.js版本）
+    
+    Args:
+        codes: 股票代码列表（Node.js参数名）
+    
+    Returns:
+        直接返回quotes数组（Node.js返回格式）
+    """
+    result = get_batch_quotes(codes)
+    
+    if result.get('success'):
+        # Node.js直接返回数组，不包装在对象中
+        return {
+            'success': True,
+            'data': result['data']['quotes'],  # 直接返回quotes数组
+            'source': result.get('source', 'multiple_adapters'),
+            'cached': result.get('cached', False)
+        }
+    else:
+        return result
