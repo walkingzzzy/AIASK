@@ -592,7 +592,7 @@ def get_realtime_quote(stock_code: str) -> dict:
     
     优化特性：
     - 优先使用单只股票接口，避免获取全市场数据
-    - 快速降级机制（AkShare -> DataSource -> Sina -> Tencent）
+    - 快速降级机制（Tushare/DataSource -> AkShare -> Sina -> Tencent）
     - 超时控制，避免长时间等待
     - 数据验证
     """
@@ -603,7 +603,16 @@ def get_realtime_quote(stock_code: str) -> dict:
     try:
         code = normalize_code(stock_code)
 
-        # 1. Try AkShare (优化版：优先单只股票接口)
+        # 1. Try DataSource (Tushare / eFinance) - 优先数据源
+        try:
+            res = data_source.get_realtime_quote(code)
+            if res:
+                validated = validate_quote(res)
+                return ok(validated, cached=False)
+        except Exception as e:
+            print(f"DataSource quote failed for {code}: {e}", file=sys.stderr)
+
+        # 2. Try AkShare (优化版：优先单只股票接口)
         try:
             res = _get_realtime_quote_akshare(code)
         except (TimeoutError, RuntimeError, Exception) as e:
@@ -613,16 +622,6 @@ def get_realtime_quote(stock_code: str) -> dict:
             # Validate data
             validated = validate_quote(res)
             return ok(validated, cached=False)
-
-        # 2. Try DataSource (Tushare / eFinance) - 快速失败
-        print(f"AkShare quote failed for {code}, trying DataSource (Tushare/eFinance)...", file=sys.stderr)
-        try:
-            res = data_source.get_realtime_quote(code)
-            if res:
-                validated = validate_quote(res)
-                return ok(validated, cached=False)
-        except Exception as e:
-            print(f"DataSource quote failed for {code}: {e}", file=sys.stderr)
 
         # 3. Try Sina (快速降级，超时3秒)
         print(f"Trying Sina for {code}...", file=sys.stderr)
@@ -768,6 +767,7 @@ def get_batch_quotes(stock_codes: list[str]) -> dict:
                             "amount": minute.get("amount"),
                             "preClose": prev_close,
                             "time": minute.get("time"),
+                            "source": "akshare_minute",
                         }
                     )
                     continue
@@ -795,6 +795,7 @@ def get_batch_quotes(stock_codes: list[str]) -> dict:
                             "changePercent": safe_float(pick_value(row, ["涨跌幅", "涨幅"])),
                             "volume": safe_int(pick_value(row, ["成交量"])),
                             "amount": safe_float(pick_value(row, ["成交额"])),
+                            "source": "akshare_spot",
                         }
                     )
                     continue
@@ -857,7 +858,14 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
     
     code = normalize_code(stock_code)
     try:
-        # 1. Try AkShare
+        # 1. Try DataSource for daily (Tushare / Baostock / eFinance)
+        if period == "daily":
+            ds_results = data_source.get_kline(code, period, limit)
+            if ds_results:
+                validated_results = [validate_kline(item) for item in ds_results]
+                return ok(validated_results)
+
+        # 2. Try AkShare
         df = _run_with_retry(
             lambda: ak.stock_zh_a_hist(symbol=code, period=period, adjust="qfq"),
             _KLINE_TIMEOUTS,
@@ -867,14 +875,14 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
 
         df = df.tail(int(limit))
         results = _process_kline_akshare(df, code)
-        
+
         # Validate K-line data
         validated_results = [validate_kline(item) for item in results]
         return ok(validated_results)
     except Exception as e:
         print(f"AkShare K-line fetch failed for {code}: {e}", file=sys.stderr)
-        
-        # 1.5 Try DataSource (Tushare / Baostock / eFinance)
+
+        # 2.5 Try DataSource fallback (for non-daily or after AkShare failure)
         print(f"Trying DataSource K-line fallback for {code}...", file=sys.stderr)
         ds_results = data_source.get_kline(code, period, limit)
         if ds_results:

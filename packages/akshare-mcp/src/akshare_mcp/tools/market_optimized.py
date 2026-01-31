@@ -360,8 +360,9 @@ def get_realtime_quote_optimized(stock_code: str) -> dict:
     
     优化特性：
     - 5秒进程内缓存（会话期间重复查询<10ms）
+    - 优先使用 Tushare Pro / DataSource
     - 优先使用单只股票接口，避免获取全市场数据
-    - 快速降级机制（AkShare -> Sina -> Tencent）
+    - 快速降级机制（DataSource -> AkShare -> Sina -> Tencent）
     - 超时控制（避免长时间等待）
     - 数据验证（Pydantic）
     - 请求限流（防止被封）
@@ -369,18 +370,33 @@ def get_realtime_quote_optimized(stock_code: str) -> dict:
     try:
         code = normalize_code(stock_code)
         
-        # 1. 尝试AkShare（优化版：优先单只股票接口）
+        # 1. 优先使用 DataSource (Tushare Pro)
+        try:
+            from ..data_source import data_source
+            res = data_source.get_realtime_quote(code)
+            if res:
+                # 数据验证
+                try:
+                    validated = validate_quote(res)
+                    return ok(validated.dict(), cached=False)
+                except ValueError as e:
+                    print(f"Warning: Quote validation failed for {code}: {e}", file=sys.stderr)
+                    return ok(res, cached=False)
+        except Exception as e:
+            print(f"DataSource quote failed for {code}: {e}", file=sys.stderr)
+        
+        # 2. 降级到 AkShare（优化版：优先单只股票接口）
         result = _fetch_quote_from_akshare(code)
         if result:
             return ok(result, cached=False)
         
-        # 2. 快速降级到Sina（超时时间短，响应快）
+        # 3. 快速降级到Sina（超时时间短，响应快）
         print(f"AkShare failed for {code}, trying Sina...", file=sys.stderr)
         result = _fetch_quote_from_sina(code, timeout=3.0)  # 缩短超时时间，快速失败
         if result:
             return ok(result, cached=False)
         
-        # 3. 降级到Tencent
+        # 4. 降级到Tencent
         print(f"Sina failed for {code}, trying Tencent...", file=sys.stderr)
         result = _fetch_quote_from_tencent(code, timeout=3.0)
         if result:
@@ -397,6 +413,22 @@ def get_realtime_quote_optimized(stock_code: str) -> dict:
 # =====================
 
 @cached(ttl=3600, key_prefix="kline")  # 1小时缓存（日线数据变化慢）
+@retry_with_fallback(max_attempts=3, backoff=1.0)
+def _fetch_kline_from_datasource(code: str, period: str, limit: int) -> Optional[List[Dict]]:
+    """
+    从 DataSource 获取K线（优先 Tushare Pro，带缓存和重试）
+    """
+    try:
+        from ..data_source import data_source
+        results = data_source.get_kline(code, period, limit)
+        if results:
+            return results
+    except Exception as e:
+        print(f"DataSource K-line failed for {code}: {e}", file=sys.stderr)
+    return None
+
+
+@cached(ttl=3600, key_prefix="kline_ak")  # 1小时缓存（日线数据变化慢）
 @retry_with_fallback(max_attempts=3, backoff=1.0)
 def _fetch_kline_from_akshare(code: str, period: str, limit: int) -> Optional[List[Dict]]:
     """
@@ -455,6 +487,7 @@ def get_kline_optimized(stock_code: str, period: str = "daily", limit: int = 100
     获取K线数据（优化版）
     
     优化特性：
+    - 优先使用 Tushare Pro / DataSource（日线数据）
     - 1小时进程内缓存（日线数据变化慢）
     - 自动重试（3次，指数退避）
     - 数据验证（Pydantic，跳过无效数据）
@@ -463,7 +496,13 @@ def get_kline_optimized(stock_code: str, period: str = "daily", limit: int = 100
     try:
         code = normalize_code(stock_code)
         
-        # 获取K线数据（带缓存和重试）
+        # 1. 优先使用 DataSource (Tushare Pro) - 仅日线数据
+        if period == "daily":
+            results = _fetch_kline_from_datasource(code, period, limit)
+            if results:
+                return ok(results, cached=False)
+        
+        # 2. 降级到 AkShare（带缓存和重试）
         results = _fetch_kline_from_akshare(code, period, limit)
         
         if results:

@@ -150,8 +150,22 @@ class VectorizedIndicators:
         Returns:
             MACD 值、信号线、柱状图和交易信号
         """
-        if len(data) < slow_period + signal_period:
-            return IndicatorResult(values=np.array([]))
+        # 检查数据量是否足够
+        min_required = slow_period + signal_period
+        if len(data) < min_required:
+            return IndicatorResult(
+                values=np.array([]),
+                signal=None,
+                metadata={
+                    'error': f'数据不足：需要至少{min_required}天，当前{len(data)}天',
+                    'macd': np.array([]),
+                    'signal_line': np.array([]),
+                    'histogram': np.array([]),
+                    'fast_period': fast_period,
+                    'slow_period': slow_period,
+                    'signal_period': signal_period
+                }
+            )
         
         # 计算快慢 EMA
         ema_fast = VectorizedIndicators.ema(data, fast_period)
@@ -160,21 +174,24 @@ class VectorizedIndicators:
         # MACD 线 = 快线 - 慢线
         macd_line = ema_fast - ema_slow
         
-        # 信号线 = MACD 的 EMA
-        macd_valid = macd_line[~np.isnan(macd_line)]
-        signal_line = VectorizedIndicators.ema(macd_valid, signal_period)
+        # 修复：直接对MACD线计算信号线，保持数组长度一致
+        signal_line_full = np.full(len(data), np.nan)
         
-        # 对齐信号线长度
-        signal_aligned = np.full(len(data), np.nan)
-        # 计算有效数据的起始位置
-        valid_macd_start = slow_period - 1
-        valid_signal_start = valid_macd_start + signal_period - 1
-        # 确保长度匹配
-        signal_len = min(len(signal_line), len(data) - valid_signal_start)
-        signal_aligned[valid_signal_start:valid_signal_start + signal_len] = signal_line[:signal_len]
+        # 从slow_period-1开始有有效的MACD值
+        valid_start = slow_period - 1
+        if valid_start + signal_period <= len(data):
+            # 对有效的MACD值计算EMA作为信号线
+            macd_valid = macd_line[valid_start:]
+            # 过滤掉NaN值
+            macd_valid_clean = macd_valid[~np.isnan(macd_valid)]
+            if len(macd_valid_clean) >= signal_period:
+                signal_values = VectorizedIndicators.ema(macd_valid_clean, signal_period)
+                # 将信号线值放回正确的位置
+                signal_start_idx = valid_start + (len(macd_valid) - len(macd_valid_clean))
+                signal_line_full[signal_start_idx:signal_start_idx + len(signal_values)] = signal_values
         
         # 柱状图 = MACD - 信号线
-        histogram = macd_line - signal_aligned
+        histogram = macd_line - signal_line_full
         
         # 生成交易信号（金叉死叉）
         signal = None
@@ -194,7 +211,7 @@ class VectorizedIndicators:
             signal=signal,
             metadata={
                 'macd': macd_line,
-                'signal_line': signal_aligned,
+                'signal_line': signal_line_full,
                 'histogram': histogram,
                 'fast_period': fast_period,
                 'slow_period': slow_period,

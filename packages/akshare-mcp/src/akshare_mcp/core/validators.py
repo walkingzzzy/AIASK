@@ -31,6 +31,17 @@ class StockQuote(BaseModel):
             raise ValueError('价格必须大于0')
         return v
     
+    @validator('volume', pre=True)
+    def convert_volume_to_int(cls, v):
+        """将成交量转换为整数（处理浮点数输入）"""
+        if v is None:
+            return None
+        try:
+            # 如果是浮点数，转换为整数
+            return int(float(v))
+        except (ValueError, TypeError):
+            return None
+    
     @validator('volume')
     def volume_must_be_non_negative(cls, v):
         """成交量不能为负"""
@@ -68,6 +79,17 @@ class KlineData(BaseModel):
         if v is not None and v <= 0:
             raise ValueError('价格必须大于0')
         return v
+    
+    @validator('volume', pre=True)
+    def convert_volume_to_int(cls, v):
+        """将成交量转换为整数（处理浮点数输入）"""
+        if v is None:
+            return None
+        try:
+            # 如果是浮点数，转换为整数
+            return int(float(v))
+        except (ValueError, TypeError):
+            return None
     
     @validator('volume')
     def volume_must_be_non_negative(cls, v):

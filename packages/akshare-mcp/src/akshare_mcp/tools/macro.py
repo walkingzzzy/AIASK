@@ -1,11 +1,12 @@
 import os
-from typing import Any
+from typing import Any, Optional
 
 import akshare as ak
 import pandas as pd
 
 from ..core.cache_manager import cached
 from ..core.rate_limiter import get_limiter
+from ..data_source import data_source
 from ..utils import (
     fail,
     fetch_mofcom_shrzgm_via_curl,
@@ -26,6 +27,92 @@ def _get_social_financing_df() -> pd.DataFrame:
             raise RuntimeError(f"Mofcom TLS 失败且 curl 兜底失败: {curl_exc}") from exc
 
 
+def _try_tushare_macro(indicator: str, limit: int) -> Optional[dict]:
+    pro = data_source.get_tushare_pro()
+    if not pro:
+        return None
+
+    def _format_month(value: Any) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if not text:
+            return ""
+        if len(text) == 6 and text.isdigit():
+            return f"{text[:4]}-{text[4:6]}"
+        return format_period(text)
+
+    try:
+        if indicator == "cpi":
+            df = pro.cpi()
+            if df is None or df.empty:
+                return None
+            records = []
+            for _, row in df.iterrows():
+                period = _format_month(row.get("month") or row.get("period"))
+                value = parse_numeric(row.get("nt_val"))
+                yoy = parse_numeric(row.get("nt_yoy"))
+                mom = parse_numeric(row.get("nt_mom"))
+                if period and value is not None:
+                    records.append({"period": period, "value": value, "yoyChange": yoy, "momChange": mom, "publishDate": period})
+            if not records:
+                return None
+            records = records[-limit:][::-1]
+            return ok({"indicator": indicator, "records": records})
+
+        if indicator == "ppi":
+            df = pro.ppi()
+            if df is None or df.empty:
+                return None
+            records = []
+            for _, row in df.iterrows():
+                period = _format_month(row.get("month") or row.get("period"))
+                value = parse_numeric(row.get("ppi"))
+                yoy = parse_numeric(row.get("ppi_yoy"))
+                mom = parse_numeric(row.get("ppi_mom"))
+                if period and value is not None:
+                    records.append({"period": period, "value": value, "yoyChange": yoy, "momChange": mom, "publishDate": period})
+            if not records:
+                return None
+            records = records[-limit:][::-1]
+            return ok({"indicator": indicator, "records": records})
+
+        if indicator in {"m2", "m2_growth"}:
+            df = pro.money_supply()
+            if df is None or df.empty:
+                return None
+            records = []
+            for _, row in df.iterrows():
+                period = _format_month(row.get("month") or row.get("period"))
+                value = parse_numeric(row.get("m2")) if indicator == "m2" else parse_numeric(row.get("m2_yoy"))
+                mom = parse_numeric(row.get("m2_mom")) if indicator == "m2_growth" else None
+                if period and value is not None:
+                    records.append({"period": period, "value": value, "yoyChange": None if indicator == "m2" else value, "momChange": mom, "publishDate": period})
+            if not records:
+                return None
+            records = records[-limit:][::-1]
+            return ok({"indicator": indicator, "records": records})
+
+        if indicator == "shibor":
+            df = pro.shibor()
+            if df is None or df.empty:
+                return None
+            records = []
+            for _, row in df.iterrows():
+                period = format_period(row.get("date") or row.get("trade_date") or row.get("period"))
+                value = parse_numeric(row.get("on")) or parse_numeric(row.get("overnight"))
+                if period and value is not None:
+                    records.append({"period": period, "value": value, "yoyChange": None, "momChange": None, "publishDate": period})
+            if not records:
+                return None
+            records = records[-limit:][::-1]
+            return ok({"indicator": indicator, "records": records})
+
+    except Exception:
+        return None
+    return None
+
+
 @cached(ttl=3600.0)  # 1小时缓存，宏观数据更新频率低
 def get_macro_indicator(indicator: str, limit: int = 120) -> dict:
     """
@@ -40,6 +127,11 @@ def get_macro_indicator(indicator: str, limit: int = 120) -> dict:
     
     try:
         code = str(indicator or "").strip().lower()
+
+        # 0. Try Tushare Pro first for supported macro indicators
+        ts_result = _try_tushare_macro(code, min(limit, 480))
+        if ts_result and ts_result.get("success"):
+            return ts_result
 
         def _unemployment_df() -> pd.DataFrame:
             df = ak.macro_china_urban_unemployment()

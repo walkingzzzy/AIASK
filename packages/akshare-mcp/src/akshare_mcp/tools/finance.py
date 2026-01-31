@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from ..baostock_api import baostock_client
 from ..cache import cache
 from ..date_utils import get_latest_trading_date
+from ..data_source import data_source
 
 _RETRY_SLEEP_SECONDS = float(os.getenv("AKSHARE_RETRY_SLEEP_SECONDS", "0.5"))
 _FINANCE_RETRY = int(os.getenv("AKSHARE_FINANCE_RETRY", "2"))
@@ -40,6 +41,82 @@ def _call_with_retry(fn: Callable[[], T]) -> T:
         raise last_error
     raise RuntimeError("请求失败")
 
+
+def _get_financials_tushare(code: str) -> Optional[dict]:
+    pro = data_source.get_tushare_pro()
+    if not pro:
+        return None
+
+    ts_code = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=550)).strftime("%Y%m%d")
+
+    try:
+        indicator_df = pro.fina_indicator(ts_code=ts_code, start_date=start_date, end_date=end_date)
+    except Exception as e:
+        print(f"[Finance] Tushare fina_indicator failed: {e}", file=sys.stderr)
+        indicator_df = None
+
+    try:
+        income_df = pro.income(ts_code=ts_code, start_date=start_date, end_date=end_date)
+    except Exception as e:
+        print(f"[Finance] Tushare income failed: {e}", file=sys.stderr)
+        income_df = None
+
+    if (indicator_df is None or indicator_df.empty) and (income_df is None or income_df.empty):
+        return None
+
+    indicator_row = None
+    if indicator_df is not None and not indicator_df.empty:
+        indicator_df = indicator_df.sort_values("end_date")
+        indicator_row = indicator_df.iloc[-1]
+
+    income_row = None
+    if income_df is not None and not income_df.empty:
+        income_df = income_df.sort_values("end_date")
+        income_row = income_df.iloc[-1]
+
+    report_date = None
+    if indicator_row is not None and indicator_row.get("end_date"):
+        report_date = str(indicator_row.get("end_date"))
+    elif income_row is not None and income_row.get("end_date"):
+        report_date = str(income_row.get("end_date"))
+
+    # 获取ROA，如果为空则尝试计算
+    roa_value = parse_numeric(indicator_row.get("roa")) if indicator_row is not None else None
+    
+    # 如果ROA为空，尝试用净利润/总资产计算
+    if roa_value is None and income_row is not None:
+        try:
+            balance_df = pro.balancesheet(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            if balance_df is not None and not balance_df.empty:
+                balance_df = balance_df.sort_values("end_date")
+                balance_row = balance_df.iloc[-1]
+                total_assets = parse_numeric(balance_row.get("total_assets"))
+                net_profit = parse_numeric(income_row.get("n_income"))
+                
+                if total_assets and net_profit and total_assets > 0:
+                    roa_value = (net_profit / total_assets) * 100
+                    print(f"[Finance] Calculated ROA for {code}: {roa_value:.2f}%", file=sys.stderr)
+        except Exception as e:
+            print(f"[Finance] ROA calculation failed: {e}", file=sys.stderr)
+
+    return {
+        "code": code,
+        "reportDate": report_date,
+        "revenue": parse_numeric(income_row.get("total_revenue")) if income_row is not None else None,
+        "netProfit": parse_numeric(income_row.get("n_income")) if income_row is not None else None,
+        "grossProfitMargin": parse_numeric(indicator_row.get("grossprofit_margin")) if indicator_row is not None else None,
+        "netProfitMargin": parse_numeric(indicator_row.get("netprofit_margin")) if indicator_row is not None else None,
+        "roe": parse_numeric(indicator_row.get("roe")) if indicator_row is not None else None,
+        "roa": roa_value,
+        "debtRatio": parse_numeric(indicator_row.get("debt_to_assets")) if indicator_row is not None else None,
+        "currentRatio": parse_numeric(indicator_row.get("current_ratio")) if indicator_row is not None else None,
+        "eps": parse_numeric(indicator_row.get("eps")) if indicator_row is not None else None,
+        "bvps": None,
+        "source": "tushare_pro",
+    }
+
 @cached(ttl=86400.0)  # 24h cache for financial data
 def get_financials(stock_code: str) -> dict:
     """
@@ -58,20 +135,31 @@ def get_financials(stock_code: str) -> dict:
         return ok(cached_data)
 
     # Strategy:
-    # 1. Try AkShare THS (Most recent)
-    # 2. Try AkShare EM (Standard)
-    # 3. Fallback to Baostock (Stable/Offline-like)
+    # 1. Try Tushare Pro (custom/official) - 优先使用
+    # 2. Try AkShare THS (Most recent) - 降级
+    # 3. Try AkShare EM (Standard) - 降级
+    # 4. Fallback to Baostock (Stable/Offline-like) - 最后降级
     
     res = None
      
-    # 1 & 2. Try AkShare
+    # 1. Try Tushare Pro (优先，如果成功则直接返回)
     try:
-        # Optimistic try
-        res = _get_financials_akshare(code)
+        res = _get_financials_tushare(code)
+        if res:
+            # Tushare Pro成功，直接缓存并返回
+            cache.set(f"financials_{code}", res)
+            return ok(res)
     except Exception as e:
-        print(f"AkShare financial fetch failed for {code}: {e}", file=sys.stderr)
+        print(f"Tushare financial fetch failed for {code}: {e}", file=sys.stderr)
 
-    # 3. Fallback to Baostock
+    # 2 & 3. Try AkShare (降级)
+    if not res:
+        try:
+            res = _get_financials_akshare(code)
+        except Exception as e:
+            print(f"AkShare financial fetch failed for {code}: {e}", file=sys.stderr)
+
+    # 4. Fallback to Baostock
     if not res:
         try:
             # Baostock generally works with Quarter/Year, so we get the latest available
@@ -124,20 +212,31 @@ def _get_financials_akshare(code: str) -> Optional[dict]:
 
         row = df.iloc[-1]
         report_date = str(row.get("报告期", ""))
+        
+        # 尝试多个可能的ROA字段名
+        roa = (
+            parse_numeric(row.get("总资产收益率")) or
+            parse_numeric(row.get("总资产报酬率")) or
+            parse_numeric(row.get("ROA")) or
+            parse_numeric(row.get("资产收益率")) or
+            parse_numeric(row.get("总资产净利率"))
+        )
+        
         return {
             "code": code,
             "reportDate": report_date,
             "eps": parse_numeric(row.get("基本每股收益")),
             "bvps": parse_numeric(row.get("每股净资产")),
             "roe": parse_numeric(row.get("净资产收益率")) or parse_numeric(row.get("净资产收益率-摊薄")),
-            "roa": parse_numeric(row.get("总资产收益率")),
+            "roa": roa,
             "grossProfitMargin": parse_numeric(row.get("销售毛利率")),
             "netProfitMargin": parse_numeric(row.get("销售净利率")),
             "debtRatio": parse_numeric(row.get("资产负债率")),
             "currentRatio": parse_numeric(row.get("流动比率")),
             "source": "akshare_ths"
         }
-    except Exception:
+    except Exception as e:
+        print(f"[Finance] AkShare THS failed: {e}", file=sys.stderr)
         return _get_financials_akshare_em(code)
 
 def _get_financials_akshare_em(code: str) -> Optional[dict]:
@@ -156,19 +255,28 @@ def _get_financials_akshare_em(code: str) -> Optional[dict]:
             return None
         return parse_numeric(rows.iloc[0].get(latest_col))
 
+    # 尝试多个可能的ROA指标名称
+    roa = (
+        pick_metric("总资产收益率") or
+        pick_metric("总资产报酬率") or
+        pick_metric("总资产净利率") or
+        pick_metric("资产收益率")
+    )
+
     return {
         "code": code,
         "reportDate": str(latest_col),
         "eps": pick_metric("基本每股收益"),
         "bvps": pick_metric("每股净资产"),
         "roe": pick_metric("净资产收益率"),
-        "roa": pick_metric("总资产收益率"),
+        "roa": roa,
         "grossProfitMargin": pick_metric("销售毛利率"),
         "netProfitMargin": pick_metric("销售净利率"),
         "debtRatio": pick_metric("资产负债率"),
         "currentRatio": pick_metric("流动比率"),
         "source": "akshare_em"
     }
+
 
 @cached(ttl=86400.0)  # 24h cache for stock info
 def get_stock_info(stock_code: str) -> dict:
@@ -185,6 +293,36 @@ def get_stock_info(stock_code: str) -> dict:
     try:
         code = normalize_code(stock_code)
         df = None
+
+        # 1. Try Tushare Pro
+        try:
+            pro = data_source.get_tushare_pro()
+            if pro:
+                ts_code = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
+                df = pro.stock_basic(
+                    ts_code=ts_code,
+                    list_status="L",
+                    fields="ts_code,symbol,name,market,industry,list_date",
+                )
+        except Exception:
+            df = None
+
+        if df is not None and not df.empty:
+            row = df.iloc[0]
+            return ok(
+                {
+                    "code": code,
+                    "name": str(row.get("name") or ""),
+                    "industry": str(row.get("industry") or ""),
+                    "listDate": str(row.get("list_date") or ""),
+                    "totalShares": "",
+                    "floatShares": "",
+                    "totalMarketCap": "",
+                    "floatMarketCap": "",
+                    "raw": {k: str(row.get(k, "")) for k in df.columns},
+                }
+            )
+
         try:
             df = _call_with_retry(lambda: ak.stock_individual_info_em(symbol=code))
         except Exception:

@@ -3,7 +3,8 @@
 from typing import Optional, Dict, Any, List
 from ..services import backtest_engine
 from ..storage import get_db
-from ..utils import ok, fail
+from ..utils import ok, fail, normalize_code, parse_date_input
+from .market import get_kline_data
 
 # 检查Ray是否可用
 RAY_AVAILABLE = False
@@ -16,6 +17,65 @@ except ImportError:
 
 def register(mcp):
     """注册回测工具"""
+
+    def _normalize_dates(
+        start_date: Optional[str], end_date: Optional[str]
+    ) -> tuple[Optional[str], Optional[str]]:
+        sd = start_date
+        ed = end_date
+        if sd and len(sd) == 4:
+            sd = f"{sd}-01-01"
+        if ed and len(ed) == 4:
+            ed = f"{ed}-12-31"
+        return sd, ed
+
+    def _estimate_limit(
+        start_date: Optional[str], end_date: Optional[str], default: int = 300
+    ) -> int:
+        start = parse_date_input(start_date) if start_date else None
+        end = parse_date_input(end_date) if end_date else None
+        if start and end:
+            days = abs((end - start).days) + 1
+            return min(max(days, 50), 1000)
+        return default
+
+    def _normalize_klines(klines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        cleaned: List[Dict[str, Any]] = []
+        for row in klines or []:
+            if not isinstance(row, dict):
+                continue
+            if row.get("close") is None:
+                continue
+            date_val = row.get("date") or row.get("time")
+            if date_val is not None:
+                row = {**row, "date": str(date_val)[:10]}
+            cleaned.append(row)
+        cleaned.sort(key=lambda x: str(x.get("date") or x.get("time") or ""))
+        return cleaned
+
+    async def _fetch_klines(
+        db, code: str, start_date: Optional[str], end_date: Optional[str]
+    ) -> tuple[List[Dict[str, Any]], str]:
+        klines = await db.get_klines(code, start_date, end_date)
+        normalized = _normalize_klines(klines)
+        if normalized:
+            return normalized, "timescaledb"
+
+        limit = _estimate_limit(start_date, end_date)
+        fallback = get_kline_data(
+            code=code,
+            period="daily",
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            adjust="qfq",
+        )
+        if fallback.get("success"):
+            fallback_klines = _normalize_klines(fallback.get("data") or [])
+            if fallback_klines:
+                return fallback_klines, "market_fallback"
+
+        return [], "none"
     
     @mcp.tool()
     async def run_simple_backtest(
@@ -43,15 +103,14 @@ def register(mcp):
         """
         try:
             db = get_db()
-            
+
+            code = normalize_code(code)
+
             # 日期格式处理：支持 YYYY 或 YYYY-MM-DD
-            if start_date and len(start_date) == 4:
-                start_date = f"{start_date}-01-01"
-            if end_date and len(end_date) == 4:
-                end_date = f"{end_date}-12-31"
-            
-            klines = await db.get_klines(code, start_date, end_date)
-            
+            start_date, end_date = _normalize_dates(start_date, end_date)
+
+            klines, _ = await _fetch_klines(db, code, start_date, end_date)
+
             if not klines:
                 return fail('No kline data found')
             
@@ -105,19 +164,17 @@ def register(mcp):
         try:
             import time
             start_time = time.time()
-            
+
             db = get_db()
-            
+
             # 日期格式处理：支持 YYYY 或 YYYY-MM-DD
-            if start_date and len(start_date) == 4:
-                start_date = f"{start_date}-01-01"
-            if end_date and len(end_date) == 4:
-                end_date = f"{end_date}-12-31"
-            
+            start_date, end_date = _normalize_dates(start_date, end_date)
+
             # 批量获取K线数据
             klines_dict = {}
-            for code in codes:
-                klines = await db.get_klines(code, start_date, end_date)
+            normalized_codes = [normalize_code(c) for c in (codes or [])]
+            for code in normalized_codes:
+                klines, _ = await _fetch_klines(db, code, start_date, end_date)
                 if klines:
                     klines_dict[code] = klines
             
