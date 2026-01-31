@@ -14,7 +14,7 @@ def register(mcp):
         code: str,
         indicators: List[str],
         period: str = 'daily',
-        limit: int = 100
+        limit: int = 250
     ):
         """
         计算技术指标
@@ -23,7 +23,7 @@ def register(mcp):
             code: 股票代码
             indicators: 指标列表 ['MA', 'EMA', 'RSI', 'MACD', 'KDJ', 'BOLL', 'ATR']
             period: K线周期
-            limit: K线数量
+            limit: K线数量 (默认250，确保MACD等指标有足够数据)
         """
         try:
             db = get_db()
@@ -31,6 +31,10 @@ def register(mcp):
             
             if not klines:
                 return fail('No kline data found')
+            
+            # 检查MACD所需的最小数据量
+            if 'MACD' in indicators and len(klines) < 35:
+                return fail(f'MACD需要至少35天数据，当前只有{len(klines)}天。请增加limit参数或检查数据源。')
             
             results = technical_analysis.calculate_all_indicators(klines, indicators)
             

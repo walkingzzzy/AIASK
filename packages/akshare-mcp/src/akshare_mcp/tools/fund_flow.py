@@ -3,6 +3,7 @@ import sys
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
@@ -20,6 +21,7 @@ from ..utils import (
     safe_float,
     parse_date_input,
 )
+from ..data_source import data_source
 
 # Import optimization modules
 from ..core.cache_manager import cached
@@ -37,6 +39,108 @@ _HKEX_DAILY_STAT_URL = os.getenv(
     "https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_{date}e.js",
 )
 _RETRY_SLEEP_SECONDS = float(os.getenv("AKSHARE_RETRY_SLEEP_SECONDS", "1.0"))
+_SECTOR_FLOW_TIMEOUT_SECONDS = float(os.getenv("AKSHARE_SECTOR_FLOW_TIMEOUT_SECONDS", "20"))
+_SECTOR_FLOW_INDICATORS = [
+    s.strip()
+    for s in os.getenv("AKSHARE_SECTOR_FLOW_INDICATORS", "今日,3日,5日").split(",")
+    if s.strip()
+]
+_SECTOR_FLOW_CACHE_MAX_AGE = int(os.getenv("AKSHARE_SECTOR_FLOW_CACHE_MAX_AGE", "3600"))
+_SECTOR_FLOW_DISABLE_PROXY_ON_FAIL = os.getenv("AKSHARE_SECTOR_FLOW_DISABLE_PROXY_ON_FAIL", "1").lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+}
+_SECTOR_FLOW_CACHE_PATH = os.getenv(
+    "AKSHARE_SECTOR_FLOW_CACHE_PATH",
+    os.path.join(os.getcwd(), ".mcp_cache", "sector_fund_flow.json"),
+)
+
+_sector_flow_cache: dict[str, Any] = {"data": None, "ts": 0.0}
+
+
+def _run_with_timeout(fn, timeout: float):
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            future.cancel()
+            raise TimeoutError(f"AKShare sector fund flow timeout >{timeout}s")
+
+
+def _get_env_proxy() -> dict[str, str]:
+    proxy = {}
+    http_proxy = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
+    https_proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+    if http_proxy:
+        proxy["http"] = http_proxy
+    if https_proxy:
+        proxy["https"] = https_proxy
+    return proxy
+
+
+def _load_sector_flow_cache_file() -> Optional[list[dict]]:
+    try:
+        if not _SECTOR_FLOW_CACHE_PATH:
+            return None
+        if not os.path.exists(_SECTOR_FLOW_CACHE_PATH):
+            return None
+        with open(_SECTOR_FLOW_CACHE_PATH, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return None
+        ts = float(payload.get("ts", 0.0))
+        data = payload.get("data")
+        if not data or not isinstance(data, list):
+            return None
+        if _SECTOR_FLOW_CACHE_MAX_AGE > 0 and (time.time() - ts) > _SECTOR_FLOW_CACHE_MAX_AGE:
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def _save_sector_flow_cache_file(data: list[dict]) -> None:
+    try:
+        if not _SECTOR_FLOW_CACHE_PATH:
+            return
+        folder = os.path.dirname(_SECTOR_FLOW_CACHE_PATH)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        payload = {"ts": time.time(), "data": data}
+        with open(_SECTOR_FLOW_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+    except Exception:
+        return
+
+
+class _ProxyBypass:
+    def __enter__(self):
+        self._backup = {
+            "HTTP_PROXY": os.getenv("HTTP_PROXY"),
+            "HTTPS_PROXY": os.getenv("HTTPS_PROXY"),
+            "http_proxy": os.getenv("http_proxy"),
+            "https_proxy": os.getenv("https_proxy"),
+            "NO_PROXY": os.getenv("NO_PROXY"),
+            "no_proxy": os.getenv("no_proxy"),
+        }
+        os.environ["NO_PROXY"] = "*"
+        os.environ["no_proxy"] = "*"
+        os.environ.pop("HTTP_PROXY", None)
+        os.environ.pop("HTTPS_PROXY", None)
+        os.environ.pop("http_proxy", None)
+        os.environ.pop("https_proxy", None)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        for key, value in self._backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        return False
 
 
 def _parse_date(value: Any) -> Optional[date]:
@@ -72,9 +176,17 @@ def _fetch_eastmoney_datacenter(params: dict[str, Any]) -> list[dict]:
         "Referer": "https://data.eastmoney.com/",
     }
     try:
-        resp = requests.get(url, params=params, headers=headers, timeout=15)
+        proxies = _get_env_proxy() or None
+        resp = requests.get(url, params=params, headers=headers, timeout=15, proxies=proxies)
         payload = resp.json() if resp.status_code == 200 else {}
         return payload.get("result", {}).get("data", []) or []
+    except requests.exceptions.ProxyError:
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=15)
+            payload = resp.json() if resp.status_code == 200 else {}
+            return payload.get("result", {}).get("data", []) or []
+        except Exception:
+            return []
     except Exception:
         return []
 
@@ -171,15 +283,10 @@ def _get_anchor_date() -> date:
 
 
 def _north_fund_from_tushare(days: int) -> list[dict]:
-    token = os.getenv("TUSHARE_TOKEN")
-    if not token:
-        return []
     try:
-        import tushare as ts  # type: ignore
-    except Exception:
-        return []
-    try:
-        pro = ts.pro_api(token)
+        pro = data_source.get_tushare_pro()
+        if not pro:
+            return []
         anchor = _get_anchor_date()
         end_date = anchor.strftime("%Y%m%d")
         start_date = (anchor - timedelta(days=days * 3)).strftime("%Y%m%d")
@@ -589,26 +696,72 @@ def get_sector_fund_flow(top_n: int = 20) -> dict:
         top_n = int(top_n)
         df = None
         last_error: Optional[Exception] = None
-        
+
         # 增加重试次数
         max_retries = 3
-        for i in range(max_retries):
-            try:
-                # 东方财富行业资金流向
-                df = ak.stock_sector_fund_flow_rank(indicator="今日")
-                if df is not None and not df.empty:
-                    break
-            except Exception as exc:
-                last_error = exc
-                if i < max_retries - 1:
-                    time.sleep(1.0) # wait 1s before retry
-        
+        indicators = _SECTOR_FLOW_INDICATORS or ["今日"]
+        for _ in range(max_retries):
+            for indicator in indicators:
+                try:
+                    df = _run_with_timeout(
+                        lambda: ak.stock_sector_fund_flow_rank(indicator=indicator),
+                        _SECTOR_FLOW_TIMEOUT_SECONDS,
+                    )
+                    if df is not None and not df.empty:
+                        break
+                except Exception as exc:
+                    last_error = exc
+                    df = None
+                    if _RETRY_SLEEP_SECONDS > 0:
+                        time.sleep(_RETRY_SLEEP_SECONDS)
+            if df is not None and not df.empty:
+                break
+
+        # 代理失败降级：再次尝试禁用代理
+        if (df is None or df.empty) and _SECTOR_FLOW_DISABLE_PROXY_ON_FAIL:
+            if isinstance(last_error, requests.exceptions.ProxyError) or (
+                last_error and "proxy" in str(last_error).lower()
+            ):
+                with _ProxyBypass():
+                    for indicator in indicators:
+                        try:
+                            df = _run_with_timeout(
+                                lambda: ak.stock_sector_fund_flow_rank(indicator=indicator),
+                                _SECTOR_FLOW_TIMEOUT_SECONDS,
+                            )
+                            if df is not None and not df.empty:
+                                break
+                        except Exception as exc:
+                            last_error = exc
+                            df = None
+
         if df is None or df.empty:
-            # Fallback
+            # Fallback: Eastmoney (proxy-aware)
             fallback = _fetch_sector_flow_eastmoney(top_n)
             if fallback:
+                _sector_flow_cache["data"] = fallback
+                _sector_flow_cache["ts"] = time.time()
+                _save_sector_flow_cache_file(fallback)
                 return ok(fallback)
-            
+
+            # Local cache: return stale data if available
+            cached_data = _sector_flow_cache.get("data")
+            cached_ts = _sector_flow_cache.get("ts", 0.0)
+            if cached_data and (time.time() - float(cached_ts)) <= _SECTOR_FLOW_CACHE_MAX_AGE:
+                return ok(cached_data, cached=True)
+
+            file_cached = _load_sector_flow_cache_file()
+            if file_cached:
+                return ok(file_cached, cached=True)
+
+            # Soft fallback: reuse concept fund flow as last resort
+            try:
+                concept = get_concept_fund_flow(top_n=top_n)
+            except Exception as exc:
+                concept = fail(exc)
+            if concept.get("success") and concept.get("data"):
+                return ok(concept["data"], cached=True)
+
             msg = str(last_error) if last_error else "接口返回为空"
             return fail(f"未获取到行业板块资金流向数据 (Retried {max_retries} times): {msg}")
 
@@ -627,27 +780,41 @@ def get_sector_fund_flow(top_n: int = 20) -> dict:
                     "smallNetInflow": safe_float(row.get("小单净流入-净额")),
                 }
             )
+        _sector_flow_cache["data"] = results
+        _sector_flow_cache["ts"] = time.time()
+        _save_sector_flow_cache_file(results)
         return ok(results)
     except Exception as e:
+        # Local cache: return stale data if available
+        cached_data = _sector_flow_cache.get("data")
+        cached_ts = _sector_flow_cache.get("ts", 0.0)
+        if cached_data and (time.time() - float(cached_ts)) <= _SECTOR_FLOW_CACHE_MAX_AGE:
+            return ok(cached_data, cached=True)
+        file_cached = _load_sector_flow_cache_file()
+        if file_cached:
+            return ok(file_cached, cached=True)
         return fail(f"系统错误: {e}")
 
 
 def _fetch_sector_flow_eastmoney(top_n: int) -> list[dict]:
     try:
         url = "https://push2.eastmoney.com/api/qt/clist/get"
+        params = {
+            "pn": 1,
+            "pz": top_n,
+            "po": 1,
+            "np": 1,
+            "fltt": 2,
+            "invt": 2,
+            "fs": "m:90+t:2",
+            "fields": "f12,f14,f3,f62,f66,f184",
+        }
+        proxies = _get_env_proxy() or None
         response = requests.get(
             url,
-            params={
-                "pn": 1,
-                "pz": top_n,
-                "po": 1,
-                "np": 1,
-                "fltt": 2,
-                "invt": 2,
-                "fs": "m:90+t:2",
-                "fields": "f12,f14,f3,f62,f66,f184",
-            },
+            params=params,
             timeout=6,
+            proxies=proxies,
         )
         if response.status_code != 200:
             return []
@@ -674,6 +841,36 @@ def _fetch_sector_flow_eastmoney(top_n: int) -> list[dict]:
                 }
             )
         return results
+    except requests.exceptions.ProxyError:
+        try:
+            response = requests.get(url, params=params, timeout=6)
+            if response.status_code != 200:
+                return []
+            payload = response.json()
+            items = payload.get("data", {}).get("diff", []) if isinstance(payload, dict) else []
+            results: list[dict] = []
+            for item in items:
+                change_raw = parse_numeric(item.get("f3"))
+                main_in = parse_numeric(item.get("f62"))
+                main_out = parse_numeric(item.get("f66"))
+                net_inflow = None
+                if main_in is not None and main_out is not None:
+                    net_inflow = main_in - main_out
+                results.append(
+                    {
+                        "name": str(item.get("f14") or ""),
+                        "changePercent": change_raw / 100 if change_raw is not None else None,
+                        "mainNetInflow": net_inflow if net_inflow is not None else main_in,
+                        "mainNetInflowPercent": parse_numeric(item.get("f184")),
+                        "superLargeNetInflow": None,
+                        "largeNetInflow": None,
+                        "mediumNetInflow": None,
+                        "smallNetInflow": None,
+                    }
+                )
+            return results
+        except Exception:
+            return []
     except Exception:
         return []
 

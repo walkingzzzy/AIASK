@@ -7,6 +7,7 @@ import akshare as ak
 
 from ..core.cache_manager import cached
 from ..core.rate_limiter import get_limiter
+from ..data_source import data_source
 from ..utils import (
     fail,
     format_period,
@@ -20,12 +21,92 @@ from ..utils import (
 
 _RETRY_SLEEP_SECONDS = float(os.getenv("AKSHARE_RETRY_SLEEP_SECONDS", "0.5"))
 
+def _to_ymd(value: Any) -> str:
+    text = format_period(value)
+    return text.replace("-", "") if text else ""
+
+
+def _map_tushare_ann_rows(rows: list[dict]) -> list[dict]:
+    results: list[dict] = []
+    for row in rows:
+        title = row.get("ann_title") or row.get("title") or row.get("公告标题")
+        time_val = row.get("ann_date") or row.get("f_ann_date") or row.get("date")
+        url = row.get("ann_url") or row.get("url")
+        if not title and not url:
+            continue
+        results.append(
+            {
+                "title": str(title or ""),
+                "time": format_period(time_val),
+                "source": "tushare",
+                "url": str(url or ""),
+                "date": format_period(time_val),
+            }
+        )
+    return results
+
+
+def _try_tushare_anns(start_date: str, end_date: str, stock_code: str, limit: int) -> list[dict]:
+    pro = data_source.get_tushare_pro()
+    if not pro:
+        return []
+    try:
+        ts_code = ""
+        if stock_code:
+            code = normalize_code(stock_code)
+            ts_code = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
+        df = pro.anns(
+            ts_code=ts_code,
+            start_date=_to_ymd(start_date),
+            end_date=_to_ymd(end_date),
+        )
+        if df is None or df.empty:
+            return []
+        rows = df.head(limit).fillna("").to_dict(orient="records")
+        return _map_tushare_ann_rows(rows)
+    except Exception:
+        return []
+
+
+def _try_tushare_news(start_date: str, end_date: str, limit: int) -> list[dict]:
+    pro = data_source.get_tushare_pro()
+    if not pro:
+        return []
+    try:
+        df = pro.news(
+            start_date=_to_ymd(start_date),
+            end_date=_to_ymd(end_date),
+            src="sina",
+        )
+        if df is None or df.empty:
+            return []
+        rows = df.head(limit).fillna("").to_dict(orient="records")
+        results: list[dict] = []
+        for row in rows:
+            title = row.get("title") or row.get("新闻标题")
+            time_val = row.get("datetime") or row.get("date") or row.get("time")
+            url = row.get("url")
+            if not title and not url:
+                continue
+            results.append(
+                {
+                    "title": str(title or ""),
+                    "time": format_period(time_val),
+                    "source": str(row.get("src") or "tushare"),
+                    "url": str(url or ""),
+                    "date": format_period(time_val),
+                }
+            )
+        return results
+    except Exception:
+        return []
+
 
 def _map_news_rows(rows: list[dict]) -> list[dict]:
     results: list[dict] = []
     for row in rows:
         title = pick_value(row, ["title", "标题", "新闻标题", "公告标题"])
-        time_val = pick_value(row, ["time", "发布时间", "公告日期", "日期", "发布时间"])
+        time_val = pick_value(row, ["time", "发布时间", "公告日期", "日期", "date", "发布时间"])
         source = pick_value(row, ["source", "来源", "来源网站", "媒体名称"])
         url = pick_value(row, ["url", "链接", "网址", "新闻链接"])
         if not title and not url:
@@ -36,6 +117,29 @@ def _map_news_rows(rows: list[dict]) -> list[dict]:
                 "time": format_period(time_val),
                 "source": str(source or ""),
                 "url": str(url or ""),
+                "date": format_period(time_val),
+            }
+        )
+    return results
+
+
+def _map_research_rows(rows: list[dict]) -> list[dict]:
+    results: list[dict] = []
+    for row in rows:
+        title = pick_value(row, ["title", "报告名称", "标题", "研报标题"])
+        institution = pick_value(row, ["institution", "机构名称", "机构", "研究机构", "发布机构"])
+        author = pick_value(row, ["author", "作者", "研究员", "分析师"])
+        time_val = pick_value(row, ["date", "发布日期", "日期", "发布时间"])
+        url = pick_value(row, ["url", "链接", "网址", "报告链接"])
+        if not title and not institution:
+            continue
+        results.append(
+            {
+                "title": str(title or ""),
+                "time": format_period(time_val),
+                "source": str(institution or author or ""),
+                "url": str(url or ""),
+                "date": format_period(time_val),
             }
         )
     return results
@@ -129,8 +233,26 @@ def get_stock_notices(
         events: list[dict[str, Any]] = []
         max_seconds = int(os.getenv("AKSHARE_NOTICE_MAX_SECONDS", "20"))
         max_retry = int(os.getenv("AKSHARE_NOTICE_RETRY", "2"))
+        max_items = int(os.getenv("AKSHARE_NOTICE_MAX_ITEMS", "500"))
         start_ts = time.monotonic()
         partial = False
+
+        # 0. Try Tushare Pro announcements first
+        try:
+            tushare_items = _try_tushare_anns(start.isoformat(), end.isoformat(), code_filter, max_items)
+            if tushare_items:
+                return ok(
+                    {
+                        "startDate": start.isoformat(),
+                        "endDate": end.isoformat(),
+                        "types": normalized_types,
+                        "events": tushare_items,
+                        "truncated": len(tushare_items) > max_items,
+                        "partial": False,
+                    }
+                )
+        except Exception:
+            pass
 
         current = start
         while current <= end:
@@ -173,7 +295,6 @@ def get_stock_notices(
             current += timedelta(days=1)
 
         events = sorted(events, key=lambda x: str(x.get("date") or ""), reverse=True)
-        max_items = int(os.getenv("AKSHARE_NOTICE_MAX_ITEMS", "500"))
         truncated = len(events) > max_items
         if truncated:
             events = events[:max_items]
@@ -344,15 +465,33 @@ def get_analyst_ranking(year: str = "") -> dict:
         
         analysts = []
         for _, row in df.head(50).iterrows():
-            analysts.append({
-                "rank": safe_int(row.get("排名", row.get("序号"))),
-                "name": str(row.get("分析师", row.get("姓名", ""))).strip(),
-                "institution": str(row.get("所属机构", row.get("机构", ""))).strip(),
-                "industry": str(row.get("所属行业", row.get("行业", ""))).strip(),
-                "score": safe_float(row.get("综合得分", row.get("得分"))),
-                "winRate": safe_float(row.get("胜率")),
-            })
-        
+            name = str(
+                pick_value(row, ["分析师", "姓名", "研究员", "作者", "分析师姓名"]) or ""
+            ).strip()
+            institution = str(
+                pick_value(row, ["所属机构", "机构", "机构名称", "所在机构"]) or ""
+            ).strip()
+            industry = str(
+                pick_value(row, ["所属行业", "行业", "研究领域", "行业名称"]) or ""
+            ).strip()
+            rank = safe_int(pick_value(row, ["排名", "序号", "名次", "排行"]))
+            score = safe_float(pick_value(row, ["综合得分", "得分", "评分", "总评分"]))
+            win_rate = safe_float(pick_value(row, ["胜率", "准确率", "命中率"]))
+
+            if not name and not institution:
+                continue
+
+            analysts.append(
+                {
+                    "rank": rank,
+                    "name": name,
+                    "institution": institution,
+                    "industry": industry,
+                    "score": score,
+                    "winRate": win_rate,
+                }
+            )
+
         return ok({
             "year": year,
             "analysts": analysts,
@@ -444,7 +583,7 @@ def get_profit_forecast(symbol: str = "") -> dict:
 @cached(ttl=1800.0)  # 30分钟缓存
 def get_stock_news(stock_code: str, limit: int = 20) -> dict:
     """
-    获取个股新闻列表（优先使用 AkShare 内置接口，失败则回退公告）
+    获取个股新闻列表（优先使用 AkShare 内置接口，失败则回退公告/研报）
     """
     limiter = get_limiter("news", rate=3.0)
     limiter.acquire()
@@ -453,11 +592,18 @@ def get_stock_news(stock_code: str, limit: int = 20) -> dict:
         code = normalize_code(stock_code)
         limit = int(limit) if int(limit or 0) > 0 else 20
 
+        # 0. Try Tushare announcements as news
+        end_date = date.today()
+        start_date = end_date - timedelta(days=30)
+        items = _try_tushare_anns(start_date.isoformat(), end_date.isoformat(), code, limit)
+        if items:
+            return ok(items[:limit])
+
         items = _try_akshare_news_functions(code, limit)
         if items:
             return ok(items[:limit])
 
-        # 回退：使用公告数据充当新闻
+        # 回退1：使用公告数据充当新闻
         end_date = date.today()
         start_date = end_date - timedelta(days=30)
         fallback = get_stock_notices(
@@ -469,6 +615,21 @@ def get_stock_news(stock_code: str, limit: int = 20) -> dict:
         if fallback.get("success") and fallback.get("data"):
             events = fallback["data"].get("events", [])
             mapped = _map_news_rows(events)
+            if mapped:
+                return ok(mapped[:limit])
+
+        # 回退2：使用研报数据充当新闻
+        research = get_stock_research(code, limit=max(limit, 10))
+        if research.get("success") and research.get("data"):
+            reports = research["data"].get("reports", [])
+            mapped = _map_research_rows(reports)
+            if mapped:
+                return ok(mapped[:limit])
+
+        # 回退3：使用研报通用接口（可能返回更广泛研报）
+        reports = get_research_reports(code, limit=max(limit, 10))
+        if reports.get("success") and reports.get("data"):
+            mapped = _map_research_rows(reports["data"] if isinstance(reports["data"], list) else [])
             if mapped:
                 return ok(mapped[:limit])
 
@@ -487,9 +648,28 @@ def get_market_news(limit: int = 20) -> dict:
 
     try:
         limit = int(limit) if int(limit or 0) > 0 else 20
+        end_date = date.today()
+        start_date = end_date - timedelta(days=7)
+        items = _try_tushare_news(start_date.isoformat(), end_date.isoformat(), limit)
+        if items:
+            return ok(items[:limit])
+
         items = _try_akshare_news_functions("", limit)
         if items:
             return ok(items[:limit])
+
+        fallback = get_stock_notices(
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            types=["全部"],
+            stock_code="",
+        )
+        if fallback.get("success") and fallback.get("data"):
+            events = fallback["data"].get("events", [])
+            mapped = _map_news_rows(events)
+            if mapped:
+                return ok(mapped[:limit])
+
         return fail("市场新闻暂不可用")
     except Exception as e:
         return fail(e)

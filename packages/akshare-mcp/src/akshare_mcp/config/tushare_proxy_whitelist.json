@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-01-30 22:30:08",
+  "http_url": "http://lianghua.nanyangqiankun.top",
+  "supported": [
+    "stock_basic",
+    "trade_cal",
+    "daily",
+    "weekly",
+    "monthly",
+    "daily_basic",
+    "adj_factor",
+    "moneyflow",
+    "stk_limit",
+    "suspend",
+    "top_list",
+    "moneyflow_hsgt",
+    "index_basic",
+    "index_daily",
+    "index_classify",
+    "fund_basic",
+    "fund_daily",
+    "fund_nav",
+    "fund_manager",
+    "fund_company",
+    "fund_portfolio",
+    "fina_indicator",
+    "income",
+    "balancesheet",
+    "cashflow",
+    "cb_basic",
+    "hk_basic",
+    "us_basic",
+    "fut_basic",
+    "shibor"
+  ],
+  "empty": [
+    "namechange",
+    "stk_holdernumber",
+    "margin",
+    "index_weight",
+    "index_member",
+    "dividend",
+    "cb_daily",
+    "fut_daily"
+  ],
+  "no_permission": [
+    "news",
+    "hk_daily",
+    "us_daily"
+  ],
+  "not_supported": [
+    "anns",
+    "bond_basic",
+    "bond_daily",
+    "fut_weekly",
+    "fut_monthly",
+    "cpi",
+    "ppi",
+    "money_supply"
+  ]
+}
