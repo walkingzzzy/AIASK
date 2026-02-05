@@ -48,23 +48,15 @@ def _search_stocks_tushare_fallback(keyword: str, limit: int) -> list:
 
 
 def _iter_registered_tools(mcp):
-    # Try common FastMCP internal registries across versions.
-    for attr in ("_tools", "tools"):
-        obj = getattr(mcp, attr, None)
-        if isinstance(obj, dict):
-            return list(obj.items())
-    registry = getattr(mcp, "_tool_registry", None) or getattr(mcp, "tool_registry", None)
-    if registry is not None:
-        for attr in ("_tools", "tools"):
-            obj = getattr(registry, attr, None)
-            if isinstance(obj, dict):
-                return list(obj.items())
-        list_fn = getattr(registry, "list_tools", None)
-        if callable(list_fn):
-            try:
-                return [(t.name, t) for t in list_fn()]
-            except Exception:
-                return []
+    """获取已注册的工具列表 - 兼容 FastMCP"""
+    # FastMCP 使用 _tool_manager._tools 存储工具
+    tool_manager = getattr(mcp, '_tool_manager', None)
+    if tool_manager:
+        tools_dict = getattr(tool_manager, '_tools', None)
+        if isinstance(tools_dict, dict):
+            return list(tools_dict.items())
+    
+    # 兜底：返回空列表
     return []
 
 
@@ -125,9 +117,14 @@ def register(mcp):
         for name, tool in _iter_registered_tools(mcp):
             if not name:
                 continue
-            desc = getattr(tool, "description", None) or getattr(tool, "summary", None)
+            # FastMCP Tool 对象有 description 属性
+            desc = getattr(tool, "description", None)
             if not desc:
-                desc = getattr(tool, "__doc__", None)
+                # 兜底：尝试从原始函数获取
+                fn = getattr(tool, "fn", None)
+                if fn:
+                    desc = getattr(fn, "__doc__", None)
+            
             tools.append({
                 'name': str(name),
                 'category': getattr(tool, "category", None),
