@@ -2,7 +2,70 @@
 
 from typing import Optional
 from ..storage import get_db
-from ..utils import ok, fail
+from ..utils import ok, fail, normalize_code
+from ..data_source import data_source
+
+
+def _search_stocks_tushare_fallback(keyword: str, limit: int) -> list:
+    """DB 无数据时用 Tushare Pro 股票列表按名称/代码筛选"""
+    pro = data_source.get_tushare_pro()
+    if not pro:
+        return []
+    keyword_stripped = keyword.strip()
+    if not keyword_stripped:
+        return []
+    keyword_lower = keyword_stripped.lower()
+    try:
+        df = pro.stock_basic(
+            exchange="",
+            list_status="L",
+            fields="ts_code,symbol,name,industry",
+        )
+    except Exception:
+        return []
+    if df is None or df.empty:
+        return []
+    results = []
+    for _, row in df.iterrows():
+        ts_code = str(row.get("ts_code", "") or "")
+        symbol = str(row.get("symbol", "") or "")
+        name = str(row.get("name", "") or "")
+        industry = str(row.get("industry", "") or "")
+        if (
+            keyword_lower in ts_code.lower()
+            or keyword_lower in symbol.lower()
+            or keyword_lower in name
+        ):
+            results.append({
+                "code": normalize_code(symbol) if symbol else ts_code,
+                "name": name,
+                "industry": industry or None,
+                "market_cap": None,
+            })
+            if len(results) >= limit:
+                break
+    return results
+
+
+def _iter_registered_tools(mcp):
+    # Try common FastMCP internal registries across versions.
+    for attr in ("_tools", "tools"):
+        obj = getattr(mcp, attr, None)
+        if isinstance(obj, dict):
+            return list(obj.items())
+    registry = getattr(mcp, "_tool_registry", None) or getattr(mcp, "tool_registry", None)
+    if registry is not None:
+        for attr in ("_tools", "tools"):
+            obj = getattr(registry, attr, None)
+            if isinstance(obj, dict):
+                return list(obj.items())
+        list_fn = getattr(registry, "list_tools", None)
+        if callable(list_fn):
+            try:
+                return [(t.name, t) for t in list_fn()]
+            except Exception:
+                return []
+    return []
 
 
 def register(mcp):
@@ -17,13 +80,13 @@ def register(mcp):
         搜索股票
         
         Args:
-            keyword: 关键词（代码或名称）
+            keyword: 关键词（代码或名称，支持中文）
             limit: 返回数量
         """
         try:
             db = get_db()
+            results = []
             
-            # 直接查询数据库，使用正确的字段名
             async with db.acquire() as conn:
                 rows = await conn.fetch(
                     """SELECT stock_code, stock_name, industry, market_cap
@@ -33,7 +96,6 @@ def register(mcp):
                        LIMIT $3""",
                     f'%{keyword}%', f'%{keyword}%', limit
                 )
-                
                 results = [
                     {
                         'code': row['stock_code'],
@@ -43,6 +105,9 @@ def register(mcp):
                     }
                     for row in rows
                 ]
+            
+            if not results:
+                results = _search_stocks_tushare_fallback(keyword, limit)
             
             return ok({
                 'keyword': keyword,
@@ -55,27 +120,23 @@ def register(mcp):
     
     @mcp.tool()
     def available_tools():
-        """获取可用工具列表"""
-        tools = [
-            {'name': 'get_realtime_quote', 'category': 'market', 'description': '获取实时行情'},
-            {'name': 'get_batch_quotes', 'category': 'market', 'description': '批量获取行情'},
-            {'name': 'get_kline_data', 'category': 'market', 'description': '获取K线数据'},
-            {'name': 'search_stocks', 'category': 'market', 'description': '搜索股票'},
-            {'name': 'get_stock_info', 'category': 'market', 'description': '获取股票信息'},
-            {'name': 'get_financials', 'category': 'finance', 'description': '获取财务数据'},
-            {'name': 'get_valuation_metrics', 'category': 'valuation', 'description': '获取估值指标'},
-            {'name': 'dcf_valuation', 'category': 'valuation', 'description': 'DCF估值'},
-            {'name': 'calculate_technical_indicators', 'category': 'technical', 'description': '计算技术指标'},
-            {'name': 'check_candlestick_patterns', 'category': 'technical', 'description': '检测K线形态'},
-            {'name': 'run_simple_backtest', 'category': 'backtest', 'description': '运行回测'},
-            {'name': 'optimize_portfolio', 'category': 'portfolio', 'description': '组合优化'},
-            {'name': 'analyze_portfolio_risk', 'category': 'portfolio', 'description': '风险分析'},
-            {'name': 'should_i_buy', 'category': 'decision', 'description': '买入建议'},
-            {'name': 'should_i_sell', 'category': 'decision', 'description': '卖出建议'},
-        ]
-        
+        """获取所有可用工具列表"""
+        tools = []
+        for name, tool in _iter_registered_tools(mcp):
+            if not name:
+                continue
+            desc = getattr(tool, "description", None) or getattr(tool, "summary", None)
+            if not desc:
+                desc = getattr(tool, "__doc__", None)
+            tools.append({
+                'name': str(name),
+                'category': getattr(tool, "category", None),
+                'description': desc.strip() if isinstance(desc, str) else None,
+            })
+        tools.sort(key=lambda x: x.get('name', ''))
+
         return ok({'tools': tools, 'count': len(tools)})
-    
+
     @mcp.tool()
     def get_available_categories():
         """获取工具分类"""
