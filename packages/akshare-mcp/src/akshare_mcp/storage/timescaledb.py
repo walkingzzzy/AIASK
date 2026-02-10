@@ -1,13 +1,20 @@
 """
 TimescaleDB 适配器
 对齐 Node 版本的 timescaledb.ts，提供统一的数据库访问接口
+
+重要：MCP stdio 协议要求 stdout 只传输协议数据。
+本模块所有日志必须走 logging（输出到 stderr），禁止使用 print()。
 """
 
 import os
 import asyncio
+import logging
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
 from contextlib import asynccontextmanager
+
+logger = logging.getLogger(__name__)
 
 try:
     import asyncpg
@@ -18,19 +25,63 @@ except ImportError:
 
 
 class TimescaleDBAdapter:
-    """TimescaleDB 异步适配器"""
+    """TimescaleDB 异步适配器
+    
+    关键设计：asyncpg.Pool 绑定到创建它的事件循环。
+    如果 FastMCP 回收/重建事件循环，旧 pool 会报 "Event loop is closed"。
+    因此每次 acquire() 时检测当前事件循环是否与 pool 创建时一致，
+    不一致则自动重建 pool。
+    """
     
     def __init__(self):
         self.pool: Optional[asyncpg.Pool] = None
         self._initialized = False
+        self._init_lock: Optional[asyncio.Lock] = None
+        self._bound_loop: Optional[asyncio.AbstractEventLoop] = None
         
+    def _get_init_lock(self) -> asyncio.Lock:
+        """懒加载初始化锁，确保在当前事件循环中创建"""
+        loop = asyncio.get_running_loop()
+        if self._init_lock is None or self._bound_loop is not loop:
+            self._init_lock = asyncio.Lock()
+        return self._init_lock
+
     async def initialize(self) -> None:
         """初始化数据库连接池"""
+        current_loop = asyncio.get_running_loop()
+        
+        # 如果 pool 已存在但绑定的事件循环已变更，需要重建
+        if self._initialized and self._bound_loop is not current_loop:
+            logger.info("Event loop changed, recreating connection pool")
+            # 旧 pool 不能 close()（它绑定的 loop 已关闭），直接丢弃
+            self.pool = None
+            self._initialized = False
+        
         if self._initialized:
             return
             
         if not ASYNCPG_AVAILABLE:
             raise RuntimeError("asyncpg not installed. Run: pip install asyncpg")
+        
+        # 若未设置 DB_PASSWORD/DB_NAME，尝试从 .env 加载（兜底，应对 MCP 子进程未继承环境）
+        if not os.getenv('DB_PASSWORD') or os.getenv('DB_PASSWORD') == 'password':
+            _candidates = [
+                Path(os.getenv('AKSHARE_MCP_ENV', '')),  # Cursor MCP 可设置 AKSHARE_MCP_ENV=/path/to/.env
+                Path(__file__).resolve().parent.parent.parent.parent / '.env',  # 包根目录（源码/editable）
+                Path.cwd() / 'packages' / 'akshare-mcp' / '.env',  # 工作目录为项目根时
+                Path.cwd() / '.env',  # 工作目录为 packages/akshare-mcp 时
+            ]
+            for _env in _candidates:
+                if not _env or not _env.exists():
+                    continue
+                for line in _env.read_text(encoding='utf-8', errors='replace').splitlines():
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        k, v = line.split('=', 1)
+                        k, v = k.strip(), v.strip()
+                        if k.startswith('DB_'):
+                            os.environ[k] = v
+                break
         
         # 从环境变量读取配置
         db_config = {
@@ -47,12 +98,13 @@ class TimescaleDBAdapter:
         try:
             self.pool = await asyncpg.create_pool(**db_config)
             self._initialized = True
-            print(f"[TimescaleDB] Connected to {db_config['host']}:{db_config['port']}/{db_config['database']}")
+            self._bound_loop = asyncio.get_running_loop()
+            logger.info("Connected to %s:%s/%s", db_config['host'], db_config['port'], db_config['database'])
             
             # 初始化数据库表
             await self._init_tables()
         except Exception as e:
-            print(f"[TimescaleDB] Connection failed: {e}")
+            logger.error("Connection failed: %s", e)
             raise
     
     async def _init_tables(self) -> None:
@@ -168,6 +220,7 @@ class TimescaleDBAdapter:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS paper_accounts (
                     id TEXT PRIMARY KEY,
+                    user_id TEXT DEFAULT 'default',
                     name TEXT NOT NULL,
                     initial_capital DOUBLE PRECISION NOT NULL,
                     current_capital DOUBLE PRECISION NOT NULL,
@@ -214,6 +267,7 @@ class TimescaleDBAdapter:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS backtest_results (
                     id TEXT PRIMARY KEY,
+                    code TEXT,
                     strategy TEXT NOT NULL,
                     params TEXT,
                     stocks TEXT,
@@ -237,6 +291,8 @@ class TimescaleDBAdapter:
                     trades_count INTEGER,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
+                
+                CREATE INDEX IF NOT EXISTS idx_backtest_results_code ON backtest_results(code);
                 
                 CREATE TABLE IF NOT EXISTS backtest_trades (
                     id TEXT PRIMARY KEY,
@@ -280,6 +336,7 @@ class TimescaleDBAdapter:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS alerts (
                     id SERIAL PRIMARY KEY,
+                    user_id TEXT DEFAULT 'default',
                     code TEXT,
                     indicator TEXT,
                     condition TEXT,
@@ -320,12 +377,19 @@ class TimescaleDBAdapter:
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)
+
+            # 8.1 兼容旧库：补齐 alerts.user_id（避免历史库缺列导致 alerts_manager 失败）
+            await conn.execute("""
+                ALTER TABLE alerts
+                ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT 'default';
+            """)
             
             # 9. 创建自选股表
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS watchlist_groups (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
+                    user_id TEXT DEFAULT 'default',
                     sort_order INTEGER DEFAULT 0,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
@@ -335,13 +399,15 @@ class TimescaleDBAdapter:
                 
                 CREATE TABLE IF NOT EXISTS watchlist (
                     id SERIAL PRIMARY KEY,
+                    user_id TEXT DEFAULT 'default',
                     code TEXT NOT NULL,
-                    name TEXT NOT NULL,
+                    name TEXT,
                     group_id TEXT DEFAULT 'default',
                     tags JSONB DEFAULT '[]'::jsonb,
                     notes TEXT,
+                    note TEXT,
                     added_at TIMESTAMPTZ DEFAULT NOW(),
-                    UNIQUE(code, group_id)
+                    UNIQUE(user_id, code)
                 );
             """)
             
@@ -472,23 +538,171 @@ class TimescaleDBAdapter:
                 CREATE INDEX IF NOT EXISTS idx_sync_schedules_next_run ON sync_schedules(next_run);
             """)
             
-            print("[TimescaleDB] All tables initialized successfully (aligned with Node version)")
+            # 16. 创建事件表（财报、分红、重组等）
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS events (
+                    id SERIAL PRIMARY KEY,
+                    code TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_date DATE NOT NULL,
+                    title TEXT,
+                    description TEXT,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_events_code ON events(code);
+                CREATE INDEX IF NOT EXISTS idx_events_date ON events(event_date);
+                CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+            """)
+            
+            # 17. 创建用户表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    email TEXT,
+                    settings JSONB DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                
+                INSERT INTO users (id, username) 
+                VALUES ('default', 'default') ON CONFLICT DO NOTHING;
+            """)
+            
+            # 18. 创建选股策略表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS screener_strategies (
+                    id SERIAL PRIMARY KEY,
+                    user_id TEXT DEFAULT 'default',
+                    name TEXT NOT NULL,
+                    criteria TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_screener_strategies_user ON screener_strategies(user_id);
+            """)
+            
+            # 19. 创建龙虎榜数据表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS dragon_tiger (
+                    id SERIAL PRIMARY KEY,
+                    code TEXT NOT NULL,
+                    trade_date DATE NOT NULL,
+                    reason TEXT,
+                    buy_amount DOUBLE PRECISION,
+                    sell_amount DOUBLE PRECISION,
+                    net_buy DOUBLE PRECISION,
+                    buyer_type TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(code, trade_date, reason)
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_dragon_tiger_date ON dragon_tiger(trade_date);
+                CREATE INDEX IF NOT EXISTS idx_dragon_tiger_code ON dragon_tiger(code);
+            """)
+            
+            # 20. 创建大宗交易表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS block_trades (
+                    id SERIAL PRIMARY KEY,
+                    code TEXT NOT NULL,
+                    trade_date DATE NOT NULL,
+                    trade_price DOUBLE PRECISION,
+                    trade_amount DOUBLE PRECISION,
+                    buyer TEXT,
+                    seller TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_block_trades_date ON block_trades(trade_date);
+                CREATE INDEX IF NOT EXISTS idx_block_trades_code ON block_trades(code);
+            """)
+            
+            # 21. 创建研究报告表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS research_reports (
+                    id SERIAL PRIMARY KEY,
+                    code TEXT NOT NULL,
+                    title TEXT,
+                    rating TEXT,
+                    target_price DOUBLE PRECISION,
+                    institution TEXT,
+                    analyst TEXT,
+                    publish_date DATE,
+                    summary TEXT,
+                    pdf_url TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_research_reports_code ON research_reports(code);
+                CREATE INDEX IF NOT EXISTS idx_research_reports_date ON research_reports(publish_date);
+            """)
+            
+            # 22. 创建模拟交易订单表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS paper_orders (
+                    id SERIAL PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    shares INTEGER NOT NULL,
+                    price DOUBLE PRECISION,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_paper_orders_account ON paper_orders(account_id);
+                CREATE INDEX IF NOT EXISTS idx_paper_orders_status ON paper_orders(status);
+            """)
+            
+            logger.info("All tables initialized successfully (aligned with Node version)")
     
     async def close(self) -> None:
         """关闭连接池"""
         if self.pool:
-            await self.pool.close()
+            try:
+                await self.pool.close()
+            except Exception:
+                pass  # pool 可能已绑定到已关闭的 loop
+            self.pool = None
             self._initialized = False
-            print("[TimescaleDB] Connection closed")
+            self._bound_loop = None
+            self._init_lock = None
+            logger.info("Connection closed")
     
     @asynccontextmanager
     async def acquire(self):
-        """获取数据库连接"""
-        if not self._initialized:
-            await self.initialize()
+        """获取数据库连接（自动处理事件循环变更和连接池重建）"""
+        # 使用锁防止并发初始化导致 "operation in progress"
+        lock = self._get_init_lock()
         
-        async with self.pool.acquire() as conn:
-            yield conn
+        if not self._initialized or self._bound_loop is not asyncio.get_running_loop():
+            async with lock:
+                # double-check after acquiring lock
+                if not self._initialized or self._bound_loop is not asyncio.get_running_loop():
+                    await self.initialize()
+        
+        try:
+            async with self.pool.acquire() as conn:
+                yield conn
+        except Exception as e:
+            err_msg = str(e).lower()
+            # 如果是事件循环关闭或连接池失效，尝试重建
+            if 'event loop is closed' in err_msg or 'pool is closed' in err_msg or 'not running' in err_msg:
+                logger.warning("Pool error detected (%s), rebuilding...", e)
+                async with lock:
+                    self.pool = None
+                    self._initialized = False
+                    await self.initialize()
+                async with self.pool.acquire() as conn:
+                    yield conn
+            else:
+                raise
     
     # ========== K线数据 ==========
     
@@ -572,21 +786,50 @@ class TimescaleDBAdapter:
                 for row in rows
             ]
     
-    async def save_klines(self, klines: List[Dict[str, Any]]) -> int:
+    async def save_klines(self, code_or_klines, klines: Optional[List[Dict[str, Any]]] = None) -> int:
         """
         批量保存K线数据
         
         Args:
-            klines: K线数据列表
+            code_or_klines: 兼容参数。既支持 save_klines(klines)，也支持 save_klines(code, klines)
+            klines: K线数据列表（当第一个参数是 code 时使用）
         
         Returns:
             插入/更新的行数
         """
-        if not klines:
+        from datetime import datetime as _dt, date as _date
+        
+        # 兼容历史调用：很多地方以 save_klines(code, klines) 方式调用
+        if klines is None:
+            code = None
+            klines_list = code_or_klines
+        else:
+            code = str(code_or_klines) if code_or_klines is not None else None
+            klines_list = klines
+
+        if not klines_list:
             return 0
+
+        # 归一化：确保每条记录包含 code
+        if code:
+            for k in klines_list:
+                if isinstance(k, dict) and not k.get("code"):
+                    k["code"] = code
+        
+        def _parse_date(val):
+            """安全解析日期，兼容多种格式"""
+            if isinstance(val, (_dt, _date)):
+                return val
+            if isinstance(val, str):
+                val = val.strip()[:10]  # 取前10字符，去掉时间部分
+                for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y/%m/%d"):
+                    try:
+                        return _dt.strptime(val, fmt)
+                    except ValueError:
+                        continue
+            return None
         
         async with self.acquire() as conn:
-            # 使用 UPSERT (ON CONFLICT DO UPDATE)
             query = """
                 INSERT INTO kline_1d (
                     time, code, open, high, low, close, 
@@ -605,19 +848,21 @@ class TimescaleDBAdapter:
                     updated_at = NOW()
             """
             
-            # 批量执行
-            await conn.executemany(
-                query,
-                [
-                    (
-                        k['date'], k['code'], k['open'], k['high'], k['low'], k['close'],
-                        k['volume'], k.get('amount'), k.get('turnover'), k.get('change_pct')
-                    )
-                    for k in klines
-                ]
-            )
+            # 过滤掉日期解析失败的记录
+            rows = []
+            for k in klines_list:
+                parsed_date = _parse_date(k.get('date'))
+                if parsed_date is None:
+                    continue
+                rows.append((
+                    parsed_date, k['code'], k['open'], k['high'], k['low'], k['close'],
+                    k['volume'], k.get('amount'), k.get('turnover'), k.get('change_pct')
+                ))
             
-            return len(klines)
+            if rows:
+                await conn.executemany(query, rows)
+            
+            return len(rows)
     
     # ========== 股票信息 ==========
     
@@ -674,6 +919,22 @@ class TimescaleDBAdapter:
     
     # ========== 财务数据 ==========
     
+    async def _financials_code_column(self, conn) -> str:
+        """兼容历史库：financials 可能用 stock_code 或 code 作为代码列"""
+        try:
+            rows = await conn.fetch(
+                """SELECT column_name FROM information_schema.columns
+                   WHERE table_schema = 'public' AND table_name = 'financials'"""
+            )
+            cols = {r["column_name"] for r in rows} if rows else set()
+            if "stock_code" in cols:
+                return "stock_code"
+            if "code" in cols:
+                return "code"
+        except Exception:
+            pass
+        return "stock_code"
+    
     async def get_financials(
         self,
         code: str,
@@ -681,13 +942,14 @@ class TimescaleDBAdapter:
     ) -> List[Dict[str, Any]]:
         """查询财务数据"""
         async with self.acquire() as conn:
+            code_col = await self._financials_code_column(conn)
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT 
-                    stock_code, report_date, revenue, net_profit, 
+                    {code_col}, report_date, revenue, net_profit, 
                     roe, debt_ratio, revenue_growth, profit_growth
                 FROM financials
-                WHERE stock_code = $1
+                WHERE {code_col} = $1
                 ORDER BY report_date DESC
                 LIMIT $2
                 """,
@@ -696,7 +958,7 @@ class TimescaleDBAdapter:
             
             return [
                 {
-                    'code': row['stock_code'],
+                    'code': row[code_col],
                     'report_date': row['report_date'].strftime('%Y-%m-%d') if row['report_date'] else None,
                     'revenue': float(row['revenue']) if row['revenue'] else None,
                     'net_profit': float(row['net_profit']) if row['net_profit'] else None,
@@ -801,7 +1063,11 @@ _db_instance: Optional[TimescaleDBAdapter] = None
 
 
 def get_db() -> TimescaleDBAdapter:
-    """获取数据库实例"""
+    """获取数据库实例（全局单例）
+    
+    TimescaleDBAdapter 内部会自动检测事件循环变更并重建连接池，
+    因此单例模式是安全的。
+    """
     global _db_instance
     if _db_instance is None:
         _db_instance = TimescaleDBAdapter()

@@ -6,3 +6,15 @@ logs/
 *.log
 coverage/
 .vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.coverage
+.benchmarks/
+.mcp_cache/
