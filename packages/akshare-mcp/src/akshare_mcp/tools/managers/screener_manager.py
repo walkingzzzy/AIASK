@@ -86,9 +86,9 @@ async def _get_stock_pool_with_klines(
     stock_codes: list,
     period: str = 'daily',
     limit: int = 100,
-    max_concurrent: int = 5,
-    per_stock_timeout: float = 5.0,
-    total_timeout: float = 30.0,
+    max_concurrent: int = 3,
+    per_stock_timeout: float = 8.0,
+    total_timeout: float = 60.0,
     pool_cap: int = 100,
 ) -> dict:
     """
@@ -514,7 +514,17 @@ def register_screener_manager(mcp):
                 if tech_conditions:
                     from ..tdx_formula import _get_default_stock_pool
 
-                    pool = fundamental_codes if fundamental_codes is not None else _get_default_stock_pool()
+                    # 优先使用传入的 stock_pool，其次基本面结果，最后默认池
+                    user_pool = kwargs.get('stock_pool', [])
+                    if isinstance(user_pool, str):
+                        user_pool = [c.strip() for c in user_pool.split(',') if c.strip()]
+
+                    if user_pool:
+                        pool = user_pool
+                    elif fundamental_codes is not None:
+                        pool = fundamental_codes
+                    else:
+                        pool = _get_default_stock_pool()
 
                     # 异步并发获取K线数据（带超时保护）
                     kline_result = await _get_stock_pool_with_klines(pool)
