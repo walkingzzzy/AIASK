@@ -25,6 +25,8 @@ from typing import Optional, Any
 import datetime
 from concurrent.futures import ThreadPoolExecutor
 
+logger = logging.getLogger(__name__)
+
 try:
     import akshare as ak
 except ImportError:
@@ -195,51 +197,55 @@ class DataSourceManager:
         if tq is None:
             return None
 
-        with self._tdx_lock:
-            try:
-                tdx_code = self._convert_to_tdx_code(code)
-                snapshot = tq.get_market_snapshot(stock_code=tdx_code)
+        if not self._tdx_lock.acquire(timeout=5):
+            logger.warning("TDX lock acquire timeout for quote %s, skip to fallback", code)
+            return None
+        try:
+            tdx_code = self._convert_to_tdx_code(code)
+            snapshot = tq.get_market_snapshot(stock_code=tdx_code)
 
-                if not snapshot or snapshot.get("ErrorId") != "0":
-                    return None
-
-                # 解析返回数据（基于实际API文档验证的字段名）
-                price = safe_float(snapshot.get("Now", 0))
-                pre_close = safe_float(snapshot.get("LastClose", 0))
-                change = price - pre_close if price and pre_close else None
-                change_pct = (change / pre_close * 100) if change and pre_close else None
-
-                # 五档盘口数据（列表形式）
-                buyp = snapshot.get("Buyp", [])
-                buyv = snapshot.get("Buyv", [])
-                sellp = snapshot.get("Sellp", [])
-                sellv = snapshot.get("Sellv", [])
-
-                return {
-                    "code": code,
-                    "name": "",  # snapshot 不返回股票名称
-                    "price": price,
-                    "change": change,
-                    "changePercent": change_pct,
-                    "open": safe_float(snapshot.get("Open", 0)),
-                    "high": safe_float(snapshot.get("High", 0)) or safe_float(snapshot.get("Max", 0)),
-                    "low": safe_float(snapshot.get("Low", 0)) or safe_float(snapshot.get("Min", 0)),
-                    "preClose": pre_close,
-                    "volume": safe_int(snapshot.get("Volume", 0)),
-                    "amount": safe_float(snapshot.get("Amount", 0)),
-                    "turnoverRate": None,
-                    # 五档盘口
-                    "bid1": safe_float(buyp[0]) if buyp else None,
-                    "bid1Vol": safe_int(buyv[0]) if buyv else None,
-                    "ask1": safe_float(sellp[0]) if sellp else None,
-                    "ask1Vol": safe_int(sellv[0]) if sellv else None,
-                    "bids": [{"price": safe_float(buyp[i]), "volume": safe_int(buyv[i])} for i in range(min(len(buyp), len(buyv), 5))],
-                    "asks": [{"price": safe_float(sellp[i]), "volume": safe_int(sellv[i])} for i in range(min(len(sellp), len(sellv), 5))],
-                    "source": "tdxquant",
-                }
-            except Exception as e:
-                print(f"[DataSource] TdxQuant quote failed: {e}", file=sys.stderr)
+            if not snapshot or snapshot.get("ErrorId") != "0":
                 return None
+
+            # 解析返回数据（基于实际API文档验证的字段名）
+            price = safe_float(snapshot.get("Now", 0))
+            pre_close = safe_float(snapshot.get("LastClose", 0))
+            change = price - pre_close if price and pre_close else None
+            change_pct = (change / pre_close * 100) if change and pre_close else None
+
+            # 五档盘口数据（列表形式）
+            buyp = snapshot.get("Buyp", [])
+            buyv = snapshot.get("Buyv", [])
+            sellp = snapshot.get("Sellp", [])
+            sellv = snapshot.get("Sellv", [])
+
+            return {
+                "code": code,
+                "name": "",  # snapshot 不返回股票名称
+                "price": price,
+                "change": change,
+                "changePercent": change_pct,
+                "open": safe_float(snapshot.get("Open", 0)),
+                "high": safe_float(snapshot.get("High", 0)) or safe_float(snapshot.get("Max", 0)),
+                "low": safe_float(snapshot.get("Low", 0)) or safe_float(snapshot.get("Min", 0)),
+                "preClose": pre_close,
+                "volume": safe_int(snapshot.get("Volume", 0)),
+                "amount": safe_float(snapshot.get("Amount", 0)),
+                "turnoverRate": None,
+                # 五档盘口
+                "bid1": safe_float(buyp[0]) if buyp else None,
+                "bid1Vol": safe_int(buyv[0]) if buyv else None,
+                "ask1": safe_float(sellp[0]) if sellp else None,
+                "ask1Vol": safe_int(sellv[0]) if sellv else None,
+                "bids": [{"price": safe_float(buyp[i]), "volume": safe_int(buyv[i])} for i in range(min(len(buyp), len(buyv), 5))],
+                "asks": [{"price": safe_float(sellp[i]), "volume": safe_int(sellv[i])} for i in range(min(len(sellp), len(sellv), 5))],
+                "source": "tdxquant",
+            }
+        except Exception as e:
+            logger.error("TdxQuant quote failed for %s: %s", code, e)
+            return None
+        finally:
+            self._tdx_lock.release()
 
     def _get_kline_tdxquant(self, code: str, period: str, limit: int) -> list[dict]:
         """从 TdxQuant 获取K线数据（线程安全：TDX 共享对象不支持并发）"""
@@ -247,48 +253,53 @@ class DataSourceManager:
         if tq is None:
             return []
 
-        with self._tdx_lock:
-            try:
-                # 周期映射
-                period_map = {
-                    "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
-                    "60m": "1h", "1h": "1h", "daily": "1d", "weekly": "1w",
-                    "1d": "1d", "1w": "1w", "1M": "1M", "monthly": "1M"
-                }
-                tdx_period = period_map.get(period, "1d")
-                tdx_code = self._convert_to_tdx_code(code)
+        # 带超时获取锁，避免并发场景下长时间阻塞导致调用方超时
+        if not self._tdx_lock.acquire(timeout=5):
+            logger.warning("TDX lock acquire timeout for kline %s, skip to fallback", code)
+            return []
+        try:
+            # 周期映射
+            period_map = {
+                "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+                "60m": "1h", "1h": "1h", "daily": "1d", "weekly": "1w",
+                "1d": "1d", "1w": "1w", "1M": "1M", "monthly": "1M"
+            }
+            tdx_period = period_map.get(period, "1d")
+            tdx_code = self._convert_to_tdx_code(code)
 
-                data = tq.get_market_data(
-                    stock_list=[tdx_code],
-                    period=tdx_period,
-                    count=limit,
-                    dividend_type='none',
-                    fill_data=True
-                )
+            data = tq.get_market_data(
+                stock_list=[tdx_code],
+                period=tdx_period,
+                count=limit,
+                dividend_type='none',
+                fill_data=True
+            )
 
-                if not data or "Close" not in data:
-                    return []
-
-                close_df = data.get("Close")
-                if close_df is None or close_df.empty:
-                    return []
-
-                results = []
-                for idx in close_df.index:
-                    results.append({
-                        "date": str(idx)[:10],
-                        "open": safe_float(data["Open"].loc[idx, tdx_code]) if "Open" in data else None,
-                        "close": safe_float(data["Close"].loc[idx, tdx_code]) if "Close" in data else None,
-                        "high": safe_float(data["High"].loc[idx, tdx_code]) if "High" in data else None,
-                        "low": safe_float(data["Low"].loc[idx, tdx_code]) if "Low" in data else None,
-                        "volume": safe_int(data["Volume"].loc[idx, tdx_code]) if "Volume" in data else None,
-                        "amount": safe_float(data["Amount"].loc[idx, tdx_code]) if "Amount" in data else None,
-                        "source": "tdxquant",
-                    })
-                return results
-            except Exception as e:
-                print(f"[DataSource] TdxQuant kline failed: {e}", file=sys.stderr)
+            if not data or "Close" not in data:
                 return []
+
+            close_df = data.get("Close")
+            if close_df is None or close_df.empty:
+                return []
+
+            results = []
+            for idx in close_df.index:
+                results.append({
+                    "date": str(idx)[:10],
+                    "open": safe_float(data["Open"].loc[idx, tdx_code]) if "Open" in data else None,
+                    "close": safe_float(data["Close"].loc[idx, tdx_code]) if "Close" in data else None,
+                    "high": safe_float(data["High"].loc[idx, tdx_code]) if "High" in data else None,
+                    "low": safe_float(data["Low"].loc[idx, tdx_code]) if "Low" in data else None,
+                    "volume": safe_int(data["Volume"].loc[idx, tdx_code]) if "Volume" in data else None,
+                    "amount": safe_float(data["Amount"].loc[idx, tdx_code]) if "Amount" in data else None,
+                    "source": "tdxquant",
+                })
+            return results
+        except Exception as e:
+            logger.error("TdxQuant kline failed for %s: %s", code, e)
+            return []
+        finally:
+            self._tdx_lock.release()
 
     def get_stock_info_tdxquant(self, code: str, field_list: list = None) -> Optional[dict]:
         """从 TdxQuant 获取股票基本信息

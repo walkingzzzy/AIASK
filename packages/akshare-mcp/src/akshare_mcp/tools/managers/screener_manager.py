@@ -87,8 +87,8 @@ async def _get_stock_pool_with_klines(
     period: str = 'daily',
     limit: int = 100,
     max_concurrent: int = 3,
-    per_stock_timeout: float = 8.0,
-    total_timeout: float = 60.0,
+    per_stock_timeout: float = 15.0,
+    total_timeout: float = 120.0,
     pool_cap: int = 100,
 ) -> dict:
     """
