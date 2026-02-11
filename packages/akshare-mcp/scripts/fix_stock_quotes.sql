@@ -1,0 +1,5 @@
+-- Add missing validation columns to stock_quotes
+ALTER TABLE stock_quotes 
+ADD COLUMN IF NOT EXISTS pe DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS pb DOUBLE PRECISION,
+ADD COLUMN IF NOT EXISTS mkt_cap DOUBLE PRECISION;
