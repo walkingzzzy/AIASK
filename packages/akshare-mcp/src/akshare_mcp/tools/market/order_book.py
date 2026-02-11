@@ -1,0 +1,446 @@
+"""盘口数据模块"""
+
+import sys
+import time
+import requests
+from typing import Optional, Any
+from ..market.helpers import (
+    normalize_code, parse_numeric, pick_value,
+    ok, fail
+)
+from ...core.cache_manager import cached
+from ...core.rate_limiter import get_limiter
+from ...data_source import data_source
+try:
+    import akshare as ak
+except ImportError:
+    ak = None
+import pandas as pd
+
+
+def _get_order_book_tdxquant(code: str) -> Optional[dict]:
+    """从 TdxQuant 获取五档盘口数据"""
+    if not data_source.is_tdx_available():
+        return None
+
+    try:
+        tq = data_source.get_tdxquant()
+        if tq is None:
+            return None
+
+        # 转换代码格式
+        tdx_code = data_source._convert_to_tdx_code(code)
+        snapshot = tq.get_market_snapshot(stock_code=tdx_code)
+
+        if not snapshot or snapshot.get("ErrorId") != "0":
+            return None
+
+        # 解析五档盘口数据
+        buyp = snapshot.get("Buyp", [])
+        buyv = snapshot.get("Buyv", [])
+        sellp = snapshot.get("Sellp", [])
+        sellv = snapshot.get("Sellv", [])
+
+        bids = []
+        asks = []
+
+        for i in range(min(len(buyp), len(buyv), 5)):
+            price = parse_numeric(buyp[i])
+            volume = int(parse_numeric(buyv[i]) or 0)
+            if price is not None and price > 0:
+                bids.append({"price": price, "volume": volume})
+
+        for i in range(min(len(sellp), len(sellv), 5)):
+            price = parse_numeric(sellp[i])
+            volume = int(parse_numeric(sellv[i]) or 0)
+            if price is not None and price > 0:
+                asks.append({"price": price, "volume": volume})
+
+        if not bids and not asks:
+            return None
+
+        return {
+            "code": code,
+            "bids": bids,
+            "asks": asks,
+            "timestamp": int(time.time() * 1000),
+            "source": "tdxquant",
+        }
+    except Exception as e:
+        print(f"[OrderBook] TdxQuant failed: {e}", file=sys.stderr)
+        return None
+
+
+def _build_exchange_code(code: str) -> str:
+    symbol = normalize_code(code)
+    if symbol.startswith(("0", "3")):
+        return f"sz{symbol}"
+    return f"sh{symbol}"
+
+
+def _get_order_book_sina_direct(code: str) -> Optional[dict]:
+    """Sina 直连：五档盘口"""
+    try:
+        symbol = normalize_code(code)
+        sina_code = _build_exchange_code(symbol)
+        url = f"http://hq.sinajs.cn/list={sina_code}"
+        headers = {"Referer": "https://finance.sina.com.cn/"}
+        resp = requests.get(url, headers=headers, timeout=5)
+        text = resp.text
+        if "=" not in text or '="' not in text:
+            return None
+
+        content = text.split('="', 1)[1].strip('";\n')
+        if not content:
+            return None
+
+        parts = content.split(",")
+        if len(parts) < 30:
+            return None
+
+        bids: list[dict] = []
+        asks: list[dict] = []
+        bid_volume_idx = [10, 12, 14, 16, 18]
+        bid_price_idx = [11, 13, 15, 17, 19]
+        ask_volume_idx = [20, 22, 24, 26, 28]
+        ask_price_idx = [21, 23, 25, 27, 29]
+
+        for i in range(5):
+            bid_price = parse_numeric(parts[bid_price_idx[i]]) if bid_price_idx[i] < len(parts) else None
+            bid_volume = parse_numeric(parts[bid_volume_idx[i]]) if bid_volume_idx[i] < len(parts) else None
+            if bid_price is not None or bid_volume is not None:
+                bids.append({"price": bid_price or 0, "volume": int(bid_volume or 0)})
+
+            ask_price = parse_numeric(parts[ask_price_idx[i]]) if ask_price_idx[i] < len(parts) else None
+            ask_volume = parse_numeric(parts[ask_volume_idx[i]]) if ask_volume_idx[i] < len(parts) else None
+            if ask_price is not None or ask_volume is not None:
+                asks.append({"price": ask_price or 0, "volume": int(ask_volume or 0)})
+
+        if not bids and not asks:
+            return None
+
+        return {
+            "code": symbol,
+            "bids": bids,
+            "asks": asks,
+            "timestamp": int(time.time() * 1000),
+        }
+    except Exception:
+        return None
+
+
+def _get_order_book_tencent_direct(code: str) -> Optional[dict]:
+    """Tencent 直连：五档盘口"""
+    try:
+        symbol = normalize_code(code)
+        qt_code = _build_exchange_code(symbol)
+        url = f"http://qt.gtimg.cn/q={qt_code}"
+        resp = requests.get(url, timeout=5)
+        text = resp.text
+        if "=" not in text or '="' not in text:
+            return None
+
+        content = text.split('="', 1)[1].strip('";\n')
+        if not content:
+            return None
+
+        parts = content.split("~")
+        if len(parts) < 29:
+            return None
+
+        bids: list[dict] = []
+        asks: list[dict] = []
+        bid_price_idx = [9, 11, 13, 15, 17]
+        bid_volume_idx = [10, 12, 14, 16, 18]
+        ask_price_idx = [19, 21, 23, 25, 27]
+        ask_volume_idx = [20, 22, 24, 26, 28]
+
+        for i in range(5):
+            bid_price = parse_numeric(parts[bid_price_idx[i]]) if bid_price_idx[i] < len(parts) else None
+            bid_volume = parse_numeric(parts[bid_volume_idx[i]]) if bid_volume_idx[i] < len(parts) else None
+            if bid_price is not None or bid_volume is not None:
+                bids.append({"price": bid_price or 0, "volume": int(bid_volume or 0)})
+
+            ask_price = parse_numeric(parts[ask_price_idx[i]]) if ask_price_idx[i] < len(parts) else None
+            ask_volume = parse_numeric(parts[ask_volume_idx[i]]) if ask_volume_idx[i] < len(parts) else None
+            if ask_price is not None or ask_volume is not None:
+                asks.append({"price": ask_price or 0, "volume": int(ask_volume or 0)})
+
+        if not bids and not asks:
+            return None
+
+        return {
+            "code": symbol,
+            "bids": bids,
+            "asks": asks,
+            "timestamp": int(time.time() * 1000),
+        }
+    except Exception:
+        return None
+
+
+def _parse_order_book_df(df: pd.DataFrame, code: str) -> Optional[dict]:
+    if df is None or df.empty:
+        return None
+
+    bids: list[dict] = []
+    asks: list[dict] = []
+
+    if "item" in df.columns and "value" in df.columns:
+        mapping = {str(row.get("item", "")).strip(): row.get("value") for _, row in df.iterrows()}
+
+        def pick_price(keys: list[str]) -> Optional[float]:
+            for key in keys:
+                if key in mapping:
+                    val = parse_numeric(mapping.get(key))
+                    if val is not None:
+                        return val
+            return None
+
+        def pick_volume(keys: list[str]) -> Optional[int]:
+            for key in keys:
+                if key in mapping:
+                    val = parse_numeric(mapping.get(key))
+                    if val is not None:
+                        return int(val)
+            return None
+
+        for i in range(1, 6):
+            price = pick_price([f"买{i}", f"买{i}价", f"买{i}价格"])
+            volume = pick_volume([f"买{i}量", f"买{i}手", f"买{i}数量"])
+            if price is not None or volume is not None:
+                bids.append({"price": price or 0, "volume": volume or 0})
+
+            price = pick_price([f"卖{i}", f"卖{i}价", f"卖{i}价格"])
+            volume = pick_volume([f"卖{i}量", f"卖{i}手", f"卖{i}数量"])
+            if price is not None or volume is not None:
+                asks.append({"price": price or 0, "volume": volume or 0})
+    else:
+        row = df.iloc[0].to_dict()
+        for i in range(1, 6):
+            bid_price = parse_numeric(pick_value(pd.Series(row), [f"买{i}价", f"买{i}", f"bid{i}"]))
+            bid_volume = parse_numeric(pick_value(pd.Series(row), [f"买{i}量", f"buy{i}"]))
+            if bid_price is not None or bid_volume is not None:
+                bids.append({"price": bid_price or 0, "volume": int(bid_volume or 0)})
+
+            ask_price = parse_numeric(pick_value(pd.Series(row), [f"卖{i}价", f"卖{i}", f"ask{i}"]))
+            ask_volume = parse_numeric(pick_value(pd.Series(row), [f"卖{i}量", f"sell{i}"]))
+            if ask_price is not None or ask_volume is not None:
+                asks.append({"price": ask_price or 0, "volume": int(ask_volume or 0)})
+
+    if not bids and not asks:
+        return None
+
+    return {
+        "code": code,
+        "bids": bids,
+        "asks": asks,
+        "timestamp": int(time.time() * 1000),
+    }
+
+
+def _parse_trade_direction(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "neutral"
+    if "买" in text:
+        return "buy"
+    if "卖" in text:
+        return "sell"
+    return "neutral"
+
+
+def _get_trade_details_tencent_direct(code: str, limit: int) -> Optional[list[dict]]:
+    """Tencent 直连：成交明细"""
+    try:
+        symbol = normalize_code(code)
+        qt_code = _build_exchange_code(symbol)
+        url = f"http://stock.gtimg.cn/data/index.php?appn=detail&action=data&c={qt_code}&p=1"
+        resp = requests.get(url, timeout=5)
+        text = resp.text
+        if '"' not in text:
+            return None
+
+        start = text.find('"')
+        end = text.rfind('"')
+        if start < 0 or end <= start:
+            return None
+
+        content = text[start + 1:end]
+        if not content:
+            return None
+
+        items = [item for item in content.split("|") if item]
+        if not items:
+            return None
+
+        details: list[dict] = []
+        for item in items[-limit:]:
+            parts = item.split("/")
+            if len(parts) < 7:
+                continue
+            time_str = parts[1]
+            price = parse_numeric(parts[2]) or 0
+            volume = int(parse_numeric(parts[4]) or 0)
+            direction_raw = str(parts[6]).strip().upper()
+            direction = "neutral"
+            if direction_raw == "B":
+                direction = "buy"
+            elif direction_raw == "S":
+                direction = "sell"
+            details.append(
+                {
+                    "time": time_str,
+                    "price": price,
+                    "volume": volume,
+                    "direction": direction,
+                }
+            )
+
+        return details if details else None
+    except Exception:
+        return None
+
+
+@cached(ttl=5.0)
+def get_order_book(stock_code: str) -> dict:
+    """获取五档盘口数据
+
+    数据源优先级: TdxQuant (官方实时) -> AkShare -> Sina -> Tencent
+
+    Args:
+        stock_code (str, required): 股票代码，6位数字，如 "600519"、"000001"
+
+    Returns:
+        dict: {"success": bool, "data": {...}}
+        data 字段:
+        - code (str): 股票代码
+        - bids (list[dict]): 买盘五档，每项含 price(float) 和 volume(int)
+        - asks (list[dict]): 卖盘五档，每项含 price(float) 和 volume(int)
+        - timestamp (int): 毫秒级时间戳
+        - source (str): 数据来源标识（仅 TdxQuant 源包含）
+
+    Errors:
+        - 所有数据源均不可用时返回 success=false
+
+    Examples:
+        get_order_book("600519")
+        get_order_book("000001")
+    """
+    limiter = get_limiter("quote", max_calls=10, period=1.0)
+    limiter.acquire()
+
+    code = normalize_code(stock_code)
+
+    # 0. 优先使用 TdxQuant (官方实时数据)
+    tdx_result = _get_order_book_tdxquant(code)
+    if tdx_result:
+        return ok(tdx_result)
+
+    # 1. Try AkShare (if available)
+    df = None
+    if ak is not None:
+        for func_name, args in (
+            ("stock_bid_ask_em", {"symbol": code}),
+            ("stock_bid_ask_em", {"code": code}),
+            ("stock_bid_ask_sina", {"symbol": code}),
+        ):
+            func = getattr(ak, func_name, None)
+            if not func:
+                continue
+            try:
+                df = func(**args)
+            except Exception:
+                df = None
+            parsed = _parse_order_book_df(df, code)
+            if parsed:
+                return ok(parsed)
+
+    # 2. Try direct fetch
+    for direct_fetch in (_get_order_book_sina_direct, _get_order_book_tencent_direct):
+        parsed = direct_fetch(code)
+        if parsed:
+            return ok(parsed)
+
+    return fail(f"未获取到 {code} 的盘口数据 (尝试源: TdxQuant, AkShare, Sina, Tencent)")
+
+
+@cached(ttl=5.0)
+def get_trade_details(stock_code: str, limit: int = 20) -> dict:
+    """获取成交明细
+
+    Args:
+        stock_code (str, required): 股票代码，6位数字，如 "600519"
+        limit (int, optional): 返回条数，默认 20
+
+    Returns:
+        dict: {"success": bool, "data": list[dict] | dict}
+        正常返回 data 为列表，每项含:
+        - time (str): 成交时间
+        - price (float): 成交价
+        - volume (int): 成交量
+        - direction (str): 买卖方向，"buy"/"sell"/"neutral"
+        非交易时段返回 data 为 dict，含 code/trades(空列表)/message/trading_hours
+
+    Errors:
+        - 所有数据源均不可用且处于交易时段时返回 success=false
+
+    Examples:
+        get_trade_details("600519")
+        get_trade_details("000001", limit=50)
+    """
+    limiter = get_limiter("quote", max_calls=10, period=1.0)
+    limiter.acquire()
+
+    code = normalize_code(stock_code)
+    limit = int(limit) if int(limit or 0) > 0 else 20
+    df = None
+    if ak is not None:
+        for func_name, args in (
+            ("stock_intraday_em", {"symbol": code}),
+            ("stock_intraday_sina", {"symbol": code}),
+            ("stock_intraday_em", {"code": code}),
+        ):
+            func = getattr(ak, func_name, None)
+            if not func:
+                continue
+            try:
+                df = func(**args)
+            except Exception:
+                df = None
+            if df is not None and not df.empty:
+                break
+
+    if df is None or df.empty:
+        direct = _get_trade_details_tencent_direct(code, limit)
+        if direct:
+            return ok(direct)
+
+        # 非交易时段友好提示
+        from datetime import datetime, time as dt_time
+        now_time = datetime.now().time()
+        is_trading = (dt_time(9, 30) <= now_time <= dt_time(11, 30) or
+                      dt_time(13, 0) <= now_time <= dt_time(15, 0))
+        weekday = datetime.now().weekday()
+        if not is_trading or weekday >= 5:
+            return ok({
+                'code': code, 'trades': [],
+                'message': '当前非交易时段，成交明细数据仅在盘中可用',
+                'trading_hours': '09:30-11:30, 13:00-15:00 (工作日)'
+            })
+
+        return fail(f"未获取到 {code} 的成交明细数据 (尝试源: AkShare, Tencent)")
+
+    df = df.tail(limit)
+    records: list[dict] = []
+    for _, row in df.iterrows():
+        records.append(
+            {
+                "time": str(pick_value(row, ["时间", "成交时间", "time"]) or ""),
+                "price": parse_numeric(pick_value(row, ["成交价", "价格", "price"])) or 0,
+                "volume": int(parse_numeric(pick_value(row, ["成交量", "手数", "数量", "volume", "vol"])) or 0),
+                "direction": _parse_trade_direction(pick_value(row, ["买卖盘性质", "性质", "direction"])),
+            }
+        )
+
+    return ok(records)
