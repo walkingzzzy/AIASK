@@ -1,0 +1,55 @@
+version: '3.8'
+
+# 开发环境配置 - 包含数据库管理工具
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: akshare-timescaledb
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: stockdb
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d stockdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - akshare-network
+
+  # pgAdmin - Web 数据库管理工具
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: akshare-pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@akshare.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      - timescaledb
+    restart: unless-stopped
+    networks:
+      - akshare-network
+
+volumes:
+  timescaledb-data:
+    driver: local
+    name: akshare-timescaledb-data
+  pgadmin-data:
+    driver: local
+    name: akshare-pgadmin-data
+
+networks:
+  akshare-network:
+    driver: bridge
+    name: akshare-network

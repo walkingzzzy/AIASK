@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: akshare-timescaledb
+    ports:
+      - "5432:5432"
+    environment:
+      # 匹配 packages/akshare-mcp/.env 的配置
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: stockdb
+      # TimescaleDB 优化配置
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+      # 性能优化（可选）
+      POSTGRES_SHARED_BUFFERS: 256MB
+      POSTGRES_EFFECTIVE_CACHE_SIZE: 1GB
+      POSTGRES_WORK_MEM: 16MB
+      POSTGRES_MAINTENANCE_WORK_MEM: 128MB
+    volumes:
+      # 持久化数据存储
+      - timescaledb-data:/var/lib/postgresql/data
+      # 可选：自定义初始化脚本
+      # - ./init-scripts:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d stockdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - akshare-network
+    # 资源限制（可选）
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 512M
+
+volumes:
+  timescaledb-data:
+    driver: local
+    name: akshare-timescaledb-data
+
+networks:
+  akshare-network:
+    driver: bridge
+    name: akshare-network
