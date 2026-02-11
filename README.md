@@ -30,10 +30,9 @@
 - **仓位管理**：动态仓位调整
 - **模拟交易**：纸上交易功能
 
-### 🖥️ 用户界面
-- **桌面客户端**：基于 Electron 的跨平台应用
-- **Web界面**：响应式Web应用
-- **数据可视化**：K线图、指标图表、回测曲线
+### 🧩 客户端接入
+- **MCP 客户端**：支持 Claude Desktop、Cursor 等标准 MCP 客户端
+- **可视化能力**：通过客户端或外部面板展示 K 线图、指标图表、回测曲线
 
 ## 🏗️ 系统架构
 
@@ -52,11 +51,6 @@ AIASK/
 │   │   └── src/akshare_mcp/
 │   │       ├── tools/          # 数据获取工具
 │   │       └── core/           # 核心功能
-│   │
-│   └── chat-client/            # Electron客户端
-│       └── src/
-│           ├── main/           # 主进程
-│           └── renderer/       # 渲染进程
 │
 ├── workflows/                  # 回测模板
 └── reports/                    # 测试报告
@@ -67,7 +61,7 @@ AIASK/
 ### 前置要求
 
 - Node.js >= 20.0.0
-- Python >= 3.11
+- Python >= 3.12
 - PostgreSQL + TimescaleDB
 - Docker（推荐）
 
@@ -81,10 +75,6 @@ npm install
 # 安装 Python 依赖
 cd ../akshare-mcp
 pip install -e .
-
-# 安装客户端依赖
-cd ../chat-client
-npm install
 ```
 
 ### 2. 启动数据库
@@ -118,10 +108,6 @@ npm run init-db-full
 ```bash
 # 启动 MCP 服务器
 cd packages/mcp-server-compact
-npm start
-
-# 启动桌面客户端
-cd packages/chat-client
 npm start
 ```
 

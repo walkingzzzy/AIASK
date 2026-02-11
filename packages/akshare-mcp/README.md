@@ -586,6 +586,58 @@ python -m akshare_mcp.server
 
 保存后**完全重启 Cursor**（或先关闭该 MCP 再重新打开），使新环境生效。
 
+
+## P1 性能优化说明（方案 C / D）
+
+### 1) 批量回测并发取数（`run_batch_backtest`）
+
+`run_batch_backtest` 新增参数：
+
+- `fetch_concurrency`（默认 `8`）：前置 K 线拉取并发度（内部自动约束在 `1~20`）
+
+返回结果新增字段：
+
+- `timings.io_fetch_seconds`：取数阶段耗时
+- `timings.compute_seconds`：回测计算阶段耗时
+- `timings.aggregation_seconds`：结果汇总阶段耗时
+- `timings.total_seconds`：总耗时
+- `source_stats`：各数据来源命中统计（如 `timescaledb`、`market_fallback`、`none`）
+- `fetch_concurrency`：本次执行实际并发度
+- `performance_goal`：性能目标说明
+
+示例：
+
+```python
+result = await run_batch_backtest(
+    codes=["600519", "000001", "000858"],
+    strategy="ma_cross",
+    fetch_concurrency=8,
+)
+print(result["data"]["timings"])
+```
+
+### 2) 缓存层升级（`SimpleCache`）
+
+`SimpleCache` 已升级为 **内存 LRU + 文件缓存** 双层结构：
+
+- 文件写入采用原子替换（临时文件 + `os.replace`）
+- 并发访问使用 `threading.RLock` 保护
+- 新增统计指标：`total_requests / hits / misses / hit_rate / miss_rate`
+- 兼容保留：`get_stats()`，并新增语义化别名 `get_cache_stats()`
+
+示例：
+
+```python
+from akshare_mcp.cache import cache
+
+stats = cache.get_cache_stats()
+print(stats["hit_rate"], stats["total_requests"])
+```
+
+> 说明：以上改动保持原有 `cache.get/set/clear/get_stats` 调用方式不变。
+
+---
+
 ## 北向资金数据源说明
 
 北向资金优先使用 Tushare（稳定），其次使用港交所公开日度数据（若可解析），最后才回退到东方财富历史接口。

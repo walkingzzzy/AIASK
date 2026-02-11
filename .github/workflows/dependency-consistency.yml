@@ -5,21 +5,27 @@ on:
     paths:
       - "packages/akshare-mcp/pyproject.toml"
       - "packages/akshare-mcp/requirements.txt"
+      - "packages/akshare-mcp/requirements.lock.txt"
       - "packages/akshare-mcp/setup.py"
+      - "packages/akshare-mcp/src/akshare_mcp/__init__.py"
       - "packages/akshare-mcp/scripts/check_dependency_consistency.py"
+      - "README.md"
       - ".github/workflows/dependency-consistency.yml"
   push:
     branches: ["master", "main"]
     paths:
       - "packages/akshare-mcp/pyproject.toml"
       - "packages/akshare-mcp/requirements.txt"
+      - "packages/akshare-mcp/requirements.lock.txt"
       - "packages/akshare-mcp/setup.py"
+      - "packages/akshare-mcp/src/akshare_mcp/__init__.py"
       - "packages/akshare-mcp/scripts/check_dependency_consistency.py"
+      - "README.md"
       - ".github/workflows/dependency-consistency.yml"
 
 jobs:
   dependency-consistency:
-    name: check requirements.txt vs pyproject.toml
+    name: check deps/version/readme/lock consistency
     runs-on: ubuntu-latest
 
     steps:
@@ -31,7 +37,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run dependency consistency check
+      - name: Run consistency checks
         run: |
           python packages/akshare-mcp/scripts/check_dependency_consistency.py
 
