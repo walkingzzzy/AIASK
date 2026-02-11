@@ -8,14 +8,35 @@ from typing import List, Dict, Any, Optional, Tuple
 from scipy.spatial.distance import cosine, euclidean
 from sklearn.preprocessing import StandardScaler
 import hashlib
+import os
 
 
 class VectorSearchEngine:
     """向量搜索引擎"""
     
-    def __init__(self):
+    def __init__(self, backend: Optional[str] = None, allow_fallback: Optional[bool] = None):
         self.scaler = StandardScaler()
         self.pattern_cache = {}
+        env_backend = os.getenv('VECTOR_SEARCH_BACKEND', 'python').strip().lower()
+        self.backend = (backend or env_backend or 'python').strip().lower()
+        if self.backend not in {'python', 'index'}:
+            self.backend = 'python'
+
+        if allow_fallback is None:
+            allow_fallback = os.getenv('VECTOR_SEARCH_ALLOW_FALLBACK', 'true').strip().lower() not in {
+                '0', 'false', 'no'
+            }
+        self.allow_fallback = bool(allow_fallback)
+        self.last_backend_used = self.backend
+
+    def set_backend(self, backend: str, allow_fallback: Optional[bool] = None) -> None:
+        """设置默认检索后端。"""
+        backend = (backend or 'python').strip().lower()
+        if backend not in {'python', 'index'}:
+            raise ValueError("backend must be 'python' or 'index'")
+        self.backend = backend
+        if allow_fallback is not None:
+            self.allow_fallback = bool(allow_fallback)
     
     # ========== K线形态向量化 ==========
     
@@ -169,7 +190,9 @@ class VectorSearchEngine:
         candidate_klines_dict: Dict[str, List[Dict[str, Any]]],
         top_k: int = 10,
         method: str = 'price_volume',
-        metric: str = 'cosine'
+        metric: str = 'cosine',
+        backend: Optional[str] = None,
+        allow_fallback: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         """
         查找相似的K线形态
@@ -190,7 +213,13 @@ class VectorSearchEngine:
         if len(query_vector) == 0:
             return []
         
-        # 计算所有候选的相似度
+        backend_to_use = (backend or self.backend).strip().lower()
+        if backend_to_use not in {'python', 'index'}:
+            backend_to_use = 'python'
+
+        fallback_enabled = self.allow_fallback if allow_fallback is None else bool(allow_fallback)
+
+        # 计算所有候选的相似度（Python主路径）
         similarities = []
         
         for code, klines in candidate_klines_dict.items():
@@ -211,11 +240,60 @@ class VectorSearchEngine:
                 'code': code,
                 'similarity': similarity,
                 'klines': candidate_klines,
+                'source': 'python',
             })
         
-        # 排序并返回top_k
-        similarities.sort(key=lambda x: x['similarity'], reverse=True)
-        return similarities[:top_k]
+        def _python_results() -> List[Dict[str, Any]]:
+            similarities.sort(key=lambda x: x['similarity'], reverse=True)
+            self.last_backend_used = 'python'
+            return similarities[:top_k]
+
+        if backend_to_use == 'python':
+            return _python_results()
+
+        # index 主路径（当前实现为进程内向量索引；可扩展到 pgvector/ANN）
+        try:
+            self.build_index(
+                klines_dict=candidate_klines_dict,
+                pattern_length=len(query_klines),
+                method=method,
+            )
+            index_results = self.search_index(query_vector=query_vector, top_k=top_k, metric=metric)
+            if index_results:
+                self.last_backend_used = 'index'
+                enriched = []
+                for item in index_results:
+                    code = item.get('code')
+                    if not code:
+                        continue
+                    candidate_klines = candidate_klines_dict.get(code, [])
+                    if len(candidate_klines) >= len(query_klines):
+                        candidate_klines = candidate_klines[-len(query_klines):]
+                    enriched.append({
+                        'code': code,
+                        'similarity': item.get('similarity', 0.0),
+                        'klines': candidate_klines,
+                        'source': 'index',
+                    })
+                return enriched
+
+            if fallback_enabled:
+                result = _python_results()
+                self.last_backend_used = 'python_fallback'
+                for item in result:
+                    item['source'] = 'python_fallback'
+                return result
+            self.last_backend_used = 'index'
+            return []
+        except Exception:
+            if fallback_enabled:
+                result = _python_results()
+                self.last_backend_used = 'python_fallback'
+                for item in result:
+                    item['source'] = 'python_fallback'
+                return result
+            self.last_backend_used = 'index_error'
+            return []
     
     # ========== 形态识别 ==========
     

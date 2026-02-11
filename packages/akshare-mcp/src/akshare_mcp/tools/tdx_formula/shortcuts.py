@@ -1,6 +1,10 @@
 """TDX 公式系统 - 便捷指标函数 + MCP 注册"""
 
+import logging
+
+from ...data_source import data_source
 from .api import calculate_indicator, screen_stocks, get_expert_signals, get_formula_data
+from .utils import _ensure_formula_api
 
 
 # ============== 便捷指标函数 ==============
@@ -67,8 +71,45 @@ def calculate_vr(stock_code: str, n: int = 26,
 
 # ============== MCP 注册函数 ==============
 
+
+def _detect_formula_capability() -> tuple[bool, list[str]]:
+    """启动阶段检测公式 API 能力。"""
+    missing = []
+    try:
+        if not data_source.is_tdx_available():
+            return False, ["tdx_not_available"]
+
+        tq = data_source.get_tdxquant()
+        if tq is None:
+            return False, ["tdx_init_failed"]
+
+        for method in ("formula_set_data_info", "formula_zb"):
+            if not (hasattr(tq, method) and callable(getattr(tq, method, None))):
+                missing.append(method)
+
+        return len(missing) == 0, missing
+    except Exception as e:
+        logging.getLogger(__name__).warning("检测公式 API 能力失败: %s", e)
+        return False, ["capability_check_exception"]
+
 def register(mcp):
     """注册 TDX 公式计算工具到 MCP 服务"""
+    formula_supported, missing_methods = _detect_formula_capability()
+    tool_unavailable_tag = "" if formula_supported else " [当前环境不可用]"
+    env_requirement = (
+        "⚠️ 环境要求：需满足 hasattr(tq, 'formula_zb') 且 "
+        "hasattr(tq, 'formula_set_data_info') 为 True。\n"
+        "如当前环境不支持：\n"
+        "- 方案A（推荐）：升级到支持公式 API 的 TdxQuant/tqcenter 版本；\n"
+        "- 方案B：在通达信客户端公式管理器手动执行；\n"
+        "- 方案C：继续使用本工具的 Python 回退（支持 MACD/KDJ/RSI/BOLL 等常用指标）。"
+    )
+
+    if not formula_supported:
+        logging.getLogger(__name__).warning(
+            "TDX 公式 API 当前环境不可用，仍注册工具并依赖回退。缺失能力: %s",
+            ", ".join(missing_methods) if missing_methods else "unknown",
+        )
 
     @mcp.tool()
     def tdx_calculate_indicator(
@@ -79,11 +120,13 @@ def register(mcp):
         count: int = 100,
         dividend_type: int = 1,
     ) -> dict:
-        """
-        [TDX] 计算技术指标公式
+        f"""
+        [TDX] 计算技术指标公式{tool_unavailable_tag}
 
         使用通达信公式系统计算技术指标，支持 MACD、KDJ、RSI、BOLL 等所有通达信内置指标。
         数据源优先级: TdxQuant 原生公式 → Python 回退计算
+
+        {env_requirement}
 
         Args:
             stock_code (str, required): 股票代码，如 "600519"、"000001"
@@ -114,6 +157,17 @@ def register(mcp):
             - BOLL: formula_name="BOLL", formula_args="20,2"
         """
         return calculate_indicator(stock_code, formula_name, formula_args, period, count, dividend_type)
+
+    # 注意：函数体内 f-string 不是 Python 的编译期 docstring，
+    # 这里显式回填 __doc__，确保 MCP 框架与回归脚本能读取到动态标记。
+    tdx_calculate_indicator.__doc__ = f"""
+        [TDX] 计算技术指标公式{tool_unavailable_tag}
+
+        使用通达信公式系统计算技术指标，支持 MACD、KDJ、RSI、BOLL 等所有通达信内置指标。
+        数据源优先级: TdxQuant 原生公式 → Python 回退计算
+
+        {env_requirement}
+    """
 
     @mcp.tool()
     def tdx_screen_stocks(
@@ -438,11 +492,13 @@ def register(mcp):
         count: int = 100,
         dividend_type: int = 1,
     ) -> dict:
-        """
-        [TDX] 获取公式系统K线数据
+        f"""
+        [TDX] 获取公式系统K线数据{tool_unavailable_tag}
 
         获取与公式计算相同的基础K线数据，可用于自定义分析。
         数据源优先级: TdxQuant 原生 → Python 回退
+
+        {env_requirement}
 
         Args:
             stock_code (str, required): 股票代码，如 "600519"
@@ -462,3 +518,12 @@ def register(mcp):
             tdx_get_formula_data("000001", period="1w", count=50)
         """
         return get_formula_data(stock_code, period, count, dividend_type)
+
+    tdx_get_formula_data.__doc__ = f"""
+        [TDX] 获取公式系统K线数据{tool_unavailable_tag}
+
+        获取与公式计算相同的基础K线数据，可用于自定义分析。
+        数据源优先级: TdxQuant 原生 → Python 回退
+
+        {env_requirement}
+    """

@@ -1,7 +1,10 @@
 """回测工具"""
 
-from typing import Optional, Dict, Any, List
+import asyncio
+import time
+from typing import Optional, Dict, Any, List, Tuple
 from ..services import backtest_engine
+from ..services.data_sync import data_sync_service
 from ..storage import get_db
 from ..utils import ok, fail, normalize_code, parse_date_input
 from .market import get_kline_data
@@ -76,6 +79,85 @@ def register(mcp):
                 return fallback_klines, "market_fallback"
 
         return [], "none"
+
+    async def _fetch_klines_batch(
+        db,
+        codes: List[str],
+        start_date: Optional[str],
+        end_date: Optional[str],
+        fetch_concurrency: int,
+    ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, int]]:
+        """优先走DB批量接口，失败/缺失时回退逐只并发拉取。"""
+        source_counter: Dict[str, int] = {
+            "timescaledb_batch": 0,
+            "timescaledb": 0,
+            "market_fallback": 0,
+            "none": 0,
+        }
+
+        # 路径1：优先尝试数据库批量读取
+        batch_method = getattr(db, "get_klines_batch", None)
+        if callable(batch_method):
+            try:
+                limit = _estimate_limit(start_date, end_date)
+                batch_rows = await batch_method(codes, start_date, end_date, limit)
+                klines_dict: Dict[str, List[Dict[str, Any]]] = {}
+                for code in codes:
+                    normalized = _normalize_klines((batch_rows or {}).get(code, []))
+                    if normalized:
+                        klines_dict[code] = normalized
+                        source_counter["timescaledb_batch"] += 1
+
+                # 对批量接口没命中的 code 做回退补齐
+                missing_codes = [c for c in codes if c not in klines_dict]
+                if not missing_codes:
+                    return klines_dict, source_counter
+
+                concurrency = max(1, min(int(fetch_concurrency or 1), 20))
+                semaphore = asyncio.Semaphore(concurrency)
+
+                async def _worker(code: str) -> Tuple[str, List[Dict[str, Any]], str]:
+                    async with semaphore:
+                        klines, source = await _fetch_klines(db, code, start_date, end_date)
+                        return code, klines, source
+
+                results = await asyncio.gather(*[_worker(code) for code in missing_codes], return_exceptions=True)
+                for item in results:
+                    if isinstance(item, Exception):
+                        source_counter["none"] += 1
+                        continue
+                    code, klines, source = item
+                    source_counter[source] = source_counter.get(source, 0) + 1
+                    if klines:
+                        klines_dict[code] = klines
+                return klines_dict, source_counter
+            except Exception:
+                # 批量读取失败时，自动回退旧路径
+                pass
+
+        # 路径2：旧路径（逐只并发拉取）
+        concurrency = max(1, min(int(fetch_concurrency or 1), 20))
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _worker(code: str) -> Tuple[str, List[Dict[str, Any]], str]:
+            async with semaphore:
+                klines, source = await _fetch_klines(db, code, start_date, end_date)
+                return code, klines, source
+
+        tasks = [_worker(code) for code in codes]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        klines_dict: Dict[str, List[Dict[str, Any]]] = {}
+        for item in results:
+            if isinstance(item, Exception):
+                source_counter["none"] += 1
+                continue
+            code, klines, source = item
+            source_counter[source] = source_counter.get(source, 0) + 1
+            if klines:
+                klines_dict[code] = klines
+
+        return klines_dict, source_counter
     
     @mcp.tool()
     async def run_simple_backtest(
@@ -142,11 +224,13 @@ def register(mcp):
         commission: float = 0.0003,
         short_period: int = 5,
         long_period: int = 20,
-        use_parallel: bool = True
+        use_parallel: bool = True,
+        fetch_concurrency: int = 8,
+        warmup_before_fetch: bool = False,
     ):
         """
         批量回测多只股票（支持Ray并行加速）- 性能优化版
-        
+
         Args:
             codes: 股票代码列表
             strategy: 策略名称 ('ma_cross', 'buy_and_hold', 'momentum', 'rsi')
@@ -157,190 +241,138 @@ def register(mcp):
             short_period: 短期均线周期
             long_period: 长期均线周期
             use_parallel: 是否使用Ray并行计算（需要安装ray）
-        
+            warmup_before_fetch: 是否在回测前做数据预热
+
         Returns:
             批量回测结果，包含每只股票的回测指标
         """
         try:
-            import time
-            start_time = time.time()
-
+            total_start = time.perf_counter()
             db = get_db()
 
             # 日期格式处理：支持 YYYY 或 YYYY-MM-DD
             start_date, end_date = _normalize_dates(start_date, end_date)
-
-            # 批量获取K线数据
-            klines_dict = {}
             normalized_codes = [normalize_code(c) for c in (codes or [])]
-            for code in normalized_codes:
-                klines, _ = await _fetch_klines(db, code, start_date, end_date)
-                if klines:
-                    klines_dict[code] = klines
-            
+            if not normalized_codes:
+                return fail("codes is empty")
+
+            # 可选：回测前预热（走统一 data_sync 流程）
+            warmup_result = None
+            if warmup_before_fetch:
+                warmup_result = await data_sync_service.sync_stock_klines(
+                    codes=normalized_codes,
+                    start_date=start_date or "",
+                    end_date=end_date or "",
+                    period="daily",
+                )
+
+            # 阶段1：并发取数（优先批量DB）
+            io_start = time.perf_counter()
+            klines_dict, source_stats = await _fetch_klines_batch(
+                db=db,
+                codes=normalized_codes,
+                start_date=start_date,
+                end_date=end_date,
+                fetch_concurrency=fetch_concurrency,
+            )
+            io_seconds = time.perf_counter() - io_start
+
             if not klines_dict:
-                return fail('No kline data found for any code')
-            
+                return fail("No kline data found for any code")
+
             params = {
-                'initial_capital': initial_capital,
-                'commission': commission,
-                'short_period': short_period,
-                'long_period': long_period,
+                "initial_capital": initial_capital,
+                "commission": commission,
+                "short_period": short_period,
+                "long_period": long_period,
             }
-            
-            # 选择执行模式
-            if use_parallel and RAY_AVAILABLE:
-                # 使用优化的Ray并行回测
-                result = ParallelBacktestEngine.batch_backtest(
+
+            # 阶段2：回测计算
+            compute_start = time.perf_counter()
+            engine = globals().get("ParallelBacktestEngine")
+            can_parallel = bool(use_parallel and RAY_AVAILABLE and engine)
+            if can_parallel:
+                result = engine.batch_backtest(
                     list(klines_dict.keys()),
                     klines_dict,
                     strategy,
-                    params
+                    params,
                 )
-                execution_mode = 'parallel_optimized'
-            else:
-                # 使用顺序回测
-                if use_parallel and not RAY_AVAILABLE:
-                    print("Warning: Ray not available, falling back to sequential execution")
-                
-                result = ParallelBacktestEngine.batch_backtest_sequential(
+                execution_mode = "parallel_optimized"
+            elif engine and hasattr(engine, "batch_backtest_sequential"):
+                result = engine.batch_backtest_sequential(
                     list(klines_dict.keys()),
                     klines_dict,
                     strategy,
-                    params
+                    params,
                 )
-                execution_mode = 'sequential'
-            
-            elapsed_time = time.time() - start_time
-            
-            if result.get('success'):
-                # 添加性能统计
-                result['data']['execution_time'] = f"{elapsed_time:.2f}s"
-                result['data']['execution_mode'] = execution_mode
-                result['data']['codes_count'] = len(codes)
-                result['data']['successful_count'] = len([r for r in result['data']['results'] if r.get('success', False)])
-                
-                # 计算平均指标
-                successful_results = [r for r in result['data']['results'] if r.get('success', False)]
-                if successful_results:
-                    avg_return = sum(r.get('total_return', 0) for r in successful_results) / len(successful_results)
-                    avg_sharpe = sum(r.get('sharpe_ratio', 0) for r in successful_results) / len(successful_results)
-                    avg_max_dd = sum(r.get('max_drawdown', 0) for r in successful_results) / len(successful_results)
-                    
-                    result['data']['summary'] = {
-                        'avg_return': float(avg_return),
-                        'avg_return_pct': f"{avg_return*100:.2f}%",
-                        'avg_sharpe_ratio': float(avg_sharpe),
-                        'avg_max_drawdown': float(avg_max_dd),
-                        'avg_max_drawdown_pct': f"{avg_max_dd*100:.2f}%",
-                    }
-                
-                return ok(result['data'])
+                execution_mode = "sequential"
             else:
-                return fail(result.get('error', 'Batch backtest failed'))
-        
-        except Exception as e:
-            return fail(str(e))
-            
-            # 获取所有股票的K线数据
-            klines_dict = {}
-            for code in codes:
-                klines = await db.get_klines(code, start_date, end_date)
-                if klines:
-                    klines_dict[code] = klines
-            
-            if not klines_dict:
-                return fail('No kline data found for any stock')
-            
-            params = {
-                'initial_capital': initial_capital,
-                'commission': commission,
-                'short_period': short_period,
-                'long_period': long_period,
-            }
-            
-            # 使用Ray并行回测（如果可用且启用）
-            if use_parallel and RAY_AVAILABLE:
-                result = ParallelBacktestEngine.batch_backtest(
-                    codes=list(klines_dict.keys()),
-                    klines_dict=klines_dict,
-                    strategy=strategy,
-                    params=params
-                )
-                
-                if result.get('success'):
-                    # 格式化结果
-                    results = result['data']['results']
-                    formatted_results = []
-                    
-                    for r in results:
-                        if r.get('success'):
-                            data = r['data']
-                            formatted_results.append({
-                                'code': data.get('code'),
-                                'total_return': f"{data.get('total_return', 0) * 100:.2f}%",
-                                'sharpe_ratio': f"{data.get('sharpe_ratio', 0):.2f}",
-                                'max_drawdown': f"{data.get('max_drawdown', 0) * 100:.2f}%",
-                                'trades': data.get('trades', 0),
-                                'win_rate': f"{data.get('win_rate', 0) * 100:.2f}%",
-                            })
-                    
-                    # 计算汇总统计
-                    total_returns = [r['data']['total_return'] for r in results if r.get('success')]
-                    avg_return = sum(total_returns) / len(total_returns) if total_returns else 0
-                    
-                    return ok({
-                        'results': formatted_results,
-                        'summary': {
-                            'total_stocks': len(codes),
-                            'successful': len(formatted_results),
-                            'failed': len(codes) - len(formatted_results),
-                            'average_return': f"{avg_return * 100:.2f}%",
-                            'parallel_mode': 'Ray',
-                        }
-                    })
-                else:
-                    return fail(result.get('error', 'Batch backtest failed'))
-            
-            # 串行回测（fallback）
-            else:
-                results = []
-                for code in klines_dict.keys():
-                    result = backtest_engine.run_backtest(
-                        code, 
-                        klines_dict[code], 
-                        strategy, 
-                        params
+                # 无Ray环境下的纯本地后备执行
+                local_results: List[Dict[str, Any]] = []
+                for code in list(klines_dict.keys()):
+                    single = backtest_engine.run_backtest(
+                        code,
+                        klines_dict[code],
+                        strategy,
+                        params,
                     )
-                    
-                    if result.get('success'):
-                        data = result['data']
-                        results.append({
-                            'code': data.get('code'),
-                            'total_return': f"{data.get('total_return', 0) * 100:.2f}%",
-                            'sharpe_ratio': f"{data.get('sharpe_ratio', 0):.2f}",
-                            'max_drawdown': f"{data.get('max_drawdown', 0) * 100:.2f}%",
-                            'trades': data.get('trades', 0),
-                            'win_rate': f"{data.get('win_rate', 0) * 100:.2f}%",
-                        })
-                
-                # 计算汇总统计
-                if results:
-                    total_returns = [float(r['total_return'].rstrip('%')) / 100 for r in results]
-                    avg_return = sum(total_returns) / len(total_returns)
-                else:
-                    avg_return = 0
-                
-                return ok({
-                    'results': results,
-                    'summary': {
-                        'total_stocks': len(codes),
-                        'successful': len(results),
-                        'failed': len(codes) - len(results),
-                        'average_return': f"{avg_return * 100:.2f}%",
-                        'parallel_mode': 'Sequential (Ray not available)' if not RAY_AVAILABLE else 'Sequential',
-                    }
-                })
-        
+                    if single.get("success"):
+                        local_results.append(single.get("data") or {})
+                result = {
+                    "success": True,
+                    "data": {"results": local_results, "count": len(local_results)},
+                }
+                execution_mode = "local_sequential"
+            compute_seconds = time.perf_counter() - compute_start
+
+            if not result.get("success"):
+                return fail(result.get("error", "Batch backtest failed"))
+
+            # 阶段3：汇总统计
+            aggregation_start = time.perf_counter()
+            payload = result.get("data") or {}
+            payload["execution_mode"] = execution_mode
+            payload["codes_count"] = len(normalized_codes)
+            payload["requested_codes"] = normalized_codes
+            payload["fetch_concurrency"] = max(1, min(int(fetch_concurrency or 1), 20))
+            payload["source_stats"] = source_stats
+            payload["warmup_enabled"] = bool(warmup_before_fetch)
+            if warmup_result is not None:
+                payload["warmup"] = warmup_result
+
+            successful_results = [
+                r for r in (payload.get("results") or []) if r.get("success", True)
+            ]
+            payload["successful_count"] = len(successful_results)
+            payload["failed_count"] = payload["codes_count"] - payload["successful_count"]
+
+            if successful_results:
+                avg_return = sum(r.get("total_return", 0) for r in successful_results) / len(successful_results)
+                avg_sharpe = sum(r.get("sharpe_ratio", 0) for r in successful_results) / len(successful_results)
+                avg_max_dd = sum(r.get("max_drawdown", 0) for r in successful_results) / len(successful_results)
+                payload["summary"] = {
+                    "avg_return": float(avg_return),
+                    "avg_return_pct": f"{avg_return * 100:.2f}%",
+                    "avg_sharpe_ratio": float(avg_sharpe),
+                    "avg_max_drawdown": float(avg_max_dd),
+                    "avg_max_drawdown_pct": f"{avg_max_dd * 100:.2f}%",
+                }
+
+            aggregation_seconds = time.perf_counter() - aggregation_start
+            total_seconds = time.perf_counter() - total_start
+            payload["timings"] = {
+                "io_fetch_seconds": round(io_seconds, 6),
+                "compute_seconds": round(compute_seconds, 6),
+                "aggregation_seconds": round(aggregation_seconds, 6),
+                "total_seconds": round(total_seconds, 6),
+            }
+            payload["execution_time"] = f"{total_seconds:.2f}s"
+            payload["performance_goal"] = {
+                "target": "same codes, total time reduce 30%+",
+                "io_parallel_enabled": True,
+            }
+
+            return ok(payload)
         except Exception as e:
             return fail(str(e))

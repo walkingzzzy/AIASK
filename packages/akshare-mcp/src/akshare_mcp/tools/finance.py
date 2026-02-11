@@ -84,7 +84,7 @@ def _get_financials_tushare(code: str) -> Optional[dict]:
 
     # 获取ROA，如果为空则尝试计算
     roa_value = parse_numeric(indicator_row.get("roa")) if indicator_row is not None else None
-    
+
     # 如果ROA为空，尝试用净利润/总资产计算
     if roa_value is None and income_row is not None:
         try:
@@ -94,7 +94,7 @@ def _get_financials_tushare(code: str) -> Optional[dict]:
                 balance_row = balance_df.iloc[-1]
                 total_assets = parse_numeric(balance_row.get("total_assets"))
                 net_profit = parse_numeric(income_row.get("n_income"))
-                
+
                 if total_assets and net_profit and total_assets > 0:
                     roa_value = (net_profit / total_assets) * 100
                     print(f"[Finance] Calculated ROA for {code}: {roa_value:.2f}%", file=sys.stderr)
@@ -125,9 +125,9 @@ def get_financials(stock_code: str) -> dict:
     # Rate limiting
     limiter = get_limiter("finance", max_calls=5, period=1.0)
     limiter.acquire()
-    
+
     code = normalize_code(stock_code)
-    
+
     # 0. Check Cache (TTL 24h)
     cached_data = cache.get(f"financials_{code}", ttl_seconds=86400)
     if cached_data:
@@ -139,9 +139,9 @@ def get_financials(stock_code: str) -> dict:
     # 2. Try AkShare THS (Most recent) - 降级
     # 3. Try AkShare EM (Standard) - 降级
     # 4. Fallback to Baostock (Stable/Offline-like) - 最后降级
-    
+
     res = None
-     
+
     # 1. Try Tushare Pro (优先，如果成功则直接返回)
     try:
         res = _get_financials_tushare(code)
@@ -173,10 +173,10 @@ def get_financials(stock_code: str) -> dict:
                 year = str(q_date.year)
                 month = q_date.month
                 quarter = "1" if month <= 3 else "2" if month <= 6 else "3" if month <= 9 else "4"
-                
+
                 # Fetch Balance Sheet (for BVPS/Debt) and Profit (for EPS/ROE)
                 # This is expensive, so just trying once or twice might be enough.
-                
+
                 # Simplified: just try to get a valid result
                 df_profit = baostock_client.get_profit_statement(code, year, quarter)
                 if not df_profit.empty:
@@ -200,7 +200,7 @@ def get_financials(stock_code: str) -> dict:
         # Cache Result
         cache.set(f"financials_{code}", res)
         return ok(res)
-    
+
     return fail(f"所有数据源均无法获取 {code} 的财务数据 (AkShare & Baostock)")
 
 def _get_financials_akshare(code: str) -> Optional[dict]:
@@ -212,7 +212,7 @@ def _get_financials_akshare(code: str) -> Optional[dict]:
 
         row = df.iloc[-1]
         report_date = str(row.get("报告期", ""))
-        
+
         # 尝试多个可能的ROA字段名
         roa = (
             parse_numeric(row.get("总资产收益率")) or
@@ -221,7 +221,7 @@ def _get_financials_akshare(code: str) -> Optional[dict]:
             parse_numeric(row.get("资产收益率")) or
             parse_numeric(row.get("总资产净利率"))
         )
-        
+
         return {
             "code": code,
             "reportDate": report_date,
@@ -289,7 +289,7 @@ def get_stock_info(stock_code: str) -> dict:
     # Rate limiting
     limiter = get_limiter("info", max_calls=5, period=1.0)
     limiter.acquire()
-    
+
     try:
         code = normalize_code(stock_code)
         df = None
@@ -361,6 +361,166 @@ def get_stock_info(stock_code: str) -> dict:
         return fail(e)
 
 
+
+def _parse_yyyymmdd_to_year_mmdd(date: str) -> tuple[int, int]:
+    """将 YYYYMMDD 转换为 (year, mmdd)。"""
+    if not date or len(date) != 8 or not date.isdigit():
+        raise ValueError("date 必须为 YYYYMMDD 格式")
+    return int(date[:4]), int(date[4:])
+
+
+def tdx_get_financial_snapshot(stock_code: str) -> dict:
+    """
+    [TDX] 获取单只股票最新财务快照
+
+    底层 API: get_gp_one_data(stock_code)
+    """
+    try:
+        code = normalize_code(stock_code)
+        if not data_source.is_tdx_available():
+            return fail("TdxQuant 不可用")
+
+        tq = data_source.get_tdxquant()
+        if tq is None:
+            return fail("TdxQuant 初始化失败")
+
+        tdx_code = data_source._convert_to_tdx_code(code)
+
+        # 兼容不同 TdxQuant 版本：有的版本仅支持位置参数
+        try:
+            result = tq.get_gp_one_data(stock_code=tdx_code)
+        except TypeError:
+            result = tq.get_gp_one_data(tdx_code)
+
+        if isinstance(result, dict) and result.get("ErrorId") and result.get("ErrorId") != "0":
+            return fail(result.get("Error", "获取财务快照失败"))
+
+        return ok({
+            "code": code,
+            "source": "tdxquant",
+            "data": result,
+        })
+    except Exception as e:
+        return fail(f"获取财务快照异常: {e}")
+
+
+def tdx_get_financial_history(stock_codes: list[str], fields: list[str], date: str) -> dict:
+    """
+    [TDX] 获取指定日期财务数据
+
+    底层 API: get_financial_data_by_date(stock_list, field_list, year, mmdd)
+    """
+    try:
+        if not stock_codes:
+            return fail("stock_codes 不能为空")
+        if not fields:
+            return fail("fields 不能为空")
+
+        year, mmdd = _parse_yyyymmdd_to_year_mmdd(date)
+
+        if not data_source.is_tdx_available():
+            return fail("TdxQuant 不可用")
+
+        tq = data_source.get_tdxquant()
+        if tq is None:
+            return fail("TdxQuant 初始化失败")
+
+        tdx_codes = [data_source._convert_to_tdx_code(normalize_code(c)) for c in stock_codes]
+
+        result = tq.get_financial_data_by_date(
+            stock_list=tdx_codes,
+            field_list=fields,
+            year=year,
+            mmdd=mmdd,
+        )
+
+        if isinstance(result, dict) and result.get("ErrorId") and result.get("ErrorId") != "0":
+            return fail(result.get("Error", "获取财务历史数据失败"))
+
+        return ok({
+            "date": date,
+            "stockCodes": stock_codes,
+            "fields": fields,
+            "source": "tdxquant",
+            "data": result,
+        })
+    except Exception as e:
+        return fail(f"获取财务历史数据异常: {e}")
+
+
+def tdx_get_f10_info(stock_code: str, info_type: int = 0) -> dict:
+    """
+    [TDX] 获取 F10 附加信息
+
+    底层 API: get_more_info(stock_code, info_type)
+    """
+    try:
+        code = normalize_code(stock_code)
+
+        if not data_source.is_tdx_available():
+            return fail("TdxQuant 不可用")
+
+        tq = data_source.get_tdxquant()
+        if tq is None:
+            return fail("TdxQuant 初始化失败")
+
+        tdx_code = data_source._convert_to_tdx_code(code)
+
+        result = None
+        used_method = None
+
+        # 兼容不同 TdxQuant 版本的接口命名和参数签名
+        candidates = [
+            ("get_more_info", (tdx_code, info_type), {"stock_code": tdx_code, "info_type": info_type}),
+            ("get_f10_info", (tdx_code, info_type), {"stock_code": tdx_code, "info_type": info_type}),
+            ("get_company_info", (tdx_code, info_type), {"stock_code": tdx_code, "info_type": info_type}),
+            ("get_company_info", (tdx_code,), {"stock_code": tdx_code}),
+            ("get_stock_info", (tdx_code,), {"stock_code": tdx_code, "field_list": []}),
+            ("get_stock_info", (tdx_code,), {"stock_code": tdx_code}),
+        ]
+
+        last_error = None
+        for method_name, args, kwargs in candidates:
+            method = getattr(tq, method_name, None)
+            if not callable(method):
+                continue
+
+            try:
+                result = method(**kwargs)
+                used_method = method_name
+                break
+            except TypeError:
+                try:
+                    result = method(*args)
+                    used_method = method_name
+                    break
+                except Exception as e:
+                    last_error = e
+            except Exception as e:
+                last_error = e
+
+        if used_method is None:
+            if last_error is not None:
+                return fail(f"当前 TdxQuant 版本不支持 F10 接口调用: {last_error}")
+            return fail("当前 TdxQuant 版本不支持 F10 接口（未找到 get_more_info/get_f10_info/get_company_info）")
+
+        if isinstance(result, dict) and result.get("ErrorId") and result.get("ErrorId") != "0":
+            return fail(result.get("Error", "获取 F10 附加信息失败"))
+
+        return ok({
+            "code": code,
+            "infoType": info_type,
+            "method": used_method,
+            "source": "tdxquant",
+            "data": result,
+        })
+    except Exception as e:
+        return fail(f"获取 F10 附加信息异常: {e}")
+
+
 def register(mcp):
     mcp.tool()(get_financials)
     mcp.tool()(get_stock_info)
+    mcp.tool()(tdx_get_financial_snapshot)
+    mcp.tool()(tdx_get_financial_history)
+    mcp.tool()(tdx_get_f10_info)

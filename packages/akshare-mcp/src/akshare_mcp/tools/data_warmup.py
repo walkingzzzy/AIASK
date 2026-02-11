@@ -1,12 +1,25 @@
 """数据预热工具"""
 
-from typing import Optional, List
-from ..utils import ok, fail
+from datetime import date, timedelta
+from typing import Optional, List, Dict, Any
+
+from ..cache import cache
+from ..services.data_sync import data_sync_service
+from ..utils import ok, fail, normalize_code
+
+
+_LAST_WARMUP_STATE: Dict[str, Any] = {
+    "last_warmup": None,
+    "stocks": [],
+    "lookback_days": None,
+    "include_financials": None,
+    "result": None,
+}
 
 
 def register(mcp):
     """注册数据预热工具"""
-    
+
     @mcp.tool()
     async def data_warmup(
         action: str,
@@ -17,36 +30,80 @@ def register(mcp):
     ):
         """
         数据预热
-        
+
         Args:
             action: 操作 ('warmup', 'status', 'clear')
             stocks: 股票代码列表
             lookback_days: 回溯天数
-            force_update: 强制更新
-            include_financials: 包含财务数据
+            force_update: 强制更新（会先清理缓存）
+            include_financials: 包含财务数据（当前仅记录参数，后续可扩展）
         """
         try:
-            if action == 'warmup':
+            action = str(action or "").strip().lower()
+
+            if action == "warmup":
+                normalized_stocks = [normalize_code(s) for s in (stocks or []) if str(s).strip()]
+                if not normalized_stocks:
+                    return fail("stocks is empty")
+
+                lookback_days = max(1, int(lookback_days or 250))
+                end_date = date.today()
+                start_date = end_date - timedelta(days=lookback_days)
+
+                if force_update:
+                    cache.clear()
+
+                sync_result = await data_sync_service.sync_stock_klines(
+                    codes=normalized_stocks,
+                    start_date=start_date.isoformat(),
+                    end_date=end_date.isoformat(),
+                    period="daily",
+                )
+
+                _LAST_WARMUP_STATE.update(
+                    {
+                        "last_warmup": end_date.isoformat(),
+                        "stocks": normalized_stocks,
+                        "lookback_days": lookback_days,
+                        "include_financials": bool(include_financials),
+                        "result": sync_result,
+                    }
+                )
+
                 stats = {
-                    'stocks_warmed': len(stocks) if stocks else 0,
-                    'klines_loaded': 0,
-                    'financials_loaded': 0 if include_financials else None
+                    "stocks_warmed": len(normalized_stocks),
+                    "lookback_days": lookback_days,
+                    "period": "daily",
+                    "force_update": bool(force_update),
+                    "include_financials": bool(include_financials),
+                    "sync_result": sync_result,
                 }
                 return ok(stats)
-            
-            elif action == 'status':
+
+            if action == "status":
                 status = {
-                    'last_warmup': None,
-                    'cached_stocks': 0,
-                    'cache_hit_rate': 0.0
+                    "last_warmup": _LAST_WARMUP_STATE.get("last_warmup"),
+                    "last_warmup_stocks": len(_LAST_WARMUP_STATE.get("stocks") or []),
+                    "last_warmup_lookback_days": _LAST_WARMUP_STATE.get("lookback_days"),
+                    "sync_metrics": data_sync_service.get_sync_metrics(),
+                    "cache_stats": cache.get_cache_stats(),
                 }
                 return ok(status)
-            
-            elif action == 'clear':
-                return ok({'cleared': True})
-            
-            else:
-                return fail(f'Unknown action: {action}')
-        
+
+            if action == "clear":
+                cleared_files = cache.clear()
+                _LAST_WARMUP_STATE.update(
+                    {
+                        "last_warmup": None,
+                        "stocks": [],
+                        "lookback_days": None,
+                        "include_financials": None,
+                        "result": None,
+                    }
+                )
+                return ok({"cleared": True, "cache_files_removed": int(cleared_files)})
+
+            return fail(f"Unknown action: {action}")
+
         except Exception as e:
             return fail(str(e))

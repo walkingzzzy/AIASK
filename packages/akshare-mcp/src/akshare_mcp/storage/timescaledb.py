@@ -715,29 +715,29 @@ class TimescaleDBAdapter:
     ) -> List[Dict[str, Any]]:
         """
         查询K线数据
-        
+
         Args:
             code: 股票代码
             start_date: 开始日期 (YYYY-MM-DD 或 YYYY)
             end_date: 结束日期 (YYYY-MM-DD 或 YYYY)
             limit: 限制返回条数
-        
+
         Returns:
             K线数据列表
         """
         from datetime import datetime
-        
+
         async with self.acquire() as conn:
             query = """
-                SELECT 
-                    time, code, open, high, low, close, 
+                SELECT
+                    time, code, open, high, low, close,
                     volume, amount, turnover, change_pct
                 FROM kline_1d
                 WHERE code = $1
             """
             params = [code]
             param_idx = 2
-            
+
             if start_date:
                 # 确保日期格式正确，支持多种格式
                 if isinstance(start_date, str):
@@ -749,7 +749,7 @@ class TimescaleDBAdapter:
                     query += f" AND time >= ${param_idx}::date"
                     params.append(start_date_obj)
                     param_idx += 1
-            
+
             if end_date:
                 # 确保日期格式正确
                 if isinstance(end_date, str):
@@ -761,15 +761,15 @@ class TimescaleDBAdapter:
                     query += f" AND time <= ${param_idx}::date"
                     params.append(end_date_obj)
                     param_idx += 1
-            
+
             query += " ORDER BY time DESC"
-            
+
             if limit:
                 query += f" LIMIT ${param_idx}"
                 params.append(limit)
-            
+
             rows = await conn.fetch(query, *params)
-            
+
             return [
                 {
                     'date': row['time'].strftime('%Y-%m-%d') if isinstance(row['time'], (datetime, date)) else str(row['time']),
@@ -785,6 +785,85 @@ class TimescaleDBAdapter:
                 }
                 for row in rows
             ]
+
+    async def get_klines_batch(
+        self,
+        codes: List[str],
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """批量查询多只股票K线数据（单SQL）。"""
+        from datetime import datetime
+
+        normalized_codes = [str(c).strip() for c in (codes or []) if str(c).strip()]
+        if not normalized_codes:
+            return {}
+
+        async with self.acquire() as conn:
+            params: List[Any] = [normalized_codes]
+            where_clauses = ["code = ANY($1::text[])"]
+            param_idx = 2
+
+            if start_date:
+                if isinstance(start_date, str) and len(start_date) == 4:
+                    start_date = f"{start_date}-01-01"
+                start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d').date()
+                where_clauses.append(f"time >= ${param_idx}::date")
+                params.append(start_date_obj)
+                param_idx += 1
+
+            if end_date:
+                if isinstance(end_date, str) and len(end_date) == 4:
+                    end_date = f"{end_date}-12-31"
+                end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d').date()
+                where_clauses.append(f"time <= ${param_idx}::date")
+                params.append(end_date_obj)
+                param_idx += 1
+
+            limit_filter = ""
+            if limit and int(limit) > 0:
+                limit_filter = f"WHERE rn <= ${param_idx}"
+                params.append(int(limit))
+
+            query = f"""
+                WITH ranked AS (
+                    SELECT
+                        time, code, open, high, low, close,
+                        volume, amount, turnover, change_pct,
+                        ROW_NUMBER() OVER (PARTITION BY code ORDER BY time DESC) AS rn
+                    FROM kline_1d
+                    WHERE {' AND '.join(where_clauses)}
+                )
+                SELECT
+                    time, code, open, high, low, close,
+                    volume, amount, turnover, change_pct
+                FROM ranked
+                {limit_filter}
+                ORDER BY code ASC, time DESC
+            """
+
+            rows = await conn.fetch(query, *params)
+
+        grouped: Dict[str, List[Dict[str, Any]]] = {code: [] for code in normalized_codes}
+        for row in rows:
+            code = row['code']
+            grouped.setdefault(code, []).append(
+                {
+                    'date': row['time'].strftime('%Y-%m-%d') if isinstance(row['time'], (datetime, date)) else str(row['time']),
+                    'code': code,
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': int(row['volume']),
+                    'amount': float(row['amount']) if row['amount'] else None,
+                    'turnover': float(row['turnover']) if row['turnover'] else None,
+                    'change_pct': float(row['change_pct']) if row['change_pct'] else None,
+                }
+            )
+
+        return grouped
     
     async def save_klines(self, code_or_klines, klines: Optional[List[Dict[str, Any]]] = None) -> int:
         """

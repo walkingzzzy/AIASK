@@ -10,8 +10,11 @@ Phase 4 实现 - MCP 服务开发方案
 """
 
 import asyncio
+import json
 import logging
+import os
 import time
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -46,7 +49,7 @@ CACHE_TTL = {
 class DataSyncService:
     """数据同步服务"""
     
-    def __init__(self):
+    def __init__(self, dead_letter_dir: Optional[str] = None):
         self._db = None
         self._sync_lock = None
         self._lock_loop = None  # 跟踪 lock 绑定的事件循环
@@ -62,6 +65,12 @@ class DataSyncService:
         self._retry_backoff_base = 0.5
         self._flush_timeout_seconds = 30
 
+        # dead-letter 配置（持久化失败任务）
+        cache_dir = getattr(cache, "cache_dir", ".mcp_cache")
+        default_dlq_dir = Path(cache_dir) / "dead_letters"
+        self._dead_letter_dir = Path(dead_letter_dir) if dead_letter_dir else default_dlq_dir
+        self._dead_letter_file = self._dead_letter_dir / "kline_save_failures.jsonl"
+
         # 任务追踪指标
         self._metrics: Dict[str, float] = {
             "pending": 0,
@@ -69,6 +78,7 @@ class DataSyncService:
             "fail": 0,
             "retry": 0,
             "lag": 0.0,
+            "dead_letter": 0,
         }
 
     def _get_sync_lock(self) -> asyncio.Lock:
@@ -134,7 +144,7 @@ class DataSyncService:
                 self._metrics["pending"] = self._save_queue.qsize()
 
     async def _save_klines_with_retry(self, item: Dict[str, Any]) -> None:
-        """保存失败自动重试（指数退避）。"""
+        """保存失败自动重试（指数退避），最终失败写入 dead-letter。"""
         stock_code = item["stock_code"]
         klines = item["klines"]
 
@@ -165,12 +175,103 @@ class DataSyncService:
                     "[DataSync] save failed after retries",
                     extra={"code": stock_code, "max_retry": self._max_retry, "error": str(e)},
                 )
+                self._persist_dead_letter(item=item, error=e)
                 return
 
-    def get_sync_metrics(self) -> Dict[str, float]:
-        """返回当前同步指标（pending/success/fail/retry/lag）。"""
-        metrics = dict(self._metrics)
+    def _persist_dead_letter(self, item: Dict[str, Any], error: Exception) -> None:
+        """将最终失败的任务写入 jsonl。"""
+        record = {
+            "stock_code": item.get("stock_code"),
+            "retry": item.get("retry", 0),
+            "enqueued_at": item.get("enqueued_at"),
+            "failed_at": time.time(),
+            "error": str(error),
+            "klines_count": len(item.get("klines") or []),
+            "sample_dates": [
+                str(k.get("date"))
+                for k in (item.get("klines") or [])[:3]
+                if isinstance(k, dict)
+            ],
+        }
+
+        try:
+            os.makedirs(self._dead_letter_dir, exist_ok=True)
+            with open(self._dead_letter_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._metrics["dead_letter"] += 1
+        except Exception as dlq_err:
+            logger.error(
+                "[DataSync] persist dead letter failed",
+                extra={"error": str(dlq_err), "path": str(self._dead_letter_file)},
+            )
+
+    def get_dead_letters(self, limit: int = 20) -> Dict[str, Any]:
+        """读取最近 dead-letter 记录。"""
+        limit = max(1, int(limit or 20))
+        if not self._dead_letter_file.exists():
+            return {
+                "success": True,
+                "path": str(self._dead_letter_file),
+                "count": 0,
+                "records": [],
+            }
+
+        records: List[Dict[str, Any]] = []
+        try:
+            with open(self._dead_letter_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        records.append(json.loads(line))
+                    except Exception:
+                        continue
+
+            if len(records) > limit:
+                records = records[-limit:]
+
+            return {
+                "success": True,
+                "path": str(self._dead_letter_file),
+                "count": len(records),
+                "records": records,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "path": str(self._dead_letter_file),
+                "count": 0,
+                "records": [],
+                "error": str(e),
+            }
+
+    def clear_dead_letters(self) -> Dict[str, Any]:
+        """清空 dead-letter 文件。"""
+        removed = 0
+        try:
+            if self._dead_letter_file.exists():
+                self._dead_letter_file.unlink()
+                removed = 1
+            self._metrics["dead_letter"] = 0
+            return {
+                "success": True,
+                "removed": removed,
+                "path": str(self._dead_letter_file),
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "removed": removed,
+                "path": str(self._dead_letter_file),
+                "error": str(e),
+            }
+
+    def get_sync_metrics(self) -> Dict[str, Any]:
+        """返回当前同步指标（pending/success/fail/retry/lag/dead_letter）。"""
+        metrics: Dict[str, Any] = dict(self._metrics)
         metrics["pending"] = self._save_queue.qsize()
+        metrics["dead_letter_path"] = str(self._dead_letter_file)
         return metrics
 
     async def flush(self, timeout_seconds: Optional[float] = None) -> bool:
@@ -201,6 +302,28 @@ class DataSyncService:
         self._save_workers.clear()
         self._workers_started = False
     
+    def _build_kline_cache_key_v2(
+        self,
+        stock_code: str,
+        period: str,
+        start_date: str,
+        end_date: str,
+        limit: int,
+    ) -> str:
+        """标准化缓存键（namespace + version）。"""
+        return f"kline:v2:{stock_code}:{period}:{start_date}:{end_date}:{limit}"
+
+    def _build_kline_cache_key_legacy(
+        self,
+        stock_code: str,
+        period: str,
+        start_date: str,
+        end_date: str,
+        limit: int,
+    ) -> str:
+        """历史缓存键（兼容读取）。"""
+        return f"kline_{stock_code}_{period}_{start_date}_{end_date}_{limit}"
+
     async def get_kline_with_cache(
         self,
         stock_code: str,
@@ -212,23 +335,28 @@ class DataSyncService:
     ) -> dict:
         """
         获取K线数据（带缓存）
-        
+
         数据流向:
         1. 先查 SimpleCache (短期缓存)
         2. 再查 TimescaleDB (持久缓存)
         3. 缓存未命中则调用 API
         4. 获取后自动写入缓存
         """
-        cache_key = f"kline_{stock_code}_{period}_{start_date}_{end_date}_{limit}"
+        cache_key_v2 = self._build_kline_cache_key_v2(stock_code, period, start_date, end_date, limit)
+        cache_key_legacy = self._build_kline_cache_key_legacy(stock_code, period, start_date, end_date, limit)
         ttl = CACHE_TTL.get("kline_daily", 3600)
-        
-        # 1. 查询 SimpleCache
+
+        # 1. 查询 SimpleCache（优先新key，兼容旧key并回填）
         if use_cache:
-            cached = cache.get(cache_key, ttl)
+            cached = cache.get(cache_key_v2, ttl)
+            if not cached:
+                cached = cache.get(cache_key_legacy, ttl)
+                if cached:
+                    cache.set(cache_key_v2, cached)
             if cached:
                 data = self._filter_and_enrich_klines(cached, start_date, end_date, limit)
                 return {"success": True, "data": data, "source": "simple_cache"}
-        
+
         # 2. 查询 TimescaleDB
         if use_cache:
             try:
@@ -236,8 +364,8 @@ class DataSyncService:
                 db_data = await db.get_klines(stock_code, start_date, end_date, limit)
                 if db_data:
                     data = self._filter_and_enrich_klines(db_data, start_date, end_date, limit)
-                    # 写入 SimpleCache
-                    cache.set(cache_key, data)
+                    # 写入 SimpleCache（统一使用新key）
+                    cache.set(cache_key_v2, data)
                     return {"success": True, "data": data, "source": "timescaledb"}
             except Exception as e:
                 logger.warning(
@@ -247,19 +375,19 @@ class DataSyncService:
 
         # 3. 调用 API 获取数据
         api_data = data_source.get_kline(stock_code, period, limit)
-        
+
         if api_data:
             # 4. 日期过滤 + 补充 change_pct
             data = self._filter_and_enrich_klines(api_data, start_date, end_date, limit)
-            
-            # 5. 写入缓存
-            cache.set(cache_key, data)
-            
+
+            # 5. 写入缓存（统一使用新key）
+            cache.set(cache_key_v2, data)
+
             # 6. 入队异步写入 TimescaleDB（受控队列 + worker）
             await self._enqueue_save_task(stock_code, data)
-            
+
             return {"success": True, "data": data, "source": "api"}
-        
+
         return {"success": False, "data": [], "source": "none", "message": "获取K线数据失败"}
     
     def _filter_and_enrich_klines(self, klines: list, start_date: str, end_date: str, limit: int) -> list:

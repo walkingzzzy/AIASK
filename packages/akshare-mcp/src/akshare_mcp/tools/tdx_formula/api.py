@@ -17,6 +17,49 @@ from .fallback import (
 logger = logging.getLogger(__name__)
 
 
+def _tdx_unavailable_hint() -> dict:
+    """当 TDX 不可用时，提供与公式能力缺失一致的引导信息。"""
+    return {
+        "capability": "tdx_not_available",
+        "message": "当前 TdxQuant 不可用，已自动降级到 Python 回退",
+        "data": {},
+        "guidance": {
+            "solutions": [
+                "确认通达信客户端已启动并登录",
+                "确认 TDX_INIT_PATH 指向可用策略脚本并 initialize 成功",
+            ],
+            "alternatives": [
+                "继续使用 Python 回退（支持 MACD/KDJ/RSI/BOLL 等常见指标）",
+                "使用 calculate_technical_indicators（AkShare 技术指标计算）",
+            ],
+            "checks": [
+                "检查 data_source.is_tdx_available() 是否为 True",
+                "检查 get_tdxquant() 是否返回实例",
+            ],
+        },
+    }
+
+
+def _attach_formula_guidance(fallback_result: dict, compat_err: dict | None) -> dict:
+    """将公式 API 缺失的结构化引导附加到回退结果。"""
+    if not compat_err:
+        return fallback_result
+
+    merged = dict(fallback_result)
+    merged["capability"] = compat_err.get("capability", "formula_api_not_supported")
+    merged["formula_api"] = {
+        "supported": False,
+        "message": compat_err.get("message", "当前环境不支持 TDX 公式 API"),
+        "data": compat_err.get("data", {}),
+        "guidance": compat_err.get("guidance", {}),
+    }
+    merged["message"] = (
+        f"{fallback_result.get('message', '')}；"
+        f"{compat_err.get('message', '当前环境不支持 TDX 公式 API，已自动降级')}"
+    ).strip("；")
+    return merged
+
+
 def calculate_indicator(
     stock_code: str,
     formula_name: str,
@@ -28,11 +71,13 @@ def calculate_indicator(
     """
     计算技术指标公式（TDX 优先，自动回退到 Python）
     """
+    compat_err_ctx = None
     if data_source.is_tdx_available():
         try:
             tq = data_source.get_tdxquant()
             if tq is not None:
                 compat_err = _ensure_formula_api(tq)
+                compat_err_ctx = compat_err
                 if compat_err is None:
                     tdx_code = _convert_to_tdx_code(stock_code)
                     tdx_period = _convert_period(period)
@@ -58,9 +103,13 @@ def calculate_indicator(
         except Exception as e:
             logger.debug(f"TDX formula failed, falling back to Python: {e}")
 
-    return _fallback_calculate_indicator(
+    else:
+        compat_err_ctx = _tdx_unavailable_hint()
+
+    fallback = _fallback_calculate_indicator(
         stock_code, formula_name, formula_args, period, count, dividend_type
     )
+    return _attach_formula_guidance(fallback, compat_err_ctx)
 
 
 def screen_stocks(
@@ -73,11 +122,13 @@ def screen_stocks(
     """
     条件选股公式（TDX 优先，自动回退到 Python 选股引擎）
     """
+    compat_err_ctx = None
     if data_source.is_tdx_available():
         try:
             tq = data_source.get_tdxquant()
             if tq is not None:
                 compat_err = _ensure_formula_api(tq)
+                compat_err_ctx = compat_err
                 if compat_err is None:
                     pool = stock_pool
                     if pool is None or len(pool) == 0:
@@ -128,7 +179,11 @@ def screen_stocks(
         except Exception as e:
             logger.debug(f"TDX screen_stocks failed, falling back to Python: {e}")
 
-    return _fallback_screen_stocks(formula_name, formula_args, stock_pool, period, count)
+    else:
+        compat_err_ctx = _tdx_unavailable_hint()
+
+    fallback = _fallback_screen_stocks(formula_name, formula_args, stock_pool, period, count)
+    return _attach_formula_guidance(fallback, compat_err_ctx)
 
 
 def get_expert_signals(
@@ -142,11 +197,13 @@ def get_expert_signals(
     """
     获取专家系统信号（TDX 优先，自动回退到 Python）
     """
+    compat_err_ctx = None
     if data_source.is_tdx_available():
         try:
             tq = data_source.get_tdxquant()
             if tq is not None:
                 compat_err = _ensure_formula_api(tq)
+                compat_err_ctx = compat_err
                 if compat_err is None:
                     tdx_code = _convert_to_tdx_code(stock_code)
                     tdx_period = _convert_period(period)
@@ -186,7 +243,11 @@ def get_expert_signals(
         except Exception as e:
             logger.debug(f"TDX expert_signals failed, falling back to Python: {e}")
 
-    return _fallback_expert_signals(stock_code, formula_name, formula_args, period, count)
+    else:
+        compat_err_ctx = _tdx_unavailable_hint()
+
+    fallback = _fallback_expert_signals(stock_code, formula_name, formula_args, period, count)
+    return _attach_formula_guidance(fallback, compat_err_ctx)
 
 
 def get_formula_data(
@@ -198,11 +259,13 @@ def get_formula_data(
     """
     获取公式系统K线数据（TDX 优先，自动回退到 Python）
     """
+    compat_err_ctx = None
     if data_source.is_tdx_available():
         try:
             tq = data_source.get_tdxquant()
             if tq is not None:
                 compat_err = _ensure_formula_api(tq)
+                compat_err_ctx = compat_err
                 if compat_err is None:
                     tdx_code = _convert_to_tdx_code(stock_code)
                     tdx_period = _convert_period(period)
@@ -229,10 +292,16 @@ def get_formula_data(
         except Exception as e:
             logger.debug(f"TDX formula_data failed, falling back to Python: {e}")
 
+    else:
+        compat_err_ctx = _tdx_unavailable_hint()
+
     # Python 回退
     klines = _get_kline_for_fallback(stock_code, period, count)
     if not klines:
-        return {"success": False, "data": [], "message": f"无法获取 {stock_code} 的K线数据"}
+        return _attach_formula_guidance(
+            {"success": False, "data": [], "message": f"无法获取 {stock_code} 的K线数据"},
+            compat_err_ctx,
+        )
 
     klines = sorted(klines, key=lambda x: x.get("date", ""))
     formatted = [
@@ -248,7 +317,7 @@ def get_formula_data(
         for k in klines
     ]
 
-    return {
+    fallback = {
         "success": True,
         "data": formatted,
         "count": len(formatted),
@@ -258,3 +327,4 @@ def get_formula_data(
         "dividend_type": dividend_type,
         "source": "python_fallback",
     }
+    return _attach_formula_guidance(fallback, compat_err_ctx)

@@ -4,6 +4,7 @@ from typing import Optional, List, Dict
 from ..storage import get_db
 from ..services.factor_calculator import factor_calculator
 from ..services import technical_analysis
+from ..services.vector_search import vector_search_engine
 from ..utils import ok, fail
 import statistics
 
@@ -182,115 +183,100 @@ def register(mcp):
     async def search_by_kline(
         code: str,
         days: int = 20,
-        top_n: int = 10
+        top_n: int = 10,
+        search_backend: str = 'python',
+        allow_fallback: bool = True,
     ):
         """
-        基于K线形态搜索相似股票 - 使用价格序列相关性
-        
+        基于K线形态搜索相似股票 - 使用向量搜索引擎。
+
         Args:
             code: 股票代码
             days: K线天数
             top_n: 返回数量
+            search_backend: 检索后端（python/index）
+            allow_fallback: index 失败时是否回退 python
         """
         try:
             db = get_db()
-            
+
             # 1. 获取目标股票K线
             target_klines = await db.get_klines(code, limit=days)
             if not target_klines or len(target_klines) < days:
                 return fail(f'Insufficient kline data for {code}')
-            
-            # 归一化价格序列（使用收益率）
-            target_closes = [k['close'] for k in target_klines]
-            target_returns = [(target_closes[i] - target_closes[i+1]) / target_closes[i+1] 
-                             for i in range(len(target_closes)-1)]
-            
-            if len(target_returns) < 5:
-                return fail('Insufficient data for pattern matching')
-            
+
             # 2. 获取目标股票信息
             target_info = await db.get_stock_info(code)
             target_industry = target_info.get('industry', '') if target_info else ''
-            
+
             # 3. 查找候选股票
             async with db.acquire() as conn:
                 if target_industry:
                     rows = await conn.fetch(
-                        """SELECT code, name FROM stocks 
-                           WHERE industry = $1 AND code != $2 
+                        """SELECT code, name FROM stocks
+                           WHERE industry = $1 AND code != $2
                            LIMIT 100""",
                         target_industry, code
                     )
                 else:
                     rows = await conn.fetch(
-                        """SELECT code, name FROM stocks 
-                           WHERE code != $1 
+                        """SELECT code, name FROM stocks
+                           WHERE code != $1
                            LIMIT 100""",
                         code
                     )
-                
-                candidates = {row['code']: row['name'] for row in rows}
-            
+
+            candidates = {row['code']: row['name'] for row in rows}
             if not candidates:
                 return fail('No candidate stocks found')
-            
-            # 4. 计算形态相似度
-            similarities = []
-            
-            for candidate_code, candidate_name in list(candidates.items())[:50]:
+
+            # 4. 获取候选K线并执行向量检索
+            candidate_klines_dict: Dict[str, List[Dict]] = {}
+            for candidate_code in list(candidates.keys())[:50]:
                 try:
                     candidate_klines = await db.get_klines(candidate_code, limit=days)
-                    if not candidate_klines or len(candidate_klines) < days:
-                        continue
-                    
-                    candidate_closes = [k['close'] for k in candidate_klines]
-                    candidate_returns = [(candidate_closes[i] - candidate_closes[i+1]) / candidate_closes[i+1] 
-                                        for i in range(len(candidate_closes)-1)]
-                    
-                    if len(candidate_returns) < 5:
-                        continue
-                    
-                    # 计算皮尔逊相关系数
-                    min_len = min(len(target_returns), len(candidate_returns))
-                    target_subset = target_returns[:min_len]
-                    candidate_subset = candidate_returns[:min_len]
-                    
-                    # 计算相关系数
-                    mean_target = statistics.mean(target_subset)
-                    mean_candidate = statistics.mean(candidate_subset)
-                    
-                    numerator = sum((target_subset[i] - mean_target) * (candidate_subset[i] - mean_candidate) 
-                                   for i in range(min_len))
-                    
-                    target_var = sum((x - mean_target) ** 2 for x in target_subset)
-                    candidate_var = sum((x - mean_candidate) ** 2 for x in candidate_subset)
-                    
-                    if target_var > 0 and candidate_var > 0:
-                        correlation = numerator / (target_var * candidate_var) ** 0.5
-                        similarity = (correlation + 1) / 2  # 转换到[0,1]区间
-                        
-                        similarities.append({
-                            'code': candidate_code,
-                            'name': candidate_name,
-                            'similarity': round(similarity, 4),
-                            'correlation': round(correlation, 4)
-                        })
-                
-                except Exception as e:
+                    if candidate_klines and len(candidate_klines) >= days:
+                        candidate_klines_dict[candidate_code] = candidate_klines
+                except Exception:
                     continue
-            
-            # 5. 排序并返回
-            similarities.sort(key=lambda x: x['similarity'], reverse=True)
-            
+
+            if not candidate_klines_dict:
+                return fail('No candidate kline data available')
+
+            search_results = vector_search_engine.find_similar_patterns(
+                query_klines=target_klines,
+                candidate_klines_dict=candidate_klines_dict,
+                top_k=top_n,
+                method='returns',
+                metric='correlation',
+                backend=search_backend,
+                allow_fallback=allow_fallback,
+            )
+
+            results = []
+            for item in search_results:
+                candidate_code = item.get('code', '')
+                similarity = float(item.get('similarity', 0.0))
+                results.append({
+                    'code': candidate_code,
+                    'name': candidates.get(candidate_code, ''),
+                    'similarity': round(similarity, 4),
+                    'source': item.get('source', vector_search_engine.last_backend_used),
+                })
+
             return ok({
                 'code': code,
                 'name': target_info.get('name', '') if target_info else '',
                 'days': days,
-                'results': similarities[:top_n],
+                'results': results,
                 'total_candidates': len(candidates),
-                'calculated': len(similarities)
+                'candidate_klines_loaded': len(candidate_klines_dict),
+                'calculated': len(results),
+                'search_backend': search_backend,
+                'actual_backend': vector_search_engine.last_backend_used,
+                'allow_fallback': bool(allow_fallback),
             })
-        
+
         except Exception as e:
             return fail(str(e))
     

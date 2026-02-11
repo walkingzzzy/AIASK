@@ -53,13 +53,36 @@ def tdx_send_file(file_path: str) -> dict:
         if tq is None:
             return {"success": False, "message": "TdxQuant 初始化失败"}
 
-        result = tq.send_file(file=file_path)
+        # 兼容不同版本 TdxQuant 的 send_file 方法签名
+        send_attempts = [
+            ("file", lambda: tq.send_file(file=file_path)),
+            ("file_path", lambda: tq.send_file(file_path=file_path)),
+            ("path", lambda: tq.send_file(path=file_path)),
+            ("positional", lambda: tq.send_file(file_path)),
+        ]
+
+        result = None
+        errors = []
+        for method_name, send_call in send_attempts:
+            try:
+                result = send_call()
+                break
+            except TypeError as te:
+                errors.append(f"{method_name}: {te}")
+                continue
+            except Exception as e:
+                return {"success": False, "message": f"发送失败({method_name}): {e}"}
+
+        if result is None:
+            return {
+                "success": False,
+                "message": "send_file 参数签名不兼容，尝试 file/file_path/path/positional 均失败: " + " | ".join(errors),
+            }
 
         if isinstance(result, dict):
             if result.get("ErrorId") == "0":
                 return {"success": True, "message": f"文件已发送到通达信客户端: {file_path}"}
-            else:
-                return {"success": False, "message": f"发送失败: {result.get('Error', result.get('Msg', '未知错误'))}"}
+            return {"success": False, "message": f"发送失败: {result.get('Error', result.get('Msg', '未知错误'))}"}
 
         return {"success": True, "message": f"文件已发送到通达信客户端: {file_path}"}
     except Exception as e:

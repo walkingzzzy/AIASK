@@ -105,30 +105,42 @@ class FactorCalculatorExtended:
         }
     
     @staticmethod
-    def calculate_volatility_factors(klines: List[Dict[str, Any]]) -> Dict[str, float]:
+    def calculate_volatility_factors(
+        klines: List[Dict[str, Any]],
+        market_returns: Optional[List[float]] = None,
+    ) -> Dict[str, float]:
         """
         波动率因子
         - volatility: 历史波动率
-        - beta: 市场Beta
+        - beta: 市场Beta（使用真实基准收益序列）
         - downside_risk: 下行风险
+
+        Args:
+            klines: K线数据
+            market_returns: 真实市场收益率序列（可选）
         """
         closes = np.array([k['close'] for k in klines])
-        
+
         # 历史波动率（20日）
         if len(closes) >= 20:
             returns = np.diff(closes[-20:]) / closes[-20:-1]
             volatility = np.std(returns) * np.sqrt(252)
         else:
             volatility = 0.0
-        
-        # Beta（简化计算，假设市场收益率）
+
+        # Beta（使用真实市场收益率序列；无可用数据时确定性降级）
+        beta = 1.0
         if len(closes) >= 60:
             stock_returns = np.diff(closes[-60:]) / closes[-60:-1]
-            market_returns = np.random.normal(0.001, 0.02, len(stock_returns))  # 模拟市场收益
-            beta = np.cov(stock_returns, market_returns)[0, 1] / np.var(market_returns)
-        else:
-            beta = 1.0
-        
+            if market_returns:
+                market = np.array(market_returns, dtype=float)
+                if len(market) >= len(stock_returns):
+                    market = market[-len(stock_returns):]
+                if len(market) == len(stock_returns):
+                    market_var = np.var(market)
+                    if market_var > 1e-12:
+                        beta = np.cov(stock_returns, market)[0, 1] / market_var
+
         # 下行风险（负收益的标准差）
         if len(closes) >= 20:
             returns = np.diff(closes[-20:]) / closes[-20:-1]
@@ -136,7 +148,7 @@ class FactorCalculatorExtended:
             downside_risk = np.std(negative_returns) if len(negative_returns) > 0 else 0.0
         else:
             downside_risk = 0.0
-        
+
         return {
             'volatility': float(volatility),
             'beta': float(beta),
@@ -257,7 +269,8 @@ class FactorCalculatorExtended:
     def calculate_all_factors(
         klines: List[Dict[str, Any]],
         stock_info: Optional[Dict[str, Any]] = None,
-        financials: Optional[List[Dict[str, Any]]] = None
+        financials: Optional[List[Dict[str, Any]]] = None,
+        market_returns: Optional[List[float]] = None,
     ) -> Dict[str, Any]:
         """计算所有因子"""
         
@@ -268,7 +281,10 @@ class FactorCalculatorExtended:
             factors['momentum'] = FactorCalculatorExtended.calculate_momentum_factors(klines)
             factors['volume'] = FactorCalculatorExtended.calculate_volume_factors(klines)
             factors['price'] = FactorCalculatorExtended.calculate_price_factors(klines)
-            factors['volatility'] = FactorCalculatorExtended.calculate_volatility_factors(klines)
+            factors['volatility'] = FactorCalculatorExtended.calculate_volatility_factors(
+                klines,
+                market_returns=market_returns,
+            )
         
         # 基本面因子
         if financials:
