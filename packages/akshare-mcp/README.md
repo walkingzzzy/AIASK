@@ -2,7 +2,7 @@
 
 🎉 **完整的A股量化分析服务器** - 集成数据获取、技术分析、回测系统、因子分析、组合优化、智能分析于一体
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-success.svg)](.)
 
@@ -49,11 +49,172 @@
 
 ## 🚀 快速开始
 
-### 安装
+### 📦 安装依赖
+
+#### 方式1：使用 uv（推荐）
 ```bash
 cd packages/akshare-mcp
+
+# 安装依赖（uv会自动创建虚拟环境）
+uv sync
+```
+
+#### 方式2：使用 pip + venv
+```bash
+cd packages/akshare-mcp
+
+# 创建虚拟环境
+python -m venv .venv
+
+# 激活虚拟环境
+# Windows:
+.venv\Scripts\activate
+# Linux/Mac:
+source .venv/bin/activate
+
+# 安装依赖
 pip install -r requirements.txt
 ```
+
+---
+
+### 🚀 启动MCP服务
+
+#### 方式1：使用 uv 启动（推荐）
+```bash
+cd packages/akshare-mcp
+
+# uv会自动管理虚拟环境并启动服务
+uv run python start_server.py
+```
+
+#### 方式2：使用虚拟环境启动
+```bash
+cd packages/akshare-mcp
+
+# 激活虚拟环境
+# Windows:
+.venv\Scripts\activate
+# Linux/Mac:
+source .venv/bin/activate
+
+# 启动服务
+python start_server.py
+```
+
+#### 方式3：直接运行（需要已安装依赖）
+```bash
+cd packages/akshare-mcp
+python start_server.py
+```
+
+**启动成功标志**：
+```
+============================================================
+AKShare MCP Server v2
+============================================================
+Python版本: 3.12.x
+工作目录: /path/to/packages/akshare-mcp
+============================================================
+
+启动服务器...
+```
+
+---
+
+### ⚙️ 环境配置
+
+在 `packages/akshare-mcp/.env` 文件中配置以下环境变量：
+
+```bash
+# 数据库配置（必需）
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=stockdb
+DB_USER=postgres
+DB_PASSWORD=your_password
+
+# Tushare Token（可选，用于获取更多数据）
+TUSHARE_TOKEN=your_tushare_token
+
+# TDX配置（可选）
+TDX_HOST=119.147.212.81
+TDX_PORT=7709
+```
+
+**注意**：
+- 如果没有 `.env` 文件，请复制 `.env.example` 并修改
+- 数据库配置是必需的，否则部分功能无法使用
+- Tushare Token 可在 [Tushare官网](https://tushare.pro/) 注册获取
+
+---
+
+### 🔍 验证服务状态
+
+启动服务后，可以通过以下方式验证：
+
+#### 1. 检查服务日志
+服务启动后会显示：
+- Python版本信息
+- 工作目录路径
+- 服务器启动状态
+
+#### 2. 测试数据库连接
+```bash
+cd packages/akshare-mcp
+python scripts/verify_db_connection.py
+```
+
+#### 3. 运行测试套件
+```bash
+cd packages/akshare-mcp
+pytest tests/ -v
+```
+
+---
+
+### 🐛 常见问题
+
+#### 问题1：找不到模块 `akshare_mcp`
+**解决方案**：
+```bash
+# 确保在正确的目录
+cd packages/akshare-mcp
+
+# 使用 uv 运行
+uv run python start_server.py
+
+# 或者安装为可编辑模式
+pip install -e .
+```
+
+#### 问题2：数据库连接失败
+**解决方案**：
+1. 检查 `.env` 文件中的数据库配置
+2. 确保 PostgreSQL 服务正在运行
+3. 验证数据库用户名和密码正确
+4. 运行 `python scripts/verify_db_connection.py` 诊断
+
+#### 问题3：依赖包版本冲突
+**解决方案**：
+```bash
+# 使用 uv 重新同步依赖
+uv sync --reinstall
+
+# 或者重新创建虚拟环境
+rm -rf .venv
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+# 或 .venv\Scripts\activate  # Windows
+pip install -r requirements.txt
+```
+
+#### 问题4：端口被占用
+**解决方案**：
+- MCP服务使用stdio通信，不占用网络端口
+- 如果是数据库端口冲突，修改 `.env` 中的 `DB_PORT`
+
+---
 
 ### 基础使用
 ```python
@@ -77,6 +238,10 @@ print(f"收益率: {result['data']['total_return']:.2%}")
 ```
 
 详细教程请查看 [快速开始指南](GETTING_STARTED.md)
+
+### Cursor MCP 与 Conda/venv 环境统一
+
+若本机有 Conda、MCP 又使用虚拟环境，希望 MCP 使用**项目源码和 .env**，请按 [CURSOR_MCP_SETUP.md](CURSOR_MCP_SETUP.md) 配置：用 **Conda 或 venv 的 Python 直接运行 `start_server.py`**，并设置 **cwd** 为 `packages/akshare-mcp`。也可使用 `run_mcp.sh` 自动选择 Conda/venv。
 
 ---
 
@@ -192,7 +357,7 @@ diagnosis = nlp_query_engine.diagnose_stock(query, stock_data)
 ## 🏗️ 架构
 
 ### 技术栈
-- **语言**: Python 3.10+
+- **语言**: Python 3.12+
 - **框架**: FastMCP
 - **数据库**: PostgreSQL + TimescaleDB
 - **并行**: Ray
@@ -254,6 +419,14 @@ make test-perf
 pytest tests/ -v
 pytest tests/ -v --benchmark-only
 ```
+
+### 数据源测试
+在项目根目录下运行数据源完整性测试（Tushare Pro/Legacy、Baostock、eFinance、AKShare 及 DataSourceManager 整合接口）：
+```bash
+# 从仓库根目录执行（会加载 packages/akshare-mcp/src 并读取 .env）
+python scripts/test_data_sources.py
+```
+需在 `packages/akshare-mcp/.env` 中配置 `TUSHARE_TOKEN` 后 Tushare Pro 测试才会执行；其他数据源无需配置即可尝试。
 
 ### 测试覆盖
 - ✅ 单元测试: 50+个
@@ -398,6 +571,20 @@ python -m akshare_mcp.server
   }
 }
 ```
+
+### Cursor 中数据库连不上时
+
+依赖数据库的工具（search_stocks、valuation、Manager 等）需要正确连接 PostgreSQL/TimescaleDB。若出现 `password authentication failed for user "postgres"`：
+
+1. **确保 MCP 从项目内启动且能读到 .env**：在 Cursor 的 MCP 配置里把 `command` 设为在**项目根目录**下执行，例如：
+   - `command`: `uvx` 或 `python`，`args`: `["--from", "packages/akshare-mcp", "akshare-mcp"]` 或 `["-m", "akshare_mcp.server"]`，并确认**工作目录为项目根**（含 `packages/akshare-mcp/.env` 的目录的上一级）。
+
+2. **或显式传入环境变量**：在 MCP 配置里为该 server 设置 `env`，例如：
+   - `DB_PASSWORD`: 你的数据库密码（与 `packages/akshare-mcp/.env` 中一致）
+   - `DB_NAME`: 数据库名（如 `stockdb`）
+   - 或 `AKSHARE_MCP_ENV`: `.env` 文件的**绝对路径**（如 `/Users/xxx/股票/packages/akshare-mcp/.env`）
+
+保存后**完全重启 Cursor**（或先关闭该 MCP 再重新打开），使新环境生效。
 
 ## 北向资金数据源说明
 

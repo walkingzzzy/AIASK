@@ -1,0 +1,390 @@
+"""
+数据源整合优化模块
+
+Phase 4 实现 - MCP 服务开发方案
+
+功能：
+1. 统一数据访问层 - 先查缓存，再调用 API
+2. TDX 数据自动同步到 TimescaleDB
+3. 智能缓存策略 - 根据数据类型设置不同 TTL
+"""
+
+import asyncio
+import logging
+import time
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+
+from ..storage import get_db
+from ..cache import cache
+from ..data_source import data_source
+
+
+logger = logging.getLogger(__name__)
+
+
+# 数据源优先级配置
+DATA_SOURCE_PRIORITY = [
+    "tdxquant",      # 1. TdxQuant (最优先，实时性最好)
+    "tushare_pro",   # 2. Tushare Pro (数据全面)
+    "eastmoney",     # 3. 东方财富直接 API (全市场行情/板块资金流)
+]
+
+# 缓存 TTL 配置 (秒)
+CACHE_TTL = {
+    "realtime_quote": 5,       # 实时行情 5秒
+    "kline_intraday": 60,      # 分钟K线 1分钟
+    "kline_daily": 3600,       # 日K线 1小时
+    "trading_dates": 86400,    # 交易日历 24小时
+    "ipo_info": 3600,          # IPO信息 1小时
+    "cb_info": 3600,           # 可转债信息 1小时
+    "gb_info": 86400,          # 股本数据 24小时
+    "financial": 86400,        # 财务数据 24小时
+}
+
+
+class DataSyncService:
+    """数据同步服务"""
+    
+    def __init__(self):
+        self._db = None
+        self._sync_lock = None
+        self._lock_loop = None  # 跟踪 lock 绑定的事件循环
+
+        # 落库任务队列与 worker（受控后台任务）
+        self._save_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+        self._save_workers: List[asyncio.Task] = []
+        self._workers_started = False
+        self._stopping = False
+
+        # 重试配置
+        self._max_retry = 3
+        self._retry_backoff_base = 0.5
+        self._flush_timeout_seconds = 30
+
+        # 任务追踪指标
+        self._metrics: Dict[str, float] = {
+            "pending": 0,
+            "success": 0,
+            "fail": 0,
+            "retry": 0,
+            "lag": 0.0,
+        }
+
+    def _get_sync_lock(self) -> asyncio.Lock:
+        """懒加载 asyncio.Lock，确保在当前事件循环内创建"""
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        
+        if self._sync_lock is None or self._lock_loop is not current_loop:
+            self._sync_lock = asyncio.Lock()
+            self._lock_loop = current_loop
+        return self._sync_lock
+    
+    async def get_db(self):
+        """获取数据库连接（TimescaleDBAdapter 内部自动处理事件循环变更）"""
+        if self._db is None:
+            self._db = get_db()
+        # 不需要手动 initialize()，acquire() 内部会自动处理
+        return self._db
+
+    async def _ensure_workers_started(self, worker_count: int = 1) -> None:
+        """确保后台落库 worker 已启动（惰性启动）。"""
+        if self._workers_started:
+            return
+        for idx in range(worker_count):
+            task = asyncio.create_task(self._save_worker(idx))
+            self._save_workers.append(task)
+        self._workers_started = True
+        logger.info("[DataSync] save workers started", extra={"worker_count": worker_count})
+
+    async def _enqueue_save_task(self, stock_code: str, klines: List[Dict]) -> None:
+        """入队异步落库任务，替代裸 create_task 放飞。"""
+        if self._stopping:
+            logger.warning("[DataSync] service stopping, skip enqueue", extra={"code": stock_code})
+            return
+
+        await self._ensure_workers_started()
+        item = {
+            "stock_code": stock_code,
+            "klines": klines,
+            "retry": 0,
+            "enqueued_at": time.time(),
+        }
+        await self._save_queue.put(item)
+        self._metrics["pending"] = self._save_queue.qsize()
+
+    async def _save_worker(self, worker_id: int) -> None:
+        """消费落库队列的后台 worker。"""
+        logger.info("[DataSync] save worker online", extra={"worker_id": worker_id})
+        while True:
+            item = await self._save_queue.get()
+            try:
+                if item.get("_stop"):
+                    logger.info("[DataSync] save worker stopping", extra={"worker_id": worker_id})
+                    return
+
+                lag = max(0.0, time.time() - float(item.get("enqueued_at", time.time())))
+                self._metrics["lag"] = lag
+                await self._save_klines_with_retry(item)
+            finally:
+                self._save_queue.task_done()
+                self._metrics["pending"] = self._save_queue.qsize()
+
+    async def _save_klines_with_retry(self, item: Dict[str, Any]) -> None:
+        """保存失败自动重试（指数退避）。"""
+        stock_code = item["stock_code"]
+        klines = item["klines"]
+
+        for attempt in range(item.get("retry", 0), self._max_retry + 1):
+            try:
+                await self._save_klines_to_db(stock_code, klines)
+                self._metrics["success"] += 1
+                return
+            except Exception as e:
+                if attempt < self._max_retry:
+                    self._metrics["retry"] += 1
+                    backoff = self._retry_backoff_base * (2 ** attempt)
+                    logger.warning(
+                        "[DataSync] save failed, retrying",
+                        extra={
+                            "code": stock_code,
+                            "attempt": attempt + 1,
+                            "max_retry": self._max_retry,
+                            "backoff": backoff,
+                            "error": str(e),
+                        },
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+
+                self._metrics["fail"] += 1
+                logger.error(
+                    "[DataSync] save failed after retries",
+                    extra={"code": stock_code, "max_retry": self._max_retry, "error": str(e)},
+                )
+                return
+
+    def get_sync_metrics(self) -> Dict[str, float]:
+        """返回当前同步指标（pending/success/fail/retry/lag）。"""
+        metrics = dict(self._metrics)
+        metrics["pending"] = self._save_queue.qsize()
+        return metrics
+
+    async def flush(self, timeout_seconds: Optional[float] = None) -> bool:
+        """等待所有已入队任务完成。"""
+        timeout = timeout_seconds if timeout_seconds is not None else self._flush_timeout_seconds
+        try:
+            await asyncio.wait_for(self._save_queue.join(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[DataSync] flush timeout",
+                extra={"timeout": timeout, "pending": self._save_queue.qsize()},
+            )
+            return False
+
+    async def shutdown(self) -> None:
+        """优雅停机：flush 队列并停止 worker。"""
+        self._stopping = True
+        await self.flush()
+
+        if not self._workers_started:
+            return
+
+        for _ in self._save_workers:
+            await self._save_queue.put({"_stop": True})
+
+        await asyncio.gather(*self._save_workers, return_exceptions=True)
+        self._save_workers.clear()
+        self._workers_started = False
+    
+    async def get_kline_with_cache(
+        self,
+        stock_code: str,
+        period: str = "daily",
+        start_date: str = "",
+        end_date: str = "",
+        limit: int = 100,
+        use_cache: bool = True
+    ) -> dict:
+        """
+        获取K线数据（带缓存）
+        
+        数据流向:
+        1. 先查 SimpleCache (短期缓存)
+        2. 再查 TimescaleDB (持久缓存)
+        3. 缓存未命中则调用 API
+        4. 获取后自动写入缓存
+        """
+        cache_key = f"kline_{stock_code}_{period}_{start_date}_{end_date}_{limit}"
+        ttl = CACHE_TTL.get("kline_daily", 3600)
+        
+        # 1. 查询 SimpleCache
+        if use_cache:
+            cached = cache.get(cache_key, ttl)
+            if cached:
+                data = self._filter_and_enrich_klines(cached, start_date, end_date, limit)
+                return {"success": True, "data": data, "source": "simple_cache"}
+        
+        # 2. 查询 TimescaleDB
+        if use_cache:
+            try:
+                db = await self.get_db()
+                db_data = await db.get_klines(stock_code, start_date, end_date, limit)
+                if db_data:
+                    data = self._filter_and_enrich_klines(db_data, start_date, end_date, limit)
+                    # 写入 SimpleCache
+                    cache.set(cache_key, data)
+                    return {"success": True, "data": data, "source": "timescaledb"}
+            except Exception as e:
+                logger.warning(
+                    "[DataSync] TimescaleDB query failed",
+                    extra={"code": stock_code, "error": str(e)},
+                )
+
+        # 3. 调用 API 获取数据
+        api_data = data_source.get_kline(stock_code, period, limit)
+        
+        if api_data:
+            # 4. 日期过滤 + 补充 change_pct
+            data = self._filter_and_enrich_klines(api_data, start_date, end_date, limit)
+            
+            # 5. 写入缓存
+            cache.set(cache_key, data)
+            
+            # 6. 入队异步写入 TimescaleDB（受控队列 + worker）
+            await self._enqueue_save_task(stock_code, data)
+            
+            return {"success": True, "data": data, "source": "api"}
+        
+        return {"success": False, "data": [], "source": "none", "message": "获取K线数据失败"}
+    
+    def _filter_and_enrich_klines(self, klines: list, start_date: str, end_date: str, limit: int) -> list:
+        """过滤日期范围 + 补充 change_pct 字段"""
+        if not klines:
+            return klines
+        
+        # 日期过滤
+        filtered = klines
+        if start_date:
+            sd = start_date.replace('-', '')
+            filtered = [k for k in filtered if str(k.get('date', '')).replace('-', '') >= sd]
+        if end_date:
+            ed = end_date.replace('-', '')
+            filtered = [k for k in filtered if str(k.get('date', '')).replace('-', '') <= ed]
+        
+        # 限制数量
+        if limit and len(filtered) > limit:
+            filtered = filtered[-limit:]
+        
+        # 补充 change_pct（涨跌幅）
+        for i, k in enumerate(filtered):
+            if k.get('change_pct') is None:
+                close = k.get('close')
+                pre_close = None
+                if i > 0:
+                    pre_close = filtered[i - 1].get('close')
+                elif k.get('pre_close'):
+                    pre_close = k.get('pre_close')
+                if close and pre_close and pre_close != 0:
+                    k['change_pct'] = round((close - pre_close) / pre_close * 100, 2)
+                else:
+                    k['change_pct'] = 0
+        
+        return filtered
+    
+    async def _save_klines_to_db(self, stock_code: str, klines: List[Dict]):
+        """保存K线数据到 TimescaleDB（单次尝试，异常上抛给重试层）。"""
+        db = await self.get_db()
+        await db.save_klines(stock_code, klines)
+    
+    async def sync_trading_dates(self, year: int = None) -> dict:
+        """
+        同步交易日历到 TimescaleDB
+        """
+        if year is None:
+            year = datetime.now().year
+        
+        start_date = f"{year}0101"
+        end_date = f"{year}1231"
+        
+        result = data_source.get_trading_dates(
+            start_time=start_date,
+            end_time=end_date
+        )
+        
+        if result.get("success"):
+            dates = result["data"]
+            # 过滤确保只返回指定年份的数据
+            dates = [d for d in dates if str(d).startswith(str(year))]
+            
+            # 判断是否为当前年份且数据不完整
+            import datetime
+            current_year = datetime.datetime.now().year
+            is_current_year = (year == current_year)
+            note = ""
+            if is_current_year and len(dates) < 200:
+                note = f"当前年份数据截至今日，后续交易日将随时间推移自动更新"
+            elif year > current_year:
+                note = f"{year}年为未来年份，交易日历可能尚未完全发布"
+            
+            msg = f"同步 {year} 年交易日历成功，共 {len(dates)} 个交易日"
+            if note:
+                msg += f"（{note}）"
+            
+            return {
+                "success": True,
+                "year": year,
+                "dates": dates,
+                "count": len(dates),
+                "source": result.get("source"),
+                "message": msg,
+                "note": note if note else None,
+            }
+        
+        return result
+    
+    async def sync_stock_klines(
+        self,
+        codes: List[str],
+        start_date: str = "",
+        end_date: str = "",
+        period: str = "daily"
+    ) -> dict:
+        """
+        批量同步股票K线数据
+        """
+        async with self._get_sync_lock():
+            results = {"success": 0, "failed": 0, "errors": []}
+            
+            for code in codes:
+                try:
+                    result = await self.get_kline_with_cache(
+                        stock_code=code,
+                        period=period,
+                        start_date=start_date,
+                        end_date=end_date,
+                        use_cache=False  # 强制从 API 获取
+                    )
+                    if result.get("success"):
+                        results["success"] += 1
+                    else:
+                        results["failed"] += 1
+                        results["errors"].append({"code": code, "error": result.get("message")})
+                except Exception as e:
+                    results["failed"] += 1
+                    results["errors"].append({"code": code, "error": str(e)})
+            
+            return {
+                "success": True,
+                "data": results,
+                "message": f"同步完成: 成功 {results['success']}, 失败 {results['failed']}"
+            }
+
+
+# 全局实例
+data_sync_service = DataSyncService()
+
