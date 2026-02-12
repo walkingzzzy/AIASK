@@ -23,6 +23,7 @@ description: 回测、组合优化、风险分析、压力测试以及组合/回
 # 失败与兜底
 - 股票列表过少：提示扩充样本或降低分组数量。
 - 回测日期缺失：使用工具默认日期或提示用户补充。
+- 工具分流：`run_batch_backtest` 失败时降级为 `run_simple_backtest` 分标的执行；`optimize_portfolio` 失败时先用等权并通过 `risk_manager` 做风险复核。
 
 # 参考
 - 读取 `references/tools.md` 了解参数与返回要点。

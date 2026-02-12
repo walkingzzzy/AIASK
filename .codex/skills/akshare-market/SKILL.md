@@ -22,6 +22,7 @@ description: A股行情、K线、分钟线、盘口、成交明细、涨停、�
 - 未找到代码：要求用户明确代码或先执行 `search_stocks`。
 - 日期不合法：要求使用 YYYY-MM-DD 或 YYYYMMDD。
 - 周期不合法：提示可用周期（daily/weekly/monthly/1m/5m/15m/30m/60m）。
+- 工具分流：`get_realtime_quote` 失败时改用 `get_batch_quotes`（单标的）或 `get_kline` 最新收盘近似；`get_order_book` 失败时改用 `get_trade_details`。
 
 # 参考
 - 读取 `references/tools.md` 了解参数与返回要点。

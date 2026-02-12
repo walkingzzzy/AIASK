@@ -16,6 +16,7 @@ description: 宏观指标、期权链、预警与情绪的组合编排流程。
 # 失败与兜底
 - 宏观指标不可用：提示更换指标或缩短时间范围。
 - 期权标的不支持：提示仅支持 50ETF/300ETF。
+- 工具分流：`get_option_chain` 失败时改用 `options_manager(action=list)`；预警创建失败时改用 `alerts_manager(action=create)` 并返回可复核参数。
 
 # 参考
 - 预警如需持久化管理，可使用 `alerts_manager`。

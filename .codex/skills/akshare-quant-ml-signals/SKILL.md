@@ -16,6 +16,7 @@ description: 机器学习信号研究的流程与边界，强调可解释性与�
 # 失败与兜底
 - 特征不稳定：提示减少特征或延长样本期。
 - 过拟合风险高：提示进行样本外验证并降低复杂度。
+- 工具分流：`calculate_factor_ic` 失败时改用 `backtest_factor` 评估信号分层收益；`run_batch_backtest` 失败时降级到 `run_simple_backtest`。
 
 # 参考
 - 技术指标与因子工具：`calculate_technical_indicators`、`calculate_factor`。

@@ -16,6 +16,7 @@ description: 费用与成本识别、长期影响评估与敏感性分析。
 # 失败与兜底
 - 无法提供费率：提供默认费率区间并标注不确定性。
 - 数据不足：缩短回测区间或减少标的数量。
+- 工具分流：`run_batch_backtest` 失败时降级为 `run_simple_backtest` 分标的测试；`backtest_manager` 不可用时输出本次参数与结果对照表作为临时留痕。
 
 # 参考
 - 回测参数中的成本模型：`order_cost`、`slippage_rate` 等。

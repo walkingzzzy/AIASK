@@ -14,6 +14,7 @@ description: 量化方法基础能力：时间序列、相关性、协方差与�
 
 # 失败与兜底
 - 历史数据不足：缩短区间或减少标的数量。
+- 工具分流：`analyze_portfolio_risk` 失败时改用 `risk_manager(action=calculate_var)` 与 `stress_test_portfolio` 输出最小风险指标集。
 
 # 参考
 - 组合优化与风险工具：`optimize_portfolio`、`analyze_portfolio_risk`。

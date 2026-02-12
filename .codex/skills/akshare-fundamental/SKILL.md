@@ -21,6 +21,7 @@ description: 基本面、财务指标、估值模型、情绪指数，以及智�
 # 失败与兜底
 - 财务/估值数据为空：提示数据源可能缺失，建议改用 `get_stock_info` 基础字段。
 - DDM 增长率 >= 要求回报率：要求用户调整参数。
+- 工具分流：`get_financials` 失败时改用 `fundamental_analysis_manager(action=analyze)`；`dcf_valuation`/`ddm_valuation` 失败时降级为 `get_valuation_metrics` + `relative_valuation`。
 
 # 参考
 - 读取 `references/tools.md` 了解参数与返回要点。

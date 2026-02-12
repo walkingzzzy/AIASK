@@ -16,6 +16,7 @@ description: 量化数据工程：数据源确认、质量检查、缺口补齐�
 # 失败与兜底
 - 数据源不可用：提示更换数据源或延后验证。
 - 历史数据不足：缩短区间或使用更高流动性标的。
+- 工具分流：`data_warmup` 失败时按 `sync_kline_data -> batch_sync_klines -> data_sync_manager(action=sync)` 顺序补数。
 
 # 参考
 - 数据预热：`data_warmup`。

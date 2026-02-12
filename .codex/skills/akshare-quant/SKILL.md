@@ -18,6 +18,7 @@ description: 技术指标计算、K线形态识别、因子计算与IC/分组回
 # 失败与兜底
 - 数据不足：提示用户减少周期或选择更高流动性股票。
 - 因子不支持：先返回可用因子列表。
+- 工具分流：`calculate_technical_indicators` 失败时改用 `technical_analysis_manager(action=calculate)`；相似检索失败时按 `search_by_kline -> vector_search_manager(action=similar_stocks)` 分流。
 
 # 参考
 - 读取 `references/tools.md` 了解参数与返回要点。

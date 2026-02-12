@@ -15,6 +15,7 @@ description: 绩效衡量与归因流程，包含收益拆解与风险来源说�
 # 失败与兜底
 - 无基准数据：提示用户提供基准或仅输出绝对绩效。
 - 行业数据缺失：降级为个股与因子层归因。
+- 工具分流：`performance_manager` 失败时改用 `portfolio_manager` + `analyze_portfolio_risk` 组合输出；`get_index_quote` 失败时改用指数历史K线近似基准收益。
 
 # 参考
 - 风险分析工具：`analyze_portfolio_risk`。

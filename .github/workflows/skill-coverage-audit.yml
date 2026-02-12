@@ -1,0 +1,46 @@
+name: Skill Coverage Audit
+
+on:
+  pull_request:
+    paths:
+      - ".codex/skills/**"
+      - ".codex/skills/_meta/coverage_baseline.json"
+      - "packages/akshare-mcp/src/akshare_mcp/server.py"
+      - "packages/akshare-mcp/src/akshare_mcp/tools/**"
+      - "scripts/skill_coverage_audit.py"
+      - ".github/workflows/skill-coverage-audit.yml"
+  push:
+    branches: ["master", "main"]
+    paths:
+      - ".codex/skills/**"
+      - ".codex/skills/_meta/coverage_baseline.json"
+      - "packages/akshare-mcp/src/akshare_mcp/server.py"
+      - "packages/akshare-mcp/src/akshare_mcp/tools/**"
+      - "scripts/skill_coverage_audit.py"
+      - ".github/workflows/skill-coverage-audit.yml"
+
+jobs:
+  skill-coverage-audit:
+    name: check skills/tool coverage thresholds
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run skill coverage audit
+        run: |
+          python scripts/skill_coverage_audit.py --check-thresholds
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-coverage-audit
+          path: |
+            skill_tool_coverage_runtime.json
+            skill_tool_gap_list.txt
