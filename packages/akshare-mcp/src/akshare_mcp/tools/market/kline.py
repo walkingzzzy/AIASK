@@ -1,6 +1,5 @@
 """K线数据模块"""
 
-import sys
 import re
 import json
 import requests
@@ -16,6 +15,7 @@ from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...core.validators import validate_kline
 from ...data_source import data_source
+from ...utils import safe_stderr_print
 try:
     from ...baostock_api import baostock_client
 except (ImportError, Exception):
@@ -90,7 +90,7 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
             validated_results = [validate_kline(item).model_dump() for item in ds_results]
             return ok(validated_results)
     except Exception as e:
-        print(f"DataSource K-line fetch failed for {code}: {e}", file=sys.stderr)
+        safe_stderr_print(f"DataSource K-line fetch failed for {code}: {e}")
 
     # 2. AkShare 降级
     if ak is not None:
@@ -106,7 +106,7 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
                     validated_results = [validate_kline(item).model_dump() for item in results]
                     return ok(validated_results)
         except Exception as e:
-            print(f"AkShare K-line fetch failed for {code}: {e}", file=sys.stderr)
+            safe_stderr_print(f"AkShare K-line fetch failed for {code}: {e}")
 
         # 2.5 Tencent K线（仅日线）
         if period == "daily" and ak is not None:
@@ -136,7 +136,7 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
                         validated_results = [validate_kline(item).model_dump() for item in results]
                         return ok(validated_results)
             except Exception as e_tx:
-                print(f"Tencent K-line fetch failed for {code}: {e_tx}", file=sys.stderr)
+                safe_stderr_print(f"Tencent K-line fetch failed for {code}: {e_tx}")
 
     # 3. Baostock 降级（仅日线）
     if period == "daily" and baostock_client is not None:
@@ -160,7 +160,7 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
                 validated_results = [validate_kline(item).model_dump() for item in results]
                 return ok(validated_results)
         except Exception as e2:
-            print(f"Baostock K-line fetch failed for {code}: {e2}", file=sys.stderr)
+            safe_stderr_print(f"Baostock K-line fetch failed for {code}: {e2}")
 
     return fail(f"所有数据源均无法获取 {code} 的K线数据")
 
@@ -295,7 +295,7 @@ def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> d
                     return ok(validated_results)
                 # 如果返回的是日线数据（仅日期），跳过
         except Exception as e:
-            print(f"DataSource minute kline fetch failed for {code}: {e}", file=sys.stderr)
+            safe_stderr_print(f"DataSource minute kline fetch failed for {code}: {e}")
 
     results = _get_minute_kline_from_akshare(code, minutes, limit)
     if not results:
@@ -380,7 +380,7 @@ def get_kline_data(
                     validated_results = [validate_kline(item).model_dump() for item in filtered]
                     return ok(validated_results)
         except Exception as e_ds:
-            print(f"DataSource K-line (date range) failed for {code_normalized}: {e_ds}", file=sys.stderr)
+            safe_stderr_print(f"DataSource K-line (date range) failed for {code_normalized}: {e_ds}")
 
         if ak is None:
             return fail(f'无法获取 {code} 的K线数据 (日期范围查询, 所有数据源均失败)')
@@ -497,7 +497,7 @@ def get_index_kline(index_code: str, period: str = "daily", limit: int = 60) -> 
                         if results:
                             return ok(results)
         except Exception as e:
-            print(f"TDX index kline failed for {code}: {e}", file=sys.stderr)
+            safe_stderr_print(f"TDX index kline failed for {code}: {e}")
 
     # 2. AkShare 降级：使用指数专用 API
     if ak is not None:
@@ -531,7 +531,7 @@ def get_index_kline(index_code: str, period: str = "daily", limit: int = 60) -> 
                 if results:
                     return ok(results)
         except Exception as e:
-            print(f"AkShare index kline failed for {code}: {e}", file=sys.stderr)
+            safe_stderr_print(f"AkShare index kline failed for {code}: {e}")
 
     # 3. Tushare 降级
     ts_pro = data_source.get_tushare_pro()
@@ -563,7 +563,6 @@ def get_index_kline(index_code: str, period: str = "daily", limit: int = 60) -> 
                 if results:
                     return ok(results)
         except Exception as e:
-            print(f"Tushare index kline failed for {code}: {e}", file=sys.stderr)
+            safe_stderr_print(f"Tushare index kline failed for {code}: {e}")
 
     return fail(f"所有数据源均无法获取指数 {code} 的K线数据")
-

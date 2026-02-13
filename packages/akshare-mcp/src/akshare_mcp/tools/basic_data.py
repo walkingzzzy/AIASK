@@ -45,13 +45,35 @@ def register(mcp):
             get_trading_dates(start_date="20260101", end_date="20260131")
         """
         try:
+            import datetime as _dt
+
+            def _valid_yyyymmdd(v: Optional[str]) -> bool:
+                if not v:
+                    return True
+                if len(v) != 8 or not v.isdigit():
+                    return False
+                try:
+                    _dt.datetime.strptime(v, "%Y%m%d")
+                    return True
+                except ValueError:
+                    return False
+
+            if not _valid_yyyymmdd(start_date):
+                return fail("start_date 格式错误，应为 YYYYMMDD")
+            if not _valid_yyyymmdd(end_date):
+                return fail("end_date 格式错误，应为 YYYYMMDD")
+            if start_date and end_date and start_date > end_date:
+                return fail("start_date 不能晚于 end_date")
+            if count == 0 or count < -1:
+                return fail("count 仅支持 -1 或正整数")
+
             result = data_source.get_trading_dates(
                 market="SH",
                 start_time=start_date or "",
                 end_time=end_date or "",
                 count=count
             )
-            
+
             if result.get("success"):
                 return ok({
                     "dates": result["data"],

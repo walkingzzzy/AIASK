@@ -66,7 +66,7 @@ def register(mcp):
                         # 波动率
                         target_features['volatility'] = factor_calculator.calculate_volatility(closes[:20])
                         # 趋势
-                        ma20 = technical_analysis.TechnicalAnalysis.calculate_sma(closes, 20)
+                        ma20 = technical_analysis.calculate_sma(closes, 20)
                         if ma20 and len(ma20) > 0:
                             target_features['trend'] = (closes[0] - ma20[-1]) / ma20[-1]
                 except:
@@ -78,13 +78,13 @@ def register(mcp):
             # 3. 查找同行业股票
             async with db.acquire() as conn:
                 rows = await conn.fetch(
-                    """SELECT code, name FROM stocks 
-                       WHERE industry = $1 AND code != $2 
+                    """SELECT stock_code, stock_name FROM stocks
+                       WHERE industry = $1 AND stock_code != $2
                        LIMIT 100""",
                     target_industry, code
                 )
-                candidate_codes = [row['code'] for row in rows]
-                candidate_names = {row['code']: row['name'] for row in rows}
+                candidate_codes = [row['stock_code'] for row in rows]
+                candidate_names = {row['stock_code']: row['stock_name'] for row in rows}
             
             if not candidate_codes:
                 return fail(f'No candidate stocks found in industry: {target_industry}')
@@ -123,7 +123,7 @@ def register(mcp):
                                 closes = [k['close'] for k in klines]
                                 candidate_features['momentum'] = factor_calculator.calculate_momentum(closes[:20])
                                 candidate_features['volatility'] = factor_calculator.calculate_volatility(closes[:20])
-                                ma20 = technical_analysis.TechnicalAnalysis.calculate_sma(closes, 20)
+                                ma20 = technical_analysis.calculate_sma(closes, 20)
                                 if ma20 and len(ma20) > 0:
                                     candidate_features['trend'] = (closes[0] - ma20[-1]) / ma20[-1]
                         except:
@@ -168,7 +168,7 @@ def register(mcp):
             
             return ok({
                 'code': code,
-                'name': target_info.get('name', ''),
+                'name': target_info.get('name') or target_info.get('stock_name', ''),
                 'industry': target_industry,
                 'similar_stocks': similarities[:top_n],
                 'similarity_type': similarity_type,
@@ -213,20 +213,20 @@ def register(mcp):
             async with db.acquire() as conn:
                 if target_industry:
                     rows = await conn.fetch(
-                        """SELECT code, name FROM stocks
-                           WHERE industry = $1 AND code != $2
+                        """SELECT stock_code, stock_name FROM stocks
+                           WHERE industry = $1 AND stock_code != $2
                            LIMIT 100""",
                         target_industry, code
                     )
                 else:
                     rows = await conn.fetch(
-                        """SELECT code, name FROM stocks
-                           WHERE code != $1
+                        """SELECT stock_code, stock_name FROM stocks
+                           WHERE stock_code != $1
                            LIMIT 100""",
                         code
                     )
 
-            candidates = {row['code']: row['name'] for row in rows}
+            candidates = {row['stock_code']: row['stock_name'] for row in rows}
             if not candidates:
                 return fail('No candidate stocks found')
 
@@ -266,7 +266,7 @@ def register(mcp):
 
             return ok({
                 'code': code,
-                'name': target_info.get('name', '') if target_info else '',
+                'name': (target_info.get('name') or target_info.get('stock_name', '')) if target_info else '',
                 'days': days,
                 'results': results,
                 'total_candidates': len(candidates),
@@ -302,26 +302,26 @@ def register(mcp):
             async with db.acquire() as conn:
                 # 多条件搜索
                 rows = await conn.fetch(
-                    """SELECT code, name, industry, market_cap, pe_ratio, pb_ratio
-                       FROM stocks 
-                       WHERE LOWER(code) LIKE $1 
-                          OR LOWER(name) LIKE $1 
+                    """SELECT stock_code, stock_name, industry, market_cap, pe_ratio, pb_ratio
+                       FROM stocks
+                       WHERE LOWER(stock_code) LIKE $1
+                          OR LOWER(stock_name) LIKE $1
                           OR LOWER(industry) LIKE $1
                        ORDER BY market_cap DESC NULLS LAST
                        LIMIT $2""",
                     f'%{query_lower}%', limit
                 )
-                
+
                 results = []
                 for row in rows:
                     # 计算匹配分数
                     score = 0.0
                     match_type = []
-                    
-                    code_lower = row['code'].lower()
-                    name_lower = row['name'].lower() if row['name'] else ''
+
+                    code_lower = row['stock_code'].lower()
+                    name_lower = row['stock_name'].lower() if row['stock_name'] else ''
                     industry_lower = row['industry'].lower() if row['industry'] else ''
-                    
+
                     # 代码完全匹配
                     if code_lower == query_lower:
                         score += 1.0
@@ -329,24 +329,24 @@ def register(mcp):
                     elif query_lower in code_lower:
                         score += 0.8
                         match_type.append('code_partial')
-                    
+
                     # 名称匹配
                     if query_lower in name_lower:
                         score += 0.9
                         match_type.append('name')
-                    
+
                     # 行业匹配
                     if query_lower in industry_lower:
                         score += 0.6
                         match_type.append('industry')
-                    
+
                     # 如果没有匹配，给个基础分
                     if score == 0:
                         score = 0.3
-                    
+
                     results.append({
-                        'code': row['code'],
-                        'name': row['name'],
+                        'code': row['stock_code'],
+                        'name': row['stock_name'],
                         'industry': row['industry'],
                         'market_cap': float(row['market_cap']) if row['market_cap'] else None,
                         'pe_ratio': float(row['pe_ratio']) if row['pe_ratio'] else None,

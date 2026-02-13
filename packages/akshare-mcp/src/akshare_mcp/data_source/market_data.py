@@ -5,11 +5,10 @@
 数据源优先级: TDX → Tushare Pro → AKShare
 """
 
-import sys
 import datetime
 import logging
 
-from ..utils import normalize_code, safe_float, safe_int
+from ..utils import normalize_code, safe_float, safe_int, safe_stderr_print
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +40,27 @@ class MarketDataMixin:
         Returns:
             dict: {"success": bool, "data": list, "source": str, "message": str}
         """
+        def _valid_yyyymmdd(value: str) -> bool:
+            if not value:
+                return True
+            if len(value) != 8 or not value.isdigit():
+                return False
+            try:
+                datetime.datetime.strptime(value, "%Y%m%d")
+                return True
+            except ValueError:
+                return False
+
+        # 参数校验
+        if not _valid_yyyymmdd(start_time):
+            return {"success": False, "data": [], "source": "none", "message": "start_time 格式错误，应为 YYYYMMDD"}
+        if not _valid_yyyymmdd(end_time):
+            return {"success": False, "data": [], "source": "none", "message": "end_time 格式错误，应为 YYYYMMDD"}
+        if start_time and end_time and start_time > end_time:
+            return {"success": False, "data": [], "source": "none", "message": "start_time 不能晚于 end_time"}
+        if count == 0 or count < -1:
+            return {"success": False, "data": [], "source": "none", "message": "count 仅支持 -1 或正整数"}
+
         # 1. 优先使用 TDX
         if self.is_tdx_available():
             try:
@@ -53,14 +73,18 @@ class MarketDataMixin:
                         count=count
                     )
                     if isinstance(result, list):
+                        dates = [str(d) for d in result if str(d)]
+                        dates = sorted(dates)
+                        if count > 0:
+                            dates = dates[-count:]
                         return {
                             "success": True,
-                            "data": result,
+                            "data": dates,
                             "source": "tdx",
-                            "message": f"获取到 {len(result)} 个交易日"
+                            "message": f"获取到 {len(dates)} 个交易日"
                         }
             except Exception as e:
-                print(f"[DataSource] TDX get_trading_dates failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] TDX get_trading_dates failed: {e}")
 
         # 2. 降级到 Tushare Pro
         if self.ts_pro:
@@ -75,7 +99,8 @@ class MarketDataMixin:
                     is_open='1'
                 )
                 if df is not None and not df.empty:
-                    dates = df['cal_date'].tolist()
+                    dates = [str(d) for d in df['cal_date'].tolist() if d]
+                    dates = sorted(dates)
                     if count > 0:
                         dates = dates[-count:]
                     return {
@@ -85,7 +110,7 @@ class MarketDataMixin:
                         "message": f"获取到 {len(dates)} 个交易日"
                     }
             except Exception as e:
-                print(f"[DataSource] Tushare Pro trade_cal failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare Pro trade_cal failed: {e}")
 
         # 3. 降级到 AKShare
         if ak is not None:
@@ -97,6 +122,7 @@ class MarketDataMixin:
                         dates = [d for d in dates if d >= start_time]
                     if end_time:
                         dates = [d for d in dates if d <= end_time]
+                    dates = sorted(dates)
                     if count > 0:
                         dates = dates[-count:]
                     return {
@@ -106,7 +132,7 @@ class MarketDataMixin:
                         "message": f"获取到 {len(dates)} 个交易日"
                     }
             except Exception as e:
-                print(f"[DataSource] AKShare trade_date failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] AKShare trade_date failed: {e}")
 
         return {"success": False, "data": [], "source": "none", "message": "所有数据源均失败"}
 
@@ -139,7 +165,7 @@ class MarketDataMixin:
                             "message": f"获取到 {len(result)} 条申购信息"
                         }
             except Exception as e:
-                print(f"[DataSource] TDX get_ipo_info failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] TDX get_ipo_info failed: {e}")
 
         # 2. 降级到 Tushare Pro (新股)
         if self.ts_pro and ipo_type in (0, 2):
@@ -161,7 +187,7 @@ class MarketDataMixin:
                         "message": f"获取到 {len(data)} 条新股申购信息"
                     }
             except Exception as e:
-                print(f"[DataSource] Tushare Pro new_share failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare Pro new_share failed: {e}")
 
         # 3. 降级到 AKShare
         try:
@@ -211,7 +237,7 @@ class MarketDataMixin:
                     "message": f"获取到 {len(results)} 条申购信息"
                 }
         except Exception as e:
-            print(f"[DataSource] AKShare IPO info failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] AKShare IPO info failed: {e}")
 
         return {"success": False, "data": [], "source": "none", "message": "所有数据源均失败"}
 
@@ -243,7 +269,7 @@ class MarketDataMixin:
                             "message": "获取可转债信息成功"
                         }
             except Exception as e:
-                print(f"[DataSource] TDX get_cb_info failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] TDX get_cb_info failed: {e}")
 
         # 2. 降级到 Tushare Pro
         if self.ts_pro:
@@ -269,7 +295,7 @@ class MarketDataMixin:
                         "message": "获取可转债信息成功"
                     }
             except Exception as e:
-                print(f"[DataSource] Tushare Pro cb_basic failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare Pro cb_basic failed: {e}")
 
         # 3. 降级到 AKShare
         try:
@@ -293,7 +319,7 @@ class MarketDataMixin:
                         "message": "获取可转债信息成功"
                     }
         except Exception as e:
-            print(f"[DataSource] AKShare cb_info failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] AKShare cb_info failed: {e}")
 
         return {"success": False, "data": {}, "source": "none", "message": "所有数据源均失败"}
 
@@ -338,7 +364,7 @@ class MarketDataMixin:
                             "message": f"获取到 {len(result)} 条股本数据"
                         }
             except Exception as e:
-                print(f"[DataSource] TDX get_gb_info failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] TDX get_gb_info failed: {e}")
 
         # 2. 降级到 Tushare Pro
         if self.ts_pro:
@@ -365,7 +391,7 @@ class MarketDataMixin:
                         "message": f"获取到 {len(results)} 条股本数据"
                     }
             except Exception as e:
-                print(f"[DataSource] Tushare Pro daily_basic failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare Pro daily_basic failed: {e}")
 
         # 3. 降级到 AKShare
         try:
@@ -386,6 +412,6 @@ class MarketDataMixin:
                     "message": "获取到 1 条股本数据"
                 }
         except Exception as e:
-            print(f"[DataSource] AKShare stock_info failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] AKShare stock_info failed: {e}")
 
         return {"success": False, "data": [], "source": "none", "message": "所有数据源均失败"}

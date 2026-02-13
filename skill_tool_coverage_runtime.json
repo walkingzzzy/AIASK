@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-02-12T07:21:10+00:00",
+  "generated_at": "2026-02-13T02:34:57+00:00",
   "repo_root": "C:/Users/1/Desktop/股票",
   "tool_source_files": [
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/server.py",
@@ -15,6 +15,7 @@
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/managers/__init__.py",
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/managers/alerts_manager.py",
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/managers/backtest_manager.py",
+    "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/managers/benchmark_manager.py",
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/managers/compliance_manager.py",
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/managers/comprehensive_manager.py",
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/managers/data_sync_manager.py",
@@ -86,10 +87,10 @@
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/valuation.py",
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/vector.py"
   ],
-  "tool_count": 152,
+  "tool_count": 153,
   "skills_count": 20,
   "coverage": {
-    "covered_count": 152,
+    "covered_count": 153,
     "coverage_pct": 100.0,
     "missing_count": 0
   },
@@ -99,8 +100,8 @@
     "coverage_pct": 100.0
   },
   "manager": {
-    "total_count": 30,
-    "covered_count": 30,
+    "total_count": 31,
+    "covered_count": 31,
     "coverage_pct": 100.0
   },
   "all_tools": [
@@ -112,6 +113,7 @@
     "backtest_factor",
     "backtest_manager",
     "batch_sync_klines",
+    "benchmark_manager",
     "calculate_factor",
     "calculate_factor_ic",
     "calculate_fear_greed_index",
@@ -292,6 +294,7 @@
         "available_tools",
         "backtest_manager",
         "batch_sync_klines",
+        "benchmark_manager",
         "check_all_alerts",
         "clear_cache",
         "clear_dead_letters",
@@ -449,6 +452,7 @@
       "file": "C:/Users/1/Desktop/股票/.codex/skills/akshare-performance-attribution/SKILL.md",
       "referenced_tools": [
         "analyze_portfolio_risk",
+        "benchmark_manager",
         "get_index_quote",
         "performance_manager",
         "portfolio_manager"
@@ -477,6 +481,7 @@
       "referenced_tools": [
         "alerts_manager",
         "analyze_portfolio_risk",
+        "benchmark_manager",
         "compliance_manager",
         "data_sync_manager",
         "data_warmup",
@@ -649,6 +654,7 @@
     "backtest_factor",
     "backtest_manager",
     "batch_sync_klines",
+    "benchmark_manager",
     "calculate_factor",
     "calculate_factor_ic",
     "calculate_fear_greed_index",
@@ -874,6 +880,7 @@
   "manager_tools": [
     "alerts_manager",
     "backtest_manager",
+    "benchmark_manager",
     "compliance_manager",
     "comprehensive_manager",
     "data_sync_manager",
@@ -906,6 +913,7 @@
   "covered_manager_by_skills": [
     "alerts_manager",
     "backtest_manager",
+    "benchmark_manager",
     "compliance_manager",
     "comprehensive_manager",
     "data_sync_manager",
@@ -937,15 +945,7 @@
   ],
   "unknown_tool_refs": [],
   "threshold_check": {
-    "enabled": true,
-    "baseline": "C:/Users/1/Desktop/股票/.codex/skills/_meta/coverage_baseline.json",
-    "passed": true,
-    "violations": [],
-    "thresholds": {
-      "min_total_coverage_pct": 90.0,
-      "min_tdx_coverage_count": 30,
-      "min_manager_coverage_count": 25,
-      "max_unknown_tool_refs": 0
-    }
+    "enabled": false,
+    "baseline": "C:/Users/1/Desktop/股票/.codex/skills/_meta/coverage_baseline.json"
   }
 }

@@ -110,9 +110,18 @@ class InitSync:
         self.tdx_available = data_source.is_tdx_available()
         self.start_time = None
 
+    def _safe_print(self, text: str, end: str = "\n", flush: bool = False):
+        """安全输出：避免 Windows/GBK 控制台因特殊字符报编码错误。"""
+        try:
+            print(text, end=end, flush=flush)
+        except UnicodeEncodeError:
+            enc = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+            safe_text = text.encode(enc, errors='replace').decode(enc, errors='replace')
+            print(safe_text, end=end, flush=flush)
+
     def log(self, msg: str):
         ts = datetime.now().strftime('%H:%M:%S')
-        print(f"[{ts}] {msg}")
+        self._safe_print(f"[{ts}] {msg}")
 
     def progress(self, cur: int, total: int, desc: str = ""):
         if total == 0:
@@ -120,8 +129,9 @@ class InitSync:
         pct = cur / total * 100
         bar_len = 40
         filled = int(bar_len * cur / total)
-        bar = "█" * filled + "░" * (bar_len - filled)
-        print(f"\r  [{bar}] {pct:5.1f}% ({cur}/{total}) {desc}", end="", flush=True)
+        # 使用 ASCII 进度条，避免 GBK 环境输出异常
+        bar = "#" * filled + "-" * (bar_len - filled)
+        self._safe_print(f"\r  [{bar}] {pct:5.1f}% ({cur}/{total}) {desc}", end="", flush=True)
 
     # ==================================================================
     # 1. 股票基础信息（同 daily）

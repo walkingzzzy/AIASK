@@ -5,6 +5,7 @@ from ..services import technical_analysis
 from ..services.factor_calculator import factor_calculator
 from ..utils import ok, fail
 import statistics
+import time
 
 
 def register(mcp):
@@ -13,27 +14,61 @@ def register(mcp):
     @mcp.tool()
     async def should_i_buy(
         code: str,
-        investment_style: str = 'balanced'
+        investment_style: str = 'balanced',
+        as_of: str = '',
+        adjust: str = '',
+        price_source_policy: str = 'auto',
+        explain: bool = True,
+        strict_mode: bool = False
     ):
         """
         买入建议 - 综合估值、技术、基本面、因子分析
-        
+
         Args:
             code: 股票代码
             investment_style: 投资风格 ('aggressive'激进, 'balanced'平衡, 'conservative'保守)
+            as_of: 分析时点（可选）
+            adjust: 复权口径（可选）
+            price_source_policy: 价格源策略（可选）
+            explain: 是否返回证据链
+            strict_mode: 严格模式（空值严格处理）
         """
+        start_time = time.perf_counter()
+        trace_id = f"should_i_buy:{code}:{int(time.time() * 1000)}"
+
+        def _with_meta(resp: dict, source_chain: list | None = None) -> dict:
+            resp['meta'] = {
+                'trace_id': trace_id,
+                'tool_version': 'v1.1.0',
+                'data_timestamp': None,
+                'source_chain': source_chain or ['db', 'technical_analysis', 'factor_calculator'],
+                'cached': bool(resp.get('cached', False)),
+                'latency_ms': int((time.perf_counter() - start_time) * 1000),
+                'as_of': as_of,
+                'adjust': adjust,
+                'price_source_policy': price_source_policy,
+                'strict_mode': strict_mode,
+            }
+            return resp
+
+        def _ok(data: dict, source_chain: list | None = None) -> dict:
+            return _with_meta(ok(data), source_chain)
+
+        def _fail(message: str, source_chain: list | None = None) -> dict:
+            return _with_meta(fail(message), source_chain)
+
         try:
             db = get_db()
             
             # 1. 获取基础信息
             stock_info = await db.get_stock_info(code)
             if not stock_info:
-                return fail(f'Stock {code} not found')
+                return _fail(f'Stock {code} not found')
             
             # 2. 获取K线数据
             klines = await db.get_klines(code, limit=100)
             if not klines or len(klines) < 20:
-                return fail('Insufficient kline data')
+                return _fail('Insufficient kline data')
             
             closes = [k['close'] for k in klines]
             volumes = [k['volume'] for k in klines]
@@ -74,7 +109,7 @@ def register(mcp):
             
             # 4. 技术分析
             # RSI
-            rsi_result = technical_analysis.TechnicalAnalysis.calculate_rsi(closes)
+            rsi_result = technical_analysis.calculate_rsi(closes)
             if rsi_result:
                 rsi_value = rsi_result[-1] if isinstance(rsi_result, list) else rsi_result.get('value', 50)
                 if rsi_value < 30:
@@ -86,7 +121,7 @@ def register(mcp):
                     score -= 15
             
             # MACD
-            macd_result = technical_analysis.TechnicalAnalysis.calculate_macd(closes)
+            macd_result = technical_analysis.calculate_macd(closes)
             if macd_result and 'histogram' in macd_result:
                 hist = macd_result['histogram']
                 if len(hist) >= 2:
@@ -99,8 +134,8 @@ def register(mcp):
                         score -= 20
             
             # 均线趋势
-            ma20 = technical_analysis.TechnicalAnalysis.calculate_sma(closes, 20)
-            ma60 = technical_analysis.TechnicalAnalysis.calculate_sma(closes, 60)
+            ma20 = technical_analysis.calculate_sma(closes, 20)
+            ma60 = technical_analysis.calculate_sma(closes, 60)
             if ma20 and ma60 and len(ma20) > 0 and len(ma60) > 0:
                 if closes[-1] > ma20[-1] > ma60[-1]:
                     reasons.append('多头排列，趋势向上')
@@ -201,7 +236,8 @@ def register(mcp):
             
             confidence = max(0, min(100, confidence))
             
-            return ok({
+            analysis_date = klines[0].get('date', '')
+            payload = {
                 'code': code,
                 'name': stock_info.get('name', ''),
                 'recommendation': recommendation,
@@ -213,11 +249,25 @@ def register(mcp):
                 'reasons': reasons,
                 'risks': risks,
                 'investment_style': investment_style,
-                'analysis_date': klines[0].get('date', '')
-            })
+                'analysis_date': analysis_date,
+                'failed_modules': []
+            }
+            if explain:
+                payload['diagnostic'] = {
+                    'trace': [
+                        'valuation',
+                        'technical:rsi/macd/ma',
+                        'fundamental',
+                        'factor:momentum',
+                        f'style:{investment_style}',
+                    ]
+                }
+            result = _ok(payload)
+            result['meta']['data_timestamp'] = analysis_date
+            return result
         
         except Exception as e:
-            return fail(str(e))
+            return _fail(str(e))
     
     @mcp.tool()
     async def should_i_sell(
@@ -279,7 +329,7 @@ def register(mcp):
             
             # 5. 技术分析
             # RSI
-            rsi_result = technical_analysis.TechnicalAnalysis.calculate_rsi(closes)
+            rsi_result = technical_analysis.calculate_rsi(closes)
             if rsi_result:
                 rsi_value = rsi_result[-1] if isinstance(rsi_result, list) else rsi_result.get('value', 50)
                 if rsi_value > 80:
@@ -291,9 +341,9 @@ def register(mcp):
                 elif rsi_value < 30:
                     risks.append(f'RSI超卖({rsi_value:.1f})，可能反弹')
                     score -= 15
-            
+
             # MACD
-            macd_result = technical_analysis.TechnicalAnalysis.calculate_macd(closes)
+            macd_result = technical_analysis.calculate_macd(closes)
             if macd_result and 'histogram' in macd_result:
                 hist = macd_result['histogram']
                 if len(hist) >= 2:
@@ -303,10 +353,10 @@ def register(mcp):
                     elif hist[-2] < 0 and hist[-1] > 0:
                         risks.append('MACD金叉，买入信号')
                         score -= 20
-            
+
             # 均线
-            ma20 = technical_analysis.TechnicalAnalysis.calculate_sma(closes, 20)
-            ma60 = technical_analysis.TechnicalAnalysis.calculate_sma(closes, 60)
+            ma20 = technical_analysis.calculate_sma(closes, 20)
+            ma60 = technical_analysis.calculate_sma(closes, 60)
             if ma20 and ma60 and len(ma20) > 0 and len(ma60) > 0:
                 if closes[-1] < ma20[-1] < ma60[-1]:
                     reasons.append('跌破均线，趋势转弱')

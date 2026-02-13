@@ -115,7 +115,7 @@ def register(mcp):
             technical_signals = []
             
             # RSI
-            rsi_result = technical_analysis.TechnicalAnalysis.calculate_rsi(closes)
+            rsi_result = technical_analysis.calculate_rsi(closes)
             if rsi_result:
                 rsi_value = rsi_result[-1] if isinstance(rsi_result, list) else rsi_result.get('value', 50)
                 if rsi_value < 30:
@@ -127,9 +127,9 @@ def register(mcp):
                 else:
                     technical_signals.append('RSI正常区间')
                     technical_score += 10
-            
+
             # MACD
-            macd_result = technical_analysis.TechnicalAnalysis.calculate_macd(closes)
+            macd_result = technical_analysis.calculate_macd(closes)
             if macd_result and 'histogram' in macd_result:
                 hist = macd_result['histogram']
                 if len(hist) >= 2:
@@ -139,10 +139,10 @@ def register(mcp):
                     elif hist[-2] > 0 and hist[-1] < 0:
                         technical_signals.append('MACD死叉，卖出信号')
                         technical_score -= 20
-            
+
             # 均线
-            ma20 = technical_analysis.TechnicalAnalysis.calculate_sma(closes, 20)
-            ma60 = technical_analysis.TechnicalAnalysis.calculate_sma(closes, 60)
+            ma20 = technical_analysis.calculate_sma(closes, 20)
+            ma60 = technical_analysis.calculate_sma(closes, 60)
             if ma20 and ma60 and len(ma20) > 0 and len(ma60) > 0:
                 if closes[-1] > ma20[-1] > ma60[-1]:
                     technical_signals.append('多头排列，趋势向上')

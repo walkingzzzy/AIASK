@@ -450,8 +450,7 @@ class DataSyncService:
             dates = [d for d in dates if str(d).startswith(str(year))]
             
             # 判断是否为当前年份且数据不完整
-            import datetime
-            current_year = datetime.datetime.now().year
+            current_year = datetime.now().year
             is_current_year = (year == current_year)
             note = ""
             if is_current_year and len(dates) < 200:

@@ -62,14 +62,16 @@ class SchemaBase:
 
         # 若未设置 DB_PASSWORD/DB_NAME，尝试从 .env 加载
         if not os.getenv('DB_PASSWORD') or os.getenv('DB_PASSWORD') == 'password':
+            _env_from_var = os.getenv('AKSHARE_MCP_ENV', '').strip()
             _candidates = [
-                Path(os.getenv('AKSHARE_MCP_ENV', '')),
                 Path(__file__).resolve().parent.parent.parent.parent.parent / '.env',
                 Path.cwd() / 'packages' / 'akshare-mcp' / '.env',
                 Path.cwd() / '.env',
             ]
+            if _env_from_var:
+                _candidates.insert(0, Path(_env_from_var))
             for _env in _candidates:
-                if not _env or not _env.exists():
+                if not _env.exists() or not _env.is_file():
                     continue
                 for line in _env.read_text(encoding='utf-8', errors='replace').splitlines():
                     line = line.strip()

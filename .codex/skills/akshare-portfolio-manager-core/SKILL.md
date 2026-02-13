@@ -31,6 +31,7 @@ description: 顶级基金经理核心流程：目标与约束、组合构建、�
 - 阶段 6（复盘闭环）：
   - 用 `risk_manager(action=calculate_var|stress_test)` 做事后风险复盘。
   - 用 `performance_manager(action=calculate_metrics|benchmark_comparison)` 输出绩效与基准对比。
+  - 用 `benchmark_manager(action=run_daily|get_report)` 输出统一评分与历史报告快照。
   - 必要时用 `data_sync_manager(action=status|sync)` + `get_sync_status` 做数据一致性检查。
 
 # 失败与兜底
@@ -43,4 +44,4 @@ description: 顶级基金经理核心流程：目标与约束、组合构建、�
 - 数据链路异常：`data_sync_manager` 失败时用 `data_warmup` 或 `sync_kline_data` 补齐关键数据。
 
 # 参考
-- 管理器工具：`user_manager`、`research_manager`、`event_manager`、`portfolio_manager`、`compliance_manager`、`execution_manager`、`watchlist_manager`、`live_trading_manager`、`alerts_manager`、`risk_manager`、`performance_manager`、`data_sync_manager`。
+- 管理器工具：`user_manager`、`research_manager`、`event_manager`、`portfolio_manager`、`compliance_manager`、`execution_manager`、`watchlist_manager`、`live_trading_manager`、`alerts_manager`、`risk_manager`、`performance_manager`、`benchmark_manager`、`data_sync_manager`。

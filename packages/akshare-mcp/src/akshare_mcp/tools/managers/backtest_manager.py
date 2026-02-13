@@ -102,15 +102,31 @@ def register_backtest_manager(mcp):
                 from ...services.backtest import backtest_engine
                 
                 initial_capital = kwargs.get('initial_capital', 100000)
-                commission_rate = kwargs.get('commission_rate', 0.0003)
-                
+                commission_rate = kwargs.get('commission_rate', kwargs.get('commission', 0.0003))
+                slippage = kwargs.get('slippage', 0.0)
+                benchmark_code = (kwargs.get('benchmark') or '000300').strip()
+
+                benchmark_klines = []
+                if benchmark_code:
+                    benchmark_normalized = normalize_code(benchmark_code)
+                    benchmark_klines = await db.get_klines(benchmark_normalized, limit=limit)
+                    if not benchmark_klines:
+                        try:
+                            benchmark_klines = data_source.get_kline(benchmark_normalized, 'daily', limit)
+                        except Exception as e:
+                            logger.warning(f"[BacktestManager] Failed to fetch benchmark klines: {e}")
+                            benchmark_klines = []
+
                 supported_strategies = ['ma_cross', 'buy_and_hold', 'momentum', 'rsi']
                 if strategy not in supported_strategies:
                     return fail(f'不支持的策略: {strategy}，支持: {", ".join(supported_strategies)}')
-                
+
                 params = {
                     'initial_capital': initial_capital,
                     'commission': commission_rate,
+                    'slippage': slippage,
+                    'benchmark': benchmark_code,
+                    'benchmark_klines': benchmark_klines,
                     'short_period': kwargs.get('short_period', 5),
                     'long_period': kwargs.get('long_period', 20),
                     'lookback': kwargs.get('lookback', 20),
@@ -119,7 +135,7 @@ def register_backtest_manager(mcp):
                     'oversold': kwargs.get('oversold', 30),
                     'overbought': kwargs.get('overbought', 70),
                 }
-                
+
                 result = backtest_engine.run_backtest(
                     code=code,
                     klines=klines,

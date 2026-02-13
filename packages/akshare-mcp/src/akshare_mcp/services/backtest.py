@@ -290,116 +290,138 @@ class BacktestEngine:
         """运行回测"""
         if not klines:
             return {'success': False, 'error': 'No kline data'}
-        
+
         params = params or {}
-        initial_capital = params.get('initial_capital', 100000)
-        commission = params.get('commission', 0.0003)
-        
+        initial_capital = float(params.get('initial_capital', 100000) or 100000)
+        commission = float(params.get('commission', 0.0003) or 0.0)
+        slippage = float(params.get('slippage', 0.0) or 0.0)
+        total_cost_rate = max(0.0, commission + slippage)
+
+        benchmark = str(params.get('benchmark') or '')
+        benchmark_klines = params.get('benchmark_klines') or []
+        benchmark_return: Optional[float] = None
+        if isinstance(benchmark_klines, list) and benchmark_klines:
+            try:
+                bm_closes = [
+                    float(row.get('close'))
+                    for row in benchmark_klines
+                    if isinstance(row, dict) and row.get('close') is not None
+                ]
+                if len(bm_closes) >= 2 and bm_closes[0] != 0:
+                    benchmark_return = (bm_closes[-1] - bm_closes[0]) / bm_closes[0]
+            except Exception:
+                benchmark_return = None
+
+        def _finalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+            enriched = dict(payload)
+            enriched['commission'] = float(commission)
+            enriched['slippage'] = float(slippage)
+            enriched['total_cost_rate'] = float(total_cost_rate)
+            if benchmark:
+                enriched['benchmark'] = benchmark
+            if benchmark_return is not None:
+                enriched['benchmark_return'] = float(benchmark_return)
+                enriched['excess_return'] = float(enriched.get('total_return', 0.0) - benchmark_return)
+            return enriched
+
         closes = np.array([k['close'] for k in klines])
-        
+
         if strategy == 'ma_cross':
             short_period = params.get('short_period', 5)
             long_period = params.get('long_period', 20)
-            
+
             result = _backtest_ma_cross_jit(
-                closes, short_period, long_period, initial_capital, commission
+                closes, short_period, long_period, initial_capital, total_cost_rate
             )
-            
+
             final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = result
-            
-            return {
-                'success': True,
-                'data': {
-                    'code': code,
-                    'strategy': strategy,
-                    'initial_capital': initial_capital,
-                    'final_capital': float(final_capital),
-                    'total_return': float(total_return),
-                    'max_drawdown': float(max_dd),
-                    'sharpe_ratio': float(sharpe),
-                    'trades_count': int(trades),
-                    'win_rate': float(win_rate),
-                    'params': params,
-                }
+
+            payload = {
+                'code': code,
+                'strategy': strategy,
+                'initial_capital': initial_capital,
+                'final_capital': float(final_capital),
+                'total_return': float(total_return),
+                'max_drawdown': float(max_dd),
+                'sharpe_ratio': float(sharpe),
+                'trades_count': int(trades),
+                'win_rate': float(win_rate),
+                'params': params,
             }
-        
+            return {'success': True, 'data': _finalize_payload(payload)}
+
         elif strategy == 'buy_and_hold':
             final_capital = initial_capital * (closes[-1] / closes[0])
             total_return = (final_capital - initial_capital) / initial_capital
-            
+
             equity = initial_capital * (closes / closes[0])
             peak = np.maximum.accumulate(equity)
             drawdown = (peak - equity) / peak
             max_dd = float(np.max(drawdown))
-            
-            return {
-                'success': True,
-                'data': {
-                    'code': code,
-                    'strategy': strategy,
-                    'initial_capital': initial_capital,
-                    'final_capital': float(final_capital),
-                    'total_return': float(total_return),
-                    'max_drawdown': max_dd,
-                    'sharpe_ratio': 0.0,
-                    'trades_count': 1,
-                    'win_rate': 1.0 if total_return > 0 else 0.0,
-                }
+
+            payload = {
+                'code': code,
+                'strategy': strategy,
+                'initial_capital': initial_capital,
+                'final_capital': float(final_capital),
+                'total_return': float(total_return),
+                'max_drawdown': max_dd,
+                'sharpe_ratio': 0.0,
+                'trades_count': 1,
+                'win_rate': 1.0 if total_return > 0 else 0.0,
+                'params': params,
             }
-        
+            return {'success': True, 'data': _finalize_payload(payload)}
+
         elif strategy == 'momentum':
             lookback = params.get('lookback', 20)
             threshold = params.get('threshold', 0.02)
-            
+
             result = _backtest_momentum_jit(
-                closes, lookback, threshold, initial_capital, commission
+                closes, lookback, threshold, initial_capital, total_cost_rate
             )
-            
+
             final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = result
-            
-            return {
-                'success': True,
-                'data': {
-                    'code': code,
-                    'strategy': strategy,
-                    'initial_capital': initial_capital,
-                    'final_capital': float(final_capital),
-                    'total_return': float(total_return),
-                    'max_drawdown': float(max_dd),
-                    'sharpe_ratio': float(sharpe),
-                    'trades_count': int(trades),
-                    'win_rate': float(win_rate),
-                    'params': params,
-                }
+
+            payload = {
+                'code': code,
+                'strategy': strategy,
+                'initial_capital': initial_capital,
+                'final_capital': float(final_capital),
+                'total_return': float(total_return),
+                'max_drawdown': float(max_dd),
+                'sharpe_ratio': float(sharpe),
+                'trades_count': int(trades),
+                'win_rate': float(win_rate),
+                'params': params,
             }
-        
+            return {'success': True, 'data': _finalize_payload(payload)}
+
         elif strategy == 'rsi':
             rsi_period = params.get('rsi_period', 14)
             oversold = params.get('oversold', 30)
             overbought = params.get('overbought', 70)
-            
+
             result = _backtest_rsi_jit(
-                closes, rsi_period, oversold, overbought, initial_capital, commission
+                closes, rsi_period, oversold, overbought, initial_capital, total_cost_rate
             )
-            
+
             final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = result
-            
-            return {
-                'success': True,
-                'data': {
-                    'code': code,
-                    'strategy': strategy,
-                    'initial_capital': initial_capital,
-                    'final_capital': float(final_capital),
-                    'total_return': float(total_return),
-                    'max_drawdown': float(max_dd),
-                    'sharpe_ratio': float(sharpe),
-                    'trades_count': int(trades),
-                    'win_rate': float(win_rate),
-                    'params': params,
-                }
+
+            payload = {
+                'code': code,
+                'strategy': strategy,
+                'initial_capital': initial_capital,
+                'final_capital': float(final_capital),
+                'total_return': float(total_return),
+                'max_drawdown': float(max_dd),
+                'sharpe_ratio': float(sharpe),
+                'trades_count': int(trades),
+                'win_rate': float(win_rate),
+                'params': params,
             }
-        
+            return {'success': True, 'data': _finalize_payload(payload)}
+
         return {'success': False, 'error': f'Unknown strategy: {strategy}'}
     
     @staticmethod

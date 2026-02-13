@@ -2,6 +2,8 @@
 
 import json
 import logging
+import time
+from datetime import datetime
 from typing import Optional, List, Any
 
 from ...storage import get_db
@@ -38,12 +40,148 @@ def _ensure_serializable(obj: Any) -> Any:
     return obj
 
 
+def _safe_last_numeric(series: Any) -> float | None:
+    """安全获取序列最后一个数值。"""
+    if not isinstance(series, list) or not series:
+        return None
+    val = series[-1]
+    try:
+        return float(val)
+    except Exception:
+        return None
+
+
+def _build_indicator_summary(klines: list[dict], results: dict) -> dict:
+    """基于 MA/RSI/MACD/KDJ/BOLL/ATR 生成摘要。"""
+    if not klines:
+        return {
+            'trend': {'label': 'unknown', 'reason': '缺少K线数据'},
+            'momentum': {'label': 'unknown'},
+            'volatility': {'label': 'unknown'},
+            'signals': [],
+            'suggestion': 'wait',
+            'suggestion_text': '数据不足，建议观望'
+        }
+
+    closes = [float(k.get('close', 0) or 0) for k in klines]
+    latest_close = closes[-1] if closes else 0.0
+
+    ma20 = _safe_last_numeric(results.get('ma'))
+    rsi_val = None
+    if isinstance(results.get('rsi'), dict):
+        try:
+            rsi_val = float(results['rsi'].get('value')) if results['rsi'].get('value') is not None else None
+        except Exception:
+            rsi_val = None
+
+    macd_hist = None
+    if isinstance(results.get('macd'), dict):
+        macd_hist = _safe_last_numeric(results['macd'].get('histogram'))
+
+    atr_val = _safe_last_numeric(results.get('atr'))
+
+    boll_upper = boll_middle = boll_lower = None
+    if isinstance(results.get('boll'), dict):
+        boll_upper = _safe_last_numeric(results['boll'].get('upper'))
+        boll_middle = _safe_last_numeric(results['boll'].get('middle'))
+        boll_lower = _safe_last_numeric(results['boll'].get('lower'))
+
+    signals = []
+    score = 0
+
+    # 趋势
+    trend_label = 'neutral'
+    trend_reason = '趋势中性'
+    if ma20 is not None and latest_close > 0:
+        if latest_close > ma20:
+            trend_label = 'up'
+            trend_reason = '收盘价位于MA20上方'
+            signals.append('MA20上方，趋势偏多')
+            score += 1
+        elif latest_close < ma20:
+            trend_label = 'down'
+            trend_reason = '收盘价位于MA20下方'
+            signals.append('MA20下方，趋势偏空')
+            score -= 1
+
+    # 动量
+    momentum_label = 'neutral'
+    if rsi_val is not None:
+        if rsi_val < 30:
+            momentum_label = 'oversold'
+            signals.append(f'RSI={rsi_val:.1f}，超卖')
+            score += 1
+        elif rsi_val > 70:
+            momentum_label = 'overbought'
+            signals.append(f'RSI={rsi_val:.1f}，超买')
+            score -= 1
+        else:
+            momentum_label = 'normal'
+            signals.append(f'RSI={rsi_val:.1f}，区间正常')
+
+    if macd_hist is not None:
+        if macd_hist > 0:
+            signals.append('MACD柱线为正，动量偏强')
+            score += 1
+        elif macd_hist < 0:
+            signals.append('MACD柱线为负，动量偏弱')
+            score -= 1
+
+    # 波动
+    volatility_label = 'normal'
+    atr_pct = None
+    if atr_val is not None and latest_close > 0:
+        atr_pct = atr_val / latest_close
+        if atr_pct >= 0.04:
+            volatility_label = 'high'
+            signals.append(f'ATR/Close={atr_pct:.2%}，波动较高')
+        elif atr_pct <= 0.015:
+            volatility_label = 'low'
+            signals.append(f'ATR/Close={atr_pct:.2%}，波动较低')
+
+    boll_width_pct = None
+    if boll_upper is not None and boll_lower is not None and boll_middle:
+        try:
+            boll_width_pct = (boll_upper - boll_lower) / float(boll_middle)
+        except Exception:
+            boll_width_pct = None
+
+    if score >= 2:
+        suggestion, suggestion_text = 'buy', '技术面偏强，可关注低吸机会'
+    elif score == 1:
+        suggestion, suggestion_text = 'hold', '技术面小幅偏强，可持有观察'
+    elif score == 0:
+        suggestion, suggestion_text = 'wait', '技术信号分化，建议观望'
+    else:
+        suggestion, suggestion_text = 'sell', '技术面偏弱，注意风险控制'
+
+    return {
+        'trend': {'label': trend_label, 'reason': trend_reason},
+        'momentum': {
+            'label': momentum_label,
+            'rsi': rsi_val,
+            'macd_histogram': macd_hist,
+        },
+        'volatility': {
+            'label': volatility_label,
+            'atr_pct': round(atr_pct, 6) if atr_pct is not None else None,
+            'boll_width_pct': round(boll_width_pct, 6) if boll_width_pct is not None else None,
+        },
+        'signals': signals,
+        'suggestion': suggestion,
+        'suggestion_text': suggestion_text,
+    }
+
+
+
+
+
 def register_technical_analysis_manager(mcp):
     """注册技术分析管理器工具"""
-    
+
     @mcp.tool()
     async def technical_analysis_manager(
-        action: str, 
+        action: str,
         code: Optional[str] = None,
         indicators: Optional[List[str]] = None,
         period: str = 'daily',
@@ -52,7 +190,7 @@ def register_technical_analysis_manager(mcp):
     ):
         """
         技术分析管理器（统一 action + kwargs 协议，连接真实服务）
-        
+
         Args:
             action (str, required): 操作类型，可选 help/calculate/list_indicators/check_patterns
             code (str, optional): 股票代码，calculate 和 check_patterns 时必填
@@ -79,6 +217,7 @@ def register_technical_analysis_manager(mcp):
         """
         try:
             kwargs = _normalize_kwargs(kwargs)
+            action = (action or '').strip()
             code = code or kwargs.get("code") or kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
             if indicators is None:
                 indicators = kwargs.get("indicators")
@@ -95,8 +234,45 @@ def register_technical_analysis_manager(mcp):
                 except Exception:
                     indicators = ["MA", "RSI", "MACD"]
 
+            # 统一可选参数（向后兼容）
+            as_of = kwargs.get('as_of', '')
+            adjust = kwargs.get('adjust', '')
+            price_source_policy = kwargs.get('price_source_policy', 'auto')
+            explain = kwargs.get('explain', True)
+            strict_mode = kwargs.get('strict_mode', False)
+
+            # 统一 meta
+            start_time = time.perf_counter()
+            trace_id = f"technical_analysis_manager:{action}:{int(time.time() * 1000)}"
+            tool_version = "v1.1"
+
+            def _with_meta(resp: dict, source_chain=None, data_timestamp: str | None = None):
+                if source_chain is None:
+                    source_chain = ['technical_analysis_manager']
+                latency_ms = int((time.perf_counter() - start_time) * 1000)
+                resp['meta'] = {
+                    'trace_id': trace_id,
+                    'tool_version': tool_version,
+                    'data_timestamp': data_timestamp or datetime.now().strftime('%Y-%m-%d'),
+                    'source_chain': source_chain,
+                    'cached': False,
+                    'latency_ms': latency_ms,
+                    'as_of': as_of,
+                    'adjust': adjust,
+                    'price_source_policy': price_source_policy,
+                    'explain': explain,
+                    'strict_mode': strict_mode,
+                }
+                return resp
+
+            def _ok(data: dict, source_chain=None, data_timestamp: str | None = None):
+                return _with_meta(ok(data), source_chain, data_timestamp)
+
+            def _fail(message: str, source_chain=None, data_timestamp: str | None = None):
+                return _with_meta(fail(message), source_chain, data_timestamp)
+
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'calculate': '计算技术指标（需要 code, indicators）',
                         'check_patterns': '检测K线形态（需要 code）',
@@ -104,75 +280,108 @@ def register_technical_analysis_manager(mcp):
                         'help': '显示帮助信息',
                     }
                 })
-            
-            elif action == 'calculate' and code:
+
+            elif action == 'calculate':
+                if not code:
+                    return _fail('需要提供股票代码（code）')
+
                 code = normalize_code(code)
                 db = get_db()
-                
+                source_chain = ['timescaledb']
+
                 # 1. 尝试从DB获取K线
                 klines = await db.get_klines(code, limit=limit)
-                
+
                 # 2. DB无数据时自动获取
                 if not klines:
                     logger.info(f"[TechnicalAnalysisManager] Fetching klines for {code}")
                     klines = data_source.get_kline(code, period, limit)
-                    
+                    source_chain = ['data_source']
+
                     # 保存到DB
                     if klines:
                         try:
                             await db.save_klines(code, klines)
                         except Exception as e:
                             logger.warning(f"[TechnicalAnalysisManager] Failed to save klines: {e}")
-                
+
                 if not klines:
-                    return fail(f'无法获取K线数据，请检查股票代码 {code}')
-                
+                    return _fail(f'无法获取K线数据，请检查股票代码 {code}', source_chain=source_chain)
+
                 # 3. 计算技术指标
                 from ...services.technical_analysis import technical_analysis
                 indicators = indicators or ['MA', 'RSI', 'MACD']
-                
+
                 # 检查MACD所需数据量
-                if 'MACD' in indicators and len(klines) < 35:
-                    return fail(f'MACD需要至少35天数据，当前只有{len(klines)}天')
-                
+                if any((str(i).upper() == 'MACD') for i in indicators) and len(klines) < 35:
+                    return _fail(f'MACD需要至少35天数据，当前只有{len(klines)}天', source_chain=source_chain)
+
+                klines = sorted(klines, key=lambda x: x.get('date') or '')
+                analysis_date = (klines[-1].get('date') if klines else None) or datetime.now().strftime('%Y-%m-%d')
                 results = technical_analysis.calculate_all_indicators(klines, indicators)
+                summary = _build_indicator_summary(klines, results)
+
                 out = {
                     **results,
+                    'summary': summary,
                     'code': code,
-                    'data_source': klines[0].get('source', 'unknown') if klines else 'unknown',
-                    'kline_count': len(klines)
+                    'data_source': klines[-1].get('source', 'unknown') if klines else 'unknown',
+                    'kline_count': len(klines),
+                    'analysis_date': analysis_date,
+                    'requested_indicators': indicators,
                 }
-                return ok(_ensure_serializable(out))
-                
-            elif action == 'check_patterns' and code:
+                if explain:
+                    out['diagnostic'] = {
+                        'trace': [
+                            f'code={code}',
+                            f'period={period}',
+                            f'kline_count={len(klines)}',
+                            f'indicators={indicators}',
+                            f'summary_suggestion={summary.get("suggestion")}',
+                        ]
+                    }
+
+                return _ok(
+                    _ensure_serializable(out),
+                    source_chain=source_chain + ['technical_analysis'],
+                    data_timestamp=analysis_date,
+                )
+
+            elif action == 'check_patterns':
+                if not code:
+                    return _fail('需要提供股票代码（code）')
+
                 code = normalize_code(code)
                 db = get_db()
-                
+                source_chain = ['timescaledb']
+
                 # 获取K线
                 klines = await db.get_klines(code, limit=100)
                 if not klines:
                     klines = data_source.get_kline(code, period, 100)
+                    source_chain = ['data_source']
                     if klines:
                         try:
                             await db.save_klines(code, klines)
                         except Exception:
                             pass
-                
+
                 if not klines:
-                    return fail(f'无法获取K线数据，请检查股票代码 {code}')
-                
+                    return _fail(f'无法获取K线数据，请检查股票代码 {code}', source_chain=source_chain)
+
                 # 检测形态
                 from ...services.pattern_recognition import pattern_recognition
                 patterns = pattern_recognition.detect_patterns(klines)
-                
-                return ok(_ensure_serializable({
+                analysis_date = (sorted(klines, key=lambda x: x.get('date') or '')[-1].get('date')) if klines else None
+
+                return _ok(_ensure_serializable({
                     'code': code,
                     'patterns': patterns,
                     'kline_count': len(klines)
-                }))
-                
+                }), source_chain=source_chain + ['pattern_recognition'], data_timestamp=analysis_date)
+
             elif action == 'list_indicators':
-                return ok({
+                return _ok({
                     'indicators': ['MA', 'EMA', 'RSI', 'MACD', 'KDJ', 'BOLL', 'ATR'],
                     'descriptions': {
                         'MA': '移动平均线 - 趋势跟踪指标',
@@ -185,7 +394,7 @@ def register_technical_analysis_manager(mcp):
                     }
                 })
             else:
-                return fail(f'Unknown action: {action}. Supported: help, calculate, check_patterns, list_indicators')
+                return _fail(f'Unknown action: {action}. Supported: help, calculate, check_patterns, list_indicators')
         except Exception as e:
             logger.error(f"[TechnicalAnalysisManager] Error: {e}")
-            return fail(str(e))
+            return _fail(str(e))

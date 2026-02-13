@@ -168,11 +168,13 @@ def register(mcp):
         initial_capital: float = 100000,
         commission: float = 0.0003,
         short_period: int = 5,
-        long_period: int = 20
+        long_period: int = 20,
+        benchmark: str = '000300',
+        slippage: float = 0.0,
     ):
         """
         运行简单回测
-        
+
         Args:
             code: 股票代码
             strategy: 策略名称 ('ma_cross', 'buy_and_hold', 'momentum', 'rsi')
@@ -182,6 +184,8 @@ def register(mcp):
             commission: 手续费率
             short_period: 短期均线周期
             long_period: 长期均线周期
+            benchmark: 基准代码（默认000300）
+            slippage: 滑点成本率（与commission叠加）
         """
         try:
             db = get_db()
@@ -195,21 +199,30 @@ def register(mcp):
 
             if not klines:
                 return fail('No kline data found')
-            
+
+            benchmark_klines: List[Dict[str, Any]] = []
+            benchmark_code = (benchmark or '').strip()
+            if benchmark_code:
+                bm_code = normalize_code(benchmark_code)
+                benchmark_klines, _ = await _fetch_klines(db, bm_code, start_date, end_date)
+
             params = {
                 'initial_capital': initial_capital,
                 'commission': commission,
+                'slippage': slippage,
                 'short_period': short_period,
                 'long_period': long_period,
+                'benchmark': benchmark_code,
+                'benchmark_klines': benchmark_klines,
             }
-            
+
             result = backtest_engine.run_backtest(code, klines, strategy, params)
-            
+
             if result.get('success'):
                 return ok(result['data'])
             else:
                 return fail(result.get('error', 'Backtest failed'))
-        
+
         except Exception as e:
             return fail(str(e))
     

@@ -7,7 +7,6 @@ P1 重构: 核心数据获取函数脱离 AkShare 依赖
 """
 
 import os
-import sys
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -22,6 +21,7 @@ import pandas as pd
 import requests
 
 from ...utils import normalize_code, safe_float, safe_int, pick_value, parse_numeric, parse_date_input
+from ...utils import safe_stderr_print
 
 # 配置常量
 _SPOT_TTL_SECONDS = float(os.getenv("AKSHARE_SPOT_TTL_SECONDS", "2"))
@@ -88,7 +88,7 @@ def run_with_retry(fn, timeouts: list[float]) -> Any:
             return run_with_timeout(fn, timeout)
         except Exception as exc:
             last_error = exc
-            print(f"[helpers] 请求失败 (timeout={timeout}s): {exc}", file=sys.stderr)
+            safe_stderr_print(f"[helpers] 请求失败 (timeout={timeout}s): {exc}")
             if _RETRY_SLEEP_SECONDS > 0:
                 time.sleep(_RETRY_SLEEP_SECONDS)
     if last_error:
@@ -167,7 +167,7 @@ def _fetch_all_a_spot_eastmoney() -> Optional[pd.DataFrame]:
         payload = _eastmoney_get(url, params, timeout=15)
         return _parse_eastmoney_spot(payload)
     except Exception as e:
-        print(f"[helpers] 东财 push2 全市场行情失败: {e}", file=sys.stderr)
+        safe_stderr_print(f"[helpers] 东财 push2 全市场行情失败: {e}")
         return None
 
 
@@ -272,7 +272,7 @@ def _fetch_index_spot_eastmoney() -> Optional[pd.DataFrame]:
             })
         return pd.DataFrame(records) if records else None
     except Exception as e:
-        print(f"[helpers] 东财 push2 指数行情失败: {e}", file=sys.stderr)
+        safe_stderr_print(f"[helpers] 东财 push2 指数行情失败: {e}")
         return None
 
 
@@ -371,7 +371,7 @@ def _fetch_stock_list_tushare() -> Optional[list[dict]]:
                 records.append({"code": code, "name": name})
         return records if records else None
     except Exception as e:
-        print(f"[helpers] Tushare stock_basic 失败: {e}", file=sys.stderr)
+        safe_stderr_print(f"[helpers] Tushare stock_basic 失败: {e}")
         return None
 
 
@@ -394,7 +394,7 @@ def _fetch_stock_list_tdx() -> Optional[list[dict]]:
             records.append({"code": code, "name": ""})
         return records if records else None
     except Exception as e:
-        print(f"[helpers] TDX get_stock_list 失败: {e}", file=sys.stderr)
+        safe_stderr_print(f"[helpers] TDX get_stock_list 失败: {e}")
         return None
 
 

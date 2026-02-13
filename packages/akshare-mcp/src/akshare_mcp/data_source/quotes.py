@@ -5,11 +5,10 @@
 数据源优先级: TDX → Tushare Pro → Tushare legacy → eFinance/Baostock
 """
 
-import sys
 import datetime
 import logging
 
-from ..utils import normalize_code, safe_float, safe_int
+from ..utils import normalize_code, safe_float, safe_int, safe_stderr_print
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +94,7 @@ class QuotesMixin:
                             if turnover_rate is not None:
                                 break
                 except Exception as e:
-                    print(f"[DataSource] Failed to get turnover_rate: {e}", file=sys.stderr)
+                    safe_stderr_print(f"[DataSource] Failed to get turnover_rate: {e}")
 
                 if df is not None and not df.empty:
                     df = df.sort_values("trade_date")
@@ -123,7 +122,7 @@ class QuotesMixin:
                         "source": "tushare_pro",
                     }
             except Exception as e:
-                print(f"[DataSource] Tushare Pro quote failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare Pro quote failed: {e}")
 
         # 2. Tushare legacy
         try:
@@ -149,7 +148,7 @@ class QuotesMixin:
                     "source": "tushare_legacy",
                 }
         except Exception as e:
-            print(f"[DataSource] Tushare legacy quote failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] Tushare legacy quote failed: {e}")
 
         # 3. eFinance
         if ef is not None:
@@ -173,7 +172,7 @@ class QuotesMixin:
                         "source": "efinance"
                     }
             except Exception as e:
-                print(f"[DataSource] eFinance quote failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] eFinance quote failed: {e}")
 
         return None
 
@@ -215,7 +214,7 @@ class QuotesMixin:
                         })
                     return results
             except Exception as e:
-                print(f"[DataSource] Tushare Pro KLine failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare Pro KLine failed: {e}")
 
         # 2. Tushare legacy (仅日线)
         if period == 'daily':
@@ -237,7 +236,7 @@ class QuotesMixin:
                         })
                     return results
             except Exception as e:
-                print(f"[DataSource] Tushare legacy KLine failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare legacy KLine failed: {e}")
 
         # 3. Baostock
         if baostock_client is not None:
@@ -260,7 +259,7 @@ class QuotesMixin:
                         })
                     return results
             except Exception as e:
-                print(f"[DataSource] Baostock KLine failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Baostock KLine failed: {e}")
 
         # 4. eFinance
         if ef is not None:
@@ -281,6 +280,6 @@ class QuotesMixin:
                         })
                     return results
             except Exception as e:
-                print(f"[DataSource] eFinance KLine failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] eFinance KLine failed: {e}")
 
         return []

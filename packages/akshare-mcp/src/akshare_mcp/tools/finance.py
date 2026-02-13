@@ -452,7 +452,7 @@ def tdx_get_f10_info(stock_code: str, info_type: int = 0) -> dict:
     """
     [TDX] 获取 F10 附加信息
 
-    底层 API: get_more_info(stock_code, info_type)
+    底层 API: get_more_info(stock_code)
     """
     try:
         code = normalize_code(stock_code)
@@ -464,45 +464,21 @@ def tdx_get_f10_info(stock_code: str, info_type: int = 0) -> dict:
         if tq is None:
             return fail("TdxQuant 初始化失败")
 
+        # Official doc only guarantees get_more_info(stock_code).
+        # Keep info_type for backward compatibility but do not pass it downstream.
+        if info_type != 0:
+            return fail("当前 TdxQuant F10 接口不支持 info_type，请使用 info_type=0")
+
+        method = getattr(tq, "get_more_info", None)
+        if not callable(method):
+            return fail("当前 TdxQuant 版本不支持 get_more_info 接口")
+
         tdx_code = data_source._convert_to_tdx_code(code)
-
-        result = None
-        used_method = None
-
-        # 兼容不同 TdxQuant 版本的接口命名和参数签名
-        candidates = [
-            ("get_more_info", (tdx_code, info_type), {"stock_code": tdx_code, "info_type": info_type}),
-            ("get_f10_info", (tdx_code, info_type), {"stock_code": tdx_code, "info_type": info_type}),
-            ("get_company_info", (tdx_code, info_type), {"stock_code": tdx_code, "info_type": info_type}),
-            ("get_company_info", (tdx_code,), {"stock_code": tdx_code}),
-            ("get_stock_info", (tdx_code,), {"stock_code": tdx_code, "field_list": []}),
-            ("get_stock_info", (tdx_code,), {"stock_code": tdx_code}),
-        ]
-
-        last_error = None
-        for method_name, args, kwargs in candidates:
-            method = getattr(tq, method_name, None)
-            if not callable(method):
-                continue
-
-            try:
-                result = method(**kwargs)
-                used_method = method_name
-                break
-            except TypeError:
-                try:
-                    result = method(*args)
-                    used_method = method_name
-                    break
-                except Exception as e:
-                    last_error = e
-            except Exception as e:
-                last_error = e
-
-        if used_method is None:
-            if last_error is not None:
-                return fail(f"当前 TdxQuant 版本不支持 F10 接口调用: {last_error}")
-            return fail("当前 TdxQuant 版本不支持 F10 接口（未找到 get_more_info/get_f10_info/get_company_info）")
+        try:
+            result = method(stock_code=tdx_code)
+        except TypeError:
+            # Some builds expose positional-only signatures.
+            result = method(tdx_code)
 
         if isinstance(result, dict) and result.get("ErrorId") and result.get("ErrorId") != "0":
             return fail(result.get("Error", "获取 F10 附加信息失败"))
@@ -510,9 +486,10 @@ def tdx_get_f10_info(stock_code: str, info_type: int = 0) -> dict:
         return ok({
             "code": code,
             "infoType": info_type,
-            "method": used_method,
+            "method": "get_more_info",
             "source": "tdxquant",
             "data": result,
+            "note": "info_type retained for compatibility; call path uses get_more_info(stock_code).",
         })
     except Exception as e:
         return fail(f"获取 F10 附加信息异常: {e}")

@@ -1,6 +1,5 @@
 """盘口数据模块"""
 
-import sys
 import time
 import requests
 from typing import Optional, Any
@@ -11,6 +10,7 @@ from ..market.helpers import (
 from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...data_source import data_source
+from ...utils import safe_stderr_print
 try:
     import akshare as ak
 except ImportError:
@@ -67,7 +67,7 @@ def _get_order_book_tdxquant(code: str) -> Optional[dict]:
             "source": "tdxquant",
         }
     except Exception as e:
-        print(f"[OrderBook] TdxQuant failed: {e}", file=sys.stderr)
+        safe_stderr_print(f"[OrderBook] TdxQuant failed: {e}")
         return None
 
 

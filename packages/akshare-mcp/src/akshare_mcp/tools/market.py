@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -20,6 +19,7 @@ from ..utils import (
     parse_numeric,
     safe_float,
     safe_int,
+    safe_stderr_print,
 )
 from ..data_source import data_source
 from ..baostock_api import baostock_client
@@ -98,7 +98,7 @@ def _run_with_retry(fn, timeouts: list[float]) -> Any:
             return _run_with_timeout(fn, timeout)
         except Exception as exc:
             last_error = exc
-            print(f"[akshare-mcp] 请求失败 (timeout={timeout}s): {exc}", file=sys.stderr)
+            safe_stderr_print(f"[akshare-mcp] 请求失败 (timeout={timeout}s): {exc}")
             if _RETRY_SLEEP_SECONDS > 0:
                 time.sleep(_RETRY_SLEEP_SECONDS)
     if last_error:
@@ -610,13 +610,13 @@ def get_realtime_quote(stock_code: str) -> dict:
                 validated = validate_quote(res)
                 return ok(validated, cached=False)
         except Exception as e:
-            print(f"DataSource quote failed for {code}: {e}", file=sys.stderr)
+            safe_stderr_print(f"DataSource quote failed for {code}: {e}")
 
         # 2. Try AkShare (优化版：优先单只股票接口)
         try:
             res = _get_realtime_quote_akshare(code)
         except (TimeoutError, RuntimeError, Exception) as e:
-            print(f"AkShare quote failed for {code}: {e}", file=sys.stderr)
+            safe_stderr_print(f"AkShare quote failed for {code}: {e}")
             res = None
         if res:
             # Validate data
@@ -624,14 +624,14 @@ def get_realtime_quote(stock_code: str) -> dict:
             return ok(validated, cached=False)
 
         # 3. Try Sina (快速降级，超时3秒)
-        print(f"Trying Sina for {code}...", file=sys.stderr)
+        safe_stderr_print(f"Trying Sina for {code}...")
         res = _get_quote_sina(code)
         if res:
             validated = validate_quote(res)
             return ok(validated, cached=False)
 
         # 4. Try Tencent (最后降级，超时3秒)
-        print(f"Sina failed for {code}, trying Tencent...", file=sys.stderr)
+        safe_stderr_print(f"Sina failed for {code}, trying Tencent...")
         res = _get_quote_tencent(code)
         if res:
             validated = validate_quote(res)
@@ -677,7 +677,7 @@ def _get_realtime_quote_akshare(code: str) -> Optional[dict]:
             }
     except (TimeoutError, RuntimeError, Exception) as e:
         # 超时或失败时继续尝试下一个策略
-        print(f"Minute quote failed for {code}: {e}", file=sys.stderr)
+        safe_stderr_print(f"Minute quote failed for {code}: {e}")
 
     # 策略2: 尝试日K线（单只股票）
     try:
@@ -686,7 +686,7 @@ def _get_realtime_quote_akshare(code: str) -> Optional[dict]:
             daily["source"] = "akshare_daily"
             return daily
     except (TimeoutError, RuntimeError, Exception) as e:
-        print(f"Daily quote failed for {code}: {e}", file=sys.stderr)
+        safe_stderr_print(f"Daily quote failed for {code}: {e}")
 
     # 策略3: 降级到全市场数据（较慢，但数据完整）
     try:
@@ -712,7 +712,7 @@ def _get_realtime_quote_akshare(code: str) -> Optional[dict]:
                     "source": "akshare_spot"
                 }
     except (TimeoutError, RuntimeError, Exception) as e:
-        print(f"Spot market failed for {code}: {e}", file=sys.stderr)
+        safe_stderr_print(f"Spot market failed for {code}: {e}")
         
     return None
 
@@ -880,10 +880,10 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
         validated_results = [validate_kline(item) for item in results]
         return ok(validated_results)
     except Exception as e:
-        print(f"AkShare K-line fetch failed for {code}: {e}", file=sys.stderr)
+        safe_stderr_print(f"AkShare K-line fetch failed for {code}: {e}")
 
         # 2.5 Try DataSource fallback (for non-daily or after AkShare failure)
-        print(f"Trying DataSource K-line fallback for {code}...", file=sys.stderr)
+        safe_stderr_print(f"Trying DataSource K-line fallback for {code}...")
         ds_results = data_source.get_kline(code, period, limit)
         if ds_results:
             validated_results = [validate_kline(item) for item in ds_results]
@@ -922,7 +922,7 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
                         validated_results = [validate_kline(item) for item in results]
                         return ok(validated_results)
             except Exception as e_tx:
-                print(f"Tencent K-line fetch failed for {code}: {e_tx}", file=sys.stderr)
+                safe_stderr_print(f"Tencent K-line fetch failed for {code}: {e_tx}")
         
         # 3. Fallback to Baostock
         # Only supports daily for now easily
@@ -952,7 +952,7 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
                     validated_results = [validate_kline(item) for item in results]
                     return ok(validated_results)
             except Exception as e2:
-                print(f"Baostock K-line fetch failed for {code}: {e2}", file=sys.stderr)
+                safe_stderr_print(f"Baostock K-line fetch failed for {code}: {e2}")
 
         return fail(f"所有数据源均无法获取 {code} 的K线数据")
 

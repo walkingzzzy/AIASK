@@ -120,7 +120,7 @@ def register(mcp):
         count: int = 100,
         dividend_type: int = 1,
     ) -> dict:
-        f"""
+        """
         [TDX] 计算技术指标公式{tool_unavailable_tag}
 
         使用通达信公式系统计算技术指标，支持 MACD、KDJ、RSI、BOLL 等所有通达信内置指标。
@@ -492,7 +492,7 @@ def register(mcp):
         count: int = 100,
         dividend_type: int = 1,
     ) -> dict:
-        f"""
+        """
         [TDX] 获取公式系统K线数据{tool_unavailable_tag}
 
         获取与公式计算相同的基础K线数据，可用于自定义分析。

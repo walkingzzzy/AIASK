@@ -80,13 +80,16 @@ class DataSourceManager:
                     except Exception:
                         pass
             except Exception as e:
-                print(f"[DataSource] Tushare init failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare init failed: {e}")
 
         # efinance doesn't need init
         # baostock needs login (handled in baostock_api.py or lazy)
 
         # TdxQuant 初始化（优先使用 TDX：若已配置插件路径则默认启用）
         self.tdx_plugin_path = os.getenv("TDX_PLUGIN_PATH", "").strip()
+        self.tdx_init_path = os.getenv("TDX_INIT_PATH", "").strip()
+        _tdx_unique_init = os.getenv("TDX_INIT_USE_UNIQUE", "1").strip().lower()
+        self.tdx_init_use_unique = _tdx_unique_init not in ("0", "false", "no")
         _tdx_env = os.getenv("TDX_ENABLED", "").strip().lower()
         if _tdx_env in ("false", "0", "no"):
             self.tdx_enabled = False
@@ -112,13 +115,40 @@ class DataSourceManager:
 
             from tqcenter import tq
             self.tq = tq
-            print("[DataSource] TdxQuant module loaded", file=sys.stderr)
+            safe_stderr_print("[DataSource] TdxQuant module loaded")
         except UnicodeDecodeError as e:
-            print(f"[DataSource] TdxQuant init failed (encoding error, check plugin files are UTF-8): {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant init failed (encoding error, check plugin files are UTF-8): {e}")
             self.tq = None
         except Exception as e:
-            print(f"[DataSource] TdxQuant init failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant init failed: {e}")
             self.tq = None
+
+    def _build_tdx_init_candidates(self) -> list[str]:
+        """Build ordered initialize path candidates to avoid fixed-name strategy conflicts."""
+        paths: list[str] = []
+
+        if self.tdx_init_path:
+            paths.append(self.tdx_init_path)
+
+        if self.tdx_plugin_path and os.path.isdir(self.tdx_plugin_path):
+            if self.tdx_init_use_unique:
+                paths.append(os.path.join(self.tdx_plugin_path, f"mcp_strategy_{os.getpid()}.py"))
+            paths.append(os.path.join(self.tdx_plugin_path, "mcp_strategy.py"))
+
+        paths.append(__file__)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for p in paths:
+            key = str(p).strip()
+            if not key:
+                continue
+            k = key.lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            deduped.append(key)
+        return deduped
 
     def _ensure_tdx_initialized(self) -> bool:
         """确保 TdxQuant 已初始化（懒加载），失败后间隔 60 秒可重试，支持内部重试"""
@@ -132,32 +162,45 @@ class DataSourceManager:
             # 超过 60 秒，重置失败标记，允许重试
             self._tdx_init_failed = False
         if not self._tdx_initialized:
-            import os
             import time
-            init_path = __file__
-            if self.tdx_plugin_path and os.path.isdir(self.tdx_plugin_path):
-                init_path = os.path.join(self.tdx_plugin_path, "mcp_strategy.py")
 
+            init_candidates = self._build_tdx_init_candidates()
             max_retries = 3
-            for attempt in range(1, max_retries + 1):
-                try:
-                    self.tq.initialize(init_path)
-                    self._tdx_initialized = True
-                    if attempt > 1:
-                        print(f"[DataSource] TdxQuant initialized (attempt {attempt})", file=sys.stderr)
-                    else:
-                        print("[DataSource] TdxQuant initialized", file=sys.stderr)
-                    return True
-                except Exception as e:
-                    if attempt < max_retries:
-                        wait = 0.5 * attempt
-                        print(f"[DataSource] TdxQuant init attempt {attempt} failed: {e}, retrying in {wait}s...", file=sys.stderr)
-                        time.sleep(wait)
-                    else:
-                        self._tdx_init_failed = True
-                        self._tdx_fail_time = time.time()
-                        print(f"[DataSource] TdxQuant initialize failed after {max_retries} attempts (will retry after 60s): {e}", file=sys.stderr)
-                        return False
+            last_error = None
+
+            for init_path in init_candidates:
+                safe_stderr_print(f"[DataSource] Calling tq.initialize({init_path})")
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        self.tq.initialize(init_path)
+                        self._tdx_initialized = True
+                        if attempt > 1:
+                            safe_stderr_print(
+                                f"[DataSource] TdxQuant initialized (attempt {attempt}, path={init_path})"
+                            )
+                        else:
+                            safe_stderr_print(f"[DataSource] TdxQuant initialized (path={init_path})")
+                        return True
+                    except Exception as e:
+                        last_error = e
+                        if attempt < max_retries:
+                            wait = 0.5 * attempt
+                            safe_stderr_print(
+                                f"[DataSource] TdxQuant init attempt {attempt} failed on {init_path}: {e}, retrying in {wait}s..."
+                            )
+                            time.sleep(wait)
+                        else:
+                            safe_stderr_print(
+                                f"[DataSource] TdxQuant init path failed after {max_retries} attempts: {init_path}, error: {e}"
+                            )
+
+            self._tdx_init_failed = True
+            self._tdx_fail_time = time.time()
+            safe_stderr_print(
+                f"[DataSource] TdxQuant initialize failed for all candidate paths {init_candidates} "
+                f"(will retry after 60s): {last_error}"
+            )
+            return False
         return True
 
     def is_tdx_available(self) -> bool:
@@ -343,7 +386,7 @@ class DataSourceManager:
                 "source": "tdxquant",
             }
         except Exception as e:
-            print(f"[DataSource] TdxQuant get_stock_info failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant get_stock_info failed: {e}")
             return None
 
     def get_stock_info_priority_tdx(self, code: str) -> Optional[dict]:
@@ -415,7 +458,7 @@ class DataSourceManager:
                 })
             return results
         except Exception as e:
-            print(f"[DataSource] TdxQuant get_divid_factors failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant get_divid_factors failed: {e}")
             return []
 
     def get_sector_list_tdxquant(self) -> list:
@@ -434,7 +477,7 @@ class DataSourceManager:
                 return []
             return result
         except Exception as e:
-            print(f"[DataSource] TdxQuant get_sector_list failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant get_sector_list failed: {e}")
             return []
 
     def get_stock_list_in_sector_tdxquant(self, block_code: str, block_type: int = 0) -> list:
@@ -457,7 +500,7 @@ class DataSourceManager:
                 return []
             return result
         except Exception as e:
-            print(f"[DataSource] TdxQuant get_stock_list_in_sector failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant get_stock_list_in_sector failed: {e}")
             return []
 
     def subscribe_hq_tdxquant(self, stock_list: list, callback=None) -> dict:
@@ -493,7 +536,7 @@ class DataSourceManager:
                     "message": result.get("Error", "订阅失败") if result else "订阅失败",
                 }
         except Exception as e:
-            print(f"[DataSource] TdxQuant subscribe_hq failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant subscribe_hq failed: {e}")
             return {"success": False, "message": str(e)}
 
     # ---- 股票名称缓存 ----
@@ -568,7 +611,7 @@ class DataSourceManager:
                             if turnover_rate is not None:
                                 break
                 except Exception as e:
-                    print(f"[DataSource] Failed to get turnover_rate: {e}", file=sys.stderr)
+                    safe_stderr_print(f"[DataSource] Failed to get turnover_rate: {e}")
                 
                 if df is not None and not df.empty:
                     df = df.sort_values("trade_date")
@@ -596,7 +639,7 @@ class DataSourceManager:
                         "source": "tushare_pro",
                     }
             except Exception as e:
-                print(f"[DataSource] Tushare Pro quote failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare Pro quote failed: {e}")
 
         # 2. 备用: Tushare legacy realtime
         try:
@@ -622,7 +665,7 @@ class DataSourceManager:
                     "source": "tushare_legacy",
                 }
         except Exception as e:
-            print(f"[DataSource] Tushare legacy quote failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] Tushare legacy quote failed: {e}")
 
         # 3. 最后备用: eFinance（单只行情用 get_latest_quote(stock_codes)，参数为 str 或 List[str]；get_realtime_quotes(fs) 为市场类型如'沪A'）
         if ef is not None:
@@ -646,7 +689,7 @@ class DataSourceManager:
                         "source": "efinance"
                     }
             except Exception as e:
-                print(f"[DataSource] eFinance quote failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] eFinance quote failed: {e}")
 
         return None
 
@@ -690,7 +733,7 @@ class DataSourceManager:
                         })
                     return results
             except Exception as e:
-                print(f"[DataSource] Tushare Pro KLine failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare Pro KLine failed: {e}")
 
         # 2. 备用: Tushare legacy (仅日线)
         if period == 'daily':
@@ -712,7 +755,7 @@ class DataSourceManager:
                         })
                     return results
             except Exception as e:
-                print(f"[DataSource] Tushare legacy KLine failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare legacy KLine failed: {e}")
         
         # 3. 备用: Baostock
         if baostock_client is not None:
@@ -735,7 +778,7 @@ class DataSourceManager:
                         })
                     return results
             except Exception as e:
-                print(f"[DataSource] Baostock KLine failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Baostock KLine failed: {e}")
 
         # 4. 最后备用: eFinance
         if ef is not None:
@@ -756,7 +799,7 @@ class DataSourceManager:
                         })
                     return results
             except Exception as e:
-                print(f"[DataSource] eFinance KLine failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] eFinance KLine failed: {e}")
             
         return []
 
@@ -783,6 +826,27 @@ class DataSourceManager:
 
         注意: TDX 需要先在客户端下载上证指数(999999)的盘后数据
         """
+        def _valid_yyyymmdd(value: str) -> bool:
+            if not value:
+                return True
+            if len(value) != 8 or not value.isdigit():
+                return False
+            try:
+                datetime.datetime.strptime(value, "%Y%m%d")
+                return True
+            except ValueError:
+                return False
+
+        # 参数校验
+        if not _valid_yyyymmdd(start_time):
+            return {"success": False, "data": [], "source": "none", "message": "start_time 格式错误，应为 YYYYMMDD"}
+        if not _valid_yyyymmdd(end_time):
+            return {"success": False, "data": [], "source": "none", "message": "end_time 格式错误，应为 YYYYMMDD"}
+        if start_time and end_time and start_time > end_time:
+            return {"success": False, "data": [], "source": "none", "message": "start_time 不能晚于 end_time"}
+        if count == 0 or count < -1:
+            return {"success": False, "data": [], "source": "none", "message": "count 仅支持 -1 或正整数"}
+
         # 1. 优先使用 TDX
         if self.is_tdx_available():
             try:
@@ -796,14 +860,18 @@ class DataSourceManager:
                     )
                     # TDX 返回 List[str]
                     if isinstance(result, list):
+                        dates = [str(d) for d in result if str(d)]
+                        dates = sorted(dates)
+                        if count > 0:
+                            dates = dates[-count:]
                         return {
                             "success": True,
-                            "data": result,
+                            "data": dates,
                             "source": "tdx",
-                            "message": f"获取到 {len(result)} 个交易日"
+                            "message": f"获取到 {len(dates)} 个交易日"
                         }
             except Exception as e:
-                print(f"[DataSource] TDX get_trading_dates failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] TDX get_trading_dates failed: {e}")
 
         # 2. 降级到 Tushare Pro
         if self.ts_pro:
@@ -819,7 +887,8 @@ class DataSourceManager:
                     is_open='1'
                 )
                 if df is not None and not df.empty:
-                    dates = df['cal_date'].tolist()
+                    dates = [str(d) for d in df['cal_date'].tolist() if d]
+                    dates = sorted(dates)
                     if count > 0:
                         dates = dates[-count:]
                     return {
@@ -829,7 +898,7 @@ class DataSourceManager:
                         "message": f"获取到 {len(dates)} 个交易日"
                     }
             except Exception as e:
-                print(f"[DataSource] Tushare Pro trade_cal failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare Pro trade_cal failed: {e}")
 
         # 3. 降级到 AKShare
         if ak is not None:
@@ -844,6 +913,8 @@ class DataSourceManager:
                         dates = [d for d in dates if d >= start_time]
                     if end_time:
                         dates = [d for d in dates if d <= end_time]
+
+                    dates = sorted(dates)
                     if count > 0:
                         dates = dates[-count:]
 
@@ -854,7 +925,7 @@ class DataSourceManager:
                         "message": f"获取到 {len(dates)} 个交易日"
                     }
             except Exception as e:
-                print(f"[DataSource] AKShare trade_date failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] AKShare trade_date failed: {e}")
 
         return {"success": False, "data": [], "source": "none", "message": "所有数据源均失败"}
 
@@ -892,7 +963,7 @@ class DataSourceManager:
                             "message": f"获取到 {len(result)} 条申购信息"
                         }
             except Exception as e:
-                print(f"[DataSource] TDX get_ipo_info failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] TDX get_ipo_info failed: {e}")
 
         # 2. 降级到 Tushare Pro (新股)
         if self.ts_pro and ipo_type in (0, 2):
@@ -915,7 +986,7 @@ class DataSourceManager:
                         "message": f"获取到 {len(data)} 条新股申购信息"
                     }
             except Exception as e:
-                print(f"[DataSource] Tushare Pro new_share failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare Pro new_share failed: {e}")
 
         # 3. 降级到 AKShare
         try:
@@ -967,7 +1038,7 @@ class DataSourceManager:
                     "message": f"获取到 {len(results)} 条申购信息"
                 }
         except Exception as e:
-            print(f"[DataSource] AKShare IPO info failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] AKShare IPO info failed: {e}")
 
         return {"success": False, "data": [], "source": "none", "message": "所有数据源均失败"}
 
@@ -1008,7 +1079,7 @@ class DataSourceManager:
                             "message": "获取可转债信息成功"
                         }
             except Exception as e:
-                print(f"[DataSource] TDX get_cb_info failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] TDX get_cb_info failed: {e}")
 
         # 2. 降级到 Tushare Pro
         if self.ts_pro:
@@ -1035,7 +1106,7 @@ class DataSourceManager:
                         "message": "获取可转债信息成功"
                     }
             except Exception as e:
-                print(f"[DataSource] Tushare Pro cb_basic failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare Pro cb_basic failed: {e}")
 
         # 3. 降级到 AKShare
         try:
@@ -1059,7 +1130,7 @@ class DataSourceManager:
                         "message": "获取可转债信息成功"
                     }
         except Exception as e:
-            print(f"[DataSource] AKShare cb_info failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] AKShare cb_info failed: {e}")
 
         return {"success": False, "data": {}, "source": "none", "message": "所有数据源均失败"}
 
@@ -1109,7 +1180,7 @@ class DataSourceManager:
                             "message": f"获取到 {len(result)} 条股本数据"
                         }
             except Exception as e:
-                print(f"[DataSource] TDX get_gb_info failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] TDX get_gb_info failed: {e}")
 
         # 2. 降级到 Tushare Pro
         if self.ts_pro:
@@ -1137,7 +1208,7 @@ class DataSourceManager:
                         "message": f"获取到 {len(results)} 条股本数据"
                     }
             except Exception as e:
-                print(f"[DataSource] Tushare Pro daily_basic failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare Pro daily_basic failed: {e}")
 
         # 3. 降级到 AKShare
         try:
@@ -1160,7 +1231,7 @@ class DataSourceManager:
                     "message": "获取到 1 条股本数据"
                 }
         except Exception as e:
-            print(f"[DataSource] AKShare stock_info failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] AKShare stock_info failed: {e}")
 
         return {"success": False, "data": [], "source": "none", "message": "所有数据源均失败"}
 
@@ -1183,7 +1254,7 @@ class DataSource:
                     if quote:
                         results.append(quote)
                 except Exception as e:
-                    print(f"[DataSource] Batch quote failed: {e}", file=sys.stderr)
+                    safe_stderr_print(f"[DataSource] Batch quote failed: {e}")
         return results
     
     def get_quote(self, code: str) -> dict:

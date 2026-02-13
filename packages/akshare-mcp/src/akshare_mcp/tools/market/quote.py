@@ -1,6 +1,5 @@
 """实时行情模块"""
 
-import sys
 import time
 import requests
 from typing import Optional
@@ -18,6 +17,7 @@ from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...core.validators import validate_quote
 from ...data_source import data_source
+from ...utils import safe_stderr_print
 try:
     import akshare as ak
 except ImportError:
@@ -354,7 +354,7 @@ def _get_realtime_quote_akshare(code: str) -> Optional[dict]:
                 "source": "akshare_minute"
             }
     except (TimeoutError, RuntimeError, Exception) as e:
-        print(f"Minute quote failed for {code}: {e}", file=sys.stderr)
+        safe_stderr_print(f"Minute quote failed for {code}: {e}")
 
     # 策略2: 尝试日K线（单只股票）
     try:
@@ -363,7 +363,7 @@ def _get_realtime_quote_akshare(code: str) -> Optional[dict]:
             daily["source"] = "akshare_daily"
             return daily
     except (TimeoutError, RuntimeError, Exception) as e:
-        print(f"Daily quote failed for {code}: {e}", file=sys.stderr)
+        safe_stderr_print(f"Daily quote failed for {code}: {e}")
 
     # 策略3: 降级到全市场数据（较慢，但数据完整）
     try:
@@ -389,7 +389,7 @@ def _get_realtime_quote_akshare(code: str) -> Optional[dict]:
                     "source": "akshare_spot"
                 }
     except (TimeoutError, RuntimeError, Exception) as e:
-        print(f"Spot market failed for {code}: {e}", file=sys.stderr)
+        safe_stderr_print(f"Spot market failed for {code}: {e}")
         
     return None
 
@@ -440,27 +440,27 @@ def get_realtime_quote(stock_code: str) -> dict:
                 validated = validate_quote(res)
                 return ok(validated, cached=False)
         except Exception as e:
-            print(f"DataSource quote failed for {code}: {e}", file=sys.stderr)
+            safe_stderr_print(f"DataSource quote failed for {code}: {e}")
 
         # 2. Try AkShare
         try:
             res = _get_realtime_quote_akshare(code)
         except (TimeoutError, RuntimeError, Exception) as e:
-            print(f"AkShare quote failed for {code}: {e}", file=sys.stderr)
+            safe_stderr_print(f"AkShare quote failed for {code}: {e}")
             res = None
         if res:
             validated = validate_quote(res)
             return ok(validated, cached=False)
 
         # 3. Try Sina
-        print(f"Trying Sina for {code}...", file=sys.stderr)
+        safe_stderr_print(f"Trying Sina for {code}...")
         res = _get_quote_sina(code)
         if res:
             validated = validate_quote(res)
             return ok(validated, cached=False)
 
         # 4. Try Tencent
-        print(f"Sina failed for {code}, trying Tencent...", file=sys.stderr)
+        safe_stderr_print(f"Sina failed for {code}, trying Tencent...")
         res = _get_quote_tencent(code)
         if res:
             validated = validate_quote(res)

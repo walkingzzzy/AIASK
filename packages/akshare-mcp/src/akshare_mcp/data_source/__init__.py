@@ -8,13 +8,13 @@
 """
 
 import os
-import sys
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
 import tushare as ts
 
 from ..tushare_whitelist import load_tushare_whitelist
+from ..utils import safe_stderr_print
 from .tdx import TdxMixin
 from .quotes import QuotesMixin
 from .market_data import MarketDataMixin
@@ -55,7 +55,7 @@ class DataSourceManager(TdxMixin, QuotesMixin, MarketDataMixin):
                     except Exception:
                         pass
             except Exception as e:
-                print(f"[DataSource] Tushare init failed: {e}", file=sys.stderr)
+                safe_stderr_print(f"[DataSource] Tushare init failed: {e}")
 
         # TDX 初始化（来自 TdxMixin）
         self._init_tdx_config()
@@ -96,7 +96,7 @@ class DataSource:
                     if quote:
                         results.append(quote)
                 except Exception as e:
-                    print(f"[DataSource] Batch quote failed: {e}", file=sys.stderr)
+                    safe_stderr_print(f"[DataSource] Batch quote failed: {e}")
         return results
 
     def get_quote(self, code: str) -> dict:

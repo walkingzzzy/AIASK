@@ -49,7 +49,7 @@ description: 顶级基金经理专业流程：投研、组合、执行、风控�
   - 用 `paper_trading_manager` 做预演与成交行为检查。
   - Node 兼容行情输出可用 `get_batch_quotes_compat`。
 - 阶段 9（复盘与报告）：
-  - 用 `performance_manager`、`backtest_manager` 形成绩效复盘。
+  - 用 `performance_manager`、`benchmark_manager`、`backtest_manager` 形成绩效复盘与基准评分。
   - 报告模板按 `references/reporting_rules.md`：
     - 日报：`assets/templates/daily_report_template.md`
     - 周报：`assets/templates/weekly_report_template.md`

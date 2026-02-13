@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import subprocess
 from datetime import date, datetime
 from typing import Any, Optional
@@ -39,6 +40,26 @@ def fail(error: Any) -> dict:
         "cached": False,
         "timestamp": now_iso(),
     }
+
+
+def safe_stderr_print(*args: Any, sep: str = " ", end: str = "\n") -> None:
+    """Best-effort stderr logging that never raises."""
+    try:
+        msg = sep.join(str(arg) for arg in args) + end
+    except Exception:
+        msg = " ".join(repr(arg) for arg in args) + end
+
+    try:
+        stream = getattr(sys, "stderr", None)
+        if stream is None:
+            return
+        stream.write(msg)
+        flush = getattr(stream, "flush", None)
+        if callable(flush):
+            flush()
+    except Exception:
+        # Never let diagnostics logging mask the original exception.
+        return
 
 
 def safe_float(val: Any) -> Optional[float]:

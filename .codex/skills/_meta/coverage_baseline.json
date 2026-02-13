@@ -1,21 +1,21 @@
 {
   "version": 1,
   "updated_at": "2026-02-12",
-  "description": "Skill coverage quality gates for CI. Thresholds should only move upward after planned improvements are merged.",
+  "description": "Skill coverage quality gates for CI (strict mode). Keep full tool coverage, full TDX coverage, and full manager coverage.",
   "observed_baseline": {
-    "tool_count": 152,
+    "tool_count": 153,
     "skills_count": 20,
-    "covered_count": 152,
+    "covered_count": 153,
     "coverage_pct": 100.0,
     "tdx_covered_count": 36,
     "tdx_total_count": 36,
-    "manager_covered_count": 30,
-    "manager_total_count": 30
+    "manager_covered_count": 31,
+    "manager_total_count": 31
   },
   "thresholds": {
-    "min_total_coverage_pct": 90.0,
-    "min_tdx_coverage_count": 30,
-    "min_manager_coverage_count": 25,
+    "min_total_coverage_pct": 100.0,
+    "min_tdx_coverage_count": 36,
+    "min_manager_coverage_count": 31,
     "max_unknown_tool_refs": 0
   }
 }

@@ -9,9 +9,10 @@ import sys
 import time
 import logging
 import threading
+import importlib.util
 from typing import Optional
 
-from ..utils import normalize_code, safe_float, safe_int
+from ..utils import normalize_code, safe_float, safe_int, safe_stderr_print
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,8 @@ class TdxMixin:
         """初始化 TDX 配置（由 DataSourceManager._init 调用）"""
         self.tdx_plugin_path = os.getenv("TDX_PLUGIN_PATH", "").strip()
         self.tdx_init_path = os.getenv("TDX_INIT_PATH", "").strip()
+        _tdx_unique_init = os.getenv("TDX_INIT_USE_UNIQUE", "1").strip().lower()
+        self.tdx_init_use_unique = _tdx_unique_init not in ("0", "false", "no")
         _tdx_env = os.getenv("TDX_ENABLED", "").strip().lower()
         if _tdx_env in ("false", "0", "no"):
             self.tdx_enabled = False
@@ -49,53 +52,74 @@ class TdxMixin:
         self._tdx_last_init_stage = "module_loading"
         self._tdx_last_init_error = ""
         try:
-            print(f"[DataSource] TDX_PLUGIN_PATH={self.tdx_plugin_path}", file=sys.stderr)
-            print(f"[DataSource] TDX_ENABLED={self.tdx_enabled}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TDX_PLUGIN_PATH={self.tdx_plugin_path}")
+            safe_stderr_print(f"[DataSource] TDX_ENABLED={self.tdx_enabled}")
 
-            if not os.path.isdir(self.tdx_plugin_path):
+            plugin_path_valid = bool(self.tdx_plugin_path) and os.path.isdir(self.tdx_plugin_path)
+            tqcenter_path = os.path.join(self.tdx_plugin_path, "tqcenter.py") if self.tdx_plugin_path else ""
+            tqcenter_exists = bool(tqcenter_path) and os.path.isfile(tqcenter_path)
+
+            if plugin_path_valid:
+                pyplugins_dir = os.path.dirname(self.tdx_plugin_path)
+                tpythclient_path = os.path.join(pyplugins_dir, "TPythClient.dll")
+                tdxrpc_path = os.path.join(pyplugins_dir, "tdxrpcx64.dll")
+                tpythclient_exists = os.path.isfile(tpythclient_path)
+                tdxrpc_exists = os.path.isfile(tdxrpc_path)
+
+                safe_stderr_print(f"[DataSource] tqcenter.py path={tqcenter_path}, exists={tqcenter_exists}")
+                safe_stderr_print(f"[DataSource] TPythClient.dll path={tpythclient_path}, exists={tpythclient_exists}")
+                safe_stderr_print(f"[DataSource] tdxrpcx64.dll path={tdxrpc_path}, exists={tdxrpc_exists}")
+
+                if tqcenter_exists and self.tdx_plugin_path not in sys.path:
+                    sys.path.insert(0, self.tdx_plugin_path)
+            else:
                 self._tdx_last_init_stage = "plugin_path_check"
                 self._tdx_last_init_error = f"TDX plugin path does not exist: {self.tdx_plugin_path}"
-                print(f"[DataSource] {self._tdx_last_init_error}", file=sys.stderr)
-                self.tq = None
-                return
+                safe_stderr_print(f"[DataSource] {self._tdx_last_init_error}, fallback to sys.path import")
 
-            tqcenter_path = os.path.join(self.tdx_plugin_path, "tqcenter.py")
-            tqcenter_exists = os.path.isfile(tqcenter_path)
-            pyplugins_dir = os.path.dirname(self.tdx_plugin_path)
-            tpythclient_path = os.path.join(pyplugins_dir, "TPythClient.dll")
-            tdxrpc_path = os.path.join(pyplugins_dir, "tdxrpcx64.dll")
-            tpythclient_exists = os.path.isfile(tpythclient_path)
-            tdxrpc_exists = os.path.isfile(tdxrpc_path)
-
-            print(f"[DataSource] tqcenter.py path={tqcenter_path}, exists={tqcenter_exists}", file=sys.stderr)
-            print(f"[DataSource] TPythClient.dll path={tpythclient_path}, exists={tpythclient_exists}", file=sys.stderr)
-            print(f"[DataSource] tdxrpcx64.dll path={tdxrpc_path}, exists={tdxrpc_exists}", file=sys.stderr)
-
-            if not tqcenter_exists:
-                self._tdx_last_init_stage = "tqcenter_check"
-                self._tdx_last_init_error = f"tqcenter.py not found at {tqcenter_path}"
-                print(f"[DataSource] {self._tdx_last_init_error}", file=sys.stderr)
-                self.tq = None
-                return
-
-            if self.tdx_plugin_path not in sys.path:
-                sys.path.insert(0, self.tdx_plugin_path)
-
+            # 优先使用显式插件目录，其次回退到当前 Python 环境 sys.path 中的 tqcenter
             self._tdx_last_init_stage = "import_tqcenter"
             from tqcenter import tq
             self.tq = tq
             self._tdx_last_init_stage = "module_loaded"
-            print("[DataSource] TdxQuant module loaded successfully", file=sys.stderr)
+            safe_stderr_print("[DataSource] TdxQuant module loaded successfully")
         except UnicodeDecodeError as e:
             self._tdx_last_init_stage = "module_load_failed"
             self._tdx_last_init_error = f"UnicodeDecodeError: {e}"
-            print(f"[DataSource] TdxQuant init failed (encoding error, check plugin files are UTF-8): {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant init failed (encoding error, check plugin files are UTF-8): {e}")
             self.tq = None
         except Exception as e:
             self._tdx_last_init_stage = "module_load_failed"
             self._tdx_last_init_error = f"{type(e).__name__}: {e}"
-            print(f"[DataSource] TdxQuant init failed: {type(e).__name__}: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant init failed: {type(e).__name__}: {e}")
             self.tq = None
+
+    def _build_tdx_init_candidates(self) -> list[str]:
+        """Build ordered initialize path candidates to avoid fixed-name strategy conflicts."""
+        paths: list[str] = []
+
+        if self.tdx_init_path:
+            paths.append(self.tdx_init_path)
+
+        if self.tdx_plugin_path and os.path.isdir(self.tdx_plugin_path):
+            if self.tdx_init_use_unique:
+                paths.append(os.path.join(self.tdx_plugin_path, f"mcp_strategy_{os.getpid()}.py"))
+            paths.append(os.path.join(self.tdx_plugin_path, "mcp_strategy.py"))
+
+        paths.append(__file__)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for p in paths:
+            key = str(p).strip()
+            if not key:
+                continue
+            k = key.lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            deduped.append(key)
+        return deduped
 
     def _ensure_tdx_initialized(self) -> bool:
         """确保 TdxQuant 已初始化（懒加载），失败后间隔 60 秒可重试"""
@@ -103,60 +127,61 @@ class TdxMixin:
             self._tdx_last_init_stage = "module_not_loaded"
             if not self._tdx_last_init_error:
                 self._tdx_last_init_error = "tq is None (module not loaded)"
-            print(
-                f"[DataSource] _ensure_tdx_initialized: {self._tdx_last_init_error}",
-                file=sys.stderr,
-            )
+            safe_stderr_print(f"[DataSource] _ensure_tdx_initialized: {self._tdx_last_init_error}")
             return False
 
         if self._tdx_init_failed:
             elapsed = time.time() - self._tdx_fail_time if self._tdx_fail_time else 0
             if elapsed < 60:
                 remain = int(60 - elapsed)
-                print(
+                safe_stderr_print(
                     f"[DataSource] TdxQuant cooldown active: {remain}s remaining, "
                     f"last_stage={self._tdx_last_init_stage}, last_error={self._tdx_last_init_error}",
-                    file=sys.stderr,
                 )
                 return False
-            print("[DataSource] Retrying TdxQuant initialization after cooldown...", file=sys.stderr)
+            safe_stderr_print("[DataSource] Retrying TdxQuant initialization after cooldown...")
             self._tdx_init_failed = False
 
         if not self._tdx_initialized:
-            # 默认使用当前文件路径，支持通过环境变量覆盖
-            init_path = self.tdx_init_path or __file__
-            print(f"[DataSource] Calling tq.initialize({init_path})", file=sys.stderr)
-
+            init_candidates = self._build_tdx_init_candidates()
             max_retries = 3
-            for attempt in range(1, max_retries + 1):
-                try:
-                    self._tdx_last_init_stage = "initializing"
-                    self.tq.initialize(init_path)
-                    self._tdx_initialized = True
-                    self._tdx_last_init_stage = "initialized"
-                    self._tdx_last_init_error = ""
-                    print(f"[DataSource] TdxQuant initialized successfully (attempt {attempt})", file=sys.stderr)
-                    return True
-                except Exception as e:
-                    self._tdx_last_init_stage = "initialize_failed"
-                    self._tdx_last_init_error = f"{type(e).__name__}: {e}"
-                    if attempt < max_retries:
-                        wait = 0.5 * attempt
-                        print(
-                            f"[DataSource] TdxQuant init attempt {attempt} failed: {self._tdx_last_init_error}, "
-                            f"retrying in {wait}s...",
-                            file=sys.stderr,
+
+            for init_path in init_candidates:
+                safe_stderr_print(f"[DataSource] Calling tq.initialize({init_path})")
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        self._tdx_last_init_stage = "initializing"
+                        self.tq.initialize(init_path)
+                        self._tdx_initialized = True
+                        self._tdx_last_init_stage = "initialized"
+                        self._tdx_last_init_error = ""
+                        safe_stderr_print(
+                            f"[DataSource] TdxQuant initialized successfully (attempt {attempt}, path={init_path})"
                         )
-                        time.sleep(wait)
-                    else:
-                        self._tdx_init_failed = True
-                        self._tdx_fail_time = time.time()
-                        print(
-                            f"[DataSource] TdxQuant initialize failed after {max_retries} attempts "
-                            f"(will retry after 60s): {self._tdx_last_init_error}",
-                            file=sys.stderr,
-                        )
-                        return False
+                        return True
+                    except Exception as e:
+                        self._tdx_last_init_stage = "initialize_failed"
+                        self._tdx_last_init_error = f"{type(e).__name__}: {e}"
+                        if attempt < max_retries:
+                            wait = 0.5 * attempt
+                            safe_stderr_print(
+                                f"[DataSource] TdxQuant init attempt {attempt} failed on {init_path}: "
+                                f"{self._tdx_last_init_error}, retrying in {wait}s...",
+                            )
+                            time.sleep(wait)
+                        else:
+                            safe_stderr_print(
+                                f"[DataSource] TdxQuant init path failed after {max_retries} attempts: "
+                                f"{init_path}, error: {self._tdx_last_init_error}",
+                            )
+
+            self._tdx_init_failed = True
+            self._tdx_fail_time = time.time()
+            safe_stderr_print(
+                f"[DataSource] TdxQuant initialize failed for all candidate paths {init_candidates} "
+                f"(will retry after 60s): {self._tdx_last_init_error}",
+            )
+            return False
         return True
 
     def is_tdx_available(self) -> bool:
@@ -320,7 +345,7 @@ class TdxMixin:
                 "source": "tdxquant",
             }
         except Exception as e:
-            print(f"[DataSource] TdxQuant get_stock_info failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant get_stock_info failed: {e}")
             return None
 
     def get_stock_info_priority_tdx(self, code: str) -> Optional[dict]:
@@ -374,7 +399,7 @@ class TdxMixin:
                 })
             return results
         except Exception as e:
-            print(f"[DataSource] TdxQuant get_divid_factors failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant get_divid_factors failed: {e}")
             return []
 
     # ---- 板块 ----
@@ -390,7 +415,7 @@ class TdxMixin:
                 return []
             return result
         except Exception as e:
-            print(f"[DataSource] TdxQuant get_sector_list failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant get_sector_list failed: {e}")
             return []
 
     def get_stock_list_in_sector_tdxquant(self, block_code: str, block_type: int = 0) -> list:
@@ -404,7 +429,7 @@ class TdxMixin:
                 return []
             return result
         except Exception as e:
-            print(f"[DataSource] TdxQuant get_stock_list_in_sector failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant get_stock_list_in_sector failed: {e}")
             return []
 
     # ---- 订阅 ----
@@ -430,5 +455,5 @@ class TdxMixin:
                     "message": result.get("Error", "订阅失败") if result else "订阅失败",
                 }
         except Exception as e:
-            print(f"[DataSource] TdxQuant subscribe_hq failed: {e}", file=sys.stderr)
+            safe_stderr_print(f"[DataSource] TdxQuant subscribe_hq failed: {e}")
             return {"success": False, "message": str(e)}

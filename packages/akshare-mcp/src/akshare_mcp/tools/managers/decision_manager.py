@@ -2,6 +2,8 @@
 
 import numpy as np
 import json
+import time
+from datetime import datetime
 from ...storage import get_db
 from ...utils import ok, fail, normalize_code
 from ...data_source import data_source
@@ -57,14 +59,51 @@ def register_decision_manager(mcp):
             decision_manager(action="portfolio_advice", kwargs='{"codes":["600519","000858","002304"],"weights":[0.4,0.3,0.3]}')
         """
         try:
+            start_time = time.perf_counter()
+            trace_id = f"decision_manager:{action}:{int(time.time() * 1000)}"
+            tool_version = "v1.1"
+
             db = get_db()
             kwargs = _normalize_kwargs(dict(kwargs))
+
+            # 统一可选参数（向后兼容）
+            as_of = kwargs.get('as_of', '')
+            adjust = kwargs.get('adjust', '')
+            price_source_policy = kwargs.get('price_source_policy', 'auto')
+            explain = kwargs.get('explain', True)
+            strict_mode = kwargs.get('strict_mode', False)
+
+            def _with_meta(resp: dict, source_chain=None, data_timestamp: str | None = None):
+                if source_chain is None:
+                    source_chain = ['decision_manager']
+                latency_ms = int((time.perf_counter() - start_time) * 1000)
+                resp['meta'] = {
+                    'trace_id': trace_id,
+                    'tool_version': tool_version,
+                    'data_timestamp': data_timestamp or datetime.now().strftime('%Y-%m-%d'),
+                    'source_chain': source_chain,
+                    'cached': False,
+                    'latency_ms': latency_ms,
+                    'as_of': as_of,
+                    'adjust': adjust,
+                    'price_source_policy': price_source_policy,
+                    'explain': explain,
+                    'strict_mode': strict_mode,
+                }
+                return resp
+
+            def _ok(data: dict, source_chain=None, data_timestamp: str | None = None):
+                return _with_meta(ok(data), source_chain, data_timestamp)
+
+            def _fail(message: str, source_chain=None, data_timestamp: str | None = None):
+                return _with_meta(fail(message), source_chain, data_timestamp)
+
             # action 可能也在 kwargs 里（部分 MCP 客户端把所有参数放进 kwargs）
             if not action and kwargs.get("action"):
                 action = kwargs.get("action")
             
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'analyze': '综合分析（需要 code）',
                         'recommend': '推荐股票（可选 criteria, limit）',
@@ -76,7 +115,7 @@ def register_decision_manager(mcp):
             elif action == 'analyze':
                 code = kwargs.get('code')
                 if not code:
-                    return fail('需要提供股票代码（可传 code / stock_code / symbol，或放在 kwargs 的 JSON 中）')
+                    return _fail('需要提供股票代码（可传 code / stock_code / symbol，或放在 kwargs 的 JSON 中）')
                 
                 code = normalize_code(code)
                 
@@ -92,7 +131,7 @@ def register_decision_manager(mcp):
                             pass
                 
                 if not klines or len(klines) < 20:
-                    return fail(f'K线数据不足，无法分析（需要至少20天数据，当前{len(klines) if klines else 0}天）')
+                    return _fail(f'K线数据不足，无法分析（需要至少20天数据，当前{len(klines) if klines else 0}天）')
                 
                 prices = np.array([k['close'] for k in klines])
                 volumes = np.array([k['volume'] for k in klines])
@@ -145,38 +184,74 @@ def register_decision_manager(mcp):
                     sentiment_score = 70
                 elif volume_ratio < 0.7:
                     sentiment_score = 40
+
+                # 估值评分（与 smart_stock_diagnosis 口径对齐）
+                valuation_score = 50
+                pe = float(financials[0].get('pe_ratio', 0)) if financials else 0.0
+                pb = float(financials[0].get('pb_ratio', 0)) if financials else 0.0
+
+                if pe and 0 < pe < 15:
+                    valuation_score += 20
+                elif pe and pe > 50:
+                    valuation_score -= 20
+                elif pe:
+                    valuation_score += 10
+
+                if pb and 0 < pb < 2:
+                    valuation_score += 15
+                elif pb and pb > 5:
+                    valuation_score -= 15
+
+                valuation_score = max(0, min(100, valuation_score))
                 
+                # 综合评分：与 smart_stock_diagnosis 对齐（0.3/0.3/0.25/0.15）
                 total_score = (
-                    trend_score * 0.4 +
-                    fundamental_score * 0.4 +
-                    sentiment_score * 0.2
+                    trend_score * 0.3 +
+                    fundamental_score * 0.3 +
+                    valuation_score * 0.25 +
+                    sentiment_score * 0.15
                 )
                 
+                # 新口径 recommendation（buy/hold/wait/sell）
+                if total_score >= 75:
+                    recommendation = 'buy'
+                    recommendation_text = '强烈推荐买入'
+                elif total_score >= 60:
+                    recommendation = 'hold'
+                    recommendation_text = '可以持有或适量买入'
+                elif total_score >= 45:
+                    recommendation = 'wait'
+                    recommendation_text = '观望为主'
+                else:
+                    recommendation = 'sell'
+                    recommendation_text = '建议卖出或回避'
+
+                # 旧口径 decision（向后兼容）
                 if total_score >= 75:
                     decision = 'strong_buy'
                     confidence = 'high'
-                    reason = '技术面、基本面、情绪面均表现良好'
+                    reason = '技术面、基本面、估值、情绪面均表现良好'
                 elif total_score >= 60:
                     decision = 'buy'
                     confidence = 'medium'
-                    reason = '整体表现较好，可适当买入'
-                elif total_score >= 45:
-                    decision = 'hold'
-                    confidence = 'medium'
-                    reason = '表现中性，建议观望'
+                    reason = '整体表现较好，建议持有或逢低布局'
                 elif total_score >= 30:
                     decision = 'sell'
                     confidence = 'medium'
-                    reason = '表现较弱，建议减仓'
+                    reason = '表现偏弱，建议减仓或观望'
                 else:
                     decision = 'strong_sell'
                     confidence = 'high'
                     reason = '多方面表现不佳，建议清仓'
                 
-                return ok({
+                analysis_date = datetime.now().strftime('%Y-%m-%d')
+                payload = {
                     'code': code,
+                    'recommendation': recommendation,
+                    'recommendation_text': recommendation_text,
                     'decision': decision,
                     'confidence': confidence,
+                    'overall_score': float(total_score),
                     'total_score': float(total_score),
                     'reason': reason,
                     'analysis': {
@@ -193,14 +268,40 @@ def register_decision_manager(mcp):
                             'roe': float(financials[0].get('roe', 0)) if financials else 0,
                             'pe_ratio': float(financials[0].get('pe_ratio', 0)) if financials else 0,
                         },
+                        'valuation': {
+                            'score': float(valuation_score),
+                            'pe_ratio': pe,
+                            'pb_ratio': pb,
+                        },
                         'sentiment': {
                             'score': float(sentiment_score),
                             'volume_ratio': float(volume_ratio),
                             'status': 'active' if volume_ratio > 1.2 else ('weak' if volume_ratio < 0.8 else 'normal')
                         }
                     },
+                    'scores': {
+                        'technical': float(trend_score),
+                        'fundamental': float(fundamental_score),
+                        'valuation': float(valuation_score),
+                        'sentiment': float(sentiment_score),
+                    },
+                    'analysis_date': analysis_date,
                     'risk_warning': '投资有风险，决策仅供参考' if total_score < 60 else None
-                })
+                }
+
+                if explain:
+                    payload['diagnostic'] = {
+                        'trace': [
+                            f'trend_score={trend_score}',
+                            f'fundamental_score={fundamental_score}',
+                            f'valuation_score={valuation_score}',
+                            f'sentiment_score={sentiment_score}',
+                            f'total_score={round(total_score, 2)}',
+                            f'recommendation={recommendation}',
+                        ]
+                    }
+
+                return _ok(payload, data_timestamp=analysis_date)
             
             elif action == 'recommend':
                 criteria = kwargs.get('criteria', {})
@@ -228,7 +329,7 @@ def register_decision_manager(mcp):
                 
                 recommendations.sort(key=lambda x: x['score'], reverse=True)
                 
-                return ok({
+                return _ok({
                     'recommendations': recommendations,
                     'count': len(recommendations),
                     'criteria': criteria
@@ -244,7 +345,7 @@ def register_decision_manager(mcp):
                     )
                 
                 if not holdings:
-                    return ok({'message': '当前组合无持仓，请先添加持仓后再操作'})
+                    return _ok({'message': '当前组合无持仓，请先添加持仓后再操作'})
                 
                 advice_list = []
                 
@@ -273,7 +374,7 @@ def register_decision_manager(mcp):
                 else:
                     overall_advice = '组合表现较弱，建议调整持仓'
                 
-                return ok({
+                return _ok({
                     'portfolio_id': portfolio_id,
                     'overall_score': float(avg_score),
                     'overall_advice': overall_advice,
@@ -281,6 +382,6 @@ def register_decision_manager(mcp):
                 })
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, analyze, recommend, portfolio_advice')
+                return _fail(f'Unknown action: {action}. Supported: help, analyze, recommend, portfolio_advice')
         except Exception as e:
-            return fail(str(e))
+            return _fail(str(e))
