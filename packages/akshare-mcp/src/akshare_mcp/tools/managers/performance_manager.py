@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timezone
+import numpy as np
 from ...storage import get_db
 from ...utils import ok, fail, normalize_code
 from ..market import get_kline
@@ -32,9 +33,143 @@ def _safe_portfolio_id(val):
         return val
 
 
+def _extract_closes(klines):
+    """从 K 线记录中提取按时间升序排列的收盘价序列。"""
+    if not klines:
+        return np.array([])
+
+    rows = []
+    for k in klines:
+        if not isinstance(k, dict):
+            continue
+        close = k.get('close')
+        if close is None:
+            continue
+        try:
+            close_v = float(close)
+        except Exception:
+            continue
+
+        dt = (
+            k.get('date')
+            or k.get('datetime')
+            or k.get('trade_date')
+            or k.get('time')
+            or ''
+        )
+        rows.append((str(dt), close_v))
+
+    if len(rows) < 2:
+        return np.array([])
+
+    rows.sort(key=lambda x: x[0])
+    return np.array([r[1] for r in rows], dtype=float)
+
+
+async def _fetch_returns_for_code(db, code: str, lookback_days: int):
+    """获取单只股票日收益率序列（优先 DB，失败回退工具层 get_kline）。"""
+    klines = await db.get_klines(code, limit=lookback_days + 1)
+    if not klines or len(klines) < 2:
+        res = get_kline(normalize_code(code), 'daily', lookback_days + 1)
+        if res.get('success') and res.get('data'):
+            klines = res['data']
+
+    closes = _extract_closes(klines)
+    if len(closes) < 2:
+        return np.array([]), None
+
+    returns = np.diff(closes) / closes[:-1]
+    latest_close = float(closes[-1])
+    return returns, latest_close
+
+
+async def _build_portfolio_daily_returns(db, holdings, lookback_days: int):
+    """基于持仓构建组合日收益率序列（静态权重近似）。"""
+    if not holdings:
+        return np.array([])
+
+    returns_list = []
+    value_list = []
+
+    for h in holdings:
+        code = h.get('code')
+        if not code:
+            continue
+
+        returns, latest_close = await _fetch_returns_for_code(db, code, lookback_days)
+        if len(returns) == 0 or latest_close is None:
+            continue
+
+        shares = float(h.get('shares') or 0)
+        position_value = shares * latest_close
+        if position_value <= 0:
+            # 缺失持仓市值时降级为等权，先记为 1
+            position_value = 1.0
+
+        returns_list.append(returns)
+        value_list.append(position_value)
+
+    if not returns_list:
+        return np.array([])
+
+    min_len = min(len(r) for r in returns_list)
+    if min_len < 2:
+        return np.array([])
+
+    aligned = np.array([r[-min_len:] for r in returns_list], dtype=float)
+    values = np.array(value_list, dtype=float)
+    weights = values / values.sum() if values.sum() > 0 else np.array([1.0 / len(values)] * len(values))
+
+    return np.dot(weights, aligned)
+
+
+def _calc_max_drawdown(returns: np.ndarray) -> float:
+    """根据收益率序列计算最大回撤。"""
+    if returns is None or len(returns) == 0:
+        return 0.0
+
+    equity = np.cumprod(1.0 + returns)
+    running_max = np.maximum.accumulate(equity)
+    drawdown = equity / running_max - 1.0
+    return float(abs(np.min(drawdown)))
+
+
+def _calc_annualized_from_daily(returns: np.ndarray) -> tuple:
+    """从日收益率序列计算年化收益和年化波动。"""
+    if returns is None or len(returns) == 0:
+        return 0.0, 0.0
+
+    mean_daily = float(np.mean(returns))
+    ann_return = (1.0 + mean_daily) ** 252 - 1.0
+
+    if len(returns) > 1:
+        ann_vol = float(np.std(returns, ddof=1) * np.sqrt(252))
+    else:
+        ann_vol = 0.0
+
+    return float(ann_return), float(ann_vol)
+
+
+def _calc_period_return(returns: np.ndarray) -> float:
+    """根据收益率序列计算区间累计收益率。"""
+    if returns is None or len(returns) == 0:
+        return 0.0
+    return float(np.prod(1.0 + returns) - 1.0)
+
+
+def _to_pct(v: float) -> str:
+    return f"{v * 100:.2f}%"
+
+
+def _to_float_list(arr: np.ndarray):
+    if arr is None or len(arr) == 0:
+        return []
+    return [float(x) for x in arr.tolist()]
+
+
 def register_performance_manager(mcp):
     """注册绩效管理器工具"""
-    
+
     @mcp.tool()
     async def performance_manager(action: str, **kwargs):
         """绩效管理器（统一 action + kwargs 协议）
@@ -43,9 +178,9 @@ def register_performance_manager(mcp):
             action (str, required): 操作类型，可选 help/calculate_metrics/attribution/benchmark_comparison
             kwargs: JSON 字符串或关键字参数，不同 action 所需参数:
                 - help: 无需额外参数
-                - calculate_metrics: codes(list[str]), weights(list[float]), lookback_days(int, optional)
-                - attribution: codes(list[str]), weights(list[float])
-                - benchmark_comparison: codes(list[str]), weights(list[float]), benchmark(str, optional)
+                - calculate_metrics: portfolio_id(str|int), lookback_days(int, optional)
+                - attribution: portfolio_id(str|int)
+                - benchmark_comparison: portfolio_id(str|int), benchmark(str, optional), lookback_days(int, optional)
 
         Returns:
             dict: {"success": bool, "data": {...}, "error": str|None}
@@ -54,16 +189,16 @@ def register_performance_manager(mcp):
             # 查看帮助
             performance_manager(action="help", kwargs="{}")
             # 计算绩效指标
-            performance_manager(action="calculate_metrics", kwargs='{"codes":["600519","000858"],"weights":[0.6,0.4]}')
+            performance_manager(action="calculate_metrics", kwargs='{"portfolio_id":1,"lookback_days":252}')
             # 归因分析
-            performance_manager(action="attribution", kwargs='{"codes":["600519","000858"],"weights":[0.6,0.4]}')
+            performance_manager(action="attribution", kwargs='{"portfolio_id":1}')
             # 基准对比
-            performance_manager(action="benchmark_comparison", kwargs='{"codes":["600519","000858"],"weights":[0.6,0.4],"benchmark":"000300"}')
+            performance_manager(action="benchmark_comparison", kwargs='{"portfolio_id":1,"benchmark":"000300","lookback_days":252}')
         """
         try:
             db = get_db()
             kwargs = _normalize_kwargs(dict(kwargs))
-            
+
             if action == 'help':
                 return ok({
                     'supported_actions': {
@@ -73,16 +208,18 @@ def register_performance_manager(mcp):
                         'help': '显示帮助信息',
                     }
                 })
-            
+
             elif action == 'calculate_metrics':
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
-                
+                lookback_days = int(kwargs.get('lookback_days', 252) or 252)
+                lookback_days = max(20, min(2000, lookback_days))
+
                 async with db.acquire() as conn:
                     portfolio = await conn.fetchrow(
                         "SELECT * FROM portfolios WHERE id = $1",
                         portfolio_id
                     )
-                    
+
                     if not portfolio:
                         return ok({
                             'success': True,
@@ -100,90 +237,109 @@ def register_performance_manager(mcp):
                                 {'name': '稳健投资组合', 'stocks': ['601318', '600887', '601166']}
                             ]
                         })
-                    
+
+                    holdings = await conn.fetch(
+                        "SELECT * FROM holdings WHERE portfolio_id = $1",
+                        portfolio_id
+                    )
+
                     trades = await conn.fetch(
-                        """SELECT * FROM paper_trades 
+                        """SELECT * FROM paper_trades
                            WHERE account_id = (SELECT user_id FROM portfolios WHERE id = $1)
                            ORDER BY created_at""",
                         portfolio_id
                     )
-                
+
                 initial_capital = float(portfolio['initial_capital'])
                 current_value = float(portfolio['current_value'])
-                total_return = (current_value - initial_capital) / initial_capital
-                
+                total_return = (current_value - initial_capital) / initial_capital if initial_capital > 0 else 0.0
+
                 created_at = portfolio['created_at']
                 # 统一为 offset-aware 避免 naive vs aware 报错
                 now = datetime.now(timezone.utc)
                 if created_at.tzinfo is None:
                     created_at = created_at.replace(tzinfo=timezone.utc)
                 days_held = (now - created_at).days
-                if days_held == 0:
+                if days_held <= 0:
                     days_held = 1
-                
-                annualized_return = (1 + total_return) ** (365 / days_held) - 1
-                
+
+                # 交易统计
                 win_trades = 0
                 loss_trades = 0
-                total_profit = 0
-                total_loss = 0
-                
+                total_profit = 0.0
+                total_loss = 0.0
+
                 for trade in trades:
-                    pnl = trade.get('pnl', 0)
+                    pnl = float(trade.get('pnl', 0) or 0)
                     if pnl > 0:
                         win_trades += 1
                         total_profit += pnl
                     elif pnl < 0:
                         loss_trades += 1
                         total_loss += abs(pnl)
-                
+
                 total_trades = win_trades + loss_trades
-                win_rate = win_trades / total_trades if total_trades > 0 else 0
-                
-                avg_profit = total_profit / win_trades if win_trades > 0 else 0
-                avg_loss = total_loss / loss_trades if loss_trades > 0 else 0
-                profit_loss_ratio = avg_profit / avg_loss if avg_loss > 0 else 0
-                
+                win_rate = win_trades / total_trades if total_trades > 0 else 0.0
+                avg_profit = total_profit / win_trades if win_trades > 0 else 0.0
+                avg_loss = total_loss / loss_trades if loss_trades > 0 else 0.0
+                profit_loss_ratio = avg_profit / avg_loss if avg_loss > 0 else 0.0
+
+                # 时序绩效指标（优先使用持仓收益序列，缺失时回退到账户口径）
                 risk_free_rate = 0.03
-                volatility = abs(total_return) * 0.5
-                sharpe_ratio = (annualized_return - risk_free_rate) / volatility if volatility > 0 else 0
-                
-                max_drawdown = abs(min(0, total_return * 0.3))
-                
+                portfolio_daily_returns = await _build_portfolio_daily_returns(db, holdings, lookback_days)
+
+                if len(portfolio_daily_returns) > 1:
+                    series_total_return = _calc_period_return(portfolio_daily_returns)
+                    annualized_return, volatility = _calc_annualized_from_daily(portfolio_daily_returns)
+                    max_drawdown = _calc_max_drawdown(portfolio_daily_returns)
+                else:
+                    series_total_return = total_return
+                    annualized_return = (1 + total_return) ** (365 / days_held) - 1 if days_held > 0 else 0.0
+                    volatility = 0.0
+                    max_drawdown = 0.0
+
+                sharpe_ratio = (annualized_return - risk_free_rate) / volatility if volatility > 0 else 0.0
+
                 return ok({
                     'portfolio_id': portfolio_id,
                     'initial_capital': float(initial_capital),
                     'current_value': float(current_value),
                     'total_return': float(total_return),
-                    'total_return_pct': f"{total_return*100:.2f}%",
+                    'total_return_pct': _to_pct(total_return),
+                    'series_total_return': float(series_total_return),
+                    'series_total_return_pct': _to_pct(series_total_return),
                     'annualized_return': float(annualized_return),
-                    'annualized_return_pct': f"{annualized_return*100:.2f}%",
+                    'annualized_return_pct': _to_pct(annualized_return),
                     'sharpe_ratio': float(sharpe_ratio),
                     'max_drawdown': float(max_drawdown),
-                    'max_drawdown_pct': f"{max_drawdown*100:.2f}%",
+                    'max_drawdown_pct': _to_pct(max_drawdown),
                     'volatility': float(volatility),
+                    'volatility_pct': _to_pct(volatility),
+                    'risk_free_rate': float(risk_free_rate),
+                    'lookback_days': lookback_days,
+                    'daily_returns_count': int(len(portfolio_daily_returns)),
                     'trading_stats': {
                         'total_trades': total_trades,
                         'win_trades': win_trades,
                         'loss_trades': loss_trades,
                         'win_rate': float(win_rate),
-                        'win_rate_pct': f"{win_rate*100:.2f}%",
+                        'win_rate_pct': _to_pct(win_rate),
                         'profit_loss_ratio': float(profit_loss_ratio),
                         'avg_profit': float(avg_profit),
                         'avg_loss': float(avg_loss),
                     },
                     'days_held': days_held,
                 })
-            
+
             elif action == 'attribution':
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
-                
+
                 async with db.acquire() as conn:
                     holdings = await conn.fetch(
                         "SELECT * FROM holdings WHERE portfolio_id = $1",
                         portfolio_id
                     )
-                
+
                 if not holdings:
                     return ok({
                         'message': '当前组合无持仓，请先添加持仓后再操作',
@@ -192,19 +348,14 @@ def register_performance_manager(mcp):
                             'step2': 'performance_manager(action="attribution", portfolio_id="xxx")'
                         }
                     })
-                
-                total_return = 0
-                stock_selection_return = 0
-                sector_allocation_return = 0
-                timing_return = 0
-                
-                sector_returns = {}
-                
+
+                rows = []
+                total_weight_base = 0.0
                 for holding in holdings:
                     code = holding['code']
-                    shares = holding['shares']
-                    cost_price = holding.get('cost_price', 0)
-                    
+                    shares = float(holding.get('shares') or 0)
+                    cost_price = float(holding.get('cost_price') or 0)
+
                     klines = await db.get_klines(code, limit=1)
                     if not klines:
                         res = get_kline(normalize_code(code), 'daily', 1)
@@ -212,99 +363,184 @@ def register_performance_manager(mcp):
                             klines = res['data']
                     if not klines:
                         continue
-                    
-                    current_price = klines[0]['close']
-                    
-                    stock_return = (current_price - cost_price) / cost_price if cost_price > 0 else 0
-                    
+
+                    current_price = float(klines[0]['close'])
+                    stock_return = (current_price - cost_price) / cost_price if cost_price > 0 else 0.0
+
+                    # 权重基数优先使用成本市值，缺失时退化为当前市值，再退化为 1
+                    cost_value = shares * cost_price if shares > 0 and cost_price > 0 else 0.0
+                    current_value = shares * current_price if shares > 0 and current_price > 0 else 0.0
+                    weight_base = cost_value if cost_value > 0 else (current_value if current_value > 0 else 1.0)
+
                     stock_info = await db.get_stock_info(code)
                     sector = stock_info.get('industry', '未知') if stock_info else '未知'
-                    
-                    if sector not in sector_returns:
-                        sector_returns[sector] = []
-                    sector_returns[sector].append(stock_return)
-                    
-                    total_return += stock_return
-                
-                num_holdings = len(holdings)
-                avg_return = total_return / num_holdings if num_holdings > 0 else 0
-                
-                stock_selection_return = avg_return * 0.5
-                sector_allocation_return = avg_return * 0.3
-                timing_return = avg_return * 0.2
-                
+
+                    rows.append({
+                        'code': code,
+                        'sector': sector,
+                        'stock_return': float(stock_return),
+                        'weight_base': float(weight_base),
+                    })
+                    total_weight_base += weight_base
+
+                if not rows or total_weight_base <= 0:
+                    return fail('持仓数据不足，无法进行归因分析')
+
+                # 归一化权重
+                for r in rows:
+                    r['weight'] = float(r['weight_base'] / total_weight_base)
+
+                # 组合总收益（可复现）：sum(weight * stock_return)
+                total_return = float(sum(r['weight'] * r['stock_return'] for r in rows))
+
+                # 计算行业收益（行业内按权重加权）
+                sector_weight_sum = {}
+                sector_weighted_return_sum = {}
+                for r in rows:
+                    s = r['sector']
+                    sector_weight_sum[s] = sector_weight_sum.get(s, 0.0) + r['weight']
+                    sector_weighted_return_sum[s] = sector_weighted_return_sum.get(s, 0.0) + r['weight'] * r['stock_return']
+
+                sector_return_map = {
+                    s: (sector_weighted_return_sum[s] / sector_weight_sum[s]) if sector_weight_sum[s] > 0 else 0.0
+                    for s in sector_weight_sum
+                }
+
+                # 第一阶段可审计拆解：
+                # sector_allocation = sum(weight * sector_return)
+                # stock_selection = sum(weight * (stock_return - sector_return))
+                # timing 暂未实现，设为 0
+                sector_allocation_return = float(sum(r['weight'] * sector_return_map.get(r['sector'], 0.0) for r in rows))
+                stock_selection_return = float(sum(
+                    r['weight'] * (r['stock_return'] - sector_return_map.get(r['sector'], 0.0))
+                    for r in rows
+                ))
+                timing_return = 0.0
+
+                # 数值稳定处理，确保分解和与总收益一致
+                decomposition_total = stock_selection_return + sector_allocation_return + timing_return
+                residual = total_return - decomposition_total
+                stock_selection_return += residual
+
+                attribution_by_stock = []
+                for r in rows:
+                    contribution = r['weight'] * r['stock_return']
+                    attribution_by_stock.append({
+                        'code': r['code'],
+                        'sector': r['sector'],
+                        'weight': float(r['weight']),
+                        'weight_pct': _to_pct(r['weight']),
+                        'stock_return': float(r['stock_return']),
+                        'stock_return_pct': _to_pct(r['stock_return']),
+                        'contribution': float(contribution),
+                        'contribution_pct': _to_pct(contribution),
+                    })
+
+                attribution_by_stock.sort(key=lambda x: x['contribution'], reverse=True)
+
                 return ok({
                     'portfolio_id': portfolio_id,
-                    'total_return': float(avg_return),
+                    'total_return': float(total_return),
+                    'total_return_pct': _to_pct(total_return),
                     'attribution': {
                         'stock_selection': {
                             'return': float(stock_selection_return),
-                            'contribution': f"{(stock_selection_return/avg_return*100):.1f}%" if avg_return != 0 else "0%",
-                            'description': '个股选择贡献'
+                            'contribution': _to_pct(stock_selection_return),
+                            'description': '个股选择贡献（相对行业收益的超额）'
                         },
                         'sector_allocation': {
                             'return': float(sector_allocation_return),
-                            'contribution': f"{(sector_allocation_return/avg_return*100):.1f}%" if avg_return != 0 else "0%",
-                            'description': '行业配置贡献'
+                            'contribution': _to_pct(sector_allocation_return),
+                            'description': '行业配置贡献（按行业加权收益）'
                         },
                         'timing': {
                             'return': float(timing_return),
-                            'contribution': f"{(timing_return/avg_return*100):.1f}%" if avg_return != 0 else "0%",
-                            'description': '择时贡献'
+                            'contribution': _to_pct(timing_return),
+                            'description': '择时贡献（第一阶段暂未实现）',
+                            'status': 'partial',
+                            'reason': 'timing model not enabled'
                         }
                     },
+                    'attribution_by_stock': attribution_by_stock,
                     'sector_performance': {
-                        sector: f"{(sum(returns)/len(returns)*100):.2f}%" 
-                        for sector, returns in sector_returns.items()
-                    }
+                        sector: {
+                            'weight': float(sector_weight_sum[sector]),
+                            'weight_pct': _to_pct(sector_weight_sum[sector]),
+                            'return': float(sector_return_map[sector]),
+                            'return_pct': _to_pct(sector_return_map[sector]),
+                        }
+                        for sector in sector_return_map
+                    },
+                    'method': 'weighted_return_decomposition_v1'
                 })
-            
+
             elif action == 'benchmark_comparison':
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
                 benchmark = kwargs.get('benchmark', '000001')
-                
+                lookback_days = int(kwargs.get('lookback_days', 252) or 252)
+                lookback_days = max(20, min(2000, lookback_days))
+
                 metrics_result = await performance_manager(
                     action='calculate_metrics',
-                    portfolio_id=portfolio_id
+                    portfolio_id=portfolio_id,
+                    lookback_days=lookback_days
                 )
-                
+
                 if not metrics_result.get('success'):
                     return metrics_result
                 # calculate_metrics 在“未找到组合”场景会返回 ok(message=...)，
                 # 但不会包含 total_return；此处直接透传提示，避免 KeyError。
                 if not isinstance(metrics_result.get('data'), dict) or 'total_return' not in metrics_result['data']:
                     return metrics_result
-                
-                portfolio_return = metrics_result['data']['total_return']
-                
-                klines = await db.get_klines(benchmark, limit=252)
-                if not klines or len(klines) < 2:
-                    res = get_kline(normalize_code(benchmark), 'daily', 252)
-                    if res.get('success') and res.get('data'):
-                        klines = res['data']
-                if not klines or len(klines) < 2:
-                    return fail('基准数据不足')
-                
-                benchmark_return = (klines[-1]['close'] - klines[0]['close']) / klines[0]['close']
-                
+
+                metrics_data = metrics_result['data']
+
+                async with db.acquire() as conn:
+                    holdings = await conn.fetch(
+                        "SELECT * FROM holdings WHERE portfolio_id = $1",
+                        portfolio_id
+                    )
+
+                portfolio_daily_returns = await _build_portfolio_daily_returns(db, holdings, lookback_days)
+                benchmark_daily_returns, _ = await _fetch_returns_for_code(db, benchmark, lookback_days)
+
+                min_len = min(len(portfolio_daily_returns), len(benchmark_daily_returns))
+                if min_len < 2:
+                    return fail('组合或基准收益序列不足，无法计算 tracking_error')
+
+                p_ret = portfolio_daily_returns[-min_len:]
+                b_ret = benchmark_daily_returns[-min_len:]
+                excess_daily = p_ret - b_ret
+
+                portfolio_return = _calc_period_return(p_ret)
+                benchmark_return = _calc_period_return(b_ret)
                 excess_return = portfolio_return - benchmark_return
-                
-                tracking_error = abs(excess_return) * 0.5
-                information_ratio = excess_return / tracking_error if tracking_error > 0 else 0
-                
+
+                tracking_error = float(np.std(excess_daily, ddof=1) * np.sqrt(252)) if len(excess_daily) > 1 else 0.0
+                annualized_excess_return = (1.0 + excess_return) ** (252 / min_len) - 1.0
+                information_ratio = annualized_excess_return / tracking_error if tracking_error > 0 else 0.0
+
                 return ok({
                     'portfolio_id': portfolio_id,
                     'benchmark': benchmark,
                     'portfolio_return': float(portfolio_return),
-                    'portfolio_return_pct': f"{portfolio_return*100:.2f}%",
+                    'portfolio_return_pct': _to_pct(portfolio_return),
                     'benchmark_return': float(benchmark_return),
-                    'benchmark_return_pct': f"{benchmark_return*100:.2f}%",
+                    'benchmark_return_pct': _to_pct(benchmark_return),
                     'excess_return': float(excess_return),
-                    'excess_return_pct': f"{excess_return*100:.2f}%",
+                    'excess_return_pct': _to_pct(excess_return),
+                    'tracking_error': float(tracking_error),
+                    'tracking_error_pct': _to_pct(tracking_error),
+                    'annualized_excess_return': float(annualized_excess_return),
+                    'annualized_excess_return_pct': _to_pct(annualized_excess_return),
                     'information_ratio': float(information_ratio),
                     'outperformance': excess_return > 0,
+                    'lookback_days': lookback_days,
+                    'aligned_days': int(min_len),
+                    'portfolio_total_return_account': float(metrics_data.get('total_return', 0.0)),
+                    'portfolio_total_return_series': float(metrics_data.get('series_total_return', portfolio_return)),
                 })
-            
+
             else:
                 return fail(f'Unknown action: {action}. Supported: help, calculate_metrics, attribution, benchmark_comparison')
         except Exception as e:

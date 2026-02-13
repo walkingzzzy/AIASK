@@ -78,22 +78,55 @@ def register_comprehensive_manager(mcp):
                 
                 klines = sorted(klines, key=lambda x: x.get('date') or '')
                 current_price = klines[-1]['close']
-                
+                stock_info = await db.get_stock_info(code) or {}
+
+                pe_ratio = float(financials[0].get('pe_ratio', 0)) if financials else 0.0
+                roe = float(financials[0].get('roe', 0)) if financials else 0.0
+                rating = 'A' if roe >= 20 else ('B' if roe >= 10 else 'C')
+                profitability_level = 'high' if roe >= 20 else ('medium' if roe >= 10 else 'low')
+
+                technical_data = {
+                    'trend': 'uptrend',
+                    'support': float(current_price * 0.95),
+                    'resistance': float(current_price * 1.05),
+                }
+                fundamental_data = {
+                    'pe_ratio': pe_ratio,
+                    'roe': roe,
+                    'rating': rating
+                }
+
+                # 轻量可解释评分，便于旧版字段兼容
+                score_from_roe = max(0.0, min(60.0, roe * 2.0))
+                score_from_pe = 0.0
+                if pe_ratio > 0:
+                    score_from_pe = max(0.0, min(40.0, 40.0 - max(0.0, pe_ratio - 15.0)))
+                total_score = round(score_from_roe + score_from_pe, 2)
+
                 return ok({
+                    # 新版结构
                     'code': code,
                     'current_price': float(current_price),
-                    'technical_analysis': {
-                        'trend': 'uptrend',
-                        'support': float(current_price * 0.95),
-                        'resistance': float(current_price * 1.05),
-                    },
-                    'fundamental_analysis': {
-                        'pe_ratio': float(financials[0].get('pe_ratio', 0)) if financials else 0,
-                        'roe': float(financials[0].get('roe', 0)) if financials else 0,
-                        'rating': 'B'
-                    },
+                    'technical_analysis': technical_data,
+                    'fundamental_analysis': fundamental_data,
                     'recommendation': 'hold',
-                    'confidence': 'medium'
+                    'confidence': 'medium',
+                    # 向后兼容结构
+                    'basic_info': {
+                        'code': code,
+                        'name': stock_info.get('stock_name', code),
+                        'industry': stock_info.get('industry', 'unknown'),
+                        'current_price': float(current_price),
+                    },
+                    'technical': technical_data,
+                    'fundamental': {
+                        'valuation': {'pe_ratio': pe_ratio},
+                        'profitability': {'roe': roe, 'level': profitability_level},
+                        'rating': rating,
+                    },
+                    'score': {
+                        'total_score': float(total_score),
+                    },
                 })
             
             elif action == 'quick_scan':

@@ -20,7 +20,8 @@ def register(mcp):
         risk_free_rate: float = 0.03,
         market_weights: Optional[List[float]] = None,
         views: Optional[List[Dict[str, Any]]] = None,
-        risk_budgets: Optional[List[float]] = None
+        risk_budgets: Optional[List[float]] = None,
+        max_weight: float = 0.35,
     ):
         """
         组合优化
@@ -42,6 +43,7 @@ def register(mcp):
                 [{'type': 'absolute', 'asset': 0, 'return': 0.10},
                  {'type': 'relative', 'assets': [0, 1], 'return': 0.05}]
             risk_budgets: 风险预算（用于风险预算优化）
+            max_weight: 单资产最大权重上限（用于 max_sharpe，默认 0.35）
         
         Returns:
             最优权重和组合指标
@@ -143,14 +145,16 @@ def register(mcp):
                     stocks,
                     returns_matrix,
                     expected_returns,
-                    risk_free_rate=risk_free_rate
+                    risk_free_rate=risk_free_rate,
+                    max_weight=max_weight,
                 )
-                
+
                 return ok({
                     'weights': result['weights'],
                     'expected_return': f"{result['expected_return']*100:.2f}%",
                     'volatility': f"{result['volatility']*100:.2f}%",
                     'sharpe_ratio': f"{result['sharpe_ratio']:.2f}",
+                    'constraints_applied': result.get('constraints_applied', {'max_weight': max_weight}),
                     'method': method,
                 })
             

@@ -183,7 +183,8 @@ class PortfolioOptimizer:
         stocks: List[str],
         returns_matrix: np.ndarray,
         expected_returns: np.ndarray,
-        risk_free_rate: float = 0.03
+        risk_free_rate: float = 0.03,
+        max_weight: float = 0.35,
     ) -> Dict[str, Any]:
         """
         最大化夏普比率
@@ -193,6 +194,7 @@ class PortfolioOptimizer:
             returns_matrix: 收益率矩阵 (n_stocks, n_periods)
             expected_returns: 预期收益率 (n_stocks,)
             risk_free_rate: 无风险利率
+            max_weight: 单资产最大权重上限（默认 0.35）
         
         Returns:
             最大夏普比率组合
@@ -203,7 +205,8 @@ class PortfolioOptimizer:
         result = advanced_optimizer.max_sharpe_ratio(
             expected_returns=expected_returns,
             cov_matrix=cov_matrix,
-            risk_free_rate=risk_free_rate
+            risk_free_rate=risk_free_rate,
+            max_weight=max_weight,
         )
         
         if result['success']:

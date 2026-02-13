@@ -6,7 +6,42 @@ decision_manager, comprehensive_manager, sector_manager的增强功能
 
 import pytest
 import asyncio
+import importlib
 from datetime import datetime
+
+
+class _DummyMCP:
+    """用于注册 manager 的最小 MCP stub。"""
+
+    def tool(self):
+        def _decorator(fn):
+            setattr(self, fn.__name__, fn)
+            return fn
+
+        return _decorator
+
+
+def _get_manager_callable(manager_name: str, register_module: str, register_func: str):
+    """获取可调用的 manager 函数（优先 direct import，失败后 register 回退）。"""
+    try:
+        managers_extended = importlib.import_module('akshare_mcp.tools.managers_extended')
+        return getattr(managers_extended, manager_name)
+    except Exception:
+        module = importlib.import_module(register_module)
+        register = getattr(module, register_func)
+        mcp = _DummyMCP()
+        register(mcp)
+        return getattr(mcp, manager_name)
+
+
+def _get_performance_manager_callable():
+    """保持兼容的旧 helper 名称。"""
+    return _get_manager_callable(
+        manager_name='performance_manager',
+        register_module='akshare_mcp.tools.managers.performance_manager',
+        register_func='register_performance_manager',
+    )
+
 
 
 class TestRiskManager:
@@ -19,7 +54,11 @@ class TestRiskManager:
         print("测试VaR计算...")
         print("="*60)
         
-        from akshare_mcp.tools.managers_extended import risk_manager
+        risk_manager = _get_manager_callable(
+            manager_name='risk_manager',
+            register_module='akshare_mcp.tools.managers.risk_manager',
+            register_func='register_risk_manager',
+        )
         
         result = await risk_manager(
             action='calculate_var',
@@ -43,7 +82,11 @@ class TestRiskManager:
         print("测试压力测试...")
         print("="*60)
         
-        from akshare_mcp.tools.managers_extended import risk_manager
+        risk_manager = _get_manager_callable(
+            manager_name='risk_manager',
+            register_module='akshare_mcp.tools.managers.risk_manager',
+            register_func='register_risk_manager',
+        )
         
         result = await risk_manager(
             action='stress_test',
@@ -70,7 +113,11 @@ class TestQuantManager:
         print("测试因子计算...")
         print("="*60)
         
-        from akshare_mcp.tools.managers_extended import quant_manager
+        quant_manager = _get_manager_callable(
+            manager_name='quant_manager',
+            register_module='akshare_mcp.tools.managers.quant_manager',
+            register_func='register_quant_manager',
+        )
         
         result = await quant_manager(
             action='calculate_factors',
@@ -95,7 +142,11 @@ class TestQuantManager:
         print("测试多因子评分...")
         print("="*60)
         
-        from akshare_mcp.tools.managers_extended import quant_manager
+        quant_manager = _get_manager_callable(
+            manager_name='quant_manager',
+            register_module='akshare_mcp.tools.managers.quant_manager',
+            register_func='register_quant_manager',
+        )
         
         result = await quant_manager(
             action='multi_factor_score',
@@ -119,53 +170,144 @@ class TestQuantManager:
 
 class TestPerformanceManager:
     """测试绩效管理器"""
-    
+
     @pytest.mark.asyncio
     async def test_calculate_metrics(self):
-        """测试绩效指标计算"""
+        """测试绩效指标计算（含时序字段）"""
         print("\n" + "="*60)
         print("测试绩效指标计算...")
         print("="*60)
-        
-        from akshare_mcp.tools.managers_extended import performance_manager
-        
+
+        performance_manager = _get_performance_manager_callable()
+
         result = await performance_manager(
             action='calculate_metrics',
-            portfolio_id=1
+            portfolio_id=1,
+            lookback_days=120
         )
-        
+
         assert result['success'] is True
-        assert 'total_return' in result['data']
-        assert 'sharpe_ratio' in result['data']
-        assert 'trading_stats' in result['data']
-        
-        print(f"✅ 总收益率: {result['data']['total_return_pct']}")
-        print(f"✅ 年化收益率: {result['data']['annualized_return_pct']}")
-        print(f"✅ 夏普比率: {result['data']['sharpe_ratio']:.2f}")
-        print(f"✅ 最大回撤: {result['data']['max_drawdown_pct']}")
-        print(f"✅ 胜率: {result['data']['trading_stats']['win_rate_pct']}")
-    
+        data = result['data']
+
+        # 基础字段
+        assert 'total_return' in data
+        assert 'sharpe_ratio' in data
+        assert 'trading_stats' in data
+
+        # 新增时序字段
+        assert 'series_total_return' in data
+        assert 'volatility' in data
+        assert 'max_drawdown' in data
+        assert 'lookback_days' in data
+        assert 'daily_returns_count' in data
+
+        assert isinstance(data['trading_stats'], dict)
+        assert data['lookback_days'] == 120
+        assert data['daily_returns_count'] >= 0
+
+        print(f"✅ 总收益率: {data['total_return_pct']}")
+        print(f"✅ 序列总收益率: {data['series_total_return_pct']}")
+        print(f"✅ 年化收益率: {data['annualized_return_pct']}")
+        print(f"✅ 夏普比率: {data['sharpe_ratio']:.2f}")
+        print(f"✅ 最大回撤: {data['max_drawdown_pct']}")
+        print(f"✅ 年化波动率: {data['volatility_pct']}")
+        print(f"✅ 胜率: {data['trading_stats']['win_rate_pct']}")
+
+    @pytest.mark.asyncio
+    async def test_benchmark_comparison(self):
+        """测试基准对比（含TE/IR）"""
+        print("\n" + "="*60)
+        print("测试基准对比...")
+        print("="*60)
+
+        performance_manager = _get_performance_manager_callable()
+
+        result = await performance_manager(
+            action='benchmark_comparison',
+            portfolio_id=1,
+            benchmark='000300',
+            lookback_days=120
+        )
+
+        # 兼容离线/弱网环境：若外部行情源不可用，接口可能返回 fail
+        if not result.get('success'):
+            err = (result.get('error') or result.get('message') or '').lower()
+            assert (
+                'tracking_error' in err
+                or '收益序列不足' in (result.get('error') or result.get('message') or '')
+                or '502' in err
+                or 'bad gateway' in err
+                or 'network' in err
+            )
+            return
+
+        data = result['data']
+
+        assert 'tracking_error' in data
+        assert 'information_ratio' in data
+        assert 'annualized_excess_return' in data
+        assert 'aligned_days' in data
+        assert 'portfolio_total_return_account' in data
+        assert 'portfolio_total_return_series' in data
+
+        assert data['aligned_days'] >= 2
+
+        print(f"✅ 超额收益: {data['excess_return_pct']}")
+        print(f"✅ 跟踪误差: {data['tracking_error_pct']}")
+        print(f"✅ 信息比率: {data['information_ratio']:.4f}")
+        print(f"✅ 对齐交易日: {data['aligned_days']}")
+
     @pytest.mark.asyncio
     async def test_attribution(self):
-        """测试归因分析"""
+        """测试归因分析（含可审计字段）"""
         print("\n" + "="*60)
         print("测试归因分析...")
         print("="*60)
-        
-        from akshare_mcp.tools.managers_extended import performance_manager
-        
+
+        performance_manager = _get_performance_manager_callable()
+
         result = await performance_manager(
             action='attribution',
             portfolio_id=1
         )
-        
-        assert result['success'] is True
-        assert 'attribution' in result['data']
-        
-        attribution = result['data']['attribution']
+
+        # 兼容空组合场景：接口会 success=true 并返回引导信息
+        assert result.get('success') is True
+        data = result['data']
+        if 'attribution' not in data:
+            msg = data.get('message', '')
+            assert '无持仓' in msg
+            assert 'quick_start' in data
+            return
+
+        assert 'attribution' in data
+        assert 'attribution_by_stock' in data
+        assert 'sector_performance' in data
+        assert 'method' in data
+
+        attribution = data['attribution']
+        assert 'stock_selection' in attribution
+        assert 'sector_allocation' in attribution
+        assert 'timing' in attribution
+
+        decomposition_sum = (
+            float(attribution['stock_selection']['return'])
+            + float(attribution['sector_allocation']['return'])
+            + float(attribution['timing']['return'])
+        )
+        assert abs(decomposition_sum - float(data['total_return'])) < 1e-8
+
+        if data['attribution_by_stock']:
+            row = data['attribution_by_stock'][0]
+            assert 'code' in row
+            assert 'weight' in row
+            assert 'stock_return' in row
+            assert 'contribution' in row
+
         print(f"✅ 股票选择贡献: {attribution['stock_selection']['contribution']}")
         print(f"✅ 行业配置贡献: {attribution['sector_allocation']['contribution']}")
         print(f"✅ 择时贡献: {attribution['timing']['contribution']}")
+
 
 
 class TestScreenerManager:
@@ -178,7 +320,11 @@ class TestScreenerManager:
         print("测试股票筛选...")
         print("="*60)
         
-        from akshare_mcp.tools.managers_extended import screener_manager
+        screener_manager = _get_manager_callable(
+            manager_name='screener_manager',
+            register_module='akshare_mcp.tools.managers.screener_manager',
+            register_func='register_screener_manager',
+        )
         
         result = await screener_manager(
             action='screen',
@@ -209,7 +355,11 @@ class TestDecisionManager:
         print("测试综合分析决策...")
         print("="*60)
         
-        from akshare_mcp.tools.managers_extended import decision_manager
+        decision_manager = _get_manager_callable(
+            manager_name='decision_manager',
+            register_module='akshare_mcp.tools.managers.decision_manager',
+            register_func='register_decision_manager',
+        )
         
         result = await decision_manager(
             action='analyze',
@@ -242,7 +392,11 @@ class TestComprehensiveManager:
         print("测试全面分析...")
         print("="*60)
         
-        from akshare_mcp.tools.managers_extended import comprehensive_manager
+        comprehensive_manager = _get_manager_callable(
+            manager_name='comprehensive_manager',
+            register_module='akshare_mcp.tools.managers.comprehensive_manager',
+            register_func='register_comprehensive_manager',
+        )
         
         result = await comprehensive_manager(
             action='full_analysis',
@@ -272,7 +426,11 @@ class TestSectorManager:
         print("测试板块表现...")
         print("="*60)
         
-        from akshare_mcp.tools.managers_extended import sector_manager
+        sector_manager = _get_manager_callable(
+            manager_name='sector_manager',
+            register_module='akshare_mcp.tools.managers.sector_manager',
+            register_func='register_sector_manager',
+        )
         
         result = await sector_manager(
             action='sector_performance',

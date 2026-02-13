@@ -78,7 +78,34 @@ def register_options_manager(mcp):
                 })
             
             elif action == 'list':
-                return ok({'options': [], 'count': 0, 'note': '期权列表功能待实现'})
+                underlying = kwargs.get('underlying') or kwargs.get('code') or '510050'
+                expiry_month = kwargs.get('expiry_month') or kwargs.get('month') or ""
+                limit = kwargs.get('limit', 200)
+                try:
+                    limit = int(limit)
+                except Exception:
+                    limit = 200
+
+                from ..options import get_option_chain
+
+                chain = get_option_chain(
+                    underlying=str(underlying),
+                    expiry_month=str(expiry_month),
+                    limit=limit,
+                )
+                if not chain.get('success'):
+                    return fail(chain.get('error') or '获取期权链失败')
+
+                data = chain.get('data') or {}
+                options = data.get('options') or []
+                return ok({
+                    'underlying': data.get('underlying', {}),
+                    'expiryMonths': data.get('expiryMonths', []),
+                    'selectedExpiry': data.get('selectedExpiry', []),
+                    'options': options,
+                    'count': len(options),
+                    'truncated': bool(data.get('truncated', False)),
+                })
             
             elif action == 'calculate_greeks':
                 code = kwargs.get('code') or kwargs.get('underlying')

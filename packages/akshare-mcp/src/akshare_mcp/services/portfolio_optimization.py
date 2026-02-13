@@ -330,33 +330,42 @@ class PortfolioOptimizer:
     def max_sharpe_ratio(
         expected_returns: np.ndarray,
         cov_matrix: np.ndarray,
-        risk_free_rate: float = 0.03
+        risk_free_rate: float = 0.03,
+        max_weight: float = 0.35,
     ) -> Dict[str, Any]:
         """
         最大化夏普比率
-        
+
         Args:
             expected_returns: 预期收益率
             cov_matrix: 协方差矩阵
             risk_free_rate: 无风险利率
-        
+            max_weight: 单资产最大权重上限（默认 35%）
+
         Returns:
             最大夏普比率组合
         """
         n_assets = len(expected_returns)
-        
+
+        # 约束可行性保护：当资产数较少时，放宽上限到可行最小值 1/n
+        safe_cap = float(max(0.0, min(1.0, max_weight)))
+        feasible_min_cap = 1.0 / n_assets if n_assets > 0 else 1.0
+        upper_bound = max(safe_cap, feasible_min_cap)
+
         # 目标函数：最大化夏普比率 = 最小化负夏普比率
         def neg_sharpe(weights):
             portfolio_return = np.dot(weights, expected_returns)
             portfolio_std = np.sqrt(np.dot(weights, np.dot(cov_matrix, weights)))
+            if portfolio_std <= 0:
+                return 1e9
             sharpe = (portfolio_return - risk_free_rate) / portfolio_std
             return -sharpe
-        
+
         # 约束和边界
         constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
-        bounds = tuple((0, 1) for _ in range(n_assets))
+        bounds = tuple((0, upper_bound) for _ in range(n_assets))
         initial_weights = np.array([1.0 / n_assets] * n_assets)
-        
+
         # 优化
         result = minimize(
             neg_sharpe,
@@ -365,20 +374,23 @@ class PortfolioOptimizer:
             bounds=bounds,
             constraints=constraints
         )
-        
+
         optimal_weights = result.x
-        
+
         # 计算组合指标
         portfolio_return = np.dot(optimal_weights, expected_returns)
         portfolio_std = np.sqrt(np.dot(optimal_weights, np.dot(cov_matrix, optimal_weights)))
-        sharpe_ratio = (portfolio_return - risk_free_rate) / portfolio_std
-        
+        sharpe_ratio = (portfolio_return - risk_free_rate) / portfolio_std if portfolio_std > 0 else 0.0
+
         return {
             'weights': optimal_weights.tolist(),
             'expected_return': float(portfolio_return),
             'volatility': float(portfolio_std),
             'sharpe_ratio': float(sharpe_ratio),
             'success': result.success,
+            'constraints_applied': {
+                'max_weight': float(upper_bound),
+            },
         }
     
     # ========== 最小方差 ==========

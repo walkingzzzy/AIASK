@@ -4,12 +4,12 @@
 """
 
 from typing import Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, ConfigDict, ValidationInfo, field_validator
 
 
 class StockQuote(BaseModel):
     """股票行情数据模型"""
-    
+
     code: str = Field(..., description="股票代码")
     name: str = Field(default="", description="股票名称")
     price: Optional[float] = Field(None, description="当前价格")
@@ -23,15 +23,19 @@ class StockQuote(BaseModel):
     amount: Optional[float] = Field(None, description="成交额")
     turnoverRate: Optional[float] = Field(None, description="换手率")
     source: str = Field(default="unknown", description="数据源")
-    
-    @validator('price')
+
+    model_config = ConfigDict(extra='allow')
+
+    @field_validator('price')
+    @classmethod
     def price_must_be_positive(cls, v):
         """价格必须大于0"""
         if v is not None and v <= 0:
             raise ValueError('价格必须大于0')
         return v
-    
-    @validator('volume', pre=True)
+
+    @field_validator('volume', mode='before')
+    @classmethod
     def convert_volume_to_int(cls, v):
         """将成交量转换为整数（处理浮点数输入）"""
         if v is None:
@@ -41,29 +45,27 @@ class StockQuote(BaseModel):
             return int(float(v))
         except (ValueError, TypeError):
             return None
-    
-    @validator('volume')
+
+    @field_validator('volume')
+    @classmethod
     def volume_must_be_non_negative(cls, v):
         """成交量不能为负"""
         if v is not None and v < 0:
             raise ValueError('成交量不能为负')
         return v
-    
-    @validator('amount')
+
+    @field_validator('amount')
+    @classmethod
     def amount_must_be_non_negative(cls, v):
         """成交额不能为负"""
         if v is not None and v < 0:
             raise ValueError('成交额不能为负')
         return v
-    
-    class Config:
-        # 允许额外字段
-        extra = 'allow'
 
 
 class KlineData(BaseModel):
     """K线数据模型"""
-    
+
     date: str = Field(..., description="日期")
     open: Optional[float] = Field(None, description="开盘价")
     close: Optional[float] = Field(None, description="收盘价")
@@ -72,15 +74,19 @@ class KlineData(BaseModel):
     volume: Optional[int] = Field(None, description="成交量")
     amount: Optional[float] = Field(None, description="成交额")
     source: str = Field(default="unknown", description="数据源")
-    
-    @validator('open', 'close', 'high', 'low')
+
+    model_config = ConfigDict(extra='allow')
+
+    @field_validator('open', 'close', 'high', 'low')
+    @classmethod
     def price_must_be_positive(cls, v):
         """价格必须大于0"""
         if v is not None and v <= 0:
             raise ValueError('价格必须大于0')
         return v
-    
-    @validator('volume', pre=True)
+
+    @field_validator('volume', mode='before')
+    @classmethod
     def convert_volume_to_int(cls, v):
         """将成交量转换为整数（处理浮点数输入）"""
         if v is None:
@@ -90,50 +96,52 @@ class KlineData(BaseModel):
             return int(float(v))
         except (ValueError, TypeError):
             return None
-    
-    @validator('volume')
+
+    @field_validator('volume')
+    @classmethod
     def volume_must_be_non_negative(cls, v):
         """成交量不能为负"""
         if v is not None and v < 0:
             raise ValueError('成交量不能为负')
         return v
-    
-    @validator('high')
-    def high_must_be_highest(cls, v, values):
+
+    @field_validator('high')
+    @classmethod
+    def high_must_be_highest(cls, v, info: ValidationInfo):
         """最高价必须是最高的"""
         if v is None:
             return v
-        
-        open_price = values.get('open')
-        close_price = values.get('close')
-        low_price = values.get('low')
-        
+
+        data = info.data or {}
+        open_price = data.get('open')
+        close_price = data.get('close')
+        low_price = data.get('low')
+
         prices = [p for p in [open_price, close_price, low_price] if p is not None]
         if prices and v < max(prices):
             # 警告但不抛出异常（数据可能有误差）
             pass
-        
+
         return v
-    
-    @validator('low')
-    def low_must_be_lowest(cls, v, values):
+
+    @field_validator('low')
+    @classmethod
+    def low_must_be_lowest(cls, v, info: ValidationInfo):
         """最低价必须是最低的"""
         if v is None:
             return v
-        
-        open_price = values.get('open')
-        close_price = values.get('close')
-        high_price = values.get('high')
-        
+
+        data = info.data or {}
+        open_price = data.get('open')
+        close_price = data.get('close')
+        high_price = data.get('high')
+
         prices = [p for p in [open_price, close_price, high_price] if p is not None]
         if prices and v > min(prices):
             # 警告但不抛出异常（数据可能有误差）
             pass
-        
+
         return v
-    
-    class Config:
-        extra = 'allow'
 
 
 def validate_quote(data: dict) -> StockQuote:
@@ -188,7 +196,7 @@ def validate_kline_list(data_list: list) -> list:
     for i, data in enumerate(data_list):
         try:
             validated_data = validate_kline(data)
-            validated.append(validated_data.dict())
+            validated.append(validated_data.model_dump())
         except ValueError as e:
             # 跳过无效数据，记录警告
             import sys

@@ -1,7 +1,12 @@
 """合规管理器 - 交易限制、合规检查"""
 
 import json
+from datetime import datetime, timedelta, timezone
 from ...utils import ok, fail, normalize_code
+
+MAX_SINGLE_ORDER_SHARES = 1_000_000
+MAX_SINGLE_ORDER_AMOUNT = 50_000_000.0
+MIN_LOT_SIZE = 100
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
@@ -18,7 +23,20 @@ def _normalize_kwargs(kwargs: dict) -> dict:
             pass
     if "code" not in kwargs or kwargs.get("code") is None:
         kwargs["code"] = kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
+    if kwargs.get("quantity") is None:
+        kwargs["quantity"] = kwargs.get("shares") or kwargs.get("qty")
+    if kwargs.get("direction") is None:
+        kwargs["direction"] = kwargs.get("side") or kwargs.get("order_side")
     return kwargs
+
+
+def _in_cn_trading_hours() -> bool:
+    """简单交易时段校验（北京时间，工作日 09:30-11:30, 13:00-15:00）"""
+    now_cn = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8)))
+    if now_cn.weekday() >= 5:
+        return False
+    minutes = now_cn.hour * 60 + now_cn.minute
+    return (570 <= minutes <= 690) or (780 <= minutes <= 900)
 
 
 def register_compliance_manager(mcp):
@@ -66,22 +84,76 @@ def register_compliance_manager(mcp):
             
             elif action in ['check_order', 'check', 'check_trade']:
                 code = normalize_code(kwargs.get('code') or '') if kwargs.get('code') else None
-                shares = kwargs.get('shares')
-                account_id = kwargs.get('account_id')
-                
+                direction = str(kwargs.get('direction') or '').strip().lower()
+                quantity_raw = kwargs.get('quantity')
+                price_raw = kwargs.get('price')
+
+                violations = []
+                warnings = []
+
+                quantity = None
+                if quantity_raw is not None:
+                    try:
+                        quantity = int(float(quantity_raw))
+                    except Exception:
+                        violations.append('quantity 格式无效，需为正整数')
+
+                price = None
+                if price_raw is not None:
+                    try:
+                        price = float(price_raw)
+                    except Exception:
+                        violations.append('price 格式无效，需为正数')
+
+                if not code:
+                    violations.append('缺少 code 参数')
+                if direction not in ('buy', 'sell'):
+                    violations.append('direction 仅支持 buy/sell')
+                if quantity is None or quantity <= 0:
+                    violations.append('quantity 必须大于 0')
+                if price is not None and price <= 0:
+                    violations.append('price 必须大于 0')
+
+                if quantity is not None and quantity > MAX_SINGLE_ORDER_SHARES:
+                    violations.append(f'单笔数量超限（>{MAX_SINGLE_ORDER_SHARES}）')
+
+                if direction == 'buy' and quantity is not None and quantity % MIN_LOT_SIZE != 0:
+                    warnings.append(f'买入数量建议为 {MIN_LOT_SIZE} 的整数倍')
+
+                order_amount = None
+                if quantity is not None and price is not None and price > 0:
+                    order_amount = quantity * price
+                    if order_amount > MAX_SINGLE_ORDER_AMOUNT:
+                        violations.append(f'单笔金额超限（>{MAX_SINGLE_ORDER_AMOUNT:.0f}）')
+
+                trading_hours = _in_cn_trading_hours()
                 checks = {
-                    'position_limit': True,
-                    'trading_hours': True,
-                    'suspended': False,
-                    'st_stock': False,
+                    'position_limit': quantity is not None and quantity <= MAX_SINGLE_ORDER_SHARES,
+                    'trading_hours': trading_hours,
+                    'suspended': False,   # 当前未接入实时停牌源
+                    'st_stock': False,    # 当前未接入 ST 名单实时校验
+                    'lot_size': not (direction == 'buy' and quantity is not None and quantity % MIN_LOT_SIZE != 0),
+                    'order_amount': (order_amount is None) or (order_amount <= MAX_SINGLE_ORDER_AMOUNT),
                 }
-                
-                passed = all(v for v in checks.values() if isinstance(v, bool) and v) and not checks.get('suspended') and not checks.get('st_stock')
-                
+
+                if not trading_hours:
+                    warnings.append('当前时间不在交易时段内（仅提示，部分券商支持预委托）')
+                warnings.append('停牌/ST/涨跌停校验当前为静态规则，建议在下单前接入实时行情复核')
+
+                blocked = len(violations) > 0
+                passed = not blocked
+
                 return ok({
                     'code': code,
+                    'direction': direction,
+                    'quantity': quantity,
+                    'price': price,
+                    'order_amount': float(order_amount) if order_amount is not None else None,
                     'passed': passed,
+                    'blocked': blocked,
                     'checks': checks,
+                    'violations': violations,
+                    'warnings': warnings,
                 })
             
             elif action == 'get_restrictions':
@@ -90,8 +162,11 @@ def register_compliance_manager(mcp):
                     'code': code,
                     'restrictions': {
                         'max_position_pct': 0.1,
-                        'max_single_order': 10000,
+                        'max_single_order_shares': MAX_SINGLE_ORDER_SHARES,
+                        'max_single_order_amount': MAX_SINGLE_ORDER_AMOUNT,
+                        'min_lot_size': MIN_LOT_SIZE,
                         'trading_allowed': True,
+                        'trading_hours': '09:30-11:30, 13:00-15:00 (Asia/Shanghai)',
                     }
                 })
             
@@ -99,6 +174,9 @@ def register_compliance_manager(mcp):
                 return ok({
                     'rules': [
                         {'name': 'position_limit', 'description': '单只股票持仓不超过净资产10%'},
+                        {'name': 'single_order_shares', 'description': f'单笔数量不超过 {MAX_SINGLE_ORDER_SHARES} 股'},
+                        {'name': 'single_order_amount', 'description': f'单笔金额不超过 {MAX_SINGLE_ORDER_AMOUNT:.0f} 元'},
+                        {'name': 'lot_size', 'description': f'买入数量建议为 {MIN_LOT_SIZE} 的整数倍'},
                         {'name': 'trading_hours', 'description': '只能在交易时间内下单（9:30-11:30, 13:00-15:00）'},
                         {'name': 'st_restriction', 'description': 'ST股票每日涨跌幅限制5%'},
                         {'name': 'suspended', 'description': '停牌股票不可交易'},

@@ -18,6 +18,13 @@ def _normalize_kwargs(kwargs: dict) -> dict:
             pass
     if "code" not in kwargs or kwargs.get("code") is None:
         kwargs["code"] = kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
+    # 参数别名兼容：文档使用 total_quantity/duration_minutes，历史实现使用 total_shares/duration
+    if kwargs.get("total_shares") is None:
+        kwargs["total_shares"] = kwargs.get("total_quantity") or kwargs.get("quantity")
+    if kwargs.get("duration") is None:
+        kwargs["duration"] = kwargs.get("duration_minutes") or kwargs.get("minutes")
+    if kwargs.get("slices") is None and kwargs.get("slice_count") is not None:
+        kwargs["slices"] = kwargs.get("slice_count")
     return kwargs
 
 
@@ -67,43 +74,60 @@ def register_execution_manager(mcp):
                 code = kwargs.get('code')
                 total_shares = kwargs.get('total_shares')
                 duration = kwargs.get('duration', 60)
+                slices = kwargs.get('slices')
                 
                 if not code:
                     return fail('需要提供 code 参数')
                 if total_shares is None:
-                    return fail('需要提供 total_shares 参数')
+                    return fail('需要提供 total_shares 或 total_quantity 参数')
                 if not isinstance(total_shares, (int, float)) or total_shares <= 0:
                     return fail('total_shares 必须是正数')
                 if not isinstance(duration, (int, float)) or duration <= 0:
                     return fail('duration 必须是正数')
                 
-                slices = int(duration) // 5
+                if slices is None:
+                    slices = int(duration) // 5
+                else:
+                    try:
+                        slices = int(slices)
+                    except Exception:
+                        return fail('slices 必须是正整数')
                 if slices <= 0:
                     slices = 1
+                interval = max(1, int(duration) // slices)
                 shares_per_slice = int(total_shares) // slices
+                remainder = int(total_shares) - shares_per_slice * slices
                 
                 return ok({
                     'algorithm': 'TWAP',
                     'code': code,
                     'total_shares': int(total_shares),
+                    'total_quantity': int(total_shares),  # 向后兼容文档参数名
+                    'duration': int(duration),
+                    'duration_minutes': int(duration),  # 向后兼容文档参数名
                     'slices': slices,
                     'shares_per_slice': shares_per_slice,
-                    'interval': 5,
+                    'interval': interval,
+                    'remainder_shares': remainder,
                 })
             
             elif action == 'vwap':
                 code = kwargs.get('code')
                 total_shares = kwargs.get('total_shares')
+                duration = kwargs.get('duration', 60)
                 
                 if not code:
                     return fail('需要提供 code 参数')
                 if total_shares is None:
-                    return fail('需要提供 total_shares 参数')
+                    return fail('需要提供 total_shares 或 total_quantity 参数')
                 
                 return ok({
                     'algorithm': 'VWAP',
                     'code': code,
                     'total_shares': int(total_shares),
+                    'total_quantity': int(total_shares),  # 向后兼容文档参数名
+                    'duration': int(duration),
+                    'duration_minutes': int(duration),  # 向后兼容文档参数名
                     'status': 'scheduled',
                 })
             

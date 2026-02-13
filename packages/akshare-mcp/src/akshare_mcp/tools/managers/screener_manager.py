@@ -309,6 +309,9 @@ def register_screener_manager(mcp):
                     
                     stock['score'] = score
                     stock['rating'] = 'A' if score >= 80 else ('B' if score >= 60 else ('C' if score >= 40 else 'D'))
+                    # 向后兼容：统一输出 code/name 字段，避免仅有 stock_code/stock_name
+                    stock['code'] = stock.get('stock_code') or stock.get('code')
+                    stock['name'] = stock.get('stock_name') or stock.get('name') or ''
                 
                 stocks.sort(key=lambda x: x['score'], reverse=True)
                 
