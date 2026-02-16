@@ -7,6 +7,7 @@ from datetime import datetime
 from ...storage import get_db
 from ...utils import ok, fail, normalize_code
 from ...data_source import data_source
+from ...tools.market.helpers import get_stock_list_cached
 import logging
 
 logger = logging.getLogger(__name__)
@@ -404,16 +405,32 @@ def register_decision_manager(mcp):
 
                 candidate_codes = []
                 candidate_rows = []
+                filter_chain = []
+                source_method = 'user_codes'
 
                 if isinstance(codes, list) and codes:
                     candidate_codes = [normalize_code(c) for c in codes if isinstance(c, str) and c.strip()]
+                    filter_chain.append({'step': 'source', 'method': 'user_codes', 'count': len(candidate_codes)})
                 else:
-                    if hasattr(db, 'search_stocks'):
+                    # 1) 优先: get_stock_list_cached（全A股列表）
+                    try:
+                        stock_list, _cached = get_stock_list_cached()
+                        if stock_list:
+                            candidate_rows = stock_list[:universe_limit]
+                            source_method = 'get_stock_list'
+                    except Exception:
+                        candidate_rows = []
+
+                    # 2) 降级: db.search_stocks
+                    if not candidate_rows and hasattr(db, 'search_stocks'):
                         try:
                             candidate_rows = await db.search_stocks(keyword=keyword, limit=universe_limit)
+                            if candidate_rows:
+                                source_method = 'db.search_stocks'
                         except Exception:
                             candidate_rows = []
 
+                    # 3) 降级: SQL 查询
                     if not candidate_rows and hasattr(db, 'acquire'):
                         try:
                             async with db.acquire() as conn:
@@ -436,20 +453,28 @@ def register_decision_manager(mcp):
                                     'industry': row_dict.get('industry'),
                                     'market_cap': float(mc) if mc else None,
                                 })
+                            if candidate_rows:
+                                source_method = 'sql_stocks_table'
                         except Exception:
                             candidate_rows = []
 
+                    filter_chain.append({'step': 'source', 'method': source_method, 'count': len(candidate_rows)})
+
                     if sector_set:
+                        before = len(candidate_rows)
                         candidate_rows = [
                             r for r in candidate_rows
                             if str((r or {}).get('industry', '')).strip() in sector_set
                         ]
+                        filter_chain.append({'step': 'sector_filter', 'before': before, 'after': len(candidate_rows)})
 
                     if min_market_cap > 0:
+                        before = len(candidate_rows)
                         candidate_rows = [
                             r for r in candidate_rows
                             if _to_float((r or {}).get('market_cap', 0.0), 0.0) >= min_market_cap
                         ]
+                        filter_chain.append({'step': 'market_cap_filter', 'before': before, 'after': len(candidate_rows)})
 
                     seen_codes = set()
                     for row in candidate_rows:
@@ -457,11 +482,10 @@ def register_decision_manager(mcp):
                         if code and code not in seen_codes:
                             seen_codes.add(code)
                             candidate_codes.append(code)
+                    filter_chain.append({'step': 'dedup', 'count': len(candidate_codes)})
 
-                fallback_used = False
-                if not candidate_codes:
-                    fallback_used = True
-                    candidate_codes = ['600519', '000858', '002304', '000001', '600036']
+                fallback_used = source_method not in ('user_codes', 'get_stock_list')
+                no_candidates = not candidate_codes
 
                 recommendations = []
                 scanned = 0
@@ -491,6 +515,7 @@ def register_decision_manager(mcp):
                     'recommendations': recommendations,
                     'count': len(recommendations),
                     'criteria': criteria,
+                    'message': '未找到符合条件的候选股票' if no_candidates else '',
                     'universe': {
                         'candidate_count': len(candidate_codes),
                         'scanned_count': scanned,
@@ -499,6 +524,10 @@ def register_decision_manager(mcp):
                         'sector_filter': list(sector_set),
                         'min_market_cap': min_market_cap,
                         'fallback_used': fallback_used,
+                        'no_candidates': no_candidates,
+                        'source_method': source_method,
+                        'filter_chain': filter_chain,
+                        'coverage_rate': round(len(recommendations) / max(1, scanned), 4),
                     },
                 })
             

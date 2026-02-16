@@ -1134,6 +1134,150 @@ async def run_factor_oos_validation(
     )
 
 
+# ── P2-2: 因子稳健性检验 ──────────────────────────────────
+
+async def run_factor_robustness_check(
+    codes: List[str],
+    factor: str,
+    windows: Optional[List[int]] = None,
+    param_variations: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    """P2-2: 多窗口 IC 稳定性 + 参数敏感性 + 子样本一致性。"""
+    factor_name = _normalize_factor_name(factor)
+    if factor_name not in SUPPORTED_FACTORS:
+        return fail(f"Unsupported factor: {factor_name}")
+    if not codes:
+        return fail("codes is required")
+
+    windows = windows or [5, 10, 20, 60]
+    param_variations = param_variations or [10, 20, 40, 60]
+    db = get_db()
+
+    # ── 辅助：单窗口截面 IC ──
+    async def _cross_section_ic(lookback: int) -> Dict[str, Any]:
+        fv, fr = [], []
+        requires_fin = SUPPORTED_FACTORS[factor_name]["requires_financials"]
+        for code in codes:
+            klines = await db.get_klines(code, limit=lookback + 30)
+            if not klines or len(klines) < lookback + 5:
+                continue
+            closes = [k["close"] for k in klines if isinstance(k, dict) and k.get("close") is not None]
+            if len(closes) < lookback + 2:
+                continue
+            financial = None
+            if requires_fin:
+                financial = _latest_financial_row(await db.get_financials(code, limit=1))
+                if not financial:
+                    continue
+            stock_info = None
+            try:
+                stock_info = await db.get_stock_info(code)
+            except Exception:
+                pass
+            val = _calculate_factor_value(factor_name, closes[:lookback], financial=financial, stock_info=stock_info, period=lookback)
+            if val is None or np.isnan(val):
+                continue
+            ci = min(lookback - 1, len(closes) - 2)
+            fi = min(ci + lookback, len(closes) - 1)
+            if fi <= ci or closes[ci] <= 0:
+                continue
+            fv.append(float(val))
+            fr.append(float((closes[fi] - closes[ci]) / closes[ci]))
+        n = len(fv)
+        if n < 10:
+            return {"ic": 0.0, "rank_ic": 0.0, "sample_size": n, "significant": False}
+        ic = float(np.corrcoef(fv, fr)[0, 1])
+        rank_ic = float(stats.spearmanr(fv, fr).statistic)
+        p_val = float(stats.spearmanr(fv, fr).pvalue)
+        return {"ic": ic, "rank_ic": rank_ic, "p_value": p_val, "sample_size": n, "significant": p_val < 0.05}
+
+    # ── 1) 多窗口 IC 稳定性 ──
+    multi_window_results = {}
+    for w in windows:
+        multi_window_results[str(w)] = await _cross_section_ic(w)
+
+    ic_values = [v["rank_ic"] for v in multi_window_results.values() if v["sample_size"] >= 10]
+    window_stability = float(1.0 - (np.std(ic_values) / (abs(np.mean(ic_values)) + 1e-9))) if len(ic_values) >= 2 else 0.0
+    window_stability = max(0.0, min(1.0, window_stability))
+
+    # ── 2) 参数敏感性 ──
+    param_results = {}
+    for p in param_variations:
+        param_results[str(p)] = await _cross_section_ic(p)
+
+    param_ics = [v["rank_ic"] for v in param_results.values() if v["sample_size"] >= 10]
+    param_stability = float(1.0 - (np.std(param_ics) / (abs(np.mean(param_ics)) + 1e-9))) if len(param_ics) >= 2 else 0.0
+    param_stability = max(0.0, min(1.0, param_stability))
+
+    # ── 3) 子样本一致性（前半 vs 后半） ──
+    half = len(codes) // 2
+    if half >= 5:
+        sub1 = await _cross_section_ic.__wrapped__(20) if False else None  # noqa — 用简单分割
+        # 直接用 codes 前后半分别计算
+        codes_a, codes_b = codes[:half], codes[half:]
+        saved_codes = codes  # noqa
+
+        async def _sub_ic(sub_codes):
+            fv, fr = [], []
+            lb = 20
+            requires_fin = SUPPORTED_FACTORS[factor_name]["requires_financials"]
+            for code in sub_codes:
+                klines = await db.get_klines(code, limit=lb + 30)
+                if not klines or len(klines) < lb + 5:
+                    continue
+                closes = [k["close"] for k in klines if isinstance(k, dict) and k.get("close") is not None]
+                if len(closes) < lb + 2:
+                    continue
+                financial = None
+                if requires_fin:
+                    financial = _latest_financial_row(await db.get_financials(code, limit=1))
+                    if not financial:
+                        continue
+                stock_info = None
+                try:
+                    stock_info = await db.get_stock_info(code)
+                except Exception:
+                    pass
+                val = _calculate_factor_value(factor_name, closes[:lb], financial=financial, stock_info=stock_info, period=lb)
+                if val is None or np.isnan(val):
+                    continue
+                ci = min(lb - 1, len(closes) - 2)
+                fi = min(ci + lb, len(closes) - 1)
+                if fi <= ci or closes[ci] <= 0:
+                    continue
+                fv.append(float(val))
+                fr.append(float((closes[fi] - closes[ci]) / closes[ci]))
+            n = len(fv)
+            if n < 5:
+                return {"rank_ic": 0.0, "sample_size": n}
+            return {"rank_ic": float(stats.spearmanr(fv, fr).statistic), "sample_size": n}
+
+        sub_a = await _sub_ic(codes_a)
+        sub_b = await _sub_ic(codes_b)
+        # 同号且差异不大 → 高一致性
+        same_sign = (sub_a["rank_ic"] * sub_b["rank_ic"]) > 0
+        diff = abs(sub_a["rank_ic"] - sub_b["rank_ic"])
+        subsample_consistency = 1.0 if same_sign and diff < 0.05 else (0.5 if same_sign else 0.0)
+        subsample_detail = {"sub_a": sub_a, "sub_b": sub_b, "same_sign": same_sign, "ic_diff": round(diff, 4)}
+    else:
+        subsample_consistency = 0.0
+        subsample_detail = {"note": "insufficient codes for sub-sample split (need >= 10)"}
+
+    # ── 综合稳健性评分 ──
+    robustness_score = round((window_stability * 0.4 + param_stability * 0.3 + subsample_consistency * 0.3), 4)
+    grade = "strong" if robustness_score >= 0.7 else ("moderate" if robustness_score >= 0.4 else "weak")
+
+    return ok({
+        "factor": factor_name,
+        "robustness_score": robustness_score,
+        "grade": grade,
+        "multi_window_ic": {"results": multi_window_results, "stability": round(window_stability, 4)},
+        "param_sensitivity": {"results": param_results, "stability": round(param_stability, 4)},
+        "subsample_consistency": {"score": subsample_consistency, "detail": subsample_detail},
+        "weights": {"multi_window": 0.4, "param_sensitivity": 0.3, "subsample": 0.3},
+    })
+
+
 def register(mcp):
     @mcp.tool()
     def get_factor_library(category: str = "all"):
@@ -1204,6 +1348,30 @@ def register(mcp):
                     return fail(
                         "Failed to calculate factor: size (missing market cap in stock_info/financials, expected one of "
                         f"{', '.join(MARKET_CAP_KEYS)})"
+                    )
+                if factor_name == "momentum":
+                    return fail(
+                        f"Failed to calculate factor: momentum (need >= 2 close prices, got {len(closes)})"
+                    )
+                if factor_name == "trend":
+                    return fail(
+                        f"Failed to calculate factor: trend (need >= 3 close prices, got {len(closes)})"
+                    )
+                if factor_name == "reversal":
+                    return fail(
+                        f"Failed to calculate factor: reversal (need >= 2 close prices, got {len(closes)})"
+                    )
+                if factor_name == "volatility":
+                    return fail(
+                        f"Failed to calculate factor: volatility (need >= 4 close prices with valid returns, got {len(closes)})"
+                    )
+                if factor_name == "value":
+                    return fail(
+                        "Failed to calculate factor: value (need positive pe_ratio, pb_ratio, or ps_ratio in financials)"
+                    )
+                if factor_name == "quality":
+                    return fail(
+                        "Failed to calculate factor: quality (need roe/debt_ratio in financials)"
                     )
                 return fail(f"Failed to calculate factor: {factor_name}")
 
@@ -1304,6 +1472,24 @@ def register(mcp):
                 kfold_purge_gap=kfold_purge_gap,
                 bootstrap_n=bootstrap_n,
                 bootstrap_confidence=bootstrap_confidence,
+            )
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def factor_robustness_check(
+        codes: list,
+        factor: str,
+        windows: list = None,
+        param_variations: list = None,
+    ):
+        """P2-2: Factor robustness check — multi-window IC stability, parameter sensitivity, sub-sample consistency."""
+        try:
+            return await run_factor_robustness_check(
+                codes=codes,
+                factor=factor,
+                windows=windows,
+                param_variations=param_variations,
             )
         except Exception as e:
             return fail(str(e))

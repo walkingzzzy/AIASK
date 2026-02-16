@@ -13,8 +13,72 @@ Version: 2.1
 
 import numpy as np
 import pandas as pd
+import re
+import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+# ── P2-1: 可解释文本信号管线 ──────────────────────────────
+
+class TextSignalPipeline:
+    """基于关键词词典的可解释文本信号管线。"""
+
+    # 金融情绪词典：{关键词: 权重}，正=利好，负=利空
+    SENTIMENT_DICT: Dict[str, float] = {
+        # 利好
+        "利好": 1.0, "上涨": 0.8, "突破": 0.7, "增长": 0.9, "盈利": 0.8,
+        "超预期": 1.2, "创新高": 1.0, "放量": 0.6, "回购": 0.7, "增持": 0.8,
+        "分红": 0.5, "扭亏": 1.0, "中标": 0.7, "签约": 0.6, "获批": 0.7,
+        "涨停": 0.9, "大涨": 0.8, "景气": 0.6, "复苏": 0.7, "加速": 0.5,
+        # 利空
+        "利空": -1.0, "下跌": -0.8, "跌破": -0.7, "亏损": -0.9, "减持": -0.8,
+        "暴跌": -1.2, "跌停": -0.9, "缩量": -0.4, "违规": -1.0, "处罚": -0.9,
+        "退市": -1.5, "爆雷": -1.3, "质押": -0.5, "诉讼": -0.6, "下滑": -0.7,
+        "萎缩": -0.6, "衰退": -0.8, "风险": -0.5, "警示": -0.6, "ST": -1.0,
+    }
+
+    @classmethod
+    def score_text(cls, text: str) -> Dict[str, Any]:
+        """对单条文本打分，返回分数和命中关键词证据。"""
+        if not text:
+            return {"score": 0.0, "hits": []}
+        score = 0.0
+        hits: List[Dict[str, Any]] = []
+        for kw, weight in cls.SENTIMENT_DICT.items():
+            count = len(re.findall(re.escape(kw), text))
+            if count > 0:
+                contrib = weight * count
+                score += contrib
+                hits.append({"keyword": kw, "weight": weight, "count": count, "contrib": round(contrib, 3)})
+        return {"score": round(score, 4), "hits": hits}
+
+    @classmethod
+    def aggregate_signals(cls, headlines: List[str]) -> Dict[str, Any]:
+        """聚合多条新闻的文本信号，输出可解释的综合评分。"""
+        if not headlines:
+            return {"signal_score": 0.0, "n_articles": 0, "evidence": [], "sentiment": "neutral"}
+        details = [cls.score_text(h) for h in headlines]
+        scores = [d["score"] for d in details]
+        avg_score = float(np.mean(scores)) if scores else 0.0
+        # 收集 top 命中证据
+        all_hits: Dict[str, float] = {}
+        for d in details:
+            for h in d["hits"]:
+                all_hits[h["keyword"]] = all_hits.get(h["keyword"], 0.0) + h["contrib"]
+        top_evidence = sorted(all_hits.items(), key=lambda x: abs(x[1]), reverse=True)[:10]
+
+        sentiment = "bullish" if avg_score > 0.3 else ("bearish" if avg_score < -0.3 else "neutral")
+        return {
+            "signal_score": round(avg_score, 4),
+            "n_articles": len(headlines),
+            "sentiment": sentiment,
+            "positive_count": sum(1 for s in scores if s > 0),
+            "negative_count": sum(1 for s in scores if s < 0),
+            "evidence": [{"keyword": k, "total_contrib": round(v, 3)} for k, v in top_evidence],
+        }
 
 
 class LLMAlphaMiner:
@@ -148,6 +212,8 @@ class LLMAlphaMiner:
                     "formula": " ".join(formula.split())[:500],
                     "category": category,
                     "rationale": rationale[:500] if rationale else "",
+                    "_engine": item.get("_engine", ""),
+                    "_text_signal": item.get("_text_signal"),
                 }
             )
             if len(cleaned) >= num_candidates:
@@ -252,13 +318,31 @@ class LLMAlphaMiner:
             })
 
         if news_headlines and close_col and volume_col:
-            pool.append({
-                "name": "News_Attention_Proxy",
-                "description": "新闻关注度代理（量能突增 × 短期动量）。",
-                "formula": f"(({volume_col} / ({volume_col}.rolling(5).mean() + 1e-9)) - 1) * {close_col}.pct_change(3)",
-                "category": "sentiment",
-                "rationale": f"样本包含 {len(news_headlines)} 条近期新闻，使用交易行为代理情绪冲击。",
-            })
+            # P2-1: 优先使用文本信号管线，失败时降级为量价代理
+            try:
+                text_signal = TextSignalPipeline.aggregate_signals(news_headlines)
+                signal_score = text_signal.get("signal_score", 0.0)
+                evidence = text_signal.get("evidence", [])
+                evidence_str = ", ".join(e["keyword"] for e in evidence[:5]) if evidence else "无显著关键词"
+                pool.append({
+                    "name": "Text_Sentiment_Signal",
+                    "description": f"文本信号管线情绪因子（{text_signal['sentiment']}），基于{text_signal['n_articles']}条新闻。",
+                    "formula": f"text_signal_score={signal_score}; volume_confirm=({volume_col}/({volume_col}.rolling(5).mean()+1e-9)-1)*sign({signal_score})",
+                    "category": "sentiment",
+                    "rationale": f"文本信号得分 {signal_score}，关键词证据: {evidence_str}。",
+                    "_engine": "text_signal_pipeline_v1",
+                    "_text_signal": text_signal,
+                })
+            except Exception as exc:
+                logger.debug("TextSignalPipeline failed, fallback to proxy: %s", exc)
+                pool.append({
+                    "name": "News_Attention_Proxy",
+                    "description": "新闻关注度代理（量能突增 × 短期动量）— 文本管线降级。",
+                    "formula": f"(({volume_col} / ({volume_col}.rolling(5).mean() + 1e-9)) - 1) * {close_col}.pct_change(3)",
+                    "category": "sentiment",
+                    "rationale": f"样本包含 {len(news_headlines)} 条近期新闻，文本管线不可用，使用交易行为代理。",
+                    "_engine": "fallback_proxy",
+                })
 
         # 简单优先级：趋势明显先看 momentum/trend；高波动先看 volatility/reversal
         trend_priority = abs(period_return) >= 0.1
@@ -304,6 +388,7 @@ class LLMAlphaMiner:
         timestamp = datetime.now().isoformat()
         candidates: List[Dict[str, Any]] = []
         for i, item in enumerate(normalized, 1):
+            engine = item.get("_engine") or "local_rule_v1"
             candidate = {
                 "factor_id": f"ALPHA_FACTOR_{int(datetime.now().timestamp())}_{i:03d}",
                 "name": item["name"],
@@ -312,8 +397,12 @@ class LLMAlphaMiner:
                 "category": item["category"],
                 "rationale": item.get("rationale", ""),
                 "created_at": timestamp,
-                "engine": "local_rule_v1",
+                "engine": engine,
             }
+            # P2-1: 附加文本信号详情（可解释性）
+            text_signal = item.get("_text_signal")
+            if text_signal:
+                candidate["text_signal"] = text_signal
             candidates.append(candidate)
 
         self.factor_candidates.extend(candidates)

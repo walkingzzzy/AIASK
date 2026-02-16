@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "akshare-mcp": {
+      "command": "c:\\Users\\1\\Desktop\\股票\\packages\\akshare-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "akshare_mcp.server"],
+      "cwd": "c:\\Users\\1\\Desktop\\股票\\packages\\akshare-mcp",
+      "env": {
+        "TUSHARE_TOKEN": "2ecc5201dcf93fff3ee466a622d40687b86ecfa6a69481aa8ff0b01ef02f",
+        "TUSHARE_HTTP_URL": "http://lianghua.nanyangqiankun.top",
+        "TDX_ENABLED": "true",
+        "TDX_PLUGIN_PATH": "C:\\new_tdx_test\\PYPlugins\\user",
+        "TDX_TIMEOUT": "5",
+        "TDX_INIT_PATH": "C:\\new_tdx_test\\PYPlugins\\user\\mcp_strategy.py",
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_USER": "postgres",
+        "DB_PASSWORD": "postgres",
+        "DB_NAME": "stockdb",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

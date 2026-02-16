@@ -1,4 +1,4 @@
-"""策略工件注册中心（P0）：DB 持久化 + 内存缓存。"""
+"""策略工件注册中心（P0）：DB 持久化 + 内存缓存。P2-3: 实验注册标准模板。"""
 
 from __future__ import annotations
 
@@ -148,3 +148,68 @@ async def list_artifacts_async(limit: int = 20) -> list[dict]:
             logger.warning("Failed to list artifacts from DB: %s", exc)
 
     return list_artifacts(limit)
+
+
+# ── P2-3: 实验注册标准模板 ─────────────────────────────────
+
+EXPERIMENT_SCHEMA = {
+    "required": [
+        "experiment_id",   # 唯一标识
+        "hypothesis",      # 实验假设
+        "method",          # 方法描述（如 IC分析/回测/OOS验证）
+        "parameters",      # 参数字典
+        "status",          # draft / running / completed / failed
+    ],
+    "optional": [
+        "result",              # 实验结果
+        "conclusion",          # 结论
+        "author",              # 作者
+        "tags",                # 标签列表
+        "factor_name",         # 关联因子名
+        "universe",            # 股票池描述
+        "data_range",          # 数据区间
+        "reproducibility_info",  # 可复现信息（数据版本、随机种子等）
+    ],
+    "valid_statuses": {"draft", "running", "completed", "failed"},
+}
+
+
+def validate_experiment(exp: dict) -> list[str]:
+    """校验实验是否符合标准模板，返回错误列表（空=通过）。"""
+    if not isinstance(exp, dict):
+        return ["experiment must be a dict"]
+    errors: list[str] = []
+    for field in EXPERIMENT_SCHEMA["required"]:
+        val = exp.get(field)
+        if val is None or (isinstance(val, str) and not val.strip()):
+            errors.append(f"missing required field: {field}")
+    # parameters 必须是 dict
+    params = exp.get("parameters")
+    if params is not None and not isinstance(params, dict):
+        errors.append("parameters must be a dict")
+    # status 枚举校验
+    status = exp.get("status")
+    if status and status not in EXPERIMENT_SCHEMA["valid_statuses"]:
+        errors.append(f"invalid status '{status}', must be one of {EXPERIMENT_SCHEMA['valid_statuses']}")
+    # tags 如果存在必须是 list
+    tags = exp.get("tags")
+    if tags is not None and not isinstance(tags, list):
+        errors.append("tags must be a list")
+    return errors
+
+
+def register_experiment(experiment: dict) -> dict:
+    """校验并注册实验工件，返回完整注册记录。"""
+    errors = validate_experiment(experiment)
+    if errors:
+        raise ValueError(f"实验模板校验失败: {'; '.join(errors)}")
+
+    payload = deepcopy(experiment)
+    # 统一元数据字段
+    payload["artifact_type"] = "experiment"
+    payload["artifact_id"] = payload.pop("experiment_id")
+    payload.setdefault("created_at", _now_iso())
+    payload.setdefault("tags", [])
+    payload.setdefault("reproducibility_info", {})
+
+    return register_artifact(payload)

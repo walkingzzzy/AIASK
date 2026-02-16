@@ -283,15 +283,32 @@ def _run_dcf_distribution(
         return payload
 
     sorted_values = sorted(values)
+    p10 = _linear_quantile(sorted_values, 0.10)
+    p50 = _linear_quantile(sorted_values, 0.50)
+    p90 = _linear_quantile(sorted_values, 0.90)
+    spread = p90 - p10
+    spread_ratio = spread / abs(p50) if p50 != 0 else float('inf')
+    # 宽度风险: narrow(<30%), moderate(30-60%), wide(60-100%), extreme(>100%)
+    if spread_ratio < 0.3:
+        spread_risk = "narrow"
+    elif spread_ratio < 0.6:
+        spread_risk = "moderate"
+    elif spread_ratio < 1.0:
+        spread_risk = "wide"
+    else:
+        spread_risk = "extreme"
     payload.update(
         {
             "mean": float(statistics.mean(sorted_values)),
             "std": float(statistics.pstdev(sorted_values)) if len(sorted_values) > 1 else 0.0,
-            "p10": _linear_quantile(sorted_values, 0.10),
-            "p50": _linear_quantile(sorted_values, 0.50),
-            "p90": _linear_quantile(sorted_values, 0.90),
+            "p10": p10,
+            "p50": p50,
+            "p90": p90,
             "min": float(sorted_values[0]),
             "max": float(sorted_values[-1]),
+            "spread": round(float(spread), 4),
+            "spread_ratio": round(float(spread_ratio), 4),
+            "spread_risk": spread_risk,
         }
     )
     return payload
@@ -395,6 +412,13 @@ def _scenario_dcf(
     risk_free_rate: float,
     market_risk_premium: float,
     scenarios: List[dict],
+    enable_distribution: bool = False,
+    distribution_samples: int = 1000,
+    distribution_growth_std: float = 0.2,
+    distribution_margin_std: float = 0.15,
+    distribution_discount_std: float = 0.1,
+    distribution_terminal_std: float = 0.1,
+    distribution_seed: Optional[int] = None,
 ) -> dict:
     """
     多情景概率加权 DCF。
@@ -405,12 +429,16 @@ def _scenario_dcf(
         cost_of_debt, terminal_growth
 
     返回各情景估值明细 + 概率加权内在价值。
+    当 enable_distribution=True 时，同时返回每个情景估值区间与加权区间。
     """
     results = []
     weighted_value = 0.0
     total_prob = 0.0
 
-    for sc in scenarios:
+    scenario_interval_rows = []
+    sample_size = _sanitize_distribution_samples(distribution_samples)
+
+    for idx, sc in enumerate(scenarios):
         prob = sc["probability"]
         total_prob += prob
 
@@ -450,7 +478,7 @@ def _scenario_dcf(
         intrinsic = pv_result["intrinsic_value"]
         weighted_value += prob * intrinsic
 
-        results.append({
+        scenario_row = {
             "scenario": sc["name"],
             "probability": prob,
             "growth_rate": sc["growth_rate"],
@@ -459,7 +487,32 @@ def _scenario_dcf(
             "terminal_growth": terminal_growth,
             "intrinsic_value": float(intrinsic),
             "weighted_contribution": float(prob * intrinsic),
-        })
+        }
+
+        if enable_distribution:
+            dist_seed = None if distribution_seed is None else int(distribution_seed) + idx
+            interval = _run_dcf_distribution(
+                base_revenue=base_revenue,
+                years=years,
+                tax_rate=tax_rate,
+                capex_ratio=sc["capex_ratio"],
+                depreciation_ratio=sc["depreciation_ratio"],
+                nwc_ratio=sc["nwc_ratio"],
+                growth_rate=sc["growth_rate"],
+                profit_margin=sc["profit_margin"],
+                discount_rate=discount_rate,
+                terminal_growth_rate=terminal_growth,
+                sample_size=sample_size,
+                growth_std_ratio=distribution_growth_std,
+                margin_std_ratio=distribution_margin_std,
+                discount_std_ratio=distribution_discount_std,
+                terminal_std_ratio=distribution_terminal_std,
+                seed=dist_seed,
+            )
+            scenario_row["valuation_interval"] = interval
+            scenario_interval_rows.append((prob, interval))
+
+        results.append(scenario_row)
 
     # 归一化（防止概率之和不为 1）
     if total_prob > 0 and abs(total_prob - 1.0) > 1e-6:
@@ -469,10 +522,53 @@ def _scenario_dcf(
                 r["probability"] / total_prob * r["intrinsic_value"]
             )
 
-    return {
+    payload = {
         "scenarios": results,
         "weighted_intrinsic_value": float(weighted_value),
     }
+
+    if enable_distribution and scenario_interval_rows:
+        norm = total_prob if total_prob > 0 else 1.0
+
+        def _weighted_percentile(key: str):
+            vals = []
+            for prob, interval in scenario_interval_rows:
+                v = interval.get(key)
+                if v is not None and math.isfinite(float(v)):
+                    vals.append((prob, float(v)))
+            if not vals:
+                return None
+            return float(sum((p / norm) * v for p, v in vals))
+
+        wp10 = _weighted_percentile("p10")
+        wp50 = _weighted_percentile("p50")
+        wp90 = _weighted_percentile("p90")
+        w_spread = (wp90 - wp10) if wp90 is not None and wp10 is not None else None
+        w_spread_ratio = (w_spread / abs(wp50)) if w_spread is not None and wp50 and wp50 != 0 else None
+        if w_spread_ratio is None:
+            w_spread_risk = "unknown"
+        elif w_spread_ratio < 0.3:
+            w_spread_risk = "narrow"
+        elif w_spread_ratio < 0.6:
+            w_spread_risk = "moderate"
+        elif w_spread_ratio < 1.0:
+            w_spread_risk = "wide"
+        else:
+            w_spread_risk = "extreme"
+
+        payload["weighted_valuation_interval"] = {
+            "p10": wp10,
+            "p50": wp50,
+            "p90": wp90,
+            "spread": round(float(w_spread), 4) if w_spread is not None else None,
+            "spread_ratio": round(float(w_spread_ratio), 4) if w_spread_ratio is not None else None,
+            "spread_risk": w_spread_risk,
+            "method": "probability_weighted_by_scenario",
+            "distribution_enabled": True,
+            "requested_samples": int(sample_size),
+        }
+
+    return payload
 
 
 def register(mcp):
@@ -807,17 +903,50 @@ def register(mcp):
                     return rows
                 return None
 
+            def _safe_float(value):
+                try:
+                    return float(value) if value is not None else None
+                except Exception:
+                    return None
+
+            def _first_number(row: dict, keys: List[str]):
+                if not isinstance(row, dict):
+                    return None
+                for k in keys:
+                    if k in row and row.get(k) is not None:
+                        val = _safe_float(row.get(k))
+                        if val is not None:
+                            return val
+                return None
+
+            def _derive_growth(fin_row: dict):
+                return _first_number(fin_row, [
+                    'revenue_yoy', 'revenue_growth', 'growth_rate',
+                    'net_profit_growth', 'profit_growth',
+                ])
+
+            def _derive_cashflow_quality(fin_row: dict):
+                ocf = _first_number(fin_row, [
+                    'operating_cash_flow',
+                    'net_operate_cash_flow',
+                    'net_cash_flow_from_operating_activities',
+                    'cashflow_from_operations',
+                ])
+                net_profit = _first_number(fin_row, [
+                    'net_profit',
+                    'net_income',
+                    'profit',
+                ])
+                ratio = None
+                if net_profit is not None and abs(net_profit) > 1e-9 and ocf is not None:
+                    ratio = ocf / net_profit
+                return ocf, net_profit, ratio
+
             target_fin_row = _latest_row(target_financial) or {}
-            target_roe = target_fin_row.get('roe')
-            target_debt_ratio = target_fin_row.get('debt_ratio')
-            try:
-                target_roe = float(target_roe) if target_roe is not None else None
-            except Exception:
-                target_roe = None
-            try:
-                target_debt_ratio = float(target_debt_ratio) if target_debt_ratio is not None else None
-            except Exception:
-                target_debt_ratio = None
+            target_roe = _safe_float(target_fin_row.get('roe'))
+            target_debt_ratio = _safe_float(target_fin_row.get('debt_ratio'))
+            target_growth = _derive_growth(target_fin_row)
+            target_ocf, target_net_profit, target_ocf_profit_ratio = _derive_cashflow_quality(target_fin_row)
 
             # 获取目标股票估值指标
             target_metrics = {}
@@ -866,22 +995,13 @@ def register(mcp):
                     except Exception:
                         peer_financial = None
                     peer_fin_row = _latest_row(peer_financial) or {}
-                    try:
-                        peer_metrics['_roe'] = (
-                            float(peer_fin_row.get('roe'))
-                            if peer_fin_row.get('roe') is not None
-                            else None
-                        )
-                    except Exception:
-                        peer_metrics['_roe'] = None
-                    try:
-                        peer_metrics['_debt_ratio'] = (
-                            float(peer_fin_row.get('debt_ratio'))
-                            if peer_fin_row.get('debt_ratio') is not None
-                            else None
-                        )
-                    except Exception:
-                        peer_metrics['_debt_ratio'] = None
+                    peer_metrics['_roe'] = _safe_float(peer_fin_row.get('roe'))
+                    peer_metrics['_debt_ratio'] = _safe_float(peer_fin_row.get('debt_ratio'))
+                    peer_metrics['_growth'] = _derive_growth(peer_fin_row)
+                    peer_ocf, peer_profit, peer_ocf_profit_ratio = _derive_cashflow_quality(peer_fin_row)
+                    peer_metrics['_ocf'] = peer_ocf
+                    peer_metrics['_net_profit'] = peer_profit
+                    peer_metrics['_ocf_profit_ratio'] = peer_ocf_profit_ratio
                     peer_candidates.append(peer_metrics)
 
             if not peer_candidates:
@@ -891,9 +1011,14 @@ def register(mcp):
                 'candidate_count': len(peer_candidates),
                 'size_filter_relaxed': False,
                 'quality_filter_relaxed': False,
+                'growth_filter_relaxed': False,
+                'cashflow_filter_relaxed': False,
                 'size_ratio_min': 0.3,
                 'size_ratio_max': 3.0,
                 'quality_thresholds': {},
+                'growth_thresholds': {},
+                'cashflow_thresholds': {},
+                'relaxation_reasons': [],
             }
 
             # 过滤1：规模可比（默认 0.3x~3x）
@@ -945,8 +1070,107 @@ def register(mcp):
                     peer_stage = quality_filtered
                 else:
                     peer_pool_build['quality_filter_relaxed'] = True
+                    peer_pool_build['relaxation_reasons'].append('quality_filter_relaxed_due_to_small_sample')
             else:
                 peer_pool_build['after_quality_filter'] = len(peer_stage)
+
+            # 过滤3：成长可比（优先使用 revenue/profit growth）
+            growth_filtered = peer_stage
+            growth_target = target_growth
+            growth_floor = None
+            growth_ceil = None
+            if growth_target is not None:
+                growth_tolerance = max(0.08, abs(growth_target) * 0.6)
+                growth_floor = growth_target - growth_tolerance
+                growth_ceil = growth_target + growth_tolerance
+                peer_pool_build['growth_thresholds'] = {
+                    'target_growth': float(growth_target),
+                    'growth_floor': float(growth_floor),
+                    'growth_ceil': float(growth_ceil),
+                    'mode': 'around_target',
+                }
+            else:
+                growth_floor = -0.30
+                peer_pool_build['growth_thresholds'] = {
+                    'growth_floor': float(growth_floor),
+                    'mode': 'minimum_floor',
+                }
+
+            growth_filtered = []
+            growth_data_available = False
+            for p in peer_stage:
+                g = p.get('_growth')
+                if g is None:
+                    continue
+                growth_data_available = True
+                if growth_ceil is not None:
+                    if growth_floor <= g <= growth_ceil:
+                        growth_filtered.append(p)
+                else:
+                    if g >= growth_floor:
+                        growth_filtered.append(p)
+
+            peer_pool_build['after_growth_filter'] = len(growth_filtered)
+            if growth_data_available and len(growth_filtered) >= 5:
+                peer_stage = growth_filtered
+            else:
+                peer_pool_build['growth_filter_relaxed'] = True
+                if not growth_data_available:
+                    peer_pool_build['relaxation_reasons'].append('growth_filter_relaxed_due_to_missing_data')
+                else:
+                    peer_pool_build['relaxation_reasons'].append('growth_filter_relaxed_due_to_small_sample')
+
+            # 过滤4：现金流口径一致性（经营现金流与净利润匹配）
+            cashflow_filtered = []
+            cashflow_data_available = False
+
+            if target_ocf_profit_ratio is not None:
+                ratio_floor = max(0.2, target_ocf_profit_ratio * 0.5)
+                ratio_ceil = max(ratio_floor + 0.1, target_ocf_profit_ratio * 1.5)
+                peer_pool_build['cashflow_thresholds'] = {
+                    'target_ocf_profit_ratio': float(target_ocf_profit_ratio),
+                    'ratio_floor': float(ratio_floor),
+                    'ratio_ceil': float(ratio_ceil),
+                    'require_positive_ocf': bool((target_ocf or 0.0) > 0),
+                    'mode': 'ratio_band',
+                }
+            else:
+                ratio_floor = 0.2
+                ratio_ceil = None
+                peer_pool_build['cashflow_thresholds'] = {
+                    'ratio_floor': float(ratio_floor),
+                    'require_positive_ocf': True,
+                    'mode': 'minimum_ratio_or_positive_ocf',
+                }
+
+            for p in peer_stage:
+                ocf = p.get('_ocf')
+                ratio = p.get('_ocf_profit_ratio')
+                has_any = (ocf is not None) or (ratio is not None)
+                if not has_any:
+                    continue
+                cashflow_data_available = True
+
+                ok_cash = True
+                if ratio is not None:
+                    ok_cash = ratio >= ratio_floor
+                    if ratio_ceil is not None:
+                        ok_cash = ok_cash and (ratio <= ratio_ceil)
+                elif ocf is not None:
+                    ok_cash = ocf > 0
+
+                if ok_cash:
+                    cashflow_filtered.append(p)
+
+            peer_pool_build['after_cashflow_filter'] = len(cashflow_filtered)
+            if cashflow_data_available and len(cashflow_filtered) >= 5:
+                peer_stage = cashflow_filtered
+            else:
+                peer_pool_build['cashflow_filter_relaxed'] = True
+                if not cashflow_data_available:
+                    peer_pool_build['relaxation_reasons'].append('cashflow_filter_relaxed_due_to_missing_data')
+                else:
+                    peer_pool_build['relaxation_reasons'].append('cashflow_filter_relaxed_due_to_small_sample')
 
             # 排序：优先规模更接近目标
             if target_market_cap > 0:
@@ -984,12 +1208,29 @@ def register(mcp):
                     industry_mean = industry_stats[metric]['mean']
                     industry_median = industry_stats[metric]['median']
 
+                    ptm = float((target_value - industry_median) / industry_median * 100) if industry_median else None
+                    # 偏离风险标记：|premium_to_median| > 30% 为 high
+                    if ptm is not None:
+                        abs_ptm = abs(ptm)
+                        if abs_ptm > 50:
+                            deviation_risk = 'extreme'
+                        elif abs_ptm > 30:
+                            deviation_risk = 'high'
+                        else:
+                            deviation_risk = 'normal'
+                        risk_flag = 'high_premium' if ptm > 30 else ('high_discount' if ptm < -30 else 'normal')
+                    else:
+                        deviation_risk = None
+                        risk_flag = None
+
                     comparison[metric] = {
                         'target': target_value,
                         'industry_mean': industry_mean,
                         'industry_median': industry_median,
                         'premium_to_mean': float((target_value - industry_mean) / industry_mean * 100) if industry_mean else None,
-                        'premium_to_median': float((target_value - industry_median) / industry_median * 100) if industry_median else None,
+                        'premium_to_median': ptm,
+                        'deviation_risk': deviation_risk,
+                        'risk_flag': risk_flag,
                         'percentile': float(sum(1 for p in peer_data if p.get(metric, float('inf')) < target_value) / len(peer_data) * 100)
                     }
 
@@ -1161,6 +1402,13 @@ def register(mcp):
         debt_weight: Optional[float] = None,
         cost_of_debt: Optional[float] = None,
         terminal_growth: Optional[float] = None,
+        enable_distribution: bool = False,
+        distribution_samples: int = 1000,
+        distribution_growth_std: float = 0.2,
+        distribution_margin_std: float = 0.15,
+        distribution_discount_std: float = 0.1,
+        distribution_terminal_std: float = 0.1,
+        distribution_seed: Optional[int] = None,
     ):
         """
         多情景概率加权 DCF 估值（支持行业模板）
@@ -1280,6 +1528,13 @@ def register(mcp):
                 risk_free_rate=risk_free_rate,
                 market_risk_premium=market_risk_premium,
                 scenarios=scenarios,
+                enable_distribution=enable_distribution,
+                distribution_samples=distribution_samples,
+                distribution_growth_std=distribution_growth_std,
+                distribution_margin_std=distribution_margin_std,
+                distribution_discount_std=distribution_discount_std,
+                distribution_terminal_std=distribution_terminal_std,
+                distribution_seed=distribution_seed,
             )
 
             payload = {

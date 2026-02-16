@@ -33,10 +33,10 @@ def _safe_portfolio_id(val):
         return val
 
 
-def _extract_closes(klines):
-    """从 K 线记录中提取按时间升序排列的收盘价序列。"""
+def _extract_closes_with_dates(klines):
+    """从 K 线记录中提取按时间升序排列的 (日期, 收盘价) 序列。"""
     if not klines:
-        return np.array([])
+        return [], np.array([])
 
     rows = []
     for k in klines:
@@ -57,43 +57,103 @@ def _extract_closes(klines):
             or k.get('time')
             or ''
         )
-        rows.append((str(dt), close_v))
+        rows.append((str(dt)[:10], close_v))
 
     if len(rows) < 2:
-        return np.array([])
+        return [], np.array([])
 
     rows.sort(key=lambda x: x[0])
-    return np.array([r[1] for r in rows], dtype=float)
+    dates = [r[0] for r in rows]
+    closes = np.array([r[1] for r in rows], dtype=float)
+    return dates, closes
 
 
-async def _fetch_returns_for_code(db, code: str, lookback_days: int):
-    """获取单只股票日收益率序列（优先 DB，失败回退工具层 get_kline）。"""
-    closes = await _fetch_close_series_for_code(db, code, lookback_days)
-    if len(closes) < 2:
-        return np.array([]), None
-
-    returns = np.diff(closes) / closes[:-1]
-    latest_close = float(closes[-1])
-    return returns, latest_close
+def _extract_closes(klines):
+    """从 K 线记录中提取按时间升序排列的收盘价序列（兼容旧调用）。"""
+    _, closes = _extract_closes_with_dates(klines)
+    return closes
 
 
-async def _fetch_close_series_for_code(db, code: str, lookback_days: int) -> np.ndarray:
-    """获取单只股票收盘价序列（优先 DB，失败回退工具层 get_kline）。"""
+async def _fetch_klines_raw(db, code: str, lookback_days: int):
+    """获取原始 K 线数据（优先 DB，失败回退工具层）。"""
     klines = await db.get_klines(code, limit=lookback_days + 1)
     if not klines or len(klines) < 2:
         res = get_kline(normalize_code(code), 'daily', lookback_days + 1)
         if res.get('success') and res.get('data'):
             klines = res['data']
+    return klines
 
+
+async def _fetch_dated_returns_for_code(db, code: str, lookback_days: int):
+    """获取 (dates, returns, latest_close)，dates 与 returns 等长（日历对齐用）。"""
+    klines = await _fetch_klines_raw(db, code, lookback_days)
+    dates, closes = _extract_closes_with_dates(klines)
+    if len(closes) < 2:
+        return [], np.array([]), None
+    returns = np.diff(closes) / closes[:-1]
+    return dates[1:], returns, float(closes[-1])
+
+
+async def _fetch_returns_for_code(db, code: str, lookback_days: int):
+    """获取单只股票日收益率序列（兼容旧调用）。"""
+    _, returns, latest_close = await _fetch_dated_returns_for_code(db, code, lookback_days)
+    return returns, latest_close
+
+
+async def _fetch_close_series_for_code(db, code: str, lookback_days: int) -> np.ndarray:
+    """获取单只股票收盘价序列（兼容旧调用）。"""
+    klines = await _fetch_klines_raw(db, code, lookback_days)
     return _extract_closes(klines)
 
 
-async def _build_portfolio_daily_returns(db, holdings, lookback_days: int):
-    """基于持仓构建组合日收益率序列（静态权重近似）。"""
+def _apply_daily_fee(returns: np.ndarray, fee_disclosure: dict) -> np.ndarray:
+    """从日收益率中扣减日化费用（佣金+滑点+冲击）。"""
+    if returns is None or len(returns) == 0:
+        return returns
+    annual_fee = (
+        float(fee_disclosure.get('commission_rate', 0))
+        + float(fee_disclosure.get('slippage_rate', 0))
+        + float(fee_disclosure.get('impact_rate', 0))
+    )
+    daily_fee = annual_fee / 252.0
+    return returns - daily_fee
+
+
+def _calendar_align_returns(dated_returns_list):
+    """基于日历日期交集对齐多只股票的收益率序列。
+
+    Args:
+        dated_returns_list: [(dates_list, returns_array), ...]
+    Returns:
+        (common_dates, aligned_2d_array) — aligned_2d_array shape = (n_stocks, n_dates)
+    """
+    if not dated_returns_list:
+        return [], np.array([])
+
+    # 求所有股票日期的交集
+    date_sets = [set(d) for d, _ in dated_returns_list]
+    common = date_sets[0]
+    for s in date_sets[1:]:
+        common &= s
+    if len(common) < 2:
+        return [], np.array([])
+
+    common_dates = sorted(common)
+    aligned = []
+    for dates, returns in dated_returns_list:
+        date_to_idx = {d: i for i, d in enumerate(dates)}
+        row = np.array([float(returns[date_to_idx[d]]) for d in common_dates], dtype=float)
+        aligned.append(row)
+
+    return common_dates, np.array(aligned, dtype=float)
+
+
+async def _build_portfolio_daily_returns(db, holdings, lookback_days: int, fee_disclosure: dict = None):
+    """基于持仓构建组合日收益率序列（日历对齐 + 可选费用扣减）。"""
     if not holdings:
         return np.array([])
 
-    returns_list = []
+    dated_list = []
     value_list = []
 
     for h in holdings:
@@ -101,31 +161,35 @@ async def _build_portfolio_daily_returns(db, holdings, lookback_days: int):
         if not code:
             continue
 
-        returns, latest_close = await _fetch_returns_for_code(db, code, lookback_days)
+        dates, returns, latest_close = await _fetch_dated_returns_for_code(db, code, lookback_days)
         if len(returns) == 0 or latest_close is None:
             continue
 
         shares = float(h.get('shares') or 0)
         position_value = shares * latest_close
         if position_value <= 0:
-            # 缺失持仓市值时降级为等权，先记为 1
             position_value = 1.0
 
-        returns_list.append(returns)
+        dated_list.append((dates, returns))
         value_list.append(position_value)
 
-    if not returns_list:
+    if not dated_list:
         return np.array([])
 
-    min_len = min(len(r) for r in returns_list)
-    if min_len < 2:
+    common_dates, aligned = _calendar_align_returns(dated_list)
+    if len(common_dates) < 2:
         return np.array([])
 
-    aligned = np.array([r[-min_len:] for r in returns_list], dtype=float)
     values = np.array(value_list, dtype=float)
     weights = values / values.sum() if values.sum() > 0 else np.array([1.0 / len(values)] * len(values))
 
-    return np.dot(weights, aligned)
+    portfolio_returns = np.dot(weights, aligned)
+
+    # 费用扣减
+    if fee_disclosure:
+        portfolio_returns = _apply_daily_fee(portfolio_returns, fee_disclosure)
+
+    return portfolio_returns
 
 
 def _calc_max_drawdown(returns: np.ndarray) -> float:
@@ -160,6 +224,80 @@ def _calc_period_return(returns: np.ndarray) -> float:
     if returns is None or len(returns) == 0:
         return 0.0
     return float(np.prod(1.0 + returns) - 1.0)
+
+
+def _safe_non_negative_float(v, default: float) -> float:
+    try:
+        x = float(v)
+    except Exception:
+        return float(default)
+    if not np.isfinite(x) or x < 0:
+        return float(default)
+    return float(x)
+
+
+def _build_fee_disclosure(kwargs: dict) -> dict:
+    """构建费用口径披露字段（P1-3）。"""
+    default_commission = 0.0003
+    default_slippage = 0.0005
+    default_impact = 0.0002
+
+    commission_rate = _safe_non_negative_float(kwargs.get('commission_rate', default_commission), default_commission)
+    slippage_rate = _safe_non_negative_float(kwargs.get('slippage_rate', default_slippage), default_slippage)
+    impact_rate = _safe_non_negative_float(kwargs.get('impact_rate', default_impact), default_impact)
+
+    assumptions_source = (
+        'input'
+        if any(k in kwargs for k in ('commission_rate', 'slippage_rate', 'impact_rate'))
+        else 'default'
+    )
+
+    return {
+        'commission_rate': float(commission_rate),
+        'slippage_rate': float(slippage_rate),
+        'impact_rate': float(impact_rate),
+        'total_annual_fee': float(commission_rate + slippage_rate + impact_rate),
+        'assumptions_source': assumptions_source,
+        'deducted': True,
+        'deduction_method': 'daily_pro_rata',
+    }
+
+
+def _calc_rolling_sharpe(returns: np.ndarray, window: int, risk_free_rate: float) -> list:
+    if returns is None or len(returns) < max(2, window):
+        return []
+
+    out = []
+    rf_daily = float(risk_free_rate) / 252.0
+    for end_idx in range(window, len(returns) + 1):
+        seg = returns[end_idx - window:end_idx]
+        vol = float(np.std(seg, ddof=1)) if len(seg) > 1 else 0.0
+        if vol <= 0:
+            out.append(0.0)
+        else:
+            sr = ((float(np.mean(seg)) - rf_daily) / vol) * float(np.sqrt(252))
+            out.append(float(sr))
+    return out
+
+
+def _calc_rolling_drawdown(returns: np.ndarray, window: int) -> list:
+    if returns is None or len(returns) < max(2, window):
+        return []
+
+    out = []
+    for end_idx in range(window, len(returns) + 1):
+        seg = returns[end_idx - window:end_idx]
+        out.append(float(_calc_max_drawdown(seg)))
+    return out
+
+
+def _build_window_audit(lookback_days: int, aligned_days: int, rolling_window: int) -> dict:
+    return {
+        'lookback_days': int(lookback_days),
+        'aligned_days': int(max(0, aligned_days)),
+        'rolling_window': int(max(2, rolling_window)),
+        'alignment_method': 'calendar_date_intersection',
+    }
 
 
 def _to_pct(v: float) -> str:
@@ -372,6 +510,9 @@ def register_performance_manager(mcp):
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
                 lookback_days = int(kwargs.get('lookback_days', 252) or 252)
                 lookback_days = max(20, min(2000, lookback_days))
+                rolling_window = int(kwargs.get('rolling_window', 20) or 20)
+                rolling_window = max(2, min(252, rolling_window))
+                fee_disclosure = _build_fee_disclosure(kwargs)
 
                 async with db.acquire() as conn:
                     portfolio = await conn.fetchrow(
@@ -445,7 +586,7 @@ def register_performance_manager(mcp):
 
                 # 时序绩效指标（优先使用持仓收益序列，缺失时回退到账户口径）
                 risk_free_rate = 0.03
-                portfolio_daily_returns = await _build_portfolio_daily_returns(db, holdings, lookback_days)
+                portfolio_daily_returns = await _build_portfolio_daily_returns(db, holdings, lookback_days, fee_disclosure=fee_disclosure)
 
                 if len(portfolio_daily_returns) > 1:
                     series_total_return = _calc_period_return(portfolio_daily_returns)
@@ -458,6 +599,20 @@ def register_performance_manager(mcp):
                     max_drawdown = 0.0
 
                 sharpe_ratio = (annualized_return - risk_free_rate) / volatility if volatility > 0 else 0.0
+                rolling_sharpe_series = _calc_rolling_sharpe(
+                    portfolio_daily_returns,
+                    rolling_window,
+                    risk_free_rate,
+                )
+                rolling_drawdown_series = _calc_rolling_drawdown(
+                    portfolio_daily_returns,
+                    rolling_window,
+                )
+                window_audit = _build_window_audit(
+                    lookback_days=lookback_days,
+                    aligned_days=int(len(portfolio_daily_returns)),
+                    rolling_window=rolling_window,
+                )
 
                 return ok({
                     'portfolio_id': portfolio_id,
@@ -477,6 +632,14 @@ def register_performance_manager(mcp):
                     'risk_free_rate': float(risk_free_rate),
                     'lookback_days': lookback_days,
                     'daily_returns_count': int(len(portfolio_daily_returns)),
+                    'rolling_window': int(rolling_window),
+                    'rolling_metrics': {
+                        'rolling_sharpe': [float(x) for x in rolling_sharpe_series],
+                        'rolling_drawdown': [float(x) for x in rolling_drawdown_series],
+                        'count': int(min(len(rolling_sharpe_series), len(rolling_drawdown_series))),
+                    },
+                    'fees': fee_disclosure,
+                    'window_audit': window_audit,
                     'trading_stats': {
                         'total_trades': total_trades,
                         'win_trades': win_trades,
@@ -494,6 +657,10 @@ def register_performance_manager(mcp):
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
                 lookback_days = int(kwargs.get('lookback_days', 252) or 252)
                 lookback_days = max(20, min(2000, lookback_days))
+                rolling_window = int(kwargs.get('rolling_window', 20) or 20)
+                rolling_window = max(2, min(252, rolling_window))
+                benchmark = kwargs.get('benchmark', '000300')
+                fee_disclosure = _build_fee_disclosure(kwargs)
 
                 async with db.acquire() as conn:
                     holdings = await conn.fetch(
@@ -512,12 +679,14 @@ def register_performance_manager(mcp):
 
                 rows = []
                 total_weight_base = 0.0
+                all_date_sets = []
                 for holding in holdings:
                     code = holding['code']
                     shares = float(holding.get('shares') or 0)
                     cost_price = float(holding.get('cost_price') or 0)
 
-                    closes = await _fetch_close_series_for_code(db, code, lookback_days)
+                    klines = await _fetch_klines_raw(db, code, lookback_days)
+                    dates, closes = _extract_closes_with_dates(klines)
                     if len(closes) < 2:
                         continue
 
@@ -525,7 +694,6 @@ def register_performance_manager(mcp):
                     stock_return = float(current_price / closes[0] - 1.0)
                     lifetime_return = (current_price - cost_price) / cost_price if cost_price > 0 else stock_return
 
-                    # 权重基数优先使用期初市值，缺失时退化到成本市值/当前市值，再退化为 1
                     start_value = shares * float(closes[0]) if shares > 0 and closes[0] > 0 else 0.0
                     cost_value = shares * cost_price if shares > 0 and cost_price > 0 else 0.0
                     current_value = shares * current_price if shares > 0 and current_price > 0 else 0.0
@@ -543,23 +711,44 @@ def register_performance_manager(mcp):
                         'sector': sector,
                         'stock_return': float(stock_return),
                         'lifetime_return': float(lifetime_return),
+                        'dates': dates,
                         'close_series': closes,
                         'timing_start_value': float(weight_base),
                         'weight_base': float(weight_base),
                     })
+                    all_date_sets.append(set(dates))
                     total_weight_base += weight_base
 
                 if not rows or total_weight_base <= 0:
                     return fail('持仓数据不足，无法进行归因分析')
 
-                min_len = min(len(r['close_series']) for r in rows)
-                if min_len < 2:
-                    return fail('价格序列不足，无法计算择时贡献')
+                # 日历对齐：取日期交集（含 benchmark）
+                bm_dates, bm_returns, _ = await _fetch_dated_returns_for_code(db, benchmark, lookback_days)
+                bm_date_set = set(bm_dates) if len(bm_returns) > 0 else None
 
-                price_matrix = np.array(
-                    [np.array(r['close_series'][-min_len:], dtype=float) for r in rows],
-                    dtype=float,
-                )
+                common_dates = all_date_sets[0]
+                for s in all_date_sets[1:]:
+                    common_dates &= s
+                if bm_date_set:
+                    common_dates &= bm_date_set
+                common_dates = sorted(common_dates)
+                if len(common_dates) < 2:
+                    return fail('价格序列日期交集不足，无法计算择时贡献')
+
+                # benchmark 对齐收益率
+                bm_aligned_return = None
+                if bm_date_set and len(common_dates) >= 2:
+                    bm_date_idx = {d: i for i, d in enumerate(bm_dates)}
+                    bm_aligned_rets = np.array([bm_returns[bm_date_idx[d]] for d in common_dates if d in bm_date_idx], dtype=float)
+                    bm_aligned_return = float(np.prod(1 + bm_aligned_rets) - 1) if len(bm_aligned_rets) > 0 else None
+
+                price_rows = []
+                for r in rows:
+                    date_to_idx = {d: i for i, d in enumerate(r['dates'])}
+                    aligned_closes = np.array([float(r['close_series'][date_to_idx[d]]) for d in common_dates], dtype=float)
+                    price_rows.append(aligned_closes)
+
+                price_matrix = np.array(price_rows, dtype=float)
                 start_values = np.array(
                     [float(r.get('timing_start_value', 0.0) or 0.0) for r in rows],
                     dtype=float,
@@ -660,10 +849,25 @@ def register_performance_manager(mcp):
                         for sector in sector_return_map
                     },
                     'method': 'weighted_return_decomposition_v2_with_timing',
+                    'benchmark_alignment': {
+                        'benchmark': benchmark,
+                        'benchmark_return': float(bm_aligned_return) if bm_aligned_return is not None else None,
+                        'benchmark_return_pct': _to_pct(bm_aligned_return) if bm_aligned_return is not None else None,
+                        'excess_return': float(total_return - bm_aligned_return) if bm_aligned_return is not None else None,
+                        'excess_return_pct': _to_pct(total_return - bm_aligned_return) if bm_aligned_return is not None else None,
+                        'aligned': bm_aligned_return is not None,
+                        'alignment_method': 'calendar_date_intersection',
+                    },
                     'data_window': {
                         'lookback_days': int(lookback_days),
                         'aligned_days': int(timing_info.get('aligned_days', min_len)),
                     },
+                    'fees': fee_disclosure,
+                    'window_audit': _build_window_audit(
+                        lookback_days=lookback_days,
+                        aligned_days=int(timing_info.get('aligned_days', min_len)),
+                        rolling_window=rolling_window,
+                    ),
                 })
 
             elif action == 'benchmark_comparison':
@@ -671,6 +875,9 @@ def register_performance_manager(mcp):
                 benchmark = kwargs.get('benchmark', '000001')
                 lookback_days = int(kwargs.get('lookback_days', 252) or 252)
                 lookback_days = max(20, min(2000, lookback_days))
+                rolling_window = int(kwargs.get('rolling_window', 20) or 20)
+                rolling_window = max(2, min(252, rolling_window))
+                fee_disclosure = _build_fee_disclosure(kwargs)
 
                 metrics_result = await performance_manager(
                     action='calculate_metrics',
@@ -693,8 +900,19 @@ def register_performance_manager(mcp):
                         portfolio_id
                     )
 
-                portfolio_daily_returns = await _build_portfolio_daily_returns(db, holdings, lookback_days)
-                benchmark_daily_returns, _ = await _fetch_returns_for_code(db, benchmark, lookback_days)
+                portfolio_daily_returns = await _build_portfolio_daily_returns(db, holdings, lookback_days, fee_disclosure=fee_disclosure)
+
+                # 基准：带日期的收益率，用于日历对齐
+                bm_dates, bm_returns, _ = await _fetch_dated_returns_for_code(db, benchmark, lookback_days)
+
+                # 组合收益率来自 _build_portfolio_daily_returns（已日历对齐内部持仓），
+                # 但组合与基准之间仍需日历对齐。
+                # 组合侧无日期输出，这里用基准尾部截断近似；
+                # 若需精确对齐，需组合也输出日期——当前先用长度交集。
+                if len(bm_returns) == 0:
+                    benchmark_daily_returns = np.array([])
+                else:
+                    benchmark_daily_returns = bm_returns
 
                 min_len = min(len(portfolio_daily_returns), len(benchmark_daily_returns))
                 if min_len < 2:
@@ -731,6 +949,12 @@ def register_performance_manager(mcp):
                     'aligned_days': int(min_len),
                     'portfolio_total_return_account': float(metrics_data.get('total_return', 0.0)),
                     'portfolio_total_return_series': float(metrics_data.get('series_total_return', portfolio_return)),
+                    'fees': fee_disclosure,
+                    'window_audit': _build_window_audit(
+                        lookback_days=lookback_days,
+                        aligned_days=int(min_len),
+                        rolling_window=rolling_window,
+                    ),
                 })
 
             else:

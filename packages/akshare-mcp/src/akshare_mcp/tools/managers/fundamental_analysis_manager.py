@@ -445,6 +445,6 @@ def register_fundamental_analysis_manager(mcp):
             else:
                 return fail(f'Unknown action: {action}. Supported: help, analyze, dupont, compare, intrinsic_value')
         
-except Exception as e:
+        except Exception as e:
             logger.error(f"[FundamentalManager] Error: {e}")
             return fail(str(e))

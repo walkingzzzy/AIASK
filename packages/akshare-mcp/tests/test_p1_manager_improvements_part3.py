@@ -200,10 +200,25 @@ class TestPerformanceManager:
         assert 'max_drawdown' in data
         assert 'lookback_days' in data
         assert 'daily_returns_count' in data
+        assert 'rolling_window' in data
+        assert 'rolling_metrics' in data
+        assert 'fees' in data
+        assert 'window_audit' in data
 
         assert isinstance(data['trading_stats'], dict)
         assert data['lookback_days'] == 120
         assert data['daily_returns_count'] >= 0
+        assert isinstance(data['rolling_metrics'], dict)
+        assert 'rolling_sharpe' in data['rolling_metrics']
+        assert 'rolling_drawdown' in data['rolling_metrics']
+        assert 'count' in data['rolling_metrics']
+        assert isinstance(data['fees'], dict)
+        assert 'commission_rate' in data['fees']
+        assert 'slippage_rate' in data['fees']
+        assert 'impact_rate' in data['fees']
+        assert isinstance(data['window_audit'], dict)
+        assert data['window_audit']['lookback_days'] == 120
+        assert data['window_audit']['rolling_window'] == data['rolling_window']
 
         print(f"✅ 总收益率: {data['total_return_pct']}")
         print(f"✅ 序列总收益率: {data['series_total_return_pct']}")
@@ -249,8 +264,17 @@ class TestPerformanceManager:
         assert 'aligned_days' in data
         assert 'portfolio_total_return_account' in data
         assert 'portfolio_total_return_series' in data
+        assert 'fees' in data
+        assert 'window_audit' in data
 
         assert data['aligned_days'] >= 2
+        assert isinstance(data['fees'], dict)
+        assert 'commission_rate' in data['fees']
+        assert 'slippage_rate' in data['fees']
+        assert 'impact_rate' in data['fees']
+        assert isinstance(data['window_audit'], dict)
+        assert data['window_audit']['lookback_days'] == 120
+        assert data['window_audit']['aligned_days'] == data['aligned_days']
 
         print(f"✅ 超额收益: {data['excess_return_pct']}")
         print(f"✅ 跟踪误差: {data['tracking_error_pct']}")
@@ -284,6 +308,8 @@ class TestPerformanceManager:
         assert 'attribution_by_stock' in data
         assert 'sector_performance' in data
         assert 'method' in data
+        assert 'fees' in data
+        assert 'window_audit' in data
 
         attribution = data['attribution']
         assert 'stock_selection' in attribution

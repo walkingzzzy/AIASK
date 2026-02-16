@@ -62,7 +62,9 @@ async def test_recommend_uses_dynamic_universe_with_filters(monkeypatch):
 
     assert result["success"] is True
     data = result["data"]
+    assert data["message"] == ""
     assert data["universe"]["fallback_used"] is False
+    assert data["universe"]["no_candidates"] is False
     assert data["universe"]["candidate_count"] == 1
     assert data["universe"]["scanned_count"] == 1
     assert fake_db.search_called == 1
@@ -88,5 +90,36 @@ async def test_recommend_prefers_explicit_codes_over_search(monkeypatch):
     data = result["data"]
     assert fake_db.search_called == 0
     assert data["universe"]["fallback_used"] is False
+    assert data["universe"]["no_candidates"] is False
     assert data["universe"]["candidate_count"] == 2
     assert data["recommendations"][0]["code"] in {"000001", "000002"}
+
+
+@pytest.mark.asyncio
+async def test_recommend_returns_empty_when_filters_exhaust_candidates(monkeypatch):
+    mcp = _DummyMCP()
+    dm.register_decision_manager(mcp)
+    fake_db = _FakeDecisionDB()
+    monkeypatch.setattr(dm, "get_db", lambda: fake_db)
+
+    result = await mcp.decision_manager(
+        action="recommend",
+        limit=5,
+        universe_limit=50,
+        criteria={
+            "min_score": 0,
+            "sectors": ["银行"],
+            "liquidity_filter": {"min_market_cap": 1_000_000_000_000},
+        },
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    assert fake_db.search_called == 1
+    assert data["recommendations"] == []
+    assert data["count"] == 0
+    assert data["message"] == "未找到符合条件的候选股票"
+    assert data["universe"]["fallback_used"] is False
+    assert data["universe"]["no_candidates"] is True
+    assert data["universe"]["candidate_count"] == 0
+    assert data["universe"]["scanned_count"] == 0
