@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-02-16T07:38:51+00:00",
+  "generated_at": "2026-02-16T08:02:27+00:00",
   "repo_root": "C:/Users/1/Desktop/股票",
   "tool_source_files": [
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/server.py",
@@ -89,9 +89,9 @@
   "tool_count": 157,
   "skills_count": 20,
   "coverage": {
-    "covered_count": 154,
-    "coverage_pct": 98.09,
-    "missing_count": 3
+    "covered_count": 157,
+    "coverage_pct": 100.0,
+    "missing_count": 0
   },
   "tdx": {
     "total_count": 36,
@@ -395,8 +395,10 @@
         "get_historical_valuation",
         "get_stock_info",
         "get_valuation_metrics",
+        "list_industry_templates",
         "parse_selection_query",
         "relative_valuation",
+        "scenario_dcf_valuation",
         "smart_stock_diagnosis"
       ],
       "refs_unknown": []
@@ -589,6 +591,7 @@
         "stress_test_portfolio",
         "sync_kline_data",
         "technical_analysis_manager",
+        "validate_factor_oos",
         "vector_search_manager"
       ],
       "refs_unknown": []
@@ -734,6 +737,7 @@
     "industry_chain_manager",
     "insight_manager",
     "limit_up_manager",
+    "list_industry_templates",
     "list_skills",
     "live_trading_manager",
     "macro_manager",
@@ -754,6 +758,7 @@
     "run_batch_backtest",
     "run_simple_backtest",
     "run_skill",
+    "scenario_dcf_valuation",
     "screener_manager",
     "search_by_kline",
     "search_research",
@@ -802,14 +807,11 @@
     "technical_analysis_manager",
     "trading_data_manager",
     "user_manager",
+    "validate_factor_oos",
     "vector_search_manager",
     "watchlist_manager"
   ],
-  "missing_tools": [
-    "list_industry_templates",
-    "scenario_dcf_valuation",
-    "validate_factor_oos"
-  ],
+  "missing_tools": [],
   "tdx_tools": [
     "add_stocks_to_watchlist",
     "create_watchlist",

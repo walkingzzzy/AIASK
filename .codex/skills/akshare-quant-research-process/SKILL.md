@@ -27,6 +27,7 @@ description: 量化研究流程编排：数据→信号→组合→回测→执�
   - 用 `run_simple_backtest` / `run_batch_backtest` 完成样本内回测。
   - 同时记录手续费、滑点、调仓频率等成本假设。
 - 阶段 6（样本外/OOS）：
+  - 优先使用 `validate_factor_oos`（Walk-Forward + Purged KFold + Bootstrap CI）输出统一 OOS 报告。
   - 使用滚动窗口重复阶段 4-5，输出样本外表现与衰减情况。
   - 样本外显著劣化则回退到阶段 2 调整信号。
 - 阶段 7（风险与归因）：

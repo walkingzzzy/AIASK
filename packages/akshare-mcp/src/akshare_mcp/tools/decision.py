@@ -2,6 +2,14 @@
 
 from ..storage import get_db
 from ..services import technical_analysis
+from ..services import (
+    add_evidence,
+    create_chain,
+    make_evidence,
+    save_chain,
+    set_conclusion,
+    summarize_chain,
+)
 from ..services.factor_calculator import factor_calculator
 from ..utils import ok, fail
 import statistics
@@ -35,6 +43,51 @@ def register(mcp):
         """
         start_time = time.perf_counter()
         trace_id = f"should_i_buy:{code}:{int(time.time() * 1000)}"
+        evidence_chain = None
+        try:
+            evidence_chain = create_chain(
+                trace_id=trace_id,
+                code=code,
+                action="should_i_buy",
+                tool_version="v1.1.0",
+                extra={
+                    "investment_style": investment_style,
+                    "as_of": as_of,
+                    "adjust": adjust,
+                    "price_source_policy": price_source_policy,
+                    "strict_mode": strict_mode,
+                },
+            )
+        except Exception:
+            evidence_chain = None
+
+        def _record_evidence(
+            evidence_type: str,
+            metric_name: str,
+            raw_value,
+            delta_score: float,
+            *,
+            confidence_hint: float | None = None,
+            detail: dict | None = None,
+        ) -> None:
+            nonlocal evidence_chain
+            if evidence_chain is None:
+                return
+            try:
+                ev = make_evidence(
+                    evidence_type=evidence_type,
+                    source_module="decision.should_i_buy",
+                    metric_name=metric_name,
+                    raw_value=raw_value,
+                    score=float(max(0.0, min(100.0, 50.0 + delta_score))),
+                    weight=1.0,
+                    score_contribution=float(delta_score),
+                    confidence=confidence_hint,
+                    detail=detail or {},
+                )
+                evidence_chain = add_evidence(evidence_chain, ev)
+            except Exception:
+                pass
 
         def _with_meta(resp: dict, source_chain: list | None = None) -> dict:
             resp['meta'] = {
@@ -91,21 +144,26 @@ def register(mcp):
                 reasons.append(f'估值偏低(PE={pe:.1f})')
                 score += 25
                 confidence += 15
+                _record_evidence("valuation", "pe_ratio", pe, 25, confidence_hint=0.75)
             elif pe and 15 <= pe < 30:
                 reasons.append(f'估值合理(PE={pe:.1f})')
                 score += 15
                 confidence += 10
+                _record_evidence("valuation", "pe_ratio", pe, 15, confidence_hint=0.65)
             elif pe and pe >= 50:
                 risks.append(f'估值偏高(PE={pe:.1f})')
                 score -= 15
+                _record_evidence("valuation", "pe_ratio", pe, -15, confidence_hint=0.70)
             
             if pb and 0 < pb < 2:
                 reasons.append(f'市净率偏低(PB={pb:.1f})')
                 score += 20
                 confidence += 10
+                _record_evidence("valuation", "pb_ratio", pb, 20, confidence_hint=0.7)
             elif pb and pb > 5:
                 risks.append(f'市净率偏高(PB={pb:.1f})')
                 score -= 10
+                _record_evidence("valuation", "pb_ratio", pb, -10, confidence_hint=0.65)
             
             # 4. 技术分析
             # RSI
@@ -116,9 +174,11 @@ def register(mcp):
                     reasons.append(f'RSI超卖({rsi_value:.1f})，可能反弹')
                     score += 20
                     confidence += 15
+                    _record_evidence("technical", "rsi", float(rsi_value), 20, confidence_hint=0.75)
                 elif rsi_value > 70:
                     risks.append(f'RSI超买({rsi_value:.1f})，短期风险')
                     score -= 15
+                    _record_evidence("technical", "rsi", float(rsi_value), -15, confidence_hint=0.70)
             
             # MACD
             macd_result = technical_analysis.calculate_macd(closes)
@@ -129,9 +189,11 @@ def register(mcp):
                         reasons.append('MACD金叉，买入信号')
                         score += 25
                         confidence += 20
+                        _record_evidence("technical", "macd_histogram", float(hist[-1]), 25, confidence_hint=0.8)
                     elif hist[-2] > 0 and hist[-1] < 0:
                         risks.append('MACD死叉，卖出信号')
                         score -= 20
+                        _record_evidence("technical", "macd_histogram", float(hist[-1]), -20, confidence_hint=0.78)
             
             # 均线趋势
             ma20 = technical_analysis.calculate_sma(closes, 20)
@@ -141,9 +203,23 @@ def register(mcp):
                     reasons.append('多头排列，趋势向上')
                     score += 20
                     confidence += 15
+                    _record_evidence(
+                        "technical",
+                        "ma_trend",
+                        {"close": float(closes[-1]), "ma20": float(ma20[-1]), "ma60": float(ma60[-1])},
+                        20,
+                        confidence_hint=0.75,
+                    )
                 elif closes[-1] < ma20[-1] < ma60[-1]:
                     risks.append('空头排列，趋势向下')
                     score -= 20
+                    _record_evidence(
+                        "technical",
+                        "ma_trend",
+                        {"close": float(closes[-1]), "ma20": float(ma20[-1]), "ma60": float(ma60[-1])},
+                        -20,
+                        confidence_hint=0.75,
+                    )
             
             # 成交量
             recent_vol = statistics.mean(volumes[:5])
@@ -152,6 +228,13 @@ def register(mcp):
                 reasons.append('成交量放大，资金关注')
                 score += 15
                 confidence += 10
+                _record_evidence(
+                    "technical",
+                    "volume_ratio",
+                    float(recent_vol / avg_vol) if avg_vol else 0.0,
+                    15,
+                    confidence_hint=0.6,
+                )
             
             # 5. 基本面分析
             try:
@@ -171,20 +254,24 @@ def register(mcp):
                             reasons.append(f'ROE优秀({roe*100:.1f}%)')
                             score += 20
                             confidence += 10
+                            _record_evidence("fundamental", "roe", roe, 20, confidence_hint=0.72)
                         elif roe > 0.10:
                             reasons.append(f'ROE良好({roe*100:.1f}%)')
                             score += 10
+                            _record_evidence("fundamental", "roe", roe, 10, confidence_hint=0.65)
                         
                         debt_ratio = float(financial_row['debt_ratio']) if financial_row['debt_ratio'] else 0
                         if debt_ratio > 0.7:
                             risks.append(f'负债率较高({debt_ratio*100:.1f}%)')
                             score -= 10
+                            _record_evidence("fundamental", "debt_ratio", debt_ratio, -10, confidence_hint=0.68)
                         
                         revenue_growth = float(financial_row['revenue_growth']) if financial_row['revenue_growth'] else 0
                         if revenue_growth > 0.2:
                             reasons.append(f'营收高增长({revenue_growth*100:.1f}%)')
                             score += 20
                             confidence += 15
+                            _record_evidence("fundamental", "revenue_growth", revenue_growth, 20, confidence_hint=0.75)
             except:
                 pass
             
@@ -194,9 +281,11 @@ def register(mcp):
                 if momentum > 0.1:
                     reasons.append('动量因子强势')
                     score += 15
+                    _record_evidence("factor", "momentum", float(momentum), 15, confidence_hint=0.62)
                 elif momentum < -0.1:
                     risks.append('动量因子弱势')
                     score -= 10
+                    _record_evidence("factor", "momentum", float(momentum), -10, confidence_hint=0.62)
             except:
                 pass
             
@@ -252,6 +341,30 @@ def register(mcp):
                 'analysis_date': analysis_date,
                 'failed_modules': []
             }
+
+            if evidence_chain is not None:
+                try:
+                    confidence_ratio = max(0.0, min(1.0, confidence / 100.0))
+                    evidence_chain = set_conclusion(
+                        evidence_chain,
+                        recommendation=recommendation,
+                        total_score=float(score),
+                        raw_total_score=float(score),
+                        reason=action_text,
+                        confidence=confidence_ratio,
+                        data_quality={
+                            "kline_size": len(closes),
+                            "has_financial_row": bool('financial_row' in locals() and financial_row),
+                            "strict_mode": bool(strict_mode),
+                        },
+                    )
+                    saved_chain = save_chain(evidence_chain)
+                    payload['evidence_trace_id'] = saved_chain.get('trace_id')
+                    if explain:
+                        payload['evidence_summary'] = summarize_chain(saved_chain)
+                except Exception as chain_exc:
+                    payload['failed_modules'].append(f"evidence_chain:{chain_exc}")
+
             if explain:
                 payload['diagnostic'] = {
                     'trace': [
@@ -264,6 +377,7 @@ def register(mcp):
                 }
             result = _ok(payload)
             result['meta']['data_timestamp'] = analysis_date
+            result['meta']['evidence_chain_saved'] = bool(payload.get('evidence_trace_id'))
             return result
         
         except Exception as e:

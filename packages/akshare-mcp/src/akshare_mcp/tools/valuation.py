@@ -629,6 +629,33 @@ def register(mcp):
                 return fail(f'Stock {code} not found')
 
             target_industry = target_info.get('industry', '')
+            target_market_cap = float(target_info.get('market_cap') or 0.0)
+            target_financial = None
+            try:
+                target_financial = await db.get_financials(code, limit=1)
+            except Exception:
+                target_financial = None
+
+            def _latest_row(rows):
+                if isinstance(rows, list) and rows:
+                    for item in rows:
+                        if isinstance(item, dict):
+                            return item
+                if isinstance(rows, dict):
+                    return rows
+                return None
+
+            target_fin_row = _latest_row(target_financial) or {}
+            target_roe = target_fin_row.get('roe')
+            target_debt_ratio = target_fin_row.get('debt_ratio')
+            try:
+                target_roe = float(target_roe) if target_roe is not None else None
+            except Exception:
+                target_roe = None
+            try:
+                target_debt_ratio = float(target_debt_ratio) if target_debt_ratio is not None else None
+            except Exception:
+                target_debt_ratio = None
 
             # 获取目标股票估值指标
             target_metrics = {}
@@ -640,14 +667,13 @@ def register(mcp):
             if not target_metrics:
                 return fail(f'No valid valuation metrics for {code}')
 
-            # 查找可比公司
+            # 查找可比公司（优先同行业，扩大样本后再做层层过滤）
             if not peers:
-                # 自动查找同行业公司
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
                         """SELECT stock_code FROM stocks
                            WHERE industry = $1 AND stock_code != $2
-                           LIMIT 20""",
+                           LIMIT 200""",
                         target_industry, code
                     )
                     peers = [row['stock_code'] for row in rows]
@@ -655,8 +681,8 @@ def register(mcp):
             if not peers:
                 return fail(f'No peer companies found for industry: {target_industry}')
 
-            # 获取可比公司估值指标
-            peer_data = []
+            # 获取候选可比公司估值与质量数据
+            peer_candidates = []
             for peer_code in peers:
                 peer_info = await db.get_stock_info(peer_code)
                 if not peer_info:
@@ -671,7 +697,106 @@ def register(mcp):
                         valid = True
 
                 if valid:
-                    peer_data.append(peer_metrics)
+                    peer_metrics['_market_cap'] = float(peer_info.get('market_cap') or 0.0)
+                    peer_financial = None
+                    try:
+                        peer_financial = await db.get_financials(peer_code, limit=1)
+                    except Exception:
+                        peer_financial = None
+                    peer_fin_row = _latest_row(peer_financial) or {}
+                    try:
+                        peer_metrics['_roe'] = (
+                            float(peer_fin_row.get('roe'))
+                            if peer_fin_row.get('roe') is not None
+                            else None
+                        )
+                    except Exception:
+                        peer_metrics['_roe'] = None
+                    try:
+                        peer_metrics['_debt_ratio'] = (
+                            float(peer_fin_row.get('debt_ratio'))
+                            if peer_fin_row.get('debt_ratio') is not None
+                            else None
+                        )
+                    except Exception:
+                        peer_metrics['_debt_ratio'] = None
+                    peer_candidates.append(peer_metrics)
+
+            if not peer_candidates:
+                return fail('No valid peer data found')
+
+            peer_pool_build = {
+                'candidate_count': len(peer_candidates),
+                'size_filter_relaxed': False,
+                'quality_filter_relaxed': False,
+                'size_ratio_min': 0.3,
+                'size_ratio_max': 3.0,
+                'quality_thresholds': {},
+            }
+
+            # 过滤1：规模可比（默认 0.3x~3x）
+            peer_stage = peer_candidates
+            size_filtered = peer_stage
+            if target_market_cap > 0:
+                size_filtered = [
+                    p for p in peer_stage
+                    if p.get('_market_cap', 0.0) > 0
+                    and 0.3 <= (p.get('_market_cap', 0.0) / target_market_cap) <= 3.0
+                ]
+                peer_pool_build['after_size_filter'] = len(size_filtered)
+                if len(size_filtered) >= 5:
+                    peer_stage = size_filtered
+                else:
+                    peer_pool_build['size_filter_relaxed'] = True
+            else:
+                peer_pool_build['after_size_filter'] = len(peer_stage)
+
+            # 过滤2：质量可比（ROE/负债率）
+            quality_filtered = peer_stage
+            roe_threshold = None
+            debt_threshold = None
+            if target_roe is not None:
+                roe_threshold = max(0.05, target_roe * 0.5)
+                peer_pool_build['quality_thresholds']['roe_min'] = roe_threshold
+            if target_debt_ratio is not None:
+                debt_threshold = min(0.95, target_debt_ratio + 0.25)
+                peer_pool_build['quality_thresholds']['debt_ratio_max'] = debt_threshold
+
+            if roe_threshold is not None or debt_threshold is not None:
+                quality_filtered = []
+                for p in peer_stage:
+                    ok_roe = True
+                    if roe_threshold is not None:
+                        peer_roe = p.get('_roe')
+                        ok_roe = (peer_roe is not None) and (peer_roe >= roe_threshold)
+
+                    ok_debt = True
+                    if debt_threshold is not None:
+                        peer_debt = p.get('_debt_ratio')
+                        ok_debt = (peer_debt is None) or (peer_debt <= debt_threshold)
+
+                    if ok_roe and ok_debt:
+                        quality_filtered.append(p)
+
+                peer_pool_build['after_quality_filter'] = len(quality_filtered)
+                if len(quality_filtered) >= 5:
+                    peer_stage = quality_filtered
+                else:
+                    peer_pool_build['quality_filter_relaxed'] = True
+            else:
+                peer_pool_build['after_quality_filter'] = len(peer_stage)
+
+            # 排序：优先规模更接近目标
+            if target_market_cap > 0:
+                peer_stage = sorted(
+                    peer_stage,
+                    key=lambda p: abs((p.get('_market_cap', target_market_cap) / target_market_cap) - 1.0),
+                )
+
+            peer_data = []
+            for p in peer_stage:
+                public_row = {k: v for k, v in p.items() if not str(k).startswith('_')}
+                peer_data.append(public_row)
 
             if not peer_data:
                 return fail('No valid peer data found')
@@ -701,8 +826,8 @@ def register(mcp):
                         'target': target_value,
                         'industry_mean': industry_mean,
                         'industry_median': industry_median,
-                        'premium_to_mean': float((target_value - industry_mean) / industry_mean * 100),
-                        'premium_to_median': float((target_value - industry_median) / industry_median * 100),
+                        'premium_to_mean': float((target_value - industry_mean) / industry_mean * 100) if industry_mean else None,
+                        'premium_to_median': float((target_value - industry_median) / industry_median * 100) if industry_median else None,
                         'percentile': float(sum(1 for p in peer_data if p.get(metric, float('inf')) < target_value) / len(peer_data) * 100)
                     }
 
@@ -714,6 +839,7 @@ def register(mcp):
                 'industry_stats': industry_stats,
                 'comparison': comparison,
                 'peer_count': len(peer_data),
+                'peer_pool_build': peer_pool_build,
                 'peers': peer_data[:10]  # 只返回前10个可比公司
             })
 

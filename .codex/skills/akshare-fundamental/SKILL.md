@@ -10,7 +10,8 @@ description: 基本面、财务指标、估值模型、情绪指数，以及智�
 - 基本信息与财务：用 `get_stock_info` 与 `get_financials`。
 - 估值：
   - 指标：`get_valuation_metrics` / `get_historical_valuation`。
-  - 模型：`dcf_valuation` / `ddm_valuation`。
+  - 模型：`dcf_valuation` / `ddm_valuation` / `scenario_dcf_valuation`。
+  - 行业模板：先用 `list_industry_templates` 查看参数模板，再按需调用 `scenario_dcf_valuation`。
   - 对比估值：`relative_valuation`。
 - 情绪：个股用 `analyze_stock_sentiment`，全市场用 `calculate_fear_greed_index`。
 - 语义能力：
