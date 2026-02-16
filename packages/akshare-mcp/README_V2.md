@@ -69,6 +69,34 @@ python -m akshare_mcp.server
 - get_valuation_metrics
 - dcf_valuation
 
+
+#### DCF估值（P0-1 升级说明）
+- `dcf_valuation` 已从简化近似升级为 **Driver DCF + WACC**：
+  - 显性期：Revenue→EBIT→NOPAT→FCF
+  - 折现率：支持 CAPM + 税后债务成本 + 资本结构拆解
+  - 终值：Gordon Growth（校验 `discount_rate/WACC > terminal_growth_rate`）
+- 新增可选参数：
+  - `risk_free_rate`, `beta`, `market_risk_premium`
+  - `cost_of_debt`, `tax_rate`, `equity_weight`, `debt_weight`
+  - `terminal_growth_rate`, `capex_ratio`, `depreciation_ratio`, `nwc_ratio`
+  - `enable_sensitivity`
+- 新增返回字段：
+  - `wacc_breakdown`, `driver_assumptions`, `projection`
+  - `pv_sum`, `pv_terminal`, `terminal_value`, `sensitivity`, `meta`
+- 向后兼容：旧调用方式（仅 `discount_rate/growth_rate/years`）无需改动。
+
+### 因子IC分析（P0-2 升级说明）
+- `calculate_factor_ic` 升级为 **双口径 IC 输出**：
+  - `normal_ic` / `normal_p_value`（Pearson）
+  - `rank_ic` / `rank_p_value`（Spearman）
+- 默认启用中性化：`enable_neutralization=True`
+  - 中性化维度：行业 / 市值（log） / Beta
+  - 返回 `neutralization` 元信息（是否启用、使用风格、降级原因等）
+- 向后兼容：保留旧字段
+  - `ic` 继续可用（映射 `rank_ic`）
+  - `p_value` 继续可用（映射 `rank_p_value`）
+- 审计留痕：补充 `source_chain`，记录计算链路。
+
 ### 决策 (decision)
 - should_i_buy
 - should_i_sell

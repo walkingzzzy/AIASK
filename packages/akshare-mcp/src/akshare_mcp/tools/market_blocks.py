@@ -5,6 +5,7 @@
 from typing import Dict, Any, Optional, List
 import akshare as ak
 from ..storage.timescaledb import get_db
+from ..utils import safe_stderr_print
 
 
 async def get_market_blocks(
@@ -152,4 +153,4 @@ async def _save_blocks_to_db(db, blocks: List[Dict[str, Any]]) -> None:
                     block['leader_name']
                 )
     except Exception as e:
-        print(f"[MarketBlocks] Failed to save to DB: {e}")
+        safe_stderr_print(f"[MarketBlocks] Failed to save to DB: {e}")

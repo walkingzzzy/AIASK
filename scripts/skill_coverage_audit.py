@@ -129,11 +129,46 @@ def collect_skill_coverages(skills_dir: Path, all_tools: set[str]) -> list[Skill
     return coverage_items
 
 
+def detect_module_name_collisions(package_root: Path) -> list[dict]:
+    """Detect file-package collisions like market.py + market/__init__.py in the same package dir."""
+    if not package_root.is_dir():
+        return []
+
+    collisions: list[dict] = []
+    package_dirs = [d for d in package_root.rglob("*") if d.is_dir() and (d / "__init__.py").exists()]
+    package_dirs.insert(0, package_root)
+
+    for pkg_dir in sorted(set(package_dirs)):
+        py_files = {
+            p.stem: p
+            for p in pkg_dir.glob("*.py")
+            if p.name != "__init__.py"
+        }
+        sub_packages = {
+            d.name: d
+            for d in pkg_dir.iterdir()
+            if d.is_dir() and (d / "__init__.py").exists()
+        }
+
+        for name in sorted(set(py_files) & set(sub_packages)):
+            collisions.append(
+                {
+                    "package_dir": str(pkg_dir.as_posix()),
+                    "name": name,
+                    "module_file": str(py_files[name].as_posix()),
+                    "package_init": str((sub_packages[name] / "__init__.py").as_posix()),
+                }
+            )
+
+    return collisions
+
+
 def compute_report(
     repo_root: Path,
     all_tools: list[str],
     tool_source_files: list[Path],
     skill_coverages: list[SkillCoverage],
+    module_name_collisions: list[dict],
 ) -> dict:
     all_tools_set = set(all_tools)
     union_covered = sorted(
@@ -197,6 +232,8 @@ def compute_report(
         "manager_tools": manager_tools,
         "covered_manager_by_skills": covered_manager,
         "unknown_tool_refs": unknown_refs,
+        "module_name_collisions": module_name_collisions,
+        "module_name_collisions_count": len(module_name_collisions),
     }
 
 
@@ -227,6 +264,13 @@ def evaluate_thresholds(report: dict, baseline: dict) -> tuple[bool, list[str]]:
     unknown_total = sum(len(item["refs_unknown"]) for item in report["unknown_tool_refs"])
     if max_unknown is not None and unknown_total > int(max_unknown):
         violations.append(f"unknown tool refs {unknown_total} > max_unknown_tool_refs {max_unknown}")
+
+    max_module_collisions = thresholds.get("max_module_name_collisions")
+    collision_count = int(report.get("module_name_collisions_count", 0))
+    if max_module_collisions is not None and collision_count > int(max_module_collisions):
+        violations.append(
+            f"module name collisions {collision_count} > max_module_name_collisions {max_module_collisions}"
+        )
 
     return len(violations) == 0, violations
 
@@ -259,6 +303,11 @@ def parse_args() -> argparse.Namespace:
         help="Path to project skills directory",
     )
     parser.add_argument(
+        "--package-root",
+        default="packages/akshare-mcp/src/akshare_mcp",
+        help="Path to Python package root used for module collision checks",
+    )
+    parser.add_argument(
         "--output-json",
         default="skill_tool_coverage_runtime.json",
         help="Output JSON report path",
@@ -288,6 +337,7 @@ def main() -> int:
     server_file = (repo_root / args.server_file).resolve()
     tools_dir = (repo_root / args.tools_dir).resolve()
     skills_dir = (repo_root / args.skills_dir).resolve()
+    package_root = (repo_root / args.package_root).resolve()
     output_json = (repo_root / args.output_json).resolve()
     output_gap = (repo_root / args.output_gap).resolve()
     baseline_file = (repo_root / args.baseline).resolve()
@@ -304,7 +354,10 @@ def main() -> int:
 
     all_tools, tool_source_files = discover_runtime_tools(server_file, tools_dir)
     skill_coverages = collect_skill_coverages(skills_dir, set(all_tools))
-    report = compute_report(repo_root, all_tools, tool_source_files, skill_coverages)
+    module_name_collisions = detect_module_name_collisions(package_root)
+    report = compute_report(
+        repo_root, all_tools, tool_source_files, skill_coverages, module_name_collisions
+    )
 
     threshold_result = {"enabled": False, "baseline": str(baseline_file.as_posix())}
     exit_code = 0
@@ -330,7 +383,7 @@ def main() -> int:
     print(
         "[OK] tools={tool_count} skills={skills_count} covered={covered} "
         "coverage={coverage}% missing={missing} tdx={tdx_cov}/{tdx_total} "
-        "manager={mgr_cov}/{mgr_total}".format(
+        "manager={mgr_cov}/{mgr_total} collisions={collisions}".format(
             tool_count=report["tool_count"],
             skills_count=report["skills_count"],
             covered=report["coverage"]["covered_count"],
@@ -340,6 +393,7 @@ def main() -> int:
             tdx_total=report["tdx"]["total_count"],
             mgr_cov=report["manager"]["covered_count"],
             mgr_total=report["manager"]["total_count"],
+            collisions=report["module_name_collisions_count"],
         )
     )
 
@@ -347,6 +401,17 @@ def main() -> int:
         for item in report["unknown_tool_refs"]:
             print(
                 f"[WARN] unknown refs in {item['skill']}: {', '.join(item['refs_unknown'])}",
+                file=sys.stderr,
+            )
+
+    if report.get("module_name_collisions"):
+        for item in report["module_name_collisions"]:
+            print(
+                "[WARN] module collision: {name} -> {module_file} | {package_init}".format(
+                    name=item["name"],
+                    module_file=item["module_file"],
+                    package_init=item["package_init"],
+                ),
                 file=sys.stderr,
             )
 

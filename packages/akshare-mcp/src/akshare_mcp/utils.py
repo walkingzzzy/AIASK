@@ -4,12 +4,14 @@ AKShare MCP Server Utilities
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
-import subprocess
 from datetime import date, datetime
 from typing import Any, Optional
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 import pandas as pd
 
@@ -172,25 +174,32 @@ def parse_date_input(value: str) -> Optional[date]:
 
 
 def fetch_mofcom_shrzgm_via_curl() -> pd.DataFrame:
-    import json
     url = "https://data.mofcom.gov.cn/datamofcom/front/gnmy/shrzgmQuery"
+    req = Request(
+        url,
+        method="POST",
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json;charset=UTF-8",
+            "User-Agent": "Mozilla/5.0",
+        },
+        data=b"{}",
+    )
+
     try:
-        result = subprocess.run(
-            ["curl", "-k", "--tlsv1", "-s", "-X", "POST", url],
-            check=False,
-            text=True,
-            capture_output=True,
-            timeout=15,
-        )
+        with urlopen(req, timeout=15) as resp:
+            status = getattr(resp, "status", 200)
+            payload = resp.read().decode("utf-8", errors="ignore").strip()
+    except URLError as exc:
+        raise RuntimeError(f"HTTP 请求失败: {exc}") from exc
     except Exception as exc:
-        raise RuntimeError(f"curl 请求失败: {exc}") from exc
+        raise RuntimeError(f"请求异常: {exc}") from exc
 
-    if result.returncode != 0:
-        raise RuntimeError(f"curl 退出码异常: {result.returncode} {result.stderr.strip()}")
+    if status and int(status) >= 400:
+        raise RuntimeError(f"HTTP 状态异常: {status}")
 
-    payload = result.stdout.strip()
     if not payload:
-        raise RuntimeError("curl 返回为空")
+        raise RuntimeError("HTTP 返回为空")
 
     data = json.loads(payload)
     if not isinstance(data, list) or not data:

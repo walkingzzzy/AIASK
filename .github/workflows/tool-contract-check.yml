@@ -1,0 +1,51 @@
+name: Tool Contract Check
+
+on:
+  pull_request:
+    paths:
+      - "packages/akshare-mcp/src/**"
+      - "packages/akshare-mcp/tests/**"
+      - "packages/akshare-mcp/scripts/check_module_resolution.py"
+      - "scripts/skill_coverage_audit.py"
+      - ".github/workflows/tool-contract-check.yml"
+  push:
+    branches: ["master", "main"]
+    paths:
+      - "packages/akshare-mcp/src/**"
+      - "packages/akshare-mcp/tests/**"
+      - "packages/akshare-mcp/scripts/check_module_resolution.py"
+      - "scripts/skill_coverage_audit.py"
+      - ".github/workflows/tool-contract-check.yml"
+
+jobs:
+  tool-contract-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packages/akshare-mcp/requirements.txt
+
+      - name: Run skill coverage threshold check
+        run: |
+          python scripts/skill_coverage_audit.py --check-thresholds
+
+      - name: Run module resolution check
+        run: |
+          python packages/akshare-mcp/scripts/check_module_resolution.py
+
+      - name: Run tool contract tests
+        env:
+          PYTHONPATH: packages/akshare-mcp/src
+        run: |
+          cd packages/akshare-mcp
+          pytest tests/test_tool_contract_check.py -q

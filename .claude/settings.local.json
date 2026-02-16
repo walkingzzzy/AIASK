@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_p0_regressions.py tests/test_p1_regressions_managers.py tests/test_p2_data_quality_and_meta.py tests/test_tool_contract_check.py -v --tb=short)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "WebSearch"
+    ]
+  }
+}

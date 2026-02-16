@@ -1,0 +1,3 @@
+TOTAL_PRINT_CALLS=27
+UNSAFE_PRINT_CALLS=1
+storage\timescaledb.py:6:本模块所有日志必须走 logging（输出到 stderr），禁止使用 print()。

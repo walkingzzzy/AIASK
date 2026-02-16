@@ -57,46 +57,60 @@ def register_macro_manager(mcp):
             if action == 'help':
                 return ok({
                     'supported_actions': {
-                        'get_indicators': '获取宏观指标（需要 indicator/type）',
+                        'get_indicators': '获取宏观指标（支持 indicator/type 或 indicators 列表）',
                         'market_overview': '市场概览',
                         'help': '显示帮助信息',
                     }
                 })
-            
+
             elif action == 'get_indicators':
-                # 从多种可能的参数名中获取指标类型
-                raw_indicator = None
-                for key in ('indicator', 'type', 'indicator_type', 'name'):
-                    val = kwargs.get(key)
-                    if val is not None and str(val).strip():
-                        raw_indicator = str(val).strip().lower()
-                        logger.info(f"[MacroManager] Found indicator from key '{key}': {raw_indicator}")
-                        break
-                
-                if not raw_indicator:
-                    logger.warning(f"[MacroManager] No indicator found in kwargs: {list(kwargs.keys())}")
-                
-                indicator_type = raw_indicator or 'gdp'
-                logger.info(f"[MacroManager] Final indicator_type: {indicator_type}")
-                
-                # 尝试从真实数据源获取
+                # P1-2 修复说明：
+                # 旧实现在未命中参数时会默认 gdp，且仅支持单指标，容易出现“请求 CPI/PMI 却返回 GDP”的口径错配。
+                # 新实现统一支持 indicator/type + indicators(list/逗号串)，并保证响应只包含请求指标结果。
+
+                def _normalize_indicator_list(raw_kwargs: dict) -> list[str]:
+                    values = []
+
+                    # 1) 优先读取 indicators（可为 list / 逗号字符串）
+                    raw_list = raw_kwargs.get('indicators')
+                    if isinstance(raw_list, list):
+                        values.extend(raw_list)
+                    elif isinstance(raw_list, str) and raw_list.strip():
+                        values.extend([x.strip() for x in raw_list.split(',') if x.strip()])
+
+                    # 2) 兼容单值参数
+                    if not values:
+                        for key in ('indicator', 'type', 'indicator_type', 'name'):
+                            val = raw_kwargs.get(key)
+                            if val is not None and str(val).strip():
+                                values.append(str(val).strip())
+                                break
+
+                    # 3) 保持向后兼容：完全未传时默认 gdp
+                    if not values:
+                        values = ['gdp']
+
+                    # 4) 归一 + 去重
+                    normalized = []
+                    seen = set()
+                    for v in values:
+                        item = str(v).strip().lower()
+                        if item and item not in seen:
+                            normalized.append(item)
+                            seen.add(item)
+                    return normalized
+
+                requested_indicators = _normalize_indicator_list(kwargs)
+
+                limit_raw = kwargs.get('limit', 5)
                 try:
-                    from ..macro import get_macro_indicator
-                    result = get_macro_indicator(indicator=indicator_type, limit=5)
-                    logger.info(f"[MacroManager] get_macro_indicator result success={result.get('success')}, has_data={bool(result.get('data'))}")
-                    if result.get('success') and result.get('data'):
-                        return ok({
-                            'indicator_type': indicator_type,
-                            'data': result['data'],
-                            'source': 'macro_indicator'
-                        })
-                    # 如果 get_macro_indicator 返回失败，使用 fallback
-                    logger.info(f"[MacroManager] get_macro_indicator failed for {indicator_type}, using fallback")
-                except Exception as e:
-                    logger.warning(f"[MacroManager] get_macro_indicator failed: {e}")
-                
-                # 降级：返回示例宏观数据
-                indicators = {
+                    limit = int(limit_raw)
+                except Exception:
+                    limit = 5
+                if limit <= 0:
+                    limit = 5
+
+                fallback_indicators = {
                     'gdp': {
                         'value': 121.02,
                         'unit': '万亿元',
@@ -128,23 +142,63 @@ def register_macro_manager(mcp):
                         'yoy_growth': 8.7
                     },
                 }
-                
-                data = indicators.get(indicator_type)
-                if not data:
-                    # 不再默认返回 gdp，而是明确告知不支持
-                    return ok({
+
+                results_by_indicator = {}
+                sources_by_indicator = {}
+
+                for indicator_type in requested_indicators:
+                    data = None
+                    source = 'none'
+
+                    # 先尝试真实数据源
+                    try:
+                        from ..macro import get_macro_indicator
+                        result = get_macro_indicator(indicator=indicator_type, limit=limit)
+                        if result.get('success') and result.get('data'):
+                            data = result.get('data')
+                            source = result.get('data', [{}])[0].get('source', 'macro_indicator') if isinstance(result.get('data'), list) else 'macro_indicator'
+                    except Exception as e:
+                        logger.warning(f"[MacroManager] get_macro_indicator failed for {indicator_type}: {e}")
+
+                    # 再用本地 fallback（仅当前请求指标）
+                    if data is None and indicator_type in fallback_indicators:
+                        data = fallback_indicators[indicator_type]
+                        source = 'fallback'
+
+                    results_by_indicator[indicator_type] = data
+                    sources_by_indicator[indicator_type] = source
+
+                unsupported = [k for k, v in results_by_indicator.items() if v is None]
+
+                # 向后兼容：单指标请求保留 indicator_type + data 结构
+                if len(requested_indicators) == 1:
+                    indicator_type = requested_indicators[0]
+                    payload = {
                         'indicator_type': indicator_type,
-                        'data': None,
-                        'supported_indicators': list(indicators.keys()),
-                        'message': f'指标 "{indicator_type}" 暂无数据，支持的指标: {", ".join(indicators.keys())}',
-                        'source': 'none'
+                        'data': results_by_indicator[indicator_type],
+                        'source': sources_by_indicator[indicator_type],
+                        'requested_indicators': requested_indicators,
+                    }
+                    if unsupported:
+                        payload.update({
+                            'supported_indicators': list(fallback_indicators.keys()),
+                            'message': f'指标 "{indicator_type}" 暂无数据，支持的指标: {", ".join(fallback_indicators.keys())}',
+                        })
+                    return ok(payload)
+
+                # 多指标：返回分指标结果，严格与请求口径一致
+                payload = {
+                    'requested_indicators': requested_indicators,
+                    'data': results_by_indicator,
+                    'sources': sources_by_indicator,
+                }
+                if unsupported:
+                    payload.update({
+                        'unsupported_indicators': unsupported,
+                        'supported_indicators': list(fallback_indicators.keys()),
+                        'message': '部分指标暂无数据，请参考 supported_indicators',
                     })
-                
-                return ok({
-                    'indicator_type': indicator_type,
-                    'data': data,
-                    'source': 'fallback'
-                })
+                return ok(payload)
             
             elif action == 'market_overview':
                 return ok({

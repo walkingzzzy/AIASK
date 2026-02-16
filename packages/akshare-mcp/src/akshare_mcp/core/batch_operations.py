@@ -11,6 +11,8 @@ from typing import Dict, List, Optional, Callable, Any, Tuple
 from dataclasses import dataclass
 import time
 
+from ..utils import safe_stderr_print
+
 
 @dataclass
 class BatchResult:
@@ -117,7 +119,7 @@ class BatchOperations:
             if not retry_items:
                 break
             
-            print(f"重试第 {retry + 1} 次，剩余 {len(retry_items)} 项...")
+            safe_stderr_print(f"重试第 {retry + 1} 次，剩余 {len(retry_items)} 项...")
             result = self.batch_execute(func, retry_items, *args, **kwargs)
             success.update(result.success)
             
@@ -166,7 +168,7 @@ class BatchOperations:
         # 分块处理
         for i in range(0, len(items), chunk_size):
             chunk = items[i:i + chunk_size]
-            print(f"处理第 {i//chunk_size + 1} 块，共 {len(chunk)} 项...")
+            safe_stderr_print(f"处理第 {i//chunk_size + 1} 块，共 {len(chunk)} 项...")
             
             result = self.batch_execute(func, chunk, *args, **kwargs)
             all_success.update(result.success)
@@ -241,9 +243,11 @@ class BatchQuotesFetcher:
             # 合并结果
             cached_results.update(result.success)
             
-            print(f"批量获取完成: 成功 {result.success_count}, "
-                  f"失败 {result.failed_count}, "
-                  f"耗时 {result.total_time:.2f}s")
+            safe_stderr_print(
+                f"批量获取完成: 成功 {result.success_count}, "
+                f"失败 {result.failed_count}, "
+                f"耗时 {result.total_time:.2f}s"
+            )
         
         return cached_results
 
@@ -284,9 +288,11 @@ class BatchIndicatorCalculator:
             list(data_dict.keys())
         )
         
-        print(f"批量计算完成: 成功 {result.success_count}, "
-              f"失败 {result.failed_count}, "
-              f"耗时 {result.total_time:.2f}s")
+        safe_stderr_print(
+            f"批量计算完成: 成功 {result.success_count}, "
+            f"失败 {result.failed_count}, "
+            f"耗时 {result.total_time:.2f}s"
+        )
         
         return result.success
 

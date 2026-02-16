@@ -32,7 +32,12 @@ class SentimentAnalyzer:
         }
     
     @staticmethod
-    def calculate_fear_greed_index() -> Dict[str, Any]:
+    def calculate_fear_greed_index(
+        index_klines: List[Dict[str, Any]] | None = None,
+        breadth_data: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """计算恐惧贪婪指数（支持外部传入数据，便于测试与回放）。"""
+
         def _clamp(v: float) -> int:
             return int(max(0, min(100, round(v))))
 
@@ -40,69 +45,60 @@ class SentimentAnalyzer:
             'momentum': 50,
             'volatility': 50,
             'volume': 50,
-            'breadth': 50
+            'breadth': 50,
         }
-        notes: List[str] = []
 
-        # 1) 动量 + 波动（上证指数）
-        try:
-            from ..tools.market.quote import get_index_quote
-            idx = get_index_quote("000001")
-            data = (idx or {}).get('data') or {}
-            change_pct = float(data.get('changePercent') or 0.0)
-            pre_close = float(data.get('preClose') or 0.0)
-            high = float(data.get('high') or 0.0)
-            low = float(data.get('low') or 0.0)
+        # 1) 指数K线驱动：动量、波动、成交量
+        if index_klines and len(index_klines) >= 5:
+            closes = [float(k.get('close', 0) or 0) for k in index_klines if isinstance(k, dict)]
+            volumes = [float(k.get('volume', 0) or 0) for k in index_klines if isinstance(k, dict)]
 
-            # 涨跌幅映射到动量：+6% 约对应 +48 分
-            components['momentum'] = _clamp(50 + change_pct * 8.0)
+            if len(closes) >= 5 and closes[-5] > 0:
+                momentum_pct = (closes[-1] - closes[-5]) / closes[-5] * 100.0
+                components['momentum'] = _clamp(50 + momentum_pct * 4.0)
 
-            # 振幅越大，恐惧越高（分值越低）
-            if pre_close > 0 and high > 0 and low > 0:
-                intraday_range_pct = (high - low) / pre_close * 100
-                components['volatility'] = _clamp(75 - intraday_range_pct * 8.0)
-        except Exception:
-            notes.append('index_quote_unavailable')
+            if len(closes) >= 20:
+                recent = closes[-20:]
+                base = np.mean(recent) if np.mean(recent) else 1.0
+                # 波动越大，越偏恐惧（分值越低）
+                vol_pct = float(np.std(recent) / base * 100.0)
+                components['volatility'] = _clamp(75 - vol_pct * 8.0)
 
-        # 2) 市场广度（涨停统计）
-        try:
-            from ..tools.market.limit_up import get_limit_up_statistics
-            stat = get_limit_up_statistics()
-            data = (stat or {}).get('data') or {}
-            total_limit_up = float(data.get('totalLimitUp') or 0.0)
-            success_rate = float(data.get('successRate') or 0.0)
-            components['breadth'] = _clamp(30 + min(total_limit_up, 120) * 0.4 + success_rate * 0.2)
-        except Exception:
-            notes.append('limit_up_stats_unavailable')
+            if len(volumes) >= 20:
+                short_v = float(np.mean(volumes[-5:]))
+                long_v = float(np.mean(volumes[-20:-5])) if np.mean(volumes[-20:-5]) else 0.0
+                if long_v > 0:
+                    vr = short_v / long_v
+                    components['volume'] = _clamp(50 + (vr - 1.0) * 25.0)
 
-        # 3) 资金（北向）
-        try:
-            from ..tools.fund_flow import get_north_fund
-            north = get_north_fund(days=1)
-            items = ((north or {}).get('data') or {}).get('items') or []
-            latest_total = 0.0
-            if items:
-                latest_total = float(items[-1].get('total') or 0.0)
-            # 单位按元估计：每 +10 亿约增加 5 分
-            components['volume'] = _clamp(50 + latest_total / 1_000_000_000 * 5.0)
-        except Exception:
-            notes.append('north_fund_unavailable')
+        # 2) 市场广度：外部传入 breadth_data 优先（测试契约依赖）
+        if breadth_data:
+            lu = float(breadth_data.get('limit_up_count', 0) or 0)
+            ld = float(breadth_data.get('limit_down_count', 0) or 0)
+            adv = float(breadth_data.get('advance_count', 0) or 0)
+            dec = float(breadth_data.get('decline_count', 0) or 0)
+            limit_balance = (lu - ld) / max(lu + ld, 1.0)
+            adv_balance = (adv - dec) / max(adv + dec, 1.0)
+            breadth_score = 50 + limit_balance * 30 + adv_balance * 20
+            components['breadth'] = _clamp(breadth_score)
 
         index = _clamp(sum(components.values()) / 4.0)
-        if index >= 67:
+        if index >= 80:
+            level = 'extreme_greed'
+        elif index >= 60:
             level = 'greed'
-        elif index <= 33:
+        elif index <= 20:
+            level = 'extreme_fear'
+        elif index <= 40:
             level = 'fear'
         else:
             level = 'neutral'
 
-        result = {
+        return {
             'index': index,
             'level': level,
-            'components': components
+            'components': components,
         }
-        if notes:
-            result['notes'] = notes
-        return result
+
 
 sentiment_analyzer = SentimentAnalyzer()

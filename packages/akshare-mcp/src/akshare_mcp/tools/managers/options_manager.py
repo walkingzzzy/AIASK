@@ -15,8 +15,15 @@ def _normalize_kwargs(kwargs: dict) -> dict:
                 extra = None
         if isinstance(extra, dict):
             kwargs = {**kwargs, **extra}
+
+    # P1-1 参数命名统一：option_price 为标准字段，兼容 market_price / OptionPrice / price
     if kwargs.get("option_price") is None:
-        kwargs["option_price"] = kwargs.get("OptionPrice") or kwargs.get("price")
+        kwargs["option_price"] = (
+            kwargs.get("market_price")
+            or kwargs.get("OptionPrice")
+            or kwargs.get("price")
+        )
+
     # 参数别名统一
     if kwargs.get("expiry_date") is None:
         kwargs["expiry_date"] = kwargs.get("maturity") or kwargs.get("expiry") or kwargs.get("expire_date") or kwargs.get("expiration") or kwargs.get("expiry_date_str")
@@ -50,8 +57,8 @@ def register_options_manager(mcp):
                 - help: 无需额外参数
                 - list: underlying(str, 如 "510050"), expiry_month(str, optional)
                 - calculate_greeks: S(float, 标的价格), K(float, 行权价), T(float, 到期时间/年), r(float, 无风险利率), sigma(float, 波动率), option_type(str, "call"/"put")
-                - calculate_price: 同 calculate_greeks
-                - implied_volatility: S(float), K(float), T(float), r(float), market_price(float), option_type(str)
+                - calculate_price: 同 calculate_greeks；支持 expiry_date(YYYY-MM-DD) 自动换算 time_to_maturity
+                - implied_volatility: option_price(float, 标准参数；兼容 market_price/price), S(float), K(float), T(float), r(float), option_type(str)
 
         Returns:
             dict: {"success": bool, "data": {...}, "error": str|None}
@@ -203,14 +210,42 @@ def register_options_manager(mcp):
                 })
             
             elif action == 'calculate_price':
-                spot = float(kwargs.get('spot', 100.0) or 100.0)
-                strike = float(kwargs.get('strike', 100.0) or 100.0)
-                time_to_maturity = float(kwargs.get('time_to_maturity', 0.25) or 0.25)
-                risk_free_rate = float(kwargs.get('risk_free_rate', 0.03) or 0.03)
-                volatility = float(kwargs.get('volatility', 0.25) or 0.25)
-                option_type = str(kwargs.get('option_type', 'call') or 'call')
-                dividend_yield = float(kwargs.get('dividend_yield', 0.0) or 0.0)
-                
+                # P1-3 修复说明：
+                # 旧实现对异常参数（如 option_type 非法、volatility<=0）缺乏校验，且会静默回退默认值。
+                # 新实现保留“缺参默认值”以兼容历史调用，但对“已提供且非法”的参数显式报错。
+                option_type_raw = kwargs.get('option_type', 'call')
+                option_type = str(option_type_raw or 'call').lower().strip()
+                if option_type not in ('call', 'put'):
+                    return fail('option_type 必须为 call 或 put')
+
+                def _to_float(name: str, raw_value, default_value: float) -> float:
+                    # 兼容策略：None/空串使用默认；有值但无法转换时报错
+                    if raw_value is None or raw_value == '':
+                        return float(default_value)
+                    try:
+                        return float(raw_value)
+                    except Exception:
+                        raise ValueError(name)
+
+                try:
+                    spot = _to_float('spot', kwargs.get('spot'), 100.0)
+                    strike = _to_float('strike', kwargs.get('strike'), 100.0)
+                    time_to_maturity = _to_float('time_to_maturity', kwargs.get('time_to_maturity'), 0.25)
+                    risk_free_rate = _to_float('risk_free_rate', kwargs.get('risk_free_rate'), 0.03)
+                    volatility = _to_float('volatility', kwargs.get('volatility'), 0.25)
+                    dividend_yield = _to_float('dividend_yield', kwargs.get('dividend_yield'), 0.0)
+                except ValueError:
+                    return fail('参数类型错误：spot/strike/time_to_maturity/risk_free_rate/volatility/dividend_yield 必须为数字')
+
+                if spot <= 0:
+                    return fail('spot 必须大于 0')
+                if strike <= 0:
+                    return fail('strike 必须大于 0')
+                if time_to_maturity <= 0:
+                    return fail('time_to_maturity 必须大于 0')
+                if volatility <= 0:
+                    return fail('volatility 必须大于 0')
+
                 # 如果提供了 code 但没有显式 spot，自动获取当前价格
                 code = kwargs.get('code') or kwargs.get('underlying')
                 if code and kwargs.get('spot') is None:
@@ -219,19 +254,23 @@ def register_options_manager(mcp):
                         from ...utils import normalize_code
                         res = get_kline(normalize_code(code), 'daily', 1)
                         if res.get('success') and res.get('data'):
-                            spot = float(res['data'][-1].get('close', 0) or 0)
-                            if kwargs.get('strike') is None:
-                                strike = spot  # 平值期权
+                            fetched_spot = float(res['data'][-1].get('close', 0) or 0)
+                            if fetched_spot > 0:
+                                spot = fetched_spot
+                                if kwargs.get('strike') is None:
+                                    strike = spot  # 平值期权
                     except Exception:
                         pass
-                
+
                 expiry_date = kwargs.get('expiry_date')
                 if expiry_date:
                     from ...services.options_pricing import options_pricing
                     time_to_maturity = options_pricing.calculate_time_to_maturity(str(expiry_date))
-                
+                    if time_to_maturity <= 0:
+                        return fail('expiry_date 对应的剩余期限必须大于 0')
+
                 from ...services.options_pricing import options_pricing
-                
+
                 option_price = options_pricing.black_scholes(
                     spot=spot,
                     strike=strike,
@@ -241,14 +280,14 @@ def register_options_manager(mcp):
                     option_type=option_type,
                     dividend_yield=dividend_yield
                 )
-                
+
                 if option_type == 'call':
                     intrinsic_value = max(spot - strike, 0)
                 else:
                     intrinsic_value = max(strike - spot, 0)
-                
+
                 time_value = option_price - intrinsic_value
-                
+
                 return ok({
                     'option_type': option_type,
                     'spot': spot,
@@ -258,26 +297,43 @@ def register_options_manager(mcp):
                     'time_value': f"{time_value:.4f}",
                     'moneyness': 'ITM' if intrinsic_value > 0 else ('ATM' if abs(spot - strike) < 0.01 * spot else 'OTM'),
                 })
-            
+
             elif action == 'implied_volatility':
+                # P1-1 修复说明：
+                # 统一参数命名为 option_price，并兼容 market_price；错误提示明确列出可用参数名。
                 option_price = kwargs.get('option_price')
-                spot = float(kwargs.get('spot', 100.0) or 100.0)
-                strike = float(kwargs.get('strike', 100.0) or 100.0)
-                time_to_maturity = float(kwargs.get('time_to_maturity', 0.25) or 0.25)
-                risk_free_rate = float(kwargs.get('risk_free_rate', 0.03) or 0.03)
-                option_type = str(kwargs.get('option_type', 'call') or 'call')
-                dividend_yield = float(kwargs.get('dividend_yield', 0.0) or 0.0)
-                
-                if not option_price:
-                    return fail('需要提供option_price参数')
-                
+                if option_price is None:
+                    return fail('需要提供 option_price（兼容别名：market_price/price）参数')
+
+                try:
+                    option_price = float(option_price)
+                    spot = float(kwargs.get('spot', 100.0) or 100.0)
+                    strike = float(kwargs.get('strike', 100.0) or 100.0)
+                    time_to_maturity = float(kwargs.get('time_to_maturity', 0.25) or 0.25)
+                    risk_free_rate = float(kwargs.get('risk_free_rate', 0.03) or 0.03)
+                    dividend_yield = float(kwargs.get('dividend_yield', 0.0) or 0.0)
+                except Exception:
+                    return fail('参数类型错误：option_price/spot/strike/time_to_maturity/risk_free_rate/dividend_yield 必须为数字')
+
+                option_type = str(kwargs.get('option_type', 'call') or 'call').lower().strip()
+                if option_type not in ('call', 'put'):
+                    return fail('option_type 必须为 call 或 put')
+                if option_price <= 0:
+                    return fail('option_price 必须大于 0')
+                if spot <= 0 or strike <= 0:
+                    return fail('spot/strike 必须大于 0')
+                if time_to_maturity <= 0:
+                    return fail('time_to_maturity 必须大于 0')
+
                 expiry_date = kwargs.get('expiry_date')
                 if expiry_date:
                     from ...services.options_pricing import options_pricing
                     time_to_maturity = options_pricing.calculate_time_to_maturity(str(expiry_date))
-                
+                    if time_to_maturity <= 0:
+                        return fail('expiry_date 对应的剩余期限必须大于 0')
+
                 from ...services.options_pricing import options_pricing
-                
+
                 iv = options_pricing.implied_volatility(
                     option_price=option_price,
                     spot=spot,
@@ -287,10 +343,10 @@ def register_options_manager(mcp):
                     option_type=option_type,
                     dividend_yield=dividend_yield
                 )
-                
+
                 if iv is None:
                     return fail('隐含波动率计算未收敛')
-                
+
                 return ok({
                     'option_price': option_price,
                     'implied_volatility': f"{iv*100:.2f}%",

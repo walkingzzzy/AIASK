@@ -204,6 +204,26 @@ AKSHARE_SPOT_TIMEOUT_SECONDS=15
 - 产业链知识图谱
 - 智能诊断与投资建议
 
+### 4.8 报告生成（日报/周报/月报）
+
+- 统一入口：`insight_manager(action="generate_report", kwargs={...})`
+- 报告类型：`daily` / `weekly` / `monthly`
+- 产物格式：同步输出 `Markdown + JSON`（默认写入 `reports/`）
+- 日报自动补全字段（关键）：
+  - `index_summary`（主要指数行情）
+  - `capital_and_events`（资金流向与重大事件）
+  - `daily_return`（当日收益）
+  - `vs_benchmark`（相对基准）
+  - `contributors_and_detractors`（贡献/拖累）
+  - `core_risk_metrics`（`max_drawdown`、`volatility`、`var`、`cvar`）
+  - `daily_alerts`（当日告警）
+  - `execution_summary`（执行摘要）
+  - `watchlist`（次日关注清单）
+- 风险指标口径：历史收益序列实算（非占位符），默认窗口 `T-20D ~ T`
+- 数值字段规范：统一含 `value` + `unit` + `precision` + `window`（必要时 `basis`/`method`）
+- 数据源降级链：`TimescaleDB -> Tushare Pro -> AkShare`
+- 缺失字段规范：禁止输出 `-`，必须返回 `reason`
+
 ---
 
 ## 5. 技术方案与架构

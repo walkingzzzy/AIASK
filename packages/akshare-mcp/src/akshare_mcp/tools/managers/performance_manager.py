@@ -175,10 +175,11 @@ def register_performance_manager(mcp):
         """绩效管理器（统一 action + kwargs 协议）
 
         Args:
-            action (str, required): 操作类型，可选 help/calculate_metrics/attribution/benchmark_comparison
+            action (str, required): 操作类型，可选 help/calculate_metrics/backtest_metrics/attribution/benchmark_comparison
             kwargs: JSON 字符串或关键字参数，不同 action 所需参数:
                 - help: 无需额外参数
                 - calculate_metrics: portfolio_id(str|int), lookback_days(int, optional)
+                - backtest_metrics: backtest_id(str, optional) 或 artifact_id(str, optional)
                 - attribution: portfolio_id(str|int)
                 - benchmark_comparison: portfolio_id(str|int), benchmark(str, optional), lookback_days(int, optional)
 
@@ -190,6 +191,10 @@ def register_performance_manager(mcp):
             performance_manager(action="help", kwargs="{}")
             # 计算绩效指标
             performance_manager(action="calculate_metrics", kwargs='{"portfolio_id":1,"lookback_days":252}')
+            # 按回测ID查询回测绩效
+            performance_manager(action="backtest_metrics", kwargs='{"backtest_id":"bt_001"}')
+            # 按工件ID查询回测绩效
+            performance_manager(action="backtest_metrics", kwargs='{"artifact_id":"art_demo_001"}')
             # 归因分析
             performance_manager(action="attribution", kwargs='{"portfolio_id":1}')
             # 基准对比
@@ -203,10 +208,93 @@ def register_performance_manager(mcp):
                 return ok({
                     'supported_actions': {
                         'calculate_metrics': '计算绩效指标（需要 portfolio_id）',
+                        'backtest_metrics': '按 backtest_id/artifact_id 查询回测绩效',
                         'attribution': '归因分析（需要 portfolio_id）',
                         'benchmark_comparison': '基准对比（需要 portfolio_id, benchmark）',
                         'help': '显示帮助信息',
                     }
+                })
+
+            elif action == 'backtest_metrics':
+                backtest_id = str(kwargs.get('backtest_id') or '').strip()
+                artifact_id = str(kwargs.get('artifact_id') or '').strip()
+
+                if not backtest_id and not artifact_id:
+                    return fail('需要提供 backtest_id 或 artifact_id')
+
+                async with db.acquire() as conn:
+                    row = None
+                    if backtest_id:
+                        row = await conn.fetchrow(
+                            "SELECT * FROM backtest_results WHERE id = $1",
+                            backtest_id,
+                        )
+
+                    if not row and artifact_id:
+                        pattern_json = f'%"artifact_id": "{artifact_id}"%'
+                        pattern_py = f"%'artifact_id': '{artifact_id}'%"
+                        row = await conn.fetchrow(
+                            """SELECT * FROM backtest_results
+                               WHERE params LIKE $1 OR params LIKE $2
+                               ORDER BY created_at DESC
+                               LIMIT 1""",
+                            pattern_json,
+                            pattern_py,
+                        )
+
+                if not row:
+                    return fail('未找到匹配的回测结果')
+
+                r = dict(row)
+
+                def _to_iso(v):
+                    if isinstance(v, datetime):
+                        return v.isoformat()
+                    return str(v) if v is not None else None
+
+                start_date = _to_iso(r.get('start_date'))
+                end_date = _to_iso(r.get('end_date'))
+                created_at = _to_iso(r.get('created_at'))
+
+                total_return = float(r.get('total_return') or 0.0)
+                annual_return = float(r.get('annual_return') or 0.0)
+                max_drawdown = float(r.get('max_drawdown') or 0.0)
+                sharpe_ratio = float(r.get('sharpe_ratio') or 0.0)
+
+                # 从 params 文本中提取 artifact_id（若存在）
+                resolved_artifact_id = artifact_id
+                params_text = str(r.get('params') or '')
+                if not resolved_artifact_id and params_text:
+                    marker_json = '"artifact_id": "'
+                    marker_py = "'artifact_id': '"
+                    if marker_json in params_text:
+                        seg = params_text.split(marker_json, 1)[1]
+                        resolved_artifact_id = seg.split('"', 1)[0]
+                    elif marker_py in params_text:
+                        seg = params_text.split(marker_py, 1)[1]
+                        resolved_artifact_id = seg.split("'", 1)[0]
+
+                return ok({
+                    'backtest_id': r.get('id'),
+                    'artifact_id': resolved_artifact_id or None,
+                    'code': r.get('code'),
+                    'strategy': r.get('strategy'),
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'created_at': created_at,
+                    'initial_capital': float(r.get('initial_capital') or 0.0),
+                    'final_capital': float(r.get('final_capital') or 0.0),
+                    'total_return': total_return,
+                    'total_return_pct': _to_pct(total_return),
+                    'annual_return': annual_return,
+                    'annual_return_pct': _to_pct(annual_return),
+                    'max_drawdown': max_drawdown,
+                    'max_drawdown_pct': _to_pct(max_drawdown),
+                    'sharpe_ratio': sharpe_ratio,
+                    'sortino_ratio': float(r.get('sortino_ratio') or 0.0),
+                    'win_rate': float(r.get('win_rate') or 0.0),
+                    'win_rate_pct': _to_pct(float(r.get('win_rate') or 0.0)),
+                    'trades_count': int(r.get('trades_count') or 0),
                 })
 
             elif action == 'calculate_metrics':
@@ -542,6 +630,6 @@ def register_performance_manager(mcp):
                 })
 
             else:
-                return fail(f'Unknown action: {action}. Supported: help, calculate_metrics, attribution, benchmark_comparison')
+                return fail(f'Unknown action: {action}. Supported: help, calculate_metrics, backtest_metrics, attribution, benchmark_comparison')
         except Exception as e:
             return fail(str(e))

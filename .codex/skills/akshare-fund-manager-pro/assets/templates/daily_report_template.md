@@ -17,13 +17,15 @@
 
 ## 4. 风险与告警
 - 风险暴露：`{risk_exposure}`
-- 当日告警：`{alert_status}`
+- 当日告警（结构化）：`{daily_alerts}`
+- 告警状态（兼容字段）：`{alert_status}`
 - 异常说明：`{exceptions}`
 
 ## 5. 执行与调整
 - 当日执行摘要：`{execution_summary}`
-- 次日关注清单：`{watchlist_next_day}`
+- 次日关注清单（兼容字段）：`{watchlist_next_day}`
+- 次日关注清单（标准字段）：`{watchlist}`
 - 次日动作建议：`{next_actions}`
 
 ## 6. 数据限制
-- `data_limitations`
+- 数据限制：`{data_limitations}`

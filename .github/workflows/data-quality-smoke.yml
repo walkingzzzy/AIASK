@@ -1,0 +1,39 @@
+name: Data Quality Smoke
+
+on:
+  pull_request:
+    paths:
+      - "packages/akshare-mcp/src/**"
+      - "tests/**"
+      - ".github/workflows/data-quality-smoke.yml"
+  push:
+    branches: ["master", "main"]
+    paths:
+      - "packages/akshare-mcp/src/**"
+      - "tests/**"
+      - ".github/workflows/data-quality-smoke.yml"
+
+jobs:
+  data-quality-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packages/akshare-mcp/requirements.txt
+
+      - name: Run smoke-level data quality validation
+        env:
+          PYTHONPATH: packages/akshare-mcp/src
+        run: |
+          pytest tests/test_screen_engine.py -q
+          pytest tests/test_p1p2_datasource_validation.py -q

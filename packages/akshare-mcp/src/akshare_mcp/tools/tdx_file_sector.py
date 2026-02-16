@@ -9,9 +9,31 @@ TdxQuant 文件交互与板块管理补全模块 (Phase 2)
 """
 
 from ..data_source import data_source
+from .risk_guard import risk_audited
 
 
-def tdx_send_file(file_path: str) -> dict:
+def _tdx_unavailable_payload() -> dict:
+    """构造统一的 TDX 不可用错误，携带初始化诊断。"""
+    diag = data_source.get_tdx_init_diagnostics()
+    stage = diag.get("last_stage") or "unknown"
+    err = diag.get("last_error") or "unknown"
+    return {
+        "success": False,
+        "message": f"TdxQuant 不可用: stage={stage}, error={err}",
+        "diagnostics": diag,
+    }
+
+
+def _get_tq_or_error() -> tuple[object | None, dict | None]:
+    """获取可用 tq 实例，不可用时返回标准错误载荷。"""
+    tq = data_source.get_tdxquant()
+    if tq is None:
+        return None, _tdx_unavailable_payload()
+    return tq, None
+
+
+@risk_audited("tdx.send_file")
+def tdx_send_file(file_path: str, confirm_token: str | None = None) -> dict:
     """
     [TDX] 发送文件到通达信客户端
 
@@ -45,13 +67,10 @@ def tdx_send_file(file_path: str) -> dict:
     if ext not in ("txt", "pdf", "html"):
         return {"success": False, "message": f"不支持的文件类型: .{ext}，仅支持 txt/pdf/html"}
 
-    if not data_source.is_tdx_available():
-        return {"success": False, "message": "TdxQuant 不可用，请确保通达信客户端已启动"}
-
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {"success": False, "message": "TdxQuant 初始化失败"}
+        tq, err = _get_tq_or_error()
+        if err is not None:
+            return err
 
         # 兼容不同版本 TdxQuant 的 send_file 方法签名
         send_attempts = [
@@ -89,10 +108,12 @@ def tdx_send_file(file_path: str) -> dict:
         return {"success": False, "message": f"操作异常: {e}"}
 
 
+@risk_audited("tdx.download_data")
 def tdx_download_data(
     stock_code: str,
     date: str,
     data_type: str = "shareholder",
+    confirm_token: str | None = None,
 ) -> dict:
     """
     [TDX] 下载特定数据文件
@@ -130,13 +151,10 @@ def tdx_download_data(
     if down_type is None:
         return {"success": False, "message": f"未知的 data_type: {data_type}，可选 shareholder/etf_redemption"}
 
-    if not data_source.is_tdx_available():
-        return {"success": False, "message": "TdxQuant 不可用，请确保通达信客户端已启动"}
-
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {"success": False, "message": "TdxQuant 初始化失败"}
+        tq, err = _get_tq_or_error()
+        if err is not None:
+            return err
 
         # 转换代码格式
         tdx_code = data_source._convert_to_tdx_code(stock_code)
@@ -159,7 +177,12 @@ def tdx_download_data(
         return {"success": False, "message": f"操作异常: {e}"}
 
 
-def tdx_rename_sector(block_code: str, new_name: str) -> dict:
+@risk_audited("tdx.rename_sector")
+def tdx_rename_sector(
+    block_code: str,
+    new_name: str,
+    confirm_token: str | None = None,
+) -> dict:
     """
     [TDX] 重命名自定义板块
 
@@ -183,13 +206,10 @@ def tdx_rename_sector(block_code: str, new_name: str) -> dict:
     if not new_name:
         return {"success": False, "message": "new_name 不能为空"}
 
-    if not data_source.is_tdx_available():
-        return {"success": False, "message": "TdxQuant 不可用，请确保通达信客户端已启动"}
-
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {"success": False, "message": "TdxQuant 初始化失败"}
+        tq, err = _get_tq_or_error()
+        if err is not None:
+            return err
 
         result = tq.rename_sector(block_code=block_code, block_name=new_name)
 
@@ -208,7 +228,8 @@ def tdx_rename_sector(block_code: str, new_name: str) -> dict:
         return {"success": False, "message": f"操作异常: {e}"}
 
 
-def tdx_clear_sector(block_code: str) -> dict:
+@risk_audited("tdx.clear_sector")
+def tdx_clear_sector(block_code: str, confirm_token: str | None = None) -> dict:
     """
     [TDX] 清空板块成份股
 
@@ -230,13 +251,10 @@ def tdx_clear_sector(block_code: str) -> dict:
     if not block_code:
         return {"success": False, "message": "block_code 不能为空"}
 
-    if not data_source.is_tdx_available():
-        return {"success": False, "message": "TdxQuant 不可用，请确保通达信客户端已启动"}
-
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {"success": False, "message": "TdxQuant 初始化失败"}
+        tq, err = _get_tq_or_error()
+        if err is not None:
+            return err
 
         result = tq.clear_sector(block_code=block_code)
 

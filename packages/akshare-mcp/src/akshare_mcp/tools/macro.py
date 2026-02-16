@@ -124,7 +124,7 @@ def get_macro_indicator(indicator: str, limit: int = 120) -> dict:
     """
     limiter = get_limiter("macro", rate=3.0)  # 3次/秒
     limiter.acquire()
-    
+
     try:
         code = str(indicator or "").strip().lower()
 
@@ -326,6 +326,18 @@ def get_macro_indicator(indicator: str, limit: int = 120) -> dict:
     except Exception as e:
         return fail(e)
 
+
+
+# 兼容旧测试与历史调用：保留 _try_akshare_macro 入口
+# 语义：优先走当前统一实现；若失败则返回 None（与旧行为兼容）。
+def _try_akshare_macro(indicator: str, limit: int = 120) -> Optional[dict]:
+    try:
+        result = get_macro_indicator(indicator=indicator, limit=limit)
+        if isinstance(result, dict) and result.get("success"):
+            return result
+    except Exception:
+        pass
+    return None
 
 def register(mcp):
     mcp.tool()(get_macro_indicator)

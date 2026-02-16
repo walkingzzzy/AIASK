@@ -117,17 +117,24 @@ def register_paper_trading_manager(mcp):
                 account_id = kwargs.get('account_id')
                 if not account_id:
                     account_id = await _ensure_account(user_id, db)
-                
+
                 code = kwargs.get('code')
                 direction = kwargs.get('direction', 'buy')
                 shares = kwargs.get('shares') or kwargs.get('quantity')
                 price = kwargs.get('price')
-                
+
                 if not code:
                     return fail('需要提供 code 参数')
                 if shares is None:
                     return fail('需要提供 shares 参数')
-                
+
+                try:
+                    shares = int(shares)
+                except Exception:
+                    return fail('shares/quantity 必须是整数')
+                if shares <= 0:
+                    return fail('shares/quantity 必须大于 0')
+
                 # 市价单自动获取当前价格
                 if price is None:
                     try:
@@ -142,7 +149,7 @@ def register_paper_trading_manager(mcp):
                                 price = quote_list.get('price') or quote_list.get('close')
                     except Exception as e:
                         logger.warning(f"[PaperTrading] 获取实时价格失败: {e}")
-                    
+
                     # 如果实时行情也拿不到，尝试从K线获取最新收盘价
                     if price is None:
                         try:
@@ -151,25 +158,112 @@ def register_paper_trading_manager(mcp):
                                 price = klines[0].get('close') or klines[-1].get('close')
                         except Exception:
                             pass
-                    
+
                     if price is None:
                         return fail('市价单无法获取当前价格，请手动指定 price 参数')
-                
+
+                try:
+                    price = float(price)
+                except Exception:
+                    return fail('price 必须是数字')
+                if price <= 0:
+                    return fail('price 必须大于 0')
+
                 trade_id = str(uuid.uuid4())[:8]
                 trade_type = 'buy' if direction in ('buy', 'long') else 'sell'
-                amount = float(price) * int(shares)
-                
+                amount = price * shares
+
+                # P0-3 修复说明：
+                # 旧实现仅写 paper_trades，未同步 paper_positions / paper_accounts，导致成交后 positions 与 summary 不一致。
+                # 新实现在同一连接内完成完整记账链路：成交记录 -> 持仓更新 -> 账户资金与总资产更新。
                 async with db.acquire() as conn:
+                    account = await conn.fetchrow(
+                        "SELECT * FROM paper_accounts WHERE id = $1",
+                        account_id
+                    )
+                    if not account:
+                        return fail('账户不存在')
+
+                    existing_pos = await conn.fetchrow(
+                        "SELECT * FROM paper_positions WHERE account_id = $1 AND stock_code = $2",
+                        account_id, code
+                    )
+
+                    if trade_type == 'sell':
+                        if not existing_pos or int(existing_pos.get('quantity') or 0) < shares:
+                            return fail('持仓不足，无法卖出')
+
                     await conn.execute(
-                        """INSERT INTO paper_trades 
+                        """INSERT INTO paper_trades
                            (id, account_id, stock_code, stock_name, trade_type, price, quantity, amount, trade_time, created_at)
                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())""",
-                        trade_id, account_id, code, code, trade_type, price, int(shares), amount
+                        trade_id, account_id, code, code, trade_type, price, shares, amount
                     )
+
+                    if trade_type == 'buy':
+                        if existing_pos:
+                            old_qty = int(existing_pos.get('quantity') or 0)
+                            old_cost = float(existing_pos.get('cost_price') or 0)
+                            new_qty = old_qty + shares
+                            new_cost = ((old_cost * old_qty) + amount) / new_qty if new_qty > 0 else price
+                            market_value = price * new_qty
+                            profit_rate = ((price - new_cost) / new_cost) if new_cost else 0.0
+                            await conn.execute(
+                                """UPDATE paper_positions
+                                   SET quantity = $1, cost_price = $2, current_price = $3,
+                                       market_value = $4, profit_rate = $5, updated_at = NOW()
+                                   WHERE account_id = $6 AND stock_code = $7""",
+                                new_qty, new_cost, price, market_value, profit_rate, account_id, code
+                            )
+                        else:
+                            await conn.execute(
+                                """INSERT INTO paper_positions
+                                   (account_id, stock_code, stock_name, quantity, cost_price, current_price, market_value, profit_rate, created_at, updated_at)
+                                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())""",
+                                account_id, code, code, shares, price, price, amount, 0.0
+                            )
+                        capital_delta = -amount
+                    else:
+                        old_qty = int(existing_pos.get('quantity') or 0)
+                        old_cost = float(existing_pos.get('cost_price') or 0)
+                        new_qty = old_qty - shares
+                        if new_qty > 0:
+                            market_value = price * new_qty
+                            profit_rate = ((price - old_cost) / old_cost) if old_cost else 0.0
+                            await conn.execute(
+                                """UPDATE paper_positions
+                                   SET quantity = $1, current_price = $2,
+                                       market_value = $3, profit_rate = $4, updated_at = NOW()
+                                   WHERE account_id = $5 AND stock_code = $6""",
+                                new_qty, price, market_value, profit_rate, account_id, code
+                            )
+                        else:
+                            await conn.execute(
+                                "DELETE FROM paper_positions WHERE account_id = $1 AND stock_code = $2",
+                                account_id, code
+                            )
+                        capital_delta = amount
+
+                    old_capital = float(account.get('current_capital') or 0)
+                    new_capital = old_capital + capital_delta
+                    market_value_sum = await conn.fetchval(
+                        "SELECT COALESCE(SUM(market_value), 0) FROM paper_positions WHERE account_id = $1",
+                        account_id
+                    )
+                    total_value = float(new_capital) + float(market_value_sum or 0)
+                    await conn.execute(
+                        "UPDATE paper_accounts SET current_capital = $1, total_value = $2, updated_at = NOW() WHERE id = $3",
+                        new_capital, total_value, account_id
+                    )
+
                 return ok({
                     'order_id': trade_id,
                     'status': 'filled',
                     'account_id': account_id,
+                    'trade_type': trade_type,
+                    'price': price,
+                    'quantity': shares,
+                    'amount': amount,
                     'message': '已自动使用默认账户' if not kwargs.get('account_id') else None
                 })
             

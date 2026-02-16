@@ -11,6 +11,8 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 import heapq
 
+from ..utils import safe_stderr_print
+
 
 @dataclass
 class AccessPattern:
@@ -156,7 +158,7 @@ class SmartCache:
                     if data is not None:
                         self.base_cache.set(key, data)
                 except Exception as e:
-                    print(f"预加载失败 {key}: {e}")
+                    safe_stderr_print(f"预加载失败 {key}: {e}")
     
     def get_hot_keys(self, top_n: int = 50) -> List[str]:
         """
@@ -230,9 +232,9 @@ class SmartCache:
                 data = self.preload_func(key)
                 if data is not None:
                     self.base_cache.set(key, data)
-                    print(f"后台预加载成功: {key}")
+                    safe_stderr_print(f"后台预加载成功: {key}")
             except Exception as e:
-                print(f"后台预加载失败 {key}: {e}")
+                safe_stderr_print(f"后台预加载失败 {key}: {e}")
             
             # 避免过于频繁
             time.sleep(0.1)
@@ -327,7 +329,7 @@ class AdaptiveRateLimiter:
                 self.min_rate,
                 self.current_rate * (1 - self.adjustment_factor)
             )
-            print(f"降低速率至 {self.current_rate:.1f} 次/秒（错误率: {error_rate:.1%}）")
+            safe_stderr_print(f"降低速率至 {self.current_rate:.1f} 次/秒（错误率: {error_rate:.1%}）")
         
         elif error_rate < 0.01 and self.response_times:  # 错误率低且响应快，提高速率
             avg_response_time = sum(self.response_times) / len(self.response_times)
@@ -336,7 +338,7 @@ class AdaptiveRateLimiter:
                     self.max_rate,
                     self.current_rate * (1 + self.adjustment_factor)
                 )
-                print(f"提高速率至 {self.current_rate:.1f} 次/秒（响应时间: {avg_response_time:.2f}s）")
+                safe_stderr_print(f"提高速率至 {self.current_rate:.1f} 次/秒（响应时间: {avg_response_time:.2f}s）")
         
         # 重置计数器
         self.success_count = 0

@@ -8,6 +8,10 @@ from numba import jit
 import os
 import json
 
+from .cost_model import build_cost_model, effective_cost_rate
+from .signal_dsl import evaluate_signal
+from .slippage import SlippageCalculator, SlippageModelType
+
 # 可选的Ray支持
 RAY_AVAILABLE = False
 try:
@@ -277,6 +281,202 @@ def _backtest_rsi_jit(
     return final_capital, total_return, max_dd, sharpe, trades, win_rate, equity
 
 
+# ---------------------------------------------------------------------------
+# A股可交易性过滤器（停牌 + 涨跌停检测）
+# ---------------------------------------------------------------------------
+
+def _get_limit_ratio(code: str) -> float:
+    """根据股票代码判断涨跌停幅度。
+
+    - 主板（60xxxx / 00xxxx）: ±10%
+    - 创业板（300xxx）/ 科创板（688xxx）: ±20%
+    - ST 股票由调用方通过 is_st 参数单独处理
+    """
+    c = str(code).strip()
+    # 去掉可能的市场前缀 (sh/sz/bj)
+    for prefix in ('sh', 'sz', 'bj', 'SH', 'SZ', 'BJ'):
+        if c.startswith(prefix):
+            c = c[len(prefix):]
+            break
+    if c.startswith('300') or c.startswith('301') or c.startswith('688'):
+        return 0.20
+    return 0.10
+
+
+def build_tradability_mask(
+    closes: np.ndarray,
+    volumes: Optional[np.ndarray] = None,
+    code: str = '',
+    is_st: bool = False,
+) -> np.ndarray:
+    """构建可交易性布尔掩码。
+
+    不可交易的情况:
+    1. 停牌: volume == 0
+    2. 涨停: close >= prev_close * (1 + limit_ratio) - 容差  → 买入受限
+    3. 跌停: close <= prev_close * (1 - limit_ratio) + 容差  → 卖出受限
+
+    为简化处理，涨停和跌停日均标记为不可交易（保守策略）。
+
+    Returns
+    -------
+    np.ndarray[bool] — True 表示当日可交易
+    """
+    n = len(closes)
+    mask = np.ones(n, dtype=bool)
+
+    # 停牌检测
+    if volumes is not None and len(volumes) == n:
+        mask &= (volumes > 0)
+
+    # 涨跌停检测
+    limit_ratio = 0.05 if is_st else _get_limit_ratio(code)
+    tolerance = 0.002  # 0.2% 容差，避免浮点误差
+    for i in range(1, n):
+        prev = closes[i - 1]
+        if prev <= 0:
+            continue
+        change = (closes[i] - prev) / prev
+        # 涨停或跌停
+        if change >= limit_ratio - tolerance or change <= -(limit_ratio - tolerance):
+            mask[i] = False
+
+    return mask
+
+
+# ---------------------------------------------------------------------------
+# 通用信号驱动交易模拟器（配合 DSL evaluate_signal 使用）
+# ---------------------------------------------------------------------------
+
+def _simulate_trades_from_signals(
+    closes: np.ndarray,
+    entry_mask: np.ndarray,
+    exit_mask: np.ndarray,
+    initial_capital: float,
+    cost_rate: float,
+    volumes: Optional[np.ndarray] = None,
+    slippage_calc: Optional[SlippageCalculator] = None,
+    tradability_mask: Optional[np.ndarray] = None,
+) -> tuple:
+    """根据 entry/exit 布尔掩码模拟交易，返回与 JIT 函数相同的 7 元组。
+
+    新增参数
+    ----------
+    volumes : 成交量数组，用于动态滑点模型
+    slippage_calc : SlippageCalculator 实例，None 时退化为 cost_rate 模式
+    tradability_mask : 可交易性掩码，False 的日期跳过交易
+
+    Returns
+    -------
+    (final_capital, total_return, max_drawdown, sharpe, trades, win_rate, equity)
+    """
+    n = len(closes)
+    cash = initial_capital
+    shares = 0
+    buy_price = 0.0
+    trades = 0
+    wins = 0
+    equity = np.full(n, initial_capital, dtype=np.float64)
+
+    use_slippage_model = slippage_calc is not None
+    vols = volumes if volumes is not None else np.zeros(n)
+
+    for i in range(n):
+        # 可交易性检查
+        tradable = True if tradability_mask is None else bool(tradability_mask[i])
+
+        if entry_mask[i] and shares == 0 and cash > 0 and tradable:
+            if use_slippage_model:
+                # 先估算可买股数（用 cost_rate 近似），再计算精确滑点
+                approx_price = closes[i] * (1 + cost_rate)
+                est_shares = int(cash / approx_price) if approx_price > 0 else 0
+                if est_shares > 0:
+                    slip_info = slippage_calc.calculate(
+                        price=closes[i],
+                        volume=float(vols[i]),
+                        order_size=float(est_shares),
+                        is_buy=True,
+                    )
+                    buy_price = slip_info['execution_price'] * (1 + cost_rate)
+                    max_shares = int(cash / buy_price) if buy_price > 0 else 0
+                    if max_shares > 0:
+                        shares = max_shares
+                        cash -= shares * buy_price
+                        trades += 1
+            else:
+                buy_price = closes[i] * (1 + cost_rate)
+                max_shares = int(cash / buy_price)
+                if max_shares > 0:
+                    shares = max_shares
+                    cash -= shares * buy_price
+                    trades += 1
+
+        elif exit_mask[i] and shares > 0 and tradable:
+            if use_slippage_model:
+                slip_info = slippage_calc.calculate(
+                    price=closes[i],
+                    volume=float(vols[i]),
+                    order_size=float(shares),
+                    is_buy=False,
+                )
+                sell_price = slip_info['execution_price'] * (1 - cost_rate)
+            else:
+                sell_price = closes[i] * (1 - cost_rate)
+            revenue = shares * sell_price
+            if revenue > shares * buy_price:
+                wins += 1
+            cash += revenue
+            shares = 0
+
+        equity[i] = cash + shares * closes[i]
+
+    # 期末清仓
+    if shares > 0:
+        if use_slippage_model:
+            slip_info = slippage_calc.calculate(
+                price=closes[-1],
+                volume=float(vols[-1]) if len(vols) > 0 else 0.0,
+                order_size=float(shares),
+                is_buy=False,
+            )
+            sell_price = slip_info['execution_price'] * (1 - cost_rate)
+        else:
+            sell_price = closes[-1] * (1 - cost_rate)
+        revenue = shares * sell_price
+        if revenue > shares * buy_price:
+            wins += 1
+        cash += revenue
+        shares = 0
+
+    final_capital = cash
+    total_return = (final_capital - initial_capital) / initial_capital
+
+    # 最大回撤
+    max_dd = 0.0
+    peak = equity[0]
+    for i in range(n):
+        if equity[i] > peak:
+            peak = equity[i]
+        dd = (peak - equity[i]) / peak if peak > 0 else 0.0
+        if dd > max_dd:
+            max_dd = dd
+
+    # 夏普比率
+    valid = equity[equity > 0]
+    sharpe = 0.0
+    if len(valid) > 1:
+        rets = np.diff(valid) / valid[:-1]
+        rets = rets[rets != 0]
+        if len(rets) > 0:
+            mean_r = np.mean(rets)
+            std_r = np.std(rets)
+            if std_r > 0:
+                sharpe = (mean_r * 252) / (std_r * np.sqrt(252))
+
+    win_rate = wins / trades if trades > 0 else 0.0
+    return final_capital, total_return, max_dd, sharpe, trades, win_rate, equity
+
+
 class BacktestEngine:
     """回测引擎"""
     
@@ -293,9 +493,28 @@ class BacktestEngine:
 
         params = params or {}
         initial_capital = float(params.get('initial_capital', 100000) or 100000)
+
+        input_cost_model = params.get('cost_model') if isinstance(params.get('cost_model'), dict) else None
+        if input_cost_model:
+            cost_model = input_cost_model
+        else:
+            cost_model = build_cost_model(
+                params,
+                notional=float(initial_capital),
+                default_mode='backtest',
+                reference_price_fallback=float((klines[-1] or {}).get('close') or 0.0) if klines else 0.0,
+            )
+
         commission = float(params.get('commission', 0.0003) or 0.0)
         slippage = float(params.get('slippage', 0.0) or 0.0)
-        total_cost_rate = max(0.0, commission + slippage)
+        total_cost_rate = max(
+            0.0,
+            effective_cost_rate(
+                cost_model,
+                fallback_commission=commission,
+                fallback_slippage=slippage,
+            ),
+        )
 
         benchmark = str(params.get('benchmark') or '')
         benchmark_klines = params.get('benchmark_klines') or []
@@ -312,11 +531,25 @@ class BacktestEngine:
             except Exception:
                 benchmark_return = None
 
+        # ---- 滑点模型构建 ----
+        slippage_model_type = str(params.get('slippage_model', '') or '').lower()
+        slippage_calc: Optional[SlippageCalculator] = None
+        if slippage_model_type in ('fixed', 'volume_based', 'market_impact'):
+            type_map = {
+                'fixed': SlippageModelType.FIXED,
+                'volume_based': SlippageModelType.VOLUME_BASED,
+                'market_impact': SlippageModelType.MARKET_IMPACT,
+            }
+            slippage_calc = SlippageCalculator(type_map[slippage_model_type])
+
         def _finalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             enriched = dict(payload)
             enriched['commission'] = float(commission)
             enriched['slippage'] = float(slippage)
             enriched['total_cost_rate'] = float(total_cost_rate)
+            enriched['cost_model'] = cost_model
+            if slippage_calc is not None:
+                enriched['slippage_model'] = slippage_model_type
             if benchmark:
                 enriched['benchmark'] = benchmark
             if benchmark_return is not None:
@@ -325,6 +558,49 @@ class BacktestEngine:
             return enriched
 
         closes = np.array([k['close'] for k in klines])
+
+        # ---- 成交量数组 & 可交易性掩码 ----
+        volumes = np.array([
+            float(k.get('volume', 0) or 0) for k in klines
+        ], dtype=np.float64)
+        is_st = bool(params.get('is_st', False))
+        enable_tradability = bool(params.get('tradability_filter', False))
+        tradability_mask: Optional[np.ndarray] = None
+        if enable_tradability:
+            tradability_mask = build_tradability_mask(
+                closes, volumes=volumes, code=code, is_st=is_st,
+            )
+
+        # ---- DSL 求值路径：当 params 携带 signal_definition 时优先使用 ----
+        signal_def = params.get('signal_definition')
+        if signal_def and isinstance(signal_def, dict) and signal_def.get('expression'):
+            import pandas as _pd
+            df = _pd.DataFrame(klines)
+            signals = evaluate_signal(signal_def, df, close_col='close')
+            entry_arr = signals['entry'].values.astype(bool)
+            exit_arr = signals['exit'].values.astype(bool)
+
+            result = _simulate_trades_from_signals(
+                closes, entry_arr, exit_arr, initial_capital, total_cost_rate,
+                volumes=volumes, slippage_calc=slippage_calc,
+                tradability_mask=tradability_mask,
+            )
+            final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = result
+
+            payload = {
+                'code': code,
+                'strategy': strategy,
+                'initial_capital': initial_capital,
+                'final_capital': float(final_capital),
+                'total_return': float(total_return),
+                'max_drawdown': float(max_dd),
+                'sharpe_ratio': float(sharpe),
+                'trades_count': int(trades),
+                'win_rate': float(win_rate),
+                'params': params,
+                'signal_dsl_version': signal_def.get('schema_version', 'unknown'),
+            }
+            return {'success': True, 'data': _finalize_payload(payload)}
 
         if strategy == 'ma_cross':
             short_period = params.get('short_period', 5)
@@ -742,36 +1018,69 @@ def _parallel_backtest_task_optimized(
         
         data = processed_data[code]
         closes = data['closes']
-        
+        volumes = data.get('volumes', np.zeros_like(closes))
+
         # 使用Numba优化的回测函数
         initial_capital = params.get('initial_capital', 100000)
         commission = params.get('commission', 0.0003)
-        
-        if strategy == 'ma_cross':
+
+        # 滑点模型 & 可交易性掩码
+        slippage_model_type = str(params.get('slippage_model', '') or '').lower()
+        slippage_calc_ray: Optional[SlippageCalculator] = None
+        if slippage_model_type in ('fixed', 'volume_based', 'market_impact'):
+            _type_map = {
+                'fixed': SlippageModelType.FIXED,
+                'volume_based': SlippageModelType.VOLUME_BASED,
+                'market_impact': SlippageModelType.MARKET_IMPACT,
+            }
+            slippage_calc_ray = SlippageCalculator(_type_map[slippage_model_type])
+
+        tradability_mask_ray: Optional[np.ndarray] = None
+        if bool(params.get('tradability_filter', False)):
+            tradability_mask_ray = build_tradability_mask(
+                closes, volumes=volumes, code=code,
+                is_st=bool(params.get('is_st', False)),
+            )
+
+        # DSL 求值路径
+        signal_def = params.get('signal_definition')
+        if signal_def and isinstance(signal_def, dict) and signal_def.get('expression'):
+            import pandas as _pd
+            df = _pd.DataFrame({'close': closes})
+            signals = evaluate_signal(signal_def, df, close_col='close')
+            entry_arr = signals['entry'].values.astype(bool)
+            exit_arr = signals['exit'].values.astype(bool)
+            final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = \
+                _simulate_trades_from_signals(
+                    closes, entry_arr, exit_arr, initial_capital, commission,
+                    volumes=volumes, slippage_calc=slippage_calc_ray,
+                    tradability_mask=tradability_mask_ray,
+                )
+        elif strategy == 'ma_cross':
             short_period = params.get('short_period', 5)
             long_period = params.get('long_period', 20)
-            
+
             final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = _backtest_ma_cross_jit(
                 closes, short_period, long_period, initial_capital, commission
             )
-        
+
         elif strategy == 'momentum':
             period = params.get('period', 20)
             threshold = params.get('threshold', 0.02)
-            
+
             final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = _backtest_momentum_jit(
                 closes, period, threshold, initial_capital, commission
             )
-        
+
         elif strategy == 'rsi':
             rsi_period = params.get('rsi_period', 14)
             oversold = params.get('oversold', 30)
             overbought = params.get('overbought', 70)
-            
+
             final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = _backtest_rsi_jit(
                 closes, rsi_period, oversold, overbought, initial_capital, commission
             )
-        
+
         else:
             return {
                 'code': code,

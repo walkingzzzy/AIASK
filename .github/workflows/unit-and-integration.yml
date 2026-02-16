@@ -1,0 +1,50 @@
+name: Unit And Integration
+
+on:
+  pull_request:
+    paths:
+      - "packages/akshare-mcp/src/**"
+      - "packages/akshare-mcp/tests/**"
+      - "scripts/skill_coverage_audit.py"
+      - ".github/workflows/unit-and-integration.yml"
+  push:
+    branches: ["master", "main"]
+    paths:
+      - "packages/akshare-mcp/src/**"
+      - "packages/akshare-mcp/tests/**"
+      - "scripts/skill_coverage_audit.py"
+      - ".github/workflows/unit-and-integration.yml"
+
+jobs:
+  unit-and-integration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packages/akshare-mcp/requirements.txt
+
+      - name: Run mandatory coverage precheck
+        run: |
+          python scripts/skill_coverage_audit.py --check-thresholds
+
+      - name: Run module resolution guard
+        run: |
+          python packages/akshare-mcp/scripts/check_module_resolution.py
+
+      - name: Run unit and integration tests
+        env:
+          PYTHONPATH: packages/akshare-mcp/src
+        run: |
+          cd packages/akshare-mcp
+          pytest tests/test_p1_manager_improvements_part3.py -q
+          pytest tests/test_integration.py -q

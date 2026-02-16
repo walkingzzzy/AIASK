@@ -34,9 +34,19 @@ def _safe_portfolio_id(val):
         return val
 
 
+def _safe_float(val):
+    """安全转换 float，非法值返回 None。"""
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
 def register_portfolio_manager(mcp):
     """注册组合管理器工具"""
-    
+
     @mcp.tool()
     async def portfolio_manager(action: str, **kwargs):
         """组合管理器（统一 action + kwargs 协议）
@@ -111,15 +121,53 @@ def register_portfolio_manager(mcp):
                 return ok(dict(portfolio))
 
             elif action == 'update':
+                # P0-1 修复说明：
+                # 旧实现只更新 current_value，且当未传值时写入 NULL，触发 portfolios.current_value NOT NULL 约束冲突。
+                # 新实现先读取现有记录并回填必填字段（尤其 current_value），同时兼容顶层字段与 updates 字段。
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
-                updates = kwargs.get('updates', {})
+                if not portfolio_id:
+                    return fail('需要提供 portfolio_id 参数')
+
+                raw_updates = kwargs.get('updates', {})
+                updates = dict(raw_updates) if isinstance(raw_updates, dict) else {}
+                for key in ('name', 'description', 'current_value'):
+                    if key not in updates and kwargs.get(key) is not None:
+                        updates[key] = kwargs.get(key)
+
+                if not updates:
+                    return fail('需要提供 updates，或在顶层提供 name/description/current_value')
+
+                normalized = {}
+                if 'name' in updates and updates.get('name') is not None:
+                    normalized['name'] = str(updates.get('name'))
+                if 'description' in updates:
+                    normalized['description'] = updates.get('description')
+                if 'current_value' in updates:
+                    current_value = _safe_float(updates.get('current_value'))
+                    if current_value is None:
+                        return fail('current_value 必须是数字')
+                    normalized['current_value'] = current_value
 
                 async with db.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE portfolios SET current_value = $1, updated_at = NOW() WHERE id = $2",
-                        updates.get('current_value'), portfolio_id
+                    existing = await conn.fetchrow(
+                        "SELECT id, name, description, current_value FROM portfolios WHERE id = $1",
+                        portfolio_id
                     )
-                return ok({'portfolio_id': portfolio_id, 'updated': True})
+                    if not existing:
+                        return fail('组合不存在')
+
+                    final_name = normalized.get('name', existing['name'])
+                    final_description = normalized.get('description', existing['description'])
+                    final_current_value = normalized.get('current_value', existing['current_value'])
+
+                    if final_current_value is None:
+                        return fail('current_value 不能为空')
+
+                    await conn.execute(
+                        "UPDATE portfolios SET name = $1, description = $2, current_value = $3, updated_at = NOW() WHERE id = $4",
+                        final_name, final_description, final_current_value, portfolio_id
+                    )
+                return ok({'portfolio_id': portfolio_id, 'updated': True, 'applied_fields': list(normalized.keys())})
 
             elif action == 'delete':
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))

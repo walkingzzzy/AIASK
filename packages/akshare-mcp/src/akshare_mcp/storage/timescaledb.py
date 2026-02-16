@@ -199,13 +199,14 @@ class TimescaleDBAdapter:
                 CREATE TABLE IF NOT EXISTS portfolios (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL,
+                    description TEXT,
                     user_id TEXT DEFAULT 'default',
                     initial_capital DOUBLE PRECISION NOT NULL,
                     current_value DOUBLE PRECISION NOT NULL,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     updated_at TIMESTAMPTZ DEFAULT NOW()
                 );
-                
+
                 CREATE TABLE IF NOT EXISTS holdings (
                     id SERIAL PRIMARY KEY,
                     portfolio_id INTEGER NOT NULL,
@@ -216,6 +217,12 @@ class TimescaleDBAdapter:
                     updated_at TIMESTAMPTZ DEFAULT NOW(),
                     UNIQUE(portfolio_id, code)
                 );
+            """)
+
+            # 5.1 兼容旧库：补齐 portfolios.description（CREATE TABLE IF NOT EXISTS 不会自动补列）
+            await conn.execute("""
+                ALTER TABLE portfolios
+                ADD COLUMN IF NOT EXISTS description TEXT;
             """)
             
             # 6. 创建模拟交易表

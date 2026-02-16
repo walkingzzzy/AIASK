@@ -11,6 +11,12 @@ import sys
 import os
 from pathlib import Path
 
+
+def _apply_security_defaults() -> None:
+    """Apply secure defaults; explicit MCP config can still override these values."""
+    os.environ.setdefault("MCP_HOST", "127.0.0.1")
+    os.environ.setdefault("MCP_ALLOW_TOKEN_PASSTHROUGH", "false")
+
 # 在导入 akshare_mcp 之前加载 .env，使 get_db() 等使用实际数据库配置
 # 注意：如果环境变量已设置（来自 MCP 配置），则不覆盖，确保 MCP 配置优先级更高
 _env_path = Path(__file__).resolve().parent / '.env'
@@ -30,6 +36,7 @@ if _env_path.exists():
 
 # 添加src到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+_apply_security_defaults()
 
 if __name__ == "__main__":
     import logging

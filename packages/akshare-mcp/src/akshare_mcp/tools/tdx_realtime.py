@@ -57,6 +57,28 @@ _on_subscribe_data = _official_subscribe_callback
 _on_hq_data = _official_subscribe_callback
 
 
+def _tdx_unavailable_payload(capability: str = "tdx_not_available") -> dict:
+    """构造统一的 TDX 不可用错误，携带 data_source 初始化诊断。"""
+    diag = data_source.get_tdx_init_diagnostics()
+    stage = diag.get("last_stage") or "unknown"
+    err = diag.get("last_error") or "unknown"
+    return {
+        "success": False,
+        "error": f"TdxQuant 不可用: stage={stage}, error={err}",
+        "capability": capability,
+        "tdx_init_diagnostics": diag,
+        "env_diag": _build_official_env_diag(None),
+    }
+
+
+def _get_tq_or_error(capability: str = "tdx_not_available") -> tuple[object | None, dict | None]:
+    """获取可用 tq 实例，不可用时返回标准错误载荷。"""
+    tq = data_source.get_tdxquant()
+    if tq is None:
+        return None, _tdx_unavailable_payload(capability)
+    return tq, None
+
+
 def _formula_guidance_payload(missing: list[str] | None = None) -> dict:
     """构造公式 API 缺失时的统一引导信息。"""
     missing = missing or []
@@ -104,26 +126,12 @@ def tdx_manage_subscription(
     if action in ("subscribe", "unsubscribe") and not stock_codes:
         return {"success": False, "error": "stock_codes 不能为空", "capability": "invalid_params"}
 
-    if not data_source.is_tdx_available():
-        return {
-            "success": False,
-            "error": "TdxQuant 不可用，请确保通达信客户端已启动并登录",
-            "capability": "tdx_not_available",
-            "env_diag": _build_official_env_diag(None),
-            "guidance": _formula_guidance_payload(["tdx_runtime"]),
-        }
-
     tq = None
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {
-                "success": False,
-                "error": "TdxQuant 初始化失败",
-                "capability": "tdx_init_failed",
-                "env_diag": _build_official_env_diag(None),
-                "guidance": _formula_guidance_payload(["tdx_initialize"]),
-            }
+        tq, err = _get_tq_or_error("tdx_not_available")
+        if err is not None:
+            err["guidance"] = _formula_guidance_payload(["tdx_runtime"])
+            return err
 
         has_subscribe = hasattr(tq, "subscribe_hq") and callable(getattr(tq, "subscribe_hq", None))
         has_unsubscribe = hasattr(tq, "unsubscribe_hq") and callable(getattr(tq, "unsubscribe_hq", None))
@@ -337,13 +345,10 @@ def tdx_refresh_data(
         # all 模式下 stock_codes 为空时只刷新 cache
         refresh_type = "cache"
 
-    if not data_source.is_tdx_available():
-        return {"success": False, "error": "TdxQuant 不可用，请确保通达信客户端已启动"}
-
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {"success": False, "error": "TdxQuant 初始化失败"}
+        tq, err = _get_tq_or_error("tdx_not_available")
+        if err is not None:
+            return err
 
         results = {}
 
@@ -423,26 +428,12 @@ def tdx_custom_formula_calc(
     if not stock_code:
         return {"success": False, "error": "stock_code 不能为空", "capability": "invalid_params"}
 
-    if not data_source.is_tdx_available():
-        return {
-            "success": False,
-            "error": "TdxQuant 不可用，请确保通达信客户端已启动并登录",
-            "capability": "tdx_not_available",
-            "env_diag": _build_official_env_diag(None),
-            "guidance": _formula_guidance_payload(["tdx_runtime"]),
-        }
-
     tq = None
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {
-                "success": False,
-                "error": "TdxQuant 初始化失败",
-                "capability": "tdx_init_failed",
-                "env_diag": _build_official_env_diag(None),
-                "guidance": _formula_guidance_payload(["tdx_initialize"]),
-            }
+        tq, err = _get_tq_or_error("tdx_not_available")
+        if err is not None:
+            err["guidance"] = _formula_guidance_payload(["tdx_runtime"])
+            return err
 
         env_diag = _build_official_env_diag(tq)
         tdx_code = data_source._convert_to_tdx_code(stock_code)

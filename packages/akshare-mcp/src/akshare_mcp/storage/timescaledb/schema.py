@@ -188,11 +188,139 @@ class SchemaBase:
                 ON stock_quotes (time, code);
             """)
 
+            # 4.1 兼容旧库：补齐 stock_quotes 历史缺失列（CREATE TABLE IF NOT EXISTS 不会为已有表自动补列）
+            await conn.execute("""
+                ALTER TABLE stock_quotes
+                ADD COLUMN IF NOT EXISTS name TEXT;
+            """)
+            await conn.execute("""
+                ALTER TABLE stock_quotes
+                ADD COLUMN IF NOT EXISTS prev_close DOUBLE PRECISION;
+            """)
+            await conn.execute("""
+                ALTER TABLE stock_quotes
+                ADD COLUMN IF NOT EXISTS change_amt DOUBLE PRECISION;
+            """)
+            await conn.execute("""
+                ALTER TABLE stock_quotes
+                ADD COLUMN IF NOT EXISTS mkt_cap DOUBLE PRECISION;
+            """)
+
+            # 4.2 兼容旧库：若历史表未建唯一索引，补齐后确保 UPSERT 可用
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_quotes_time_code
+                ON stock_quotes (time, code);
+            """)
+
+            # 4.3 兼容旧库：将 change 列历史数据回填到标准列 change_amt（仅当存在 change 列时执行）
+            await conn.execute("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'stock_quotes' AND column_name = 'change'
+                    ) THEN
+                        EXECUTE 'UPDATE stock_quotes
+                                 SET change_amt = COALESCE(change_amt, "change")
+                                 WHERE change_amt IS NULL';
+                    END IF;
+                END $$;
+            """)
+
+            # 4.4 兼容旧库：将 pre_close/market_cap 历史数据回填到标准列
+            await conn.execute("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'stock_quotes' AND column_name = 'pre_close'
+                    ) THEN
+                        EXECUTE 'UPDATE stock_quotes
+                                 SET prev_close = COALESCE(prev_close, pre_close)
+                                 WHERE prev_close IS NULL';
+                    END IF;
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'stock_quotes' AND column_name = 'market_cap'
+                    ) THEN
+                        EXECUTE 'UPDATE stock_quotes
+                                 SET mkt_cap = COALESCE(mkt_cap, market_cap)
+                                 WHERE mkt_cap IS NULL';
+                    END IF;
+                END $$;
+            """)
+
+            # 4.5 兼容旧库：补齐 updated_at 列并回填（避免下游排序/统计字段为空）
+            await conn.execute("""
+                ALTER TABLE stock_quotes
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+            """)
+            await conn.execute("""
+                UPDATE stock_quotes
+                SET updated_at = COALESCE(updated_at, NOW())
+                WHERE updated_at IS NULL;
+            """)
+
+            # 4.6 兼容旧库：幂等列重命名（若历史列存在且标准列不存在，执行 rename）
+            await conn.execute("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'stock_quotes' AND column_name = 'pre_close'
+                    ) AND NOT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'stock_quotes' AND column_name = 'prev_close'
+                    ) THEN
+                        EXECUTE 'ALTER TABLE stock_quotes RENAME COLUMN pre_close TO prev_close';
+                    END IF;
+                END $$;
+            """)
+            await conn.execute("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'stock_quotes' AND column_name = 'market_cap'
+                    ) AND NOT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'stock_quotes' AND column_name = 'mkt_cap'
+                    ) THEN
+                        EXECUTE 'ALTER TABLE stock_quotes RENAME COLUMN market_cap TO mkt_cap';
+                    END IF;
+                END $$;
+            """)
+            await conn.execute("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'stock_quotes' AND column_name = 'change'
+                    ) AND NOT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'stock_quotes' AND column_name = 'change_amt'
+                    ) THEN
+                        EXECUTE 'ALTER TABLE stock_quotes RENAME COLUMN "change" TO change_amt';
+                    END IF;
+                END $$;
+            """)
+
+
             # 5. 创建组合管理表
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS portfolios (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL,
+                    description TEXT,
                     user_id TEXT DEFAULT 'default',
                     initial_capital DOUBLE PRECISION NOT NULL,
                     current_value DOUBLE PRECISION NOT NULL,
@@ -210,6 +338,12 @@ class SchemaBase:
                     updated_at TIMESTAMPTZ DEFAULT NOW(),
                     UNIQUE(portfolio_id, code)
                 );
+            """)
+
+            # 5.1 兼容旧库：补齐 portfolios.description（CREATE TABLE IF NOT EXISTS 不会自动补列）
+            await conn.execute("""
+                ALTER TABLE portfolios
+                ADD COLUMN IF NOT EXISTS description TEXT;
             """)
 
             # 6. 创建模拟交易表
@@ -654,6 +788,24 @@ class SchemaBase:
 
                 CREATE INDEX IF NOT EXISTS idx_paper_orders_account ON paper_orders(account_id);
                 CREATE INDEX IF NOT EXISTS idx_paper_orders_status ON paper_orders(status);
+            """)
+
+            # 23. 创建策略工件表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_artifacts (
+                    artifact_id TEXT PRIMARY KEY,
+                    strategy TEXT,
+                    strategy_version TEXT,
+                    code TEXT,
+                    payload JSONB,
+                    registered_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_strategy_artifacts_strategy
+                    ON strategy_artifacts(strategy);
+                CREATE INDEX IF NOT EXISTS idx_strategy_artifacts_updated
+                    ON strategy_artifacts(updated_at DESC);
             """)
 
             logger.info("All tables initialized successfully (aligned with Node version)")

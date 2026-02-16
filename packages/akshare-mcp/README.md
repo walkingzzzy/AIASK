@@ -352,6 +352,66 @@ parsed = nlp_query_engine.parse_query('选出市盈率小于30且ROE大于10的�
 diagnosis = nlp_query_engine.diagnose_stock(query, stock_data)
 ```
 
+
+### 6. 估值（Driver DCF v2，P0-1）
+```python
+# MCP tool: dcf_valuation
+# 兼容旧签名：仅传 discount_rate/growth_rate/years 仍可运行
+result = await mcp.dcf_valuation(
+    code='600519',
+    discount_rate=0.10,         # 显式传入则优先使用
+    growth_rate=0.05,
+    years=5,
+    # 以下为新增可选参数（P0-1）
+    risk_free_rate=0.03,
+    beta=1.0,
+    market_risk_premium=0.06,
+    cost_of_debt=0.05,
+    tax_rate=0.25,
+    equity_weight=0.7,
+    debt_weight=0.3,
+    terminal_growth_rate=0.03,
+    capex_ratio=0.04,
+    depreciation_ratio=0.03,
+    nwc_ratio=0.01,
+    enable_sensitivity=True,
+)
+
+# 新增关键返回字段
+# result['data']['wacc_breakdown']      # 权益成本/税后债务成本/WACC拆解
+# result['data']['driver_assumptions']  # 收入驱动项假设
+# result['data']['projection']          # 显性期FCF与折现明细
+# result['data']['sensitivity']         # g/r/tg 三维敏感性情景
+# result['data']['meta']                # 审计字段（trace/兼容模式/折现率来源）
+```
+
+> 说明：`dcf_valuation` 已从简化近似模型升级为驱动式 DCF（Revenue→EBIT→NOPAT→FCF）并支持 WACC 拆解与情景敏感性分析。保持工具名与旧调用方式不变，通过参数扩展实现向后兼容。
+
+### 7. 因子IC双口径 + 中性化（P0-2）
+```python
+# MCP tool: calculate_factor_ic
+# 新增可选参数 enable_neutralization（默认 True）
+result = await mcp.calculate_factor_ic(
+    codes=['600519', '000858', '000001', '600036'],
+    factor='momentum',
+    period=20,
+    enable_neutralization=True,
+)
+
+# 兼容字段（历史调用不受影响）
+# result['data']['ic']       == result['data']['rank_ic']
+# result['data']['p_value']  == result['data']['rank_p_value']
+
+# 新增字段（P0-2）
+# result['data']['normal_ic']
+# result['data']['rank_ic']
+# result['data']['normal_p_value']
+# result['data']['rank_p_value']
+# result['data']['neutralization']   # 行业/市值/Beta中性化元信息
+# result['data']['source_chain']     # 审计来源链
+```
+
+> 说明：`calculate_factor_ic` 现已输出 Normal IC（Pearson）+ Rank IC（Spearman）双口径；默认开启行业/市值/Beta中性化。若风格暴露缺失，会自动降级并在 `neutralization.reason` 留痕。
 ---
 
 ## 🏗️ 架构
@@ -428,10 +488,85 @@ python scripts/test_data_sources.py
 ```
 需在 `packages/akshare-mcp/.env` 中配置 `TUSHARE_TOKEN` 后 Tushare Pro 测试才会执行；其他数据源无需配置即可尝试。
 
+
+### Manager 参数与返回格式说明（P1 修复）
+
+为保证 manager 层调用的一致性与向后兼容，新增如下约定：
+
+1. `options_manager` 参数规范
+   - `implied_volatility` 标准参数为 `option_price`。
+   - 兼容别名：`market_price` / `price`（内部统一映射到 `option_price`）。
+   - `calculate_price` / `implied_volatility` 对已传入但非法参数显式报错（如 `option_type` 非 `call/put`、`volatility<=0`）。
+   - 当提供 `expiry_date`（`YYYY-MM-DD`）时，会自动换算 `time_to_maturity`；若剩余期限 `<=0` 返回错误。
+
+2. `macro_manager.get_indicators` 口径规范
+   - 支持 `indicators`（list 或逗号分隔字符串）。
+   - 兼容单值参数：`indicator` / `type` / `indicator_type` / `name`。
+   - 完全未传指标参数时，默认 `gdp`（兼容历史调用）。
+   - 响应口径与请求严格一致：
+     - 单指标：`{indicator_type, data, source, requested_indicators}`
+     - 多指标：`{requested_indicators, data, sources}`
+   - 对暂无数据指标返回 `unsupported_indicators`（多指标）或 `data=None + message`（单指标）。
+
+3. 回归测试
+   - 新增：`tests/test_p1_regressions_managers.py`
+   - 覆盖点：
+     - `option_price` 别名兼容（`market_price`）
+     - `calculate_price` 参数校验错误分支
+     - 过期 `expiry_date` 错误分支
+     - `macro_manager` 单/多指标口径一致性
+     - 未知指标与默认 `gdp` 兼容行为
+
+- 建议执行：`python -m pytest packages/akshare-mcp/tests/test_p1_regressions_managers.py -q`
+
+---
+
+### Manager 参数与返回格式说明（P2 修复）
+
+在 P1 基础上，继续增强可解释性与跨 manager 元数据一致性：
+
+1. `get_realtime_quote`（实时行情）结构化降级字段
+   - 新增字段：
+     - `attempted_sources`: 实际尝试的数据源列表（按顺序）
+     - `source_chain`: 命中链路（如 `['data_source']` 或 `['data_source','akshare']`）
+     - `fallback_used`: 是否发生降级
+     - `fallback_reason`: 降级原因摘要
+     - `data_timestamp`: 数据日期（`YYYY-MM-DD`）
+   - 兼容性：原有行情字段（`code/name/price/...`）保持不变，仅增量补充。
+
+2. `decision_manager(action='analyze')` 数据质量语义增强
+   - 新增字段：
+     - `raw_total_score`: 扣分前原始总分
+     - `data_quality.missing_fields`: 缺失财务字段列表
+     - `data_quality.financial_data_completeness`: 财务完整度（0~1）
+     - `data_quality.score_penalty`: 数据缺失导致的降权分
+   - 评分规则：`total_score = max(0, raw_total_score - score_penalty)`。
+   - 兼容性：保留 `overall_score/total_score/recommendation` 等原有核心字段。
+
+3. `quant_manager` 统一 `meta` 字段
+   - 默认补齐：
+     - `meta.data_timestamp`（默认当天 `YYYY-MM-DD`）
+     - `meta.source_chain`（默认 `['quant_manager']`）
+   - 与既有 `trace_id/tool_version/cached/latency_ms` 等保持统一风格。
+
+4. P2 回归测试
+   - 新增：`tests/test_p2_data_quality_and_meta.py`
+   - 覆盖点：
+     - 行情结构化降级字段注入（含 pydantic 模型返回路径）
+     - 决策分析 `data_quality` 与 `raw_total_score` 语义
+     - quant manager `meta` 默认值一致性
+
+- 建议执行：
+  - `python -m pytest packages/akshare-mcp/tests/test_p2_data_quality_and_meta.py -q`
+  - `python -m pytest packages/akshare-mcp/tests/test_p0_regressions.py packages/akshare-mcp/tests/test_p1_regressions_managers.py -q`
+
+---
+
 ### 测试覆盖
 - ✅ 单元测试: 50+个
 - ✅ 性能测试: 7个基准
 - ✅ 集成测试: 完整流程
+- ✅ P0/P1 回归测试: manager 关键兼容与校验路径
 
 ---
 

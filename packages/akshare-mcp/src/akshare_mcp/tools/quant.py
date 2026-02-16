@@ -1,11 +1,13 @@
 ﻿"""Quant factor tools."""
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from scipy import stats
 
 from ..services.factor_calculator import factor_calculator
+from ..services.factor_analysis import FactorAnalyzer as ICFactorAnalyzer
+from ..services.validation import FactorValidationPipeline, bootstrap_ic_ci
 from ..storage import get_db
 from ..utils import fail, ok
 
@@ -15,21 +17,57 @@ SUPPORTED_FACTORS: Dict[str, Dict[str, Any]] = {
         "category": "technical",
         "description": "动量因子",
         "requires_financials": False,
+        "sub_factors": ["return_20d", "return_60d", "trend_strength"],
+        "aliases": ["mom", "mtm", "price_momentum"],
+    },
+    "trend": {
+        "category": "technical",
+        "description": "趋势因子",
+        "requires_financials": False,
+        "sub_factors": ["ma20_slope", "ma60_slope", "price_above_ma"],
+        "aliases": ["ma_trend", "trend_strength", "moving_trend"],
+    },
+    "reversal": {
+        "category": "technical",
+        "description": "反转因子",
+        "requires_financials": False,
+        "sub_factors": ["short_term_reversal", "oversold_rebound"],
+        "aliases": ["mean_reversion", "rev", "revert"],
     },
     "volatility": {
         "category": "risk",
         "description": "波动率因子",
         "requires_financials": False,
+        "sub_factors": ["realized_vol_20d", "atr_proxy"],
+        "aliases": ["vol", "risk_volatility", "sigma"],
     },
     "value": {
         "category": "fundamental",
         "description": "价值因子",
         "requires_financials": True,
+        "sub_factors": ["pe", "pb", "ps"],
+        "aliases": ["valuation", "cheapness", "value_score"],
     },
     "quality": {
         "category": "fundamental",
         "description": "质量因子",
         "requires_financials": True,
+        "sub_factors": ["roe", "debt_ratio", "profit_growth"],
+        "aliases": ["profitability", "quality_score", "high_quality"],
+    },
+    "growth": {
+        "category": "fundamental",
+        "description": "成长因子",
+        "requires_financials": True,
+        "sub_factors": ["revenue_growth", "profit_growth", "eps_growth"],
+        "aliases": ["growth_score", "earnings_growth", "sales_growth"],
+    },
+    "size": {
+        "category": "fundamental",
+        "description": "规模因子",
+        "requires_financials": True,
+        "sub_factors": ["market_cap", "float_market_cap"],
+        "aliases": ["market_cap", "small_cap", "size_score"],
     },
 }
 
@@ -66,6 +104,48 @@ def _extract_profit_growth(financial: Dict[str, Any]) -> float:
         if val != 0.0:
             return val
     return 0.0
+
+
+def _extract_style_exposures(
+    stock_info: Optional[Dict[str, Any]],
+    financial: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """从 stock_info/financial 中提取行业、市值、beta 风格暴露（有则用，无则降级）。"""
+    info = stock_info or {}
+    fin = financial or {}
+
+    industry = info.get("industry") or fin.get("industry")
+
+    market_cap = None
+    for key in (
+        "market_cap",
+        "total_market_cap",
+        "total_mv",
+        "circ_mv",
+        "float_market_cap",
+        "mkt_cap",
+    ):
+        market_cap = _safe_float(info.get(key), 0.0)
+        if market_cap > 0:
+            break
+        market_cap = _safe_float(fin.get(key), 0.0)
+        if market_cap > 0:
+            break
+    if market_cap is not None and market_cap <= 0:
+        market_cap = None
+
+    beta = None
+    for key in ("beta", "beta_1y", "beta_250d", "beta_60d"):
+        candidate = info.get(key, fin.get(key))
+        if candidate is not None:
+            beta = _safe_float(candidate, 0.0)
+            break
+
+    return {
+        "industry": industry,
+        "market_cap": market_cap,
+        "beta": beta,
+    }
 
 
 def _calculate_factor_value(
@@ -109,7 +189,12 @@ def _calculate_factor_value(
     return None
 
 
-async def run_factor_ic_analysis(codes: list, factor: str, period: int = 20) -> Dict[str, Any]:
+async def run_factor_ic_analysis(
+    codes: list,
+    factor: str,
+    period: int = 20,
+    enable_neutralization: bool = True,
+) -> Dict[str, Any]:
     factor_name = _normalize_factor_name(factor)
     if factor_name not in SUPPORTED_FACTORS:
         return fail(f"Unsupported factor: {factor_name}. Supported: {', '.join(sorted(SUPPORTED_FACTORS.keys()))}")
@@ -121,13 +206,17 @@ async def run_factor_ic_analysis(codes: list, factor: str, period: int = 20) -> 
     db = get_db()
     factor_values = []
     future_returns = []
+    industries = []
+    market_caps = []
+    betas = []
     stats_counter = {
         "input_codes": len(codes),
         "processed": 0,
         "skipped_no_kline": 0,
         "skipped_no_financials": 0,
         "skipped_no_factor_value": 0,
-        "skipped_invalid_return": 0,
+            "skipped_invalid_return": 0,
+            "style_info_available": 0,
     }
 
     requires_financials = SUPPORTED_FACTORS[factor_name]["requires_financials"]
@@ -149,6 +238,12 @@ async def run_factor_ic_analysis(codes: list, factor: str, period: int = 20) -> 
             if not financial:
                 stats_counter["skipped_no_financials"] += 1
                 continue
+
+        stock_info = None
+        try:
+            stock_info = await db.get_stock_info(code)
+        except Exception:
+            stock_info = None
 
         factor_value = _calculate_factor_value(
             factor_name,
@@ -173,8 +268,19 @@ async def run_factor_ic_analysis(codes: list, factor: str, period: int = 20) -> 
             continue
 
         future_return = (future_price - current_price) / current_price
+        styles = _extract_style_exposures(stock_info, financial)
         factor_values.append(float(factor_value))
         future_returns.append(float(future_return))
+        industries.append(styles.get("industry"))
+        market_caps.append(styles.get("market_cap"))
+        betas.append(styles.get("beta"))
+
+        if (
+            styles.get("industry") is not None
+            or styles.get("market_cap") is not None
+            or styles.get("beta") is not None
+        ):
+            stats_counter["style_info_available"] += 1
         stats_counter["processed"] += 1
 
     sample_size = len(factor_values)
@@ -184,9 +290,36 @@ async def run_factor_ic_analysis(codes: list, factor: str, period: int = 20) -> 
             f"required>=10, stats={stats_counter}"
         )
 
-    ic, p_value = stats.spearmanr(factor_values, future_returns)
-    if np.isnan(ic) or np.isnan(p_value):
-        return fail("IC calculation returned NaN")
+    dual_ic = ICFactorAnalyzer.calculate_ic_dual(
+        factor_values=factor_values,
+        forward_returns=future_returns,
+        industry=industries,
+        market_cap=market_caps,
+        beta=betas,
+        enable_neutralization=bool(enable_neutralization),
+    )
+    rank_ic = float(dual_ic.get("rank_ic", 0.0))
+    rank_p_value = float(dual_ic.get("rank_p_value", 1.0))
+
+    # --- P0-B: Bootstrap IC 置信区间 ---
+    fv_arr = np.array(factor_values, dtype=np.float64)
+    fr_arr = np.array(future_returns, dtype=np.float64)
+    try:
+        boot_rank = bootstrap_ic_ci(fv_arr, fr_arr, method="spearman", n_bootstrap=1000, seed=42)
+        boot_normal = bootstrap_ic_ci(fv_arr, fr_arr, method="pearson", n_bootstrap=1000, seed=42)
+    except Exception:
+        boot_rank = {"ic": rank_ic, "ci_lower": 0.0, "ci_upper": 0.0, "se": 0.0, "n_bootstrap": 0, "sample_size": sample_size, "confidence": 0.95}
+        boot_normal = {"ic": 0.0, "ci_lower": 0.0, "ci_upper": 0.0, "se": 0.0, "n_bootstrap": 0, "sample_size": sample_size, "confidence": 0.95}
+
+    # --- P0-B: 改进 IC_IR ---
+    # Bootstrap SE 提供了 IC 的标准误差，IC_IR = IC / SE(IC)
+    # 当 Bootstrap SE 可用且 > 0 时使用，否则回退到截面代理
+    boot_se = boot_rank.get("se", 0.0)
+    if boot_se > 1e-10:
+        ic_ir = float(rank_ic / boot_se)
+    else:
+        # 回退: 截面代理 (backward compatibility)
+        ic_ir = float(rank_ic * np.sqrt(sample_size))
 
     win_count = sum(
         1
@@ -195,25 +328,54 @@ async def run_factor_ic_analysis(codes: list, factor: str, period: int = 20) -> 
     )
     win_rate = win_count / sample_size if sample_size > 0 else 0.0
 
-    # Cross-sectional proxy to keep backward compatibility for downstream consumers.
-    ic_ir = float(ic * np.sqrt(sample_size))
-
     return ok(
         {
             "factor": factor_name,
-            "ic": float(ic),
+            # backward compatible fields
+            "ic": rank_ic,
             "ic_ir": ic_ir,
-            "p_value": float(p_value),
-            "significant": bool(p_value < 0.05),
+            "p_value": rank_p_value,
+            "significant": bool(rank_p_value < 0.05),
+            # dual IC fields
+            "normal_ic": float(dual_ic.get("normal_ic", 0.0)),
+            "rank_ic": rank_ic,
+            "normal_p_value": float(dual_ic.get("normal_p_value", 1.0)),
+            "rank_p_value": rank_p_value,
             "sample_size": sample_size,
             "period": lookback_period,
             "win_rate": float(win_rate),
+            # P0-B: Bootstrap 置信区间
+            "bootstrap_ci": {
+                "rank_ic": {
+                    "ic": boot_rank.get("ic", rank_ic),
+                    "ci_lower": boot_rank.get("ci_lower", 0.0),
+                    "ci_upper": boot_rank.get("ci_upper", 0.0),
+                    "se": boot_rank.get("se", 0.0),
+                    "confidence": boot_rank.get("confidence", 0.95),
+                },
+                "normal_ic": {
+                    "ic": boot_normal.get("ic", 0.0),
+                    "ci_lower": boot_normal.get("ci_lower", 0.0),
+                    "ci_upper": boot_normal.get("ci_upper", 0.0),
+                    "se": boot_normal.get("se", 0.0),
+                    "confidence": boot_normal.get("confidence", 0.95),
+                },
+                "n_bootstrap": boot_rank.get("n_bootstrap", 0),
+                "ic_ir_method": "bootstrap_se" if boot_se > 1e-10 else "cross_sectional_proxy",
+            },
             "data_window": {
                 "lookback_bars": lookback_period + 30,
                 "forward_period": lookback_period,
             },
             "stats": stats_counter,
-            "source_chain": ["db.get_klines", "db.get_financials(optional)", "scipy.spearmanr"],
+            "neutralization": dual_ic.get("neutralization", {}),
+            "source_chain": [
+                "db.get_klines",
+                "db.get_financials(optional)",
+                "db.get_stock_info(optional)",
+                "factor_analysis.calculate_ic_dual",
+                "validation.bootstrap_ic_ci",
+            ],
         }
     )
 
@@ -354,6 +516,178 @@ async def run_factor_group_backtest(
     )
 
 
+async def _build_factor_return_panels(
+    codes: List[str],
+    factor_name: str,
+    db,
+    *,
+    factor_lookback: int,
+    forward_period: int,
+    panel_periods: int,
+) -> Dict[str, Any]:
+    """构建 OOS 验证所需的二维面板：factor_panel / return_panel。"""
+    per_code_factors: Dict[str, List[float]] = {}
+    per_code_returns: Dict[str, List[float]] = {}
+    requires_financials = SUPPORTED_FACTORS[factor_name]["requires_financials"]
+    stats = {
+        "input_codes": len(codes),
+        "processed_codes": 0,
+        "skipped_no_kline": 0,
+        "skipped_no_financials": 0,
+        "skipped_short_series": 0,
+    }
+
+    fetch_bars = max(80, panel_periods + factor_lookback + forward_period + 20)
+
+    for code in codes:
+        klines = await db.get_klines(code, limit=fetch_bars)
+        if not klines or len(klines) < (factor_lookback + forward_period + 5):
+            stats["skipped_no_kline"] += 1
+            continue
+
+        closes = [k.get("close") for k in klines if isinstance(k, dict) and k.get("close") is not None]
+        if len(closes) < (factor_lookback + forward_period + 5):
+            stats["skipped_no_kline"] += 1
+            continue
+
+        # 数据库通常最新在前，反转到时间正序
+        closes = list(reversed([float(c) for c in closes]))
+
+        financial = None
+        if requires_financials:
+            financial = _latest_financial_row(await db.get_financials(code, limit=1))
+            if not financial:
+                stats["skipped_no_financials"] += 1
+                continue
+
+        factors_one: List[float] = []
+        returns_one: List[float] = []
+
+        start_t = factor_lookback - 1
+        end_t = len(closes) - 1 - forward_period
+        for t in range(start_t, end_t + 1):
+            window = closes[t - factor_lookback + 1 : t + 1]
+            fv = _calculate_factor_value(
+                factor_name,
+                window,
+                financial=financial,
+                period=min(factor_lookback, len(window)),
+            )
+            p0 = closes[t]
+            p1 = closes[t + forward_period]
+            if fv is None or np.isnan(fv) or p0 <= 0:
+                continue
+            ret = (p1 - p0) / p0
+            if not np.isfinite(ret):
+                continue
+            factors_one.append(float(fv))
+            returns_one.append(float(ret))
+
+        if len(factors_one) < max(30, panel_periods // 2):
+            stats["skipped_short_series"] += 1
+            continue
+
+        per_code_factors[code] = factors_one
+        per_code_returns[code] = returns_one
+        stats["processed_codes"] += 1
+
+    if len(per_code_factors) < 5:
+        return fail(f"Not enough valid codes for panel build, stats={stats}")
+
+    common_len = min(len(v) for v in per_code_factors.values())
+    common_len = min(common_len, panel_periods)
+    if common_len < 30:
+        return fail(f"Panel periods too short after alignment: {common_len}, stats={stats}")
+
+    used_codes = sorted(per_code_factors.keys())
+    factor_panel = np.array([per_code_factors[c][-common_len:] for c in used_codes], dtype=np.float64).T
+    return_panel = np.array([per_code_returns[c][-common_len:] for c in used_codes], dtype=np.float64).T
+
+    return ok(
+        {
+            "factor_panel": factor_panel,
+            "return_panel": return_panel,
+            "codes": used_codes,
+            "periods": int(common_len),
+            "stats": stats,
+        }
+    )
+
+
+async def run_factor_oos_validation(
+    codes: List[str],
+    factor: str,
+    *,
+    factor_lookback: int = 20,
+    forward_period: int = 20,
+    panel_periods: int = 180,
+    wf_train_window: int = 60,
+    wf_test_window: int = 20,
+    wf_step: Optional[int] = None,
+    kfold_n_folds: int = 5,
+    kfold_purge_gap: int = 5,
+    bootstrap_n: int = 1000,
+    bootstrap_confidence: float = 0.95,
+) -> Dict[str, Any]:
+    """P0-A: 统一样本外验证工具（Walk-Forward + Purged KFold + Bootstrap CI）。"""
+    factor_name = _normalize_factor_name(factor)
+    if factor_name not in SUPPORTED_FACTORS:
+        return fail(f"Unsupported factor: {factor_name}. Supported: {', '.join(sorted(SUPPORTED_FACTORS.keys()))}")
+    if not codes:
+        return fail("codes is required")
+
+    db = get_db()
+    panel_resp = await _build_factor_return_panels(
+        codes=codes,
+        factor_name=factor_name,
+        db=db,
+        factor_lookback=max(2, int(factor_lookback)),
+        forward_period=max(1, int(forward_period)),
+        panel_periods=max(60, int(panel_periods)),
+    )
+    if not panel_resp.get("success"):
+        return panel_resp
+
+    pdata = panel_resp.get("data", {})
+    factor_panel = pdata["factor_panel"]
+    return_panel = pdata["return_panel"]
+
+    pipeline = FactorValidationPipeline(
+        wf_train_window=max(20, int(wf_train_window)),
+        wf_test_window=max(5, int(wf_test_window)),
+        wf_step=(None if wf_step in (None, 0) else int(wf_step)),
+        kfold_n_folds=max(3, int(kfold_n_folds)),
+        kfold_purge_gap=max(0, int(kfold_purge_gap)),
+        bootstrap_n=max(200, int(bootstrap_n)),
+        bootstrap_confidence=max(0.80, min(0.999, float(bootstrap_confidence))),
+    )
+    report = pipeline.run(
+        factor_panel=factor_panel,
+        return_panel=return_panel,
+        factor_name=factor_name,
+    )
+
+    return ok(
+        {
+            "factor": factor_name,
+            "validation_report": report,
+            "panel_info": {
+                "n_periods": int(pdata.get("periods", 0)),
+                "n_stocks": int(len(pdata.get("codes", []))),
+                "codes": pdata.get("codes", []),
+                "factor_lookback": int(factor_lookback),
+                "forward_period": int(forward_period),
+            },
+            "stats": pdata.get("stats", {}),
+            "source_chain": [
+                "db.get_klines",
+                "db.get_financials(optional)",
+                "validation.FactorValidationPipeline.run",
+            ],
+        }
+    )
+
+
 def register(mcp):
     @mcp.tool()
     def get_factor_library(category: str = "all"):
@@ -364,12 +698,20 @@ def register(mcp):
                 "category": meta["category"],
                 "description": meta["description"],
                 "requires_financials": meta["requires_financials"],
+                "sub_factors": meta.get("sub_factors", []),
+                "aliases": meta.get("aliases", []),
                 "status": "supported",
             }
             for name, meta in SUPPORTED_FACTORS.items()
             if category_key in ("all", meta["category"])
         ]
-        return ok({"factors": factors, "count": len(factors), "supported_factors": sorted(SUPPORTED_FACTORS.keys())})
+        return ok({
+            "factors": factors,
+            "count": len(factors),
+            "supported_factors": sorted(SUPPORTED_FACTORS.keys()),
+            "total_categories": len(SUPPORTED_FACTORS),
+            "note": "Factor library includes 8 categories: fundamental(4), technical(3), risk(1).",
+        })
 
     @mcp.tool()
     async def calculate_factor(code: str, factor: str):
@@ -410,10 +752,20 @@ def register(mcp):
             return fail(str(e))
 
     @mcp.tool()
-    async def calculate_factor_ic(codes: list, factor: str, period: int = 20):
-        """Calculate information coefficient (IC) by cross-section."""
+    async def calculate_factor_ic(
+        codes: list,
+        factor: str,
+        period: int = 20,
+        enable_neutralization: bool = True,
+    ):
+        """Calculate dual information coefficient (Normal IC + Rank IC) by cross-section."""
         try:
-            return await run_factor_ic_analysis(codes=codes, factor=factor, period=period)
+            return await run_factor_ic_analysis(
+                codes=codes,
+                factor=factor,
+                period=period,
+                enable_neutralization=enable_neutralization,
+            )
         except Exception as e:
             return fail(str(e))
 
@@ -427,6 +779,40 @@ def register(mcp):
                 groups=groups,
                 holding_days=holding_days,
                 factor_lookback=DEFAULT_FACTOR_LOOKBACK,
+            )
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def validate_factor_oos(
+        codes: list,
+        factor: str,
+        factor_lookback: int = 20,
+        forward_period: int = 20,
+        panel_periods: int = 180,
+        wf_train_window: int = 60,
+        wf_test_window: int = 20,
+        wf_step: int = 0,
+        kfold_n_folds: int = 5,
+        kfold_purge_gap: int = 5,
+        bootstrap_n: int = 1000,
+        bootstrap_confidence: float = 0.95,
+    ):
+        """P0-A: Unified OOS validation (Walk-Forward + Purged KFold + Bootstrap CI)."""
+        try:
+            return await run_factor_oos_validation(
+                codes=codes,
+                factor=factor,
+                factor_lookback=factor_lookback,
+                forward_period=forward_period,
+                panel_periods=panel_periods,
+                wf_train_window=wf_train_window,
+                wf_test_window=wf_test_window,
+                wf_step=(None if int(wf_step or 0) == 0 else int(wf_step)),
+                kfold_n_folds=kfold_n_folds,
+                kfold_purge_gap=kfold_purge_gap,
+                bootstrap_n=bootstrap_n,
+                bootstrap_confidence=bootstrap_confidence,
             )
         except Exception as e:
             return fail(str(e))

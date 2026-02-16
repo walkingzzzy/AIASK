@@ -15,6 +15,8 @@ from threading import Lock
 from typing import Dict, List, Optional
 from datetime import datetime
 
+from ..utils import safe_stderr_print
+
 
 @dataclass
 class PerformanceStats:
@@ -434,45 +436,53 @@ class PerformanceMonitor:
                 stats_dict = dict(self._stats)
         
         if not stats_dict:
-            print("无统计数据")
+            safe_stderr_print("无统计数据")
             return
         
-        print("\n" + "=" * 80)
-        print("性能监控统计")
-        print("=" * 80)
+        safe_stderr_print("\n" + "=" * 80)
+        safe_stderr_print("性能监控统计")
+        safe_stderr_print("=" * 80)
         
         for name, stats in stats_dict.items():
             if not stats:
                 continue
             
-            print(f"\n【{name}】")
+            safe_stderr_print(f"\n【{name}】")
             
             # 缓存统计
             if stats.cache_hits > 0 or stats.cache_misses > 0:
-                print(f"  缓存命中率: {stats.cache_hit_rate:.1%} "
-                      f"(命中: {stats.cache_hits}, 未命中: {stats.cache_misses})")
+                safe_stderr_print(
+                    f"  缓存命中率: {stats.cache_hit_rate:.1%} "
+                    f"(命中: {stats.cache_hits}, 未命中: {stats.cache_misses})"
+                )
             
             # API调用统计
             if stats.api_calls > 0:
                 error_rate = stats.api_errors / stats.api_calls if stats.api_calls > 0 else 0
-                print(f"  API调用: {stats.api_calls} 次 "
-                      f"(错误: {stats.api_errors}, 错误率: {error_rate:.1%})")
+                safe_stderr_print(
+                    f"  API调用: {stats.api_calls} 次 "
+                    f"(错误: {stats.api_errors}, 错误率: {error_rate:.1%})"
+                )
             
             # 响应时间统计
             if stats.response_times:
-                print(f"  响应时间: 平均 {stats.avg_response_time:.1f}ms, "
-                      f"P50 {stats.p50_response_time:.1f}ms, "
-                      f"P95 {stats.p95_response_time:.1f}ms, "
-                      f"P99 {stats.p99_response_time:.1f}ms")
+                safe_stderr_print(
+                    f"  响应时间: 平均 {stats.avg_response_time:.1f}ms, "
+                    f"P50 {stats.p50_response_time:.1f}ms, "
+                    f"P95 {stats.p95_response_time:.1f}ms, "
+                    f"P99 {stats.p99_response_time:.1f}ms"
+                )
             
             # 限流统计
             if stats.rate_limit_waits > 0:
                 avg_wait = stats.total_wait_time / stats.rate_limit_waits
-                print(f"  限流等待: {stats.rate_limit_waits} 次, "
-                      f"总等待 {stats.total_wait_time:.2f}s, "
-                      f"平均 {avg_wait*1000:.1f}ms")
+                safe_stderr_print(
+                    f"  限流等待: {stats.rate_limit_waits} 次, "
+                    f"总等待 {stats.total_wait_time:.2f}s, "
+                    f"平均 {avg_wait*1000:.1f}ms"
+                )
         
-        print("\n" + "=" * 80)
+        safe_stderr_print("\n" + "=" * 80)
 
 
 # 全局监控器实例

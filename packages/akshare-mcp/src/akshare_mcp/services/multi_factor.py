@@ -17,6 +17,9 @@ from typing import Dict, List, Tuple, Optional, Union
 from scipy import stats
 from scipy.optimize import minimize
 
+from .factor_analysis import FactorAnalyzer as CoreFactorAnalyzer
+from ..utils import safe_stderr_print
+
 
 class FactorStandardizer:
     """因子标准化器"""
@@ -228,6 +231,30 @@ class FactorAnalyzer:
             raise ValueError(f"Unknown method: {method}")
 
         return ic if not np.isnan(ic) else 0.0
+
+    @staticmethod
+    def calculate_ic_dual(
+        factor_values: np.ndarray,
+        returns: np.ndarray,
+        industry: Optional[List[Union[str, int]]] = None,
+        market_cap: Optional[List[float]] = None,
+        beta: Optional[List[float]] = None,
+        enable_neutralization: bool = True,
+    ) -> Dict[str, Union[float, Dict[str, Union[bool, str, int, float, list]]]]:
+        """
+        计算双口径 IC（Normal IC + Rank IC），默认启用中性化。
+
+        说明：为保持统一口径，复用 services.factor_analysis.FactorAnalyzer 的实现。
+        """
+        result = CoreFactorAnalyzer.calculate_ic_dual(
+            factor_values=np.asarray(factor_values, dtype=float).tolist(),
+            forward_returns=np.asarray(returns, dtype=float).tolist(),
+            industry=industry,
+            market_cap=market_cap,
+            beta=beta,
+            enable_neutralization=enable_neutralization,
+        )
+        return result
 
     @staticmethod
     def calculate_ic_ir(factor_values_series: List[np.ndarray],
@@ -507,22 +534,22 @@ if __name__ == '__main__':
     # 模拟收益率
     returns = np.random.randn(n_stocks) * 0.01
 
-    print("=" * 60)
-    print("多因子框架使用示例")
-    print("=" * 60)
+    safe_stderr_print("=" * 60)
+    safe_stderr_print("多因子框架使用示例")
+    safe_stderr_print("=" * 60)
 
     # 1. 因子标准化
-    print("\n1. 因子标准化")
-    print("-" * 60)
+    safe_stderr_print("\n1. 因子标准化")
+    safe_stderr_print("-" * 60)
     factor1_zscore = FactorStandardizer.z_score(factor1)
     factor1_rank = FactorStandardizer.rank_normalize(factor1)
-    print(f"原始因子均值: {np.mean(factor1):.4f}, 标准差: {np.std(factor1):.4f}")
-    print(f"Z-Score标准化后均值: {np.mean(factor1_zscore):.4f}, 标准差: {np.std(factor1_zscore):.4f}")
-    print(f"排名标准化后范围: [{np.min(factor1_rank):.4f}, {np.max(factor1_rank):.4f}]")
+    safe_stderr_print(f"原始因子均值: {np.mean(factor1):.4f}, 标准差: {np.std(factor1):.4f}")
+    safe_stderr_print(f"Z-Score标准化后均值: {np.mean(factor1_zscore):.4f}, 标准差: {np.std(factor1_zscore):.4f}")
+    safe_stderr_print(f"排名标准化后范围: [{np.min(factor1_rank):.4f}, {np.max(factor1_rank):.4f}]")
 
     # 2. 因子合成
-    print("\n2. 因子合成")
-    print("-" * 60)
+    safe_stderr_print("\n2. 因子合成")
+    safe_stderr_print("-" * 60)
     factors = {
         'factor1': factor1_zscore,
         'factor2': FactorStandardizer.z_score(factor2),
@@ -531,24 +558,24 @@ if __name__ == '__main__':
 
     combined_equal = FactorCombiner.equal_weight(factors)
     combined_ic = FactorCombiner.ic_weight(factors, returns)
-    print(f"等权合成因子均值: {np.mean(combined_equal):.4f}")
-    print(f"IC加权合成因子均值: {np.mean(combined_ic):.4f}")
+    safe_stderr_print(f"等权合成因子均值: {np.mean(combined_equal):.4f}")
+    safe_stderr_print(f"IC加权合成因子均值: {np.mean(combined_ic):.4f}")
 
     # 3. 因子分析
-    print("\n3. 因子分析")
-    print("-" * 60)
+    safe_stderr_print("\n3. 因子分析")
+    safe_stderr_print("-" * 60)
     ic = FactorAnalyzer.calculate_ic(combined_ic, returns)
-    print(f"合成因子IC: {ic:.4f}")
+    safe_stderr_print(f"合成因子IC: {ic:.4f}")
 
     # 4. 组合构建
-    print("\n4. 组合构建")
-    print("-" * 60)
+    safe_stderr_print("\n4. 组合构建")
+    safe_stderr_print("-" * 60)
     portfolios = PortfolioBuilder.quantile_portfolio(combined_ic, n_quantiles=5)
     for name, weights in portfolios.items():
         portfolio_return = weights @ returns
-        print(f"{name:12s} 组合收益: {portfolio_return:.4f}")
+        safe_stderr_print(f"{name:12s} 组合收益: {portfolio_return:.4f}")
 
-    print("\n" + "=" * 60)
-    print("多因子框架模块加载完成！")
-    print("=" * 60)
+    safe_stderr_print("\n" + "=" * 60)
+    safe_stderr_print("多因子框架模块加载完成！")
+    safe_stderr_print("=" * 60)
 

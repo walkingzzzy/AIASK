@@ -39,9 +39,83 @@ def _in_cn_trading_hours() -> bool:
     return (570 <= minutes <= 690) or (780 <= minutes <= 900)
 
 
+
+def evaluate_order_compliance(code: str, direction: str, quantity_raw, price_raw=None) -> dict:
+    """可复用的合规检查核心逻辑（供 execution_manager 强制前置闸门调用）。"""
+    code_n = normalize_code(code or '') if code else None
+    direction_n = str(direction or '').strip().lower()
+
+    violations = []
+    warnings = []
+
+    quantity = None
+    if quantity_raw is not None:
+        try:
+            quantity = int(float(quantity_raw))
+        except Exception:
+            violations.append('quantity 格式无效，需为正整数')
+
+    price = None
+    if price_raw is not None:
+        try:
+            price = float(price_raw)
+        except Exception:
+            violations.append('price 格式无效，需为正数')
+
+    if not code_n:
+        violations.append('缺少 code 参数')
+    if direction_n not in ('buy', 'sell'):
+        violations.append('direction 仅支持 buy/sell')
+    if quantity is None or quantity <= 0:
+        violations.append('quantity 必须大于 0')
+    if price is not None and price <= 0:
+        violations.append('price 必须大于 0')
+
+    if quantity is not None and quantity > MAX_SINGLE_ORDER_SHARES:
+        violations.append(f'单笔数量超限（>{MAX_SINGLE_ORDER_SHARES}）')
+
+    if direction_n == 'buy' and quantity is not None and quantity % MIN_LOT_SIZE != 0:
+        violations.append(f'买入数量必须为 {MIN_LOT_SIZE} 的整数倍')
+
+    order_amount = None
+    if quantity is not None and price is not None and price > 0:
+        order_amount = quantity * price
+        if order_amount > MAX_SINGLE_ORDER_AMOUNT:
+            violations.append(f'单笔金额超限（>{MAX_SINGLE_ORDER_AMOUNT:.0f}）')
+
+    trading_hours = _in_cn_trading_hours()
+    checks = {
+        'position_limit': quantity is not None and quantity <= MAX_SINGLE_ORDER_SHARES,
+        'trading_hours': trading_hours,
+        'suspended': False,
+        'st_stock': False,
+        'lot_size': not (direction_n == 'buy' and quantity is not None and quantity % MIN_LOT_SIZE != 0),
+        'order_amount': (order_amount is None) or (order_amount <= MAX_SINGLE_ORDER_AMOUNT),
+    }
+
+    if not trading_hours:
+        warnings.append('当前时间不在交易时段内（仅提示，部分券商支持预委托）')
+    warnings.append('停牌/ST/涨跌停校验当前为静态规则，建议在下单前接入实时行情复核')
+
+    blocked = len(violations) > 0
+    passed = not blocked
+    return {
+        'code': code_n,
+        'direction': direction_n,
+        'quantity': quantity,
+        'price': price,
+        'order_amount': float(order_amount) if order_amount is not None else None,
+        'passed': passed,
+        'blocked': blocked,
+        'checks': checks,
+        'violations': violations,
+        'warnings': warnings,
+    }
+
+
 def register_compliance_manager(mcp):
     """注册合规管理器工具"""
-    
+
     @mcp.tool()
     async def compliance_manager(action: str, **kwargs):
         """合规管理器（统一 action + kwargs 协议）
@@ -78,10 +152,10 @@ def register_compliance_manager(mcp):
                 'rules': '获取合规规则',
                 'help': '显示帮助信息',
             }
-            
+
             if action == 'help':
                 return ok({'supported_actions': SUPPORTED_ACTIONS})
-            
+
             elif action in ['check_order', 'check', 'check_trade']:
                 code = normalize_code(kwargs.get('code') or '') if kwargs.get('code') else None
                 direction = str(kwargs.get('direction') or '').strip().lower()
@@ -118,7 +192,7 @@ def register_compliance_manager(mcp):
                     violations.append(f'单笔数量超限（>{MAX_SINGLE_ORDER_SHARES}）')
 
                 if direction == 'buy' and quantity is not None and quantity % MIN_LOT_SIZE != 0:
-                    warnings.append(f'买入数量建议为 {MIN_LOT_SIZE} 的整数倍')
+                    violations.append(f'买入数量必须为 {MIN_LOT_SIZE} 的整数倍')
 
                 order_amount = None
                 if quantity is not None and price is not None and price > 0:
@@ -155,7 +229,7 @@ def register_compliance_manager(mcp):
                     'violations': violations,
                     'warnings': warnings,
                 })
-            
+
             elif action == 'get_restrictions':
                 code = kwargs.get('code')
                 return ok({
@@ -169,7 +243,7 @@ def register_compliance_manager(mcp):
                         'trading_hours': '09:30-11:30, 13:00-15:00 (Asia/Shanghai)',
                     }
                 })
-            
+
             elif action == 'rules':
                 return ok({
                     'rules': [
@@ -183,7 +257,7 @@ def register_compliance_manager(mcp):
                         {'name': 'limit_up_down', 'description': '涨跌停股票限制交易'},
                     ]
                 })
-            
+
             else:
                 return fail(f'Unknown action: {action}. Supported: {", ".join(SUPPORTED_ACTIONS.keys())}')
         except Exception as e:

@@ -392,15 +392,33 @@ def register_risk_manager(mcp):
                     stressed_value = float(sum(item["value"] * (1 + market_shock) for item in holdings_values))
                     loss = float(total_value - stressed_value)
                     loss_pct = (loss / total_value) if total_value > 0 else 0.0
+                    # Explainability layers for stress decomposition
+                    volatility_multiplier = float(params.get("volatility", 1.0))
+                    volatility_penalty_pct = max(0.0, (volatility_multiplier - 1.0) * 0.01)
+                    volatility_penalty = total_value * volatility_penalty_pct
+                    liquidity_penalty_pct = 0.003 if scenario_name in {"liquidity_crisis", "black_swan"} else 0.0
+                    liquidity_penalty = total_value * liquidity_penalty_pct
+                    adjusted_loss = loss + volatility_penalty + liquidity_penalty
+                    adjusted_loss_pct = (adjusted_loss / total_value) if total_value > 0 else 0.0
                     return {
                         "scenario": scenario_name,
                         "description": params["description"],
                         "current_value": float(total_value),
                         "stressed_value": stressed_value,
-                        "loss": loss,
-                        "loss_percentage": f"{loss_pct * 100:.2f}%",
-                        "severity": "high" if loss_pct > 0.15 else ("medium" if loss_pct > 0.08 else "low"),
-                        "recommendation": "consider hedging" if loss_pct > 0.15 else "risk acceptable",
+                        "loss": float(adjusted_loss),
+                        "loss_percentage": f"{adjusted_loss_pct * 100:.2f}%",
+                        "severity": "high" if adjusted_loss_pct > 0.15 else ("medium" if adjusted_loss_pct > 0.08 else "low"),
+                        "recommendation": "consider hedging" if adjusted_loss_pct > 0.15 else "risk acceptable",
+                        "assumptions": {
+                            "market_shock": market_shock,
+                            "volatility_multiplier": volatility_multiplier,
+                            "liquidity_penalty_pct": liquidity_penalty_pct,
+                        },
+                        "layer_losses": {
+                            "market_loss": float(loss),
+                            "volatility_penalty": float(volatility_penalty),
+                            "liquidity_penalty": float(liquidity_penalty),
+                        },
                     }
 
                 if len(scenarios_input) == 1:
@@ -515,6 +533,16 @@ def register_risk_manager(mcp):
                 }
 
                 max_weight = (max(item["value"] for item in stock_exposure) / total_value) if total_value > 0 else 0.0
+                hhi = sum((item["value"] / total_value) ** 2 for item in stock_exposure) if total_value > 0 else 0.0
+                effective_positions = (1.0 / hhi) if hhi > 0 else 0.0
+                top3_weight = (
+                    sum(sorted((item["value"] / total_value for item in stock_exposure), reverse=True)[:3])
+                    if total_value > 0
+                    else 0.0
+                )
+                sector_hhi = (
+                    sum((value / total_value) ** 2 for value in sector_totals.values()) if total_value > 0 else 0.0
+                )
                 if max_weight > 0.3:
                     concentration_level = "high"
                     concentration_desc = "single-stock concentration is too high"
@@ -543,6 +571,12 @@ def register_risk_manager(mcp):
                             "stock_count": len(stock_exposure),
                             "sector_count": len(sector_exposure),
                             "recommendation": "consider more holdings" if len(stock_exposure) < 10 else "holding count is reasonable",
+                        },
+                        "explainability": {
+                            "hhi": float(hhi),
+                            "effective_positions": float(effective_positions),
+                            "top3_weight_pct": f"{top3_weight * 100:.2f}%",
+                            "sector_hhi": float(sector_hhi),
                         },
                     }
                 )

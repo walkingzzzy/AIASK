@@ -82,7 +82,12 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
     limiter = get_limiter("kline", max_calls=5, period=1.0)
     limiter.acquire()
 
-    code = normalize_code(stock_code)
+    raw_code = str(stock_code or "").strip()
+    if not re.fullmatch(r"\d{6}", raw_code):
+        return fail("股票代码格式无效，应为6位数字")
+
+    code = normalize_code(raw_code)
+
     try:
         # 1. DataSource 优先：TDX → Tushare
         ds_results = data_source.get_kline(code, period, limit)

@@ -6,7 +6,9 @@
 """
 
 import datetime
+import io
 import logging
+from contextlib import redirect_stdout
 
 from ..utils import normalize_code, safe_float, safe_int, safe_stderr_print
 
@@ -219,7 +221,12 @@ class QuotesMixin:
         # 2. Tushare legacy (仅日线)
         if period == 'daily':
             try:
-                df = ts.get_hist_data(code)
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    df = ts.get_hist_data(code)
+                legacy_stdout = buf.getvalue().strip()
+                if legacy_stdout:
+                    safe_stderr_print(f"[DataSource] Tushare legacy stdout: {legacy_stdout}")
                 if df is not None and not df.empty:
                     df = df.iloc[::-1].tail(limit)
                     results = []

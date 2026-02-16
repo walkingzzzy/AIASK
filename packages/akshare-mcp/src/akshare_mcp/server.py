@@ -186,15 +186,53 @@ async def get_block_stocks(block_code: str):
     return await market_blocks.get_block_stocks(block_code=block_code)
 
 
+def _as_bool(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _enforce_http_security_baseline() -> None:
+    """
+    Enforce minimal security checks when running MCP over HTTP-like transports.
+
+    For stdio transport this function only logs hints and never blocks startup.
+    """
+    transport = str(os.getenv("MCP_TRANSPORT", "stdio")).strip().lower()
+    host = str(os.getenv("MCP_HOST", "127.0.0.1")).strip()
+    allowed_origins = str(os.getenv("MCP_ALLOWED_ORIGINS", "")).strip()
+    auth_mode = str(os.getenv("MCP_AUTH_MODE", "")).strip().lower()
+    token_passthrough = _as_bool(os.getenv("MCP_ALLOW_TOKEN_PASSTHROUGH"))
+
+    http_transports = {"http", "streamable-http", "sse"}
+    if transport not in http_transports:
+        logging.getLogger(__name__).info(
+            "[Security] MCP_TRANSPORT=%s, skip HTTP baseline enforcement", transport
+        )
+        return
+
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise RuntimeError(
+            "Insecure MCP_HOST for HTTP transport. Use 127.0.0.1/localhost/::1 only."
+        )
+
+    if not allowed_origins:
+        raise RuntimeError(
+            "MCP_ALLOWED_ORIGINS is required for HTTP transport (Origin validation)."
+        )
+
+    if auth_mode in {"", "none"}:
+        raise RuntimeError(
+            "MCP_AUTH_MODE must be configured for HTTP transport (e.g. bearer/api-key)."
+        )
+
+    if token_passthrough:
+        raise RuntimeError(
+            "MCP_ALLOW_TOKEN_PASSTHROUGH=true is forbidden by security baseline."
+        )
+
+
 def main() -> None:
-    """启动 MCP Server"""
-    # 不再在 main() 中创建/关闭独立的事件循环
-    # 之前的实现会 asyncio.new_event_loop() + loop.close()，
-    # 导致 FastMCP 启动后所有 async 工具报 "Event loop is closed"
-    #
-    # 数据库状态检查改为懒加载：TimescaleDBAdapter.acquire() 内部已有
-    # if not self._initialized: await self.initialize() 的逻辑，
-    # 会在首次工具调用时自动初始化，无需提前检查。
+    """Start MCP server."""
+    _enforce_http_security_baseline()
     mcp.run()
 
 

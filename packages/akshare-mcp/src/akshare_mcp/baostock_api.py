@@ -1,4 +1,7 @@
 
+import io
+from contextlib import redirect_stdout, redirect_stderr
+
 import baostock as bs
 import pandas as pd
 from typing import Optional
@@ -15,7 +18,10 @@ class BaostockClient:
 
     def login(self):
         if not self._logged_in:
-            lg = bs.login()
+            stdout_buf = io.StringIO()
+            stderr_buf = io.StringIO()
+            with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
+                lg = bs.login()
             if lg.error_code == '0':
                 self._logged_in = True
             else:
@@ -25,7 +31,10 @@ class BaostockClient:
 
     def logout(self):
         if self._logged_in:
-            bs.logout()
+            stdout_buf = io.StringIO()
+            stderr_buf = io.StringIO()
+            with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
+                bs.logout()
             self._logged_in = False
 
     def normalize_code(self, code: str) -> str:

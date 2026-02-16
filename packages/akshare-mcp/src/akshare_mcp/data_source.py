@@ -19,8 +19,10 @@
 
 import os
 import sys
+import io
 import logging
 import threading
+from contextlib import redirect_stdout
 from typing import Optional, Any
 import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -43,12 +45,13 @@ except ImportError:
 import pandas as pd
 
 from .utils import (
-    normalize_code, 
-    safe_float, 
-    safe_int, 
-    ok, 
-    fail, 
-    format_period
+    normalize_code,
+    safe_float,
+    safe_int,
+    ok,
+    fail,
+    format_period,
+    safe_stderr_print,
 )
 try:
     from .baostock_api import baostock_client
@@ -62,8 +65,19 @@ class DataSourceManager:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(DataSourceManager, cls).__new__(cls)
-            cls._instance._init()
+            cls._instance._initialized = False
+            cls._instance._init_lock = threading.Lock()
         return cls._instance
+
+    def ensure_initialized(self):
+        """惰性初始化：避免在模块导入阶段触发外部依赖初始化。"""
+        if getattr(self, "_initialized", False):
+            return
+        with self._init_lock:
+            if getattr(self, "_initialized", False):
+                return
+            self._init()
+            self._initialized = True
 
     def _init(self):
         self.tushare_token = os.getenv("TUSHARE_TOKEN", "").strip()
@@ -152,6 +166,7 @@ class DataSourceManager:
 
     def _ensure_tdx_initialized(self) -> bool:
         """确保 TdxQuant 已初始化（懒加载），失败后间隔 60 秒可重试，支持内部重试"""
+        self.ensure_initialized()
         if self.tq is None:
             return False
         if self._tdx_init_failed:
@@ -205,21 +220,26 @@ class DataSourceManager:
 
     def is_tdx_available(self) -> bool:
         """检查 TdxQuant 是否可用"""
+        self.ensure_initialized()
         return self.tq is not None and self.tdx_enabled
 
     def get_tdxquant(self):
         """获取 TdxQuant 实例"""
+        self.ensure_initialized()
         if self._ensure_tdx_initialized():
             return self.tq
         return None
 
     def get_tushare_pro(self):
+        self.ensure_initialized()
         return self.ts_pro
 
     def get_tushare_http_url(self) -> str:
+        self.ensure_initialized()
         return self.tushare_http_url
 
     def get_tushare_whitelist(self) -> dict:
+        self.ensure_initialized()
         return load_tushare_whitelist()
 
     def _convert_to_tdx_code(self, code: str) -> str:
@@ -543,6 +563,7 @@ class DataSourceManager:
 
     def _get_stock_name(self, code: str) -> str:
         """获取股票名称（带缓存），优先 TDX → Tushare stock_basic"""
+        self.ensure_initialized()
         if not hasattr(self, '_stock_name_cache'):
             self._stock_name_cache = {}
         code = normalize_code(code)
@@ -577,6 +598,7 @@ class DataSourceManager:
         """
         数据源优先级: TDX → Tushare → akshare
         """
+        self.ensure_initialized()
         code = normalize_code(code)
 
         # 0. 优先使用 TdxQuant (真正实时数据)
@@ -697,6 +719,7 @@ class DataSourceManager:
         """
         数据源优先级: TDX → Tushare → akshare
         """
+        self.ensure_initialized()
         code = normalize_code(code)
 
         # 0. 优先使用 TdxQuant (支持分钟级K线)
@@ -738,7 +761,12 @@ class DataSourceManager:
         # 2. 备用: Tushare legacy (仅日线)
         if period == 'daily':
             try:
-                df = ts.get_hist_data(code)
+                _legacy_stdout = io.StringIO()
+                with redirect_stdout(_legacy_stdout):
+                    df = ts.get_hist_data(code)
+                _legacy_noise = _legacy_stdout.getvalue().strip()
+                if _legacy_noise:
+                    safe_stderr_print(f"[DataSource] Tushare legacy stdout: {_legacy_noise}")
                 if df is not None and not df.empty:
                     df = df.iloc[::-1].tail(limit)
                     results = []
@@ -826,6 +854,7 @@ class DataSourceManager:
 
         注意: TDX 需要先在客户端下载上证指数(999999)的盘后数据
         """
+        self.ensure_initialized()
         def _valid_yyyymmdd(value: str) -> bool:
             if not value:
                 return True
@@ -949,6 +978,7 @@ class DataSourceManager:
         Returns:
             dict: {"success": bool, "data": list, "source": str, "message": str}
         """
+        self.ensure_initialized()
         # 1. 优先使用 TDX
         if self.is_tdx_available():
             try:
@@ -1060,6 +1090,7 @@ class DataSourceManager:
             - EndDate: 到期日期
             - RestScope: 剩余规模
         """
+        self.ensure_initialized()
         if not stock_code:
             return {"success": False, "data": {}, "source": "none", "message": "股票代码不能为空"}
 
@@ -1156,6 +1187,7 @@ class DataSourceManager:
             - ltgb: 流通股本
             - zgb: 总股本
         """
+        self.ensure_initialized()
         if not stock_code:
             return {"success": False, "data": [], "source": "none", "message": "股票代码不能为空"}
 

@@ -16,6 +16,7 @@
     "min_total_coverage_pct": 100.0,
     "min_tdx_coverage_count": 36,
     "min_manager_coverage_count": 31,
-    "max_unknown_tool_refs": 0
+    "max_unknown_tool_refs": 0,
+    "max_module_name_collisions": 9
   }
 }

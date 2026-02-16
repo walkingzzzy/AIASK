@@ -123,6 +123,47 @@ class TechnicalAnalysis:
         rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
         return rsi
+
+    @staticmethod
+    def calculate_rsi_series(closes: List[float], period: int = 14) -> List[float]:
+        """计算 RSI 序列（用于 TDX 公式 Python 回退）"""
+        if len(closes) < 2:
+            return [0.0] * len(closes)
+
+        if TALIB_AVAILABLE:
+            rsi = talib.RSI(np.array(closes), timeperiod=period)
+            return np.nan_to_num(rsi, 0).tolist()
+
+        closes_arr = np.array(closes, dtype=float)
+        deltas = np.diff(closes_arr)
+        gains = np.where(deltas > 0, deltas, 0.0)
+        losses = np.where(deltas < 0, -deltas, 0.0)
+
+        rsi = np.zeros(len(closes_arr), dtype=float)
+        if len(deltas) < period:
+            return rsi.tolist()
+
+        avg_gain = np.mean(gains[:period])
+        avg_loss = np.mean(losses[:period])
+
+        if avg_loss == 0:
+            rsi[period] = 100.0
+        else:
+            rs = avg_gain / avg_loss
+            rsi[period] = 100 - (100 / (1 + rs))
+
+        for i in range(period + 1, len(closes_arr)):
+            gain = gains[i - 1]
+            loss = losses[i - 1]
+            avg_gain = (avg_gain * (period - 1) + gain) / period
+            avg_loss = (avg_loss * (period - 1) + loss) / period
+            if avg_loss == 0:
+                rsi[i] = 100.0
+            else:
+                rs = avg_gain / avg_loss
+                rsi[i] = 100 - (100 / (1 + rs))
+
+        return rsi.tolist()
     
     @staticmethod
     def calculate_macd(
@@ -313,7 +354,6 @@ class TechnicalAnalysis:
         return atr.tolist()
     
     @staticmethod
-    @staticmethod
     def calculate_all_indicators(
         klines: List[Dict[str, Any]],
         indicators: List[str]
@@ -435,6 +475,122 @@ class TechnicalAnalysis:
                 roc[i] = ((closes[i] - closes[i-period]) / closes[i-period]) * 100
         
         return roc.tolist()
+
+    @staticmethod
+    def calculate_trix(closes: List[float], period: int = 12) -> Dict[str, List[float]]:
+        """计算 TRIX 指标，返回 TRIX 与 MATRIX。"""
+        ema1 = np.array(TechnicalAnalysis._calculate_ema_numpy(closes, period))
+        ema2 = np.array(TechnicalAnalysis._calculate_ema_numpy(ema1.tolist(), period))
+        ema3 = np.array(TechnicalAnalysis._calculate_ema_numpy(ema2.tolist(), period))
+        trix = np.zeros(len(closes))
+        for i in range(1, len(closes)):
+            if ema3[i - 1] != 0:
+                trix[i] = (ema3[i] - ema3[i - 1]) / ema3[i - 1] * 100
+        matrix = np.array(TechnicalAnalysis._calculate_sma_numpy(trix.tolist(), 9))
+        return {"TRIX": trix.tolist(), "MATRIX": matrix.tolist()}
+
+    @staticmethod
+    def calculate_dma_indicator(
+        closes: List[float], short: int = 10, long_period: int = 50, m: int = 10
+    ) -> Dict[str, List[float]]:
+        """计算 DMA 指标，返回 DIF 与 AMA。"""
+        short_ma = np.array(TechnicalAnalysis._calculate_sma_numpy(closes, short))
+        long_ma = np.array(TechnicalAnalysis._calculate_sma_numpy(closes, long_period))
+        dif = short_ma - long_ma
+        ama = np.array(TechnicalAnalysis._calculate_sma_numpy(dif.tolist(), m))
+        return {"DIF": dif.tolist(), "AMA": ama.tolist()}
+
+    @staticmethod
+    def calculate_expma(closes: List[float], n1: int = 12, n2: int = 50) -> Dict[str, List[float]]:
+        """计算 EXPMA 指标，返回两条指数均线。"""
+        return {
+            "EXPMA1": TechnicalAnalysis._calculate_ema_numpy(closes, n1),
+            "EXPMA2": TechnicalAnalysis._calculate_ema_numpy(closes, n2),
+        }
+
+    @staticmethod
+    def calculate_dmi(
+        highs: List[float], lows: List[float], closes: List[float], n: int = 14, m: int = 6
+    ) -> Dict[str, List[float]]:
+        """计算 DMI 指标，返回 PDI/MDI/ADX/ADXR。"""
+        n_bars = len(closes)
+        pdi = np.zeros(n_bars)
+        mdi = np.zeros(n_bars)
+        dx = np.zeros(n_bars)
+
+        tr = np.zeros(n_bars)
+        plus_dm = np.zeros(n_bars)
+        minus_dm = np.zeros(n_bars)
+        for i in range(1, n_bars):
+            up_move = highs[i] - highs[i - 1]
+            down_move = lows[i - 1] - lows[i]
+            plus_dm[i] = up_move if up_move > down_move and up_move > 0 else 0
+            minus_dm[i] = down_move if down_move > up_move and down_move > 0 else 0
+            tr[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+
+        for i in range(n, n_bars):
+            tr_n = np.sum(tr[i - n + 1:i + 1])
+            pdm_n = np.sum(plus_dm[i - n + 1:i + 1])
+            mdm_n = np.sum(minus_dm[i - n + 1:i + 1])
+            if tr_n > 0:
+                pdi[i] = pdm_n / tr_n * 100
+                mdi[i] = mdm_n / tr_n * 100
+            if (pdi[i] + mdi[i]) > 0:
+                dx[i] = abs(pdi[i] - mdi[i]) / (pdi[i] + mdi[i]) * 100
+
+        adx = np.array(TechnicalAnalysis._calculate_sma_numpy(dx.tolist(), m))
+        adxr = np.zeros(n_bars)
+        for i in range(m, n_bars):
+            adxr[i] = (adx[i] + adx[i - m]) / 2
+
+        return {"PDI": pdi.tolist(), "MDI": mdi.tolist(), "ADX": adx.tolist(), "ADXR": adxr.tolist()}
+
+    @staticmethod
+    def calculate_cr_indicator(
+        highs: List[float], lows: List[float], closes: List[float], n: int = 26
+    ) -> Dict[str, List[float]]:
+        """计算 CR 指标，返回 CR 与 MA1/MA2/MA3/MA4。"""
+        n_bars = len(closes)
+        cr = np.zeros(n_bars)
+        mid = (np.array(highs) + np.array(lows)) / 2
+        for i in range(1, n_bars):
+            start = max(1, i - n + 1)
+            up_sum = np.sum(np.maximum(0, np.array(highs[start:i + 1]) - mid[start - 1:i]))
+            down_sum = np.sum(np.maximum(0, mid[start - 1:i] - np.array(lows[start:i + 1])))
+            if down_sum > 0:
+                cr[i] = up_sum / down_sum * 100
+
+        return {
+            "CR": cr.tolist(),
+            "MA1": np.array(TechnicalAnalysis._calculate_sma_numpy(cr.tolist(), 5)).tolist(),
+            "MA2": np.array(TechnicalAnalysis._calculate_sma_numpy(cr.tolist(), 10)).tolist(),
+            "MA3": np.array(TechnicalAnalysis._calculate_sma_numpy(cr.tolist(), 20)).tolist(),
+            "MA4": np.array(TechnicalAnalysis._calculate_sma_numpy(cr.tolist(), 40)).tolist(),
+        }
+
+    @staticmethod
+    def calculate_vr_indicator(closes: List[float], volumes: List[float], n: int = 26) -> Dict[str, List[float]]:
+        """计算 VR 指标，返回 VR 序列。"""
+        n_bars = len(closes)
+        vr = np.zeros(n_bars)
+        close_arr = np.array(closes)
+        vol_arr = np.array(volumes)
+
+        for i in range(1, n_bars):
+            start = max(1, i - n + 1)
+            av = bv = cv = 0.0
+            for j in range(start, i + 1):
+                if close_arr[j] > close_arr[j - 1]:
+                    av += vol_arr[j]
+                elif close_arr[j] < close_arr[j - 1]:
+                    bv += vol_arr[j]
+                else:
+                    cv += vol_arr[j]
+            denominator = bv + 0.5 * cv
+            if denominator > 0:
+                vr[i] = (av + 0.5 * cv) / denominator * 100
+
+        return {"VR": vr.tolist()}
 
 
 # 全局实例

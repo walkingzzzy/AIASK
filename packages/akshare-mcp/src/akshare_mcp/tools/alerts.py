@@ -2,6 +2,7 @@
 
 from typing import List, Dict, Any
 from ..utils import ok, fail, normalize_code
+from .market import get_realtime_quote
 
 
 # 进程内告警存储（供 alerts.py 与 alerts_manager.py 共享）
@@ -99,12 +100,50 @@ def register(mcp):
             if alert_type in ('indicator', 'combo'):
                 alerts = [a for a in alerts if a.get('type') == alert_type]
 
+            compare_ops = {
+                '>': lambda p, v: p > v,
+                '<': lambda p, v: p < v,
+                '>=': lambda p, v: p >= v,
+                '<=': lambda p, v: p <= v,
+                '==': lambda p, v: p == v,
+            }
+
+            quote_cache: Dict[str, Dict[str, Any]] = {}
+            triggered_count = 0
+            evaluated_alerts: List[Dict[str, Any]] = []
+
+            for alert in alerts:
+                item = dict(alert)
+                item['triggered'] = False
+
+                if item.get('type') == 'indicator' and str(item.get('indicator', '')).lower() == 'price':
+                    code = item.get('code', '')
+                    if code and code not in quote_cache:
+                        quote_cache[code] = get_realtime_quote(code) or {}
+
+                    quote = quote_cache.get(code, {})
+                    quote_data = quote.get('data') or {}
+                    current_price = quote_data.get('price')
+                    item['current_price'] = current_price
+
+                    condition = item.get('condition')
+                    threshold = float(item.get('value', 0.0))
+                    if current_price is not None and condition in compare_ops:
+                        is_triggered = bool(compare_ops[condition](float(current_price), threshold))
+                        item['triggered'] = is_triggered
+                        if is_triggered:
+                            triggered_count += 1
+
+                evaluated_alerts.append(item)
+
             return ok({
-                'alerts': alerts,
-                'count': len(alerts),
+                'alerts': evaluated_alerts,
+                'count': len(evaluated_alerts),
+                'triggered_count': triggered_count,
                 'status': status,
                 'type': alert_type
             })
 
         except Exception as e:
             return fail(str(e))
+

@@ -11,6 +11,85 @@ from numba import jit
 
 class FactorAnalyzer:
     """因子分析器"""
+
+    @staticmethod
+    def _neutralize_factor_values(
+        factor_values: np.ndarray,
+        industry: Optional[List[Any]] = None,
+        market_cap: Optional[List[float]] = None,
+        beta: Optional[List[float]] = None,
+        enable_neutralization: bool = True,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """对因子做行业/市值/Beta 中性化（截面回归残差法）。"""
+        x_cols = []
+        n = len(factor_values)
+        info = {
+            'enabled': bool(enable_neutralization),
+            'industry': False,
+            'market_cap': False,
+            'beta': False,
+            'styles_used': [],
+            'sample_size': int(n),
+        }
+
+        if not enable_neutralization or n < 3:
+            info['reason'] = 'neutralization_disabled_or_small_sample'
+            return factor_values, info
+
+        # 行业哑变量（drop_first 避免完全共线）
+        if industry is not None and len(industry) == n:
+            industry_s = pd.Series(industry).astype('category')
+            dummies = pd.get_dummies(industry_s, drop_first=True)
+            if not dummies.empty:
+                x_cols.append(dummies.values.astype(float))
+                info['industry'] = True
+                info['styles_used'].append('industry')
+
+        # 市值（取log）
+        if market_cap is not None and len(market_cap) == n:
+            mcap = np.asarray(market_cap, dtype=float)
+            if np.isfinite(mcap).sum() >= 3:
+                mcap = np.where(mcap > 0, np.log(mcap), np.nan)
+                x_cols.append(mcap.reshape(-1, 1))
+                info['market_cap'] = True
+                info['styles_used'].append('market_cap')
+
+        # Beta
+        if beta is not None and len(beta) == n:
+            b = np.asarray(beta, dtype=float)
+            if np.isfinite(b).sum() >= 3:
+                x_cols.append(b.reshape(-1, 1))
+                info['beta'] = True
+                info['styles_used'].append('beta')
+
+        if not x_cols:
+            info['reason'] = 'no_style_data'
+            return factor_values, info
+
+        X = np.column_stack(x_cols)
+        y = np.asarray(factor_values, dtype=float)
+
+        valid_mask = np.isfinite(y) & np.isfinite(X).all(axis=1)
+        if valid_mask.sum() < 3:
+            info['reason'] = 'insufficient_valid_samples_after_style_mask'
+            return factor_values, info
+
+        y_valid = y[valid_mask]
+        X_valid = X[valid_mask]
+
+        # 添加截距项
+        X_design = np.column_stack([np.ones(len(X_valid)), X_valid])
+        coef, _, _, _ = np.linalg.lstsq(X_design, y_valid, rcond=None)
+        y_hat = X_design @ coef
+        resid = y_valid - y_hat
+
+        neutralized = y.copy()
+        neutralized[valid_mask] = resid
+
+        info['residual_mean'] = float(np.nanmean(resid))
+        info['residual_std'] = float(np.nanstd(resid))
+        info['valid_style_samples'] = int(valid_mask.sum())
+        return neutralized, info
     
     @staticmethod
     def calculate_ic(
@@ -55,6 +134,75 @@ class FactorAnalyzer:
             'ic': float(ic),
             'p_value': float(p_value),
             'sample_size': len(factor_values),
+        }
+
+    @staticmethod
+    def calculate_ic_dual(
+        factor_values: List[float],
+        forward_returns: List[float],
+        industry: Optional[List[Any]] = None,
+        market_cap: Optional[List[float]] = None,
+        beta: Optional[List[float]] = None,
+        enable_neutralization: bool = True,
+    ) -> Dict[str, Any]:
+        """计算双口径IC（Normal IC + Rank IC），默认启用中性化。"""
+        if len(factor_values) != len(forward_returns):
+            raise ValueError("Factor values and returns must have same length")
+
+        factor_values = np.array(factor_values, dtype=float)
+        forward_returns = np.array(forward_returns, dtype=float)
+
+        # 先按收益/因子有效值筛掉 NaN
+        mask = ~(np.isnan(factor_values) | np.isnan(forward_returns))
+        factor_values = factor_values[mask]
+        forward_returns = forward_returns[mask]
+
+        ind = None
+        mcap = None
+        b = None
+        if industry is not None and len(industry) == len(mask):
+            ind = list(np.array(industry, dtype=object)[mask])
+        if market_cap is not None and len(market_cap) == len(mask):
+            mcap = list(np.array(market_cap, dtype=float)[mask])
+        if beta is not None and len(beta) == len(mask):
+            b = list(np.array(beta, dtype=float)[mask])
+
+        if len(factor_values) < 3:
+            return {
+                'normal_ic': 0.0,
+                'rank_ic': 0.0,
+                'normal_p_value': 1.0,
+                'rank_p_value': 1.0,
+                'sample_size': int(len(factor_values)),
+                'neutralization': {
+                    'enabled': bool(enable_neutralization),
+                    'reason': 'insufficient_samples',
+                },
+            }
+
+        neutralized, neutral_meta = FactorAnalyzer._neutralize_factor_values(
+            factor_values=factor_values,
+            industry=ind,
+            market_cap=mcap,
+            beta=b,
+            enable_neutralization=enable_neutralization,
+        )
+
+        n_ic, n_p = stats.pearsonr(neutralized, forward_returns)
+        r_ic, r_p = stats.spearmanr(neutralized, forward_returns)
+
+        if np.isnan(n_ic):
+            n_ic, n_p = 0.0, 1.0
+        if np.isnan(r_ic):
+            r_ic, r_p = 0.0, 1.0
+
+        return {
+            'normal_ic': float(n_ic),
+            'rank_ic': float(r_ic),
+            'normal_p_value': float(n_p),
+            'rank_p_value': float(r_p),
+            'sample_size': int(len(neutralized)),
+            'neutralization': neutral_meta,
         }
     
     @staticmethod

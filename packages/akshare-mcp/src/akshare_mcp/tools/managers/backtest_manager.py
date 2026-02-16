@@ -6,9 +6,89 @@ from datetime import date, datetime
 from ...storage import get_db
 from ...utils import ok, fail, normalize_code
 from ...data_source import data_source
+from ...services.cost_model import build_cost_model
+from ...services.artifact_registry import register_artifact
+from ...services.signal_dsl import build_signal_definition
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_json_dumps(obj: dict) -> str:
+    try:
+        return json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        return str(obj)
+
+
+def _build_unified_cost_model(kwargs: dict, initial_capital: float, klines: list[dict]) -> dict:
+    """构建回测侧统一成本口径（统一委托到 services.cost_model）。"""
+    last_close = 0.0
+    if klines:
+        try:
+            last_close = float((klines[-1] or {}).get("close") or 0.0)
+        except Exception:
+            last_close = 0.0
+
+    return build_cost_model(
+        kwargs,
+        notional=float(initial_capital),
+        default_mode="backtest",
+        reference_price_fallback=last_close,
+    )
+
+
+def _build_strategy_artifact(
+    code: str,
+    strategy: str,
+    params: dict,
+    kwargs: dict,
+    klines: list[dict],
+    initial_capital: float,
+) -> dict:
+    """构建最小可用策略工件（P0）。"""
+    artifact_id = str(kwargs.get("artifact_id") or f"art_{uuid.uuid4().hex[:12]}")
+    strategy_version = str(kwargs.get("strategy_version") or f"{strategy}_v1")
+
+    def _safe_date_str(val) -> str:
+        if isinstance(val, date):
+            return val.isoformat()
+        if val is None:
+            return ""
+        return str(val)
+
+    start_date = _safe_date_str((klines[0] or {}).get("date") if klines else "")
+    end_date = _safe_date_str((klines[-1] or {}).get("date") if klines else "")
+
+    return {
+        "artifact_id": artifact_id,
+        "strategy_version": strategy_version,
+        "code": code,
+        "strategy": strategy,
+        "params": params,
+        "signal_definition": build_signal_definition(strategy=strategy, params=params),
+        "data_window": {
+            "period": "daily",
+            "start_date": start_date,
+            "end_date": end_date,
+            "data_points": len(klines or []),
+        },
+        "cost_model": _build_unified_cost_model(kwargs, initial_capital, klines),
+        "risk_evidence": {
+            "min_required_bars": 50,
+            "actual_bars": len(klines or []),
+            "benchmark": str(params.get("benchmark") or ""),
+            "checks": [
+                {"name": "kline_length", "passed": len(klines or []) >= 50},
+            ],
+        },
+        "evidence_refs": [
+            "tools/managers/backtest_manager.py:run",
+            "tools/managers/execution_manager.py:_build_cost_model",
+        ],
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+
 
 def _normalize_kwargs(kwargs: dict) -> dict:
     raw = kwargs.get("kwargs")
@@ -37,7 +117,7 @@ def register_backtest_manager(mcp):
             action (str, required): 操作类型，可选 help/run/save/list/get/compare
             kwargs: JSON 字符串或关键字参数，不同 action 所需参数:
                 - help: 无需额外参数
-                - run: code(str), strategy(str, "ma_cross"等), start_date(str, optional), end_date(str, optional)
+                - run: code(str), strategy(str, "ma_cross"等), start_date(str, optional), end_date(str, optional), artifact_id(str, optional)
                 - save: backtest_id(str), name(str, optional)
                 - list: limit(int, optional)
                 - get: backtest_id(str)
@@ -49,8 +129,10 @@ def register_backtest_manager(mcp):
         Examples:
             # 查看帮助
             backtest_manager(action="help", kwargs="{}")
-            # 运行均线交叉回测
+            # 运行均线交叉回测（返回 artifact_id）
             backtest_manager(action="run", kwargs='{"code":"600519","strategy":"ma_cross","short_period":5,"long_period":20}')
+            # 指定 artifact_id（便于跨 manager 追踪）
+            backtest_manager(action="run", kwargs='{"code":"000001","strategy":"momentum","artifact_id":"art_demo_001"}')
             # 列出回测记录
             backtest_manager(action="list", kwargs='{"limit":10}')
             # 对比多个回测
@@ -63,7 +145,7 @@ def register_backtest_manager(mcp):
             if action == 'help':
                 return ok({
                     'supported_actions': {
-                        'run': '运行回测（需要 code, 可选 strategy/start_date/end_date）',
+                        'run': '运行回测（需要 code, 可选 strategy/start_date/end_date；返回 artifact_id）',
                         'save': '保存回测结果',
                         'list': '列出回测记录',
                         'get': '获取回测详情（需要 backtest_id）',
@@ -136,11 +218,34 @@ def register_backtest_manager(mcp):
                     'overbought': kwargs.get('overbought', 70),
                 }
 
+                artifact = _build_strategy_artifact(
+                    code=code,
+                    strategy=strategy,
+                    params=params,
+                    kwargs=kwargs,
+                    klines=klines,
+                    initial_capital=initial_capital,
+                )
+                artifact_id = artifact['artifact_id']
+
+                params_with_artifact = {
+                    **params,
+                    'artifact_id': artifact_id,
+                    'strategy_version': artifact.get('strategy_version'),
+                    'signal_definition': artifact.get('signal_definition', {}),
+                    'cost_model': artifact.get('cost_model', {}),
+                }
+
+                try:
+                    register_artifact(artifact)
+                except Exception as e:
+                    logger.warning(f"[BacktestManager] register_artifact failed: {e}")
+
                 result = backtest_engine.run_backtest(
                     code=code,
                     klines=klines,
                     strategy=strategy,
-                    params=params,
+                    params=params_with_artifact,
                 )
                 
                 if not result.get('success'):
@@ -176,7 +281,7 @@ def register_backtest_manager(mcp):
                            (id, code, strategy, params, start_date, end_date, initial_capital, final_capital, 
                             total_return, sharpe_ratio, max_drawdown, created_at)
                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())""",
-                        backtest_id, code, strategy, str(kwargs),
+                        backtest_id, code, strategy, _safe_json_dumps(params_with_artifact),
                         start_dt, end_dt,
                         initial_capital,
                         result.get('final_capital', initial_capital),
@@ -187,8 +292,11 @@ def register_backtest_manager(mcp):
                 
                 return ok({
                     'backtest_id': backtest_id,
+                    'artifact_id': artifact_id,
+                    'artifact': artifact,
                     'code': code,
                     'strategy': strategy,
+                    'cost_model': artifact.get('cost_model', {}),
                     'result': result,
                     'data_points': len(klines)
                 })

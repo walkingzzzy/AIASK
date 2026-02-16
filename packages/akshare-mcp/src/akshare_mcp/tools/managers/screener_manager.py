@@ -374,52 +374,60 @@ def register_screener_manager(mcp):
                 })
             
             elif action == 'run_strategy':
-                strategy_id = kwargs.get('strategy_id')
-                
-                if not strategy_id:
+                raw_strategy_id = kwargs.get('strategy_id')
+
+                if raw_strategy_id is None or raw_strategy_id == '':
                     return fail('需要提供strategy_id')
-                
+
+                # 兼容 int/string：统一转字符串用于预置策略判断；用户策略ID再安全转int
+                strategy_id_str = str(raw_strategy_id).strip()
+
                 # 检查是否为预置策略
-                if strategy_id.startswith('preset_'):
-                    preset_key = strategy_id.replace('preset_', '')
+                if strategy_id_str.startswith('preset_'):
+                    preset_key = strategy_id_str.replace('preset_', '')
                     if preset_key in PRESET_STRATEGIES:
                         preset = PRESET_STRATEGIES[preset_key]
                         result = await screener_manager(
                             action='screen',
                             criteria=preset['criteria']
                         )
-                        
-                        if result.get('success'):
+
+                        if result.get('success') and isinstance(result.get('data'), dict):
                             result['data']['strategy_name'] = preset['name']
-                            result['data']['strategy_id'] = strategy_id
+                            result['data']['strategy_id'] = strategy_id_str
                             result['data']['strategy_type'] = 'preset'
-                        
+
                         return result
                     else:
                         return fail(f'预置策略不存在: {preset_key}')
-                
-                # 用户自定义策略
+
+                # 用户自定义策略：ID 应为整数
+                try:
+                    strategy_id = int(strategy_id_str)
+                except Exception:
+                    return fail(f'无效的 strategy_id: {raw_strategy_id}（用户策略需为整数ID，或使用 preset_xxx）')
+
                 async with db.acquire() as conn:
                     strategy = await conn.fetchrow(
                         "SELECT * FROM screener_strategies WHERE id = $1",
                         strategy_id
                     )
-                    
+
                     if not strategy:
                         return fail('策略不存在')
-                
+
                 criteria = json.loads(strategy['criteria']) if isinstance(strategy['criteria'], str) else strategy['criteria']
-                
+
                 result = await screener_manager(
                     action='screen',
                     criteria=criteria
                 )
-                
-                if result.get('success'):
+
+                if result.get('success') and isinstance(result.get('data'), dict):
                     result['data']['strategy_name'] = strategy['name']
                     result['data']['strategy_id'] = strategy_id
                     result['data']['strategy_type'] = 'user'
-                
+
                 return result
             
             elif action == 'technical_screen':

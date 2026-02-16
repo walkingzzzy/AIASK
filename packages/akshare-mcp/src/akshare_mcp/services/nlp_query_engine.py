@@ -92,7 +92,8 @@ class NLPQueryEngine:
         }
         
         # 提取股票代码（6位数字）
-        code_pattern = r'\b\d{6}\b'
+        # 使用“非数字边界”而非 \b，兼容中文连写场景（如：查询000001和000002的价格）
+        code_pattern = r'(?<!\d)\d{6}(?!\d)'
         codes = re.findall(code_pattern, query)
         entities['codes'] = codes
         

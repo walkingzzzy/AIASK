@@ -160,25 +160,53 @@ def register_decision_manager(mcp):
                     trend_score = 50
                 
                 financials = await db.get_financials(code, limit=1)
+
+                # P2-2: 区分“缺失值(None)”与“真实数值0”，避免使用 or 0 掩盖数据质量问题
+                latest_financial = {}
+                if isinstance(financials, list) and financials:
+                    latest_financial = financials[0] if isinstance(financials[0], dict) else {}
+                elif isinstance(financials, dict):
+                    latest_financial = financials
+
+                def _to_float_or_none(v):
+                    if v is None:
+                        return None
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        return None
+
+                roe = _to_float_or_none(latest_financial.get('roe')) if latest_financial else None
+                pe_ratio = _to_float_or_none(latest_financial.get('pe_ratio')) if latest_financial else None
+                debt_ratio = _to_float_or_none(latest_financial.get('debt_ratio')) if latest_financial else None
+                pb_ratio = _to_float_or_none(latest_financial.get('pb_ratio')) if latest_financial else None
+
+                required_fin_fields = ['roe', 'pe_ratio', 'debt_ratio', 'pb_ratio']
+                metric_map = {
+                    'roe': roe,
+                    'pe_ratio': pe_ratio,
+                    'debt_ratio': debt_ratio,
+                    'pb_ratio': pb_ratio,
+                }
+                missing_fields = [k for k in required_fin_fields if metric_map.get(k) is None]
+                completeness = (len(required_fin_fields) - len(missing_fields)) / len(required_fin_fields)
+
+                # 缺失字段采用“降权”而非“硬惩罚”，最多扣 15 分
+                score_penalty = min(15.0, float(len(missing_fields)) * 4.0)
+
                 fundamental_score = 50
-                
-                if financials:
-                    latest = financials[0]
-                    roe = latest.get('roe', 0)
-                    pe_ratio = latest.get('pe_ratio', 0)
-                    debt_ratio = latest.get('debt_ratio', 0)
-                    
-                    if roe > 15 and pe_ratio < 25 and debt_ratio < 0.5:
+                if latest_financial:
+                    if roe is not None and pe_ratio is not None and debt_ratio is not None and roe > 15 and pe_ratio < 25 and debt_ratio < 0.5:
                         fundamental_score = 80
-                    elif roe > 10 and pe_ratio < 35:
+                    elif roe is not None and pe_ratio is not None and roe > 10 and pe_ratio < 35:
                         fundamental_score = 65
-                    elif roe < 5 or pe_ratio > 50:
+                    elif (roe is not None and roe < 5) or (pe_ratio is not None and pe_ratio > 50):
                         fundamental_score = 30
-                
+
                 avg_volume = np.mean(volumes[-20:])
                 recent_volume = np.mean(volumes[-5:])
                 volume_ratio = recent_volume / avg_volume if avg_volume > 0 else 1
-                
+
                 sentiment_score = 50
                 if volume_ratio > 1.5:
                     sentiment_score = 70
@@ -187,30 +215,33 @@ def register_decision_manager(mcp):
 
                 # 估值评分（与 smart_stock_diagnosis 口径对齐）
                 valuation_score = 50
-                pe = float(financials[0].get('pe_ratio', 0)) if financials else 0.0
-                pb = float(financials[0].get('pb_ratio', 0)) if financials else 0.0
+                pe = pe_ratio
+                pb = pb_ratio
 
-                if pe and 0 < pe < 15:
-                    valuation_score += 20
-                elif pe and pe > 50:
-                    valuation_score -= 20
-                elif pe:
-                    valuation_score += 10
+                if pe is not None and pe > 0:
+                    if pe < 15:
+                        valuation_score += 20
+                    elif pe > 50:
+                        valuation_score -= 20
+                    else:
+                        valuation_score += 10
 
-                if pb and 0 < pb < 2:
-                    valuation_score += 15
-                elif pb and pb > 5:
-                    valuation_score -= 15
+                if pb is not None and pb > 0:
+                    if pb < 2:
+                        valuation_score += 15
+                    elif pb > 5:
+                        valuation_score -= 15
 
                 valuation_score = max(0, min(100, valuation_score))
-                
+
                 # 综合评分：与 smart_stock_diagnosis 对齐（0.3/0.3/0.25/0.15）
-                total_score = (
+                raw_total_score = (
                     trend_score * 0.3 +
                     fundamental_score * 0.3 +
                     valuation_score * 0.25 +
                     sentiment_score * 0.15
                 )
+                total_score = max(0.0, raw_total_score - score_penalty)
                 
                 # 新口径 recommendation（buy/hold/wait/sell）
                 if total_score >= 75:
@@ -253,7 +284,13 @@ def register_decision_manager(mcp):
                     'confidence': confidence,
                     'overall_score': float(total_score),
                     'total_score': float(total_score),
+                    'raw_total_score': float(raw_total_score),
                     'reason': reason,
+                    'data_quality': {
+                        'missing_fields': missing_fields,
+                        'financial_data_completeness': float(round(completeness, 4)),
+                        'score_penalty': float(score_penalty),
+                    },
                     'analysis': {
                         'technical': {
                             'score': float(trend_score),
@@ -265,13 +302,21 @@ def register_decision_manager(mcp):
                         },
                         'fundamental': {
                             'score': float(fundamental_score),
-                            'roe': float(financials[0].get('roe', 0)) if financials else 0,
-                            'pe_ratio': float(financials[0].get('pe_ratio', 0)) if financials else 0,
+                            'roe': roe,
+                            'pe_ratio': pe_ratio,
+                            'debt_ratio': debt_ratio,
+                            'data_quality': {
+                                'missing_fields': missing_fields,
+                                'completeness': float(round(completeness, 4)),
+                            },
                         },
                         'valuation': {
                             'score': float(valuation_score),
                             'pe_ratio': pe,
                             'pb_ratio': pb,
+                            'data_quality': {
+                                'missing_fields': [f for f in ['pe_ratio', 'pb_ratio'] if metric_map.get(f) is None],
+                            },
                         },
                         'sentiment': {
                             'score': float(sentiment_score),
@@ -296,6 +341,9 @@ def register_decision_manager(mcp):
                             f'fundamental_score={fundamental_score}',
                             f'valuation_score={valuation_score}',
                             f'sentiment_score={sentiment_score}',
+                            f'raw_total_score={round(raw_total_score, 2)}',
+                            f'score_penalty={score_penalty}',
+                            f'missing_fields={missing_fields}',
                             f'total_score={round(total_score, 2)}',
                             f'recommendation={recommendation}',
                         ]

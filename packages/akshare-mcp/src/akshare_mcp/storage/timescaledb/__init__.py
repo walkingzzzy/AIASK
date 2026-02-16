@@ -6,6 +6,7 @@
 - stock_info: 股票信息查询 (StockInfoMixin)
 - financials: 财务数据查询 (FinancialsMixin)
 - quotes: 实时行情保存与统计 (QuotesMixin)
+- artifacts: 策略工件持久化 (ArtifactMixin)
 
 向后兼容：
     from .timescaledb import TimescaleDBAdapter, get_db
@@ -19,6 +20,7 @@ from .kline import KlineMixin
 from .stock_info import StockInfoMixin
 from .financials import FinancialsMixin
 from .quotes import QuotesMixin
+from .artifacts import ArtifactMixin
 
 
 class TimescaleDBAdapter(
@@ -26,6 +28,7 @@ class TimescaleDBAdapter(
     StockInfoMixin,
     FinancialsMixin,
     QuotesMixin,
+    ArtifactMixin,
     SchemaBase,
 ):
     """TimescaleDB 异步适配器（Mixin 组合）
@@ -36,6 +39,7 @@ class TimescaleDBAdapter(
     - StockInfoMixin: 股票信息 get_stock_info / search_stocks
     - FinancialsMixin: 财务数据 get_financials
     - QuotesMixin: 实时行情 save_quote / get_stats
+    - ArtifactMixin: 策略工件 save_artifact / get_artifact_by_id / list_artifacts_db
     """
     pass
 

@@ -1,1 +1,3 @@
-
+list_industry_templates
+scenario_dcf_valuation
+validate_factor_oos

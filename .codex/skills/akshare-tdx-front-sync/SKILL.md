@@ -9,6 +9,7 @@ description: TDX 前端联动与结果同步流程；适用于“预警推送、
 # 使用流程
 - 预警推送：文本通知用 `push_message`，交易信号用 `push_warn`。
 - 回测可视化：
+  - 一键回测并推送：`run_backtest_and_send_to_tdx`
   - 时序结果用 `send_backtest_result`
   - 交易记录用 `send_backtest_trades`
 - 文件下发：分析报告/说明文档用 `tdx_send_file` 推送至客户端。
@@ -26,5 +27,5 @@ description: TDX 前端联动与结果同步流程；适用于“预警推送、
 - 工具分流：推送失败时先落地到 `watchlist_manager` 与 `alerts_manager` 维持跟踪，再等待客户端恢复后补发。
 
 # 参考
-- 前端交互工具：`push_message`、`push_warn`、`send_backtest_result`、`send_backtest_trades`、`tdx_send_file`。
+- 前端交互工具：`push_message`、`push_warn`、`run_backtest_and_send_to_tdx`、`send_backtest_result`、`send_backtest_trades`、`tdx_send_file`。
 - 场景模板：`references/scenario_templates.md`。

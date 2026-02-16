@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-02-13T07:01:31+00:00",
+  "generated_at": "2026-02-16T07:38:51+00:00",
   "repo_root": "C:/Users/1/Desktop/股票",
   "tool_source_files": [
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/server.py",
@@ -53,7 +53,6 @@
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/market/order_book.py",
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/market/quote.py",
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/market/stock_list.py",
-    "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/market.py",
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/market_blocks.py",
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/news/__init__.py",
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/news/helpers.py",
@@ -87,12 +86,12 @@
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/valuation.py",
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/vector.py"
   ],
-  "tool_count": 153,
+  "tool_count": 157,
   "skills_count": 20,
   "coverage": {
-    "covered_count": 153,
-    "coverage_pct": 100.0,
-    "missing_count": 0
+    "covered_count": 154,
+    "coverage_pct": 98.09,
+    "missing_count": 3
   },
   "tdx": {
     "total_count": 36,
@@ -189,6 +188,7 @@
     "industry_chain_manager",
     "insight_manager",
     "limit_up_manager",
+    "list_industry_templates",
     "list_skills",
     "live_trading_manager",
     "macro_manager",
@@ -205,9 +205,11 @@
     "relative_valuation",
     "research_manager",
     "risk_manager",
+    "run_backtest_and_send_to_tdx",
     "run_batch_backtest",
     "run_simple_backtest",
     "run_skill",
+    "scenario_dcf_valuation",
     "screener_manager",
     "search_by_kline",
     "search_research",
@@ -256,6 +258,7 @@
     "technical_analysis_manager",
     "trading_data_manager",
     "user_manager",
+    "validate_factor_oos",
     "vector_search_manager",
     "watchlist_manager"
   ],
@@ -619,6 +622,7 @@
         "get_user_sectors",
         "push_message",
         "push_warn",
+        "run_backtest_and_send_to_tdx",
         "send_backtest_result",
         "send_backtest_trades",
         "tdx_clear_sector",
@@ -746,6 +750,7 @@
     "relative_valuation",
     "research_manager",
     "risk_manager",
+    "run_backtest_and_send_to_tdx",
     "run_batch_backtest",
     "run_simple_backtest",
     "run_skill",
@@ -800,7 +805,11 @@
     "vector_search_manager",
     "watchlist_manager"
   ],
-  "missing_tools": [],
+  "missing_tools": [
+    "list_industry_templates",
+    "scenario_dcf_valuation",
+    "validate_factor_oos"
+  ],
   "tdx_tools": [
     "add_stocks_to_watchlist",
     "create_watchlist",
@@ -944,6 +953,57 @@
     "watchlist_manager"
   ],
   "unknown_tool_refs": [],
+  "module_name_collisions": [
+    {
+      "package_dir": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp",
+      "name": "data_source",
+      "module_file": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/data_source.py",
+      "package_init": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/data_source/__init__.py"
+    },
+    {
+      "package_dir": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/services",
+      "name": "backtest",
+      "module_file": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/services/backtest.py",
+      "package_init": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/services/backtest/__init__.py"
+    },
+    {
+      "package_dir": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/services",
+      "name": "factor_calculator",
+      "module_file": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/services/factor_calculator.py",
+      "package_init": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/services/factor_calculator/__init__.py"
+    },
+    {
+      "package_dir": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/storage",
+      "name": "timescaledb",
+      "module_file": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/storage/timescaledb.py",
+      "package_init": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/storage/timescaledb/__init__.py"
+    },
+    {
+      "package_dir": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools",
+      "name": "managers",
+      "module_file": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/managers.py",
+      "package_init": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/managers/__init__.py"
+    },
+    {
+      "package_dir": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools",
+      "name": "news",
+      "module_file": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/news.py",
+      "package_init": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/news/__init__.py"
+    },
+    {
+      "package_dir": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools",
+      "name": "semantic",
+      "module_file": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/semantic.py",
+      "package_init": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/semantic/__init__.py"
+    },
+    {
+      "package_dir": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools",
+      "name": "tdx_formula",
+      "module_file": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/tdx_formula.py",
+      "package_init": "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/tools/tdx_formula/__init__.py"
+    }
+  ],
+  "module_name_collisions_count": 8,
   "threshold_check": {
     "enabled": false,
     "baseline": "C:/Users/1/Desktop/股票/.codex/skills/_meta/coverage_baseline.json"

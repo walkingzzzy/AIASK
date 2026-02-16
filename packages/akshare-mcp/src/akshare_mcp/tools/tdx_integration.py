@@ -12,6 +12,7 @@ import datetime
 from typing import Optional
 from ..data_source import data_source
 from ..utils import normalize_code
+from .risk_guard import risk_audited
 
 
 def is_tdx_available() -> bool:
@@ -19,7 +20,28 @@ def is_tdx_available() -> bool:
     return data_source.is_tdx_available()
 
 
-def push_message(message: str) -> dict:
+def _tdx_unavailable_payload() -> dict:
+    """构造统一的 TDX 不可用错误，携带初始化诊断。"""
+    diag = data_source.get_tdx_init_diagnostics()
+    stage = diag.get("last_stage") or "unknown"
+    err = diag.get("last_error") or "unknown"
+    return {
+        "success": False,
+        "message": f"TdxQuant 不可用: stage={stage}, error={err}",
+        "diagnostics": diag,
+    }
+
+
+def _get_tq_or_error() -> tuple[Optional[object], Optional[dict]]:
+    """获取可用 tq 实例，不可用时返回标准错误载荷。"""
+    tq = data_source.get_tdxquant()
+    if tq is None:
+        return None, _tdx_unavailable_payload()
+    return tq, None
+
+
+@risk_audited("tdx.push_message")
+def push_message(message: str, confirm_token: str | None = None) -> dict:
     """
     推送消息到通达信客户端
     
@@ -35,13 +57,10 @@ def push_message(message: str) -> dict:
     Examples:
         push_message("MACD金叉提醒|600519 贵州茅台")
     """
-    if not data_source.is_tdx_available():
-        return {"success": False, "message": "TdxQuant 不可用，请确保通达信客户端已启动"}
-    
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {"success": False, "message": "TdxQuant 初始化失败"}
+        tq, err = _get_tq_or_error()
+        if err is not None:
+            return err
         
         result = tq.send_message(message)
         if result.get("ErrorId") == "0":
@@ -52,11 +71,13 @@ def push_message(message: str) -> dict:
         return {"success": False, "message": f"发送异常: {e}"}
 
 
+@risk_audited("tdx.push_warn")
 def push_warn(
     stock_code: str,
     price: float,
     reason: str,
-    bs_flag: int = 2  # 0买 1卖 2未知
+    bs_flag: int = 2,  # 0买 1卖 2未知
+    confirm_token: str | None = None,
 ) -> dict:
     """
     发送预警信号到通达信客户端
@@ -76,13 +97,10 @@ def push_warn(
     Examples:
         push_warn("600519", 1800.0, "MACD金叉买入信号", bs_flag=0)
     """
-    if not data_source.is_tdx_available():
-        return {"success": False, "message": "TdxQuant 不可用，请确保通达信客户端已启动"}
-    
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {"success": False, "message": "TdxQuant 初始化失败"}
+        tq, err = _get_tq_or_error()
+        if err is not None:
+            return err
         
         # 转换代码格式
         tdx_code = data_source._convert_to_tdx_code(stock_code)
@@ -108,7 +126,13 @@ def push_warn(
         return {"success": False, "message": f"发送异常: {e}"}
 
 
-def create_watchlist(block_code: str, block_name: str, stock_codes: list[str]) -> dict:
+@risk_audited("tdx.create_watchlist")
+def create_watchlist(
+    block_code: str,
+    block_name: str,
+    stock_codes: list[str],
+    confirm_token: str | None = None,
+) -> dict:
     """
     在通达信创建自选股板块并添加股票
 
@@ -127,13 +151,10 @@ def create_watchlist(block_code: str, block_name: str, stock_codes: list[str]) -
     Examples:
         create_watchlist("MYBLOCK1", "我的自选", ["600519", "000001"])
     """
-    if not data_source.is_tdx_available():
-        return {"success": False, "message": "TdxQuant 不可用，请确保通达信客户端已启动"}
-
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {"success": False, "message": "TdxQuant 初始化失败"}
+        tq, err = _get_tq_or_error()
+        if err is not None:
+            return err
 
         # 步骤1: 创建空板块
         result = tq.create_sector(block_code=block_code, block_name=block_name)
@@ -172,7 +193,13 @@ def create_watchlist(block_code: str, block_name: str, stock_codes: list[str]) -
         return {"success": False, "message": f"操作异常: {e}"}
 
 
-def add_stocks_to_watchlist(block_code: str, stock_codes: list[str], show: bool = False) -> dict:
+@risk_audited("tdx.add_stocks_to_watchlist")
+def add_stocks_to_watchlist(
+    block_code: str,
+    stock_codes: list[str],
+    show: bool = False,
+    confirm_token: str | None = None,
+) -> dict:
     """
     向已有板块添加股票
 
@@ -190,13 +217,10 @@ def add_stocks_to_watchlist(block_code: str, stock_codes: list[str], show: bool 
     Examples:
         add_stocks_to_watchlist("MYBLOCK1", ["000858", "600036"])
     """
-    if not data_source.is_tdx_available():
-        return {"success": False, "message": "TdxQuant 不可用，请确保通达信客户端已启动"}
-
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {"success": False, "message": "TdxQuant 初始化失败"}
+        tq, err = _get_tq_or_error()
+        if err is not None:
+            return err
 
         tdx_codes = [data_source._convert_to_tdx_code(code) for code in stock_codes]
 
@@ -214,7 +238,8 @@ def add_stocks_to_watchlist(block_code: str, stock_codes: list[str], show: bool 
         return {"success": False, "message": f"操作异常: {e}"}
 
 
-def delete_watchlist(block_code: str) -> dict:
+@risk_audited("tdx.delete_watchlist")
+def delete_watchlist(block_code: str, confirm_token: str | None = None) -> dict:
     """
     删除自定义板块
 
@@ -230,13 +255,10 @@ def delete_watchlist(block_code: str) -> dict:
     Examples:
         delete_watchlist("MYBLOCK1")
     """
-    if not data_source.is_tdx_available():
-        return {"success": False, "message": "TdxQuant 不可用，请确保通达信客户端已启动"}
-
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {"success": False, "message": "TdxQuant 初始化失败"}
+        tq, err = _get_tq_or_error()
+        if err is not None:
+            return err
 
         result = tq.delete_sector(block_code=block_code)
 
@@ -270,13 +292,10 @@ def get_user_sectors() -> dict:
     Examples:
         get_user_sectors()
     """
-    if not data_source.is_tdx_available():
-        return {"success": False, "data": [], "message": "TdxQuant 不可用"}
-
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {"success": False, "data": [], "message": "TdxQuant 初始化失败"}
+        tq, err = _get_tq_or_error()
+        if err is not None:
+            return {"success": False, "data": [], "message": err["message"], "diagnostics": err.get("diagnostics")}
 
         result = tq.get_user_sector()
 
@@ -297,11 +316,13 @@ def get_user_sectors() -> dict:
 
 # ============== Phase 2: 回测数据联动 ==============
 
+@risk_audited("tdx.send_backtest_result")
 def send_backtest_result(
     stock_code: str,
     time_list: list[str],
     data_list: list[list[str]],
-    count: int = 1
+    count: int = 1,
+    confirm_token: str | None = None,
 ) -> dict:
     """
     发送回测数据到通达信客户端进行可视化显示
@@ -324,13 +345,10 @@ def send_backtest_result(
     Examples:
         send_backtest_result("600519", ["20250101000000","20250102000000"], [["1"],["0"]])
     """
-    if not data_source.is_tdx_available():
-        return {"success": False, "message": "TdxQuant 不可用，请确保通达信客户端已启动"}
-
     try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return {"success": False, "message": "TdxQuant 初始化失败"}
+        tq, err = _get_tq_or_error()
+        if err is not None:
+            return err
 
         # 转换代码格式
         tdx_code = data_source._convert_to_tdx_code(stock_code)
@@ -392,9 +410,11 @@ def send_backtest_result(
         return {"success": False, "message": f"发送异常: {e}"}
 
 
+@risk_audited("tdx.send_backtest_trades")
 def send_backtest_trades(
     stock_code: str,
-    trades: list[dict]
+    trades: list[dict],
+    confirm_token: str | None = None,
 ) -> dict:
     """
     发送回测交易记录到通达信客户端
@@ -470,7 +490,8 @@ def send_backtest_trades(
             stock_code=stock_code,
             time_list=time_list,
             data_list=data_list,
-            count=4  # 价格、信号、股数、盈亏
+            count=4,  # 价格、信号、股数、盈亏
+            confirm_token=confirm_token,
         )
 
     except Exception as e:

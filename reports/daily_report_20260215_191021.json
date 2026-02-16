@@ -1,0 +1,185 @@
+{
+  "report_type": "daily",
+  "generated_at": "2026-02-16 14:25:24",
+  "data_window": "T-20D ~ T",
+  "trading_calendar_basis": "SSE/SZSE trading dates",
+  "data_sources": [
+    "TimescaleDB",
+    "Tushare",
+    "AkShare"
+  ],
+  "fallback_chain": "TimescaleDB -> Tushare -> AkShare",
+  "core_risk_metrics": {
+    "max_drawdown": {
+      "value": 3.11,
+      "unit": "%",
+      "precision": "0.01",
+      "window": "T-20D ~ T",
+      "method": "historical"
+    },
+    "volatility": {
+      "value": 13.03,
+      "unit": "%/年化",
+      "precision": "0.01",
+      "window": "T-20D ~ T",
+      "method": "std * sqrt(252)"
+    },
+    "var": {
+      "value": 2.13,
+      "unit": "%",
+      "precision": "0.01",
+      "window": "T-20D ~ T",
+      "confidence": "95%",
+      "method": "historical"
+    },
+    "cvar": {
+      "value": 2.13,
+      "unit": "%",
+      "precision": "0.01",
+      "window": "T-20D ~ T",
+      "confidence": "95%",
+      "method": "historical"
+    },
+    "basis": "proxy_benchmark"
+  },
+  "key_exceptions": [],
+  "next_actions": [
+    "观察板块延续性: 其他数字媒体（涨幅5.00%）",
+    "观察板块延续性: 玻璃玻纤（涨幅4.68%）",
+    "观察板块延续性: 海洋捕捞（涨幅4.22%）"
+  ],
+  "trigger_conditions": [],
+  "report_date": "2026-02-15",
+  "owner": "default",
+  "index_summary": "上证指数(000001) 4082.07点 / -1.26% ; 深证成指(399001) 14100.19点 / -1.28% ; 创业板指(399006) 3275.96点 / -1.57%（窗口: T-1D ~ T, 单位: 点/%）",
+  "market_sentiment": "bearish",
+  "capital_and_events": {
+    "north_fund": {
+      "net_inflow": 104000000000.0,
+      "sh_connect": 52000000000.0,
+      "sz_connect": 52000000000.0,
+      "unit": "亿元(数据源口径)",
+      "precision": "0.01",
+      "window": "T-1D ~ T"
+    },
+    "major_event": "慧翰股份:关于公司2026年度日常关联交易预计公告"
+  },
+  "daily_return": {
+    "value": -1.25,
+    "unit": "%",
+    "precision": "0.01",
+    "window": "T-1D ~ T",
+    "basis": "proxy_benchmark"
+  },
+  "vs_benchmark": {
+    "value": 0.0,
+    "unit": "%",
+    "precision": "0.01",
+    "window": "T-1D ~ T",
+    "benchmark": "000300"
+  },
+  "contributors_and_detractors": {
+    "top_contributors": [
+      {
+        "code": "000001",
+        "name": "上证指数",
+        "change_pct": -1.26,
+        "contribution_pct": -0.42
+      },
+      {
+        "code": "399001",
+        "name": "深证成指",
+        "change_pct": -1.28,
+        "contribution_pct": -0.43
+      }
+    ],
+    "top_detractors": [
+      {
+        "code": "399006",
+        "name": "创业板指",
+        "change_pct": -1.57,
+        "contribution_pct": -0.52
+      },
+      {
+        "code": "399001",
+        "name": "深证成指",
+        "change_pct": -1.28,
+        "contribution_pct": -0.43
+      }
+    ],
+    "unit": "%",
+    "precision": "0.01",
+    "window": "T-1D ~ T",
+    "basis": "index_proxy_equal_weight"
+  },
+  "risk_exposure": {
+    "max_drawdown": {
+      "value": 3.11,
+      "unit": "%",
+      "precision": "0.01",
+      "window": "T-20D ~ T",
+      "method": "historical"
+    },
+    "volatility": {
+      "value": 13.03,
+      "unit": "%/年化",
+      "precision": "0.01",
+      "window": "T-20D ~ T",
+      "method": "std * sqrt(252)"
+    },
+    "var": {
+      "value": 2.13,
+      "unit": "%",
+      "precision": "0.01",
+      "window": "T-20D ~ T",
+      "confidence": "95%",
+      "method": "historical"
+    },
+    "cvar": {
+      "value": 2.13,
+      "unit": "%",
+      "precision": "0.01",
+      "window": "T-20D ~ T",
+      "confidence": "95%",
+      "method": "historical"
+    },
+    "basis": "proxy_benchmark"
+  },
+  "daily_alerts": [
+    "无触发告警（规则: 跑输<-1.5%、回撤>=8%、跌停显著高于涨停）"
+  ],
+  "alert_status": {
+    "count": 1,
+    "items": [
+      "无触发告警（规则: 跑输<-1.5%、回撤>=8%、跌停显著高于涨停）"
+    ],
+    "window": "T-1D ~ T"
+  },
+  "exceptions": [],
+  "execution_summary": {
+    "orders": 0,
+    "fills": 0,
+    "fill_rate": "N/A",
+    "slippage_bps": "N/A",
+    "window": "T-1D ~ T",
+    "note": "若需精确执行统计，请传入 orders/fills/fill_rate/slippage_bps 或接入 execution_manager.summary"
+  },
+  "watchlist_next_day": {
+    "items": [
+      "观察板块延续性: 其他数字媒体（涨幅5.00%）",
+      "观察板块延续性: 玻璃玻纤（涨幅4.68%）",
+      "观察板块延续性: 海洋捕捞（涨幅4.22%）",
+      "跟踪拖累修复: 创业板指（贡献-0.52%）",
+      "跟踪拖累修复: 深证成指（贡献-0.43%）"
+    ],
+    "window": "T+1"
+  },
+  "watchlist": [
+    "观察板块延续性: 其他数字媒体（涨幅5.00%）",
+    "观察板块延续性: 玻璃玻纤（涨幅4.68%）",
+    "观察板块延续性: 海洋捕捞（涨幅4.22%）",
+    "跟踪拖累修复: 创业板指（贡献-0.52%）",
+    "跟踪拖累修复: 深证成指（贡献-0.43%）"
+  ],
+  "data_limitations": "若个别字段为空，原因为数据源当日无可用记录；已按 TimescaleDB -> Tushare -> AkShare 降级"
+}

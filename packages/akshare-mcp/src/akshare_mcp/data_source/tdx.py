@@ -10,6 +10,8 @@ import time
 import logging
 import threading
 import importlib.util
+import contextlib
+import importlib
 from typing import Optional
 
 from ..utils import normalize_code, safe_float, safe_int, safe_stderr_print
@@ -42,15 +44,25 @@ class TdxMixin:
         self._tdx_fail_time = 0.0
         self._tdx_last_init_stage = "not_started"
         self._tdx_last_init_error = ""
+        self._tdx_module_path = ""
         self._tdx_lock = threading.Lock()
 
-        if self.tdx_enabled and self.tdx_plugin_path:
+        if self.tdx_enabled:
             self._init_tdxquant()
+
 
     def _init_tdxquant(self):
         """初始化 TdxQuant 模块"""
         self._tdx_last_init_stage = "module_loading"
         self._tdx_last_init_error = ""
+        self._tdx_module_path = ""
+
+        if not self.tdx_enabled:
+            self._tdx_last_init_stage = "disabled"
+            self._tdx_last_init_error = "TDX is disabled by TDX_ENABLED"
+            self.tq = None
+            return
+
         try:
             safe_stderr_print(f"[DataSource] TDX_PLUGIN_PATH={self.tdx_plugin_path}")
             safe_stderr_print(f"[DataSource] TDX_ENABLED={self.tdx_enabled}")
@@ -75,12 +87,50 @@ class TdxMixin:
             else:
                 self._tdx_last_init_stage = "plugin_path_check"
                 self._tdx_last_init_error = f"TDX plugin path does not exist: {self.tdx_plugin_path}"
-                safe_stderr_print(f"[DataSource] {self._tdx_last_init_error}, fallback to sys.path import")
+                safe_stderr_print(f"[DataSource] {self._tdx_last_init_error}")
+                self.tq = None
+                return
 
-            # 优先使用显式插件目录，其次回退到当前 Python 环境 sys.path 中的 tqcenter
+            if self.tdx_plugin_path and not tqcenter_exists:
+                self._tdx_last_init_stage = "plugin_path_check"
+                self._tdx_last_init_error = f"tqcenter.py not found under TDX_PLUGIN_PATH: {self.tdx_plugin_path}"
+                safe_stderr_print(f"[DataSource] {self._tdx_last_init_error}")
+                self.tq = None
+                return
+
+            # 优先使用显式插件目录导入 tqcenter，避免加载到错误版本模块
             self._tdx_last_init_stage = "import_tqcenter"
-            from tqcenter import tq
+            tqcenter = importlib.import_module("tqcenter")
+            module_path = getattr(tqcenter, "__file__", "") or ""
+            if self.tdx_plugin_path:
+                expected = os.path.abspath(self.tdx_plugin_path).lower()
+                loaded_from = os.path.abspath(module_path).lower() if module_path else ""
+                if loaded_from and not loaded_from.startswith(expected):
+                    self._tdx_last_init_stage = "module_path_mismatch"
+                    self._tdx_last_init_error = (
+                        f"tqcenter loaded from unexpected path: {module_path}, expected under {self.tdx_plugin_path}"
+                    )
+                    safe_stderr_print(f"[DataSource] {self._tdx_last_init_error}")
+                    self.tq = None
+                    return
+
+            tq = getattr(tqcenter, "tq", None)
+            if tq is None:
+                self._tdx_last_init_stage = "module_load_failed"
+                self._tdx_last_init_error = "tqcenter.tq is missing"
+                safe_stderr_print(f"[DataSource] {self._tdx_last_init_error}")
+                self.tq = None
+                return
+
+            if not callable(getattr(tq, "initialize", None)):
+                self._tdx_last_init_stage = "module_load_failed"
+                self._tdx_last_init_error = "tq.initialize is missing or not callable"
+                safe_stderr_print(f"[DataSource] {self._tdx_last_init_error}")
+                self.tq = None
+                return
+
             self.tq = tq
+            self._tdx_module_path = module_path
             self._tdx_last_init_stage = "module_loaded"
             safe_stderr_print("[DataSource] TdxQuant module loaded successfully")
         except UnicodeDecodeError as e:
@@ -124,11 +174,18 @@ class TdxMixin:
     def _ensure_tdx_initialized(self) -> bool:
         """确保 TdxQuant 已初始化（懒加载），失败后间隔 60 秒可重试"""
         if self.tq is None:
-            self._tdx_last_init_stage = "module_not_loaded"
-            if not self._tdx_last_init_error:
-                self._tdx_last_init_error = "tq is None (module not loaded)"
-            safe_stderr_print(f"[DataSource] _ensure_tdx_initialized: {self._tdx_last_init_error}")
-            return False
+            if not self.tdx_enabled:
+                self._tdx_last_init_stage = "disabled"
+                self._tdx_last_init_error = "TDX is disabled by TDX_ENABLED"
+                return False
+
+            self._init_tdxquant()
+            if self.tq is None:
+                self._tdx_last_init_stage = "module_not_loaded"
+                if not self._tdx_last_init_error:
+                    self._tdx_last_init_error = "tq is None (module not loaded)"
+                safe_stderr_print(f"[DataSource] _ensure_tdx_initialized: {self._tdx_last_init_error}")
+                return False
 
         if self._tdx_init_failed:
             elapsed = time.time() - self._tdx_fail_time if self._tdx_fail_time else 0
@@ -151,7 +208,9 @@ class TdxMixin:
                 for attempt in range(1, max_retries + 1):
                     try:
                         self._tdx_last_init_stage = "initializing"
-                        self.tq.initialize(init_path)
+                        # Redirect any third-party stdout output to stderr to protect MCP stdio protocol.
+                        with contextlib.redirect_stdout(sys.stderr):
+                            self.tq.initialize(init_path)
                         self._tdx_initialized = True
                         self._tdx_last_init_stage = "initialized"
                         self._tdx_last_init_error = ""
@@ -186,7 +245,35 @@ class TdxMixin:
 
     def is_tdx_available(self) -> bool:
         """检查 TdxQuant 是否可用"""
-        return self.tq is not None and self.tdx_enabled
+        if not self.tdx_enabled:
+            return False
+        return self.get_tdxquant() is not None
+
+    def get_tdx_init_diagnostics(self) -> dict:
+        """返回 TDX 初始化诊断信息，供工具层输出更准确错误提示。"""
+        plugin_path_valid = bool(self.tdx_plugin_path) and os.path.isdir(self.tdx_plugin_path)
+        tqcenter_exists = bool(self.tdx_plugin_path) and os.path.isfile(
+            os.path.join(self.tdx_plugin_path, "tqcenter.py")
+        )
+        pyplugins_dir = os.path.dirname(self.tdx_plugin_path) if self.tdx_plugin_path else ""
+        tpythclient_path = os.path.join(pyplugins_dir, "TPythClient.dll") if pyplugins_dir else ""
+        tdxrpc_path = os.path.join(pyplugins_dir, "tdxrpcx64.dll") if pyplugins_dir else ""
+
+        return {
+            "tdx_enabled": self.tdx_enabled,
+            "tdx_plugin_path": self.tdx_plugin_path,
+            "plugin_path_valid": plugin_path_valid,
+            "tqcenter_exists": tqcenter_exists,
+            "module_loaded": self.tq is not None,
+            "initialized": self._tdx_initialized,
+            "last_stage": self._tdx_last_init_stage,
+            "last_error": self._tdx_last_init_error,
+            "module_path": self._tdx_module_path,
+            "dll_checks": {
+                "TPythClient.dll": bool(tpythclient_path) and os.path.isfile(tpythclient_path),
+                "tdxrpcx64.dll": bool(tdxrpc_path) and os.path.isfile(tdxrpc_path),
+            },
+        }
 
     def get_tdxquant(self):
         """获取 TdxQuant 实例"""

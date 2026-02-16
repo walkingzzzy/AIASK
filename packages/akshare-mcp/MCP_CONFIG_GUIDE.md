@@ -1,23 +1,14 @@
-# AKShare MCP 服务配置指南
+﻿# AKShare MCP 配置指南
 
-本文档提供在 Augment/Cursor 中配置 AKShare MCP 服务的详细说明。
+本文用于在 Cursor/Augment 中配置 `akshare-stock` MCP 服务，并提供 HTTP 传输的安全基线。
 
----
+## 1. 配置文件位置
+- Cursor: `.cursor/mcp.json` 或 `.cursor/settings/mcp.json`
+- Augment: `.augment/mcp.json` 或 `.kiro/settings/mcp.json`
 
-## 📍 配置文件位置
+## 2. 推荐配置（stdio）
 
-### Cursor
-配置文件路径：`.cursor/mcp.json` 或 `.cursor/settings/mcp.json`
-
-### Augment
-配置文件路径：`.augment/mcp.json` 或 `.kiro/settings/mcp.json`
-
----
-
-## 🚀 推荐配置方式
-
-### 方式1：使用 uv 运行（推荐）⭐
-
+### 2.1 使用 uv（推荐）
 ```json
 {
   "mcpServers": {
@@ -33,22 +24,13 @@
       "cwd": "c:\\Users\\1\\Desktop\\股票\\packages\\akshare-mcp",
       "env": {
         "PYTHONPATH": "c:\\Users\\1\\Desktop\\股票\\packages\\akshare-mcp\\src"
-      },
-      "disabled": false
+      }
     }
   }
 }
 ```
 
-**优点**：
-- ✅ uv 自动管理虚拟环境和依赖
-- ✅ 无需手动激活虚拟环境
-- ✅ 自动读取 `.env` 文件
-
----
-
-### 方式2：使用 Python 直接运行
-
+### 2.2 使用 Python 直接运行
 ```json
 {
   "mcpServers": {
@@ -58,126 +40,54 @@
       "cwd": "c:\\Users\\1\\Desktop\\股票\\packages\\akshare-mcp",
       "env": {
         "PYTHONPATH": "c:\\Users\\1\\Desktop\\股票\\packages\\akshare-mcp\\src"
-      },
-      "disabled": false
+      }
     }
   }
 }
 ```
 
-**注意**：需要先安装依赖：
-```bash
-cd c:\Users\1\Desktop\股票\packages\akshare-mcp
-pip install -r requirements.txt
-```
+## 3. HTTP 传输安全基线（强制）
+当 `MCP_TRANSPORT` 为 `http` / `streamable-http` / `sse` 时：
 
----
+1. 仅允许本地绑定：`MCP_HOST=127.0.0.1`（或 `localhost` / `::1`）
+2. 必须配置来源校验：`MCP_ALLOWED_ORIGINS`
+3. 必须启用鉴权：`MCP_AUTH_MODE`（如 `bearer` / `api-key`）
+4. 禁止 token passthrough：`MCP_ALLOW_TOKEN_PASSTHROUGH=false`
 
-### 方式3：使用虚拟环境的 Python
+服务端会在启动时校验上述条件，不满足将拒绝启动。
 
+## 4. HTTP 安全示例
 ```json
 {
   "mcpServers": {
     "akshare-stock": {
-      "command": "c:\\Users\\1\\Desktop\\股票\\packages\\akshare-mcp\\.venv\\Scripts\\python.exe",
+      "command": "python",
       "args": ["start_server.py"],
       "cwd": "c:\\Users\\1\\Desktop\\股票\\packages\\akshare-mcp",
       "env": {
-        "PYTHONPATH": "c:\\Users\\1\\Desktop\\股票\\packages\\akshare-mcp\\src"
-      },
-      "disabled": false
-    }
-  }
-}
-```
-
-**优点**：
-- ✅ 使用项目专用的虚拟环境
-- ✅ 依赖隔离，不影响系统Python
-
-**前提**：需要先创建虚拟环境：
-```bash
-cd c:\Users\1\Desktop\股票\packages\akshare-mcp
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
----
-
-### 方式4：带完整环境变量配置（推荐用于数据库连接问题）
-
-```json
-{
-  "mcpServers": {
-    "akshare-stock": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "c:\\Users\\1\\Desktop\\股票\\packages\\akshare-mcp",
-        "python",
-        "start_server.py"
-      ],
-      "cwd": "c:\\Users\\1\\Desktop\\股票\\packages\\akshare-mcp",
-      "env": {
         "PYTHONPATH": "c:\\Users\\1\\Desktop\\股票\\packages\\akshare-mcp\\src",
-        "DB_HOST": "localhost",
-        "DB_PORT": "5432",
-        "DB_NAME": "stockdb",
-        "DB_USER": "postgres",
-        "DB_PASSWORD": "your_password_here",
-        "TUSHARE_TOKEN": "your_tushare_token_here"
-      },
-      "disabled": false
+        "MCP_TRANSPORT": "streamable-http",
+        "MCP_HOST": "127.0.0.1",
+        "MCP_ALLOWED_ORIGINS": "https://chat.openai.com,https://cursor.sh",
+        "MCP_AUTH_MODE": "bearer",
+        "MCP_ALLOW_TOKEN_PASSTHROUGH": "false"
+      }
     }
   }
 }
 ```
 
-**优点**：
-- ✅ 显式指定所有环境变量
-- ✅ 解决 `.env` 文件读取问题
-- ✅ 适合数据库连接失败的情况
+## 5. 常见问题
 
-**注意**：请替换以下内容：
-- `your_password_here` → 你的数据库密码
-- `your_tushare_token_here` → 你的Tushare Token（可选）
+### 5.1 服务无法导入模块
+- 检查 `PYTHONPATH` 是否指向 `packages/akshare-mcp/src`
+- 检查当前工作目录是否为 `packages/akshare-mcp`
 
----
+### 5.2 HTTP 模式启动被拒绝
+- 检查是否按“第 3 节”配置所有安全项
+- 重点检查 `MCP_ALLOWED_ORIGINS` 与 `MCP_AUTH_MODE`
 
-## 🔧 配置参数说明
-
-| 参数 | 说明 | 必需 |
-|------|------|------|
-| `command` | 启动命令（uv/python/绝对路径） | ✅ |
-| `args` | 命令参数 | ✅ |
-| `cwd` | 工作目录（项目根目录） | ✅ |
-| `env` | 环境变量 | 可选 |
-| `disabled` | 是否禁用服务 | 可选 |
-
----
-
-## 📝 Linux/Mac 配置示例
-
-### 使用 uv（推荐）
-```json
-{
-  "mcpServers": {
-    "akshare-stock": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "/Users/username/Desktop/股票/packages/akshare-mcp",
-        "python",
-        "start_server.py"
-      ],
-      "cwd": "/Users/username/Desktop/股票/packages/akshare-mcp",
-      "disabled": false
-    }
-  }
-}
-```
-
-
+### 5.3 行情数据源降级
+- 服务会优先尝试 HTTPS 数据源
+- 如降级到 HTTP，会在日志中标记为 `*_http_fallback`
+- 这不代表无行情机会，只是数据链路降级

@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+from datetime import datetime
 from typing import Optional
 
 import numpy as np
@@ -44,14 +45,14 @@ def register_quant_manager(mcp):
             strict_mode = _kw.get("strict_mode", False)
             code = code or _kw.get("code") or _kw.get("Code") or _kw.get("stock_code") or _kw.get("symbol")
 
-            def _with_meta(resp: dict, source_chain=None):
+            def _with_meta(resp: dict, source_chain=None, data_timestamp: Optional[str] = None):
                 if not isinstance(resp, dict):
                     return resp
                 resp["meta"] = {
                     "trace_id": trace_id,
                     "tool_version": tool_version,
-                    "data_timestamp": "",
-                    "source_chain": source_chain or [],
+                    "data_timestamp": data_timestamp or datetime.now().strftime("%Y-%m-%d"),
+                    "source_chain": source_chain or ["quant_manager"],
                     "cached": False,
                     "latency_ms": round((time.perf_counter() - start_time) * 1000, 2),
                     "as_of": as_of,
@@ -62,11 +63,11 @@ def register_quant_manager(mcp):
                 }
                 return resp
 
-            def _ok(data: dict, source_chain=None):
-                return _with_meta(ok(data), source_chain)
+            def _ok(data: dict, source_chain=None, data_timestamp: Optional[str] = None):
+                return _with_meta(ok(data), source_chain, data_timestamp)
 
-            def _fail(message: str, source_chain=None):
-                return _with_meta(fail(message), source_chain)
+            def _fail(message: str, source_chain=None, data_timestamp: Optional[str] = None):
+                return _with_meta(fail(message), source_chain, data_timestamp)
 
             if action == "help":
                 return _ok(

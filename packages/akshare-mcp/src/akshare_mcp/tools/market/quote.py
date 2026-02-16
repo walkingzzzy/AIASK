@@ -1,5 +1,6 @@
 """实时行情模块"""
 
+import asyncio
 import time
 import requests
 from typing import Optional
@@ -17,6 +18,7 @@ from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...core.validators import validate_quote
 from ...data_source import data_source
+from ...storage import get_db
 from ...utils import safe_stderr_print
 try:
     import akshare as ak
@@ -27,7 +29,7 @@ import pandas as pd
 
 def _get_daily_snapshot(code: str) -> dict[str, Optional[float]]:
     """获取日K快照（用于补充 open/high/low/prev_close）
-    
+
     降级链: DataSource(TDX→Tushare) → AkShare
     """
     # 1. 优先 DataSource
@@ -80,9 +82,95 @@ def _calc_change(price: Optional[float], prev_close: Optional[float]) -> tuple[O
     return change, (change / prev_close) * 100
 
 
+def _normalize_quote_for_storage(payload: dict) -> Optional[dict]:
+    """将行情对象标准化为 DB save_quote 可接收结构。"""
+    if not isinstance(payload, dict):
+        return None
+    code = normalize_code(str(payload.get("code") or "").strip()) if payload.get("code") else None
+    price = safe_float(payload.get("price"))
+    if not code or price is None:
+        return None
+
+    return {
+        "code": code,
+        "name": payload.get("name") or "",
+        "price": price,
+        "change": safe_float(payload.get("change")),
+        "change_pct": safe_float(payload.get("changePercent") if payload.get("changePercent") is not None else payload.get("change_pct")),
+        "open": safe_float(payload.get("open")),
+        "high": safe_float(payload.get("high")),
+        "low": safe_float(payload.get("low")),
+        "pre_close": safe_float(payload.get("preClose") if payload.get("preClose") is not None else payload.get("pre_close")),
+        "volume": safe_int(payload.get("volume")),
+        "amount": safe_float(payload.get("amount")),
+        "source": payload.get("source") or "unknown",
+    }
+
+
+async def _save_quote_best_effort(payload: dict) -> None:
+    """尽力落库：失败不影响主流程返回。"""
+    try:
+        normalized = _normalize_quote_for_storage(payload)
+        if not normalized:
+            return
+        db = get_db()
+        await db.save_quote(normalized)
+    except Exception as e:
+        safe_stderr_print(f"[quote] save_quote skipped: {e}")
+
+
+def _save_quote_nonblocking(payload: dict) -> None:
+    """在同步工具函数中安全触发异步落库。"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        try:
+            loop.create_task(_save_quote_best_effort(payload))
+        except Exception as e:
+            safe_stderr_print(f"[quote] create save task failed: {e}")
+        return
+
+    try:
+        asyncio.run(_save_quote_best_effort(payload))
+    except Exception as e:
+        safe_stderr_print(f"[quote] save_quote run failed: {e}")
+
+
+
+def _save_quotes_nonblocking(items: list[dict]) -> None:
+    """批量尽力落库（失败不影响主流程）。"""
+    if not isinstance(items, list) or not items:
+        return
+
+    async def _runner() -> None:
+        for item in items:
+            await _save_quote_best_effort(item)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        try:
+            loop.create_task(_runner())
+        except Exception as e:
+            safe_stderr_print(f"[quote] create batch save task failed: {e}")
+        return
+
+    try:
+        asyncio.run(_runner())
+    except Exception as e:
+        safe_stderr_print(f"[quote] batch save run failed: {e}")
+
+
+
 def _get_minute_quote(code: str) -> dict:
     """获取分钟行情（用于实时价格）
-    
+
     降级链: DataSource(TDX 分钟K) → AkShare
     """
     # 1. 优先 TDX 分钟K线
@@ -150,7 +238,7 @@ def _get_minute_quote(code: str) -> dict:
 
 def _get_daily_quote(code: str, name: str) -> Optional[dict]:
     """获取日K线行情（降级用）
-    
+
     降级链: DataSource(TDX→Tushare) → AkShare
     """
     # 1. 优先 DataSource
@@ -214,28 +302,38 @@ def _get_daily_quote(code: str, name: str) -> Optional[dict]:
 
 def _get_quote_sina(code: str) -> Optional[dict]:
     """Fallback: Get quote from Sina interface"""
+    def _http_get_with_https_preferred(url_https: str, url_http: str, headers: dict, timeout: int = 5):
+        try:
+            resp = requests.get(url_https, headers=headers, timeout=timeout)
+            return resp, "https"
+        except Exception as https_err:
+            safe_stderr_print(f"[quote] HTTPS fallback source failed, try HTTP: {https_err}")
+            resp = requests.get(url_http, headers=headers, timeout=timeout)
+            return resp, "http_fallback"
+
     try:
         symbol = normalize_code(code)
         if symbol.startswith("0") or symbol.startswith("3"):
             sina_code = f"sz{symbol}"
         else:
             sina_code = f"sh{symbol}"
-            
-        url = f"http://hq.sinajs.cn/list={sina_code}"
+
+        url_https = f"https://hq.sinajs.cn/list={sina_code}"
+        url_http = f"http://hq.sinajs.cn/list={sina_code}"
         headers = {"Referer": "https://finance.sina.com.cn/"}
-        resp = requests.get(url, headers=headers, timeout=5)
+        resp, transport = _http_get_with_https_preferred(url_https, url_http, headers=headers, timeout=5)
         text = resp.text
         if "=" not in text or '="' not in text:
             return None
-            
+
         content = text.split('="')[1].strip('";\n')
         if not content:
             return None
-            
+
         parts = content.split(",")
         if len(parts) < 30:
             return None
-            
+
         name = parts[0]
         open_ = safe_float(parts[1])
         pre_close = safe_float(parts[2])
@@ -244,13 +342,13 @@ def _get_quote_sina(code: str) -> Optional[dict]:
         low = safe_float(parts[5])
         volume = safe_int(parts[8])
         amount = safe_float(parts[9])
-        
+
         change = None
         change_pct = None
         if price is not None and pre_close is not None and pre_close > 0:
             change = price - pre_close
             change_pct = (change / pre_close) * 100
-            
+
         return {
             "code": symbol,
             "name": name,
@@ -263,7 +361,7 @@ def _get_quote_sina(code: str) -> Optional[dict]:
             "preClose": pre_close,
             "volume": volume,
             "amount": amount,
-            "source": "sina"
+            "source": f"sina_{transport}",
         }
     except Exception:
         return None
@@ -271,27 +369,37 @@ def _get_quote_sina(code: str) -> Optional[dict]:
 
 def _get_quote_tencent(code: str) -> Optional[dict]:
     """Fallback: Get quote from Tencent interface"""
+    def _http_get_with_https_preferred(url_https: str, url_http: str, timeout: int = 5):
+        try:
+            resp = requests.get(url_https, timeout=timeout)
+            return resp, "https"
+        except Exception as https_err:
+            safe_stderr_print(f"[quote] HTTPS fallback source failed, try HTTP: {https_err}")
+            resp = requests.get(url_http, timeout=timeout)
+            return resp, "http_fallback"
+
     try:
         symbol = normalize_code(code)
         if symbol.startswith("0") or symbol.startswith("3"):
             qt_code = f"sz{symbol}"
         else:
             qt_code = f"sh{symbol}"
-            
-        url = f"http://qt.gtimg.cn/q={qt_code}"
-        resp = requests.get(url, timeout=5)
+
+        url_https = f"https://qt.gtimg.cn/q={qt_code}"
+        url_http = f"http://qt.gtimg.cn/q={qt_code}"
+        resp, transport = _http_get_with_https_preferred(url_https, url_http, timeout=5)
         text = resp.text
         if "=" not in text or '="' not in text:
             return None
-            
+
         content = text.split('="')[1].strip('";\n')
         if not content:
             return None
-            
+
         parts = content.split("~")
         if len(parts) < 40:
             return None
-            
+
         name = parts[1]
         price = safe_float(parts[3])
         pre_close = safe_float(parts[4])
@@ -300,13 +408,13 @@ def _get_quote_tencent(code: str) -> Optional[dict]:
         low = safe_float(parts[34])
         volume = safe_int(parts[6])
         amount = safe_float(parts[37]) * 10000
-        
+
         change = None
         change_pct = None
         if price is not None and pre_close is not None and pre_close > 0:
             change = price - pre_close
             change_pct = (change / pre_close) * 100
-            
+
         return {
             "code": symbol,
             "name": name,
@@ -319,7 +427,7 @@ def _get_quote_tencent(code: str) -> Optional[dict]:
             "preClose": pre_close,
             "volume": volume * 100,
             "amount": amount,
-            "source": "tencent"
+            "source": f"tencent_{transport}",
         }
     except Exception:
         return None
@@ -390,7 +498,7 @@ def _get_realtime_quote_akshare(code: str) -> Optional[dict]:
                 }
     except (TimeoutError, RuntimeError, Exception) as e:
         safe_stderr_print(f"Spot market failed for {code}: {e}")
-        
+
     return None
 
 
@@ -429,44 +537,91 @@ def get_realtime_quote(stock_code: str) -> dict:
     """
     limiter = get_limiter("quote", max_calls=10, period=1.0)
     limiter.acquire()
-    
+
+    def _ok_with_trace(payload: dict, attempted_sources: list[str], source_chain: list[str], fallback_reason: Optional[str] = None) -> dict:
+        """P2-1: 返回结构化降级信息，便于前端/调用方解释来源链路。"""
+        result = ok(payload, cached=False)
+        if isinstance(result.get("data"), dict):
+            data = result["data"]
+            data["attempted_sources"] = attempted_sources
+            data["source_chain"] = source_chain
+            data["fallback_used"] = len(source_chain) > 1 or (source_chain and source_chain[0] != "data_source")
+            data["fallback_reason"] = fallback_reason
+            data["data_timestamp"] = time.strftime("%Y-%m-%d")
+            _save_quote_nonblocking(data)
+        return result
+
+    def _as_plain_quote(v):
+        # validate_quote 可能返回 pydantic 模型；统一转为 dict 以注入结构化 trace 字段
+        if hasattr(v, "model_dump"):
+            try:
+                return v.model_dump()
+            except Exception:
+                return dict(v)
+        return v
+
     try:
         code = normalize_code(stock_code)
+        attempted_sources: list[str] = []
+        fallback_reason_parts: list[str] = []
 
         # 1. DataSource 优先：TDX → Tushare → akshare
+        attempted_sources.append("data_source")
         try:
             res = data_source.get_realtime_quote(code)
             if res:
-                validated = validate_quote(res)
-                return ok(validated, cached=False)
+                validated = _as_plain_quote(validate_quote(res))
+                return _ok_with_trace(validated, attempted_sources, source_chain=["data_source"])
         except Exception as e:
+            fallback_reason_parts.append(f"data_source失败: {e}")
             safe_stderr_print(f"DataSource quote failed for {code}: {e}")
 
         # 2. Try AkShare
+        attempted_sources.append("akshare")
         try:
             res = _get_realtime_quote_akshare(code)
         except (TimeoutError, RuntimeError, Exception) as e:
+            fallback_reason_parts.append(f"akshare失败: {e}")
             safe_stderr_print(f"AkShare quote failed for {code}: {e}")
             res = None
         if res:
-            validated = validate_quote(res)
-            return ok(validated, cached=False)
+            validated = _as_plain_quote(validate_quote(res))
+            return _ok_with_trace(
+                validated,
+                attempted_sources,
+                source_chain=["data_source", "akshare"],
+                fallback_reason="; ".join(fallback_reason_parts) if fallback_reason_parts else "DataSource不可用，已降级至AkShare",
+            )
 
         # 3. Try Sina
+        attempted_sources.append("sina")
         safe_stderr_print(f"Trying Sina for {code}...")
         res = _get_quote_sina(code)
         if res:
-            validated = validate_quote(res)
-            return ok(validated, cached=False)
+            validated = _as_plain_quote(validate_quote(res))
+            return _ok_with_trace(
+                validated,
+                attempted_sources,
+                source_chain=["data_source", "akshare", "sina"],
+                fallback_reason="; ".join(fallback_reason_parts) if fallback_reason_parts else "上游源不可用，已降级至Sina",
+            )
 
         # 4. Try Tencent
+        attempted_sources.append("tencent")
         safe_stderr_print(f"Sina failed for {code}, trying Tencent...")
         res = _get_quote_tencent(code)
         if res:
-            validated = validate_quote(res)
-            return ok(validated, cached=False)
+            validated = _as_plain_quote(validate_quote(res))
+            return _ok_with_trace(
+                validated,
+                attempted_sources,
+                source_chain=["data_source", "akshare", "sina", "tencent"],
+                fallback_reason="; ".join(fallback_reason_parts) if fallback_reason_parts else "上游源不可用，已降级至Tencent",
+            )
 
-        return fail(f"所有数据源均无法获取 {code} 的实时行情")
+        attempted = " -> ".join(attempted_sources)
+        reason = "; ".join(fallback_reason_parts) if fallback_reason_parts else "所有上游源均返回空数据"
+        return fail(f"所有数据源均无法获取 {code} 的实时行情（attempted={attempted}, reason={reason}）")
     except Exception as e:
         return fail(e)
 
@@ -607,15 +762,14 @@ def get_batch_quotes(stock_codes: list[str]) -> dict:
 
             missing.append(code)
 
-        return ok(
-            {
-                "requested": codes,
-                "found": len(quotes),
-                "missing": missing,
-                "quotes": quotes,
-            },
-            cached=spot_cached,
-        )
+        # 兼容历史调用：data 直接返回 quotes 列表
+        # 同时在顶层补充 requested/found/missing 便于新调用读取统计信息
+        result = ok(quotes, cached=spot_cached)
+        result["requested"] = codes
+        result["found"] = len(quotes)
+        result["missing"] = missing
+        result["quotes"] = quotes
+        return result
     except Exception as e:
         return fail(e)
 
@@ -636,16 +790,29 @@ def get_batch_quotes_compat(codes: list[str]) -> dict:
         get_batch_quotes_compat(["600519", "000001"])
     """
     result = get_batch_quotes(codes)
-    
-    if result.get('success'):
-        return {
-            'success': True,
-            'data': result['data']['quotes'],
-            'source': result.get('source', 'multiple_adapters'),
-            'cached': result.get('cached', False)
-        }
-    else:
+
+    if not result.get('success'):
         return result
+
+    # P0-2 修复说明：
+    # 旧实现假设 result['data'] 为 {'quotes': [...] }，但当前主接口 data 多数为 list，导致类型错误。
+    # 新实现按多种历史结构兼容提取，保证兼容层返回稳定 list。
+    data = result.get('data')
+    if isinstance(data, list):
+        quotes = data
+    elif isinstance(data, dict) and isinstance(data.get('quotes'), list):
+        quotes = data.get('quotes')
+    elif isinstance(result.get('quotes'), list):
+        quotes = result.get('quotes')
+    else:
+        quotes = []
+
+    return {
+        'success': True,
+        'data': quotes,
+        'source': result.get('source', 'multiple_adapters'),
+        'cached': result.get('cached', False)
+    }
 
 
 def get_index_quote(index_code: str) -> dict:
