@@ -55,6 +55,25 @@ def _parse_list_param(value: Any) -> list:
     return [value]
 
 
+def _parse_dict_param(value: Any) -> dict:
+    """Normalize dict-like inputs: dict / json-string."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
 def _parse_codes_weights(kwargs: dict) -> tuple[list[str], list[float], str | None]:
     """Parse codes/weights and normalize weights to sum to 1."""
     raw_codes = _parse_list_param(kwargs.get("codes"))
@@ -178,6 +197,13 @@ def _empty_stress_payload(portfolio_id: Any, input_mode: str, scenario_name: str
         "recommendation": "add holdings first",
         "empty_portfolio": True,
         "message": "empty portfolio, add holdings first",
+        "scenario_results": [],
+        "summary": {
+            "count": 0,
+            "worst_scenario": scenario_name,
+            "worst_loss": 0.0,
+            "worst_loss_pct": "0.00%",
+        },
         "quick_start": {
             "step1": 'portfolio_manager(action="add_holding", portfolio_id="xxx", code="600519", shares=100)',
             "step2": 'risk_manager(action="stress_test", portfolio_id="xxx", scenario="market_crash")',
@@ -386,11 +412,59 @@ def register_risk_manager(mcp):
                 scenarios_input = _parse_list_param(kwargs.get("scenarios")) or [scenario or "market_crash"]
 
                 scenario_defs = {
-                    "market_crash": {"market": -0.20, "volatility": 2.0, "description": "market down 20%"},
-                    "black_swan": {"market": -0.30, "volatility": 3.0, "description": "black swan event"},
-                    "interest_rate_hike": {"market": -0.10, "volatility": 1.5, "description": "sharp rate hike"},
-                    "sector_rotation": {"market": -0.05, "volatility": 1.2, "description": "sector rotation"},
-                    "liquidity_crisis": {"market": -0.15, "volatility": 2.5, "description": "liquidity crunch"},
+                    "market_crash": {
+                        "market": -0.20,
+                        "volatility": 2.0,
+                        "liquidity_penalty_pct": 0.0,
+                        "description": "market down 20%",
+                    },
+                    "black_swan": {
+                        "market": -0.30,
+                        "volatility": 3.0,
+                        "liquidity_penalty_pct": 0.003,
+                        "description": "black swan event",
+                    },
+                    "interest_rate_hike": {
+                        "market": -0.10,
+                        "volatility": 1.5,
+                        "liquidity_penalty_pct": 0.0,
+                        "description": "sharp rate hike",
+                    },
+                    "sector_rotation": {
+                        "market": -0.05,
+                        "volatility": 1.2,
+                        "liquidity_penalty_pct": 0.0,
+                        "description": "sector rotation",
+                    },
+                    "liquidity_crisis": {
+                        "market": -0.15,
+                        "volatility": 2.5,
+                        "liquidity_penalty_pct": 0.003,
+                        "description": "liquidity crunch",
+                    },
+                }
+                custom_scenarios = _parse_list_param(kwargs.get("custom_scenarios"))
+                for item in custom_scenarios:
+                    if not isinstance(item, dict):
+                        continue
+                    raw_name = str(item.get("name") or "").strip().lower()
+                    if not raw_name:
+                        continue
+                    custom_market = _safe_float(item.get("market"), None)
+                    custom_vol = _safe_float(item.get("volatility"), None)
+                    custom_liq = _safe_float(item.get("liquidity_penalty_pct"), None)
+                    scenario_defs[raw_name] = {
+                        "market": float(custom_market if custom_market is not None else -0.20),
+                        "volatility": float(custom_vol if custom_vol is not None else 1.0),
+                        "liquidity_penalty_pct": float(custom_liq if custom_liq is not None else 0.0),
+                        "description": str(item.get("description") or f"custom scenario: {raw_name}"),
+                    }
+
+                scenario_overrides = _parse_dict_param(kwargs.get("scenario_overrides"))
+                global_override = {
+                    "market": _safe_float(scenario_overrides.get("market"), None),
+                    "volatility": _safe_float(scenario_overrides.get("volatility"), None),
+                    "liquidity_penalty_pct": _safe_float(scenario_overrides.get("liquidity_penalty_pct"), None),
                 }
 
                 input_mode = "portfolio_id"
@@ -435,24 +509,67 @@ def register_risk_manager(mcp):
 
                 total_value = float(sum(item["value"] for item in holdings_values))
 
-                def _run_one_scenario(name: str) -> dict:
-                    scenario_name = name if name in scenario_defs else "market_crash"
-                    params = scenario_defs[scenario_name]
-                    market_shock = float(params.get("market", -0.2))
+                def _run_one_scenario(raw_scenario: Any) -> dict:
+                    local_override = {}
+                    if isinstance(raw_scenario, dict):
+                        local_override = raw_scenario
+                        scenario_name = str(raw_scenario.get("name") or "market_crash").strip().lower()
+                    else:
+                        scenario_name = str(raw_scenario or "market_crash").strip().lower()
+
+                    if scenario_name not in scenario_defs:
+                        scenario_name = "market_crash"
+                    params = dict(scenario_defs.get(scenario_name, scenario_defs["market_crash"]))
+
+                    # Apply global override first, then scenario-specific override.
+                    if global_override.get("market") is not None:
+                        params["market"] = float(global_override["market"])
+                    if global_override.get("volatility") is not None:
+                        params["volatility"] = float(global_override["volatility"])
+                    if global_override.get("liquidity_penalty_pct") is not None:
+                        params["liquidity_penalty_pct"] = float(global_override["liquidity_penalty_pct"])
+
+                    override_from_map = scenario_overrides.get(scenario_name)
+                    if isinstance(override_from_map, dict):
+                        if _safe_float(override_from_map.get("market"), None) is not None:
+                            params["market"] = float(_safe_float(override_from_map.get("market"), params["market"]))
+                        if _safe_float(override_from_map.get("volatility"), None) is not None:
+                            params["volatility"] = float(_safe_float(override_from_map.get("volatility"), params["volatility"]))
+                        if _safe_float(override_from_map.get("liquidity_penalty_pct"), None) is not None:
+                            params["liquidity_penalty_pct"] = float(
+                                _safe_float(override_from_map.get("liquidity_penalty_pct"), params["liquidity_penalty_pct"])
+                            )
+                        if override_from_map.get("description"):
+                            params["description"] = str(override_from_map.get("description"))
+
+                    if isinstance(local_override, dict):
+                        if _safe_float(local_override.get("market"), None) is not None:
+                            params["market"] = float(_safe_float(local_override.get("market"), params["market"]))
+                        if _safe_float(local_override.get("volatility"), None) is not None:
+                            params["volatility"] = float(_safe_float(local_override.get("volatility"), params["volatility"]))
+                        if _safe_float(local_override.get("liquidity_penalty_pct"), None) is not None:
+                            params["liquidity_penalty_pct"] = float(
+                                _safe_float(local_override.get("liquidity_penalty_pct"), params["liquidity_penalty_pct"])
+                            )
+                        if local_override.get("description"):
+                            params["description"] = str(local_override.get("description"))
+
+                    market_shock = max(-1.0, min(1.0, float(params.get("market", -0.2))))
+                    volatility_multiplier = max(0.0, float(params.get("volatility", 1.0)))
+                    liquidity_penalty_pct = max(0.0, float(params.get("liquidity_penalty_pct", 0.0)))
+
                     stressed_value = float(sum(item["value"] * (1 + market_shock) for item in holdings_values))
                     loss = float(total_value - stressed_value)
                     loss_pct = (loss / total_value) if total_value > 0 else 0.0
-                    # Explainability layers for stress decomposition
-                    volatility_multiplier = float(params.get("volatility", 1.0))
+                    # Explainability layers for stress decomposition.
                     volatility_penalty_pct = max(0.0, (volatility_multiplier - 1.0) * 0.01)
                     volatility_penalty = total_value * volatility_penalty_pct
-                    liquidity_penalty_pct = 0.003 if scenario_name in {"liquidity_crisis", "black_swan"} else 0.0
                     liquidity_penalty = total_value * liquidity_penalty_pct
                     adjusted_loss = loss + volatility_penalty + liquidity_penalty
                     adjusted_loss_pct = (adjusted_loss / total_value) if total_value > 0 else 0.0
                     return {
                         "scenario": scenario_name,
-                        "description": params["description"],
+                        "description": str(params.get("description", scenario_name)),
                         "current_value": float(total_value),
                         "stressed_value": stressed_value,
                         "loss": float(adjusted_loss),
@@ -468,18 +585,38 @@ def register_risk_manager(mcp):
                             "market_loss": float(loss),
                             "volatility_penalty": float(volatility_penalty),
                             "liquidity_penalty": float(liquidity_penalty),
+                            "total_loss": float(adjusted_loss),
+                        },
+                        "layer_loss_pct": {
+                            "market_loss_pct": f"{loss_pct * 100:.2f}%",
+                            "volatility_penalty_pct": f"{volatility_penalty_pct * 100:.2f}%",
+                            "liquidity_penalty_pct": f"{liquidity_penalty_pct * 100:.2f}%",
+                            "total_loss_pct": f"{adjusted_loss_pct * 100:.2f}%",
                         },
                     }
 
-                if len(scenarios_input) == 1:
-                    result = _run_one_scenario(str(scenarios_input[0]))
+                scenario_results = [_run_one_scenario(item) for item in scenarios_input]
+                if not scenario_results:
+                    scenario_results = [_run_one_scenario("market_crash")]
+
+                worst_case = max(scenario_results, key=lambda x: float(x.get("loss", 0.0)))
+                summary = {
+                    "count": len(scenario_results),
+                    "worst_scenario": worst_case.get("scenario"),
+                    "worst_loss": float(worst_case.get("loss", 0.0)),
+                    "worst_loss_pct": str(worst_case.get("loss_percentage", "0.00%")),
+                }
+
+                if len(scenario_results) == 1:
+                    result = dict(scenario_results[0])
                     result["portfolio_id"] = portfolio_id
                     result["input_mode"] = input_mode
+                    result["scenario_results"] = scenario_results
+                    result["summary"] = summary
                     return ok(result)
 
                 batch = {}
-                for name in scenarios_input:
-                    one = _run_one_scenario(str(name))
+                for one in scenario_results:
                     batch[one["scenario"]] = one
 
                 return ok(
@@ -487,8 +624,10 @@ def register_risk_manager(mcp):
                         "portfolio_id": portfolio_id,
                         "input_mode": input_mode,
                         "scenarios": batch,
+                        "scenario_results": scenario_results,
+                        "summary": summary,
                         "current_value": total_value,
-                        "count": len(batch),
+                        "count": len(scenario_results),
                     }
                 )
 

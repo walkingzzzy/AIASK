@@ -2,9 +2,11 @@
 
 from typing import Optional
 import json
+import math
 from ...storage import get_db
 from ...utils import ok, fail, normalize_code
 from ...data_source import data_source
+from ..valuation import _sanitize_distribution_samples, _run_dcf_distribution
 import logging
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,150 @@ def _normalize_kwargs(code: Optional[str], kwargs: dict) -> tuple[Optional[str],
     if "codes" not in kwargs and "Codes" in kwargs:
         kwargs["codes"] = kwargs.get("Codes")
     return code, kwargs
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    if value is None:
+        return float(default)
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(v):
+        return float(default)
+    return float(v)
+
+
+def _latest_value(record: dict, *keys: str, default=None):
+    for key in keys:
+        if key in record and record.get(key) is not None:
+            return record.get(key)
+    return default
+
+
+def _build_intrinsic_value_payload(code: str, method: str, latest: dict, kwargs: dict) -> dict:
+    method_l = str(method or "dcf").lower()
+
+    if method_l == "dcf":
+        growth_rate = _safe_float(kwargs.get("growth_rate", 0.10), 0.10)
+        discount_rate = _safe_float(kwargs.get("discount_rate", 0.10), 0.10)
+        terminal_growth = _safe_float(
+            kwargs.get("terminal_growth", kwargs.get("terminal_growth_rate", 0.03)),
+            0.03,
+        )
+        years = max(1, min(20, int(kwargs.get("years", 5) or 5)))
+        if discount_rate <= terminal_growth:
+            raise ValueError("discount_rate must be greater than terminal_growth")
+
+        net_profit = _safe_float(_latest_value(latest, "net_profit", "n_income", "netProfit"), 0.0)
+        revenue = _safe_float(_latest_value(latest, "revenue", "total_revenue"), 0.0)
+        fcf_raw = kwargs.get("fcf", _latest_value(latest, "free_cash_flow"))
+        fcf = _safe_float(fcf_raw, 0.0)
+        if fcf <= 0:
+            if net_profit > 0:
+                fcf = net_profit * 0.8
+            elif revenue > 0:
+                fcf = revenue * 0.08
+            else:
+                raise ValueError("no valid free cash flow input for dcf valuation")
+
+        pv_fcf = 0.0
+        for year in range(1, years + 1):
+            future_fcf = fcf * ((1 + growth_rate) ** year)
+            pv_fcf += future_fcf / ((1 + discount_rate) ** year)
+        terminal_fcf = fcf * ((1 + growth_rate) ** years) * (1 + terminal_growth)
+        terminal_value = terminal_fcf / (discount_rate - terminal_growth)
+        pv_terminal = terminal_value / ((1 + discount_rate) ** years)
+        enterprise_value = pv_fcf + pv_terminal
+
+        shares = _safe_float(
+            kwargs.get(
+                "shares_outstanding",
+                _latest_value(latest, "total_shares", "shares_outstanding", default=1_000_000_000),
+            ),
+            1_000_000_000,
+        )
+        if shares <= 0:
+            shares = 1_000_000_000.0
+
+        payload = {
+            "code": code,
+            "method": "DCF",
+            "intrinsic_value": float(enterprise_value),
+            "intrinsic_price_per_share": float(enterprise_value / shares),
+            "assumptions": {
+                "fcf": float(fcf),
+                "growth_rate": f"{growth_rate * 100:.1f}%",
+                "discount_rate": f"{discount_rate * 100:.1f}%",
+                "terminal_growth": f"{terminal_growth * 100:.1f}%",
+                "years": years,
+            },
+            "components": {
+                "pv_fcf": float(pv_fcf),
+                "pv_terminal": float(pv_terminal),
+                "terminal_value": float(terminal_value),
+            },
+        }
+
+        if bool(kwargs.get("enable_distribution", False)):
+            sample_size = _sanitize_distribution_samples(int(kwargs.get("distribution_samples", 1000) or 1000))
+            base_revenue = _safe_float(kwargs.get("base_revenue"), 0.0)
+            if base_revenue <= 0:
+                base_revenue = max(revenue, fcf / 0.2 if fcf > 0 else 0.0, 1.0)
+            profit_margin = _safe_float(kwargs.get("profit_margin"), 0.0)
+            if profit_margin <= 0:
+                profit_margin = max(min(net_profit / base_revenue, 0.6), 0.01) if net_profit > 0 else 0.15
+
+            payload["valuation_interval"] = _run_dcf_distribution(
+                base_revenue=base_revenue,
+                years=years,
+                tax_rate=max(min(_safe_float(kwargs.get("tax_rate", 0.25), 0.25), 0.45), 0.0),
+                capex_ratio=max(min(_safe_float(kwargs.get("capex_ratio", 0.04), 0.04), 0.3), 0.0),
+                depreciation_ratio=max(min(_safe_float(kwargs.get("depreciation_ratio", 0.03), 0.03), 0.2), 0.0),
+                nwc_ratio=max(min(_safe_float(kwargs.get("nwc_ratio", 0.01), 0.01), 0.1), -0.05),
+                growth_rate=growth_rate,
+                profit_margin=profit_margin,
+                discount_rate=discount_rate,
+                terminal_growth_rate=terminal_growth,
+                sample_size=sample_size,
+                growth_std_ratio=_safe_float(kwargs.get("distribution_growth_std", 0.2), 0.2),
+                margin_std_ratio=_safe_float(kwargs.get("distribution_margin_std", 0.15), 0.15),
+                discount_std_ratio=_safe_float(kwargs.get("distribution_discount_std", 0.1), 0.1),
+                terminal_std_ratio=_safe_float(kwargs.get("distribution_terminal_std", 0.1), 0.1),
+                seed=kwargs.get("distribution_seed"),
+            )
+        return payload
+
+    if method_l == "pe":
+        shares = _safe_float(_latest_value(latest, "total_shares", "shares_outstanding"), 1_000_000_000)
+        net_profit = _safe_float(_latest_value(latest, "net_profit", "n_income"), 0.0)
+        eps = _safe_float(kwargs.get("eps"), 0.0)
+        if eps <= 0 and shares > 0 and net_profit > 0:
+            eps = net_profit / shares
+        industry_pe = _safe_float(kwargs.get("industry_pe", 15), 15.0)
+        return {
+            "code": code,
+            "method": "PE",
+            "intrinsic_price_per_share": float(eps * industry_pe),
+            "eps": float(eps),
+            "industry_pe": float(industry_pe),
+        }
+
+    if method_l == "pb":
+        bvps = _safe_float(
+            kwargs.get("bvps", _latest_value(latest, "bvps", "book_value_per_share")),
+            0.0,
+        )
+        industry_pb = _safe_float(kwargs.get("industry_pb", 2.0), 2.0)
+        return {
+            "code": code,
+            "method": "PB",
+            "intrinsic_price_per_share": float(bvps * industry_pb),
+            "bvps": float(bvps),
+            "industry_pb": float(industry_pb),
+        }
+
+    raise ValueError(f"unsupported valuation method: {method_l}")
 
 
 def register_fundamental_analysis_manager(mcp):
@@ -265,7 +411,7 @@ def register_fundamental_analysis_manager(mcp):
             elif action == 'compare':
                 codes = kwargs.get('codes', [])
                 if not codes:
-                    return fail('需要提供股票代码列表')
+                    return fail('??????????')
                 
                 comparison = []
                 for c in codes[:5]:
@@ -278,8 +424,27 @@ def register_fundamental_analysis_manager(mcp):
                 
                 return ok({'comparison': comparison})
             
+            elif action == 'intrinsic_value':
+                if not code:
+                    return fail('code is required')
+
+                code = normalize_code(code)
+                method = str(kwargs.get('method', 'dcf')).lower()
+                financials = await db.get_financials(code, limit=4)
+                if not financials:
+                    stock_info = await db.get_stock_info(code)
+                    if stock_info:
+                        financials = [dict(stock_info)]
+
+                if not financials:
+                    return fail(f'no financial data for {code}')
+
+                payload = _build_intrinsic_value_payload(code, method, financials[0], kwargs)
+                return ok(payload)
+            
             else:
-                return fail(f'Unknown action: {action}. Supported: help, analyze, dupont, compare')
-        except Exception as e:
+                return fail(f'Unknown action: {action}. Supported: help, analyze, dupont, compare, intrinsic_value')
+        
+except Exception as e:
             logger.error(f"[FundamentalManager] Error: {e}")
             return fail(str(e))

@@ -1,31 +1,275 @@
 """
-LLM Alpha挖掘模块
+Alpha 挖掘模块（本地规则版）
 
-使用LLM生成和评估因子候选：
+使用本地规则生成和评估因子候选：
 - 因子候选生成
 - 因子有效性评估
 - Alpha衰减检测
 - 因子组合优化
 
 Author: AKShare MCP Server
-Version: 2.0
+Version: 2.1
 """
 
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 from datetime import datetime
-import json
 
 
 class LLMAlphaMiner:
-    """LLM Alpha挖掘器"""
-    
+    """Alpha 挖掘器（本地规则版，无外部 LLM 依赖）。"""
+
+    ALLOWED_CATEGORIES = {
+        "momentum",
+        "trend",
+        "reversal",
+        "volatility",
+        "value",
+        "quality",
+        "growth",
+        "size",
+        "liquidity",
+        "sentiment",
+        "event",
+        "risk_adjusted",
+        "divergence",
+        "custom",
+    }
+
     def __init__(self):
-        """初始化LLM Alpha挖掘器"""
+        """初始化 Alpha 挖掘器。"""
         self.factor_candidates = []
         self.evaluation_results = {}
-    
+
+    @staticmethod
+    def _extract_news_headlines(news_data: Optional[List[Dict]], limit: int = 20) -> List[str]:
+        if not news_data:
+            return []
+        headlines = []
+        for item in news_data:
+            if not isinstance(item, dict):
+                continue
+            text = (
+                item.get("title")
+                or item.get("headline")
+                or item.get("summary")
+                or item.get("content")
+                or ""
+            )
+            text = str(text).strip()
+            if text:
+                headlines.append(text[:160])
+            if len(headlines) >= limit:
+                break
+        return headlines
+
+    @staticmethod
+    def _build_market_snapshot(market_data: pd.DataFrame) -> Dict[str, Any]:
+        """构建紧凑市场快照，供本地规则生成因子。"""
+        if market_data is None or market_data.empty:
+            return {"rows": 0, "columns": [], "numeric_summary": {}}
+
+        df = market_data.tail(min(len(market_data), 180)).copy()
+        numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
+        summary = {
+            "rows": int(len(df)),
+            "columns": [str(c) for c in df.columns.tolist()],
+            "numeric_summary": {},
+        }
+        for col in numeric_cols[:12]:
+            series = df[col].dropna()
+            if len(series) == 0:
+                continue
+            summary["numeric_summary"][str(col)] = {
+                "latest": float(series.iloc[-1]),
+                "mean": float(series.mean()),
+                "std": float(series.std() if len(series) > 1 else 0.0),
+                "min": float(series.min()),
+                "max": float(series.max()),
+            }
+
+        if "close" in df.columns and pd.api.types.is_numeric_dtype(df["close"]):
+            close = df["close"].dropna()
+            if len(close) >= 2:
+                summary["close_stats"] = {
+                    "period_return": float(close.iloc[-1] / close.iloc[0] - 1.0),
+                    "volatility": float(close.pct_change().dropna().std() if len(close) > 2 else 0.0),
+                }
+
+        return summary
+
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        normalized = "_".join(str(name or "").strip().split())
+        return normalized[:64]
+
+    @staticmethod
+    def _find_col(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
+        columns = [str(c) for c in df.columns]
+        lower_map = {str(c).lower(): str(c) for c in columns}
+        for alias in aliases:
+            key = str(alias).lower()
+            if key in lower_map:
+                return lower_map[key]
+        return None
+
+    def _normalize_candidates(self, raw_candidates: List[Dict[str, Any]], num_candidates: int) -> List[Dict[str, Any]]:
+        cleaned: List[Dict[str, Any]] = []
+        used_names = set()
+
+        for item in raw_candidates:
+            if not isinstance(item, dict):
+                continue
+            name = self._normalize_name(item.get("name"))
+            description = str(item.get("description") or "").strip()
+            formula = str(item.get("formula") or "").strip()
+            category = str(item.get("category") or "custom").strip().lower()
+            rationale = str(item.get("rationale") or "").strip()
+
+            if not name or not formula:
+                continue
+            if category not in self.ALLOWED_CATEGORIES:
+                category = "custom"
+            if name in used_names:
+                suffix = 2
+                new_name = f"{name}_{suffix}"
+                while new_name in used_names:
+                    suffix += 1
+                    new_name = f"{name}_{suffix}"
+                name = new_name
+            used_names.add(name)
+
+            cleaned.append(
+                {
+                    "name": name,
+                    "description": description[:300] if description else f"Local generated factor: {name}",
+                    "formula": " ".join(formula.split())[:500],
+                    "category": category,
+                    "rationale": rationale[:500] if rationale else "",
+                }
+            )
+            if len(cleaned) >= num_candidates:
+                break
+
+        if not cleaned:
+            raise ValueError("未生成可用候选因子")
+        return cleaned
+
+    def _build_local_candidate_pool(
+        self,
+        market_data: pd.DataFrame,
+        news_data: Optional[List[Dict]] = None,
+    ) -> List[Dict[str, Any]]:
+        df = market_data
+        close_col = self._find_col(df, ["close", "收盘", "close_price"])
+        open_col = self._find_col(df, ["open", "开盘"])
+        high_col = self._find_col(df, ["high", "最高"])
+        low_col = self._find_col(df, ["low", "最低"])
+        volume_col = self._find_col(df, ["volume", "vol", "成交量"])
+        amount_col = self._find_col(df, ["amount", "turnover", "成交额"])
+        market_cap_col = self._find_col(df, ["market_cap", "total_mv", "mkt_cap", "市值"])
+
+        news_headlines = self._extract_news_headlines(news_data, limit=20)
+        snapshot = self._build_market_snapshot(df)
+        close_stats = snapshot.get("close_stats", {}) if isinstance(snapshot, dict) else {}
+        period_return = float(close_stats.get("period_return", 0.0) or 0.0)
+        volatility = float(close_stats.get("volatility", 0.0) or 0.0)
+
+        pool: List[Dict[str, Any]] = []
+        if close_col:
+            pool.append({
+                "name": "Momentum_20_60_Spread",
+                "description": "中期与短期动量差，捕捉趋势加速。",
+                "formula": f"({close_col}.pct_change(60) - {close_col}.pct_change(20))",
+                "category": "momentum",
+                "rationale": "趋势行情中更稳健地识别加速段。",
+            })
+            pool.append({
+                "name": "Volatility_Adjusted_Return",
+                "description": "收益按波动率归一，抑制高噪声区间。",
+                "formula": f"({close_col}.pct_change(20)) / ({close_col}.pct_change().rolling(20).std() + 1e-9)",
+                "category": "risk_adjusted",
+                "rationale": "在波动放大时降低虚假强势信号。",
+            })
+            pool.append({
+                "name": "Short_Term_Reversal_5D",
+                "description": "短期反转因子，识别超跌/超涨回归。",
+                "formula": f"-({close_col}.pct_change(5))",
+                "category": "reversal",
+                "rationale": "均值回复场景下提供反向信号。",
+            })
+            pool.append({
+                "name": "Trend_ZScore_20",
+                "description": "价格相对20日均线的标准分。",
+                "formula": f"({close_col} - {close_col}.rolling(20).mean()) / ({close_col}.rolling(20).std() + 1e-9)",
+                "category": "trend",
+                "rationale": "衡量趋势偏离程度，便于横截面对比。",
+            })
+
+        if close_col and volume_col:
+            pool.append({
+                "name": "Price_Volume_Synergy",
+                "description": "价格动量乘以成交量放大倍数。",
+                "formula": f"{close_col}.pct_change(20) * ({volume_col} / ({volume_col}.rolling(20).mean() + 1e-9))",
+                "category": "liquidity",
+                "rationale": "量价共振通常对应更高可持续性。",
+            })
+            pool.append({
+                "name": "Volume_Price_Divergence",
+                "description": "量价背离，监测趋势衰减风险。",
+                "formula": f"{close_col}.pct_change(5) - {volume_col}.pct_change(5)",
+                "category": "divergence",
+                "rationale": "价格上涨但量能收缩时给出预警。",
+            })
+
+        if high_col and low_col and close_col:
+            pool.append({
+                "name": "Intraday_Range_Pressure",
+                "description": "日内振幅压力，衡量波动压缩/扩张。",
+                "formula": f"(({high_col} - {low_col}) / ({close_col} + 1e-9)).rolling(10).mean()",
+                "category": "volatility",
+                "rationale": "振幅变化通常领先趋势转折。",
+            })
+
+        if open_col and close_col:
+            pool.append({
+                "name": "Gap_Continuation",
+                "description": "隔夜跳空与日内收益一致性。",
+                "formula": f"({open_col} / ({close_col}.shift(1) + 1e-9) - 1) * {close_col}.pct_change(1)",
+                "category": "event",
+                "rationale": "用于识别消息驱动后的延续性。",
+            })
+
+        if amount_col and market_cap_col:
+            pool.append({
+                "name": "Turnover_Pressure",
+                "description": "成交额相对市值压力。",
+                "formula": f"({amount_col} / ({market_cap_col} + 1e-9)).rolling(10).mean()",
+                "category": "liquidity",
+                "rationale": "高换手压力可反映交易拥挤度。",
+            })
+
+        if news_headlines and close_col and volume_col:
+            pool.append({
+                "name": "News_Attention_Proxy",
+                "description": "新闻关注度代理（量能突增 × 短期动量）。",
+                "formula": f"(({volume_col} / ({volume_col}.rolling(5).mean() + 1e-9)) - 1) * {close_col}.pct_change(3)",
+                "category": "sentiment",
+                "rationale": f"样本包含 {len(news_headlines)} 条近期新闻，使用交易行为代理情绪冲击。",
+            })
+
+        # 简单优先级：趋势明显先看 momentum/trend；高波动先看 volatility/reversal
+        trend_priority = abs(period_return) >= 0.1
+        vol_priority = volatility >= 0.03
+        if trend_priority:
+            pool.sort(key=lambda x: 0 if x["category"] in {"momentum", "trend"} else 1)
+        if vol_priority:
+            pool.sort(key=lambda x: 0 if x["category"] in {"volatility", "reversal", "risk_adjusted"} else 1)
+
+        return pool
+
     def generate_factor_candidates(
         self,
         market_data: pd.DataFrame,
@@ -33,7 +277,7 @@ class LLMAlphaMiner:
         num_candidates: int = 10
     ) -> List[Dict[str, Any]]:
         """
-        使用LLM生成候选因子
+        使用本地规则生成候选因子
         
         Args:
             market_data: 市场数据（包含价格、成交量等）
@@ -50,56 +294,28 @@ class LLMAlphaMiner:
                 'category': 因子类别（momentum/reversal/value等）
             }
         """
-        # 模拟LLM生成因子候选
-        # 实际应用中，这里会调用LLM API
-        
-        candidates = []
-        
-        # 示例：生成一些基于技术指标的因子候选
-        factor_templates = [
-            {
-                'name': 'Enhanced_Momentum',
-                'description': '增强动量因子：结合价格动量和成交量动量',
-                'formula': '(close/close.shift(20) - 1) * (volume/volume.shift(20))',
-                'category': 'momentum'
-            },
-            {
-                'name': 'Volatility_Adjusted_Return',
-                'description': '波动率调整收益：收益率除以波动率',
-                'formula': '(close/close.shift(20) - 1) / close.rolling(20).std()',
-                'category': 'risk_adjusted'
-            },
-            {
-                'name': 'Volume_Price_Divergence',
-                'description': '量价背离因子：价格变化与成交量变化的差异',
-                'formula': '(close/close.shift(5) - 1) - (volume/volume.shift(5) - 1)',
-                'category': 'divergence'
-            },
-            {
-                'name': 'Trend_Strength',
-                'description': '趋势强度因子：价格相对于移动平均线的位置',
-                'formula': '(close - close.rolling(20).mean()) / close.rolling(20).std()',
-                'category': 'trend'
-            },
-            {
-                'name': 'Liquidity_Premium',
-                'description': '流动性溢价因子：成交额相对于市值的比例',
-                'formula': '(volume * close) / market_cap',
-                'category': 'liquidity'
-            }
-        ]
-        
-        for i, template in enumerate(factor_templates[:num_candidates]):
+        if market_data is None or market_data.empty:
+            raise ValueError("market_data 不能为空")
+
+        num_candidates = max(1, min(int(num_candidates), 30))
+        raw_pool = self._build_local_candidate_pool(market_data=market_data, news_data=news_data)
+        normalized = self._normalize_candidates(raw_pool, num_candidates=num_candidates)
+
+        timestamp = datetime.now().isoformat()
+        candidates: List[Dict[str, Any]] = []
+        for i, item in enumerate(normalized, 1):
             candidate = {
-                'factor_id': f'LLM_FACTOR_{i+1:03d}',
-                'name': template['name'],
-                'description': template['description'],
-                'formula': template['formula'],
-                'category': template['category'],
-                'created_at': datetime.now().isoformat()
+                "factor_id": f"ALPHA_FACTOR_{int(datetime.now().timestamp())}_{i:03d}",
+                "name": item["name"],
+                "description": item["description"],
+                "formula": item["formula"],
+                "category": item["category"],
+                "rationale": item.get("rationale", ""),
+                "created_at": timestamp,
+                "engine": "local_rule_v1",
             }
             candidates.append(candidate)
-        
+
         self.factor_candidates.extend(candidates)
         return candidates
     
@@ -385,4 +601,3 @@ class LLMAlphaMiner:
 
 # 创建全局实例
 llm_alpha_miner = LLMAlphaMiner()
-

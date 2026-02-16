@@ -353,34 +353,153 @@ def register_decision_manager(mcp):
             
             elif action == 'recommend':
                 criteria = kwargs.get('criteria', {})
-                limit = kwargs.get('limit', 10)
-                
-                min_score = criteria.get('min_score', 60)
-                sectors = criteria.get('sectors', [])
-                
+                if isinstance(criteria, str):
+                    try:
+                        criteria = json.loads(criteria or "{}")
+                    except Exception:
+                        criteria = {}
+                if not isinstance(criteria, dict):
+                    criteria = {}
+
+                def _to_int(v, default):
+                    try:
+                        return int(v)
+                    except Exception:
+                        return int(default)
+
+                def _to_float(v, default=0.0):
+                    try:
+                        return float(v)
+                    except Exception:
+                        return float(default)
+
+                limit = max(1, _to_int(kwargs.get('limit', criteria.get('limit', 10)), 10))
+                min_score = _to_float(criteria.get('min_score', kwargs.get('min_score', 60)), 60.0)
+                sectors = criteria.get('sectors', kwargs.get('sector_filter', [])) or []
+                universe_limit = max(limit, _to_int(kwargs.get('universe_limit', criteria.get('universe_limit', limit * 20)), limit * 20))
+                universe_limit = min(universe_limit, 3000)
+
+                if isinstance(sectors, str):
+                    sectors = [s.strip() for s in sectors.split(',') if s.strip()]
+                sector_set = {str(s).strip() for s in sectors if str(s).strip()}
+
+                codes = kwargs.get('codes', criteria.get('codes', [])) or []
+                if isinstance(codes, str):
+                    codes = [c.strip() for c in codes.split(',') if c.strip()]
+
+                keyword = str(kwargs.get('keyword', criteria.get('keyword', '')) or '').strip()
+                liquidity_filter = criteria.get('liquidity_filter', kwargs.get('liquidity_filter', {})) or {}
+                if isinstance(liquidity_filter, str):
+                    try:
+                        liquidity_filter = json.loads(liquidity_filter or "{}")
+                    except Exception:
+                        liquidity_filter = {}
+                if not isinstance(liquidity_filter, dict):
+                    liquidity_filter = {}
+
+                min_market_cap = _to_float(
+                    liquidity_filter.get('min_market_cap', liquidity_filter.get('market_cap_min', 0.0)),
+                    0.0,
+                )
+
+                candidate_codes = []
+                candidate_rows = []
+
+                if isinstance(codes, list) and codes:
+                    candidate_codes = [normalize_code(c) for c in codes if isinstance(c, str) and c.strip()]
+                else:
+                    if hasattr(db, 'search_stocks'):
+                        try:
+                            candidate_rows = await db.search_stocks(keyword=keyword, limit=universe_limit)
+                        except Exception:
+                            candidate_rows = []
+
+                    if not candidate_rows and hasattr(db, 'acquire'):
+                        try:
+                            async with db.acquire() as conn:
+                                rows = await conn.fetch(
+                                    """
+                                    SELECT stock_code, stock_name, industry, market_cap
+                                    FROM stocks
+                                    ORDER BY market_cap DESC NULLS LAST
+                                    LIMIT $1
+                                    """,
+                                    universe_limit,
+                                )
+                            candidate_rows = []
+                            for r in rows:
+                                row_dict = dict(r)
+                                mc = row_dict.get('market_cap')
+                                candidate_rows.append({
+                                    'code': row_dict.get('stock_code'),
+                                    'name': row_dict.get('stock_name'),
+                                    'industry': row_dict.get('industry'),
+                                    'market_cap': float(mc) if mc else None,
+                                })
+                        except Exception:
+                            candidate_rows = []
+
+                    if sector_set:
+                        candidate_rows = [
+                            r for r in candidate_rows
+                            if str((r or {}).get('industry', '')).strip() in sector_set
+                        ]
+
+                    if min_market_cap > 0:
+                        candidate_rows = [
+                            r for r in candidate_rows
+                            if _to_float((r or {}).get('market_cap', 0.0), 0.0) >= min_market_cap
+                        ]
+
+                    seen_codes = set()
+                    for row in candidate_rows:
+                        code = normalize_code((row or {}).get('code') or (row or {}).get('stock_code') or '')
+                        if code and code not in seen_codes:
+                            seen_codes.add(code)
+                            candidate_codes.append(code)
+
+                fallback_used = False
+                if not candidate_codes:
+                    fallback_used = True
+                    candidate_codes = ['600519', '000858', '002304', '000001', '600036']
+
                 recommendations = []
-                
-                sample_codes = ['600519', '000858', '002304', '000001', '600036']
-                
-                for code in sample_codes[:limit]:
+                scanned = 0
+                for code in candidate_codes:
+                    if scanned >= universe_limit:
+                        break
+                    scanned += 1
+
                     result = await decision_manager(action='analyze', code=code)
-                    
-                    if result.get('success'):
-                        data = result['data']
-                        if data['total_score'] >= min_score:
-                            recommendations.append({
-                                'code': code,
-                                'decision': data['decision'],
-                                'score': data['total_score'],
-                                'reason': data['reason']
-                            })
-                
+                    if not result.get('success'):
+                        continue
+
+                    data = result['data']
+                    if data['total_score'] >= min_score:
+                        recommendations.append({
+                            'code': code,
+                            'decision': data['decision'],
+                            'score': data['total_score'],
+                            'reason': data['reason']
+                        })
+                        if len(recommendations) >= limit:
+                            break
+
                 recommendations.sort(key=lambda x: x['score'], reverse=True)
-                
+
                 return _ok({
                     'recommendations': recommendations,
                     'count': len(recommendations),
-                    'criteria': criteria
+                    'criteria': criteria,
+                    'universe': {
+                        'candidate_count': len(candidate_codes),
+                        'scanned_count': scanned,
+                        'limit': limit,
+                        'universe_limit': universe_limit,
+                        'sector_filter': list(sector_set),
+                        'min_market_cap': min_market_cap,
+                        'fallback_used': fallback_used,
+                    },
                 })
             
             elif action == 'portfolio_advice':

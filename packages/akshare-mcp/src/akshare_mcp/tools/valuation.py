@@ -4,6 +4,8 @@ from typing import Optional, List
 from ..storage import get_db
 from ..utils import ok, fail
 import statistics
+import math
+import random
 
 
 
@@ -167,6 +169,132 @@ def _run_sensitivity(
                     }
                 )
     return scenarios
+
+
+def _sanitize_distribution_samples(samples: int, *, low: int = 100, high: int = 10000) -> int:
+    """Normalize distribution sample count to a safe integer range."""
+    try:
+        n = int(samples)
+    except Exception:
+        n = 1000
+    return max(low, min(high, n))
+
+
+def _linear_quantile(sorted_values: List[float], q: float) -> float:
+    """Linear interpolation quantile on sorted values."""
+    if not sorted_values:
+        raise ValueError("sorted_values cannot be empty")
+    q = _clamp(float(q), 0.0, 1.0)
+    if len(sorted_values) == 1:
+        return float(sorted_values[0])
+    pos = (len(sorted_values) - 1) * q
+    low = int(pos)
+    high = min(low + 1, len(sorted_values) - 1)
+    weight = pos - low
+    return float(sorted_values[low] * (1 - weight) + sorted_values[high] * weight)
+
+
+def _run_dcf_distribution(
+    *,
+    base_revenue: float,
+    years: int,
+    tax_rate: float,
+    capex_ratio: float,
+    depreciation_ratio: float,
+    nwc_ratio: float,
+    growth_rate: float,
+    profit_margin: float,
+    discount_rate: float,
+    terminal_growth_rate: float,
+    sample_size: int,
+    growth_std_ratio: float = 0.2,
+    margin_std_ratio: float = 0.15,
+    discount_std_ratio: float = 0.1,
+    terminal_std_ratio: float = 0.1,
+    seed: Optional[int] = None,
+) -> dict:
+    """
+    Monte Carlo DCF distribution based on key assumptions.
+
+    Each std arg is interpreted as a ratio vs. the base assumption.
+    """
+    rng = random.Random(seed)
+
+    def _sample(base: float, ratio: float, low: float, high: float) -> float:
+        sigma = abs(base) * max(float(ratio), 0.0)
+        if sigma == 0:
+            return _clamp(base, low, high)
+        return _clamp(rng.gauss(base, sigma), low, high)
+
+    values: List[float] = []
+    attempts = 0
+    max_attempts = max(sample_size * 4, sample_size + 10)
+
+    while len(values) < sample_size and attempts < max_attempts:
+        attempts += 1
+        g = _sample(growth_rate, growth_std_ratio, -0.2, 0.5)
+        pm = _sample(profit_margin, margin_std_ratio, 0.01, 0.6)
+        r = _sample(discount_rate, discount_std_ratio, 0.02, 0.4)
+        tg = _sample(terminal_growth_rate, terminal_std_ratio, -0.02, 0.08)
+        if r <= tg:
+            continue
+        try:
+            projection = _build_driver_fcf_projection(
+                base_revenue=base_revenue,
+                growth_rate=g,
+                years=years,
+                profit_margin=pm,
+                tax_rate=tax_rate,
+                capex_ratio=capex_ratio,
+                depreciation_ratio=depreciation_ratio,
+                nwc_ratio=nwc_ratio,
+            )
+            pv_result = _present_value_from_projection(
+                projection,
+                discount_rate=r,
+                terminal_growth_rate=tg,
+            )
+            intrinsic = float(pv_result["intrinsic_value"])
+            if math.isfinite(intrinsic):
+                values.append(intrinsic)
+        except Exception:
+            continue
+
+    payload = {
+        "requested_samples": int(sample_size),
+        "sample_size": int(len(values)),
+        "attempts": int(attempts),
+        "mean": None,
+        "std": None,
+        "p10": None,
+        "p50": None,
+        "p90": None,
+        "min": None,
+        "max": None,
+        "assumption_std_ratio": {
+            "growth_rate": float(growth_std_ratio),
+            "profit_margin": float(margin_std_ratio),
+            "discount_rate": float(discount_std_ratio),
+            "terminal_growth_rate": float(terminal_std_ratio),
+        },
+    }
+    if not values:
+        payload["warning"] = "No valid Monte Carlo samples under current constraints"
+        return payload
+
+    sorted_values = sorted(values)
+    payload.update(
+        {
+            "mean": float(statistics.mean(sorted_values)),
+            "std": float(statistics.pstdev(sorted_values)) if len(sorted_values) > 1 else 0.0,
+            "p10": _linear_quantile(sorted_values, 0.10),
+            "p50": _linear_quantile(sorted_values, 0.50),
+            "p90": _linear_quantile(sorted_values, 0.90),
+            "min": float(sorted_values[0]),
+            "max": float(sorted_values[-1]),
+        }
+    )
+    return payload
 
 
 # 供测试与审计复用的默认情景偏移
@@ -402,6 +530,13 @@ def register(mcp):
         depreciation_ratio: float = 0.03,
         nwc_ratio: float = 0.01,
         enable_sensitivity: bool = True,
+        enable_distribution: bool = False,
+        distribution_samples: int = 1000,
+        distribution_growth_std: float = 0.2,
+        distribution_margin_std: float = 0.15,
+        distribution_discount_std: float = 0.1,
+        distribution_terminal_std: float = 0.1,
+        distribution_seed: Optional[int] = None,
     ):
         """
         DCF估值（现金流折现，驱动项版本）
@@ -512,7 +647,29 @@ def register(mcp):
                     terminal_shocks=DEFAULT_SENSITIVITY_SHOCKS,
                 )
 
-            return ok({
+            valuation_interval = None
+            if enable_distribution:
+                sample_size = _sanitize_distribution_samples(distribution_samples)
+                valuation_interval = _run_dcf_distribution(
+                    base_revenue=base_revenue,
+                    years=years,
+                    tax_rate=tax_rate,
+                    capex_ratio=capex_ratio,
+                    depreciation_ratio=depreciation_ratio,
+                    nwc_ratio=nwc_ratio,
+                    growth_rate=growth_rate,
+                    profit_margin=profit_margin,
+                    discount_rate=effective_discount_rate,
+                    terminal_growth_rate=term_g,
+                    sample_size=sample_size,
+                    growth_std_ratio=distribution_growth_std,
+                    margin_std_ratio=distribution_margin_std,
+                    discount_std_ratio=distribution_discount_std,
+                    terminal_std_ratio=distribution_terminal_std,
+                    seed=distribution_seed,
+                )
+
+            payload = {
                 'code': code,
                 'intrinsic_value': float(valuation_core['intrinsic_value']),
                 'discount_rate': float(effective_discount_rate),
@@ -538,8 +695,13 @@ def register(mcp):
                     'trace': 'dcf_driver_v2',
                     'compatibility_mode': 'legacy_signature_plus_extensions',
                     'used_discount_source': 'input_discount_rate' if discount_rate and discount_rate > 0 else 'wacc',
+                    'distribution_enabled': bool(enable_distribution),
                 }
-            })
+            }
+            if valuation_interval is not None:
+                payload['valuation_interval'] = valuation_interval
+
+            return ok(payload)
 
         except Exception as e:
             return fail(str(e))

@@ -68,19 +68,24 @@ def _extract_closes(klines):
 
 async def _fetch_returns_for_code(db, code: str, lookback_days: int):
     """获取单只股票日收益率序列（优先 DB，失败回退工具层 get_kline）。"""
-    klines = await db.get_klines(code, limit=lookback_days + 1)
-    if not klines or len(klines) < 2:
-        res = get_kline(normalize_code(code), 'daily', lookback_days + 1)
-        if res.get('success') and res.get('data'):
-            klines = res['data']
-
-    closes = _extract_closes(klines)
+    closes = await _fetch_close_series_for_code(db, code, lookback_days)
     if len(closes) < 2:
         return np.array([]), None
 
     returns = np.diff(closes) / closes[:-1]
     latest_close = float(closes[-1])
     return returns, latest_close
+
+
+async def _fetch_close_series_for_code(db, code: str, lookback_days: int) -> np.ndarray:
+    """获取单只股票收盘价序列（优先 DB，失败回退工具层 get_kline）。"""
+    klines = await db.get_klines(code, limit=lookback_days + 1)
+    if not klines or len(klines) < 2:
+        res = get_kline(normalize_code(code), 'daily', lookback_days + 1)
+        if res.get('success') and res.get('data'):
+            klines = res['data']
+
+    return _extract_closes(klines)
 
 
 async def _build_portfolio_daily_returns(db, holdings, lookback_days: int):
@@ -167,6 +172,72 @@ def _to_float_list(arr: np.ndarray):
     return [float(x) for x in arr.tolist()]
 
 
+def _compute_timing_component(price_matrix: np.ndarray, start_values: np.ndarray) -> dict:
+    """基于价格路径计算择时贡献（真实路径收益 - 静态权重线性收益）。"""
+    if (
+        price_matrix is None
+        or start_values is None
+        or price_matrix.ndim != 2
+        or len(start_values) != price_matrix.shape[0]
+        or price_matrix.shape[1] < 2
+    ):
+        return {
+            "timing_return": 0.0,
+            "realized_total_return": 0.0,
+            "static_total_return": 0.0,
+            "daily_returns": np.array([]),
+            "aligned_days": int(price_matrix.shape[1]) if isinstance(price_matrix, np.ndarray) and price_matrix.ndim == 2 else 0,
+            "assets_used": 0,
+        }
+
+    valid_mask = (
+        np.isfinite(start_values)
+        & (start_values > 0)
+        & np.isfinite(price_matrix[:, 0])
+        & (price_matrix[:, 0] > 0)
+    )
+    if int(np.sum(valid_mask)) < 1:
+        return {
+            "timing_return": 0.0,
+            "realized_total_return": 0.0,
+            "static_total_return": 0.0,
+            "daily_returns": np.array([]),
+            "aligned_days": int(price_matrix.shape[1]),
+            "assets_used": 0,
+        }
+
+    prices = np.array(price_matrix[valid_mask], dtype=float)
+    start_vals = np.array(start_values[valid_mask], dtype=float)
+
+    if prices.shape[1] < 2:
+        return {
+            "timing_return": 0.0,
+            "realized_total_return": 0.0,
+            "static_total_return": 0.0,
+            "daily_returns": np.array([]),
+            "aligned_days": int(prices.shape[1]),
+            "assets_used": int(len(start_vals)),
+        }
+
+    static_weights = start_vals / float(np.sum(start_vals))
+    daily_asset_returns = np.diff(prices, axis=1) / prices[:, :-1]
+    daily_asset_returns = np.nan_to_num(daily_asset_returns, nan=0.0, posinf=0.0, neginf=0.0)
+    daily_returns = np.dot(static_weights, daily_asset_returns)
+    realized_total_return = float(np.prod(1.0 + daily_returns) - 1.0)
+
+    asset_period_returns = prices[:, -1] / prices[:, 0] - 1.0
+    static_total_return = float(np.dot(static_weights, asset_period_returns))
+
+    return {
+        "timing_return": float(realized_total_return - static_total_return),
+        "realized_total_return": realized_total_return,
+        "static_total_return": static_total_return,
+        "daily_returns": daily_returns,
+        "aligned_days": int(prices.shape[1]),
+        "assets_used": int(len(start_vals)),
+    }
+
+
 def register_performance_manager(mcp):
     """注册绩效管理器工具"""
 
@@ -180,7 +251,7 @@ def register_performance_manager(mcp):
                 - help: 无需额外参数
                 - calculate_metrics: portfolio_id(str|int), lookback_days(int, optional)
                 - backtest_metrics: backtest_id(str, optional) 或 artifact_id(str, optional)
-                - attribution: portfolio_id(str|int)
+                - attribution: portfolio_id(str|int), lookback_days(int, optional)
                 - benchmark_comparison: portfolio_id(str|int), benchmark(str, optional), lookback_days(int, optional)
 
         Returns:
@@ -421,6 +492,8 @@ def register_performance_manager(mcp):
 
             elif action == 'attribution':
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
+                lookback_days = int(kwargs.get('lookback_days', 252) or 252)
+                lookback_days = max(20, min(2000, lookback_days))
 
                 async with db.acquire() as conn:
                     holdings = await conn.fetch(
@@ -444,21 +517,23 @@ def register_performance_manager(mcp):
                     shares = float(holding.get('shares') or 0)
                     cost_price = float(holding.get('cost_price') or 0)
 
-                    klines = await db.get_klines(code, limit=1)
-                    if not klines:
-                        res = get_kline(normalize_code(code), 'daily', 1)
-                        if res.get('success') and res.get('data'):
-                            klines = res['data']
-                    if not klines:
+                    closes = await _fetch_close_series_for_code(db, code, lookback_days)
+                    if len(closes) < 2:
                         continue
 
-                    current_price = float(klines[0]['close'])
-                    stock_return = (current_price - cost_price) / cost_price if cost_price > 0 else 0.0
+                    current_price = float(closes[-1])
+                    stock_return = float(current_price / closes[0] - 1.0)
+                    lifetime_return = (current_price - cost_price) / cost_price if cost_price > 0 else stock_return
 
-                    # 权重基数优先使用成本市值，缺失时退化为当前市值，再退化为 1
+                    # 权重基数优先使用期初市值，缺失时退化到成本市值/当前市值，再退化为 1
+                    start_value = shares * float(closes[0]) if shares > 0 and closes[0] > 0 else 0.0
                     cost_value = shares * cost_price if shares > 0 and cost_price > 0 else 0.0
                     current_value = shares * current_price if shares > 0 and current_price > 0 else 0.0
-                    weight_base = cost_value if cost_value > 0 else (current_value if current_value > 0 else 1.0)
+                    weight_base = (
+                        start_value
+                        if start_value > 0
+                        else (cost_value if cost_value > 0 else (current_value if current_value > 0 else 1.0))
+                    )
 
                     stock_info = await db.get_stock_info(code)
                     sector = stock_info.get('industry', '未知') if stock_info else '未知'
@@ -467,6 +542,9 @@ def register_performance_manager(mcp):
                         'code': code,
                         'sector': sector,
                         'stock_return': float(stock_return),
+                        'lifetime_return': float(lifetime_return),
+                        'close_series': closes,
+                        'timing_start_value': float(weight_base),
                         'weight_base': float(weight_base),
                     })
                     total_weight_base += weight_base
@@ -474,12 +552,29 @@ def register_performance_manager(mcp):
                 if not rows or total_weight_base <= 0:
                     return fail('持仓数据不足，无法进行归因分析')
 
+                min_len = min(len(r['close_series']) for r in rows)
+                if min_len < 2:
+                    return fail('价格序列不足，无法计算择时贡献')
+
+                price_matrix = np.array(
+                    [np.array(r['close_series'][-min_len:], dtype=float) for r in rows],
+                    dtype=float,
+                )
+                start_values = np.array(
+                    [float(r.get('timing_start_value', 0.0) or 0.0) for r in rows],
+                    dtype=float,
+                )
+                timing_info = _compute_timing_component(price_matrix, start_values)
+
                 # 归一化权重
                 for r in rows:
                     r['weight'] = float(r['weight_base'] / total_weight_base)
 
-                # 组合总收益（可复现）：sum(weight * stock_return)
-                total_return = float(sum(r['weight'] * r['stock_return'] for r in rows))
+                # 静态线性收益（用于行业配置/选股拆分）
+                static_total_return = float(sum(r['weight'] * r['stock_return'] for r in rows))
+                realized_total_return = float(timing_info.get('realized_total_return', static_total_return))
+                timing_return = float(timing_info.get('timing_return', 0.0))
+                total_return = realized_total_return
 
                 # 计算行业收益（行业内按权重加权）
                 sector_weight_sum = {}
@@ -494,21 +589,20 @@ def register_performance_manager(mcp):
                     for s in sector_weight_sum
                 }
 
-                # 第一阶段可审计拆解：
+                # 可审计拆解：
                 # sector_allocation = sum(weight * sector_return)
                 # stock_selection = sum(weight * (stock_return - sector_return))
-                # timing 暂未实现，设为 0
+                # timing = realized_total_return - static_total_return
                 sector_allocation_return = float(sum(r['weight'] * sector_return_map.get(r['sector'], 0.0) for r in rows))
                 stock_selection_return = float(sum(
                     r['weight'] * (r['stock_return'] - sector_return_map.get(r['sector'], 0.0))
                     for r in rows
                 ))
-                timing_return = 0.0
 
                 # 数值稳定处理，确保分解和与总收益一致
                 decomposition_total = stock_selection_return + sector_allocation_return + timing_return
                 residual = total_return - decomposition_total
-                stock_selection_return += residual
+                timing_return += residual
 
                 attribution_by_stock = []
                 for r in rows:
@@ -520,6 +614,8 @@ def register_performance_manager(mcp):
                         'weight_pct': _to_pct(r['weight']),
                         'stock_return': float(r['stock_return']),
                         'stock_return_pct': _to_pct(r['stock_return']),
+                        'lifetime_return': float(r.get('lifetime_return', r['stock_return'])),
+                        'lifetime_return_pct': _to_pct(float(r.get('lifetime_return', r['stock_return']))),
                         'contribution': float(contribution),
                         'contribution_pct': _to_pct(contribution),
                     })
@@ -544,9 +640,13 @@ def register_performance_manager(mcp):
                         'timing': {
                             'return': float(timing_return),
                             'contribution': _to_pct(timing_return),
-                            'description': '择时贡献（第一阶段暂未实现）',
-                            'status': 'partial',
-                            'reason': 'timing model not enabled'
+                            'description': '择时贡献（真实路径收益 - 静态权重线性收益）',
+                            'status': 'implemented',
+                            'basis': 'buy_and_hold_path_minus_static_linear',
+                            'aligned_days': int(timing_info.get('aligned_days', min_len)),
+                            'assets_used': int(timing_info.get('assets_used', len(rows))),
+                            'static_total_return': float(static_total_return),
+                            'realized_total_return': float(realized_total_return),
                         }
                     },
                     'attribution_by_stock': attribution_by_stock,
@@ -559,7 +659,11 @@ def register_performance_manager(mcp):
                         }
                         for sector in sector_return_map
                     },
-                    'method': 'weighted_return_decomposition_v1'
+                    'method': 'weighted_return_decomposition_v2_with_timing',
+                    'data_window': {
+                        'lookback_days': int(lookback_days),
+                        'aligned_days': int(timing_info.get('aligned_days', min_len)),
+                    },
                 })
 
             elif action == 'benchmark_comparison':
