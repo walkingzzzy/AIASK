@@ -84,6 +84,56 @@ def _parse_codes_weights(kwargs: dict) -> tuple[list[str], list[float], str | No
     return codes, weights, None
 
 
+def _safe_float(value: Any, default: float | None = 0.0) -> float | None:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _first_float(keys: list[str], *sources: dict | None, positive_only: bool = False) -> float | None:
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            if key not in source:
+                continue
+            value = _safe_float(source.get(key), None)
+            if value is None:
+                continue
+            if positive_only and value <= 0:
+                continue
+            return float(value)
+    return None
+
+
+def _format_pct(ratio: float) -> str:
+    return f"{ratio * 100:.2f}%"
+
+
+def _classify_size_bucket(market_cap: float | None) -> str:
+    # CNY market-cap buckets: large >= 200B, mid >= 50B, else small.
+    if market_cap is None or market_cap <= 0:
+        return "unknown"
+    if market_cap >= 2e11:
+        return "large"
+    if market_cap >= 5e10:
+        return "mid"
+    return "small"
+
+
+def _liquidity_level(days_to_exit: float | None) -> str:
+    if days_to_exit is None:
+        return "unknown"
+    if days_to_exit > 5:
+        return "high"
+    if days_to_exit > 2:
+        return "medium"
+    return "low"
+
+
 def _empty_var_payload(portfolio_id: Any, input_mode: str, confidence: float, method: str) -> dict:
     """Return a stable, parseable zero-risk payload for empty portfolios."""
     return {
@@ -446,6 +496,12 @@ def register_risk_manager(mcp):
                 portfolio_id = _safe_portfolio_id(kwargs.get("portfolio_id"))
                 input_mode = "portfolio_id"
                 position_rows = []
+                lookback_days = int(kwargs.get("lookback_days", 20) or 20)
+                lookback_days = max(5, min(120, lookback_days))
+                monitor_points = int(kwargs.get("monitor_points", lookback_days) or lookback_days)
+                monitor_points = max(5, min(60, monitor_points))
+                max_participation_rate = float(kwargs.get("max_participation_rate", 0.2) or 0.2)
+                max_participation_rate = max(0.01, min(0.5, max_participation_rate))
 
                 if portfolio_id is not None:
                     async with db.acquire() as conn:
@@ -466,18 +522,65 @@ def register_risk_manager(mcp):
                         code = normalize_code(str(holding["code"]))
                         shares = float(holding["shares"])
                         stock_info = await db.get_stock_info(code)
-                        klines = await db.get_klines(code, limit=1)
+                        klines = await db.get_klines(code, limit=max(lookback_days, monitor_points, 2))
                         if not klines:
                             continue
+                        financial_row = None
+                        try:
+                            financials = await db.get_financials(code, limit=1)
+                            if isinstance(financials, list) and financials:
+                                financial_row = financials[0]
+                            elif isinstance(financials, dict):
+                                financial_row = financials
+                        except Exception:
+                            financial_row = None
+
                         current_price = float(klines[0]["close"])
                         current_value = shares * current_price
                         sector = stock_info.get("industry", "unknown") if stock_info else "unknown"
+                        market_cap = _first_float(
+                            ["market_cap", "total_market_cap", "total_mv", "circ_mv", "float_market_cap", "mkt_cap"],
+                            stock_info,
+                            financial_row,
+                            positive_only=True,
+                        )
+                        beta = _first_float(["beta", "beta_1y", "beta_250d", "beta_60d"], stock_info, financial_row)
+                        pe = _first_float(["pe_ratio", "pe", "ttm_pe"], stock_info, financial_row, positive_only=True)
+                        pb = _first_float(["pb_ratio", "pb", "ttm_pb"], stock_info, financial_row, positive_only=True)
+                        roe = _first_float(["roe", "roe_ttm"], financial_row, stock_info)
+                        debt_ratio = _first_float(["debt_ratio", "debt_to_asset"], financial_row, stock_info)
+
+                        amount_samples = []
+                        for row in klines[:lookback_days]:
+                            close_px = _safe_float(row.get("close"), 0.0) or 0.0
+                            volume = _safe_float(row.get("volume"), 0.0) or 0.0
+                            amount = _safe_float(row.get("amount"), None)
+                            amount_samples.append(amount if amount is not None and amount > 0 else close_px * volume)
+                        avg_daily_amount = float(np.mean(amount_samples)) if amount_samples else 0.0
+
+                        price_series = []
+                        for row in klines[:monitor_points]:
+                            close_px = _safe_float(row.get("close"), 0.0) or 0.0
+                            if close_px <= 0:
+                                continue
+                            price_series.append((str(row.get("date", "")), float(close_px)))
+
                         position_rows.append(
                             {
                                 "code": code,
                                 "name": stock_info.get("stock_name", code) if stock_info else code,
                                 "value": float(current_value),
                                 "sector": sector,
+                                "current_price": float(current_price),
+                                "shares_proxy": float(shares),
+                                "market_cap": market_cap,
+                                "beta": beta,
+                                "pe": pe,
+                                "pb": pb,
+                                "roe": roe,
+                                "debt_ratio": debt_ratio,
+                                "avg_daily_amount": float(avg_daily_amount),
+                                "price_series": price_series,
                             }
                         )
                 else:
@@ -491,13 +594,66 @@ def register_risk_manager(mcp):
                     portfolio_value = float(kwargs.get("portfolio_value", 1_000_000) or 1_000_000)
                     for code, weight in zip(codes, weights):
                         stock_info = await db.get_stock_info(code)
+                        klines = await db.get_klines(code, limit=max(lookback_days, monitor_points, 2))
+                        if not klines:
+                            continue
+                        financial_row = None
+                        try:
+                            financials = await db.get_financials(code, limit=1)
+                            if isinstance(financials, list) and financials:
+                                financial_row = financials[0]
+                            elif isinstance(financials, dict):
+                                financial_row = financials
+                        except Exception:
+                            financial_row = None
+
+                        current_price = float(klines[0]["close"])
+                        current_value = float(weight * portfolio_value)
+                        shares_proxy = (current_value / current_price) if current_price > 0 else 0.0
                         sector = stock_info.get("industry", "unknown") if stock_info else "unknown"
+                        market_cap = _first_float(
+                            ["market_cap", "total_market_cap", "total_mv", "circ_mv", "float_market_cap", "mkt_cap"],
+                            stock_info,
+                            financial_row,
+                            positive_only=True,
+                        )
+                        beta = _first_float(["beta", "beta_1y", "beta_250d", "beta_60d"], stock_info, financial_row)
+                        pe = _first_float(["pe_ratio", "pe", "ttm_pe"], stock_info, financial_row, positive_only=True)
+                        pb = _first_float(["pb_ratio", "pb", "ttm_pb"], stock_info, financial_row, positive_only=True)
+                        roe = _first_float(["roe", "roe_ttm"], financial_row, stock_info)
+                        debt_ratio = _first_float(["debt_ratio", "debt_to_asset"], financial_row, stock_info)
+
+                        amount_samples = []
+                        for row in klines[:lookback_days]:
+                            close_px = _safe_float(row.get("close"), 0.0) or 0.0
+                            volume = _safe_float(row.get("volume"), 0.0) or 0.0
+                            amount = _safe_float(row.get("amount"), None)
+                            amount_samples.append(amount if amount is not None and amount > 0 else close_px * volume)
+                        avg_daily_amount = float(np.mean(amount_samples)) if amount_samples else 0.0
+
+                        price_series = []
+                        for row in klines[:monitor_points]:
+                            close_px = _safe_float(row.get("close"), 0.0) or 0.0
+                            if close_px <= 0:
+                                continue
+                            price_series.append((str(row.get("date", "")), float(close_px)))
+
                         position_rows.append(
                             {
                                 "code": code,
                                 "name": stock_info.get("stock_name", code) if stock_info else code,
-                                "value": float(weight * portfolio_value),
+                                "value": current_value,
                                 "sector": sector,
+                                "current_price": float(current_price),
+                                "shares_proxy": float(shares_proxy),
+                                "market_cap": market_cap,
+                                "beta": beta,
+                                "pe": pe,
+                                "pb": pb,
+                                "roe": roe,
+                                "debt_ratio": debt_ratio,
+                                "avg_daily_amount": float(avg_daily_amount),
+                                "price_series": price_series,
                             }
                         )
 
@@ -520,6 +676,7 @@ def register_risk_manager(mcp):
                             "value": value,
                             "weight": "0%",
                             "sector": sector,
+                            "liquidity_level": "unknown",
                         }
                     )
 
@@ -553,7 +710,156 @@ def register_risk_manager(mcp):
                     concentration_level = "low"
                     concentration_desc = "holdings are reasonably diversified"
 
+                # Style exposure (size/value/quality/beta)
+                size_bucket_weights = {"large": 0.0, "mid": 0.0, "small": 0.0, "unknown": 0.0}
+                beta_weight_num = 0.0
+                beta_weight_den = 0.0
+                pe_weight_num = 0.0
+                pe_weight_den = 0.0
+                pb_weight_num = 0.0
+                pb_weight_den = 0.0
+                roe_weight_num = 0.0
+                roe_weight_den = 0.0
+                debt_weight_num = 0.0
+                debt_weight_den = 0.0
+
+                for item in position_rows:
+                    value = float(item["value"])
+                    weight = (value / total_value) if total_value > 0 else 0.0
+                    bucket = _classify_size_bucket(item.get("market_cap"))
+                    size_bucket_weights[bucket] = size_bucket_weights.get(bucket, 0.0) + weight
+
+                    beta = item.get("beta")
+                    if beta is not None:
+                        beta_weight_num += weight * float(beta)
+                        beta_weight_den += weight
+
+                    pe = item.get("pe")
+                    if pe is not None and pe > 0:
+                        pe_weight_num += weight * float(pe)
+                        pe_weight_den += weight
+
+                    pb = item.get("pb")
+                    if pb is not None and pb > 0:
+                        pb_weight_num += weight * float(pb)
+                        pb_weight_den += weight
+
+                    roe = item.get("roe")
+                    if roe is not None:
+                        roe_weight_num += weight * float(roe)
+                        roe_weight_den += weight
+
+                    debt_ratio = item.get("debt_ratio")
+                    if debt_ratio is not None:
+                        debt_weight_num += weight * float(debt_ratio)
+                        debt_weight_den += weight
+
+                weighted_beta = (beta_weight_num / beta_weight_den) if beta_weight_den > 0 else None
+                weighted_pe = (pe_weight_num / pe_weight_den) if pe_weight_den > 0 else None
+                weighted_pb = (pb_weight_num / pb_weight_den) if pb_weight_den > 0 else None
+                weighted_roe = (roe_weight_num / roe_weight_den) if roe_weight_den > 0 else None
+                weighted_debt = (debt_weight_num / debt_weight_den) if debt_weight_den > 0 else None
+
+                if weighted_pe is None:
+                    valuation_tilt = "unknown"
+                elif weighted_pe <= 15:
+                    valuation_tilt = "value"
+                elif weighted_pe >= 30:
+                    valuation_tilt = "growth"
+                else:
+                    valuation_tilt = "balanced"
+
+                # Liquidity risk: estimated days to exit under participation cap.
+                liquidity_rows = []
+                weighted_days_to_exit = 0.0
+                weighted_days_den = 0.0
+                illiquid_weight = 0.0
+                for item in position_rows:
+                    value = float(item["value"])
+                    weight = (value / total_value) if total_value > 0 else 0.0
+                    avg_daily_amount = float(item.get("avg_daily_amount", 0.0) or 0.0)
+                    capacity = avg_daily_amount * max_participation_rate
+                    days_to_exit = (value / capacity) if capacity > 0 else None
+                    level = _liquidity_level(days_to_exit)
+                    if level in {"medium", "high"}:
+                        illiquid_weight += weight
+                    if days_to_exit is not None:
+                        weighted_days_to_exit += weight * days_to_exit
+                        weighted_days_den += weight
+
+                    liquidity_rows.append(
+                        {
+                            "code": item["code"],
+                            "name": item.get("name", item["code"]),
+                            "avg_daily_amount": float(avg_daily_amount),
+                            "days_to_exit": round(float(days_to_exit), 2) if days_to_exit is not None else None,
+                            "level": level,
+                        }
+                    )
+
+                for row in stock_exposure:
+                    match = next((x for x in liquidity_rows if x["code"] == row["code"]), None)
+                    if match:
+                        row["liquidity_level"] = match["level"]
+
+                portfolio_days_to_exit = (
+                    weighted_days_to_exit / weighted_days_den if weighted_days_den > 0 else None
+                )
+                if portfolio_days_to_exit is None:
+                    liquidity_level = "unknown"
+                elif portfolio_days_to_exit > 5 or illiquid_weight > 0.35:
+                    liquidity_level = "high"
+                elif portfolio_days_to_exit > 2 or illiquid_weight > 0.2:
+                    liquidity_level = "medium"
+                else:
+                    liquidity_level = "low"
+
+                # Daily monitor series: concentration + liquidity coverage snapshots.
+                daily_monitor = []
+                max_series_len = max((len(item.get("price_series", [])) for item in position_rows), default=0)
+                for idx in range(min(monitor_points, max_series_len)):
+                    daily_values = []
+                    day_label = None
+                    total_capacity = 0.0
+                    for item in position_rows:
+                        series = item.get("price_series", [])
+                        if idx >= len(series):
+                            continue
+                        day, day_close = series[idx]
+                        if day_close <= 0 or item.get("current_price", 0.0) <= 0:
+                            continue
+                        day_label = day_label or day
+                        base_value = float(item["value"])
+                        scaled_value = base_value * float(day_close / item["current_price"])
+                        daily_values.append(scaled_value)
+                        total_capacity += float(item.get("avg_daily_amount", 0.0) or 0.0) * max_participation_rate
+
+                    if not daily_values:
+                        continue
+                    total_day_value = float(sum(daily_values))
+                    hhi_day = (
+                        sum((value / total_day_value) ** 2 for value in daily_values) if total_day_value > 0 else 0.0
+                    )
+                    top3_day = (
+                        sum(sorted((value / total_day_value for value in daily_values), reverse=True)[:3])
+                        if total_day_value > 0
+                        else 0.0
+                    )
+                    liquidity_coverage = (total_capacity / total_day_value) if total_day_value > 0 else 0.0
+                    daily_monitor.append(
+                        {
+                            "date": day_label or f"t-{idx}",
+                            "hhi": float(hhi_day),
+                            "top3_weight_pct": _format_pct(top3_day),
+                            "effective_positions": float(1.0 / hhi_day) if hhi_day > 0 else 0.0,
+                            "liquidity_coverage_pct": _format_pct(liquidity_coverage),
+                        }
+                    )
+
                 stock_exposure.sort(key=lambda x: x["value"], reverse=True)
+                liquidity_rows.sort(
+                    key=lambda x: (x["days_to_exit"] is None, -(x["days_to_exit"] or 0.0)),
+                )
 
                 return ok(
                     {
@@ -577,6 +883,47 @@ def register_risk_manager(mcp):
                             "effective_positions": float(effective_positions),
                             "top3_weight_pct": f"{top3_weight * 100:.2f}%",
                             "sector_hhi": float(sector_hhi),
+                        },
+                        "risk_dashboard": {
+                            "data_window": {
+                                "lookback_days": lookback_days,
+                                "monitor_points": monitor_points,
+                                "max_participation_rate": max_participation_rate,
+                            },
+                            "industry_concentration": {
+                                "sector_count": len(sector_exposure),
+                                "sector_hhi": float(sector_hhi),
+                                "top_sector": max(sector_totals, key=sector_totals.get) if sector_totals else "unknown",
+                                "top_sector_weight_pct": (
+                                    _format_pct(max(sector_totals.values()) / total_value) if total_value > 0 else "0.00%"
+                                ),
+                            },
+                            "style_exposure": {
+                                "beta_weighted": round(float(weighted_beta), 4) if weighted_beta is not None else None,
+                                "size_bucket_weights": {k: _format_pct(v) for k, v in size_bucket_weights.items()},
+                                "valuation_tilt": valuation_tilt,
+                                "weighted_pe": round(float(weighted_pe), 2) if weighted_pe is not None else None,
+                                "weighted_pb": round(float(weighted_pb), 2) if weighted_pb is not None else None,
+                                "weighted_roe": round(float(weighted_roe), 4) if weighted_roe is not None else None,
+                                "weighted_debt_ratio": (
+                                    round(float(weighted_debt), 4) if weighted_debt is not None else None
+                                ),
+                            },
+                            "liquidity_risk": {
+                                "level": liquidity_level,
+                                "portfolio_days_to_exit": (
+                                    round(float(portfolio_days_to_exit), 2)
+                                    if portfolio_days_to_exit is not None
+                                    else None
+                                ),
+                                "illiquid_weight_pct": _format_pct(float(illiquid_weight)),
+                                "positions": liquidity_rows[:10],
+                            },
+                            "daily_monitor": {
+                                "as_of": daily_monitor[0]["date"] if daily_monitor else None,
+                                "series_count": len(daily_monitor),
+                                "series": daily_monitor,
+                            },
                         },
                     }
                 )

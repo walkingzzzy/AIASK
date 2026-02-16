@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-02-16T08:02:27+00:00",
+  "generated_at": "2026-02-16T08:13:20+00:00",
   "repo_root": "C:/Users/1/Desktop/股票",
   "tool_source_files": [
     "C:/Users/1/Desktop/股票/packages/akshare-mcp/src/akshare_mcp/server.py",
@@ -1007,7 +1007,16 @@
   ],
   "module_name_collisions_count": 8,
   "threshold_check": {
-    "enabled": false,
-    "baseline": "C:/Users/1/Desktop/股票/.codex/skills/_meta/coverage_baseline.json"
+    "enabled": true,
+    "baseline": "C:/Users/1/Desktop/股票/.codex/skills/_meta/coverage_baseline.json",
+    "passed": true,
+    "violations": [],
+    "thresholds": {
+      "min_total_coverage_pct": 100.0,
+      "min_tdx_coverage_count": 36,
+      "min_manager_coverage_count": 31,
+      "max_unknown_tool_refs": 0,
+      "max_module_name_collisions": 9
+    }
   }
 }

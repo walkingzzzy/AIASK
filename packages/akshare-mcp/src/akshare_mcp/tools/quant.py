@@ -194,6 +194,8 @@ async def run_factor_ic_analysis(
     factor: str,
     period: int = 20,
     enable_neutralization: bool = True,
+    bootstrap_n: int = 1000,
+    bootstrap_confidence: float = 0.95,
 ) -> Dict[str, Any]:
     factor_name = _normalize_factor_name(factor)
     if factor_name not in SUPPORTED_FACTORS:
@@ -300,16 +302,48 @@ async def run_factor_ic_analysis(
     )
     rank_ic = float(dual_ic.get("rank_ic", 0.0))
     rank_p_value = float(dual_ic.get("rank_p_value", 1.0))
+    bootstrap_n = max(200, min(10_000, int(bootstrap_n or 1000)))
+    bootstrap_confidence = max(0.80, min(0.999, float(bootstrap_confidence or 0.95)))
 
     # --- P0-B: Bootstrap IC 置信区间 ---
     fv_arr = np.array(factor_values, dtype=np.float64)
     fr_arr = np.array(future_returns, dtype=np.float64)
     try:
-        boot_rank = bootstrap_ic_ci(fv_arr, fr_arr, method="spearman", n_bootstrap=1000, seed=42)
-        boot_normal = bootstrap_ic_ci(fv_arr, fr_arr, method="pearson", n_bootstrap=1000, seed=42)
+        boot_rank = bootstrap_ic_ci(
+            fv_arr,
+            fr_arr,
+            method="spearman",
+            n_bootstrap=bootstrap_n,
+            confidence=bootstrap_confidence,
+            seed=42,
+        )
+        boot_normal = bootstrap_ic_ci(
+            fv_arr,
+            fr_arr,
+            method="pearson",
+            n_bootstrap=bootstrap_n,
+            confidence=bootstrap_confidence,
+            seed=42,
+        )
     except Exception:
-        boot_rank = {"ic": rank_ic, "ci_lower": 0.0, "ci_upper": 0.0, "se": 0.0, "n_bootstrap": 0, "sample_size": sample_size, "confidence": 0.95}
-        boot_normal = {"ic": 0.0, "ci_lower": 0.0, "ci_upper": 0.0, "se": 0.0, "n_bootstrap": 0, "sample_size": sample_size, "confidence": 0.95}
+        boot_rank = {
+            "ic": rank_ic,
+            "ci_lower": 0.0,
+            "ci_upper": 0.0,
+            "se": 0.0,
+            "n_bootstrap": 0,
+            "sample_size": sample_size,
+            "confidence": bootstrap_confidence,
+        }
+        boot_normal = {
+            "ic": 0.0,
+            "ci_lower": 0.0,
+            "ci_upper": 0.0,
+            "se": 0.0,
+            "n_bootstrap": 0,
+            "sample_size": sample_size,
+            "confidence": bootstrap_confidence,
+        }
 
     # --- P0-B: 改进 IC_IR ---
     # Bootstrap SE 提供了 IC 的标准误差，IC_IR = IC / SE(IC)
@@ -376,6 +410,11 @@ async def run_factor_ic_analysis(
                 "factor_analysis.calculate_ic_dual",
                 "validation.bootstrap_ic_ci",
             ],
+            "params": {
+                "enable_neutralization": bool(enable_neutralization),
+                "bootstrap_n": bootstrap_n,
+                "bootstrap_confidence": bootstrap_confidence,
+            },
         }
     )
 
@@ -757,6 +796,8 @@ def register(mcp):
         factor: str,
         period: int = 20,
         enable_neutralization: bool = True,
+        bootstrap_n: int = 1000,
+        bootstrap_confidence: float = 0.95,
     ):
         """Calculate dual information coefficient (Normal IC + Rank IC) by cross-section."""
         try:
@@ -765,6 +806,8 @@ def register(mcp):
                 factor=factor,
                 period=period,
                 enable_neutralization=enable_neutralization,
+                bootstrap_n=bootstrap_n,
+                bootstrap_confidence=bootstrap_confidence,
             )
         except Exception as e:
             return fail(str(e))

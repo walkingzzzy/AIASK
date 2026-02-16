@@ -12,8 +12,140 @@ from ..services import (
 )
 from ..services.factor_calculator import factor_calculator
 from ..utils import ok, fail
+import math
 import statistics
 import time
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def _estimate_volatility(closes: list[float], window: int = 20) -> float:
+    if not closes or len(closes) < 3:
+        return 0.0
+    n = min(window, len(closes) - 1)
+    rets = []
+    for i in range(n):
+        prev = float(closes[i + 1])
+        curr = float(closes[i])
+        if prev > 0:
+            rets.append((curr - prev) / prev)
+    if len(rets) < 2:
+        return 0.0
+    return float(statistics.pstdev(rets))
+
+
+def _calibrate_buy_probability(score: float, confidence: float, style: str, volatility: float) -> float:
+    style_threshold = {
+        "aggressive": 40.0,
+        "balanced": 60.0,
+        "conservative": 80.0,
+    }.get(str(style or "balanced").lower(), 60.0)
+
+    score_term = (float(score) - style_threshold) / 15.0
+    confidence_term = (float(confidence) - 60.0) / 25.0
+    vol_penalty = max(0.0, float(volatility) - 0.03) * 8.0
+    logit = score_term + confidence_term - vol_penalty
+    probability = 1.0 / (1.0 + math.exp(-logit))
+    return float(_clamp(probability, 0.01, 0.99))
+
+
+def _compute_rsi_from_window(window_prices: list[float]) -> float:
+    if len(window_prices) < 2:
+        return 50.0
+    gains = 0.0
+    losses = 0.0
+    for i in range(1, len(window_prices)):
+        change = float(window_prices[i] - window_prices[i - 1])
+        if change > 0:
+            gains += change
+        else:
+            losses -= change
+    period = max(1, len(window_prices) - 1)
+    avg_gain = gains / period
+    avg_loss = losses / period
+    if avg_loss <= 1e-12:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return float(100.0 - (100.0 / (1.0 + rs)))
+
+
+def _build_threshold_backtest(
+    closes_desc: list[float],
+    thresholds: list[int],
+    horizon: int = 10,
+) -> list[dict]:
+    if not closes_desc or len(closes_desc) < 80:
+        return []
+
+    closes = list(reversed([float(c) for c in closes_desc]))  # oldest -> newest
+    points: list[tuple[float, float]] = []
+    start_idx = 30
+    end_idx = len(closes) - int(horizon) - 1
+    if end_idx <= start_idx:
+        return []
+
+    for idx in range(start_idx, end_idx + 1):
+        price_now = closes[idx]
+        if price_now <= 0:
+            continue
+
+        ma10 = sum(closes[idx - 9: idx + 1]) / 10.0
+        ma30 = sum(closes[idx - 29: idx + 1]) / 30.0
+        base10 = closes[idx - 10]
+        momentum10 = ((price_now - base10) / base10) if base10 > 0 else 0.0
+        rsi14 = _compute_rsi_from_window(closes[idx - 14: idx + 1])
+
+        score = 50.0
+        if momentum10 > 0.05:
+            score += 15.0
+        elif momentum10 < -0.05:
+            score -= 15.0
+
+        if price_now > ma10 > ma30:
+            score += 20.0
+        elif price_now < ma10 < ma30:
+            score -= 20.0
+
+        if rsi14 < 30.0:
+            score += 15.0
+        elif rsi14 > 70.0:
+            score -= 15.0
+
+        score = _clamp(score, 0.0, 100.0)
+        price_future = closes[idx + horizon]
+        forward_return = ((price_future - price_now) / price_now) if price_now > 0 else 0.0
+        points.append((float(score), float(forward_return)))
+
+    if not points:
+        return []
+
+    reports: list[dict] = []
+    for threshold in thresholds:
+        subset = [p for p in points if p[0] >= float(threshold)]
+        sample_count = len(subset)
+        if sample_count == 0:
+            reports.append(
+                {
+                    "threshold": int(threshold),
+                    "sample_count": 0,
+                    "hit_rate": None,
+                    "avg_forward_return": None,
+                }
+            )
+            continue
+        win_count = sum(1 for _, r in subset if r > 0)
+        avg_ret = sum(r for _, r in subset) / sample_count
+        reports.append(
+            {
+                "threshold": int(threshold),
+                "sample_count": int(sample_count),
+                "hit_rate": float(win_count / sample_count),
+                "avg_forward_return": float(avg_ret),
+            }
+        )
+    return reports
 
 
 def register(mcp):
@@ -324,6 +456,22 @@ def register(mcp):
                     target_price = current_price * 1.15  # 默认15%涨幅
             
             confidence = max(0, min(100, confidence))
+            volatility_20d = _estimate_volatility(closes, window=20)
+            buy_probability = _calibrate_buy_probability(
+                score=float(score),
+                confidence=float(confidence),
+                style=investment_style,
+                volatility=float(volatility_20d),
+            )
+            probability_band = (
+                "high" if buy_probability >= 0.7 else ("medium" if buy_probability >= 0.45 else "low")
+            )
+
+            threshold_backtest = _build_threshold_backtest(
+                closes_desc=closes,
+                thresholds=[40, 60, 80],
+                horizon=10,
+            )
             
             analysis_date = klines[0].get('date', '')
             payload = {
@@ -339,12 +487,30 @@ def register(mcp):
                 'risks': risks,
                 'investment_style': investment_style,
                 'analysis_date': analysis_date,
-                'failed_modules': []
+                'failed_modules': [],
+                'decision_probability': {
+                    'buy_probability': round(float(buy_probability), 4),
+                    'buy_probability_pct': f"{buy_probability * 100:.2f}%",
+                    'band': probability_band,
+                    'method': 'logit(score,confidence,volatility)',
+                },
+                'probability_calibration': {
+                    'thresholds': style_thresholds,
+                    'selected_style_threshold': threshold,
+                    'volatility_20d': round(float(volatility_20d), 6),
+                    'threshold_backtest': {
+                        'horizon_days': 10,
+                        'records': threshold_backtest,
+                    },
+                },
             }
 
             if evidence_chain is not None:
                 try:
-                    confidence_ratio = max(0.0, min(1.0, confidence / 100.0))
+                    confidence_ratio = (
+                        buy_probability if recommendation in {'buy', 'hold'} else (1.0 - buy_probability)
+                    )
+                    confidence_ratio = max(0.0, min(1.0, confidence_ratio))
                     evidence_chain = set_conclusion(
                         evidence_chain,
                         recommendation=recommendation,
