@@ -1,5 +1,8 @@
 ﻿"""Quant factor tools."""
 
+import asyncio
+import os
+import time
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -111,6 +114,165 @@ _SLIPPAGE_MODEL_MAP = {
     "volume_based": SlippageModelType.VOLUME_BASED,
     "market_impact": SlippageModelType.MARKET_IMPACT,
 }
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() not in {"0", "false", "off", "no", "n"}
+
+
+def _env_int(name: str, default: int, *, min_value: int = 1, max_value: int = 20) -> int:
+    raw = os.getenv(name)
+    try:
+        val = int(str(raw).strip()) if raw is not None else int(default)
+    except Exception:
+        val = int(default)
+    return max(min_value, min(max_value, val))
+
+
+_QUANT_BATCH_FETCH_ENABLED = _env_flag("QUANT_BATCH_FETCH_ENABLED", True)
+_QUANT_PREFETCH_CONCURRENCY = _env_int("QUANT_PREFETCH_CONCURRENCY", 8, min_value=1, max_value=20)
+_QUANT_PERF_BREAKDOWN_ENABLED = _env_flag("QUANT_PERF_BREAKDOWN_ENABLED", True)
+
+_PERF_STAGE_KEYS = ("fetch", "factor", "ic", "oos", "robust", "backtest", "serialize")
+
+
+def _new_run_cache() -> Dict[str, Any]:
+    return {
+        "panels": {},
+        "stats": {
+            "panel_cache_hits": 0,
+            "panel_cache_misses": 0,
+            "duplicate_reads": 0,
+        },
+    }
+
+
+def _new_perf_tracker(enabled: bool = True) -> Dict[str, Any]:
+    return {
+        "enabled": bool(enabled),
+        "timings": {k: 0.0 for k in _PERF_STAGE_KEYS},
+    }
+
+
+def _perf_add(perf: Dict[str, Any], stage: str, elapsed: float) -> None:
+    if not isinstance(perf, dict):
+        return
+    if not bool(perf.get("enabled", False)):
+        return
+    if stage not in perf.get("timings", {}):
+        return
+    perf["timings"][stage] = float(perf["timings"][stage]) + max(0.0, float(elapsed))
+
+
+def _get_or_build_market_panel(
+    run_cache: Dict[str, Any],
+    code: str,
+    klines: List[Dict[str, Any]],
+    *,
+    chronological: bool,
+    include_volume: bool = False,
+    include_returns: bool = False,
+) -> Dict[str, Any]:
+    cache = run_cache.setdefault("panels", {})
+    stats_meta = run_cache.setdefault(
+        "stats",
+        {"panel_cache_hits": 0, "panel_cache_misses": 0, "duplicate_reads": 0},
+    )
+    key = f"{str(code)}|c={int(chronological)}|v={int(include_volume)}|r={int(include_returns)}"
+
+    cached = cache.get(key)
+    if isinstance(cached, dict):
+        stats_meta["panel_cache_hits"] = int(stats_meta.get("panel_cache_hits", 0)) + 1
+        stats_meta["duplicate_reads"] = int(stats_meta.get("duplicate_reads", 0)) + 1
+        return cached
+
+    arrs = ICFactorAnalyzer.klines_to_ndarrays(
+        klines=klines,
+        chronological=chronological,
+        include_volume=include_volume,
+        include_returns=include_returns,
+    )
+    closes_arr = arrs.get("closes")
+    if not isinstance(closes_arr, np.ndarray):
+        closes_arr = np.asarray(closes_arr or [], dtype=np.float64)
+    closes_arr = closes_arr.astype(np.float64, copy=False)
+
+    panel = {
+        "closes_arr": closes_arr,
+        "closes": closes_arr.tolist(),
+    }
+
+    if include_volume:
+        volumes_arr = arrs.get("volumes")
+        if not isinstance(volumes_arr, np.ndarray):
+            volumes_arr = np.asarray(volumes_arr or [], dtype=np.float64)
+        volumes_arr = volumes_arr.astype(np.float64, copy=False)
+        if volumes_arr.shape[0] != closes_arr.shape[0]:
+            volumes_arr = np.zeros(closes_arr.shape[0], dtype=np.float64)
+        panel["volumes_arr"] = volumes_arr
+        panel["volumes"] = volumes_arr.tolist()
+
+    if include_returns:
+        returns_arr = arrs.get("returns")
+        if not isinstance(returns_arr, np.ndarray):
+            returns_arr = np.asarray(returns_arr or [], dtype=np.float64)
+        returns_arr = returns_arr.astype(np.float64, copy=False)
+        panel["returns_arr"] = returns_arr
+        panel["returns"] = returns_arr.tolist()
+
+    cache[key] = panel
+    stats_meta["panel_cache_misses"] = int(stats_meta.get("panel_cache_misses", 0)) + 1
+    return panel
+
+
+def _build_perf_breakdown(
+    perf: Dict[str, Any],
+    *,
+    prefetch_meta: Optional[Dict[str, Any]] = None,
+    run_cache: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    if not bool((perf or {}).get("enabled", False)):
+        return None
+
+    timings_raw = (perf or {}).get("timings", {})
+    timings = {k: round(float(timings_raw.get(k, 0.0)), 6) for k in _PERF_STAGE_KEYS}
+    total_seconds = round(float(sum(timings.values())), 6)
+
+    prefetch = prefetch_meta or {}
+    memo_hits = prefetch.get("memo_hits") if isinstance(prefetch.get("memo_hits"), dict) else {}
+    run_stats = (run_cache or {}).get("stats") if isinstance(run_cache, dict) else {}
+    run_stats = run_stats if isinstance(run_stats, dict) else {}
+
+    kline_req = int(prefetch.get("kline_batch_hits", 0)) + int(prefetch.get("kline_single_fetches", 0))
+    stock_req = int(prefetch.get("stock_info_fetches", 0))
+    fin_req = int(prefetch.get("financial_fetches", 0))
+    total_req = int(kline_req + stock_req + fin_req)
+
+    return {
+        "enabled": True,
+        "timings": timings,
+        "total_seconds": total_seconds,
+        "data_stats": {
+            "request_counts": {
+                "kline_requests": int(kline_req),
+                "stock_info_requests": int(stock_req),
+                "financial_requests": int(fin_req),
+                "total_requests": int(total_req),
+            },
+            "batch_hits": {
+                "kline_batch_hits": int(prefetch.get("kline_batch_hits", 0)),
+                "kline_batch_used": bool(prefetch.get("kline_batch_used", False)),
+            },
+            "repeated_reads": {
+                "prefetch_memo_hits": int(sum(int(v or 0) for v in memo_hits.values())) if memo_hits else 0,
+                "panel_cache_hits": int(run_stats.get("panel_cache_hits", 0)),
+                "duplicate_reads": int(run_stats.get("duplicate_reads", 0)),
+            },
+        },
+    }
 
 
 def _normalize_factor_name(factor: str) -> str:
@@ -320,6 +482,159 @@ def _compute_trade_return_with_costs(
     }
 
 
+def _normalize_codes_for_prefetch(codes: List[Any]) -> List[str]:
+    seen = set()
+    normalized: List[str] = []
+    for code in codes or []:
+        code_str = str(code or "").strip()
+        if not code_str or code_str in seen:
+            continue
+        seen.add(code_str)
+        normalized.append(code_str)
+    return normalized
+
+
+async def _prefetch_market_data(
+    db: Any,
+    codes: List[Any],
+    *,
+    need_financials: bool,
+    kline_limit: int,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    fetch_concurrency: Optional[int] = None,
+    memo: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """P0: 批量优先 + 并发回退的统一预取层，减少重复 DB 查询。"""
+    code_list = _normalize_codes_for_prefetch(codes)
+    cache = memo if isinstance(memo, dict) else {}
+    concurrency = max(1, min(int(fetch_concurrency or _QUANT_PREFETCH_CONCURRENCY), 20))
+
+    result: Dict[str, Dict[str, Any]] = {code: {} for code in code_list}
+    meta: Dict[str, Any] = {
+        "codes": len(code_list),
+        "batch_enabled": bool(_QUANT_BATCH_FETCH_ENABLED),
+        "fetch_concurrency": int(concurrency),
+        "kline_batch_used": False,
+        "kline_batch_hits": 0,
+        "kline_single_fetches": 0,
+        "stock_info_fetches": 0,
+        "financial_fetches": 0,
+        "memo_hits": {"klines": 0, "stock_info": 0, "financial": 0},
+    }
+
+    for code in code_list:
+        cached = cache.get(code)
+        if not isinstance(cached, dict):
+            continue
+        for key in ("klines", "stock_info", "financial"):
+            if key in cached:
+                result[code][key] = cached.get(key)
+                meta["memo_hits"][key] += 1
+
+    # 1) Kline：优先批量接口
+    missing_klines = [c for c in code_list if "klines" not in result[c]]
+    if missing_klines and _QUANT_BATCH_FETCH_ENABLED:
+        batch_method = getattr(db, "get_klines_batch", None)
+        if callable(batch_method):
+            try:
+                limit_arg = int(kline_limit) if int(kline_limit or 0) > 0 else None
+                batch_rows = await batch_method(missing_klines, start_date, end_date, limit_arg)
+                meta["kline_batch_used"] = True
+                rows_dict = batch_rows if isinstance(batch_rows, dict) else {}
+                for code in missing_klines:
+                    rows = rows_dict.get(code, [])
+                    if isinstance(rows, list) and rows:
+                        result[code]["klines"] = rows
+                        meta["kline_batch_hits"] += 1
+            except Exception:
+                pass
+
+    # 2) Kline：并发回退
+    missing_klines = [c for c in code_list if "klines" not in result[c]]
+    if missing_klines:
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _fetch_kline_one(code: str) -> tuple[str, List[Dict[str, Any]]]:
+            async with semaphore:
+                try:
+                    if start_date is not None or end_date is not None:
+                        rows = await db.get_klines(code, start_date, end_date, kline_limit)
+                    else:
+                        rows = await db.get_klines(code, limit=kline_limit)
+                except Exception:
+                    rows = []
+                return code, rows if isinstance(rows, list) else []
+
+        batch = await asyncio.gather(*[_fetch_kline_one(code) for code in missing_klines], return_exceptions=True)
+        for item in batch:
+            if isinstance(item, Exception):
+                continue
+            code, rows = item
+            result[code]["klines"] = rows
+            meta["kline_single_fetches"] += 1
+
+    # 3) stock_info 并发获取（每个 run 内 memo 复用）
+    missing_infos = [c for c in code_list if "stock_info" not in result[c]]
+    if missing_infos:
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _fetch_info_one(code: str) -> tuple[str, Any]:
+            async with semaphore:
+                try:
+                    payload = await db.get_stock_info(code)
+                except Exception:
+                    payload = None
+                return code, payload
+
+        batch = await asyncio.gather(*[_fetch_info_one(code) for code in missing_infos], return_exceptions=True)
+        for item in batch:
+            if isinstance(item, Exception):
+                continue
+            code, payload = item
+            result[code]["stock_info"] = payload
+            meta["stock_info_fetches"] += 1
+
+    # 4) financial 并发获取（仅在因子需要时）
+    if need_financials:
+        missing_fin = [c for c in code_list if "financial" not in result[c]]
+        if missing_fin:
+            semaphore = asyncio.Semaphore(concurrency)
+
+            async def _fetch_fin_one(code: str) -> tuple[str, Optional[Dict[str, Any]]]:
+                async with semaphore:
+                    try:
+                        payload = _latest_financial_row(await db.get_financials(code, limit=1))
+                    except Exception:
+                        payload = None
+                    return code, payload
+
+            batch = await asyncio.gather(*[_fetch_fin_one(code) for code in missing_fin], return_exceptions=True)
+            for item in batch:
+                if isinstance(item, Exception):
+                    continue
+                code, payload = item
+                result[code]["financial"] = payload
+                meta["financial_fetches"] += 1
+
+    # 5) 标准化输出并写回 memo（同请求内复用）
+    for code in code_list:
+        code_data = result.setdefault(code, {})
+        if "klines" not in code_data or not isinstance(code_data.get("klines"), list):
+            code_data["klines"] = []
+        if "stock_info" not in code_data:
+            code_data["stock_info"] = None
+        if "financial" not in code_data:
+            code_data["financial"] = None
+
+        bucket = cache.setdefault(code, {})
+        bucket["klines"] = code_data["klines"]
+        bucket["stock_info"] = code_data["stock_info"]
+        bucket["financial"] = code_data["financial"]
+
+    return {"data": result, "meta": meta}
+
+
 def _calculate_factor_value(
     factor: str,
     closes: list,
@@ -417,6 +732,7 @@ async def run_factor_ic_analysis(
     enable_neutralization: bool = True,
     bootstrap_n: int = 1000,
     bootstrap_confidence: float = 0.95,
+    include_perf_breakdown: bool = True,
 ) -> Dict[str, Any]:
     factor_name = _normalize_factor_name(factor)
     if factor_name not in SUPPORTED_FACTORS:
@@ -425,8 +741,23 @@ async def run_factor_ic_analysis(
     if not codes:
         return fail("codes is required")
 
+    run_cache = _new_run_cache()
+    perf = _new_perf_tracker(_to_bool(include_perf_breakdown, _QUANT_PERF_BREAKDOWN_ENABLED))
     lookback_period = max(2, int(period))
     db = get_db()
+    requires_financials = SUPPORTED_FACTORS[factor_name]["requires_financials"]
+
+    fetch_start = time.perf_counter()
+    prefetch_resp = await _prefetch_market_data(
+        db=db,
+        codes=codes,
+        need_financials=requires_financials,
+        kline_limit=lookback_period + 30,
+    )
+    _perf_add(perf, "fetch", time.perf_counter() - fetch_start)
+    prefetched = prefetch_resp.get("data", {})
+    prefetch_meta = prefetch_resp.get("meta", {})
+
     factor_values = []
     future_returns = []
     industries = []
@@ -438,35 +769,38 @@ async def run_factor_ic_analysis(
         "skipped_no_kline": 0,
         "skipped_no_financials": 0,
         "skipped_no_factor_value": 0,
-            "skipped_invalid_return": 0,
-            "style_info_available": 0,
+        "skipped_invalid_return": 0,
+        "style_info_available": 0,
     }
 
-    requires_financials = SUPPORTED_FACTORS[factor_name]["requires_financials"]
-
+    factor_stage_start = time.perf_counter()
     for code in codes:
-        klines = await db.get_klines(code, limit=lookback_period + 30)
+        code_key = str(code or "").strip()
+        code_data = prefetched.get(code_key, {})
+        klines = code_data.get("klines") or []
         if not klines or len(klines) < lookback_period + 5:
             stats_counter["skipped_no_kline"] += 1
             continue
 
-        closes = [k["close"] for k in klines if isinstance(k, dict) and k.get("close") is not None]
+        panel = _get_or_build_market_panel(
+            run_cache=run_cache,
+            code=code_key,
+            klines=klines,
+            chronological=False,
+            include_volume=False,
+            include_returns=True,
+        )
+        closes = panel.get("closes") or []
         if len(closes) < lookback_period + 2:
             stats_counter["skipped_no_kline"] += 1
             continue
 
-        financial = None
-        if requires_financials:
-            financial = _latest_financial_row(await db.get_financials(code, limit=1))
-            if not financial:
-                stats_counter["skipped_no_financials"] += 1
-                continue
+        financial = code_data.get("financial")
+        if requires_financials and not financial:
+            stats_counter["skipped_no_financials"] += 1
+            continue
 
-        stock_info = None
-        try:
-            stock_info = await db.get_stock_info(code)
-        except Exception:
-            stock_info = None
+        stock_info = code_data.get("stock_info")
 
         factor_value = _calculate_factor_value(
             factor_name,
@@ -506,6 +840,7 @@ async def run_factor_ic_analysis(
         ):
             stats_counter["style_info_available"] += 1
         stats_counter["processed"] += 1
+    _perf_add(perf, "factor", time.perf_counter() - factor_stage_start)
 
     sample_size = len(factor_values)
     if sample_size < 10:
@@ -514,6 +849,7 @@ async def run_factor_ic_analysis(
             f"required>=10, stats={stats_counter}"
         )
 
+    ic_stage_start = time.perf_counter()
     dual_ic = ICFactorAnalyzer.calculate_ic_dual(
         factor_values=factor_values,
         forward_returns=future_returns,
@@ -566,6 +902,7 @@ async def run_factor_ic_analysis(
             "sample_size": sample_size,
             "confidence": bootstrap_confidence,
         }
+    _perf_add(perf, "ic", time.perf_counter() - ic_stage_start)
 
     # --- P0-B: 改进 IC_IR ---
     # Bootstrap SE 提供了 IC 的标准误差，IC_IR = IC / SE(IC)
@@ -584,61 +921,72 @@ async def run_factor_ic_analysis(
     )
     win_rate = win_count / sample_size if sample_size > 0 else 0.0
 
-    return ok(
-        {
-            "factor": factor_name,
-            # backward compatible fields
-            "ic": rank_ic,
-            "ic_ir": ic_ir,
-            "p_value": rank_p_value,
-            "significant": bool(rank_p_value < 0.05),
-            # dual IC fields
-            "normal_ic": float(dual_ic.get("normal_ic", 0.0)),
-            "rank_ic": rank_ic,
-            "normal_p_value": float(dual_ic.get("normal_p_value", 1.0)),
-            "rank_p_value": rank_p_value,
-            "sample_size": sample_size,
-            "period": lookback_period,
-            "win_rate": float(win_rate),
-            # P0-B: Bootstrap 置信区间
-            "bootstrap_ci": {
-                "rank_ic": {
-                    "ic": boot_rank.get("ic", rank_ic),
-                    "ci_lower": boot_rank.get("ci_lower", 0.0),
-                    "ci_upper": boot_rank.get("ci_upper", 0.0),
-                    "se": boot_rank.get("se", 0.0),
-                    "confidence": boot_rank.get("confidence", 0.95),
-                },
-                "normal_ic": {
-                    "ic": boot_normal.get("ic", 0.0),
-                    "ci_lower": boot_normal.get("ci_lower", 0.0),
-                    "ci_upper": boot_normal.get("ci_upper", 0.0),
-                    "se": boot_normal.get("se", 0.0),
-                    "confidence": boot_normal.get("confidence", 0.95),
-                },
-                "n_bootstrap": boot_rank.get("n_bootstrap", 0),
-                "ic_ir_method": "bootstrap_se" if boot_se > 1e-10 else "cross_sectional_proxy",
+    serialize_start = time.perf_counter()
+    payload = {
+        "factor": factor_name,
+        # backward compatible fields
+        "ic": rank_ic,
+        "ic_ir": ic_ir,
+        "p_value": rank_p_value,
+        "significant": bool(rank_p_value < 0.05),
+        # dual IC fields
+        "normal_ic": float(dual_ic.get("normal_ic", 0.0)),
+        "rank_ic": rank_ic,
+        "normal_p_value": float(dual_ic.get("normal_p_value", 1.0)),
+        "rank_p_value": rank_p_value,
+        "sample_size": sample_size,
+        "period": lookback_period,
+        "win_rate": float(win_rate),
+        # P0-B: Bootstrap 置信区间
+        "bootstrap_ci": {
+            "rank_ic": {
+                "ic": boot_rank.get("ic", rank_ic),
+                "ci_lower": boot_rank.get("ci_lower", 0.0),
+                "ci_upper": boot_rank.get("ci_upper", 0.0),
+                "se": boot_rank.get("se", 0.0),
+                "confidence": boot_rank.get("confidence", 0.95),
             },
-            "data_window": {
-                "lookback_bars": lookback_period + 30,
-                "forward_period": lookback_period,
+            "normal_ic": {
+                "ic": boot_normal.get("ic", 0.0),
+                "ci_lower": boot_normal.get("ci_lower", 0.0),
+                "ci_upper": boot_normal.get("ci_upper", 0.0),
+                "se": boot_normal.get("se", 0.0),
+                "confidence": boot_normal.get("confidence", 0.95),
             },
-            "stats": stats_counter,
-            "neutralization": dual_ic.get("neutralization", {}),
-            "source_chain": [
-                "db.get_klines",
-                "db.get_financials(optional)",
-                "db.get_stock_info(optional)",
-                "factor_analysis.calculate_ic_dual",
-                "validation.bootstrap_ic_ci",
-            ],
-            "params": {
-                "enable_neutralization": bool(enable_neutralization),
-                "bootstrap_n": bootstrap_n,
-                "bootstrap_confidence": bootstrap_confidence,
-            },
-        }
+            "n_bootstrap": boot_rank.get("n_bootstrap", 0),
+            "ic_ir_method": "bootstrap_se" if boot_se > 1e-10 else "cross_sectional_proxy",
+        },
+        "data_window": {
+            "lookback_bars": lookback_period + 30,
+            "forward_period": lookback_period,
+        },
+        "stats": stats_counter,
+        "prefetch": prefetch_meta,
+        "neutralization": dual_ic.get("neutralization", {}),
+        "source_chain": [
+            "quant.prefetch_market_data",
+            "db.get_klines_batch(optional)",
+            "db.get_klines(fallback)",
+            "db.get_financials(optional)",
+            "db.get_stock_info",
+            "factor_analysis.calculate_ic_dual",
+            "validation.bootstrap_ic_ci",
+        ],
+        "params": {
+            "enable_neutralization": bool(enable_neutralization),
+            "bootstrap_n": bootstrap_n,
+            "bootstrap_confidence": bootstrap_confidence,
+        },
+    }
+    _perf_add(perf, "serialize", time.perf_counter() - serialize_start)
+    perf_breakdown = _build_perf_breakdown(
+        perf,
+        prefetch_meta=prefetch_meta,
+        run_cache=run_cache,
     )
+    if perf_breakdown is not None:
+        payload["perf_breakdown"] = perf_breakdown
+    return ok(payload)
 
 
 async def run_factor_group_backtest(
@@ -654,6 +1002,7 @@ async def run_factor_group_backtest(
     is_st: bool = False,
     rebalance_step: int = 0,
     max_periods: int = 0,
+    include_perf_breakdown: bool = True,
 ) -> Dict[str, Any]:
     factor_name = _normalize_factor_name(factor)
     if factor_name not in SUPPORTED_FACTORS:
@@ -672,6 +1021,8 @@ async def run_factor_group_backtest(
     rebalance_step = max(1, int(rebalance_step or holding_days))
     max_periods = max(0, int(max_periods or 0))
 
+    run_cache = _new_run_cache()
+    perf = _new_perf_tracker(_to_bool(include_perf_breakdown, _QUANT_PERF_BREAKDOWN_ENABLED))
     db = get_db()
     per_code_data: Dict[str, Dict[str, Any]] = {}
     period_results: List[Dict[str, Any]] = []
@@ -702,62 +1053,74 @@ async def run_factor_group_backtest(
     }
     requires_financials = SUPPORTED_FACTORS[factor_name]["requires_financials"]
     fetch_bars = max(factor_lookback + holding_days * 8 + 5, 120)
+    fetch_start = time.perf_counter()
+    prefetch_resp = await _prefetch_market_data(
+        db=db,
+        codes=codes,
+        need_financials=requires_financials,
+        kline_limit=fetch_bars,
+    )
+    _perf_add(perf, "fetch", time.perf_counter() - fetch_start)
+    prefetched = prefetch_resp.get("data", {})
+    prefetch_meta = prefetch_resp.get("meta", {})
 
+    factor_stage_start = time.perf_counter()
     for code in codes:
-        klines = await db.get_klines(code, limit=fetch_bars)
+        code_key = str(code or "").strip()
+        code_data = prefetched.get(code_key, {})
+        klines = code_data.get("klines") or []
         if not klines or len(klines) < factor_lookback + 2:
             stats_counter["skipped_no_kline"] += 1
             continue
 
-        closes = [k.get("close") for k in klines if isinstance(k, dict) and k.get("close") is not None]
-        if len(closes) < factor_lookback + 2:
+        panel = _get_or_build_market_panel(
+            run_cache=run_cache,
+            code=code_key,
+            klines=klines,
+            chronological=True,
+            include_volume=True,
+            include_returns=True,
+        )
+        closes_arr = panel.get("closes_arr")
+        volumes_arr = panel.get("volumes_arr")
+        if not isinstance(closes_arr, np.ndarray) or closes_arr.shape[0] < factor_lookback + 2:
             stats_counter["skipped_no_kline"] += 1
             continue
+        if not isinstance(volumes_arr, np.ndarray) or volumes_arr.shape[0] != closes_arr.shape[0]:
+            volumes_arr = np.zeros(closes_arr.shape[0], dtype=np.float64)
 
-        closes = list(reversed([float(c) for c in closes]))
-        volumes_raw = [k.get("volume", 0) for k in klines if isinstance(k, dict) and k.get("close") is not None]
-        if len(volumes_raw) == len(closes):
-            volumes = list(reversed([float(v or 0.0) for v in volumes_raw]))
-        else:
-            volumes = [0.0] * len(closes)
+        financial = code_data.get("financial")
+        if requires_financials and not financial:
+            stats_counter["skipped_no_financials"] += 1
+            continue
 
-        financial = None
-        if requires_financials:
-            financial = _latest_financial_row(await db.get_financials(code, limit=1))
-            if not financial:
-                stats_counter["skipped_no_financials"] += 1
-                continue
-
-        stock_info = None
-        try:
-            stock_info = await db.get_stock_info(code)
-        except Exception:
-            stock_info = None
+        stock_info = code_data.get("stock_info")
 
         tradability_mask = None
         if tradability_filter:
             tradability_mask = _build_tradability_mask_local(
-                np.array(closes, dtype=np.float64),
-                np.array(volumes, dtype=np.float64),
-                code=code,
+                closes_arr,
+                volumes_arr,
+                code=code_key,
                 is_st=is_st,
             )
 
-        per_code_data[code] = {
-            "closes": closes,
-            "volumes": volumes,
+        per_code_data[code_key] = {
+            "closes_arr": closes_arr,
+            "volumes_arr": volumes_arr,
             "financial": financial,
             "stock_info": stock_info,
             "tradability_mask": tradability_mask,
         }
         stats_counter["processed_codes"] += 1
+    _perf_add(perf, "factor", time.perf_counter() - factor_stage_start)
 
     if len(per_code_data) < groups * 2:
         return fail(
             f"Not enough stocks for grouping: valid_codes={len(per_code_data)}, required>={groups * 2}, stats={stats_counter}"
         )
 
-    min_series_len = min(len(v["closes"]) for v in per_code_data.values())
+    min_series_len = min(int(v["closes_arr"].shape[0]) for v in per_code_data.values())
     start_t = factor_lookback - 1
     end_t = min_series_len - 1 - holding_days
     if end_t <= start_t:
@@ -770,11 +1133,12 @@ async def run_factor_group_backtest(
         period_indices = period_indices[-max_periods:]
     stats_counter["periods_total"] = len(period_indices)
 
+    backtest_stage_start = time.perf_counter()
     for t in period_indices:
         period_stock_data = []
         for code, pdata in per_code_data.items():
-            closes = pdata["closes"]
-            volumes = pdata["volumes"]
+            closes = pdata["closes_arr"]
+            volumes = pdata["volumes_arr"]
             financial = pdata["financial"]
             stock_info = pdata["stock_info"]
 
@@ -788,7 +1152,7 @@ async def run_factor_group_backtest(
                 window,
                 financial=financial,
                 stock_info=stock_info,
-                period=min(factor_lookback, len(window)),
+                period=min(factor_lookback, int(window.shape[0])),
             )
             if factor_value is None or np.isnan(factor_value):
                 stats_counter["skipped_no_factor_value"] += 1
@@ -796,8 +1160,8 @@ async def run_factor_group_backtest(
 
             entry_idx = t
             exit_idx = t + holding_days
-            entry_price = closes[entry_idx]
-            exit_price = closes[exit_idx]
+            entry_price = float(closes[entry_idx])
+            exit_price = float(closes[exit_idx])
             if entry_price <= 0 or exit_price <= 0:
                 stats_counter["skipped_invalid_return"] += 1
                 continue
@@ -812,10 +1176,10 @@ async def run_factor_group_backtest(
                     continue
 
             costed = _compute_trade_return_with_costs(
-                entry_price=float(entry_price),
-                exit_price=float(exit_price),
-                entry_volume=float(volumes[entry_idx]) if entry_idx < len(volumes) else 0.0,
-                exit_volume=float(volumes[exit_idx]) if exit_idx < len(volumes) else 0.0,
+                entry_price=entry_price,
+                exit_price=exit_price,
+                entry_volume=float(volumes[entry_idx]) if entry_idx < int(volumes.shape[0]) else 0.0,
+                exit_volume=float(volumes[exit_idx]) if exit_idx < int(volumes.shape[0]) else 0.0,
                 commission=commission,
                 slippage=slippage,
                 slippage_calc=slippage_calc,
@@ -866,6 +1230,7 @@ async def run_factor_group_backtest(
             }
         )
         stats_counter["periods_effective"] += 1
+    _perf_add(perf, "backtest", time.perf_counter() - backtest_stage_start)
 
     if not long_short_returns:
         return fail(f"No effective rebalance periods generated, stats={stats_counter}")
@@ -908,8 +1273,8 @@ async def run_factor_group_backtest(
         stats_counter.get("skipped_untradable", 0) / candidate_signals
     ) if candidate_signals > 0 else 0.0
 
-    return ok(
-        {
+    serialize_start = time.perf_counter()
+    payload = {
             "factor": factor_name,
             "groups": groups,
             "holding_days": holding_days,
@@ -941,17 +1306,28 @@ async def run_factor_group_backtest(
                 "untradable_ratio": untradable_ratio,
             },
             "stats": stats_counter,
+            "prefetch": prefetch_meta,
             "source_chain": [
-                "db.get_klines",
+                "quant.prefetch_market_data",
+                "db.get_klines_batch(optional)",
+                "db.get_klines(fallback)",
                 "db.get_financials(optional)",
-                "db.get_stock_info(optional)",
+                "db.get_stock_info",
                 "slippage(optional)",
                 "tradability_filter(optional)",
                 "numpy-grouping",
             ],
             "notes": "Grouped factor backtest uses rolling rebalances; max_drawdown is computed from the realized long-short equity curve.",
-        }
+    }
+    _perf_add(perf, "serialize", time.perf_counter() - serialize_start)
+    perf_breakdown = _build_perf_breakdown(
+        perf,
+        prefetch_meta=prefetch_meta,
+        run_cache=run_cache,
     )
+    if perf_breakdown is not None:
+        payload["perf_breakdown"] = perf_breakdown
+    return ok(payload)
 
 
 async def _build_factor_return_panels(
@@ -962,8 +1338,12 @@ async def _build_factor_return_panels(
     factor_lookback: int,
     forward_period: int,
     panel_periods: int,
+    run_cache: Optional[Dict[str, Any]] = None,
+    perf: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """构建 OOS 验证所需的二维面板：factor_panel / return_panel。"""
+    local_run_cache = run_cache if isinstance(run_cache, dict) else _new_run_cache()
+    local_perf = perf if isinstance(perf, dict) else _new_perf_tracker(False)
     per_code_factors: Dict[str, List[float]] = {}
     per_code_returns: Dict[str, List[float]] = {}
     requires_financials = SUPPORTED_FACTORS[factor_name]["requires_financials"]
@@ -976,50 +1356,61 @@ async def _build_factor_return_panels(
     }
 
     fetch_bars = max(80, panel_periods + factor_lookback + forward_period + 20)
+    fetch_start = time.perf_counter()
+    prefetch_resp = await _prefetch_market_data(
+        db=db,
+        codes=codes,
+        need_financials=requires_financials,
+        kline_limit=fetch_bars,
+    )
+    _perf_add(local_perf, "fetch", time.perf_counter() - fetch_start)
+    prefetched = prefetch_resp.get("data", {})
+    factor_stage_start = time.perf_counter()
 
     for code in codes:
-        klines = await db.get_klines(code, limit=fetch_bars)
+        code_key = str(code or "").strip()
+        code_data = prefetched.get(code_key, {})
+        klines = code_data.get("klines") or []
         if not klines or len(klines) < (factor_lookback + forward_period + 5):
             stats["skipped_no_kline"] += 1
             continue
 
-        closes = [k.get("close") for k in klines if isinstance(k, dict) and k.get("close") is not None]
-        if len(closes) < (factor_lookback + forward_period + 5):
+        panel = _get_or_build_market_panel(
+            run_cache=local_run_cache,
+            code=code_key,
+            klines=klines,
+            chronological=True,
+            include_volume=False,
+            include_returns=True,
+        )
+        closes_arr = panel.get("closes_arr")
+        if not isinstance(closes_arr, np.ndarray) or closes_arr.shape[0] < (factor_lookback + forward_period + 5):
             stats["skipped_no_kline"] += 1
             continue
 
-        # 数据库通常最新在前，反转到时间正序
-        closes = list(reversed([float(c) for c in closes]))
+        financial = code_data.get("financial")
+        if requires_financials and not financial:
+            stats["skipped_no_financials"] += 1
+            continue
 
-        financial = None
-        if requires_financials:
-            financial = _latest_financial_row(await db.get_financials(code, limit=1))
-            if not financial:
-                stats["skipped_no_financials"] += 1
-                continue
-
-        stock_info = None
-        try:
-            stock_info = await db.get_stock_info(code)
-        except Exception:
-            stock_info = None
+        stock_info = code_data.get("stock_info")
 
         factors_one: List[float] = []
         returns_one: List[float] = []
 
         start_t = factor_lookback - 1
-        end_t = len(closes) - 1 - forward_period
+        end_t = int(closes_arr.shape[0]) - 1 - forward_period
         for t in range(start_t, end_t + 1):
-            window = closes[t - factor_lookback + 1 : t + 1]
+            window = closes_arr[t - factor_lookback + 1 : t + 1]
             fv = _calculate_factor_value(
                 factor_name,
                 window,
                 financial=financial,
                 stock_info=stock_info,
-                period=min(factor_lookback, len(window)),
+                period=min(factor_lookback, int(window.shape[0])),
             )
-            p0 = closes[t]
-            p1 = closes[t + forward_period]
+            p0 = float(closes_arr[t])
+            p1 = float(closes_arr[t + forward_period])
             if fv is None or np.isnan(fv) or p0 <= 0:
                 continue
             ret = (p1 - p0) / p0
@@ -1032,9 +1423,10 @@ async def _build_factor_return_panels(
             stats["skipped_short_series"] += 1
             continue
 
-        per_code_factors[code] = factors_one
-        per_code_returns[code] = returns_one
+        per_code_factors[code_key] = factors_one
+        per_code_returns[code_key] = returns_one
         stats["processed_codes"] += 1
+    _perf_add(local_perf, "factor", time.perf_counter() - factor_stage_start)
 
     if len(per_code_factors) < 5:
         return fail(f"Not enough valid codes for panel build, stats={stats}")
@@ -1055,6 +1447,7 @@ async def _build_factor_return_panels(
             "codes": used_codes,
             "periods": int(common_len),
             "stats": stats,
+            "prefetch": prefetch_resp.get("meta", {}),
         }
     )
 
@@ -1073,6 +1466,10 @@ async def run_factor_oos_validation(
     kfold_purge_gap: int = 5,
     bootstrap_n: int = 1000,
     bootstrap_confidence: float = 0.95,
+    validation_parallel: bool = True,
+    max_workers: Optional[int] = None,
+    bootstrap_mode: str = "",
+    include_perf_breakdown: bool = True,
 ) -> Dict[str, Any]:
     """P0-A: 统一样本外验证工具（Walk-Forward + Purged KFold + Bootstrap CI）。"""
     factor_name = _normalize_factor_name(factor)
@@ -1081,6 +1478,8 @@ async def run_factor_oos_validation(
     if not codes:
         return fail("codes is required")
 
+    run_cache = _new_run_cache()
+    perf = _new_perf_tracker(_to_bool(include_perf_breakdown, _QUANT_PERF_BREAKDOWN_ENABLED))
     db = get_db()
     panel_resp = await _build_factor_return_panels(
         codes=codes,
@@ -1089,6 +1488,8 @@ async def run_factor_oos_validation(
         factor_lookback=max(2, int(factor_lookback)),
         forward_period=max(1, int(forward_period)),
         panel_periods=max(60, int(panel_periods)),
+        run_cache=run_cache,
+        perf=perf,
     )
     if not panel_resp.get("success"):
         return panel_resp
@@ -1097,23 +1498,39 @@ async def run_factor_oos_validation(
     factor_panel = pdata["factor_panel"]
     return_panel = pdata["return_panel"]
 
+    bootstrap_mode_norm = str(bootstrap_mode or "").strip().lower()
+    pipeline_bootstrap_n: Optional[int]
+    if bootstrap_mode_norm in {"fast", "full"}:
+        # In mode-driven execution, let validation service resolve fast/full presets.
+        pipeline_bootstrap_n = None
+    else:
+        pipeline_bootstrap_n = max(200, int(bootstrap_n))
+
     pipeline = FactorValidationPipeline(
         wf_train_window=max(20, int(wf_train_window)),
         wf_test_window=max(5, int(wf_test_window)),
         wf_step=(None if wf_step in (None, 0) else int(wf_step)),
         kfold_n_folds=max(3, int(kfold_n_folds)),
         kfold_purge_gap=max(0, int(kfold_purge_gap)),
-        bootstrap_n=max(200, int(bootstrap_n)),
+        bootstrap_n=pipeline_bootstrap_n,
         bootstrap_confidence=max(0.80, min(0.999, float(bootstrap_confidence))),
+        validation_parallel=bool(validation_parallel),
+        max_workers=max_workers,
+        bootstrap_mode=bootstrap_mode_norm or None,
     )
+    oos_stage_start = time.perf_counter()
     report = pipeline.run(
         factor_panel=factor_panel,
         return_panel=return_panel,
         factor_name=factor_name,
+        validation_parallel=bool(validation_parallel),
+        max_workers=max_workers,
+        bootstrap_mode=bootstrap_mode_norm or None,
     )
+    _perf_add(perf, "oos", time.perf_counter() - oos_stage_start)
 
-    return ok(
-        {
+    serialize_start = time.perf_counter()
+    payload = {
             "factor": factor_name,
             "validation_report": report,
             "panel_info": {
@@ -1124,14 +1541,25 @@ async def run_factor_oos_validation(
                 "forward_period": int(forward_period),
             },
             "stats": pdata.get("stats", {}),
+            "prefetch": pdata.get("prefetch", {}),
             "source_chain": [
-                "db.get_klines",
+                "quant.prefetch_market_data",
+                "db.get_klines_batch(optional)",
+                "db.get_klines(fallback)",
                 "db.get_financials(optional)",
-                "db.get_stock_info(optional)",
+                "db.get_stock_info",
                 "validation.FactorValidationPipeline.run",
             ],
-        }
+    }
+    _perf_add(perf, "serialize", time.perf_counter() - serialize_start)
+    perf_breakdown = _build_perf_breakdown(
+        perf,
+        prefetch_meta=pdata.get("prefetch", {}),
+        run_cache=run_cache,
     )
+    if perf_breakdown is not None:
+        payload["perf_breakdown"] = perf_breakdown
+    return ok(payload)
 
 
 # ── P2-2: 因子稳健性检验 ──────────────────────────────────
@@ -1141,6 +1569,7 @@ async def run_factor_robustness_check(
     factor: str,
     windows: Optional[List[int]] = None,
     param_variations: Optional[List[int]] = None,
+    include_perf_breakdown: bool = True,
 ) -> Dict[str, Any]:
     """P2-2: 多窗口 IC 稳定性 + 参数敏感性 + 子样本一致性。"""
     factor_name = _normalize_factor_name(factor)
@@ -1149,125 +1578,133 @@ async def run_factor_robustness_check(
     if not codes:
         return fail("codes is required")
 
+    run_cache = _new_run_cache()
+    perf = _new_perf_tracker(_to_bool(include_perf_breakdown, _QUANT_PERF_BREAKDOWN_ENABLED))
     windows = windows or [5, 10, 20, 60]
     param_variations = param_variations or [10, 20, 40, 60]
     db = get_db()
+    requires_financials = SUPPORTED_FACTORS[factor_name]["requires_financials"]
+    max_lookback = max([20] + [int(w) for w in windows] + [int(p) for p in param_variations])
+    fetch_start = time.perf_counter()
+    prefetch_resp = await _prefetch_market_data(
+        db=db,
+        codes=codes,
+        need_financials=requires_financials,
+        kline_limit=max_lookback + 30,
+    )
+    _perf_add(perf, "fetch", time.perf_counter() - fetch_start)
+    prefetched = prefetch_resp.get("data", {})
+    prefetch_meta = prefetch_resp.get("meta", {})
 
-    # ── 辅助：单窗口截面 IC ──
-    async def _cross_section_ic(lookback: int) -> Dict[str, Any]:
-        fv, fr = [], []
-        requires_fin = SUPPORTED_FACTORS[factor_name]["requires_financials"]
-        for code in codes:
-            klines = await db.get_klines(code, limit=lookback + 30)
-            if not klines or len(klines) < lookback + 5:
+    # ── 辅助：单窗口截面 IC（复用预取数据） ──
+    def _cross_section_ic(sub_codes: List[str], lookback: int) -> Dict[str, Any]:
+        fv: List[float] = []
+        fr: List[float] = []
+        lb = max(2, int(lookback))
+        for code in sub_codes:
+            code_key = str(code or "").strip()
+            code_data = prefetched.get(code_key, {})
+            klines = code_data.get("klines") or []
+            if not klines or len(klines) < lb + 5:
                 continue
-            closes = [k["close"] for k in klines if isinstance(k, dict) and k.get("close") is not None]
-            if len(closes) < lookback + 2:
+            panel = _get_or_build_market_panel(
+                run_cache=run_cache,
+                code=code_key,
+                klines=klines,
+                chronological=False,
+                include_volume=False,
+                include_returns=True,
+            )
+            closes_arr = panel.get("closes_arr")
+            if not isinstance(closes_arr, np.ndarray) or closes_arr.shape[0] < lb + 2:
                 continue
-            financial = None
-            if requires_fin:
-                financial = _latest_financial_row(await db.get_financials(code, limit=1))
-                if not financial:
-                    continue
-            stock_info = None
-            try:
-                stock_info = await db.get_stock_info(code)
-            except Exception:
-                pass
-            val = _calculate_factor_value(factor_name, closes[:lookback], financial=financial, stock_info=stock_info, period=lookback)
+            financial = code_data.get("financial")
+            if requires_financials and not financial:
+                continue
+            stock_info = code_data.get("stock_info")
+            val = _calculate_factor_value(
+                factor_name,
+                closes_arr[:lb],
+                financial=financial,
+                stock_info=stock_info,
+                period=lb,
+            )
             if val is None or np.isnan(val):
                 continue
-            ci = min(lookback - 1, len(closes) - 2)
-            fi = min(ci + lookback, len(closes) - 1)
-            if fi <= ci or closes[ci] <= 0:
+            ci = min(lb - 1, int(closes_arr.shape[0]) - 2)
+            fi = min(ci + lb, int(closes_arr.shape[0]) - 1)
+            p0 = float(closes_arr[ci]) if ci >= 0 else 0.0
+            if fi <= ci or p0 <= 0:
                 continue
             fv.append(float(val))
-            fr.append(float((closes[fi] - closes[ci]) / closes[ci]))
+            fr.append(float((float(closes_arr[fi]) - p0) / p0))
+
         n = len(fv)
         if n < 10:
             return {"ic": 0.0, "rank_ic": 0.0, "sample_size": n, "significant": False}
         ic = float(np.corrcoef(fv, fr)[0, 1])
         rank_ic = float(stats.spearmanr(fv, fr).statistic)
         p_val = float(stats.spearmanr(fv, fr).pvalue)
-        return {"ic": ic, "rank_ic": rank_ic, "p_value": p_val, "sample_size": n, "significant": p_val < 0.05}
+        return {
+            "ic": ic,
+            "rank_ic": rank_ic,
+            "p_value": p_val,
+            "sample_size": n,
+            "significant": bool(p_val < 0.05),
+        }
 
+    robust_stage_start = time.perf_counter()
     # ── 1) 多窗口 IC 稳定性 ──
     multi_window_results = {}
     for w in windows:
-        multi_window_results[str(w)] = await _cross_section_ic(w)
+        multi_window_results[str(w)] = _cross_section_ic(codes, int(w))
 
     ic_values = [v["rank_ic"] for v in multi_window_results.values() if v["sample_size"] >= 10]
-    window_stability = float(1.0 - (np.std(ic_values) / (abs(np.mean(ic_values)) + 1e-9))) if len(ic_values) >= 2 else 0.0
+    window_stability = (
+        float(1.0 - (np.std(ic_values) / (abs(np.mean(ic_values)) + 1e-9)))
+        if len(ic_values) >= 2
+        else 0.0
+    )
     window_stability = max(0.0, min(1.0, window_stability))
 
     # ── 2) 参数敏感性 ──
     param_results = {}
     for p in param_variations:
-        param_results[str(p)] = await _cross_section_ic(p)
+        param_results[str(p)] = _cross_section_ic(codes, int(p))
 
     param_ics = [v["rank_ic"] for v in param_results.values() if v["sample_size"] >= 10]
-    param_stability = float(1.0 - (np.std(param_ics) / (abs(np.mean(param_ics)) + 1e-9))) if len(param_ics) >= 2 else 0.0
+    param_stability = (
+        float(1.0 - (np.std(param_ics) / (abs(np.mean(param_ics)) + 1e-9)))
+        if len(param_ics) >= 2
+        else 0.0
+    )
     param_stability = max(0.0, min(1.0, param_stability))
 
     # ── 3) 子样本一致性（前半 vs 后半） ──
     half = len(codes) // 2
     if half >= 5:
-        sub1 = await _cross_section_ic.__wrapped__(20) if False else None  # noqa — 用简单分割
-        # 直接用 codes 前后半分别计算
         codes_a, codes_b = codes[:half], codes[half:]
-        saved_codes = codes  # noqa
-
-        async def _sub_ic(sub_codes):
-            fv, fr = [], []
-            lb = 20
-            requires_fin = SUPPORTED_FACTORS[factor_name]["requires_financials"]
-            for code in sub_codes:
-                klines = await db.get_klines(code, limit=lb + 30)
-                if not klines or len(klines) < lb + 5:
-                    continue
-                closes = [k["close"] for k in klines if isinstance(k, dict) and k.get("close") is not None]
-                if len(closes) < lb + 2:
-                    continue
-                financial = None
-                if requires_fin:
-                    financial = _latest_financial_row(await db.get_financials(code, limit=1))
-                    if not financial:
-                        continue
-                stock_info = None
-                try:
-                    stock_info = await db.get_stock_info(code)
-                except Exception:
-                    pass
-                val = _calculate_factor_value(factor_name, closes[:lb], financial=financial, stock_info=stock_info, period=lb)
-                if val is None or np.isnan(val):
-                    continue
-                ci = min(lb - 1, len(closes) - 2)
-                fi = min(ci + lb, len(closes) - 1)
-                if fi <= ci or closes[ci] <= 0:
-                    continue
-                fv.append(float(val))
-                fr.append(float((closes[fi] - closes[ci]) / closes[ci]))
-            n = len(fv)
-            if n < 5:
-                return {"rank_ic": 0.0, "sample_size": n}
-            return {"rank_ic": float(stats.spearmanr(fv, fr).statistic), "sample_size": n}
-
-        sub_a = await _sub_ic(codes_a)
-        sub_b = await _sub_ic(codes_b)
-        # 同号且差异不大 → 高一致性
-        same_sign = (sub_a["rank_ic"] * sub_b["rank_ic"]) > 0
-        diff = abs(sub_a["rank_ic"] - sub_b["rank_ic"])
+        sub_a = _cross_section_ic(codes_a, 20)
+        sub_b = _cross_section_ic(codes_b, 20)
+        same_sign = (sub_a.get("rank_ic", 0.0) * sub_b.get("rank_ic", 0.0)) > 0
+        diff = abs(float(sub_a.get("rank_ic", 0.0)) - float(sub_b.get("rank_ic", 0.0)))
         subsample_consistency = 1.0 if same_sign and diff < 0.05 else (0.5 if same_sign else 0.0)
-        subsample_detail = {"sub_a": sub_a, "sub_b": sub_b, "same_sign": same_sign, "ic_diff": round(diff, 4)}
+        subsample_detail = {
+            "sub_a": {"rank_ic": float(sub_a.get("rank_ic", 0.0)), "sample_size": int(sub_a.get("sample_size", 0))},
+            "sub_b": {"rank_ic": float(sub_b.get("rank_ic", 0.0)), "sample_size": int(sub_b.get("sample_size", 0))},
+            "same_sign": bool(same_sign),
+            "ic_diff": round(diff, 4),
+        }
     else:
         subsample_consistency = 0.0
         subsample_detail = {"note": "insufficient codes for sub-sample split (need >= 10)"}
 
-    # ── 综合稳健性评分 ──
     robustness_score = round((window_stability * 0.4 + param_stability * 0.3 + subsample_consistency * 0.3), 4)
     grade = "strong" if robustness_score >= 0.7 else ("moderate" if robustness_score >= 0.4 else "weak")
+    _perf_add(perf, "robust", time.perf_counter() - robust_stage_start)
 
-    return ok({
+    serialize_start = time.perf_counter()
+    payload = {
         "factor": factor_name,
         "robustness_score": robustness_score,
         "grade": grade,
@@ -1275,7 +1712,17 @@ async def run_factor_robustness_check(
         "param_sensitivity": {"results": param_results, "stability": round(param_stability, 4)},
         "subsample_consistency": {"score": subsample_consistency, "detail": subsample_detail},
         "weights": {"multi_window": 0.4, "param_sensitivity": 0.3, "subsample": 0.3},
-    })
+        "prefetch": prefetch_meta,
+    }
+    _perf_add(perf, "serialize", time.perf_counter() - serialize_start)
+    perf_breakdown = _build_perf_breakdown(
+        perf,
+        prefetch_meta=prefetch_meta,
+        run_cache=run_cache,
+    )
+    if perf_breakdown is not None:
+        payload["perf_breakdown"] = perf_breakdown
+    return ok(payload)
 
 
 def register(mcp):
@@ -1395,6 +1842,7 @@ def register(mcp):
         enable_neutralization: bool = True,
         bootstrap_n: int = 1000,
         bootstrap_confidence: float = 0.95,
+        include_perf_breakdown: bool = True,
     ):
         """Calculate dual information coefficient (Normal IC + Rank IC) by cross-section."""
         try:
@@ -1405,6 +1853,7 @@ def register(mcp):
                 enable_neutralization=enable_neutralization,
                 bootstrap_n=bootstrap_n,
                 bootstrap_confidence=bootstrap_confidence,
+                include_perf_breakdown=include_perf_breakdown,
             )
         except Exception as e:
             return fail(str(e))
@@ -1422,6 +1871,7 @@ def register(mcp):
         is_st: bool = False,
         rebalance_step: int = 0,
         max_periods: int = 0,
+        include_perf_breakdown: bool = True,
     ):
         """Run grouped factor backtest on a stock universe."""
         try:
@@ -1438,6 +1888,7 @@ def register(mcp):
                 is_st=is_st,
                 rebalance_step=rebalance_step,
                 max_periods=max_periods,
+                include_perf_breakdown=include_perf_breakdown,
             )
         except Exception as e:
             return fail(str(e))
@@ -1456,6 +1907,10 @@ def register(mcp):
         kfold_purge_gap: int = 5,
         bootstrap_n: int = 1000,
         bootstrap_confidence: float = 0.95,
+        validation_parallel: bool = True,
+        max_workers: int = 0,
+        bootstrap_mode: str = "",
+        include_perf_breakdown: bool = True,
     ):
         """P0-A: Unified OOS validation (Walk-Forward + Purged KFold + Bootstrap CI)."""
         try:
@@ -1472,6 +1927,10 @@ def register(mcp):
                 kfold_purge_gap=kfold_purge_gap,
                 bootstrap_n=bootstrap_n,
                 bootstrap_confidence=bootstrap_confidence,
+                validation_parallel=validation_parallel,
+                max_workers=(None if int(max_workers or 0) <= 0 else int(max_workers)),
+                bootstrap_mode=bootstrap_mode,
+                include_perf_breakdown=include_perf_breakdown,
             )
         except Exception as e:
             return fail(str(e))
@@ -1482,6 +1941,7 @@ def register(mcp):
         factor: str,
         windows: list = None,
         param_variations: list = None,
+        include_perf_breakdown: bool = True,
     ):
         """P2-2: Factor robustness check — multi-window IC stability, parameter sensitivity, sub-sample consistency."""
         try:
@@ -1490,6 +1950,7 @@ def register(mcp):
                 factor=factor,
                 windows=windows,
                 param_variations=param_variations,
+                include_perf_breakdown=include_perf_breakdown,
             )
         except Exception as e:
             return fail(str(e))

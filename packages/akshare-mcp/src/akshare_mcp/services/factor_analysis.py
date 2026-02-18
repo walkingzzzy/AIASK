@@ -13,6 +13,72 @@ class FactorAnalyzer:
     """因子分析器"""
 
     @staticmethod
+    def klines_to_ndarrays(
+        klines: List[Dict[str, Any]],
+        *,
+        chronological: bool = False,
+        include_volume: bool = False,
+        include_returns: bool = False,
+    ) -> Dict[str, np.ndarray]:
+        """
+        Standardize kline rows into ndarray panels for quant pipeline reuse.
+        """
+        closes: List[float] = []
+        volumes: List[float] = []
+
+        for row in klines or []:
+            if not isinstance(row, dict):
+                continue
+            close_raw = row.get("close")
+            if close_raw is None:
+                continue
+            try:
+                close_val = float(close_raw)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(close_val):
+                continue
+            closes.append(close_val)
+
+            if include_volume:
+                vol_raw = row.get("volume", 0.0)
+                try:
+                    vol_val = float(vol_raw or 0.0)
+                except (TypeError, ValueError):
+                    vol_val = 0.0
+                if not np.isfinite(vol_val):
+                    vol_val = 0.0
+                volumes.append(vol_val)
+
+        close_arr = np.asarray(closes, dtype=np.float64)
+        if chronological and close_arr.size > 0:
+            close_arr = close_arr[::-1].copy()
+
+        result: Dict[str, np.ndarray] = {"closes": close_arr}
+
+        if include_volume:
+            vol_arr = np.asarray(volumes, dtype=np.float64)
+            if chronological and vol_arr.size > 0:
+                vol_arr = vol_arr[::-1].copy()
+            if vol_arr.shape[0] != close_arr.shape[0]:
+                vol_arr = np.zeros(close_arr.shape[0], dtype=np.float64)
+            result["volumes"] = vol_arr
+
+        if include_returns:
+            if close_arr.size < 2:
+                result["returns"] = np.empty(0, dtype=np.float64)
+            else:
+                prev = close_arr[:-1]
+                curr = close_arr[1:]
+                ret_arr = np.empty(curr.shape[0], dtype=np.float64)
+                ret_arr.fill(np.nan)
+                valid = prev > 0
+                ret_arr[valid] = (curr[valid] - prev[valid]) / prev[valid]
+                result["returns"] = ret_arr
+
+        return result
+
+    @staticmethod
     def _neutralize_factor_values(
         factor_values: np.ndarray,
         industry: Optional[List[Any]] = None,

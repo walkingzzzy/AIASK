@@ -10,11 +10,13 @@ Author: AKShare MCP Server
 Version: 2.0
 """
 
-import numpy as np
-import pandas as pd
-from typing import Dict, List, Optional, Tuple, Any, Union
-from scipy import stats
+import os
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+from scipy import stats
 
 
 @dataclass
@@ -53,6 +55,151 @@ class ValidationSummary:
     fold_results: List[ValidationResult] = field(default_factory=list)
     ic_confidence_interval: Optional[Tuple[float, float]] = None
     method: str = ""
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() not in {"0", "false", "off", "no", "n"}
+
+
+def _env_int(name: str, default: int, *, min_value: int, max_value: int) -> int:
+    raw = os.getenv(name)
+    try:
+        val = int(str(raw).strip()) if raw is not None else int(default)
+    except Exception:
+        val = int(default)
+    return max(min_value, min(max_value, val))
+
+
+def _normalize_bootstrap_mode(mode: Optional[str]) -> str:
+    val = str(mode or "").strip().lower()
+    if val in {"fast", "full"}:
+        return val
+    return "full"
+
+
+def _resolve_bootstrap_iterations(
+    n_bootstrap: Optional[int],
+    bootstrap_mode: Optional[str],
+) -> int:
+    mode = _normalize_bootstrap_mode(bootstrap_mode)
+    default_n = 300 if mode == "fast" else 1000
+    if n_bootstrap is None:
+        n = default_n
+    else:
+        n = int(n_bootstrap)
+    return max(50, min(20_000, n))
+
+
+_CPU_COUNT = max(1, int(os.cpu_count() or 1))
+_VALIDATION_PARALLEL_ENABLED = _env_flag("VALIDATION_PARALLEL_ENABLED", True)
+_VALIDATION_MAX_WORKERS_DEFAULT = _env_int(
+    "VALIDATION_MAX_WORKERS",
+    min(_CPU_COUNT, 8),
+    min_value=1,
+    max_value=32,
+)
+_VALIDATION_PARALLEL_MIN_WORKLOAD = _env_int(
+    "VALIDATION_PARALLEL_MIN_WORKLOAD",
+    20_000,
+    min_value=1_000,
+    max_value=5_000_000,
+)
+_BOOTSTRAP_MODE_DEFAULT = _normalize_bootstrap_mode(os.getenv("BOOTSTRAP_MODE"))
+_BOOTSTRAP_WARN_THRESHOLD = _env_int(
+    "BOOTSTRAP_LARGE_SAMPLE_WARN_THRESHOLD",
+    3_000,
+    min_value=500,
+    max_value=2_000_000,
+)
+
+
+def _rowwise_pearson_corr(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Compute Pearson correlation row-by-row for two 2D arrays."""
+    if x.ndim != 2 or y.ndim != 2:
+        raise ValueError("x and y must be 2D arrays")
+    if x.shape != y.shape:
+        raise ValueError("x and y must have the same shape")
+
+    x = x.astype(np.float64, copy=False)
+    y = y.astype(np.float64, copy=False)
+    x_center = x - x.mean(axis=1, keepdims=True)
+    y_center = y - y.mean(axis=1, keepdims=True)
+
+    numerator = np.sum(x_center * y_center, axis=1)
+    denom_x = np.sum(x_center * x_center, axis=1)
+    denom_y = np.sum(y_center * y_center, axis=1)
+    denominator = np.sqrt(denom_x * denom_y)
+
+    corr = np.divide(
+        numerator,
+        denominator,
+        out=np.zeros_like(numerator, dtype=np.float64),
+        where=denominator > 0,
+    )
+    corr[~np.isfinite(corr)] = 0.0
+    return corr
+
+
+def _bootstrap_chunk_size(n_sample: int, n_bootstrap: int) -> int:
+    # Keep each chunk to a bounded memory footprint.
+    target_elements = 3_000_000
+    per_row = max(1, int(n_sample))
+    chunk = max(1, target_elements // per_row)
+    return max(1, min(int(n_bootstrap), chunk))
+
+
+def _bootstrap_ic_vectorized(
+    fv: np.ndarray,
+    rv: np.ndarray,
+    *,
+    method: str,
+    n_bootstrap: int,
+    rng: np.random.RandomState,
+) -> np.ndarray:
+    n = len(fv)
+    chunk_size = _bootstrap_chunk_size(n, n_bootstrap)
+    out = np.empty(n_bootstrap, dtype=np.float64)
+    m = str(method or "spearman").strip().lower()
+
+    pos = 0
+    while pos < n_bootstrap:
+        size = min(chunk_size, n_bootstrap - pos)
+        idx = rng.randint(0, n, size=(size, n))
+        sample_fv = fv[idx]
+        sample_rv = rv[idx]
+        if m == "spearman":
+            # Spearman = Pearson on ranks; keep tie handling with scipy rankdata.
+            rank_fv = stats.rankdata(sample_fv, method="average", axis=1)
+            rank_rv = stats.rankdata(sample_rv, method="average", axis=1)
+            out[pos : pos + size] = _rowwise_pearson_corr(rank_fv, rank_rv)
+        else:
+            out[pos : pos + size] = _rowwise_pearson_corr(sample_fv, sample_rv)
+        pos += size
+
+    return out
+
+
+def _bootstrap_mean_vectorized(
+    values: np.ndarray,
+    *,
+    n_bootstrap: int,
+    rng: np.random.RandomState,
+) -> np.ndarray:
+    n = len(values)
+    chunk_size = _bootstrap_chunk_size(n, n_bootstrap)
+    out = np.empty(n_bootstrap, dtype=np.float64)
+
+    pos = 0
+    while pos < n_bootstrap:
+        size = min(chunk_size, n_bootstrap - pos)
+        idx = rng.randint(0, n, size=(size, n))
+        out[pos : pos + size] = np.mean(values[idx], axis=1)
+        pos += size
+
+    return out
 
 
 def _calc_ic_pair(
@@ -98,9 +245,11 @@ def bootstrap_ic_ci(
     factor_values: np.ndarray,
     returns: np.ndarray,
     method: str = "spearman",
-    n_bootstrap: int = 1000,
+    n_bootstrap: Optional[int] = None,
     confidence: float = 0.95,
     seed: Optional[int] = None,
+    bootstrap_mode: Optional[str] = None,
+    large_sample_warn_threshold: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Bootstrap 非参数法估计 IC 置信区间。
@@ -116,6 +265,14 @@ def bootstrap_ic_ci(
     Returns:
         包含 ic, ci_lower, ci_upper, se, bootstrap_ics 的字典
     """
+    mode = _normalize_bootstrap_mode(bootstrap_mode or _BOOTSTRAP_MODE_DEFAULT)
+    n_bootstrap_eff = _resolve_bootstrap_iterations(n_bootstrap, mode)
+    warn_threshold = (
+        int(large_sample_warn_threshold)
+        if large_sample_warn_threshold is not None
+        else _BOOTSTRAP_WARN_THRESHOLD
+    )
+
     mask = np.isfinite(factor_values) & np.isfinite(returns)
     fv = factor_values[mask]
     rv = returns[mask]
@@ -129,18 +286,17 @@ def bootstrap_ic_ci(
             "se": 0.0,
             "n_bootstrap": 0,
             "sample_size": n,
+            "bootstrap_mode": mode,
         }
 
     rng = np.random.RandomState(seed)
-    boot_ics = np.empty(n_bootstrap)
-
-    for b in range(n_bootstrap):
-        idx = rng.randint(0, n, size=n)
-        if method == "spearman":
-            ic_b, _ = stats.spearmanr(fv[idx], rv[idx])
-        else:
-            ic_b = np.corrcoef(fv[idx], rv[idx])[0, 1]
-        boot_ics[b] = ic_b if np.isfinite(ic_b) else 0.0
+    boot_ics = _bootstrap_ic_vectorized(
+        fv=fv,
+        rv=rv,
+        method=method,
+        n_bootstrap=n_bootstrap_eff,
+        rng=rng,
+    )
 
     alpha = 1.0 - confidence
     ci_lower = float(np.percentile(boot_ics, 100 * alpha / 2))
@@ -158,9 +314,15 @@ def bootstrap_ic_ci(
         "ci_lower": ci_lower,
         "ci_upper": ci_upper,
         "se": float(np.std(boot_ics)),
-        "n_bootstrap": n_bootstrap,
+        "n_bootstrap": int(n_bootstrap_eff),
         "sample_size": n,
         "confidence": confidence,
+        "bootstrap_mode": mode,
+        "performance_hint": (
+            "Large sample with full bootstrap; consider bootstrap_mode='fast' (n_bootstrap=300)."
+            if n >= warn_threshold and mode == "full"
+            else None
+        ),
     }
 
 
@@ -450,6 +612,51 @@ class PurgedKFoldCV:
         )
 
 
+def _run_walk_forward_validate_task(
+    factor_panel: np.ndarray,
+    return_panel: np.ndarray,
+    cfg: Dict[str, Any],
+) -> ValidationSummary:
+    validator = WalkForwardValidator(
+        train_window=int(cfg.get("train_window", 60)),
+        test_window=int(cfg.get("test_window", 20)),
+        step=cfg.get("step"),
+        n_groups=int(cfg.get("n_groups", 5)),
+        min_samples_per_period=int(cfg.get("min_samples", 10)),
+    )
+    return validator.validate(factor_panel, return_panel)
+
+
+def _run_purged_kfold_validate_task(
+    factor_panel: np.ndarray,
+    return_panel: np.ndarray,
+    cfg: Dict[str, Any],
+) -> ValidationSummary:
+    validator = PurgedKFoldCV(
+        n_folds=int(cfg.get("n_folds", 5)),
+        purge_gap=int(cfg.get("purge_gap", 5)),
+        n_groups=int(cfg.get("n_groups", 5)),
+        min_samples_per_period=int(cfg.get("min_samples", 10)),
+    )
+    return validator.validate(factor_panel, return_panel)
+
+
+def _run_bootstrap_ic_series_task(
+    ic_series: np.ndarray,
+    n_bootstrap: Optional[int],
+    confidence: float,
+    bootstrap_mode: Optional[str],
+    seed: int = 42,
+) -> Dict[str, Any]:
+    return FactorValidationPipeline._bootstrap_ic_series(
+        ic_series=ic_series,
+        n_bootstrap=n_bootstrap,
+        confidence=confidence,
+        seed=seed,
+        bootstrap_mode=bootstrap_mode,
+    )
+
+
 class FactorValidationPipeline:
     """
     因子验证流水线
@@ -466,9 +673,12 @@ class FactorValidationPipeline:
         kfold_n_folds: int = 5,
         kfold_purge_gap: int = 5,
         n_groups: int = 5,
-        bootstrap_n: int = 1000,
+        bootstrap_n: Optional[int] = None,
         bootstrap_confidence: float = 0.95,
         min_samples: int = 10,
+        validation_parallel: bool = True,
+        max_workers: int = _VALIDATION_MAX_WORKERS_DEFAULT,
+        bootstrap_mode: Optional[str] = None,
     ):
         self.wf_validator = WalkForwardValidator(
             train_window=wf_train_window,
@@ -483,14 +693,21 @@ class FactorValidationPipeline:
             n_groups=n_groups,
             min_samples_per_period=min_samples,
         )
-        self.bootstrap_n = bootstrap_n
+        self.bootstrap_n = int(bootstrap_n) if bootstrap_n is not None else None
         self.bootstrap_confidence = bootstrap_confidence
+        self.validation_parallel = bool(validation_parallel and _VALIDATION_PARALLEL_ENABLED)
+        workers = int(max_workers or _VALIDATION_MAX_WORKERS_DEFAULT)
+        self.max_workers = max(1, min(workers, min(_CPU_COUNT, 8)))
+        self.bootstrap_mode = _normalize_bootstrap_mode(bootstrap_mode or _BOOTSTRAP_MODE_DEFAULT)
 
     def run(
         self,
         factor_panel: np.ndarray,
         return_panel: np.ndarray,
         factor_name: str = "unknown",
+        validation_parallel: bool = True,
+        max_workers: int = _VALIDATION_MAX_WORKERS_DEFAULT,
+        bootstrap_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         执行完整验证流水线。
@@ -503,25 +720,92 @@ class FactorValidationPipeline:
         Returns:
             完整验证报告字典
         """
-        # 1. Walk-Forward
-        wf_summary = self.wf_validator.validate(factor_panel, return_panel)
-
-        # 2. Purged K-Fold
-        kf_summary = self.kfold_validator.validate(factor_panel, return_panel)
-
-        # 3. Bootstrap CI（使用全样本截面均值 IC）
-        all_ics_p, all_ics_r = [], []
-        for t in range(factor_panel.shape[0]):
-            p_ic, r_ic = _calc_ic_pair(factor_panel[t], return_panel[t])
-            if np.isfinite(factor_panel[t]).sum() >= 10:
-                all_ics_p.append(p_ic)
-                all_ics_r.append(r_ic)
-
-        # 对 IC 序列做 Bootstrap
-        ic_array = np.array(all_ics_r)
-        boot_ci = self._bootstrap_ic_series(
-            ic_array, self.bootstrap_n, self.bootstrap_confidence
+        requested_parallel = bool(validation_parallel and self.validation_parallel and _VALIDATION_PARALLEL_ENABLED)
+        workers = int(max_workers or self.max_workers)
+        workers = max(1, min(workers, min(_CPU_COUNT, 8)))
+        workload = int(factor_panel.shape[0] * factor_panel.shape[1])
+        parallel_ready = bool(
+            requested_parallel
+            and workers > 1
+            and workload >= _VALIDATION_PARALLEL_MIN_WORKLOAD
         )
+
+        # 1) Build IC series for bootstrap on the full panel.
+        all_ics_r: List[float] = []
+        for t in range(factor_panel.shape[0]):
+            _p_ic, r_ic = _calc_ic_pair(factor_panel[t], return_panel[t])
+            if np.isfinite(factor_panel[t]).sum() >= 10:
+                all_ics_r.append(r_ic)
+        ic_array = np.array(all_ics_r, dtype=np.float64)
+        selected_bootstrap_mode = _normalize_bootstrap_mode(bootstrap_mode or self.bootstrap_mode)
+
+        wf_summary: Optional[ValidationSummary] = None
+        kf_summary: Optional[ValidationSummary] = None
+        boot_ci: Optional[Dict[str, Any]] = None
+        execution_mode = "serial"
+        fallback_reason: Optional[str] = None
+
+        if parallel_ready:
+            try:
+                wf_cfg = {
+                    "train_window": self.wf_validator.train_window,
+                    "test_window": self.wf_validator.test_window,
+                    "step": self.wf_validator.step,
+                    "n_groups": self.wf_validator.n_groups,
+                    "min_samples": self.wf_validator.min_samples,
+                }
+                kf_cfg = {
+                    "n_folds": self.kfold_validator.n_folds,
+                    "purge_gap": self.kfold_validator.purge_gap,
+                    "n_groups": self.kfold_validator.n_groups,
+                    "min_samples": self.kfold_validator.min_samples,
+                }
+                with ProcessPoolExecutor(max_workers=min(workers, 3)) as executor:
+                    wf_future = executor.submit(
+                        _run_walk_forward_validate_task,
+                        factor_panel,
+                        return_panel,
+                        wf_cfg,
+                    )
+                    kf_future = executor.submit(
+                        _run_purged_kfold_validate_task,
+                        factor_panel,
+                        return_panel,
+                        kf_cfg,
+                    )
+                    boot_future = executor.submit(
+                        _run_bootstrap_ic_series_task,
+                        ic_array,
+                        self.bootstrap_n,
+                        self.bootstrap_confidence,
+                        selected_bootstrap_mode,
+                        42,
+                    )
+                    wf_summary = wf_future.result()
+                    kf_summary = kf_future.result()
+                    boot_ci = boot_future.result()
+                execution_mode = "parallel"
+            except Exception as exc:
+                fallback_reason = f"parallel_failed:{type(exc).__name__}"
+
+        if wf_summary is None or kf_summary is None:
+            wf_summary = self.wf_validator.validate(factor_panel, return_panel)
+            kf_summary = self.kfold_validator.validate(factor_panel, return_panel)
+            if boot_ci is None:
+                boot_ci = self._bootstrap_ic_series(
+                    ic_array,
+                    self.bootstrap_n,
+                    self.bootstrap_confidence,
+                    bootstrap_mode=selected_bootstrap_mode,
+                )
+            execution_mode = "serial"
+        elif boot_ci is None:
+            boot_ci = self._bootstrap_ic_series(
+                ic_array,
+                self.bootstrap_n,
+                self.bootstrap_confidence,
+                bootstrap_mode=selected_bootstrap_mode,
+            )
 
         # 4. 综合评级
         rating = self._compute_rating(wf_summary, kf_summary, boot_ci)
@@ -534,16 +818,28 @@ class FactorValidationPipeline:
             "purged_kfold": self._summary_to_dict(kf_summary),
             "bootstrap_ci": boot_ci,
             "rating": rating,
+            "validation_execution": {
+                "mode": execution_mode,
+                "parallel_requested": bool(requested_parallel),
+                "parallel_effective": bool(execution_mode == "parallel"),
+                "max_workers": int(workers),
+                "workload": int(workload),
+                "fallback_reason": fallback_reason,
+            },
         }
 
     @staticmethod
     def _bootstrap_ic_series(
         ic_series: np.ndarray,
-        n_bootstrap: int,
+        n_bootstrap: Optional[int],
         confidence: float,
         seed: int = 42,
+        bootstrap_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """对 IC 时间序列做 Bootstrap 置信区间"""
+        mode = _normalize_bootstrap_mode(bootstrap_mode or _BOOTSTRAP_MODE_DEFAULT)
+        n_bootstrap_eff = _resolve_bootstrap_iterations(n_bootstrap, mode)
+
         n = len(ic_series)
         if n < 5:
             return {
@@ -552,13 +848,16 @@ class FactorValidationPipeline:
                 "ci_upper": 0.0,
                 "se": 0.0,
                 "sample_size": n,
+                "n_bootstrap": 0,
+                "bootstrap_mode": mode,
             }
 
         rng = np.random.RandomState(seed)
-        boot_means = np.empty(n_bootstrap)
-        for b in range(n_bootstrap):
-            idx = rng.randint(0, n, size=n)
-            boot_means[b] = np.mean(ic_series[idx])
+        boot_means = _bootstrap_mean_vectorized(
+            ic_series.astype(np.float64, copy=False),
+            n_bootstrap=n_bootstrap_eff,
+            rng=rng,
+        )
 
         alpha = 1.0 - confidence
         return {
@@ -570,6 +869,13 @@ class FactorValidationPipeline:
             "se": float(np.std(boot_means)),
             "sample_size": n,
             "confidence": confidence,
+            "n_bootstrap": int(n_bootstrap_eff),
+            "bootstrap_mode": mode,
+            "performance_hint": (
+                "Large sample with full bootstrap; consider bootstrap_mode='fast' (n_bootstrap=300)."
+                if n >= _BOOTSTRAP_WARN_THRESHOLD and mode == "full"
+                else None
+            ),
         }
 
     @staticmethod

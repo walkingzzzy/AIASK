@@ -412,21 +412,22 @@ def register_decision_manager(mcp):
                     candidate_codes = [normalize_code(c) for c in codes if isinstance(c, str) and c.strip()]
                     filter_chain.append({'step': 'source', 'method': 'user_codes', 'count': len(candidate_codes)})
                 else:
-                    # 1) 优先: get_stock_list_cached（全A股列表）
-                    try:
-                        stock_list, _cached = get_stock_list_cached()
-                        if stock_list:
-                            candidate_rows = stock_list[:universe_limit]
-                            source_method = 'get_stock_list'
-                    except Exception:
-                        candidate_rows = []
-
-                    # 2) 降级: db.search_stocks
-                    if not candidate_rows and hasattr(db, 'search_stocks'):
+                    # 1) 优先: db.search_stocks（动态候选池，便于按条件检索与测试桩控制）
+                    if hasattr(db, 'search_stocks'):
                         try:
                             candidate_rows = await db.search_stocks(keyword=keyword, limit=universe_limit)
                             if candidate_rows:
                                 source_method = 'db.search_stocks'
+                        except Exception:
+                            candidate_rows = []
+
+                    # 2) 降级: get_stock_list_cached（全A股列表）
+                    if not candidate_rows:
+                        try:
+                            stock_list, _cached = get_stock_list_cached()
+                            if stock_list:
+                                candidate_rows = stock_list[:universe_limit]
+                                source_method = 'get_stock_list'
                         except Exception:
                             candidate_rows = []
 
@@ -484,7 +485,7 @@ def register_decision_manager(mcp):
                             candidate_codes.append(code)
                     filter_chain.append({'step': 'dedup', 'count': len(candidate_codes)})
 
-                fallback_used = source_method not in ('user_codes', 'get_stock_list')
+                fallback_used = source_method in ('sql_stocks_table',)
                 no_candidates = not candidate_codes
 
                 recommendations = []

@@ -9,5 +9,9 @@
       "Bash(git commit:*)",
       "Bash(git push:*)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "akshare-mcp"
+  ],
+  "enableAllProjectMcpServers": true
 }

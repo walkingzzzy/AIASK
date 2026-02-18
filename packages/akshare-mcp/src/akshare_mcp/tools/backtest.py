@@ -80,6 +80,81 @@ async def _fetch_klines_for_code(
     return [], "none"
 
 
+def _estimate_limit_global(
+    start_date: Optional[str], end_date: Optional[str], default: int = 300
+) -> int:
+    start = parse_date_input(start_date) if start_date else None
+    end = parse_date_input(end_date) if end_date else None
+    if start and end:
+        days = abs((end - start).days) + 1
+        return min(max(days, 50), 1000)
+    return default
+
+
+async def _fetch_klines_batch_global(
+    db: Any,
+    codes: List[str],
+    start_date: Optional[str],
+    end_date: Optional[str],
+    fetch_concurrency: int,
+) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, int]]:
+    """Prefer DB batch fetch and fallback to bounded concurrent single-code fetch."""
+    source_counter: Dict[str, int] = {
+        "timescaledb_batch": 0,
+        "timescaledb": 0,
+        "market_fallback": 0,
+        "none": 0,
+    }
+
+    normalized_codes = [str(c).strip() for c in (codes or []) if str(c).strip()]
+    if not normalized_codes:
+        return {}, source_counter
+
+    klines_dict: Dict[str, List[Dict[str, Any]]] = {}
+    batch_method = getattr(db, "get_klines_batch", None)
+    if callable(batch_method):
+        try:
+            limit = _estimate_limit_global(start_date, end_date)
+            batch_rows = await batch_method(normalized_codes, start_date, end_date, limit)
+            rows_dict = batch_rows if isinstance(batch_rows, dict) else {}
+            for code in normalized_codes:
+                normalized = _normalize_klines_global(rows_dict.get(code, []))
+                if normalized:
+                    klines_dict[code] = normalized
+                    source_counter["timescaledb_batch"] += 1
+        except Exception:
+            pass
+
+    missing_codes = [c for c in normalized_codes if c not in klines_dict]
+    if missing_codes:
+        concurrency = max(1, min(int(fetch_concurrency or 1), 20))
+        semaphore = asyncio.Semaphore(concurrency)
+        limit = _estimate_limit_global(start_date, end_date)
+
+        async def _worker(code: str) -> Tuple[str, List[Dict[str, Any]], str]:
+            async with semaphore:
+                klines, source = await _fetch_klines_for_code(
+                    db=db,
+                    code=code,
+                    start_date=start_date,
+                    end_date=end_date,
+                    limit=limit,
+                )
+                return code, klines, source
+
+        results = await asyncio.gather(*[_worker(code) for code in missing_codes], return_exceptions=True)
+        for item in results:
+            if isinstance(item, Exception):
+                source_counter["none"] += 1
+                continue
+            code, klines, source = item
+            source_counter[source] = source_counter.get(source, 0) + 1
+            if klines:
+                klines_dict[code] = klines
+
+    return klines_dict, source_counter
+
+
 async def run_simple_backtest(
     code: str,
     strategy: str = 'ma_cross',
@@ -146,8 +221,7 @@ async def run_batch_backtest(
 ):
     """模块级批量回测接口（兼容 tests 直接 import）。"""
     try:
-        _ = fetch_concurrency  # 保留签名兼容
-        start_ts = time.perf_counter()
+        total_start = time.perf_counter()
         db = get_db()
 
         start_date, end_date = _normalize_dates_global(start_date, end_date)
@@ -175,9 +249,19 @@ async def run_batch_backtest(
             'long_period': long_period,
             '_cost_assumptions': cost,
         }
+        io_start = time.perf_counter()
+        klines_dict, source_stats = await _fetch_klines_batch_global(
+            db=db,
+            codes=normalized_codes,
+            start_date=start_date,
+            end_date=end_date,
+            fetch_concurrency=fetch_concurrency,
+        )
+        io_seconds = time.perf_counter() - io_start
+
         results: List[Dict[str, Any]] = []
         for code in normalized_codes:
-            klines, _source = await _fetch_klines_for_code(db, code, start_date, end_date)
+            klines = klines_dict.get(code) or []
             if not klines:
                 continue
             single = backtest_engine.run_backtest(code, klines, strategy, params)
@@ -192,6 +276,12 @@ async def run_batch_backtest(
             'requested_codes': normalized_codes,
             'successful_count': len(results),
             'failed_count': len(normalized_codes) - len(results),
+            'fetch_concurrency': max(1, min(int(fetch_concurrency or 1), 20)),
+            'source_stats': source_stats,
+            'timings': {
+                'io_fetch_seconds': round(io_seconds, 6),
+                'total_seconds': round(time.perf_counter() - total_start, 6),
+            },
         }
 
         if results:
@@ -203,7 +293,7 @@ async def run_batch_backtest(
                 'avg_sharpe_ratio': float(avg_sharpe),
             }
 
-        payload['execution_time'] = f"{(time.perf_counter() - start_ts):.2f}s"
+        payload['execution_time'] = f"{(time.perf_counter() - total_start):.2f}s"
         return ok(payload)
     except Exception as e:
         return fail(str(e))
@@ -230,50 +320,22 @@ def register(mcp):
     def _estimate_limit(
         start_date: Optional[str], end_date: Optional[str], default: int = 300
     ) -> int:
-        start = parse_date_input(start_date) if start_date else None
-        end = parse_date_input(end_date) if end_date else None
-        if start and end:
-            days = abs((end - start).days) + 1
-            return min(max(days, 50), 1000)
-        return default
+        return _estimate_limit_global(start_date, end_date, default)
 
     def _normalize_klines(klines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        cleaned: List[Dict[str, Any]] = []
-        for row in klines or []:
-            if not isinstance(row, dict):
-                continue
-            if row.get("close") is None:
-                continue
-            date_val = row.get("date") or row.get("time")
-            if date_val is not None:
-                row = {**row, "date": str(date_val)[:10]}
-            cleaned.append(row)
-        cleaned.sort(key=lambda x: str(x.get("date") or x.get("time") or ""))
-        return cleaned
+        return _normalize_klines_global(klines)
 
     async def _fetch_klines(
         db, code: str, start_date: Optional[str], end_date: Optional[str]
     ) -> tuple[List[Dict[str, Any]], str]:
-        klines = await db.get_klines(code, start_date, end_date)
-        normalized = _normalize_klines(klines)
-        if normalized:
-            return normalized, "timescaledb"
-
         limit = _estimate_limit(start_date, end_date)
-        fallback = get_kline_data(
+        return await _fetch_klines_for_code(
+            db=db,
             code=code,
-            period="daily",
             start_date=start_date,
             end_date=end_date,
             limit=limit,
-            adjust="qfq",
         )
-        if fallback.get("success"):
-            fallback_klines = _normalize_klines(fallback.get("data") or [])
-            if fallback_klines:
-                return fallback_klines, "market_fallback"
-
-        return [], "none"
 
     async def _fetch_klines_batch(
         db,
@@ -282,77 +344,13 @@ def register(mcp):
         end_date: Optional[str],
         fetch_concurrency: int,
     ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, int]]:
-        """优先走DB批量接口，失败/缺失时回退逐只并发拉取。"""
-        source_counter: Dict[str, int] = {
-            "timescaledb_batch": 0,
-            "timescaledb": 0,
-            "market_fallback": 0,
-            "none": 0,
-        }
-
-        # 路径1：优先尝试数据库批量读取
-        batch_method = getattr(db, "get_klines_batch", None)
-        if callable(batch_method):
-            try:
-                limit = _estimate_limit(start_date, end_date)
-                batch_rows = await batch_method(codes, start_date, end_date, limit)
-                klines_dict: Dict[str, List[Dict[str, Any]]] = {}
-                for code in codes:
-                    normalized = _normalize_klines((batch_rows or {}).get(code, []))
-                    if normalized:
-                        klines_dict[code] = normalized
-                        source_counter["timescaledb_batch"] += 1
-
-                # 对批量接口没命中的 code 做回退补齐
-                missing_codes = [c for c in codes if c not in klines_dict]
-                if not missing_codes:
-                    return klines_dict, source_counter
-
-                concurrency = max(1, min(int(fetch_concurrency or 1), 20))
-                semaphore = asyncio.Semaphore(concurrency)
-
-                async def _worker(code: str) -> Tuple[str, List[Dict[str, Any]], str]:
-                    async with semaphore:
-                        klines, source = await _fetch_klines(db, code, start_date, end_date)
-                        return code, klines, source
-
-                results = await asyncio.gather(*[_worker(code) for code in missing_codes], return_exceptions=True)
-                for item in results:
-                    if isinstance(item, Exception):
-                        source_counter["none"] += 1
-                        continue
-                    code, klines, source = item
-                    source_counter[source] = source_counter.get(source, 0) + 1
-                    if klines:
-                        klines_dict[code] = klines
-                return klines_dict, source_counter
-            except Exception:
-                # 批量读取失败时，自动回退旧路径
-                pass
-
-        # 路径2：旧路径（逐只并发拉取）
-        concurrency = max(1, min(int(fetch_concurrency or 1), 20))
-        semaphore = asyncio.Semaphore(concurrency)
-
-        async def _worker(code: str) -> Tuple[str, List[Dict[str, Any]], str]:
-            async with semaphore:
-                klines, source = await _fetch_klines(db, code, start_date, end_date)
-                return code, klines, source
-
-        tasks = [_worker(code) for code in codes]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        klines_dict: Dict[str, List[Dict[str, Any]]] = {}
-        for item in results:
-            if isinstance(item, Exception):
-                source_counter["none"] += 1
-                continue
-            code, klines, source = item
-            source_counter[source] = source_counter.get(source, 0) + 1
-            if klines:
-                klines_dict[code] = klines
-
-        return klines_dict, source_counter
+        return await _fetch_klines_batch_global(
+            db=db,
+            codes=codes,
+            start_date=start_date,
+            end_date=end_date,
+            fetch_concurrency=fetch_concurrency,
+        )
 
     @mcp.tool()
     async def run_simple_backtest(

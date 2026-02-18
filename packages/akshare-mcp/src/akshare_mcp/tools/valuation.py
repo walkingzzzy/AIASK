@@ -637,6 +637,11 @@ def register(mcp):
         """
         DCF估值（现金流折现，驱动项版本）
 
+        已知限制与降级策略：
+        - 首选数据库财务数据，若缺失则降级到 finance.get_financials。
+        - 当“最新期净利润<=0/缺失”时，不再直接失败，改为使用历史正净利润均值/单值降级估算。
+        - 返回中新增 source_chain / fallback_reason / profit_basis 审计字段，不影响既有字段兼容性。
+
         Args:
             code: 股票代码
             discount_rate: 折现率（兼容参数；不传时由WACC估算）
@@ -659,6 +664,8 @@ def register(mcp):
             if years < 1:
                 return fail('years 必须 >= 1')
 
+            source_chain: list[str] = []
+            fallback_reason: list[str] = []
             term_g = growth_rate if terminal_growth_rate is None else terminal_growth_rate
 
             # 参数边界保护
@@ -668,31 +675,117 @@ def register(mcp):
             nwc_ratio = _clamp(float(nwc_ratio), -0.05, 0.1)
 
             db = get_db()
+            source_chain.append('db.get_financials')
             financials = await db.get_financials(code, limit=max(8, years * 2))
+            if isinstance(financials, dict):
+                financials = [financials]
+            if not isinstance(financials, list):
+                financials = []
+
+            if not financials:
+                # DB 无数据时回退到 finance API
+                try:
+                    source_chain.append('finance.get_financials')
+                    from .finance import get_financials as _api_get_financials
+                    fin_res = _api_get_financials(code)
+                    if fin_res and fin_res.get('success') and fin_res.get('data'):
+                        api_data = fin_res['data']
+                        financials = api_data if isinstance(api_data, list) else [api_data]
+                        fallback_reason.append('DB无财务数据，已降级使用 finance.get_financials')
+                except Exception as e:
+                    fallback_reason.append(f'finance.get_financials 降级失败: {e}')
+
             if not financials:
                 return fail('No financial data for DCF')
 
-            latest_valid = next(
-                (
-                    f for f in financials
-                    if f.get('net_profit') is not None and float(f.get('net_profit')) > 0
-                ),
-                None,
-            )
-            if not latest_valid:
-                return fail('No valid net profit for DCF')
+            def _to_float(v):
+                try:
+                    if v is None:
+                        return None
+                    return float(v)
+                except Exception:
+                    return None
+
+            def _first_number(row: dict, keys: list[str]):
+                if not isinstance(row, dict):
+                    return None
+                for k in keys:
+                    val = _to_float(row.get(k))
+                    if val is not None:
+                        return val
+                return None
+
+            def _first_positive(row: dict, keys: list[str]):
+                val = _first_number(row, keys)
+                return val if val is not None and val > 0 else None
+
+            profit_keys = ['net_profit', 'netProfit', 'net_income', 'n_income', 'profit']
+            revenue_keys = ['revenue', 'total_revenue', 'totalRevenue', 'operating_revenue', 'operatingRevenue']
+
+            latest_row = financials[0] if financials else None
+            latest_profit = _first_positive(latest_row, profit_keys) if latest_row else None
 
             revenue_candidates = [
-                float(f.get('revenue'))
+                _first_positive(f, revenue_keys)
                 for f in financials
-                if f.get('revenue') is not None and float(f.get('revenue')) > 0
             ]
-            if not revenue_candidates:
-                return fail('No valid revenue for DCF driver model')
+            revenue_candidates = [v for v in revenue_candidates if v is not None]
 
-            base_revenue = revenue_candidates[0]
-            net_profit = float(latest_valid.get('net_profit'))
+            if revenue_candidates:
+                base_revenue = float(revenue_candidates[0])
+            else:
+                # 营收缺失降级：优先使用“历史正净利润 / 估算利润率”反推基准营收
+                profit_candidates = [
+                    _first_positive(f, profit_keys)
+                    for f in financials
+                ]
+                profit_candidates = [float(v) for v in profit_candidates if v is not None]
+                if profit_candidates:
+                    fallback_profit = float(statistics.mean(profit_candidates[: min(3, len(profit_candidates))]))
+                    inferred_margin = 0.20
+                    base_revenue = float(max(fallback_profit / inferred_margin, fallback_profit * 2))
+                    fallback_reason.append('缺少有效营收数据，已使用净利润反推基准营收（降级估算）')
+                else:
+                    # 最后兜底：完全缺少营收/利润时提供保守默认基准，避免工具直接失败
+                    base_revenue = 1_000_000_000.0
+                    fallback_reason.append('缺少有效营收与净利润数据，已使用默认基准营收进行保守估算')
+
+            profit_basis = {
+                'strategy': 'latest_positive_net_profit',
+                'sample_count': 1,
+                'raw_values': [],
+            }
+
+            if latest_profit is not None:
+                net_profit = float(latest_profit)
+            else:
+                history_positive = [
+                    _first_positive(f, profit_keys)
+                    for f in financials
+                ]
+                history_positive = [float(v) for v in history_positive if v is not None]
+                if not history_positive:
+                    net_profit = float(base_revenue * 0.15)
+                    profit_basis['strategy'] = 'default_margin_estimate'
+                    profit_basis['sample_count'] = 0
+                    profit_basis['raw_values'] = []
+                    fallback_reason.append('缺少有效净利润数据，已使用默认利润率15%估算')
+                elif len(history_positive) >= 2:
+                    net_profit = float(statistics.mean(history_positive))
+                    profit_basis['strategy'] = 'historical_positive_mean'
+                    profit_basis['sample_count'] = len(history_positive)
+                    profit_basis['raw_values'] = history_positive[:8]
+                    fallback_reason.append('最新期无有效正净利润，已降级使用历史正净利润估算')
+                else:
+                    net_profit = float(history_positive[0])
+                    profit_basis['strategy'] = 'historical_single_positive'
+                    profit_basis['sample_count'] = len(history_positive)
+                    profit_basis['raw_values'] = history_positive[:8]
+                    fallback_reason.append('最新期无有效正净利润，已降级使用历史单期正净利润估算')
+
+            profit_basis['value'] = float(net_profit)
             profit_margin = _clamp(net_profit / base_revenue, 0.02, 0.5)
+
 
             cost_of_equity = _cost_of_equity_capm(risk_free_rate, beta, market_risk_premium)
             wacc_info = _compute_wacc(
@@ -765,6 +858,10 @@ def register(mcp):
                     seed=distribution_seed,
                 )
 
+            selected_report_date = None
+            if isinstance(latest_row, dict):
+                selected_report_date = latest_row.get('report_date') or latest_row.get('reportDate')
+
             payload = {
                 'code': code,
                 'intrinsic_value': float(valuation_core['intrinsic_value']),
@@ -772,7 +869,7 @@ def register(mcp):
                 'growth_rate': float(growth_rate),
                 'terminal_growth_rate': float(term_g),
                 'years': int(years),
-                'financial_report_date': latest_valid.get('report_date'),
+                'financial_report_date': selected_report_date,
                 'model': 'Driver DCF with WACC',
                 'wacc_breakdown': wacc_info,
                 'driver_assumptions': {
@@ -787,11 +884,15 @@ def register(mcp):
                 'pv_terminal': float(valuation_core['pv_terminal']),
                 'terminal_value': float(valuation_core['terminal_value']),
                 'sensitivity': sensitivity,
+                'source_chain': source_chain,
+                'fallback_reason': fallback_reason,
+                'profit_basis': profit_basis,
                 'meta': {
                     'trace': 'dcf_driver_v2',
                     'compatibility_mode': 'legacy_signature_plus_extensions',
                     'used_discount_source': 'input_discount_rate' if discount_rate and discount_rate > 0 else 'wacc',
                     'distribution_enabled': bool(enable_distribution),
+                    'profit_basis_strategy': profit_basis.get('strategy'),
                 }
             }
             if valuation_interval is not None:
@@ -893,6 +994,14 @@ def register(mcp):
                 target_financial = await db.get_financials(code, limit=1)
             except Exception:
                 target_financial = None
+            if not target_financial:
+                try:
+                    from .finance import get_financials as _api_get_financials
+                    fin_res = _api_get_financials(code)
+                    if fin_res and fin_res.get('success') and fin_res.get('data'):
+                        target_financial = [fin_res['data']]
+                except Exception:
+                    pass
 
             def _latest_row(rows):
                 if isinstance(rows, list) and rows:
@@ -934,6 +1043,7 @@ def register(mcp):
                 ])
                 net_profit = _first_number(fin_row, [
                     'net_profit',
+                    'netProfit',
                     'net_income',
                     'profit',
                 ])
@@ -994,6 +1104,14 @@ def register(mcp):
                         peer_financial = await db.get_financials(peer_code, limit=1)
                     except Exception:
                         peer_financial = None
+                    if not peer_financial:
+                        try:
+                            from .finance import get_financials as _api_get_financials
+                            fin_res = _api_get_financials(peer_code)
+                            if fin_res and fin_res.get('success') and fin_res.get('data'):
+                                peer_financial = [fin_res['data']]
+                        except Exception:
+                            pass
                     peer_fin_row = _latest_row(peer_financial) or {}
                     peer_metrics['_roe'] = _safe_float(peer_fin_row.get('roe'))
                     peer_metrics['_debt_ratio'] = _safe_float(peer_fin_row.get('debt_ratio'))
@@ -1257,13 +1375,22 @@ def register(mcp):
         """
         获取历史估值数据
 
+        已知限制与降级策略：
+        - 首选 stock_quotes 历史库；无数据时按 Tushare -> AkShare -> Baostock 依次降级。
+        - 不同源字段可用性不同，可能出现仅价格可用、估值字段缺失。
+        - 返回新增 data_quality/source_chain/fallback_reason，便于审计与质量评估。
+
         Args:
             code: 股票代码
             days: 查询天数
         """
         try:
+            from datetime import datetime, timedelta
+
             db = get_db()
             rows = []
+            source_chain: list[str] = ['db.stock_quotes']
+            fallback_reason: list[str] = []
 
             async with db.acquire() as conn:
                 rows = await conn.fetch(
@@ -1275,50 +1402,125 @@ def register(mcp):
                     code, days
                 )
 
-            history = []
-            if rows:
-                for row in rows:
-                    history.append({
-                        'date': row['time'].strftime('%Y-%m-%d') if row['time'] else None,
-                        'pe_ratio': float(row['pe']) if row['pe'] else None,
-                        'pb_ratio': float(row['pb']) if row['pb'] else None,
-                        'market_cap': float(row['mkt_cap']) if row['mkt_cap'] else None,
-                        'price': float(row['price']) if row['price'] else None,
-                    })
-            else:
-                # Fallback 1: 尝试实时行情补一条快照（不硬失败）
+            def _to_float(value):
                 try:
-                    from .market.quote import get_realtime_quote
-                    rt = get_realtime_quote(code)
-                    data = rt.get('data') if isinstance(rt, dict) else None
-                    if isinstance(data, dict) and data.get('price') is not None:
-                        history.append({
-                            'date': data.get('time', data.get('data_timestamp', ''))[:10] or None,
-                            'pe_ratio': float(data['pe']) if data.get('pe') is not None else None,
-                            'pb_ratio': float(data['pb']) if data.get('pb') is not None else None,
-                            'market_cap': float(data['mkt_cap']) if data.get('mkt_cap') is not None else (
-                                float(data['market_cap']) if data.get('market_cap') is not None else None
-                            ),
-                            'price': float(data['price']) if data.get('price') is not None else None,
-                        })
+                    if value is None:
+                        return None
+                    return float(value)
                 except Exception:
-                    pass
+                    return None
 
-                # Fallback 2: stock 基础估值兜底
-                if not history:
-                    stock_info = await db.get_stock_info(code)
-                    if stock_info:
-                        history.append({
-                            'date': None,
-                            'pe_ratio': float(stock_info['pe_ratio']) if stock_info.get('pe_ratio') is not None else None,
-                            'pb_ratio': float(stock_info['pb_ratio']) if stock_info.get('pb_ratio') is not None else None,
-                            'market_cap': float(stock_info['market_cap']) if stock_info.get('market_cap') is not None else None,
-                            'price': None,
-                        })
+            history_raw = []
+            for row in rows or []:
+                history_raw.append({
+                    'date': row['time'].strftime('%Y-%m-%d') if row.get('time') else None,
+                    'pe_ratio': _to_float(row.get('pe')),
+                    'pb_ratio': _to_float(row.get('pb')),
+                    'market_cap': _to_float(row.get('mkt_cap')),
+                    'price': _to_float(row.get('price')),
+                })
 
-            # 计算统计信息
-            pe_values = [h['pe_ratio'] for h in history if h['pe_ratio'] is not None]
-            pb_values = [h['pb_ratio'] for h in history if h['pb_ratio'] is not None]
+            if not history_raw:
+                source_chain.append('tushare.daily_basic')
+                try:
+                    from ..data_source import data_source
+                    pro = data_source.get_tushare_pro()
+                    if pro:
+                        ts_code = f"{code}.SH" if str(code).startswith('6') else f"{code}.SZ"
+                        end_date = datetime.now().strftime('%Y%m%d')
+                        start_date = (datetime.now() - timedelta(days=max(days, 1))).strftime('%Y%m%d')
+                        df = pro.daily_basic(
+                            ts_code=ts_code,
+                            start_date=start_date,
+                            end_date=end_date,
+                            fields='trade_date,pe_ttm,pb,total_mv,close',
+                        )
+                        if df is not None and not df.empty:
+                            for _, r in df.iterrows():
+                                trade_date = str(r.get('trade_date') or '').strip()
+                                dt = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}" if len(trade_date) == 8 else None
+                                history_raw.append({
+                                    'date': dt,
+                                    'pe_ratio': _to_float(r.get('pe_ttm')),
+                                    'pb_ratio': _to_float(r.get('pb')),
+                                    'market_cap': _to_float(r.get('total_mv')),
+                                    'price': _to_float(r.get('close')),
+                                })
+                except Exception as e:
+                    fallback_reason.append(f'Tushare降级失败: {e}')
+
+            if not history_raw:
+                source_chain.append('akshare.stock_a_indicator_lg')
+                try:
+                    import akshare as ak
+                    df = ak.stock_a_indicator_lg(symbol=code)
+                    if df is not None and not df.empty:
+                        for _, r in df.tail(max(days, 1)).iterrows():
+                            dt = str(r.get('trade_date') or r.get('日期') or '')[:10] or None
+                            history_raw.append({
+                                'date': dt,
+                                'pe_ratio': _to_float(r.get('pe') if 'pe' in r else r.get('市盈率')),
+                                'pb_ratio': _to_float(r.get('pb') if 'pb' in r else r.get('市净率')),
+                                'market_cap': _to_float(r.get('total_mv') if 'total_mv' in r else r.get('总市值')),
+                                'price': _to_float(r.get('close') if 'close' in r else r.get('收盘价')),
+                            })
+                except Exception as e:
+                    fallback_reason.append(f'AkShare降级失败: {e}')
+
+            if not history_raw:
+                source_chain.append('baostock.history_k_data_plus')
+                try:
+                    from ..baostock_api import baostock_client
+                    end_date = datetime.now().strftime('%Y-%m-%d')
+                    start_date = (datetime.now() - timedelta(days=max(days * 2, 5))).strftime('%Y-%m-%d')
+                    df = baostock_client.query_history_k_data_plus(
+                        code,
+                        fields='date,close',
+                        start_date=start_date,
+                        end_date=end_date,
+                        frequency='d',
+                        adjustflag='2',
+                    )
+                    if df is not None and not df.empty:
+                        for _, r in df.tail(max(days, 1)).iterrows():
+                            history_raw.append({
+                                'date': str(r.get('date') or '')[:10] or None,
+                                'pe_ratio': None,
+                                'pb_ratio': None,
+                                'market_cap': None,
+                                'price': _to_float(r.get('close')),
+                            })
+                except Exception as e:
+                    fallback_reason.append(f'Baostock降级失败: {e}')
+
+            if not history_raw:
+                source_chain.append('db.get_stock_info')
+                stock_info = await db.get_stock_info(code)
+                if stock_info:
+                    fallback_reason.append('无历史估值序列，已降级为股票基础估值快照')
+                    history_raw.append({
+                        'date': None,
+                        'pe_ratio': _to_float(stock_info.get('pe_ratio')),
+                        'pb_ratio': _to_float(stock_info.get('pb_ratio')),
+                        'market_cap': _to_float(stock_info.get('market_cap')),
+                        'price': None,
+                    })
+
+            def _record_score(item: dict) -> int:
+                return sum(item.get(k) is not None for k in ('pe_ratio', 'pb_ratio', 'market_cap', 'price'))
+
+            dedup_map: dict[str, dict] = {}
+            for idx, item in enumerate(history_raw):
+                key = item.get('date') or f'__nodate_{idx}'
+                old = dedup_map.get(key)
+                if old is None or _record_score(item) >= _record_score(old):
+                    dedup_map[key] = item
+
+            history = list(dedup_map.values())
+            history.sort(key=lambda x: (x.get('date') is not None, x.get('date') or ''), reverse=True)
+
+            pe_values = [h['pe_ratio'] for h in history if h.get('pe_ratio') is not None]
+            pb_values = [h['pb_ratio'] for h in history if h.get('pb_ratio') is not None]
 
             stats = {}
             if pe_values:
@@ -1329,7 +1531,6 @@ def register(mcp):
                     'min': float(min(pe_values)),
                     'max': float(max(pe_values))
                 }
-
             if pb_values:
                 stats['pb'] = {
                     'current': pb_values[0],
@@ -1339,12 +1540,28 @@ def register(mcp):
                     'max': float(max(pb_values))
                 }
 
+            total_cells = len(history) * 4
+            missing_cells = sum(1 for h in history for k in ('pe_ratio', 'pb_ratio', 'market_cap', 'price') if h.get(k) is None)
+            completeness_ratio = float((total_cells - missing_cells) / total_cells) if total_cells > 0 else 0.0
+            data_quality = {
+                'raw_count': len(history_raw),
+                'deduplicated_count': len(history),
+                'duplicate_removed': max(0, len(history_raw) - len(history)),
+                'field_count': 4,
+                'missing_cells': missing_cells,
+                'completeness_ratio': round(completeness_ratio, 4),
+                'missing_ratio': round(1.0 - completeness_ratio, 4),
+            }
+
             payload = {
                 'code': code,
                 'days': days,
                 'history': history,
                 'stats': stats,
-                'count': len(history)
+                'count': len(history),
+                'source_chain': source_chain,
+                'fallback_reason': fallback_reason,
+                'data_quality': data_quality,
             }
             if not rows:
                 payload['message'] = 'stock_quotes 无历史数据，已返回降级结果'

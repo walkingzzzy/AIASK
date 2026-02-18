@@ -18,3 +18,11 @@ __pycache__/
 .coverage
 .benchmarks/
 .mcp_cache/
+
+# Project cleanup outputs
+reports/
+packages/akshare-mcp/htmlcov/
+packages/akshare-mcp/logs/*.log
+packages/akshare-mcp/sync_init_*.log
+packages/akshare-mcp/tdx_test_report.*
+packages/akshare-mcp/tests/archive/

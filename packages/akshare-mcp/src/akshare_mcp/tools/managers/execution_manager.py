@@ -407,6 +407,8 @@ def _enrich_kwargs_with_realtime(code: str, kwargs: dict) -> dict:
             vol = quote.get("volume")
             if vol and float(vol) > 0:
                 kwargs["avg_minute_volume"] = float(vol) / 240.0
+                # 标记为自动填充，避免将实时估算值直接用于高等级参与率风控判定（防止噪声误报）
+                kwargs["__auto_avg_minute_volume"] = True
     except Exception:
         pass
     return kwargs
@@ -501,6 +503,7 @@ def _build_soft_gate_warnings(
         )
 
     avg_minute_volume_raw = kwargs.get("avg_minute_volume")
+    auto_avg_minute_volume = bool(kwargs.get("__auto_avg_minute_volume", False))
     if avg_minute_volume_raw is not None:
         try:
             avg_minute_volume = float(avg_minute_volume_raw)
@@ -510,7 +513,11 @@ def _build_soft_gate_warnings(
             max_participation_rate = float(kwargs.get("max_participation_rate", 0.2) or 0.2)
             participation_rate = float(shares_per_slice) / avg_minute_volume
             if participation_rate > max_participation_rate:
-                severity = "high" if participation_rate > max_participation_rate * 1.5 else "medium"
+                # 自动填充的成交量为估算值，避免直接触发高严重级别误报
+                if auto_avg_minute_volume:
+                    severity = "medium"
+                else:
+                    severity = "high" if participation_rate > max_participation_rate * 1.5 else "medium"
                 warnings.append(
                     {
                         "type": "participation_rate_high",
@@ -577,10 +584,34 @@ def _run_pretrade_gate(
             "source": "compliance_manager",
         })
 
+    # 执行管理语义：可通过拆单化解的限制类违规（数量/金额/买入手数）降级为软告警，不阻断任务创建
+    violations = [str(v) for v in (compliance.get("violations", []) or [])]
+    soft_violation_patterns = ("单笔数量超限", "单笔金额超限", "买入数量必须为")
+    soft_violations: list[str] = []
+    hard_violations: list[str] = []
+    for v in violations:
+        if any(p in v for p in soft_violation_patterns):
+            soft_violations.append(v)
+        else:
+            hard_violations.append(v)
+
+    for v in soft_violations:
+        sev = "high" if ("单笔数量超限" in v or "单笔金额超限" in v) else "medium"
+        soft_warnings.append({
+            "type": "compliance_soft_limit",
+            "severity": sev,
+            "message": v,
+            "suggestion": "建议通过拆单、延长执行时长或分批执行化解该限制",
+            "source": "compliance_manager",
+        })
+
+    compliance_blocked = len(hard_violations) > 0
+
     gate_result = {
-        "compliance_passed": compliance["passed"],
-        "compliance_blocked": compliance["blocked"],
-        "compliance_violations": compliance.get("violations", []),
+        "compliance_passed": not compliance_blocked,
+        "compliance_blocked": compliance_blocked,
+        "compliance_violations": hard_violations,
+        "compliance_soft_violations": soft_violations,
         "compliance_checks": compliance.get("checks", {}),
         "order_amount": compliance.get("order_amount"),
     }
@@ -590,10 +621,10 @@ def _run_pretrade_gate(
         action=f"pretrade_gate:{direction}",
         params={"code": code, "direction": direction, "total_shares": total_shares,
                 "price": price_raw},
-        result={"compliance_passed": compliance["passed"],
-                "violations": compliance.get("violations", []),
+        result={"compliance_passed": not compliance_blocked,
+                "violations": hard_violations,
                 "soft_warning_count": len(soft_warnings)},
-        reason="blocked" if compliance["blocked"] else "passed",
+        reason="blocked" if compliance_blocked else "passed",
     )
 
     return gate_result

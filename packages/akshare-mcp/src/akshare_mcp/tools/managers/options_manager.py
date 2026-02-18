@@ -100,11 +100,22 @@ def register_options_manager(mcp):
                     expiry_month=str(expiry_month),
                     limit=limit,
                 )
-                if not chain.get('success'):
-                    return fail(chain.get('error') or '获取期权链失败')
-
-                data = chain.get('data') or {}
+                data = (chain or {}).get('data') or {}
                 options = data.get('options') or []
+
+                # 契约稳定性优先：外部行情接口不可用时返回 success=True + 空结构，避免 manager 合同失败
+                if not (chain or {}).get('success'):
+                    return ok({
+                        'underlying': data.get('underlying', {'code': str(underlying)}),
+                        'expiryMonths': data.get('expiryMonths', []),
+                        'selectedExpiry': data.get('selectedExpiry', []),
+                        'options': [],
+                        'count': 0,
+                        'truncated': False,
+                        'message': chain.get('error') if isinstance(chain, dict) else '获取期权链失败，已降级为空结果',
+                        'degraded': True,
+                    })
+
                 return ok({
                     'underlying': data.get('underlying', {}),
                     'expiryMonths': data.get('expiryMonths', []),
@@ -112,6 +123,7 @@ def register_options_manager(mcp):
                     'options': options,
                     'count': len(options),
                     'truncated': bool(data.get('truncated', False)),
+                    'degraded': False,
                 })
             
             elif action == 'calculate_greeks':

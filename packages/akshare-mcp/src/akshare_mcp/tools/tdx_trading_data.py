@@ -10,6 +10,8 @@ TdxQuant 交易数据模块 (Phase 1)
 需要先在通达信客户端中下载「盘后数据包」。
 """
 
+from datetime import datetime
+
 from ..data_source import data_source
 
 
@@ -67,16 +69,87 @@ SC_FIELDS = {
 }
 
 
-def _parse_date_to_year_mmdd(date_str: str) -> tuple[int, int]:
-    """将 YYYYMMDD 字符串转换为 (year, mmdd) 整数元组
+def _validate_yyyymmdd(date_str: str, field_name: str) -> str | None:
+    """校验 YYYYMMDD 日期格式与有效性。"""
+    if not date_str:
+        return None
+    if len(date_str) != 8 or not date_str.isdigit():
+        return f"{field_name} 格式错误，应为 YYYYMMDD"
+    try:
+        datetime.strptime(date_str, "%Y%m%d")
+    except ValueError:
+        return f"{field_name} 非法日期: {date_str}"
+    return None
 
-    示例：'20250615' → (2025, 615)
-          '20250103' → (2025, 103)
-          ''         → (0, 0)  # 取最新数据
-    """
+
+def _parse_date_to_year_mmdd(date_str: str) -> tuple[int, int]:
+    """将 YYYYMMDD 字符串转换为 (year, mmdd) 整数元组。"""
     if not date_str:
         return 0, 0
     return int(date_str[:4]), int(date_str[4:])
+
+
+def _contains_placeholder(value) -> tuple[int, int]:
+    """递归统计占位符（--）数量。返回 (总值数量, 占位符数量)。"""
+    if isinstance(value, dict):
+        total = 0
+        placeholder = 0
+        for v in value.values():
+            t, p = _contains_placeholder(v)
+            total += t
+            placeholder += p
+        return total, placeholder
+
+    if isinstance(value, (list, tuple, set)):
+        total = 0
+        placeholder = 0
+        for v in value:
+            t, p = _contains_placeholder(v)
+            total += t
+            placeholder += p
+        return total, placeholder
+
+    text = str(value).strip() if value is not None else ""
+    if value is None:
+        return 1, 0
+    if text == "--":
+        return 1, 1
+    return 1, 0
+
+
+def _build_quality_hints(total_values: int, placeholder_values: int) -> list[str]:
+    reasons: list[str] = []
+    if placeholder_values <= 0:
+        return reasons
+    if total_values > 0 and placeholder_values == total_values:
+        reasons.append("盘后数据未就绪（返回占位符 --）")
+    else:
+        reasons.append("数据源返回占位符（部分字段为 --）")
+    return reasons
+
+
+def _normalize_fields(fields: list[str], field_map: dict[str, str], field_prefix: str) -> tuple[list[str], list[str]]:
+    """规范化字段并返回（可用字段, 不支持字段）。"""
+    normalized: list[str] = []
+    for f in fields:
+        token = str(f or "").strip().upper()
+        if not token:
+            continue
+        if field_prefix and not token.startswith(field_prefix):
+            token = f"{field_prefix}{token}"
+        normalized.append(token)
+
+    # 去重并保持顺序
+    deduped: list[str] = []
+    seen = set()
+    for token in normalized:
+        if token not in seen:
+            seen.add(token)
+            deduped.append(token)
+
+    supported = [f for f in deduped if f in field_map]
+    unsupported = [f for f in deduped if f not in field_map]
+    return supported, unsupported
 
 
 
@@ -92,42 +165,34 @@ def tdx_get_stock_trading_data(
     从通达信本地数据包获取股票级别的交易数据，包括股东户数、龙虎榜、融资融券、
     大宗交易、增减持、陆股通等 AkShare/Tushare 无法替代的独有数据。
     需要先在通达信客户端中下载「盘后数据包」。
-
-    Args:
-        stock_codes (list[str], required): 股票代码列表，如 ["600519", "000001"]
-        fields (list[str], required): GP 字段列表，如 ["GP1", "GP3", "GP6"]
-            常用字段：
-            - GP1: 股东户数(户)
-            - GP2: 龙虎榜 买入/卖出总计(万元)
-            - GP3: 融资融券 融资余额(万元)/融券余量(股)
-            - GP4: 大宗交易 成交均价(元)/成交额(万元)
-            - GP5: 增减持 成交均价(元)/变动股数(股)
-            - GP6: 陆股通持股量(股)
-            - GP7: 陆股通市场净买入(万元)
-            - GP15: 涨跌停状态/封单金额(万元)
-            - GP16: 总市值(万元)
-            - GP21: 股息率(%)
-        start_date (str, optional): 起始日期 YYYYMMDD，为空则取最新
-        end_date (str, optional): 结束日期 YYYYMMDD
-
-    Returns:
-        dict: {"success": bool, "data": dict, "source": "tdxquant"}
-        日期范围查询时 data 结构: {stock_code: {field: [{"Date": str, "Value": [str, ...]}]}}
-        单日期/最新查询时 data 结构: {stock_code: {field: [str, ...]}}
-
-    Errors:
-        - TdxQuant 不可用时返回 success=false
-        - fields 为空时返回 success=false
-
-    Examples:
-        tdx_get_stock_trading_data(["600519"], ["GP1", "GP3", "GP6"])
-        tdx_get_stock_trading_data(["600519", "000001"], ["GP3"], start_date="20250101", end_date="20250131")
     """
+    source_chain: list[str] = []
+    fallback_reason: list[str] = []
+    degraded = False
+
     if not fields:
         return {"success": False, "error": "fields 不能为空，请指定 GP 字段列表，如 ['GP1', 'GP3']"}
 
     if not stock_codes:
         return {"success": False, "error": "stock_codes 不能为空"}
+
+    start_err = _validate_yyyymmdd(start_date, "start_date")
+    if start_err:
+        return {"success": False, "error": start_err}
+    end_err = _validate_yyyymmdd(end_date, "end_date")
+    if end_err:
+        return {"success": False, "error": end_err}
+    if end_date and not start_date:
+        return {"success": False, "error": "仅传 end_date 无效，请同时传 start_date"}
+    if start_date and end_date and start_date > end_date:
+        return {"success": False, "error": "start_date 不能晚于 end_date"}
+
+    normalized_fields, unsupported_fields = _normalize_fields(fields, GP_FIELDS, "GP")
+    if unsupported_fields:
+        degraded = True
+        fallback_reason.append(f"字段不支持: {', '.join(unsupported_fields)}")
+    if not normalized_fields:
+        return {"success": False, "error": "无可用 GP 字段，请检查 fields 参数"}
 
     if not data_source.is_tdx_available():
         return {"success": False, "error": "TdxQuant 不可用，请确保通达信客户端已启动并下载了盘后数据包"}
@@ -137,33 +202,48 @@ def tdx_get_stock_trading_data(
         if tq is None:
             return {"success": False, "error": "TdxQuant 初始化失败"}
 
-        # 转换代码格式：600519 → 600519.SH
         tdx_codes = [data_source._convert_to_tdx_code(c) for c in stock_codes]
 
-        # 判断查询模式
         if start_date and end_date:
-            # 日期范围查询
+            source_chain.append("tdxquant.get_gpjy_value")
             result = tq.get_gpjy_value(
                 stock_list=tdx_codes,
-                field_list=fields,
+                field_list=normalized_fields,
                 start_time=start_date,
                 end_time=end_date,
             )
         else:
-            # 单日期/最新查询
+            source_chain.append("tdxquant.get_gpjy_value_by_date")
             year, mmdd = _parse_date_to_year_mmdd(start_date)
             result = tq.get_gpjy_value_by_date(
                 stock_list=tdx_codes,
-                field_list=fields,
+                field_list=normalized_fields,
                 year=year,
                 mmdd=mmdd,
             )
 
-        if isinstance(result, dict) and result.get("ErrorId"):
-            if result["ErrorId"] != "0":
-                return {"success": False, "error": result.get("Error", "查询失败")}
+        if isinstance(result, dict) and result.get("ErrorId") and result["ErrorId"] != "0":
+            return {"success": False, "error": result.get("Error", "查询失败")}
 
-        return {"success": True, "data": result, "source": "tdxquant"}
+        total_values, placeholder_values = _contains_placeholder(result)
+        quality_hints = _build_quality_hints(total_values, placeholder_values)
+        if quality_hints:
+            degraded = True
+            fallback_reason.extend(quality_hints)
+
+        return {
+            "success": True,
+            "data": result,
+            "source": "tdxquant",
+            "source_chain": source_chain,
+            "fallback_reason": fallback_reason,
+            "degraded": degraded,
+            "data_quality": {
+                "total_values": total_values,
+                "placeholder_values": placeholder_values,
+                "placeholder_ratio": (placeholder_values / total_values) if total_values else 0.0,
+            },
+        }
     except Exception as e:
         return {"success": False, "error": f"查询异常: {e}"}
 
@@ -180,44 +260,34 @@ def tdx_get_sector_trading_data(
     从通达信本地数据包获取板块级别的交易数据，包括板块PE/PB、涨跌家数、
     涨停家数、融资融券、陆股通等数据。
     需要先在通达信客户端中下载「盘后数据包」。
-
-    Args:
-        sector_codes (list[str], required): 板块代码列表，如 ["880660.SH"]
-        fields (list[str], required): BK 字段列表，如 ["BK5", "BK9", "BK12"]
-            常用字段：
-            - BK5: 市盈率TTM 整体法/算术平均
-            - BK6: 市净率MRQ 整体法/算术平均
-            - BK9: 涨跌数 上涨家数/下跌家数
-            - BK10: 板块总市值(亿元)
-            - BK11: 板块流通市值(亿元)
-            - BK12: 涨停数 涨停家数/曾涨停家数
-            - BK13: 跌停数 跌停家数/曾跌停家数
-            - BK15: 融资融券 融资余额(万元)/融券余额(万元)
-            - BK16: 陆股通 沪股通流入(亿元)/深股通流入(亿元)
-            - BK18: 板块股息率(%)
-        start_date (str, optional): 起始日期 YYYYMMDD，为空则取最新
-        end_date (str, optional): 结束日期 YYYYMMDD
-            日期参数说明：start_date 和 end_date 均非空时按日期范围查询；
-            仅 start_date 非空时按指定日期查询；均为空时取最新数据。
-
-    Returns:
-        dict: {"success": bool, "data": dict, "source": "tdxquant"}
-        日期范围查询时 data 结构: {sector_code: {field: [{"Date": str, "Value": [str, ...]}]}}
-        单日期/最新查询时 data 结构: {sector_code: {field: [str, ...]}}
-
-    Errors:
-        - TdxQuant 不可用时返回 success=false
-        - fields 为空时返回 success=false
-
-    Examples:
-        tdx_get_sector_trading_data(["880660.SH"], ["BK5", "BK9", "BK12"])
-        tdx_get_sector_trading_data(["880660.SH"], ["BK15", "BK16"], start_date="20250101", end_date="20250131")
     """
+    source_chain: list[str] = []
+    fallback_reason: list[str] = []
+    degraded = False
+
     if not fields:
         return {"success": False, "error": "fields 不能为空，请指定 BK 字段列表，如 ['BK5', 'BK9']"}
 
     if not sector_codes:
         return {"success": False, "error": "sector_codes 不能为空"}
+
+    start_err = _validate_yyyymmdd(start_date, "start_date")
+    if start_err:
+        return {"success": False, "error": start_err}
+    end_err = _validate_yyyymmdd(end_date, "end_date")
+    if end_err:
+        return {"success": False, "error": end_err}
+    if end_date and not start_date:
+        return {"success": False, "error": "仅传 end_date 无效，请同时传 start_date"}
+    if start_date and end_date and start_date > end_date:
+        return {"success": False, "error": "start_date 不能晚于 end_date"}
+
+    normalized_fields, unsupported_fields = _normalize_fields(fields, BK_FIELDS, "BK")
+    if unsupported_fields:
+        degraded = True
+        fallback_reason.append(f"字段不支持: {', '.join(unsupported_fields)}")
+    if not normalized_fields:
+        return {"success": False, "error": "无可用 BK 字段，请检查 fields 参数"}
 
     if not data_source.is_tdx_available():
         return {"success": False, "error": "TdxQuant 不可用，请确保通达信客户端已启动并下载了盘后数据包"}
@@ -228,26 +298,45 @@ def tdx_get_sector_trading_data(
             return {"success": False, "error": "TdxQuant 初始化失败"}
 
         if start_date and end_date:
+            source_chain.append("tdxquant.get_bkjy_value")
             result = tq.get_bkjy_value(
                 stock_list=sector_codes,
-                field_list=fields,
+                field_list=normalized_fields,
                 start_time=start_date,
                 end_time=end_date,
             )
         else:
+            source_chain.append("tdxquant.get_bkjy_value_by_date")
             year, mmdd = _parse_date_to_year_mmdd(start_date)
             result = tq.get_bkjy_value_by_date(
                 stock_list=sector_codes,
-                field_list=fields,
+                field_list=normalized_fields,
                 year=year,
                 mmdd=mmdd,
             )
 
-        if isinstance(result, dict) and result.get("ErrorId"):
-            if result["ErrorId"] != "0":
-                return {"success": False, "error": result.get("Error", "查询失败")}
+        if isinstance(result, dict) and result.get("ErrorId") and result["ErrorId"] != "0":
+            return {"success": False, "error": result.get("Error", "查询失败")}
 
-        return {"success": True, "data": result, "source": "tdxquant"}
+        total_values, placeholder_values = _contains_placeholder(result)
+        quality_hints = _build_quality_hints(total_values, placeholder_values)
+        if quality_hints:
+            degraded = True
+            fallback_reason.extend(quality_hints)
+
+        return {
+            "success": True,
+            "data": result,
+            "source": "tdxquant",
+            "source_chain": source_chain,
+            "fallback_reason": fallback_reason,
+            "degraded": degraded,
+            "data_quality": {
+                "total_values": total_values,
+                "placeholder_values": placeholder_values,
+                "placeholder_ratio": (placeholder_values / total_values) if total_values else 0.0,
+            },
+        }
     except Exception as e:
         return {"success": False, "error": f"查询异常: {e}"}
 
@@ -263,43 +352,31 @@ def tdx_get_market_trading_data(
     从通达信本地数据包获取全市场级别的交易数据，包括融资融券、陆股通、
     涨跌停、股指期货净持仓、ETF申赎等数据。
     需要先在通达信客户端中下载「盘后数据包」。
-
-    Args:
-        fields (list[str], required): SC 字段列表，如 ["SC1", "SC2", "SC3"]
-            常用字段：
-            - SC1: 融资融券 融资余额(万元)/融券余额(万元)
-            - SC2: 陆股通资金流入 沪股通(亿元)/深股通(亿元)
-            - SC3: 涨停股个数/曾涨停股个数
-            - SC4: 跌停股个数/曾跌停股个数
-            - SC5: 上证50股指期货净持仓(手)
-            - SC6: 沪深300股指期货净持仓(手)
-            - SC7: 中证500股指期货净持仓(手)
-            - SC8: ETF基金规模(亿份)/ETF净申赎(亿份)
-            - SC10: 增减持统计 增持额(万元)/减持额(万元)
-            - SC11: 大宗交易 溢价额(万元)/折价额(万元)
-            - SC16: 龙虎榜 买入(亿元)/卖出(亿元)
-            - SC20: 陆股通净买入 沪股通(亿元)/深股通(亿元)
-            - SC31: 涨跌家数（剔除停牌）
-        start_date (str, optional): 起始日期 YYYYMMDD，为空则取最新
-        end_date (str, optional): 结束日期 YYYYMMDD
-            日期参数说明：start_date 和 end_date 均非空时按日期范围查询；
-            仅 start_date 非空时按指定日期查询；均为空时取最新数据。
-
-    Returns:
-        dict: {"success": bool, "data": dict, "source": "tdxquant"}
-        日期范围查询时 data 结构: {field: [{"Date": str, "Value": [str, ...]}]}
-        单日期/最新查询时 data 结构: {field: [str, ...]}
-
-    Errors:
-        - TdxQuant 不可用时返回 success=false
-        - fields 为空时返回 success=false
-
-    Examples:
-        tdx_get_market_trading_data(["SC1", "SC2", "SC3"])
-        tdx_get_market_trading_data(["SC3", "SC4", "SC31"], start_date="20250101", end_date="20250131")
     """
+    source_chain: list[str] = []
+    fallback_reason: list[str] = []
+    degraded = False
+
     if not fields:
         return {"success": False, "error": "fields 不能为空，请指定 SC 字段列表，如 ['SC1', 'SC3']"}
+
+    start_err = _validate_yyyymmdd(start_date, "start_date")
+    if start_err:
+        return {"success": False, "error": start_err}
+    end_err = _validate_yyyymmdd(end_date, "end_date")
+    if end_err:
+        return {"success": False, "error": end_err}
+    if end_date and not start_date:
+        return {"success": False, "error": "仅传 end_date 无效，请同时传 start_date"}
+    if start_date and end_date and start_date > end_date:
+        return {"success": False, "error": "start_date 不能晚于 end_date"}
+
+    normalized_fields, unsupported_fields = _normalize_fields(fields, SC_FIELDS, "SC")
+    if unsupported_fields:
+        degraded = True
+        fallback_reason.append(f"字段不支持: {', '.join(unsupported_fields)}")
+    if not normalized_fields:
+        return {"success": False, "error": "无可用 SC 字段，请检查 fields 参数"}
 
     if not data_source.is_tdx_available():
         return {"success": False, "error": "TdxQuant 不可用，请确保通达信客户端已启动并下载了盘后数据包"}
@@ -310,24 +387,43 @@ def tdx_get_market_trading_data(
             return {"success": False, "error": "TdxQuant 初始化失败"}
 
         if start_date and end_date:
+            source_chain.append("tdxquant.get_scjy_value")
             result = tq.get_scjy_value(
-                field_list=fields,
+                field_list=normalized_fields,
                 start_time=start_date,
                 end_time=end_date,
             )
         else:
+            source_chain.append("tdxquant.get_scjy_value_by_date")
             year, mmdd = _parse_date_to_year_mmdd(start_date)
             result = tq.get_scjy_value_by_date(
-                field_list=fields,
+                field_list=normalized_fields,
                 year=year,
                 mmdd=mmdd,
             )
 
-        if isinstance(result, dict) and result.get("ErrorId"):
-            if result["ErrorId"] != "0":
-                return {"success": False, "error": result.get("Error", "查询失败")}
+        if isinstance(result, dict) and result.get("ErrorId") and result["ErrorId"] != "0":
+            return {"success": False, "error": result.get("Error", "查询失败")}
 
-        return {"success": True, "data": result, "source": "tdxquant"}
+        total_values, placeholder_values = _contains_placeholder(result)
+        quality_hints = _build_quality_hints(total_values, placeholder_values)
+        if quality_hints:
+            degraded = True
+            fallback_reason.extend(quality_hints)
+
+        return {
+            "success": True,
+            "data": result,
+            "source": "tdxquant",
+            "source_chain": source_chain,
+            "fallback_reason": fallback_reason,
+            "degraded": degraded,
+            "data_quality": {
+                "total_values": total_values,
+                "placeholder_values": placeholder_values,
+                "placeholder_ratio": (placeholder_values / total_values) if total_values else 0.0,
+            },
+        }
     except Exception as e:
         return {"success": False, "error": f"查询异常: {e}"}
 

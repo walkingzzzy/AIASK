@@ -15,7 +15,7 @@ from ..core.cache_manager import cached
 from ..core.rate_limiter import get_limiter
 
 
-from typing import Optional, Callable, TypeVar
+from typing import Any, Optional, Callable, TypeVar
 import sys
 from datetime import datetime, timedelta
 from ..baostock_api import baostock_client
@@ -374,34 +374,157 @@ def tdx_get_financial_snapshot(stock_code: str) -> dict:
     [TDX] 获取单只股票最新财务快照
 
     底层 API: get_gp_one_data(stock_code)
+
+    已知限制与降级策略：
+    - 优先使用 TdxQuant；若 TDX 不可用或返回空对象，则降级到非TDX财务接口。
+    - 返回新增 source_chain / fallback_reason 审计字段，保留原有 code/source/data 兼容字段。
     """
     try:
         code = normalize_code(stock_code)
-        if not data_source.is_tdx_available():
-            return fail("TdxQuant 不可用")
+        source_chain: list[str] = []
+        fallback_reason: list[str] = []
 
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return fail("TdxQuant 初始化失败")
+        tdx_ok = data_source.is_tdx_available()
+        tq = data_source.get_tdxquant() if tdx_ok else None
 
-        tdx_code = data_source._convert_to_tdx_code(code)
+        if tdx_ok and tq is not None:
+            source_chain.append("tdxquant.get_gp_one_data")
+            tdx_code = data_source._convert_to_tdx_code(code)
 
-        # 兼容不同 TdxQuant 版本：有的版本仅支持位置参数
+            # 兼容不同 TdxQuant 版本：有的版本仅支持位置参数
+            try:
+                result = tq.get_gp_one_data(stock_code=tdx_code)
+            except TypeError:
+                result = tq.get_gp_one_data(tdx_code)
+
+            if isinstance(result, dict) and result.get("ErrorId") and result.get("ErrorId") != "0":
+                fallback_reason.append(result.get("Error", "TDX返回错误，准备降级"))
+            elif result not in (None, {}, []):
+                return ok({
+                    "code": code,
+                    "source": "tdxquant",
+                    "data": result,
+                    "source_chain": source_chain,
+                    "fallback_reason": fallback_reason,
+                })
+            else:
+                fallback_reason.append("TDX返回空结果，已触发降级")
+        else:
+            fallback_reason.append("TdxQuant 不可用或初始化失败，已触发降级")
+
+        # 降级链 1：finance.get_financials
+        source_chain.append("finance.get_financials")
         try:
-            result = tq.get_gp_one_data(stock_code=tdx_code)
-        except TypeError:
-            result = tq.get_gp_one_data(tdx_code)
+            fin_res = get_financials(code)
+            if fin_res and fin_res.get("success") and isinstance(fin_res.get("data"), dict):
+                payload_data = fin_res.get("data") or {}
+                payload_data.setdefault("source", payload_data.get("source") or "finance_fallback")
+                return ok({
+                    "code": code,
+                    "source": payload_data.get("source", "finance_fallback"),
+                    "data": payload_data,
+                    "source_chain": source_chain,
+                    "fallback_reason": fallback_reason,
+                })
+        except Exception as e:
+            fallback_reason.append(f"finance.get_financials 降级失败: {e}")
 
-        if isinstance(result, dict) and result.get("ErrorId") and result.get("ErrorId") != "0":
-            return fail(result.get("Error", "获取财务快照失败"))
+        # 降级链 2：finance.get_stock_info
+        source_chain.append("finance.get_stock_info")
+        try:
+            info_res = get_stock_info(code)
+            if info_res and info_res.get("success") and isinstance(info_res.get("data"), dict):
+                info = info_res.get("data") or {}
+                minimal_data = {
+                    "code": code,
+                    "name": info.get("name"),
+                    "industry": info.get("industry"),
+                    "reportDate": None,
+                    "source": "stock_info_fallback",
+                }
+                return ok({
+                    "code": code,
+                    "source": "stock_info_fallback",
+                    "data": minimal_data,
+                    "source_chain": source_chain,
+                    "fallback_reason": fallback_reason,
+                })
+        except Exception as e:
+            fallback_reason.append(f"finance.get_stock_info 降级失败: {e}")
 
-        return ok({
-            "code": code,
-            "source": "tdxquant",
-            "data": result,
-        })
+        return fail(f"获取财务快照失败（所有数据源不可用）: {' | '.join(fallback_reason)}")
     except Exception as e:
         return fail(f"获取财务快照异常: {e}")
+
+
+def _safe_decode_text(value: Any) -> tuple[Any, bool]:
+    """尽力将 bytes 解码为 UTF-8 可读字符串。返回 (新值, 是否发生转换)。"""
+    if isinstance(value, bytes):
+        for enc in ("utf-8", "gbk"):
+            try:
+                return value.decode(enc), True
+            except Exception:
+                continue
+        return value.decode("utf-8", errors="replace"), True
+    return value, False
+
+
+def _normalize_utf8_payload(payload: Any) -> tuple[Any, bool]:
+    """递归清洗 payload 中的 bytes，确保 key/value 尽量为 UTF-8 字符串。"""
+    changed = False
+
+    if isinstance(payload, dict):
+        out: dict[Any, Any] = {}
+        for k, v in payload.items():
+            nk, ck = _safe_decode_text(k)
+            nv, cv = _normalize_utf8_payload(v)
+            out[nk] = nv
+            changed = changed or ck or cv
+        return out, changed
+
+    if isinstance(payload, list):
+        out_list: list[Any] = []
+        for item in payload:
+            ni, ci = _normalize_utf8_payload(item)
+            out_list.append(ni)
+            changed = changed or ci
+        return out_list, changed
+
+    if isinstance(payload, tuple):
+        out_items: list[Any] = []
+        for item in payload:
+            ni, ci = _normalize_utf8_payload(item)
+            out_items.append(ni)
+            changed = changed or ci
+        return tuple(out_items), changed
+
+    if isinstance(payload, set):
+        out_set: set[Any] = set()
+        for item in payload:
+            ni, ci = _normalize_utf8_payload(item)
+            changed = changed or ci
+            try:
+                out_set.add(ni)
+            except Exception:
+                out_set.add(str(ni))
+                changed = True
+        return out_set, changed
+
+    nv, cv = _safe_decode_text(payload)
+    return nv, cv
+
+
+def _safe_join_messages(messages: list[str]) -> str:
+    """去重拼接错误/降级原因。"""
+    seen = set()
+    ordered: list[str] = []
+    for msg in messages:
+        text = str(msg or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ordered.append(text)
+    return " | ".join(ordered)
 
 
 def tdx_get_financial_history(stock_codes: list[str], fields: list[str], date: str) -> dict:
@@ -418,6 +541,10 @@ def tdx_get_financial_history(stock_codes: list[str], fields: list[str], date: s
 
         year, mmdd = _parse_yyyymmdd_to_year_mmdd(date)
 
+        source_chain: list[str] = []
+        fallback_reason: list[str] = []
+        degraded = False
+
         if not data_source.is_tdx_available():
             return fail("TdxQuant 不可用")
 
@@ -427,6 +554,7 @@ def tdx_get_financial_history(stock_codes: list[str], fields: list[str], date: s
 
         tdx_codes = [data_source._convert_to_tdx_code(normalize_code(c)) for c in stock_codes]
 
+        source_chain.append("tdxquant.get_financial_data_by_date")
         result = tq.get_financial_data_by_date(
             stock_list=tdx_codes,
             field_list=fields,
@@ -437,15 +565,23 @@ def tdx_get_financial_history(stock_codes: list[str], fields: list[str], date: s
         if isinstance(result, dict) and result.get("ErrorId") and result.get("ErrorId") != "0":
             return fail(result.get("Error", "获取财务历史数据失败"))
 
+        normalized_result, converted = _normalize_utf8_payload(result)
+        if converted:
+            degraded = True
+            fallback_reason.append("检测到编码异常，已自动执行 UTF-8/GBK 解码清洗")
+
         return ok({
             "date": date,
             "stockCodes": stock_codes,
             "fields": fields,
             "source": "tdxquant",
-            "data": result,
+            "source_chain": source_chain,
+            "fallback_reason": fallback_reason,
+            "degraded": degraded,
+            "data": normalized_result,
         })
     except Exception as e:
-        return fail(f"获取财务历史数据异常: {e}")
+        return fail(f"获取财务历史数据异常: {_safe_join_messages([str(e)])}")
 
 
 def tdx_get_f10_info(stock_code: str, info_type: int = 0) -> dict:
