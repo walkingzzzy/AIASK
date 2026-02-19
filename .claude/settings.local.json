@@ -7,11 +7,22 @@
       "WebSearch",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(ls:*)",
+      "Bash(npm install)",
+      "Bash(npx next build)",
+      "Bash(npx tsc:*)",
+      "Bash(npx nest build)",
+      "Bash(npm install openai)",
+      "Bash(npm install:*)",
+      "Bash(npm run build:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npm run lint)",
+      "Bash(git rm:*)"
     ]
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "akshare-mcp"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

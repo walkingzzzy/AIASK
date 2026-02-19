@@ -19,6 +19,7 @@ description: 量化研究流程编排：数据→信号→组合→回测→执�
   - 用 `calculate_factor`、`quant_manager(action=calculate_factors)`、`technical_analysis_manager(action=calculate)` 生成信号。
 - 阶段 3（有效性检验）：
   - 用 `calculate_factor_ic` 与 `backtest_factor` 检验因子方向性和稳定性。
+  - 用 `factor_robustness_check` 做多窗口稳定性、参数敏感性与子样本一致性检查。
   - 至少保留通过稳定性门槛的信号。
 - 阶段 4（组合构建）：
   - 用 `optimize_portfolio` 产出权重（或等权作为对照组）。

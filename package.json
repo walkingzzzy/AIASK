@@ -1,0 +1,34 @@
+{
+  "name": "aiask-app-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:bff": "npm run dev -w apps/bff",
+    "dev:web": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/bff && npm run build -w apps/web",
+    "start:bff": "npm run start -w apps/bff",
+    "start:web": "npm run start -w apps/web",
+    "lint": "eslint apps/web/app apps/web/components apps/web/lib apps/web/store apps/web/hooks",
+    "format": "prettier --write \"apps/**/*.{ts,tsx,js,mjs}\"",
+    "format:check": "prettier --check \"apps/**/*.{ts,tsx,js,mjs}\"",
+    "e2e:week1": "node scripts/week1-e2e.mjs",
+    "e2e:week2": "node scripts/week2-e2e.mjs",
+    "contract:week2": "node scripts/week2-contract.mjs",
+    "e2e:week3": "node scripts/week3-e2e.mjs",
+    "contract:week3": "node scripts/week3-contract.mjs",
+    "e2e:week4": "node scripts/week4-e2e.mjs",
+    "contract:week4": "node scripts/week4-contract.mjs"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.56.0",
+    "@typescript-eslint/parser": "^8.56.0",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "prettier": "^3.8.1"
+  }
+}

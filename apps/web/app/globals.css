@@ -1,0 +1,93 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-primary: #1a73e8;
+  --color-primary-light: #e8f0fe;
+  --color-error: #b00020;
+  --color-warning: #8a6d3b;
+  --color-warning-bg: #fffbeb;
+  --color-success: #10b981;
+  --color-danger: #ef4444;
+  --color-surface: #f9fafb;
+  --color-surface-alt: #f3f4f6;
+  --color-border: #ddd;
+  --color-border-light: #eee;
+  --color-text: #111;
+  --color-text-secondary: #555;
+  --color-text-muted: #666;
+  --color-sidebar: #f5f5f5;
+  --color-sidebar-border: #e0e0e0;
+  --color-nav-active: #1a73e8;
+  --color-nav-active-bg: #e8f0fe;
+  --color-nav-text: #333;
+  --font-sans: system-ui, -apple-system, sans-serif;
+  --radius-card: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  color: var(--color-text);
+  background: #fff;
+}
+
+/* Dark mode */
+.dark body,
+.dark {
+  --color-primary: #5b9cf6;
+  --color-primary-light: #1e3a5f;
+  --color-error: #ef5350;
+  --color-warning: #fbbf24;
+  --color-warning-bg: #3b2f1a;
+  --color-success: #34d399;
+  --color-danger: #f87171;
+  --color-surface: #1e1e1e;
+  --color-surface-alt: #2a2a2a;
+  --color-border: #444;
+  --color-border-light: #333;
+  --color-text: #e0e0e0;
+  --color-text-secondary: #aaa;
+  --color-text-muted: #888;
+  --color-sidebar: #1a1a1a;
+  --color-sidebar-border: #333;
+  --color-nav-active: #5b9cf6;
+  --color-nav-active-bg: #1e3a5f;
+  --color-nav-text: #ccc;
+  background: #121212;
+  color: #e0e0e0;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not(.light) body,
+  html:not(.light) {
+    --color-primary: #5b9cf6;
+    --color-primary-light: #1e3a5f;
+    --color-error: #ef5350;
+    --color-warning: #fbbf24;
+    --color-warning-bg: #3b2f1a;
+    --color-success: #34d399;
+    --color-danger: #f87171;
+    --color-surface: #1e1e1e;
+    --color-surface-alt: #2a2a2a;
+    --color-border: #444;
+    --color-border-light: #333;
+    --color-text: #e0e0e0;
+    --color-text-secondary: #aaa;
+    --color-text-muted: #888;
+    --color-sidebar: #1a1a1a;
+    --color-sidebar-border: #333;
+    --color-nav-active: #5b9cf6;
+    --color-nav-active-bg: #1e3a5f;
+    --color-nav-text: #ccc;
+    background: #121212;
+    color: #e0e0e0;
+  }
+}
