@@ -808,6 +808,91 @@ class SchemaBase:
                     ON strategy_artifacts(updated_at DESC);
             """)
 
+            # 24. 策略超市表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS strategies (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    author_id TEXT DEFAULT 'default',
+                    strategy_type TEXT NOT NULL,
+                    params JSONB DEFAULT '{}'::jsonb,
+                    factor_weights JSONB DEFAULT '{}'::jsonb,
+                    status TEXT DEFAULT 'draft',
+                    tags TEXT[] DEFAULT '{}',
+                    backtest_artifact_id TEXT,
+                    subscriber_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategies_status ON strategies(status);
+                CREATE INDEX IF NOT EXISTS idx_strategies_type ON strategies(strategy_type);
+                CREATE INDEX IF NOT EXISTS idx_strategies_author ON strategies(author_id);
+
+                CREATE TABLE IF NOT EXISTS strategy_metrics (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+                    period TEXT DEFAULT 'all',
+                    total_return DOUBLE PRECISION,
+                    annual_return DOUBLE PRECISION,
+                    sharpe_ratio DOUBLE PRECISION,
+                    max_drawdown DOUBLE PRECISION,
+                    win_rate DOUBLE PRECISION,
+                    calmar_ratio DOUBLE PRECISION,
+                    trade_count INTEGER,
+                    computed_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(strategy_id, period)
+                );
+
+                CREATE TABLE IF NOT EXISTS strategy_reviews (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+                    user_id TEXT NOT NULL,
+                    rating INTEGER CHECK (rating >= 1 AND rating <= 5),
+                    comment TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(strategy_id, user_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_reviews_strategy ON strategy_reviews(strategy_id);
+
+                CREATE TABLE IF NOT EXISTS strategy_subscriptions (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+                    user_id TEXT NOT NULL,
+                    status TEXT DEFAULT 'active',
+                    subscribed_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(strategy_id, user_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_subs_user ON strategy_subscriptions(user_id);
+            """)
+
+            # 25. 因子持久化表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS factor_values (
+                    stock_code TEXT NOT NULL,
+                    factor_date DATE NOT NULL,
+                    factor_name TEXT NOT NULL,
+                    factor_value DOUBLE PRECISION,
+                    computed_at TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (stock_code, factor_date, factor_name)
+                );
+                CREATE INDEX IF NOT EXISTS idx_factor_values_date ON factor_values(factor_date);
+                CREATE INDEX IF NOT EXISTS idx_factor_values_factor ON factor_values(factor_name);
+
+                CREATE TABLE IF NOT EXISTS factor_ic_history (
+                    id SERIAL PRIMARY KEY,
+                    factor_name TEXT NOT NULL,
+                    period TEXT NOT NULL,
+                    ic_date DATE NOT NULL,
+                    ic_value DOUBLE PRECISION,
+                    rank_ic DOUBLE PRECISION,
+                    stock_count INTEGER,
+                    computed_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(factor_name, period, ic_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_factor_ic_date ON factor_ic_history(ic_date);
+            """)
+
             logger.info("All tables initialized successfully (aligned with Node version)")
 
     async def close(self) -> None:

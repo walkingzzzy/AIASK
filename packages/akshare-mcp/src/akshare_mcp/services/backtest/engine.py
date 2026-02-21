@@ -13,6 +13,17 @@ from .strategies import (
 )
 
 
+_SLIPPAGE_NOTE = "JIT路径使用均值化滑点估算，实际交易成本可能偏高"
+
+
+def _attach_equity_curve(payload: Dict[str, Any], equity: np.ndarray) -> None:
+    """将权益曲线（降采样至最多500点）和滑点标注附加到回测结果"""
+    eq = equity.tolist()
+    step = max(1, len(eq) // 500)
+    payload['equity_curve'] = eq[::step]
+    payload['slippage_model_note'] = _SLIPPAGE_NOTE
+
+
 def _get_limit_ratio(code: str) -> float:
     """根据股票代码判断涨跌停幅度。"""
     c = str(code).strip()
@@ -298,7 +309,7 @@ def _simulate_trades_from_masks(
                 if std > 0:
                     sharpe = float((np.mean(rets) * 252.0) / (std * np.sqrt(252.0)))
 
-    win_rate = wins / trades if trades > 0 else 0.0
+    win_rate = wins / max(1, trades // 2) if trades > 0 else 0.0  # round-trip = trades//2
     return {
         "final_capital": final_capital,
         "total_return": float(total_return),
@@ -402,6 +413,7 @@ class BacktestEngine:
                     payload['tradability_filter'] = True
                     payload['tradable_days'] = int(np.sum(tradability_mask))
                     payload['total_days'] = int(len(tradability_mask))
+                _attach_equity_curve(payload, sim['equity'])
                 return {'success': True, 'data': payload}
 
             if return_trades:
@@ -423,41 +435,39 @@ class BacktestEngine:
                         'profit': float(trade_profits[i])
                     })
 
-                return {
-                    'success': True,
-                    'data': {
-                        'code': code, 'strategy': strategy,
-                        'initial_capital': initial_capital,
-                        'final_capital': float(final_capital),
-                        'total_return': float(total_return),
-                        'max_drawdown': float(max_dd),
-                        'sharpe_ratio': float(sharpe),
-                        'trades_count': int(total_trades),
-                        'win_rate': float(win_rate),
-                        'params': params,
-                        'trades': trades_detail
-                    }
-                }
-
-            result = _backtest_ma_cross_jit(
-                closes, short_period, long_period, initial_capital, total_cost_rate
-            )
-            final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = result
-
-            return {
-                'success': True,
-                'data': {
+                data = {
                     'code': code, 'strategy': strategy,
                     'initial_capital': initial_capital,
                     'final_capital': float(final_capital),
                     'total_return': float(total_return),
                     'max_drawdown': float(max_dd),
                     'sharpe_ratio': float(sharpe),
-                    'trades_count': int(trades),
+                    'trades_count': int(total_trades),
                     'win_rate': float(win_rate),
                     'params': params,
+                    'trades': trades_detail
                 }
+                _attach_equity_curve(data, equity)
+                return {'success': True, 'data': data}
+
+            result = _backtest_ma_cross_jit(
+                closes, short_period, long_period, initial_capital, total_cost_rate
+            )
+            final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = result
+
+            data = {
+                'code': code, 'strategy': strategy,
+                'initial_capital': initial_capital,
+                'final_capital': float(final_capital),
+                'total_return': float(total_return),
+                'max_drawdown': float(max_dd),
+                'sharpe_ratio': float(sharpe),
+                'trades_count': int(trades),
+                'win_rate': float(win_rate),
+                'params': params,
             }
+            _attach_equity_curve(data, equity)
+            return {'success': True, 'data': data}
 
         elif strategy == 'buy_and_hold':
             entry_idx = 0
@@ -557,6 +567,7 @@ class BacktestEngine:
                     payload['tradability_filter'] = True
                     payload['tradable_days'] = int(np.sum(tradability_mask))
                     payload['total_days'] = int(len(tradability_mask))
+                _attach_equity_curve(payload, sim['equity'])
                 return {'success': True, 'data': payload}
 
             result = _backtest_momentum_jit(
@@ -564,20 +575,19 @@ class BacktestEngine:
             )
             final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = result
 
-            return {
-                'success': True,
-                'data': {
-                    'code': code, 'strategy': strategy,
-                    'initial_capital': initial_capital,
-                    'final_capital': float(final_capital),
-                    'total_return': float(total_return),
-                    'max_drawdown': float(max_dd),
-                    'sharpe_ratio': float(sharpe),
-                    'trades_count': int(trades),
-                    'win_rate': float(win_rate),
-                    'params': params,
-                }
+            data = {
+                'code': code, 'strategy': strategy,
+                'initial_capital': initial_capital,
+                'final_capital': float(final_capital),
+                'total_return': float(total_return),
+                'max_drawdown': float(max_dd),
+                'sharpe_ratio': float(sharpe),
+                'trades_count': int(trades),
+                'win_rate': float(win_rate),
+                'params': params,
             }
+            _attach_equity_curve(data, equity)
+            return {'success': True, 'data': data}
 
         elif strategy == 'rsi':
             rsi_period = params.get('rsi_period', 14)
@@ -619,6 +629,7 @@ class BacktestEngine:
                     payload['tradability_filter'] = True
                     payload['tradable_days'] = int(np.sum(tradability_mask))
                     payload['total_days'] = int(len(tradability_mask))
+                _attach_equity_curve(payload, sim['equity'])
                 return {'success': True, 'data': payload}
 
             result = _backtest_rsi_jit(
@@ -626,20 +637,19 @@ class BacktestEngine:
             )
             final_capital, total_return, max_dd, sharpe, trades, win_rate, equity = result
 
-            return {
-                'success': True,
-                'data': {
-                    'code': code, 'strategy': strategy,
-                    'initial_capital': initial_capital,
-                    'final_capital': float(final_capital),
-                    'total_return': float(total_return),
-                    'max_drawdown': float(max_dd),
-                    'sharpe_ratio': float(sharpe),
-                    'trades_count': int(trades),
-                    'win_rate': float(win_rate),
-                    'params': params,
-                }
+            data = {
+                'code': code, 'strategy': strategy,
+                'initial_capital': initial_capital,
+                'final_capital': float(final_capital),
+                'total_return': float(total_return),
+                'max_drawdown': float(max_dd),
+                'sharpe_ratio': float(sharpe),
+                'trades_count': int(trades),
+                'win_rate': float(win_rate),
+                'params': params,
             }
+            _attach_equity_curve(data, equity)
+            return {'success': True, 'data': data}
 
         return {'success': False, 'error': f'Unknown strategy: {strategy}'}
 

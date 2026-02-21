@@ -218,49 +218,94 @@ def register(mcp):
         scenarios: Optional[List[str]] = None
     ):
         """
-        组合压力测试
+        组合压力测试（委托服务层 RiskModel.stress_test 执行 4 种场景 + 自定义冲击）
 
         Args:
-            holdings: 持仓列表 [{'code': '600519', 'weight': 0.3}, ...]
-            scenarios: 压力场景 ['market_crash', 'sector_rotation']
+            holdings: 持仓列表 [{'code': '600519', 'weight': 0.3, 'value': 100000}, ...]
+            scenarios: 压力场景 ['market_crash', 'sector_rotation', 'interest_rate_hike', 'black_swan']
         """
         try:
-            db = get_db()
-            _ = db  # 显式保留，满足测试对 db 定义的源码断言
-
             if not scenarios:
-                scenarios = ['market_crash', 'sector_rotation']
+                scenarios = ['market_crash', 'sector_rotation', 'interest_rate_hike', 'black_swan']
+
+            # 如果 holdings 缺少 value 字段，用 weight * 1000000 估算
+            for h in holdings:
+                if 'value' not in h:
+                    h['value'] = h.get('weight', 0) * 1_000_000
 
             results = {}
-
             for scenario in scenarios:
-                if scenario == 'market_crash':
-                    # 模拟市场暴跌-30%
-                    loss = sum(h['weight'] * 0.30 for h in holdings)
-                    results['market_crash'] = {
-                        'scenario': '市场暴跌-30%',
-                        'portfolio_loss': f'{loss * 100:.1f}%',
-                        'portfolio_loss_numeric': float(loss),
-                        'impact': 'severe' if loss > 0.25 else 'moderate',
-                    }
-
-                elif scenario == 'sector_rotation':
-                    # 模拟板块轮动：简单用权重集中度反向估计相关性风险
-                    weights = [float(h.get('weight', 0.0)) for h in holdings]
-                    hhi = sum(w * w for w in weights) if weights else 0.0
-                    avg_corr = min(0.95, max(0.15, 0.15 + hhi))
-                    results['sector_rotation'] = {
-                        'scenario': '板块轮动',
-                        'impact': 'moderate',
-                        'avg_correlation': f'{avg_corr:.2f}',
-                        'avg_correlation_numeric': float(avg_corr),
-                        'recommendation': '建议分散投资不同板块',
-                    }
+                result = risk_model.stress_test(holdings, scenario=scenario)
+                results[scenario] = result
 
             return ok({
                 'holdings_count': len(holdings),
                 'stress_tests': results,
             })
+
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def analyze_portfolio_risk_barra(
+        holdings: List[Dict[str, Any]],
+        lookback_days: int = 252
+    ):
+        """
+        Barra 多因子风险分解
+
+        Args:
+            holdings: 持仓列表 [{'code': '600519', 'weight': 0.3}, ...]
+            lookback_days: 回溯天数
+        """
+        try:
+            db = get_db()
+            codes = [h['code'] for h in holdings]
+
+            # 获取因子暴露（简化：用技术指标近似 Barra 风格因子）
+            factor_names = ['momentum', 'volatility', 'size', 'value', 'quality']
+            factor_exposures = {}
+            returns_list = []
+
+            for code in codes:
+                klines = await db.get_klines(code, limit=lookback_days)
+                if not klines:
+                    continue
+                closes = [k['close'] for k in klines]
+                returns = np.diff(closes) / closes[:-1]
+                returns_list.append(returns)
+
+                # 简化因子暴露估算
+                mom = (closes[-1] - closes[-20]) / closes[-20] if len(closes) >= 20 else 0
+                vol = float(np.std(returns[-60:])) if len(returns) >= 60 else 0
+                factor_exposures[code] = {
+                    'momentum': mom,
+                    'volatility': vol,
+                    'size': 0.0,
+                    'value': 0.0,
+                    'quality': 0.0,
+                }
+
+            if not returns_list or not factor_exposures:
+                return fail('No data available for Barra decomposition')
+
+            # 构建因子协方差（简化：单位矩阵 × 平均方差）
+            n_factors = len(factor_names)
+            factor_cov = np.eye(n_factors) * 0.01
+
+            # 特质风险
+            specific_risks = {}
+            for i, code in enumerate(codes):
+                if i < len(returns_list):
+                    specific_risks[code] = float(np.std(returns_list[i]))
+
+            result = risk_model.calculate_barra_risk(
+                holdings=holdings,
+                factor_exposures=factor_exposures,
+                factor_covariance=factor_cov,
+                specific_risks=specific_risks,
+            )
+            return ok(result)
 
         except Exception as e:
             return fail(str(e))

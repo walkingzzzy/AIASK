@@ -7,18 +7,46 @@ from typing import List, Dict, Any, Optional, Tuple
 from scipy.optimize import minimize
 from scipy.linalg import inv
 
+try:
+    from sklearn.covariance import LedoitWolf
+except Exception:
+    LedoitWolf = None
+
 
 class PortfolioOptimizer:
     """组合优化器"""
-    
+
+    @staticmethod
+    def _prepare_cov_matrix(
+        cov_matrix: np.ndarray,
+        returns_matrix: Optional[np.ndarray] = None,
+        use_ledoit_wolf: bool = False,
+    ) -> np.ndarray:
+        """协方差预处理：可选 Ledoit-Wolf 收缩 + 数值稳定化。"""
+        cov = np.asarray(cov_matrix, dtype=float)
+
+        if use_ledoit_wolf and returns_matrix is not None and LedoitWolf is not None:
+            try:
+                rm = np.asarray(returns_matrix, dtype=float)
+                if rm.ndim == 2 and rm.shape[1] == cov.shape[0] and rm.shape[0] >= max(3, cov.shape[0]):
+                    cov = LedoitWolf().fit(rm).covariance_
+            except Exception:
+                pass
+
+        cov = (cov + cov.T) / 2.0
+        cov = cov + np.eye(cov.shape[0]) * 1e-10
+        return cov
+
     # ========== 均值-方差优化 ==========
-    
+
     @staticmethod
     def mean_variance_optimization(
         expected_returns: np.ndarray,
         cov_matrix: np.ndarray,
         risk_aversion: float = 1.0,
-        constraints: Optional[Dict[str, Any]] = None
+        constraints: Optional[Dict[str, Any]] = None,
+        returns_matrix: Optional[np.ndarray] = None,
+        use_ledoit_wolf: bool = False,
     ) -> Dict[str, Any]:
         """
         均值-方差优化（马科维茨模型）
@@ -33,7 +61,12 @@ class PortfolioOptimizer:
             最优权重和组合指标
         """
         n_assets = len(expected_returns)
-        
+        cov_matrix = PortfolioOptimizer._prepare_cov_matrix(
+            cov_matrix,
+            returns_matrix=returns_matrix,
+            use_ledoit_wolf=use_ledoit_wolf,
+        )
+
         # 目标函数：最大化 收益 - 风险厌恶系数 * 风险
         def objective(weights):
             portfolio_return = np.dot(weights, expected_returns)
@@ -100,7 +133,9 @@ class PortfolioOptimizer:
         cov_matrix: np.ndarray,
         views: List[Dict[str, Any]],
         risk_aversion: float = 2.5,
-        tau: float = 0.05
+        tau: float = 0.05,
+        returns_matrix: Optional[np.ndarray] = None,
+        use_ledoit_wolf: bool = False,
     ) -> Dict[str, Any]:
         """
         Black-Litterman模型 - 融合市场均衡和主观观点
@@ -118,7 +153,12 @@ class PortfolioOptimizer:
             后验预期收益和最优权重
         """
         n_assets = len(market_weights)
-        
+        cov_matrix = PortfolioOptimizer._prepare_cov_matrix(
+            cov_matrix,
+            returns_matrix=returns_matrix,
+            use_ledoit_wolf=use_ledoit_wolf,
+        )
+
         # 1. 计算市场隐含收益（反向优化）
         pi = risk_aversion * np.dot(cov_matrix, market_weights)
         
@@ -181,7 +221,9 @@ class PortfolioOptimizer:
     def efficient_frontier(
         expected_returns: np.ndarray,
         cov_matrix: np.ndarray,
-        n_points: int = 50
+        n_points: int = 50,
+        returns_matrix: Optional[np.ndarray] = None,
+        use_ledoit_wolf: bool = False,
     ) -> Dict[str, Any]:
         """
         计算有效前沿
@@ -195,7 +237,12 @@ class PortfolioOptimizer:
             有效前沿数据
         """
         n_assets = len(expected_returns)
-        
+        cov_matrix = PortfolioOptimizer._prepare_cov_matrix(
+            cov_matrix,
+            returns_matrix=returns_matrix,
+            use_ledoit_wolf=use_ledoit_wolf,
+        )
+
         # 计算最小方差组合
         def min_variance_objective(weights):
             return np.dot(weights, np.dot(cov_matrix, weights))
@@ -262,7 +309,9 @@ class PortfolioOptimizer:
     @staticmethod
     def risk_parity(
         cov_matrix: np.ndarray,
-        target_risk_contributions: Optional[np.ndarray] = None
+        target_risk_contributions: Optional[np.ndarray] = None,
+        returns_matrix: Optional[np.ndarray] = None,
+        use_ledoit_wolf: bool = False,
     ) -> Dict[str, Any]:
         """
         风险平价策略 - 每个资产贡献相同的风险
@@ -275,7 +324,12 @@ class PortfolioOptimizer:
             风险平价权重
         """
         n_assets = cov_matrix.shape[0]
-        
+        cov_matrix = PortfolioOptimizer._prepare_cov_matrix(
+            cov_matrix,
+            returns_matrix=returns_matrix,
+            use_ledoit_wolf=use_ledoit_wolf,
+        )
+
         if target_risk_contributions is None:
             target_risk_contributions = np.array([1.0 / n_assets] * n_assets)
         
@@ -332,6 +386,8 @@ class PortfolioOptimizer:
         cov_matrix: np.ndarray,
         risk_free_rate: float = 0.03,
         max_weight: float = 0.35,
+        returns_matrix: Optional[np.ndarray] = None,
+        use_ledoit_wolf: bool = False,
     ) -> Dict[str, Any]:
         """
         最大化夏普比率
@@ -346,6 +402,11 @@ class PortfolioOptimizer:
             最大夏普比率组合
         """
         n_assets = len(expected_returns)
+        cov_matrix = PortfolioOptimizer._prepare_cov_matrix(
+            cov_matrix,
+            returns_matrix=returns_matrix,
+            use_ledoit_wolf=use_ledoit_wolf,
+        )
 
         # 约束可行性保护：当资产数较少时，放宽上限到可行最小值 1/n
         safe_cap = float(max(0.0, min(1.0, max_weight)))
@@ -398,19 +459,26 @@ class PortfolioOptimizer:
     @staticmethod
     def min_variance(
         cov_matrix: np.ndarray,
-        constraints: Optional[Dict[str, Any]] = None
+        constraints: Optional[Dict[str, Any]] = None,
+        returns_matrix: Optional[np.ndarray] = None,
+        use_ledoit_wolf: bool = False,
     ) -> Dict[str, Any]:
         """
         最小方差组合
-        
+
         Args:
             cov_matrix: 协方差矩阵
             constraints: 约束条件
-        
+
         Returns:
             最小方差组合
         """
         n_assets = cov_matrix.shape[0]
+        cov_matrix = PortfolioOptimizer._prepare_cov_matrix(
+            cov_matrix,
+            returns_matrix=returns_matrix,
+            use_ledoit_wolf=use_ledoit_wolf,
+        )
         
         # 目标函数：最小化方差
         def objective(weights):

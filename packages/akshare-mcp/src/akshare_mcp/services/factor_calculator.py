@@ -85,21 +85,25 @@ class FactorCalculator:
     @staticmethod
     def calculate_quality_factor(roe: float, debt_ratio: float, profit_growth: float = None) -> float:
         """质量因子（ROE、负债率、利润增长）"""
-        score = 0.0
-        
         # ROE越高越好
+        score = 0.0
+        count = 0
+
         if roe:
             score += min(roe / 20.0, 1.0)  # 归一化到0-1
-        
+            count += 1
+
         # 负债率越低越好
-        if debt_ratio:
+        if debt_ratio is not None:
             score += max(1.0 - debt_ratio, 0.0)
-        
+            count += 1
+
         # 利润增长越高越好
-        if profit_growth:
+        if profit_growth is not None:
             score += min(profit_growth / 50.0, 1.0)  # 归一化
-        
-        return score / 3.0
+            count += 1
+
+        return score / count if count > 0 else 0.0
     
     @staticmethod
     def calculate_growth_factor(revenue_growth: float, profit_growth: float) -> float:

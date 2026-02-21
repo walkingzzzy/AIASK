@@ -123,9 +123,9 @@ class Position:
             self.avg_cost = price
         else:
             total_cost = self.avg_cost * self.quantity + price * quantity
-            self.quantity += quantity
-            self.avg_cost = total_cost / self.quantity if self.quantity > 0 else 0
-        
+            new_qty = self.quantity + quantity
+            self.avg_cost = total_cost / new_qty if new_qty > 0 else 0
+
         self.quantity += quantity
         self.trades.append({
             'type': 'buy',

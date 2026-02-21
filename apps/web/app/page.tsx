@@ -28,7 +28,7 @@ export default function HomePage() {
 
   const idx = extractObject(indexMut.data);
   const luStats = extractObject(limitUpMut.data);
-  const northFlows = extractArray(northMut.data, 'flows');
+  const northFlows = extractArray(northMut.data, 'items', 'flows');
   const latestNorth = northFlows.length ? northFlows[northFlows.length - 1] : null;
   const fgObj = extractObject(fearGreedMut.data);
   const fgValue = Number(fgObj.index ?? fgObj.value ?? fgObj.fear_greed_index ?? 50);
@@ -95,15 +95,15 @@ export default function HomePage() {
         {latestNorth ? (
           <KpiGrid cols={3}>
             <KpiCard title="日期" value={String(latestNorth.date ?? '-')} />
-            <KpiCard title="净流入" value={fmtAmount(latestNorth.netInflow ?? latestNorth.net_inflow)} change={Number(latestNorth.netInflow ?? latestNorth.net_inflow ?? null)} />
-            <KpiCard title="累计净流入" value={fmtAmount(latestNorth.cumNetInflow ?? latestNorth.cum_net_inflow)} />
+            <KpiCard title="净流入" value={fmtAmount(latestNorth.total ?? latestNorth.netInflow ?? latestNorth.net_inflow)} change={Number(latestNorth.total ?? latestNorth.netInflow ?? latestNorth.net_inflow ?? null)} />
+            <KpiCard title="累计净流入" value={fmtAmount(latestNorth.cumulative ?? latestNorth.cumNetInflow ?? latestNorth.cum_net_inflow)} />
           </KpiGrid>
         ) : null}
         {northFlows.length > 1 ? (
           <BarChart
             items={northFlows.slice(-20).map((x) => ({
               label: String(x.date ?? '').slice(5),
-              value: Number(x.netInflow ?? x.net_inflow ?? 0),
+              value: Number(x.total ?? x.netInflow ?? x.net_inflow ?? 0),
             }))}
             height={240}
             yAxisName="净流入(亿)"

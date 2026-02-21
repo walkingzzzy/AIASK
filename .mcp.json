@@ -18,6 +18,10 @@
         "DB_NAME": "stockdb",
         "PYTHONIOENCODING": "utf-8"
       }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@anthropic-ai/mcp-playwright"]
     }
   }
 }

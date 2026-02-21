@@ -1,9 +1,11 @@
 import pytest
+import numpy as np
 from datetime import datetime
 
 import akshare
 import akshare_mcp.baostock_api as bs_api_mod
 import akshare_mcp.data_source as ds_mod
+import akshare_mcp.tools.decision as decision_mod
 import akshare_mcp.tools.finance as finance_mod
 import akshare_mcp.tools.market.quote as quote_mod
 import akshare_mcp.tools.managers.paper_trading_manager as ptm
@@ -11,6 +13,7 @@ import akshare_mcp.tools.managers.portfolio_manager as pm
 import akshare_mcp.tools.options as options_mod
 import akshare_mcp.tools.tdx_trading_data as tdx_trade_mod
 import akshare_mcp.tools.valuation as valuation_mod
+import akshare_mcp.services.portfolio_optimization as po_mod
 
 
 class _DummyMCP:

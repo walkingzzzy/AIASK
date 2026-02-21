@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List
 import akshare as ak
 from ..storage.timescaledb import get_db
 from ..utils import safe_stderr_print
+from ..core.normalize import normalize_block_list, normalize_block_stock_list
 
 
 async def get_market_blocks(
@@ -61,11 +62,11 @@ async def get_market_blocks(
         # 保存到数据库
         db = get_db()
         await _save_blocks_to_db(db, blocks)
-        
+
         return {
             'success': True,
             'data': {
-                'blocks': blocks,
+                'blocks': normalize_block_list(blocks),
                 'count': len(blocks),
                 'block_type': block_type,
             }
@@ -111,7 +112,7 @@ async def get_block_stocks(block_code: str) -> Dict[str, Any]:
             'success': True,
             'data': {
                 'block_code': block_code,
-                'stocks': stocks,
+                'stocks': normalize_block_stock_list(stocks),
                 'count': len(stocks),
             }
         }

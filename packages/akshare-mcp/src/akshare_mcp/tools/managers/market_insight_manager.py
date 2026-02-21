@@ -73,7 +73,7 @@ def register_market_insight_manager(mcp):
         if idx_quote.get('success') and idx_quote.get('data'):
             d = idx_quote['data']
             current_price = _safe_float(d.get('price') or d.get('最新价') or d.get('close'))
-            change_pct = _safe_float(d.get('change_pct') or d.get('涨跌幅'))
+            change_pct = _safe_float(d.get('changePercent') or d.get('change_pct') or d.get('涨跌幅'))
 
         # 2. 获取近60日指数K线计算趋势（使用指数专用接口，避免与个股000001混淆）
         kline_res = get_index_kline(index_code="000001", period="daily", limit=60)
@@ -122,13 +122,13 @@ def register_market_insight_manager(mcp):
         return ok({
             'trend': trend,
             'strength': strength,
-            'current_price': round(current_price, 2),
-            'change_pct': round(change_pct, 2),
-            'key_levels': {
+            'currentPrice': round(current_price, 2),
+            'changePercent': round(change_pct, 2),
+            'keyLevels': {
                 'support': support,
                 'resistance': resistance,
             },
-            'moving_averages': {
+            'movingAverages': {
                 'ma5': round(ma5, 2),
                 'ma20': round(ma20, 2),
                 'ma60': round(ma60, 2),
@@ -152,11 +152,11 @@ def register_market_insight_manager(mcp):
                 for s in sectors[:5]:
                     name = s.get('name') or s.get('板块名称') or s.get('sector') or str(s)
                     flow = _safe_float(s.get('mainNetInflow') or s.get('net_inflow') or s.get('主力净流入') or s.get('net_amount'))
-                    hot_sectors.append({'name': name, 'net_inflow': flow})
+                    hot_sectors.append({'name': name, 'mainNetInflow': flow})
                 for s in sectors[-3:]:
                     name = s.get('name') or s.get('板块名称') or s.get('sector') or str(s)
                     flow = _safe_float(s.get('mainNetInflow') or s.get('net_inflow') or s.get('主力净流入') or s.get('net_amount'))
-                    cold_sectors.append({'name': name, 'net_inflow': flow})
+                    cold_sectors.append({'name': name, 'mainNetInflow': flow})
 
         # 概念板块资金流向
         concept_hot = []
@@ -167,7 +167,7 @@ def register_market_insight_manager(mcp):
                 for c in concepts[:5]:
                     name = c.get('name') or c.get('板块名称') or c.get('concept') or str(c)
                     flow = _safe_float(c.get('mainNetInflow') or c.get('net_inflow') or c.get('主力净流入') or c.get('net_amount'))
-                    concept_hot.append({'name': name, 'net_inflow': flow})
+                    concept_hot.append({'name': name, 'mainNetInflow': flow})
 
         # 简单轮动判断
         if hot_sectors:
@@ -184,8 +184,8 @@ def register_market_insight_manager(mcp):
                 rotation = 'balanced'
 
         return ok({
-            'hot_sectors': hot_sectors,
-            'cold_sectors': cold_sectors,
-            'hot_concepts': concept_hot,
+            'hotSectors': hot_sectors,
+            'coldSectors': cold_sectors,
+            'hotConcepts': concept_hot,
             'rotation': rotation,
         })

@@ -136,13 +136,13 @@ def register_trading_data_manager(mcp):
                     total_buy = sum(row.get('buy_amount', 0) or 0 for row in data)
                     total_sell = sum(row.get('sell_amount', 0) or 0 for row in data)
                     net_buy = total_buy - total_sell
-                    
+
                     analysis = {
-                        'total_buy': float(total_buy),
-                        'total_sell': float(total_sell),
-                        'net_buy': float(net_buy),
-                        'market_sentiment': 'bullish' if net_buy > 0 else 'bearish',
-                        'active_stocks': len(data)
+                        'totalBuy': float(total_buy),
+                        'totalSell': float(total_sell),
+                        'netBuy': float(net_buy),
+                        'marketSentiment': 'bullish' if net_buy > 0 else 'bearish',
+                        'activeStocks': len(data)
                     }
                 else:
                     # DB 全部无数据，Tushare 降级
@@ -160,34 +160,34 @@ def register_trading_data_manager(mcp):
                                     net_amt = float(item.get('netAmount', 0) or 0) or (buy_amt - sell_amt)
                                     data.append({
                                         'code': item.get('code', ''),
-                                        'trade_date': date_val,
+                                        'tradeDate': str(date_val),
                                         'reason': item.get('reason', ''),
-                                        'buy_amount': buy_amt,
-                                        'sell_amount': sell_amt,
-                                        'net_buy': net_amt,
-                                        'buyer_type': None,
+                                        'buyAmount': buy_amt,
+                                        'sellAmount': sell_amt,
+                                        'netBuy': net_amt,
+                                        'buyerType': None,
                                     })
                     except Exception as e:
                         logger.warning(f"[TradingData] Tushare龙虎榜也失败: {e}")
 
                     if data:
-                        total_buy = sum(row.get('buy_amount', 0) or 0 for row in data)
-                        total_sell = sum(row.get('sell_amount', 0) or 0 for row in data)
+                        total_buy = sum(row.get('buyAmount') or row.get('buy_amount') or 0 for row in data)
+                        total_sell = sum(row.get('sellAmount') or row.get('sell_amount') or 0 for row in data)
                         net_buy = total_buy - total_sell
                         analysis = {
-                            'total_buy': float(total_buy),
-                            'total_sell': float(total_sell),
-                            'net_buy': float(net_buy),
-                            'market_sentiment': 'bullish' if net_buy > 0 else 'bearish',
-                            'active_stocks': len(data)
+                            'totalBuy': float(total_buy),
+                            'totalSell': float(total_sell),
+                            'netBuy': float(net_buy),
+                            'marketSentiment': 'bullish' if net_buy > 0 else 'bearish',
+                            'activeStocks': len(data)
                         }
                     else:
                         analysis = {
-                            'total_buy': 0,
-                            'total_sell': 0,
-                            'net_buy': 0,
-                            'market_sentiment': 'neutral',
-                            'active_stocks': 0
+                            'totalBuy': 0,
+                            'totalSell': 0,
+                            'netBuy': 0,
+                            'marketSentiment': 'neutral',
+                            'activeStocks': 0
                         }
                 
                 return ok({
@@ -216,24 +216,24 @@ def register_trading_data_manager(mcp):
                 if trades:
                     total_amount = sum(t.get('trade_amount', 0) for t in trades)
                     avg_price = sum(t.get('trade_price', 0) for t in trades) / len(trades)
-                    
+
                     klines = await db.get_klines(code, limit=1)
                     current_price = klines[0]['close'] if klines else 0
-                    
+
                     premium = (avg_price - current_price) / current_price if current_price > 0 else 0
-                    
+
                     analysis = {
-                        'total_trades': len(trades),
-                        'total_amount': float(total_amount),
-                        'avg_price': float(avg_price),
-                        'current_price': float(current_price),
+                        'totalTrades': len(trades),
+                        'totalAmount': float(total_amount),
+                        'avgPrice': float(avg_price),
+                        'currentPrice': float(current_price),
                         'premium': f"{premium*100:.2f}%",
                         'signal': 'positive' if premium > 0 else ('negative' if premium < -0.05 else 'neutral')
                     }
                 else:
                     analysis = {
-                        'total_trades': 0,
-                        'total_amount': 0,
+                        'totalTrades': 0,
+                        'totalAmount': 0,
                         'signal': 'no_data'
                     }
                 
@@ -280,29 +280,29 @@ def register_trading_data_manager(mcp):
                     total_buy = sum(t.get('buy_amount', 0) for t in institutional_trades)
                     total_sell = sum(t.get('sell_amount', 0) for t in institutional_trades)
                     net_flow = total_buy - total_sell
-                    
+
                     flow_analysis = {
-                        'total_buy': float(total_buy),
-                        'total_sell': float(total_sell),
-                        'net_flow': float(net_flow),
-                        'flow_direction': 'inflow' if net_flow > 0 else 'outflow',
+                        'totalBuy': float(total_buy),
+                        'totalSell': float(total_sell),
+                        'netFlow': float(net_flow),
+                        'flowDirection': 'inflow' if net_flow > 0 else 'outflow',
                         'strength': 'strong' if abs(net_flow) > total_buy * 0.3 else 'weak',
-                        'trade_count': len(institutional_trades)
+                        'tradeCount': len(institutional_trades)
                     }
                 else:
                     flow_analysis = {
-                        'total_buy': 0,
-                        'total_sell': 0,
-                        'net_flow': 0,
-                        'flow_direction': 'neutral',
+                        'totalBuy': 0,
+                        'totalSell': 0,
+                        'netFlow': 0,
+                        'flowDirection': 'neutral',
                         'strength': 'none',
-                        'trade_count': 0
+                        'tradeCount': 0
                     }
-                
+
                 return ok({
                     'code': code,
                     'period': period,
-                    'institutional_flow': flow_analysis,
+                    'institutionalFlow': flow_analysis,
                     'trades': institutional_trades[:10]
                 })
             

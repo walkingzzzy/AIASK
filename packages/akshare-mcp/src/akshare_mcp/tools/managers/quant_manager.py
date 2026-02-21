@@ -1213,9 +1213,32 @@ def register_quant_manager(mcp):
                     source_chain=["services.artifact_registry", "quant_manager.automl_discovery"],
                 )
 
+            elif action == "factor_ic_history":
+                factor_name = str(_kw.get("factor_name", "")).strip()
+                period = str(_kw.get("period", "20"))
+                limit = min(max(int(_kw.get("limit", 60)), 1), 500)
+                if not factor_name:
+                    return _fail("factor_name is required")
+                db = get_db()
+                rows = await db.get_factor_ic_history(factor_name, period, limit)
+                return _ok({
+                    "factor_name": factor_name,
+                    "period": period,
+                    "history": [
+                        {
+                            "date": str(r.get("ic_date", "")),
+                            "ic_value": r.get("ic_value"),
+                            "rank_ic": r.get("rank_ic"),
+                            "stock_count": r.get("stock_count"),
+                        }
+                        for r in rows
+                    ],
+                    "count": len(rows),
+                })
+
             return _fail(
                 "Unknown action: {action}. Supported: help, calculate_factors, alternative_factors, "
-                "factor_ic, backtest_factor, multi_factor_score, automl_discovery, feature_store, replay_experiment"
+                "factor_ic, backtest_factor, multi_factor_score, automl_discovery, feature_store, replay_experiment, factor_ic_history"
                 .format(action=action)
             )
         except Exception as e:

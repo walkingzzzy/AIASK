@@ -36,19 +36,32 @@ def _estimate_volatility(closes: list[float], window: int = 20) -> float:
     return float(statistics.pstdev(rets))
 
 
-def _calibrate_buy_probability(score: float, confidence: float, style: str, volatility: float) -> float:
-    style_threshold = {
-        "aggressive": 40.0,
-        "balanced": 60.0,
-        "conservative": 80.0,
-    }.get(str(style or "balanced").lower(), 60.0)
+def _estimate_target_price(
+    recommendation: str,
+    current_price: float,
+    pe: float,
+    score: float,
+    industry_peer_pes: list[float] | None = None,
+) -> tuple[float | None, str, float | None]:
+    """目标价估算：优先行业中位数 PE 法，缺失时回退旧口径。"""
+    if recommendation != 'buy':
+        return None, 'none', None
 
-    score_term = (float(score) - style_threshold) / 15.0
-    confidence_term = (float(confidence) - 60.0) / 25.0
-    vol_penalty = max(0.0, float(volatility) - 0.03) * 8.0
-    logit = score_term + confidence_term - vol_penalty
-    probability = 1.0 / (1.0 + math.exp(-logit))
-    return float(_clamp(probability, 0.01, 0.99))
+    if not pe or pe <= 0:
+        return float(current_price) * 1.15, 'fixed_gain_fallback', None
+
+    eps = float(current_price) / float(pe)
+    peers = [float(x) for x in (industry_peer_pes or []) if x and 0 < float(x) < 80]
+    if len(peers) >= 3:
+        industry_median_pe = float(statistics.median(peers))
+        # 给行业估值法留 10% 上行空间，避免过于保守
+        target_price = eps * industry_median_pe * 1.10
+        return float(target_price), 'industry_median_pe', industry_median_pe
+
+    pe_expansion = 1.0 + min(float(score), 100.0) / 500.0
+    return float(eps * float(pe) * pe_expansion), 'pe_expansion_fallback', None
+
+
 
 
 def _compute_rsi_from_window(window_prices: list[float]) -> float:
@@ -444,17 +457,33 @@ def register(mcp):
                 recommendation = 'avoid'
                 action_text = '建议回避'
             
-            # 9. 目标价位（简单估算）
+            # 9. 目标价位（优先行业中位数PE估值法）
             current_price = closes[0]
-            target_price = None
-            if recommendation == 'buy':
-                # 基于PE估算目标价
-                if pe and 0 < pe < 50:
-                    industry_avg_pe = pe * 1.2  # 假设行业平均PE高20%
-                    target_price = current_price * (industry_avg_pe / pe)
-                else:
-                    target_price = current_price * 1.15  # 默认15%涨幅
-            
+            industry_peer_pes: list[float] = []
+            industry_name = stock_info.get('industry') or stock_info.get('industry_name') or ''
+            if industry_name:
+                try:
+                    async with db.acquire() as conn:
+                        peer_rows = await conn.fetch(
+                            """SELECT pe_ratio FROM stocks
+                               WHERE industry = $1
+                                 AND stock_code <> $2
+                                 AND pe_ratio IS NOT NULL""",
+                            industry_name,
+                            code,
+                        )
+                    industry_peer_pes = [float(r['pe_ratio']) for r in peer_rows if r.get('pe_ratio')]
+                except Exception:
+                    industry_peer_pes = []
+
+            target_price, valuation_method, industry_median_pe = _estimate_target_price(
+                recommendation=recommendation,
+                current_price=float(current_price),
+                pe=float(pe) if pe else 0.0,
+                score=float(score),
+                industry_peer_pes=industry_peer_pes,
+            )
+
             confidence = max(0, min(100, confidence))
             volatility_20d = _estimate_volatility(closes, window=20)
             buy_probability = _calibrate_buy_probability(
@@ -483,6 +512,8 @@ def register(mcp):
                 'confidence': round(confidence, 1),
                 'current_price': current_price,
                 'target_price': round(target_price, 2) if target_price else None,
+                'valuation_method': valuation_method,
+                'industry_median_pe': round(industry_median_pe, 2) if industry_median_pe else None,
                 'reasons': reasons,
                 'risks': risks,
                 'investment_style': investment_style,

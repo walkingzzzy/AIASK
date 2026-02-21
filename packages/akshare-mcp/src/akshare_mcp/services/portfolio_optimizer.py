@@ -2,6 +2,16 @@
 
 from typing import List, Dict, Any
 import numpy as np
+from sklearn.covariance import LedoitWolf
+
+
+def _shrunk_cov(returns_matrix: np.ndarray) -> np.ndarray:
+    """Ledoit-Wolf 收缩协方差估计，降低小样本噪声"""
+    try:
+        lw = LedoitWolf().fit(returns_matrix.T)
+        return lw.covariance_
+    except Exception:
+        return _shrunk_cov(returns_matrix)
 
 # 导入完整的优化器
 from .portfolio_optimization import portfolio_optimizer as advanced_optimizer
@@ -32,7 +42,7 @@ class PortfolioOptimizer:
         Returns:
             风险平价权重
         """
-        cov_matrix = np.cov(returns_matrix)
+        cov_matrix = _shrunk_cov(returns_matrix)
         
         # 使用高级优化器
         result = advanced_optimizer.risk_parity(cov_matrix)
@@ -66,7 +76,7 @@ class PortfolioOptimizer:
         Returns:
             最优权重
         """
-        cov_matrix = np.cov(returns_matrix)
+        cov_matrix = _shrunk_cov(returns_matrix)
         
         # 使用高级优化器
         result = advanced_optimizer.mean_variance_optimization(
@@ -111,7 +121,7 @@ class PortfolioOptimizer:
         Returns:
             后验预期收益和最优权重
         """
-        cov_matrix = np.cov(returns_matrix)
+        cov_matrix = _shrunk_cov(returns_matrix)
         
         # 使用高级优化器
         result = advanced_optimizer.black_litterman(
@@ -149,7 +159,7 @@ class PortfolioOptimizer:
         Returns:
             风险预算权重
         """
-        cov_matrix = np.cov(returns_matrix)
+        cov_matrix = _shrunk_cov(returns_matrix)
         
         # 默认等权风险预算
         if risk_budgets is None:
@@ -199,7 +209,7 @@ class PortfolioOptimizer:
         Returns:
             最大夏普比率组合
         """
-        cov_matrix = np.cov(returns_matrix)
+        cov_matrix = _shrunk_cov(returns_matrix)
         
         # 使用高级优化器
         result = advanced_optimizer.max_sharpe_ratio(

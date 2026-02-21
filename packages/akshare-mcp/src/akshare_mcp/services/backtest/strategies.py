@@ -30,21 +30,23 @@ def _backtest_ma_cross_jit(
     trades = 0
     wins = 0
 
-    for i in range(long_period, n):
+    for i in range(long_period, n - 1):
         if short_ma[i-1] <= long_ma[i-1] and short_ma[i] > long_ma[i] and cash > 0:
-            buy_price = closes[i] * (1 + total_cost_rate)
+            buy_price = closes[i + 1] * (1 + total_cost_rate)
             shares = int(cash / buy_price)
             cash -= shares * buy_price
             trades += 1
         elif short_ma[i-1] >= long_ma[i-1] and short_ma[i] < long_ma[i] and shares > 0:
-            sell_price = closes[i] * (1 - total_cost_rate)
-            profit = shares * sell_price - shares * closes[i-1]
+            sell_price = closes[i + 1] * (1 - total_cost_rate)
+            profit = shares * sell_price - shares * closes[i]
             if profit > 0:
                 wins += 1
             cash += shares * sell_price
             shares = 0
 
         equity[i] = cash + shares * closes[i]
+
+    equity[n - 1] = cash + shares * closes[n - 1]
 
     if shares > 0:
         cash += shares * closes[-1] * (1 - total_cost_rate)
@@ -63,7 +65,8 @@ def _backtest_ma_cross_jit(
             max_dd = dd
 
     returns = np.diff(equity[long_period:]) / equity[long_period:-1]
-    returns = returns[returns != 0]
+    valid_mask = equity[long_period:-1] > 0
+    returns = returns[valid_mask]
     sharpe = 0.0
     if len(returns) > 0:
         mean_return = np.mean(returns)
@@ -71,7 +74,7 @@ def _backtest_ma_cross_jit(
         if std_return > 0:
             sharpe = (mean_return * 252) / (std_return * np.sqrt(252))
 
-    win_rate = wins / trades if trades > 0 else 0.0
+    win_rate = wins / trades if trades > 0 else 0.0  # trades仅计买入，即round-trip数
 
     return final_capital, total_return, max_dd, sharpe, trades, win_rate, equity
 
@@ -110,16 +113,16 @@ def _backtest_ma_cross_with_trades_jit(
     equity = np.zeros(n, dtype=np.float64)
     wins = 0
 
-    for i in range(long_period, n):
+    for i in range(long_period, n - 1):
         if short_ma[i-1] <= long_ma[i-1] and short_ma[i] > long_ma[i] and cash > 0:
-            buy_price = closes[i] * (1 + total_cost_rate)
+            buy_price = closes[i + 1] * (1 + total_cost_rate)
             buy_shares = int(cash / buy_price)
             if buy_shares > 0:
                 cost = buy_shares * buy_price
                 cash -= cost
                 shares = buy_shares
                 if trade_count < max_trades:
-                    trade_indices[trade_count] = i
+                    trade_indices[trade_count] = i + 1
                     trade_types[trade_count] = 1
                     trade_prices[trade_count] = buy_price
                     trade_shares[trade_count] = buy_shares
@@ -127,13 +130,13 @@ def _backtest_ma_cross_with_trades_jit(
                     trade_count += 1
 
         elif short_ma[i-1] >= long_ma[i-1] and short_ma[i] < long_ma[i] and shares > 0:
-            sell_price = closes[i] * (1 - total_cost_rate)
+            sell_price = closes[i + 1] * (1 - total_cost_rate)
             revenue = shares * sell_price
             profit = revenue - shares * buy_price
             if profit > 0:
                 wins += 1
             if trade_count < max_trades:
-                trade_indices[trade_count] = i
+                trade_indices[trade_count] = i + 1
                 trade_types[trade_count] = -1
                 trade_prices[trade_count] = sell_price
                 trade_shares[trade_count] = shares
@@ -143,6 +146,8 @@ def _backtest_ma_cross_with_trades_jit(
             shares = 0
 
         equity[i] = cash + shares * closes[i]
+
+    equity[n - 1] = cash + shares * closes[n - 1]
 
     if shares > 0:
         sell_price = closes[-1] * (1 - total_cost_rate)
@@ -171,7 +176,8 @@ def _backtest_ma_cross_with_trades_jit(
             max_dd = dd
 
     returns = np.diff(equity[long_period:]) / equity[long_period:-1]
-    returns = returns[returns != 0]
+    valid_mask = equity[long_period:-1] > 0
+    returns = returns[valid_mask]
     sharpe = 0.0
     if len(returns) > 0:
         mean_return = np.mean(returns)
@@ -206,11 +212,11 @@ def _backtest_momentum_jit(
     trades = 0
     wins = 0
 
-    for i in range(lookback, n):
+    for i in range(lookback, n - 1):
         momentum = (closes[i] - closes[i-lookback]) / closes[i-lookback]
 
         if momentum > threshold and shares == 0:
-            buy_price = closes[i] * (1 + total_cost_rate)
+            buy_price = closes[i + 1] * (1 + total_cost_rate)
             max_shares = int(cash / buy_price)
             if max_shares > 0:
                 cost = max_shares * buy_price
@@ -219,7 +225,7 @@ def _backtest_momentum_jit(
                 trades += 1
 
         elif momentum < -threshold and shares > 0:
-            sell_price = closes[i] * (1 - total_cost_rate)
+            sell_price = closes[i + 1] * (1 - total_cost_rate)
             revenue = shares * sell_price
             profit = revenue - (shares * buy_price)
             if profit > 0:
@@ -229,6 +235,8 @@ def _backtest_momentum_jit(
             trades += 1
 
         equity[i] = cash + shares * closes[i]
+
+    equity[n - 1] = cash + shares * closes[n - 1]
 
     if shares > 0:
         sell_price = closes[-1] * (1 - total_cost_rate)
@@ -250,7 +258,8 @@ def _backtest_momentum_jit(
             max_dd = dd
 
     returns = np.diff(equity[lookback:]) / equity[lookback:-1]
-    returns = returns[returns != 0]
+    valid_mask = equity[lookback:-1] > 0
+    returns = returns[valid_mask]
     sharpe = 0.0
     if len(returns) > 0:
         mean_return = np.mean(returns)
@@ -258,7 +267,7 @@ def _backtest_momentum_jit(
         if std_return > 0:
             sharpe = (mean_return * 252) / (std_return * np.sqrt(252))
 
-    win_rate = wins / trades if trades > 0 else 0.0
+    win_rate = wins / max(1, trades // 2) if trades > 0 else 0.0  # trades计买+卖，round-trip = trades//2
 
     return final_capital, total_return, max_dd, sharpe, trades, win_rate, equity
 
@@ -302,9 +311,9 @@ def _backtest_rsi_jit(
     wins = 0
     buy_price = 0.0
 
-    for i in range(rsi_period, n):
+    for i in range(rsi_period, n - 1):
         if rsi[i] < oversold and shares == 0:
-            buy_price = closes[i] * (1 + total_cost_rate)
+            buy_price = closes[i + 1] * (1 + total_cost_rate)
             max_shares = int(cash / buy_price)
             if max_shares > 0:
                 cost = max_shares * buy_price
@@ -313,7 +322,7 @@ def _backtest_rsi_jit(
                 trades += 1
 
         elif rsi[i] > overbought and shares > 0:
-            sell_price = closes[i] * (1 - total_cost_rate)
+            sell_price = closes[i + 1] * (1 - total_cost_rate)
             revenue = shares * sell_price
             profit = revenue - (shares * buy_price)
             if profit > 0:
@@ -323,6 +332,8 @@ def _backtest_rsi_jit(
             trades += 1
 
         equity[i] = cash + shares * closes[i]
+
+    equity[n - 1] = cash + shares * closes[n - 1]
 
     if shares > 0:
         sell_price = closes[-1] * (1 - total_cost_rate)
@@ -344,7 +355,8 @@ def _backtest_rsi_jit(
             max_dd = dd
 
     returns = np.diff(equity[rsi_period:]) / equity[rsi_period:-1]
-    returns = returns[returns != 0]
+    valid_mask = equity[rsi_period:-1] > 0
+    returns = returns[valid_mask]
     sharpe = 0.0
     if len(returns) > 0:
         mean_return = np.mean(returns)
@@ -352,6 +364,6 @@ def _backtest_rsi_jit(
         if std_return > 0:
             sharpe = (mean_return * 252) / (std_return * np.sqrt(252))
 
-    win_rate = wins / trades if trades > 0 else 0.0
+    win_rate = wins / max(1, trades // 2) if trades > 0 else 0.0  # trades计买+卖，round-trip = trades//2
 
     return final_capital, total_return, max_dd, sharpe, trades, win_rate, equity

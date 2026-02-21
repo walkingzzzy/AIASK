@@ -73,6 +73,305 @@ SUPPORTED_FACTORS: Dict[str, Dict[str, Any]] = {
         "sub_factors": ["market_cap", "float_market_cap"],
         "aliases": ["market_cap", "small_cap", "size_score"],
     },
+    # ── 技术类扩展 ──
+    "mom_1d": {
+        "category": "technical",
+        "description": "1日动量",
+        "requires_financials": False,
+        "sub_factors": ["return_1d"],
+        "aliases": ["daily_return"],
+    },
+    "mom_5d": {
+        "category": "technical",
+        "description": "5日动量",
+        "requires_financials": False,
+        "sub_factors": ["return_5d"],
+        "aliases": ["weekly_momentum"],
+    },
+    "mom_10d": {
+        "category": "technical",
+        "description": "10日动量",
+        "requires_financials": False,
+        "sub_factors": ["return_10d"],
+        "aliases": ["biweekly_momentum"],
+    },
+    "mom_60d": {
+        "category": "technical",
+        "description": "60日动量",
+        "requires_financials": False,
+        "sub_factors": ["return_60d"],
+        "aliases": ["quarterly_momentum"],
+    },
+    "rsi_14": {
+        "category": "technical",
+        "description": "14日RSI",
+        "requires_financials": False,
+        "sub_factors": ["rsi"],
+        "aliases": ["rsi", "relative_strength"],
+    },
+    "rsi_6": {
+        "category": "technical",
+        "description": "6日RSI",
+        "requires_financials": False,
+        "sub_factors": ["rsi_short"],
+        "aliases": ["rsi_fast"],
+    },
+    "macd_signal": {
+        "category": "technical",
+        "description": "MACD信号线",
+        "requires_financials": False,
+        "sub_factors": ["macd", "signal_line"],
+        "aliases": ["macd"],
+    },
+    "macd_histogram": {
+        "category": "technical",
+        "description": "MACD柱状图",
+        "requires_financials": False,
+        "sub_factors": ["macd_hist"],
+        "aliases": ["macd_bar"],
+    },
+    "willr_14": {
+        "category": "technical",
+        "description": "14日威廉指标",
+        "requires_financials": False,
+        "sub_factors": ["williams_r"],
+        "aliases": ["williams_r", "wr"],
+    },
+    "cci_20": {
+        "category": "technical",
+        "description": "20日CCI",
+        "requires_financials": False,
+        "sub_factors": ["cci"],
+        "aliases": ["commodity_channel"],
+    },
+    "mfi_14": {
+        "category": "technical",
+        "description": "14日资金流量指标",
+        "requires_financials": False,
+        "sub_factors": ["money_flow"],
+        "aliases": ["money_flow_index"],
+    },
+    "stoch_k": {
+        "category": "technical",
+        "description": "随机指标K值",
+        "requires_financials": False,
+        "sub_factors": ["stochastic_k"],
+        "aliases": ["kdj_k"],
+    },
+    "stoch_d": {
+        "category": "technical",
+        "description": "随机指标D值",
+        "requires_financials": False,
+        "sub_factors": ["stochastic_d"],
+        "aliases": ["kdj_d"],
+    },
+    "roc_10": {
+        "category": "technical",
+        "description": "10日变动率",
+        "requires_financials": False,
+        "sub_factors": ["rate_of_change"],
+        "aliases": ["roc"],
+    },
+    "roc_20": {
+        "category": "technical",
+        "description": "20日变动率",
+        "requires_financials": False,
+        "sub_factors": ["rate_of_change_20"],
+        "aliases": ["roc_monthly"],
+    },
+    # ── 波动类扩展 ──
+    "vol_5d": {
+        "category": "risk",
+        "description": "5日波动率",
+        "requires_financials": False,
+        "sub_factors": ["realized_vol_5d"],
+        "aliases": ["short_vol"],
+    },
+    "vol_10d": {
+        "category": "risk",
+        "description": "10日波动率",
+        "requires_financials": False,
+        "sub_factors": ["realized_vol_10d"],
+        "aliases": ["biweekly_vol"],
+    },
+    "vol_60d": {
+        "category": "risk",
+        "description": "60日波动率",
+        "requires_financials": False,
+        "sub_factors": ["realized_vol_60d"],
+        "aliases": ["quarterly_vol"],
+    },
+    "atr_14": {
+        "category": "risk",
+        "description": "14日ATR",
+        "requires_financials": False,
+        "sub_factors": ["average_true_range"],
+        "aliases": ["atr"],
+    },
+    "atr_20": {
+        "category": "risk",
+        "description": "20日ATR",
+        "requires_financials": False,
+        "sub_factors": ["average_true_range_20"],
+        "aliases": ["atr_monthly"],
+    },
+    "bollinger_width": {
+        "category": "risk",
+        "description": "布林带宽度",
+        "requires_financials": False,
+        "sub_factors": ["boll_width"],
+        "aliases": ["bband_width", "bb_width"],
+    },
+    "downside_vol": {
+        "category": "risk",
+        "description": "下行波动率",
+        "requires_financials": False,
+        "sub_factors": ["downside_deviation"],
+        "aliases": ["downside_risk"],
+    },
+    # ── 量价类扩展 ──
+    "volume_ratio": {
+        "category": "volume",
+        "description": "量比(5日/20日)",
+        "requires_financials": False,
+        "sub_factors": ["vol_ratio_5_20"],
+        "aliases": ["vol_ratio"],
+    },
+    "obv_slope": {
+        "category": "volume",
+        "description": "OBV斜率",
+        "requires_financials": False,
+        "sub_factors": ["on_balance_volume_slope"],
+        "aliases": ["obv_trend"],
+    },
+    "vwap_deviation": {
+        "category": "volume",
+        "description": "VWAP偏离度",
+        "requires_financials": False,
+        "sub_factors": ["vwap_dev"],
+        "aliases": ["vwap_diff"],
+    },
+    "turnover_5d": {
+        "category": "volume",
+        "description": "5日换手率",
+        "requires_financials": False,
+        "sub_factors": ["turnover_rate_5d"],
+        "aliases": ["short_turnover"],
+    },
+    "turnover_20d": {
+        "category": "volume",
+        "description": "20日换手率",
+        "requires_financials": False,
+        "sub_factors": ["turnover_rate_20d"],
+        "aliases": ["monthly_turnover"],
+    },
+    # ── 基本面扩展 ──
+    "pe_ttm": {
+        "category": "fundamental",
+        "description": "市盈率TTM",
+        "requires_financials": True,
+        "sub_factors": ["pe_ratio"],
+        "aliases": ["pe", "price_earnings"],
+    },
+    "pb_mrq": {
+        "category": "fundamental",
+        "description": "市净率MRQ",
+        "requires_financials": True,
+        "sub_factors": ["pb_ratio"],
+        "aliases": ["pb", "price_book"],
+    },
+    "ps_ttm": {
+        "category": "fundamental",
+        "description": "市销率TTM",
+        "requires_financials": True,
+        "sub_factors": ["ps_ratio"],
+        "aliases": ["ps", "price_sales"],
+    },
+    "roe_ttm": {
+        "category": "fundamental",
+        "description": "净资产收益率TTM",
+        "requires_financials": True,
+        "sub_factors": ["roe"],
+        "aliases": ["return_on_equity"],
+    },
+    "roa_ttm": {
+        "category": "fundamental",
+        "description": "总资产收益率TTM",
+        "requires_financials": True,
+        "sub_factors": ["roa"],
+        "aliases": ["return_on_assets"],
+    },
+    "gross_margin": {
+        "category": "fundamental",
+        "description": "毛利率",
+        "requires_financials": True,
+        "sub_factors": ["gross_profit_margin"],
+        "aliases": ["gpm"],
+    },
+    "net_margin": {
+        "category": "fundamental",
+        "description": "净利率",
+        "requires_financials": True,
+        "sub_factors": ["net_profit_margin"],
+        "aliases": ["npm"],
+    },
+    "debt_to_equity": {
+        "category": "fundamental",
+        "description": "资产负债率",
+        "requires_financials": True,
+        "sub_factors": ["debt_ratio"],
+        "aliases": ["leverage", "d_e_ratio"],
+    },
+    "revenue_growth_yoy": {
+        "category": "fundamental",
+        "description": "营收同比增长率",
+        "requires_financials": True,
+        "sub_factors": ["revenue_growth"],
+        "aliases": ["sales_growth"],
+    },
+    "dividend_yield": {
+        "category": "fundamental",
+        "description": "股息率",
+        "requires_financials": True,
+        "sub_factors": ["div_yield"],
+        "aliases": ["yield", "dps"],
+    },
+    # ── 另类因子 ──
+    "sentiment_score": {
+        "category": "alternative",
+        "description": "情绪得分",
+        "requires_financials": False,
+        "sub_factors": ["news_sentiment", "social_sentiment"],
+        "aliases": ["sentiment"],
+    },
+    "capital_flow": {
+        "category": "alternative",
+        "description": "资金流向得分",
+        "requires_financials": False,
+        "sub_factors": ["net_inflow", "main_force_flow"],
+        "aliases": ["money_flow"],
+    },
+    "north_flow": {
+        "category": "alternative",
+        "description": "北向资金得分",
+        "requires_financials": False,
+        "sub_factors": ["northbound_net"],
+        "aliases": ["northbound"],
+    },
+    "institutional_flow": {
+        "category": "alternative",
+        "description": "机构资金流向",
+        "requires_financials": False,
+        "sub_factors": ["inst_net_buy"],
+        "aliases": ["institution_flow"],
+    },
+    "event_intensity": {
+        "category": "alternative",
+        "description": "事件强度",
+        "requires_financials": False,
+        "sub_factors": ["event_count", "event_impact"],
+        "aliases": ["event_score"],
+    },
 }
 
 DEFAULT_FACTOR_LOOKBACK = 20
@@ -635,6 +934,16 @@ async def _prefetch_market_data(
     return {"data": result, "meta": meta}
 
 
+def _ema(data: np.ndarray, period: int) -> np.ndarray:
+    """Exponential Moving Average."""
+    alpha = 2.0 / (period + 1)
+    result = np.empty_like(data)
+    result[0] = data[0]
+    for i in range(1, len(data)):
+        result[i] = alpha * data[i] + (1 - alpha) * result[i - 1]
+    return result
+
+
 def _calculate_factor_value(
     factor: str,
     closes: list,
@@ -721,6 +1030,251 @@ def _calculate_factor_value(
         if market_cap is None:
             return None
         return float(factor_calculator.calculate_size_factor(market_cap))
+
+    # ── 短周期动量 ──
+    if factor_name in ("mom_1d", "mom_5d", "mom_10d", "mom_60d"):
+        period_map = {"mom_1d": 1, "mom_5d": 5, "mom_10d": 10, "mom_60d": 60}
+        p = period_map[factor_name]
+        if len(closes) < p + 1:
+            return None
+        return float((closes[-1] - closes[-(p + 1)]) / closes[-(p + 1)]) if closes[-(p + 1)] > 0 else None
+
+    # ── RSI ──
+    if factor_name in ("rsi_14", "rsi_6"):
+        rsi_period = 14 if factor_name == "rsi_14" else 6
+        if len(closes) < rsi_period + 1:
+            return None
+        deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+        gains = [max(d, 0) for d in deltas[-rsi_period:]]
+        losses = [max(-d, 0) for d in deltas[-rsi_period:]]
+        avg_gain = sum(gains) / rsi_period
+        avg_loss = sum(losses) / rsi_period
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return float(100.0 - 100.0 / (1.0 + rs))
+
+    # ── MACD ──
+    if factor_name in ("macd_signal", "macd_histogram"):
+        if len(closes) < 26:
+            return None
+        arr = np.array(closes, dtype=np.float64)
+        ema12 = _ema(arr, 12)
+        ema26 = _ema(arr, 26)
+        dif = ema12 - ema26
+        dea = _ema(dif, 9)
+        if factor_name == "macd_signal":
+            return float(dea[-1])
+        return float((dif[-1] - dea[-1]) * 2)
+
+    # ── Williams %R ──
+    if factor_name == "willr_14":
+        if len(closes) < 14:
+            return None
+        window = closes[-14:]
+        highest = max(window)
+        lowest = min(window)
+        if highest == lowest:
+            return 0.0
+        return float((highest - closes[-1]) / (highest - lowest) * -100)
+
+    # ── CCI ──
+    if factor_name == "cci_20":
+        if len(closes) < 20:
+            return None
+        window = closes[-20:]
+        tp = sum(window) / len(window)
+        md = sum(abs(c - tp) for c in window) / len(window)
+        if md == 0:
+            return 0.0
+        return float((closes[-1] - tp) / (0.015 * md))
+
+    # ── Stochastic K/D ──
+    if factor_name in ("stoch_k", "stoch_d"):
+        if len(closes) < 14:
+            return None
+        window = closes[-14:]
+        lowest = min(window)
+        highest = max(window)
+        if highest == lowest:
+            return 50.0
+        k = (closes[-1] - lowest) / (highest - lowest) * 100
+        if factor_name == "stoch_k":
+            return float(k)
+        # D = 3-day SMA of K (approximate with last 3 K values)
+        if len(closes) < 16:
+            return float(k)
+        k_vals = []
+        for i in range(3):
+            w = closes[-(14 + i):-i] if i > 0 else closes[-14:]
+            lo, hi = min(w), max(w)
+            k_vals.append((w[-1] - lo) / (hi - lo) * 100 if hi != lo else 50.0)
+        return float(sum(k_vals) / len(k_vals))
+
+    # ── ROC ──
+    if factor_name in ("roc_10", "roc_20"):
+        p = 10 if factor_name == "roc_10" else 20
+        if len(closes) < p + 1:
+            return None
+        prev = closes[-(p + 1)]
+        return float((closes[-1] - prev) / prev * 100) if prev > 0 else None
+
+    # ── MFI (simplified, uses closes as proxy) ──
+    if factor_name == "mfi_14":
+        if len(closes) < 15:
+            return None
+        pos_flow = 0.0
+        neg_flow = 0.0
+        for i in range(-14, 0):
+            if closes[i] > closes[i - 1]:
+                pos_flow += closes[i]
+            else:
+                neg_flow += abs(closes[i])
+        if neg_flow == 0:
+            return 100.0
+        mfr = pos_flow / neg_flow
+        return float(100.0 - 100.0 / (1.0 + mfr))
+
+    # ── 波动率变体 ──
+    if factor_name in ("vol_5d", "vol_10d", "vol_60d"):
+        period_map = {"vol_5d": 5, "vol_10d": 10, "vol_60d": 60}
+        p = period_map[factor_name]
+        if len(closes) < p + 1:
+            return None
+        window = np.array(closes[-(p + 1):], dtype=np.float64)
+        prev = window[:-1]
+        curr = window[1:]
+        valid = prev > 0
+        if int(np.sum(valid)) < 2:
+            return None
+        rets = (curr[valid] - prev[valid]) / prev[valid]
+        return float(np.std(rets, ddof=1) * np.sqrt(252.0))
+
+    # ── ATR (simplified, uses close-to-close) ──
+    if factor_name in ("atr_14", "atr_20"):
+        p = 14 if factor_name == "atr_14" else 20
+        if len(closes) < p + 1:
+            return None
+        trs = [abs(closes[i] - closes[i - 1]) for i in range(len(closes) - p, len(closes))]
+        return float(sum(trs) / len(trs))
+
+    # ── Bollinger Width ──
+    if factor_name == "bollinger_width":
+        if len(closes) < 20:
+            return None
+        window = closes[-20:]
+        ma = sum(window) / 20
+        std = (sum((c - ma) ** 2 for c in window) / 20) ** 0.5
+        if ma == 0:
+            return 0.0
+        return float(4 * std / ma)
+
+    # ── Downside Vol ──
+    if factor_name == "downside_vol":
+        if len(closes) < 21:
+            return None
+        window = np.array(closes[-21:], dtype=np.float64)
+        rets = (window[1:] - window[:-1]) / np.where(window[:-1] > 0, window[:-1], 1.0)
+        neg_rets = rets[rets < 0]
+        if len(neg_rets) < 2:
+            return 0.0
+        return float(np.std(neg_rets, ddof=1) * np.sqrt(252.0))
+
+    # ── Volume-based (simplified, use closes as proxy) ──
+    if factor_name == "volume_ratio":
+        if len(closes) < 20:
+            return None
+        vol5 = sum(abs(closes[i] - closes[i - 1]) for i in range(-5, 0)) / 5
+        vol20 = sum(abs(closes[i] - closes[i - 1]) for i in range(-20, 0)) / 20
+        return float(vol5 / vol20) if vol20 > 0 else None
+
+    if factor_name == "obv_slope":
+        if len(closes) < 20:
+            return None
+        obv = 0.0
+        obv_series = [0.0]
+        for i in range(-19, 0):
+            if closes[i] > closes[i - 1]:
+                obv += 1
+            elif closes[i] < closes[i - 1]:
+                obv -= 1
+            obv_series.append(obv)
+        x = np.arange(len(obv_series), dtype=np.float64)
+        y = np.array(obv_series, dtype=np.float64)
+        slope = float(np.polyfit(x, y, 1)[0])
+        return slope
+
+    if factor_name == "vwap_deviation":
+        if len(closes) < 20:
+            return None
+        vwap = sum(closes[-20:]) / 20
+        return float((closes[-1] - vwap) / vwap) if vwap > 0 else None
+
+    if factor_name in ("turnover_5d", "turnover_20d"):
+        if len(closes) < 20:
+            return None
+        p = 5 if factor_name == "turnover_5d" else 20
+        changes = [abs(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(-p, 0) if closes[i - 1] > 0]
+        return float(sum(changes) / len(changes)) if changes else None
+
+    # ── 基本面单指标 ──
+    if factor_name == "pe_ttm":
+        if not financial:
+            return None
+        return _safe_float(financial.get("pe_ratio"), None)
+
+    if factor_name == "pb_mrq":
+        if not financial:
+            return None
+        return _safe_float(financial.get("pb_ratio"), None)
+
+    if factor_name == "ps_ttm":
+        if not financial:
+            return None
+        return _safe_float(financial.get("ps_ratio"), None)
+
+    if factor_name == "roe_ttm":
+        if not financial:
+            return None
+        return _safe_float(financial.get("roe"), None)
+
+    if factor_name == "roa_ttm":
+        if not financial:
+            return None
+        return _safe_float(financial.get("roa"), None)
+
+    if factor_name == "gross_margin":
+        if not financial:
+            return None
+        return _safe_float(financial.get("gross_margin"), None)
+
+    if factor_name == "net_margin":
+        if not financial:
+            return None
+        return _safe_float(financial.get("net_margin"), None)
+
+    if factor_name == "debt_to_equity":
+        if not financial:
+            return None
+        return _safe_float(financial.get("debt_ratio"), None)
+
+    if factor_name == "revenue_growth_yoy":
+        if not financial:
+            return None
+        return _first_valid_float(financial, REVENUE_GROWTH_KEYS)
+
+    if factor_name == "dividend_yield":
+        if not financial:
+            return None
+        for key in ("dividend_yield", "div_yield", "dps_yield"):
+            val = _safe_float(financial.get(key), 0.0)
+            if val > 0:
+                return val
+        return None
+
+    # ── 另类因子 (placeholder — return None, computed externally) ──
+    if factor_name in ("sentiment_score", "capital_flow", "north_flow", "institutional_flow", "event_intensity"):
+        return None
 
     return None
 
@@ -1747,7 +2301,7 @@ def register(mcp):
             "count": len(factors),
             "supported_factors": sorted(SUPPORTED_FACTORS.keys()),
             "total_categories": len(SUPPORTED_FACTORS),
-            "note": "Factor library includes 8 categories: fundamental(4), technical(3), risk(1).",
+            "note": f"Factor library includes {len(SUPPORTED_FACTORS)} factors across categories: fundamental, technical, risk, volume, alternative.",
         })
 
     @mcp.tool()

@@ -21,6 +21,8 @@ from .stock_info import StockInfoMixin
 from .financials import FinancialsMixin
 from .quotes import QuotesMixin
 from .artifacts import ArtifactMixin
+from .strategy import StrategyMixin
+from .factor_storage import FactorStorageMixin
 
 
 class TimescaleDBAdapter(
@@ -29,6 +31,8 @@ class TimescaleDBAdapter(
     FinancialsMixin,
     QuotesMixin,
     ArtifactMixin,
+    StrategyMixin,
+    FactorStorageMixin,
     SchemaBase,
 ):
     """TimescaleDB 异步适配器（Mixin 组合）
@@ -40,6 +44,8 @@ class TimescaleDBAdapter(
     - FinancialsMixin: 财务数据 get_financials
     - QuotesMixin: 实时行情 save_quote / get_stats
     - ArtifactMixin: 策略工件 save_artifact / get_artifact_by_id / list_artifacts_db
+    - StrategyMixin: 策略超市 save_strategy / list_strategies / subscribe / review
+    - FactorStorageMixin: 因子持久化 save_factor_values / get_factor_values / save_factor_ic
     """
     pass
 

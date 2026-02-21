@@ -2,6 +2,16 @@
 
 from typing import List, Dict, Any, Optional
 import numpy as np
+from sklearn.covariance import LedoitWolf
+
+
+def _shrunk_cov(returns_matrix: np.ndarray) -> np.ndarray:
+    """Ledoit-Wolf 收缩协方差估计，降低小样本噪声"""
+    try:
+        lw = LedoitWolf().fit(returns_matrix.T)
+        return lw.covariance_
+    except Exception:
+        return np.cov(returns_matrix)
 
 
 class RiskModel:
@@ -48,8 +58,8 @@ class RiskModel:
         weights = np.array([h['weight'] for h in holdings])
         
         # 计算协方差矩阵
-        cov_matrix = np.cov(returns_matrix)
-        
+        cov_matrix = _shrunk_cov(returns_matrix)
+
         # 组合方差
         portfolio_var = np.dot(weights, np.dot(cov_matrix, weights))
         portfolio_vol = np.sqrt(portfolio_var)

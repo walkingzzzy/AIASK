@@ -134,13 +134,13 @@ export default function FundFlowPage() {
             加载北向资金
           </button>
           {northMut.data ? (() => {
-            const items = extractArray(northMut.data, 'flows');
+            const items = extractArray(northMut.data, 'items', 'flows');
             return items.length ? (
               <LineChart
                 categories={items.map((x: Record<string, unknown>) => fmt(x.date as string))}
                 series={[{
                   name: '北向净流入',
-                  data: items.map((x: Record<string, unknown>) => (x.netInflow as number) ?? 0),
+                  data: items.map((x: Record<string, unknown>) => (x.total as number) ?? (x.netInflow as number) ?? 0),
                   color: COLORS.primary,
                 }]}
                 height={360}

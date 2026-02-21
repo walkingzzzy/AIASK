@@ -99,12 +99,12 @@ def register_sector_manager(mcp):
                                     "SELECT block_code, block_name FROM market_blocks WHERE block_type = $1 LIMIT 20",
                                     sector_type
                                 )
-                            # 如果 DB 仍为空，直接用返回数据构造
+                            # 如果 DB 仍为空，直接用返回数据构造（camelCase output）
                             if not sectors:
                                 fetched = blocks_res['data']['blocks'][:20]
                                 sectors = [
-                                    {'block_code': b['block_code'], 'block_name': b['block_name']}
-                                    for b in fetched if b.get('block_code')
+                                    {'block_code': b.get('blockCode') or b.get('block_code'), 'block_name': b.get('blockName') or b.get('block_name')}
+                                    for b in fetched if b.get('blockCode') or b.get('block_code')
                                 ]
                     except Exception:
                         pass
@@ -140,13 +140,13 @@ def register_sector_manager(mcp):
                     
                     if valid_count > 0:
                         avg_return = total_return / valid_count
-                        
+
                         sector_performance.append({
-                            'block_code': block_code,
-                            'block_name': block_name,
+                            'blockCode': block_code,
+                            'blockName': block_name,
                             'return': float(avg_return),
-                            'return_pct': f"{avg_return*100:.2f}%",
-                            'stocks_count': valid_count,
+                            'returnPct': f"{avg_return*100:.2f}%",
+                            'stocksCount': valid_count,
                             'strength': 'strong' if avg_return > 0.1 else ('weak' if avg_return < -0.05 else 'medium')
                         })
                 
@@ -178,13 +178,13 @@ def register_sector_manager(mcp):
                         blocks_res = await get_market_blocks(block_type='industry', limit=20)
                         if blocks_res.get('success') and blocks_res.get('data', {}).get('blocks'):
                             for b in blocks_res['data']['blocks']:
-                                avg_chg = float(b.get('avg_change_pct', 0) or 0)
+                                avg_chg = float(b.get('avgChangePct') or b.get('avg_change_pct') or 0)
                                 sectors.append({
-                                    'block_code': b.get('block_code', ''),
-                                    'block_name': b.get('block_name', ''),
+                                    'blockCode': b.get('blockCode') or b.get('block_code', ''),
+                                    'blockName': b.get('blockName') or b.get('block_name', ''),
                                     'return': avg_chg / 100.0,
-                                    'return_pct': f"{avg_chg:.2f}%",
-                                    'stocks_count': b.get('stock_count', 0),
+                                    'returnPct': f"{avg_chg:.2f}%",
+                                    'stocksCount': b.get('stockCount') or b.get('stock_count', 0),
                                     'strength': 'strong' if avg_chg > 2 else ('weak' if avg_chg < -1 else 'medium')
                                 })
                             sectors.sort(key=lambda x: x['return'], reverse=True)
@@ -212,16 +212,16 @@ def register_sector_manager(mcp):
                 
                 for sector in strong_sectors:
                     rotation_advice.append({
-                        'sector': sector['block_name'],
+                        'sector': sector.get('blockName') or sector.get('block_name', ''),
                         'action': 'overweight',
-                        'reason': f"板块表现强势，{period}日涨幅{sector['return_pct']}"
+                        'reason': f"板块表现强势，{period}日涨幅{sector.get('returnPct') or sector.get('return_pct', '')}"
                     })
-                
+
                 for sector in weak_sectors:
                     rotation_advice.append({
-                        'sector': sector['block_name'],
+                        'sector': sector.get('blockName') or sector.get('block_name', ''),
                         'action': 'underweight',
-                        'reason': f"板块表现弱势，{period}日涨幅{sector['return_pct']}"
+                        'reason': f"板块表现弱势，{period}日涨幅{sector.get('returnPct') or sector.get('return_pct', '')}"
                     })
                 
                 top_return = strong_sectors[0]['return']
