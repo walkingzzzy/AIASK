@@ -514,6 +514,30 @@ class SchemaBase:
                 ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT 'default';
             """)
 
+            # 8.2 事件审计表（告警/订单）
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS alert_events (
+                    id SERIAL PRIMARY KEY,
+                    alert_id TEXT,
+                    event_type TEXT NOT NULL,
+                    payload JSONB DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_alert_events_alert ON alert_events(alert_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS order_events (
+                    id SERIAL PRIMARY KEY,
+                    order_id TEXT NOT NULL,
+                    account_id TEXT,
+                    code TEXT,
+                    event_type TEXT NOT NULL,
+                    payload JSONB DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_order_events_order ON order_events(order_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_order_events_account ON order_events(account_id, created_at DESC);
+            """)
+
             # 9. 创建自选股表
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS watchlist_groups (
@@ -790,6 +814,42 @@ class SchemaBase:
                 CREATE INDEX IF NOT EXISTS idx_paper_orders_status ON paper_orders(status);
             """)
 
+            # 22.1 兼容旧库：补齐 paper_orders 新增列
+            await conn.execute("""
+                ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS order_type TEXT DEFAULT 'market';
+                ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS stop_price DOUBLE PRECISION;
+                ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS filled_at TIMESTAMPTZ;
+                ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS commission DOUBLE PRECISION DEFAULT 0;
+                ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS reason TEXT;
+            """)
+
+            # 22.1.1 复合索引优化（PaperTradingRepository 查询加速）
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_paper_orders_acct_status ON paper_orders(account_id, status);
+                CREATE INDEX IF NOT EXISTS idx_paper_positions_acct_code ON paper_positions(account_id, stock_code);
+            """)
+
+            # 22.2 兼容旧库：补齐 paper_accounts.risk_rules
+            await conn.execute("""
+                ALTER TABLE paper_accounts ADD COLUMN IF NOT EXISTS risk_rules JSONB DEFAULT '{}'::jsonb;
+            """)
+
+            # 22.3 创建模拟交易 NAV 快照表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS paper_nav (
+                    id SERIAL PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    nav_date DATE NOT NULL,
+                    total_value DOUBLE PRECISION NOT NULL,
+                    cash DOUBLE PRECISION NOT NULL,
+                    market_value DOUBLE PRECISION NOT NULL,
+                    daily_return DOUBLE PRECISION,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(account_id, nav_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_paper_nav_account ON paper_nav(account_id, nav_date);
+            """)
+
             # 23. 创建策略工件表
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS strategy_artifacts (
@@ -891,6 +951,126 @@ class SchemaBase:
                     UNIQUE(factor_name, period, ic_date)
                 );
                 CREATE INDEX IF NOT EXISTS idx_factor_ic_date ON factor_ic_history(ic_date);
+            """)
+
+            # 26. 用户画像快照表（AI推断的大五人格）
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_profile_snapshots (
+                    id SERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    neuroticism DOUBLE PRECISION DEFAULT 0.5,
+                    openness DOUBLE PRECISION DEFAULT 0.5,
+                    herd_tendency DOUBLE PRECISION DEFAULT 0.5,
+                    greed_fear_axis DOUBLE PRECISION DEFAULT 0.0,
+                    confidence DOUBLE PRECISION DEFAULT 0.5,
+                    source TEXT DEFAULT 'ai_inference',
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_user_profile_user
+                    ON user_profile_snapshots(user_id, created_at DESC);
+            """)
+
+            # 27. 推荐审计日志表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS recommendation_audit_log (
+                    id SERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    strategy_id TEXT,
+                    stock_code TEXT,
+                    action TEXT,
+                    emotion_polarity DOUBLE PRECISION,
+                    emotion_intensity DOUBLE PRECISION,
+                    cognitive_biases TEXT[],
+                    risk_aversion DOUBLE PRECISION,
+                    kyc_level TEXT,
+                    profile_snapshot JSONB,
+                    reasoning_chain TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_rec_audit_user
+                    ON recommendation_audit_log(user_id, created_at DESC);
+            """)
+
+            # 28. 策略前向信号表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_signals (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT NOT NULL,
+                    signal_date DATE NOT NULL,
+                    code TEXT NOT NULL,
+                    signal SMALLINT NOT NULL,
+                    score DOUBLE PRECISION,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(strategy_id, signal_date, code)
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_signals_strategy
+                    ON strategy_signals(strategy_id, signal_date DESC);
+                CREATE INDEX IF NOT EXISTS idx_strategy_signals_date
+                    ON strategy_signals(signal_date DESC);
+            """)
+
+            # 29. 前向收益验证表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS signal_forward_returns (
+                    id SERIAL PRIMARY KEY,
+                    signal_id INTEGER NOT NULL,
+                    forward_days INTEGER NOT NULL,
+                    actual_return DOUBLE PRECISION,
+                    calculated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(signal_id, forward_days)
+                );
+                CREATE INDEX IF NOT EXISTS idx_signal_fwd_signal
+                    ON signal_forward_returns(signal_id);
+            """)
+
+            # 29.1 向后兼容：published → listed 迁移
+            await conn.execute("""
+                UPDATE strategies SET status = 'listed' WHERE status = 'published';
+            """)
+
+            # 30. 策略血统表（策略工厂溯源）
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_lineage (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT NOT NULL,
+                    parent_id TEXT,
+                    spawn_reason TEXT NOT NULL,
+                    birth_regime JSONB DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_lineage_sid ON strategy_lineage(strategy_id);")
+
+            # 31. 策略淘汰日志
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_elimination_log (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT NOT NULL,
+                    elimination_date DATE NOT NULL,
+                    red_flags JSONB DEFAULT '[]'::jsonb,
+                    reason TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_elim_sid ON strategy_elimination_log(strategy_id);")
+
+            # 32. 每日快照历史（策略工厂输入数据）
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS daily_snapshot_history (
+                    id SERIAL PRIMARY KEY,
+                    snapshot_date DATE NOT NULL UNIQUE,
+                    fear_greed_index INTEGER,
+                    fg_components JSONB DEFAULT '{}'::jsonb,
+                    factor_ic JSONB DEFAULT '{}'::jsonb,
+                    factor_ic_trend JSONB DEFAULT '{}'::jsonb,
+                    north_fund_3d_net DOUBLE PRECISION,
+                    margin_5d_change_pct DOUBLE PRECISION,
+                    hot_sectors JSONB DEFAULT '[]'::jsonb,
+                    cold_sectors JSONB DEFAULT '[]'::jsonb,
+                    listed_count INTEGER DEFAULT 0,
+                    category_counts JSONB DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
             """)
 
             logger.info("All tables initialized successfully (aligned with Node version)")

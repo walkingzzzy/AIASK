@@ -1,34 +1,106 @@
-"""情绪分析服务"""
+"""情绪分析服务 — 三分量复合评分"""
+import math
 import numpy as np
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+
+# ── 新闻情绪关键词库 ──
+_BULLISH_KEYWORDS = [
+    '利好', '大涨', '涨停', '突破', '新高', '放量', '加仓', '抄底',
+    '回暖', '反弹', '景气', '超预期', '增持', '回购', '分红',
+    '订单', '中标', '扩产', '盈利', '业绩增长',
+]
+_BEARISH_KEYWORDS = [
+    '利空', '大跌', '跌停', '破位', '新低', '缩量', '减持', '清仓',
+    '暴雷', '亏损', '退市', '违规', '处罚', '下调', '预警',
+    '裁员', '诉讼', '暴跌', '崩盘', '爆仓',
+]
+
 
 class SentimentAnalyzer:
+
+    # ── 分量 1: 价量动量（40%权重） ──
     @staticmethod
-    def analyze_sentiment(klines: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _price_momentum_score(klines: List[Dict[str, Any]]) -> float:
+        """基于价格变化和量比计算动量得分 0~100"""
         if not klines or len(klines) < 20:
-            return {'sentiment': 'neutral', 'score': 50}
-        
+            return 50.0
         closes = [k['close'] for k in klines]
         volumes = [k['volume'] for k in klines]
-        
         price_change = (closes[-1] - closes[-20]) / closes[-20]
-        volume_ratio = np.mean(volumes[-5:]) / np.mean(volumes[-20:-5])
-        
+        volume_ratio = np.mean(volumes[-5:]) / max(np.mean(volumes[-20:-5]), 1e-9)
         score = 50 + price_change * 100 + (volume_ratio - 1) * 20
-        score = max(0, min(100, score))
-        
-        if score > 70:
+        return max(0.0, min(100.0, score))
+
+    # ── 分量 2: 新闻情绪（30%权重） ──
+    @staticmethod
+    def _news_sentiment_score(headlines: List[str], decay_half_life: int = 5) -> float:
+        """基于关键词匹配 + 时间衰减计算新闻情绪得分 0~100
+        headlines 按时间倒序排列（最新在前）"""
+        if not headlines:
+            return 50.0
+        decay_rate = math.log(2) / max(decay_half_life, 1)
+        total_weight = 0.0
+        weighted_score = 0.0
+        for i, title in enumerate(headlines):
+            w = math.exp(-decay_rate * i)
+            total_weight += w
+            bull = sum(1 for kw in _BULLISH_KEYWORDS if kw in title)
+            bear = sum(1 for kw in _BEARISH_KEYWORDS if kw in title)
+            if bull + bear == 0:
+                s = 50.0
+            else:
+                s = 50.0 + 50.0 * (bull - bear) / (bull + bear)
+            weighted_score += w * s
+        return max(0.0, min(100.0, weighted_score / max(total_weight, 1e-9)))
+
+    # ── 分量 3: 资金流向（30%权重） ──
+    @staticmethod
+    def _fund_flow_score(fund_flow_data: Optional[Dict[str, Any]]) -> float:
+        """基于北向资金净买入和融资余额变化率计算得分 0~100"""
+        if not fund_flow_data:
+            return 50.0
+        score = 50.0
+        # 北向资金净买入（正为流入）
+        north_net = float(fund_flow_data.get('north_net_buy', 0) or 0)
+        if north_net != 0:
+            # 归一化：假设 ±10亿 为满分偏移
+            score += max(-25.0, min(25.0, north_net / 1e9 * 25.0))
+        # 融资余额变化率
+        margin_change = float(fund_flow_data.get('margin_change_rate', 0) or 0)
+        if margin_change != 0:
+            score += max(-25.0, min(25.0, margin_change * 250.0))
+        return max(0.0, min(100.0, score))
+
+    def analyze_sentiment(
+        self,
+        klines: List[Dict[str, Any]],
+        news_headlines: Optional[List[str]] = None,
+        fund_flow_data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """三分量复合情绪评分"""
+        pm = self._price_momentum_score(klines)
+        ns = self._news_sentiment_score(news_headlines or [])
+        ff = self._fund_flow_score(fund_flow_data)
+
+        # 加权复合
+        composite = pm * 0.4 + ns * 0.3 + ff * 0.3
+
+        if composite > 70:
             sentiment = 'bullish'
-        elif score < 30:
+        elif composite < 30:
             sentiment = 'bearish'
         else:
             sentiment = 'neutral'
-        
+
         return {
             'sentiment': sentiment,
-            'score': round(score, 2),
-            'price_momentum': round(price_change * 100, 2),
-            'volume_ratio': round(volume_ratio, 2)
+            'score': round(composite, 2),
+            'components': {
+                'price_momentum': round(pm, 2),
+                'news_sentiment': round(ns, 2),
+                'fund_flow': round(ff, 2),
+            },
+            'weights': {'price_momentum': 0.4, 'news_sentiment': 0.3, 'fund_flow': 0.3},
         }
     
     @staticmethod

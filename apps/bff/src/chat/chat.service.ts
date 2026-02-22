@@ -2,7 +2,8 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import OpenAI from 'openai';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { PreferencesService } from '../auth/preferences.service';
-import { CHAT_TOOLS, SYSTEM_PROMPT } from './chat.tools';
+import { UserContextService } from './user-context.service';
+import { CHAT_TOOLS, buildSystemPrompt } from './chat.tools';
 
 export type ChatEvent =
   | { type: 'delta'; content: string }
@@ -22,6 +23,7 @@ export class ChatService {
   constructor(
     private readonly mcp: McpGatewayService,
     private readonly preferencesService: PreferencesService,
+    private readonly userContextService: UserContextService,
   ) {}
 
   async *streamChat(userId: string, messages: ChatMessage[]): AsyncGenerator<ChatEvent> {
@@ -30,8 +32,11 @@ export class ChatService {
 
     const openai = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseUrl });
 
+    const userContext = await this.userContextService.getUserContext(userId);
+    const systemPrompt = buildSystemPrompt(userContext);
+
     const conversationMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt },
       ...messages.map((m) => ({ role: m.role, content: m.content }) as OpenAI.Chat.Completions.ChatCompletionMessageParam),
     ];
 
@@ -102,6 +107,20 @@ export class ChatService {
           result = await this.mcp.callTool(tc.function.name, args);
         } catch (err) {
           result = { error: err instanceof Error ? err.message : String(err) };
+        }
+
+        // Side-effect: record emotion when LLM updates user profile
+        if (tc.function.name === 'update_user_profile') {
+          try {
+            const gfa = Number(args.greed_fear_axis ?? 0);
+            let label: string;
+            if (gfa < -0.6) label = '极度焦虑';
+            else if (gfa < -0.2) label = '偏焦虑';
+            else if (gfa < 0.2) label = '理性';
+            else if (gfa < 0.6) label = '偏乐观';
+            else label = '极度贪婪';
+            this.userContextService.recordEmotion(userId, label);
+          } catch { /* best-effort */ }
         }
 
         yield { type: 'tool_result', name: tc.function.name, result };

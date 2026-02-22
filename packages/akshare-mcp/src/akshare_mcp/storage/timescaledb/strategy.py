@@ -198,3 +198,66 @@ class StrategyMixin:
                 user_id,
             )
         return [dict(r) for r in rows]
+
+    # ── 策略工厂辅助方法 ──
+
+    async def save_strategy_lineage(self, strategy_id: str, parent_id: Optional[str],
+                                     spawn_reason: str, birth_regime: dict) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO strategy_lineage (strategy_id, parent_id, spawn_reason, birth_regime)
+                   VALUES ($1, $2, $3, $4::jsonb)""",
+                strategy_id, parent_id, spawn_reason,
+                json.dumps(birth_regime, ensure_ascii=False, default=str),
+            )
+
+    async def save_elimination_log(self, strategy_id: str, elimination_date, red_flags: list,
+                                    reason: str) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO strategy_elimination_log (strategy_id, elimination_date, red_flags, reason)
+                   VALUES ($1, $2, $3::jsonb, $4)""",
+                strategy_id, elimination_date,
+                json.dumps(red_flags, ensure_ascii=False, default=str), reason,
+            )
+
+    async def save_daily_snapshot(self, snapshot_date, data: dict) -> None:
+        async with self.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO daily_snapshot_history
+                   (snapshot_date, fear_greed_index, fg_components, factor_ic, factor_ic_trend,
+                    north_fund_3d_net, margin_5d_change_pct, hot_sectors, cold_sectors,
+                    listed_count, category_counts)
+                   VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8::jsonb, $9::jsonb, $10, $11::jsonb)
+                   ON CONFLICT (snapshot_date) DO UPDATE SET
+                    fear_greed_index = EXCLUDED.fear_greed_index,
+                    fg_components = EXCLUDED.fg_components,
+                    factor_ic = EXCLUDED.factor_ic,
+                    factor_ic_trend = EXCLUDED.factor_ic_trend,
+                    north_fund_3d_net = EXCLUDED.north_fund_3d_net,
+                    margin_5d_change_pct = EXCLUDED.margin_5d_change_pct,
+                    hot_sectors = EXCLUDED.hot_sectors,
+                    cold_sectors = EXCLUDED.cold_sectors,
+                    listed_count = EXCLUDED.listed_count,
+                    category_counts = EXCLUDED.category_counts
+                """,
+                snapshot_date,
+                data.get("fear_greed_index"),
+                json.dumps(data.get("fg_components") or {}, ensure_ascii=False, default=str),
+                json.dumps(data.get("factor_ic") or {}, ensure_ascii=False, default=str),
+                json.dumps(data.get("factor_ic_trend") or {}, ensure_ascii=False, default=str),
+                data.get("north_fund_3d_net"),
+                data.get("margin_5d_change_pct"),
+                json.dumps(data.get("hot_sectors") or [], ensure_ascii=False, default=str),
+                json.dumps(data.get("cold_sectors") or [], ensure_ascii=False, default=str),
+                data.get("listed_count", 0),
+                json.dumps(data.get("category_counts") or {}, ensure_ascii=False, default=str),
+            )
+
+    async def count_strategies_by_type(self, status: str = "listed") -> Dict[str, int]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT strategy_type, COUNT(*)::int AS cnt FROM strategies WHERE status = $1 GROUP BY strategy_type",
+                status,
+            )
+        return {r["strategy_type"]: r["cnt"] for r in rows}

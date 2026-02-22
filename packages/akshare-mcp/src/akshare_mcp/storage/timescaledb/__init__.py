@@ -23,6 +23,7 @@ from .quotes import QuotesMixin
 from .artifacts import ArtifactMixin
 from .strategy import StrategyMixin
 from .factor_storage import FactorStorageMixin
+from .signal_tracking import SignalTrackingMixin
 
 
 class TimescaleDBAdapter(
@@ -33,6 +34,7 @@ class TimescaleDBAdapter(
     ArtifactMixin,
     StrategyMixin,
     FactorStorageMixin,
+    SignalTrackingMixin,
     SchemaBase,
 ):
     """TimescaleDB 异步适配器（Mixin 组合）
@@ -46,6 +48,7 @@ class TimescaleDBAdapter(
     - ArtifactMixin: 策略工件 save_artifact / get_artifact_by_id / list_artifacts_db
     - StrategyMixin: 策略超市 save_strategy / list_strategies / subscribe / review
     - FactorStorageMixin: 因子持久化 save_factor_values / get_factor_values / save_factor_ic
+    - SignalTrackingMixin: 前向信号记录 save_signals / get_signals / get_signal_stats
     """
     pass
 

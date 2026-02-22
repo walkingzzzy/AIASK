@@ -2,9 +2,15 @@ import { Injectable } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
 
-export type NormalizedFactorItem = { name: string; description: string; category: string };
-export type NormalizedFactorResult = { values: Record<string, number | null>; period: string };
-export type NormalizedIcResult = { ic: number | null; icIr: number | null; pValue: number | null };
+export type NormalizedFactorItem = {
+  name: string;
+  description: string;
+  category: string;
+  default_period?: number;
+  data_dependency?: string[];
+};
+
+type IcHistoryItem = { date: string; ic_value?: number; rank_ic?: number; stock_count?: number };
 
 @Injectable()
 export class FactorService {
@@ -54,6 +60,53 @@ export class FactorService {
     return { data: payload };
   }
 
+  async icHistory(params: { factor_name: string; period?: string; limit?: number }) {
+    const payload = await this.mcp.callTool('quant_manager', {
+      action: 'factor_ic_history',
+      kwargs: JSON.stringify({ factor_name: params.factor_name, period: params.period ?? '20', limit: params.limit ?? 60 }),
+    });
+    return { data: payload };
+  }
+
+  async decay(params: { factor_name: string; period?: string; limit?: number }) {
+    const historyResp = await this.icHistory(params);
+    const root = (historyResp?.data as any)?.data ?? historyResp?.data ?? {};
+    const raw = Array.isArray(root?.history) ? root.history : [];
+    const list = raw.map((r: any) => ({
+      date: String(r.date ?? ''),
+      ic_value: this.toNum(r.ic_value),
+      rank_ic: this.toNum(r.rank_ic),
+      stock_count: this.toNum(r.stock_count) ?? 0,
+    })) as IcHistoryItem[];
+    const sorted = list.filter((r) => r.date).sort((a, b) => a.date.localeCompare(b.date));
+    const absIc = sorted.map((r) => Math.abs(this.toNum(r.ic_value) ?? 0));
+    const base = absIc.length ? (absIc[0] || 1e-9) : 1e-9;
+    const decayCurve = sorted.map((r, idx) => ({ date: r.date, value: base > 0 ? (absIc[idx] / base) : 0 }));
+
+    let halfLife: number | null = null;
+    for (let i = 0; i < decayCurve.length; i += 1) {
+      if ((decayCurve[i]?.value ?? 0) <= 0.5) { halfLife = i; break; }
+    }
+
+    return {
+      data: {
+        factor_name: params.factor_name,
+        period: params.period ?? '20',
+        sample_count: sorted.length,
+        half_life: halfLife,
+        decay_curve: decayCurve,
+      },
+    };
+  }
+
+  async batchCompute(params: { codes: string[]; factors?: string[]; persist?: boolean; compute_ic?: boolean; period?: number }) {
+    const payload = await this.mcp.callTool('quant_manager', {
+      action: 'batch_compute_factors',
+      kwargs: JSON.stringify({ codes: params.codes, factors: params.factors ?? ['momentum', 'value', 'quality'], persist: params.persist ?? true, compute_ic: params.compute_ic ?? true, period: params.period ?? 20 }),
+    });
+    return { data: payload };
+  }
+
   private normalizeLibrary(payload: any): { factors: NormalizedFactorItem[] } {
     const root = payload?.data ?? payload ?? {};
     const list = Array.isArray(root) ? root : Array.isArray(root?.factors) ? root.factors : Array.isArray(root?.data) ? root.data : [];
@@ -62,6 +115,8 @@ export class FactorService {
         name: String(f.name ?? f.factor_name ?? ''),
         description: String(f.description ?? f.desc ?? ''),
         category: String(f.category ?? f.group ?? ''),
+        default_period: this.toNum(f.default_period) ?? 20,
+        data_dependency: Array.isArray(f.data_dependency) ? f.data_dependency.map((x: any) => String(x)) : ['kline'],
       })),
     };
   }

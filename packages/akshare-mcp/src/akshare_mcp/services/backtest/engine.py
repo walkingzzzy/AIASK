@@ -147,6 +147,14 @@ def _build_strategy_masks(
         exit_[:rsi_period] = False
         return entry, exit_
 
+    # Fallback: try StrategyRegistry for user-submitted strategies
+    from .strategy_registry import StrategyRegistry
+    klass = StrategyRegistry.get(strategy)
+    if klass is not None:
+        instance = klass()
+        instance.set_parameters(params)
+        return instance.generate_entry_exit_masks(closes, volumes)
+
     return None
 
 
@@ -172,10 +180,12 @@ def _simulate_trades_from_masks(
     equity = np.full(n, float(initial_capital), dtype=np.float64)
     trades_detail: List[Dict[str, Any]] = []
 
-    for i in range(n):
+    for i in range(n - 1):
         tradable = True if tradability_mask is None else bool(tradability_mask[i])
-        if entry_mask[i] and shares == 0 and cash > 0 and tradable:
-            exec_price = float(closes[i])
+        # Next-bar execution: signal on bar i, execute at bar i+1 close (proxy for next open)
+        next_tradable = True if tradability_mask is None else bool(tradability_mask[i + 1])
+        if entry_mask[i] and shares == 0 and cash > 0 and tradable and next_tradable:
+            exec_price = float(closes[i + 1])
             if slippage_calc is not None:
                 approx_price = exec_price * (1 + commission_rate)
                 est_shares = int(cash / approx_price) if approx_price > 0 else 0
@@ -184,7 +194,7 @@ def _simulate_trades_from_masks(
                     continue
                 slip = slippage_calc.calculate(
                     price=exec_price,
-                    volume=float(volumes[i]) if i < len(volumes) else 0.0,
+                    volume=float(volumes[i + 1]) if i + 1 < len(volumes) else 0.0,
                     order_size=float(est_shares),
                     is_buy=True,
                 )
@@ -198,12 +208,12 @@ def _simulate_trades_from_masks(
                 trades += 1
                 if return_trades:
                     trade_time = ""
-                    if klines is not None and i < len(klines):
-                        row = klines[i]
+                    if klines is not None and i + 1 < len(klines):
+                        row = klines[i + 1]
                         trade_time = str(row.get("date", row.get("trade_date", row.get("time", ""))))
                     trades_detail.append(
                         {
-                            "index": int(i),
+                            "index": int(i + 1),
                             "time": trade_time,
                             "price": float(buy_price),
                             "signal": 1,
@@ -212,12 +222,12 @@ def _simulate_trades_from_masks(
                         }
                     )
 
-        elif exit_mask[i] and shares > 0 and tradable:
-            exec_price = float(closes[i])
+        elif exit_mask[i] and shares > 0 and tradable and next_tradable:
+            exec_price = float(closes[i + 1])
             if slippage_calc is not None:
                 slip = slippage_calc.calculate(
                     price=exec_price,
-                    volume=float(volumes[i]) if i < len(volumes) else 0.0,
+                    volume=float(volumes[i + 1]) if i + 1 < len(volumes) else 0.0,
                     order_size=float(shares),
                     is_buy=False,
                 )
@@ -232,12 +242,12 @@ def _simulate_trades_from_masks(
             trades += 1
             if return_trades:
                 trade_time = ""
-                if klines is not None and i < len(klines):
-                    row = klines[i]
+                if klines is not None and i + 1 < len(klines):
+                    row = klines[i + 1]
                     trade_time = str(row.get("date", row.get("trade_date", row.get("time", ""))))
                 trades_detail.append(
                     {
-                        "index": int(i),
+                        "index": int(i + 1),
                         "time": trade_time,
                         "price": float(sell_price),
                         "signal": -1,
@@ -248,6 +258,7 @@ def _simulate_trades_from_masks(
             shares = 0
 
         equity[i] = cash + shares * closes[i]
+    equity[n - 1] = cash + shares * float(closes[n - 1])
 
     if shares > 0:
         i = n - 1
@@ -650,6 +661,41 @@ class BacktestEngine:
             }
             _attach_equity_curve(data, equity)
             return {'success': True, 'data': data}
+
+        # Generic registry fallback for custom/factory strategies
+        from .strategy_registry import StrategyRegistry as _Reg
+        _klass = _Reg.get(strategy)
+        if _klass is not None:
+            _inst = _klass()
+            _inst.set_parameters(params)
+            _masks = _inst.generate_entry_exit_masks(closes, volumes)
+            if _masks is not None and _masks[0] is not None:
+                _entry, _exit = _masks
+                _sim = _simulate_trades_from_masks(
+                    closes=closes, volumes=volumes,
+                    entry_mask=_entry, exit_mask=_exit,
+                    initial_capital=initial_capital,
+                    commission_rate=commission,
+                    slippage_calc=slippage_calc,
+                    tradability_mask=tradability_mask,
+                    return_trades=return_trades,
+                    klines=klines,
+                )
+                _payload = {
+                    'code': code, 'strategy': strategy,
+                    'initial_capital': initial_capital,
+                    'final_capital': float(_sim['final_capital']),
+                    'total_return': float(_sim['total_return']),
+                    'max_drawdown': float(_sim['max_drawdown']),
+                    'sharpe_ratio': float(_sim['sharpe_ratio']),
+                    'trades_count': int(_sim['trades_count']),
+                    'win_rate': float(_sim['win_rate']),
+                    'params': params,
+                }
+                if return_trades:
+                    _payload['trades'] = _sim.get('trades') or []
+                _attach_equity_curve(_payload, _sim['equity'])
+                return {'success': True, 'data': _payload}
 
         return {'success': False, 'error': f'Unknown strategy: {strategy}'}
 

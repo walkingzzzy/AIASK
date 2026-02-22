@@ -1,7 +1,7 @@
 """
 TimescaleDB 适配器 — K线数据 Mixin
 
-提供 get_klines / save_klines 方法。
+提供 get_klines / save_klines / get_limit_up_stats 方法。
 """
 
 from typing import Optional, List, Dict, Any
@@ -152,3 +152,53 @@ class KlineMixin:
                 await conn.executemany(query, rows)
 
             return len(rows)
+
+    async def get_limit_up_stats(self, target_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
+        """统计指定日期的涨跌停和涨跌家数
+
+        通过比较 kline_1d 中同一股票相邻两个交易日的收盘价来判断涨跌停。
+        A股主板涨跌停幅度为10%（ST为5%），此处用9.8%作为阈值以容忍精度误差。
+
+        Args:
+            target_date: 目标日期，默认为最近一个有数据的交易日
+
+        Returns:
+            包含 limit_up_count, limit_down_count, advance_count, decline_count 的字典，
+            或在无数据时返回 None
+        """
+        async with self.acquire() as conn:
+            if target_date is None:
+                row = await conn.fetchrow(
+                    "SELECT MAX(time::date) as latest FROM kline_1d"
+                )
+                if not row or not row['latest']:
+                    return None
+                target_date = row['latest']
+
+            result = await conn.fetchrow("""
+                WITH daily AS (
+                    SELECT code, close,
+                           LAG(close) OVER (PARTITION BY code ORDER BY time) AS prev_close
+                    FROM kline_1d
+                    WHERE time::date BETWEEN ($1::date - INTERVAL '5 days') AND $1::date
+                )
+                SELECT
+                    COUNT(*) FILTER (WHERE prev_close > 0 AND (close - prev_close) / prev_close >= 0.098) AS limit_up_count,
+                    COUNT(*) FILTER (WHERE prev_close > 0 AND (close - prev_close) / prev_close <= -0.098) AS limit_down_count,
+                    COUNT(*) FILTER (WHERE close > prev_close) AS advance_count,
+                    COUNT(*) FILTER (WHERE close < prev_close) AS decline_count
+                FROM daily
+                WHERE prev_close IS NOT NULL
+                  AND close IS NOT NULL
+                  AND code IN (SELECT DISTINCT code FROM kline_1d WHERE time::date = $1::date)
+            """, target_date)
+
+            if not result or result['advance_count'] is None:
+                return None
+
+            return {
+                'limit_up_count': int(result['limit_up_count'] or 0),
+                'limit_down_count': int(result['limit_down_count'] or 0),
+                'advance_count': int(result['advance_count'] or 0),
+                'decline_count': int(result['decline_count'] or 0),
+            }

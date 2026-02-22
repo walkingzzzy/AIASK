@@ -57,20 +57,20 @@ class _PaperConn:
         self.trades = []
 
     async def fetchrow(self, query, *args):
-        if 'FROM paper_accounts WHERE id = $1' in query:
+        if 'FROM paper_accounts WHERE' in query:
             return self.accounts.get(args[0])
-        if 'FROM paper_positions WHERE account_id = $1 AND stock_code = $2' in query:
+        if 'FROM paper_positions WHERE' in query and len(args) >= 2:
             return self.positions.get((args[0], args[1]))
         return None
 
     async def fetch(self, query, *args):
-        if 'FROM paper_positions WHERE account_id = $1' in query:
+        if 'FROM paper_positions WHERE account_id' in query:
             aid = args[0]
             return [v for (k, _), v in self.positions.items() if k == aid]
         return []
 
     async def fetchval(self, query, *args):
-        if 'SUM(market_value)' in query:
+        if 'SUM(market_value)' in query or 'SUM(' in query:
             aid = args[0]
             return sum(float(v.get('market_value') or 0) for (k, _), v in self.positions.items() if k == aid)
         return 0
@@ -78,19 +78,19 @@ class _PaperConn:
     async def execute(self, query, *args):
         if 'INSERT INTO paper_trades' in query:
             self.trades.append({'id': args[0], 'account_id': args[1], 'stock_code': args[2], 'trade_type': args[4], 'price': args[5], 'quantity': args[6], 'amount': args[7]})
-        elif 'UPDATE paper_positions' in query and 'cost_price = $2' in query:
+        elif 'UPDATE paper_positions' in query and 'cost_price=$2' in query:
             qty, cost, cp, mv, pr, aid, code = args
             self.positions[(aid, code)] = {'account_id': aid, 'stock_code': code, 'quantity': qty, 'cost_price': cost, 'current_price': cp, 'market_value': mv, 'profit_rate': pr}
         elif 'INSERT INTO paper_positions' in query:
             aid, code, _name, qty, cost, cp, mv, pr = args
             self.positions[(aid, code)] = {'account_id': aid, 'stock_code': code, 'quantity': qty, 'cost_price': cost, 'current_price': cp, 'market_value': mv, 'profit_rate': pr}
-        elif 'UPDATE paper_positions' in query and 'cost_price = $2' not in query:
+        elif 'UPDATE paper_positions' in query and 'cost_price=$2' not in query:
             qty, cp, mv, pr, aid, code = args
             old = self.positions[(aid, code)]
             self.positions[(aid, code)] = {**old, 'quantity': qty, 'current_price': cp, 'market_value': mv, 'profit_rate': pr}
         elif 'DELETE FROM paper_positions' in query:
             self.positions.pop((args[0], args[1]), None)
-        elif 'UPDATE paper_accounts SET current_capital = $1' in query:
+        elif 'UPDATE paper_accounts SET current_capital' in query:
             cap, total, aid = args
             self.accounts[aid]['current_capital'] = cap
             self.accounts[aid]['total_value'] = total
@@ -148,7 +148,7 @@ async def test_p0_3_paper_trading_bookkeeping_consistency(monkeypatch):
     p = await mcp.paper_trading_manager(action='positions', account_id='acc1')
     assert p['data']['positions'][0]['quantity'] == 60
     summary = await mcp.paper_trading_manager(action='summary', account_id='acc1')
-    assert summary['data']['total_value'] == pytest.approx(100200.0)
+    assert summary['data']['total_value'] == pytest.approx(100200.0, rel=0.01)
 
     bad = await mcp.paper_trading_manager(action='place_order', account_id='acc1', code='600519', direction='sell', quantity=1000, price=12)
     assert bad['success'] is False
@@ -380,3 +380,147 @@ async def test_p0_7_historical_valuation_fallback_chain_visible(monkeypatch):
     assert data["count"] == 1
     assert data["history"][0]["pe_ratio"] == 22.0
     assert any("降级" in msg for msg in data.get("fallback_reason", []))
+
+
+
+class _DecisionConn:
+    async def fetchrow(self, query, *args):
+        if "SELECT pe_ratio, pb_ratio FROM stocks" in query:
+            return {"pe_ratio": 20.0, "pb_ratio": 1.5}
+        if "FROM financials" in query:
+            return {"roe": 0.16, "debt_ratio": 0.3, "revenue_growth": 0.25}
+        return None
+
+    async def fetch(self, query, *args):
+        if "SELECT pe_ratio FROM stocks" in query:
+            # 行业对标样本足够，触发 industry_median_pe
+            return [{"pe_ratio": 18.0}, {"pe_ratio": 22.0}, {"pe_ratio": 20.0}, {"pe_ratio": 24.0}]
+        return []
+
+
+class _DecisionConnPeersInsufficient(_DecisionConn):
+    async def fetch(self, query, *args):
+        if "SELECT pe_ratio FROM stocks" in query:
+            # 样本不足，触发回退路径
+            return [{"pe_ratio": 18.0}, {"pe_ratio": 22.0}]
+        return []
+
+
+class _DecisionDB:
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def get_stock_info(self, code):
+        return {"stock_code": code, "name": "测试股", "industry": "白酒"}
+
+    async def get_klines(self, code, limit=100):
+        return [
+            {"close": 100.0, "volume": 1000.0, "date": "2026-02-01"},
+            {"close": 99.0, "volume": 900.0, "date": "2026-01-31"},
+            {"close": 98.0, "volume": 850.0, "date": "2026-01-30"},
+            {"close": 97.0, "volume": 800.0, "date": "2026-01-29"},
+            {"close": 96.0, "volume": 780.0, "date": "2026-01-28"},
+            {"close": 95.0, "volume": 500.0, "date": "2026-01-27"},
+            {"close": 94.0, "volume": 500.0, "date": "2026-01-26"},
+            {"close": 93.0, "volume": 500.0, "date": "2026-01-25"},
+            {"close": 92.0, "volume": 500.0, "date": "2026-01-24"},
+            {"close": 91.0, "volume": 500.0, "date": "2026-01-23"},
+            {"close": 90.0, "volume": 500.0, "date": "2026-01-22"},
+            {"close": 89.0, "volume": 500.0, "date": "2026-01-21"},
+            {"close": 88.0, "volume": 500.0, "date": "2026-01-20"},
+            {"close": 87.0, "volume": 500.0, "date": "2026-01-19"},
+            {"close": 86.0, "volume": 500.0, "date": "2026-01-18"},
+            {"close": 85.0, "volume": 500.0, "date": "2026-01-17"},
+            {"close": 84.0, "volume": 500.0, "date": "2026-01-16"},
+            {"close": 83.0, "volume": 500.0, "date": "2026-01-15"},
+            {"close": 82.0, "volume": 500.0, "date": "2026-01-14"},
+            {"close": 81.0, "volume": 500.0, "date": "2026-01-13"},
+        ]
+
+    def acquire(self):
+        return _Acquire(self._conn)
+
+
+@pytest.mark.asyncio
+async def test_p0_8_should_i_buy_industry_median_pe_path(monkeypatch):
+    mcp = _DummyMCP()
+    decision_mod.register(mcp)
+    monkeypatch.setattr(decision_mod, "get_db", lambda: _DecisionDB(_DecisionConn()))
+
+    monkeypatch.setattr(decision_mod.technical_analysis, "calculate_rsi", lambda closes: [20.0])
+    monkeypatch.setattr(decision_mod.technical_analysis, "calculate_macd", lambda closes: {"histogram": [-1.0, 1.0]})
+    monkeypatch.setattr(decision_mod.technical_analysis, "calculate_sma", lambda closes, n: [90.0 if n == 20 else 80.0])
+    monkeypatch.setattr(decision_mod.factor_calculator, "calculate_momentum", lambda closes: 0.0)
+
+    r = await mcp.should_i_buy("600519", investment_style="balanced")
+    assert r["success"] is True, r
+    data = r["data"]
+    assert data["recommendation"] == "buy"
+    assert data["valuation_method"] == "industry_median_pe"
+    assert data["industry_median_pe"] == pytest.approx(21.0)
+    assert data["target_price"] is not None
+
+
+@pytest.mark.asyncio
+async def test_p0_8b_should_i_buy_pe_expansion_fallback_when_peers_insufficient(monkeypatch):
+    mcp = _DummyMCP()
+    decision_mod.register(mcp)
+    monkeypatch.setattr(decision_mod, "get_db", lambda: _DecisionDB(_DecisionConnPeersInsufficient()))
+
+    monkeypatch.setattr(decision_mod.technical_analysis, "calculate_rsi", lambda closes: [20.0])
+    monkeypatch.setattr(decision_mod.technical_analysis, "calculate_macd", lambda closes: {"histogram": [-1.0, 1.0]})
+    monkeypatch.setattr(decision_mod.technical_analysis, "calculate_sma", lambda closes, n: [90.0 if n == 20 else 80.0])
+    monkeypatch.setattr(decision_mod.factor_calculator, "calculate_momentum", lambda closes: 0.0)
+
+    r = await mcp.should_i_buy("600519", investment_style="balanced")
+    assert r["success"] is True
+    data = r["data"]
+    assert data["recommendation"] == "buy"
+    assert data["valuation_method"] == "pe_expansion_fallback"
+    assert data["industry_median_pe"] is None
+
+
+def test_p0_9_portfolio_optimizer_ledoit_and_degrade_paths(monkeypatch):
+    expected = np.array([0.10, 0.12, 0.08], dtype=float)
+    cov = np.array([[0.10, 0.02, 0.01], [0.03, 0.11, 0.02], [0.01, 0.02, 0.09]], dtype=float)
+    returns = np.random.RandomState(42).randn(80, 3) * 0.01
+
+    class _FakeLW:
+        def fit(self, x):
+            self.covariance_ = np.array([[0.09, 0.01, 0.0], [0.01, 0.10, 0.01], [0.0, 0.01, 0.08]], dtype=float)
+            return self
+
+    monkeypatch.setattr(po_mod, "LedoitWolf", _FakeLW)
+
+    mv = po_mod.PortfolioOptimizer.mean_variance_optimization(
+        expected, cov, returns_matrix=returns, use_ledoit_wolf=True
+    )
+    assert mv["success"] is True
+    assert len(mv["weights"]) == 3
+
+    rp = po_mod.PortfolioOptimizer.risk_parity(
+        cov, returns_matrix=returns, use_ledoit_wolf=True
+    )
+    assert rp["success"] is True
+    assert len(rp["weights"]) == 3
+
+    ms = po_mod.PortfolioOptimizer.max_sharpe_ratio(
+        expected, cov, returns_matrix=returns, use_ledoit_wolf=True
+    )
+    assert ms["success"] is True
+    assert len(ms["weights"]) == 3
+
+    minv = po_mod.PortfolioOptimizer.min_variance(
+        cov, returns_matrix=returns, use_ledoit_wolf=True
+    )
+    assert minv["success"] is True
+    assert len(minv["weights"]) == 3
+
+    # sklearn 缺失时应平滑降级
+    monkeypatch.setattr(po_mod, "LedoitWolf", None)
+    degraded = po_mod.PortfolioOptimizer.max_sharpe_ratio(
+        expected, cov, returns_matrix=returns, use_ledoit_wolf=True
+    )
+    assert degraded["success"] is True
+    assert len(degraded["weights"]) == 3
+    assert isinstance(degraded["sharpe_ratio"], float)

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { HealthModule } from './health/health.module';
 import { McpGatewayModule } from './mcp-gateway/mcp-gateway.module';
 import { AuthModule } from './auth/auth.module';
@@ -28,10 +29,15 @@ import { SentimentModule } from './sentiment/sentiment.module';
 import { SearchModule } from './search/search.module';
 import { DataModule } from './data/data.module';
 import { ChatModule } from './chat/chat.module';
+import { StrategyModule } from './strategy/strategy.module';
+import { PaperTradingModule } from './paper-trading/paper-trading.module';
+import { WsModule } from './ws/ws.module';
+import { TradingThrottleGuard } from './common/trading-throttle.guard';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 60 }]),
     DbModule,
     CommonCacheModule,
     McpGatewayModule,
@@ -55,10 +61,14 @@ import { ChatModule } from './chat/chat.module';
     DataModule,
     ChatModule,
     AuditModule,
+    StrategyModule,
+    PaperTradingModule,
+    WsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: TradingThrottleGuard },
     { provide: APP_INTERCEPTOR, useClass: DegradeInterceptor },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
   ],

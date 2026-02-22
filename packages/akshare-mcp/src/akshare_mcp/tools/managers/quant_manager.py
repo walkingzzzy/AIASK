@@ -1213,6 +1213,141 @@ def register_quant_manager(mcp):
                     source_chain=["services.artifact_registry", "quant_manager.automl_discovery"],
                 )
 
+            elif action == "batch_compute_factors":
+                # Batch compute and persist factor values + IC for multiple stocks
+                codes = _kw.get("codes", [])
+                if not isinstance(codes, list) or not codes:
+                    return _fail("codes (list of stock codes) is required")
+                factors = _kw.get("factors", ["momentum", "value", "quality"])
+                persist = bool(_kw.get("persist", True))
+                compute_ic = bool(_kw.get("compute_ic", True))
+                period = int(_kw.get("period", 20) or 20)
+
+                supported = {"momentum", "value", "quality", "volatility", "liquidity"}
+                unknown = [f for f in factors if f not in supported]
+                if unknown:
+                    return _fail(f"Unsupported factors for batch: {unknown}. Supported: {sorted(supported)}")
+
+                db = get_db()
+                results = {}
+                errors = []
+                today = datetime.now().date()
+
+                for stock_code in codes[:200]:  # cap at 200
+                    try:
+                        klines = await db.get_klines(stock_code, limit=252)
+                        if not klines:
+                            klines_data = data_source.get_kline(stock_code, period="daily", limit=252)
+                            klines = [
+                                {"date": k.get("date"), "open": k.get("open"), "high": k.get("high"),
+                                 "low": k.get("low"), "close": k.get("close"),
+                                 "volume": k.get("volume"), "amount": k.get("amount", 0)}
+                                for k in (klines_data or [])
+                            ]
+                        if not klines:
+                            errors.append({"code": stock_code, "error": "no kline data"})
+                            continue
+
+                        closes = [k.get("close") for k in klines if isinstance(k, dict) and k.get("close") is not None]
+                        if len(closes) < 20:
+                            errors.append({"code": stock_code, "error": "insufficient data"})
+                            continue
+
+                        financials = await db.get_financials(stock_code, limit=4)
+                        latest_fin = {}
+                        if isinstance(financials, list) and financials:
+                            latest_fin = financials[0] if isinstance(financials[0], dict) else {}
+                        elif isinstance(financials, dict):
+                            latest_fin = financials
+
+                        fv = {}
+                        if "momentum" in factors:
+                            m20 = (closes[-1] - closes[-20]) / closes[-20] if len(closes) >= 20 and closes[-20] else 0.0
+                            m60 = (closes[-1] - closes[-60]) / closes[-60] if len(closes) >= 60 and closes[-60] else 0.0
+                            fv["momentum"] = float((m20 + m60) / 2.0)
+                        if "value" in factors:
+                            pe = float(latest_fin.get("pe_ratio", 0) or 0)
+                            pb = float(latest_fin.get("pb_ratio", 0) or 0)
+                            fv["value"] = float((1.0 / pe if pe > 0 else 0) + (1.0 / pb if pb > 0 else 0)) / 2.0
+                        if "quality" in factors:
+                            roe = float(latest_fin.get("roe", 0) or 0)
+                            fv["quality"] = float(roe / 30.0 if roe > 0 else 0)
+                        if "volatility" in factors:
+                            prices = np.array(closes, dtype=float)
+                            rets = np.diff(prices) / prices[:-1]
+                            fv["volatility"] = float(1.0 / (np.std(rets) * np.sqrt(252))) if len(rets) > 1 and np.std(rets) > 0 else 0.0
+                        if "liquidity" in factors:
+                            volumes = [float(k.get("volume", 0) or 0) for k in klines[-20:]]
+                            fv["liquidity"] = float(np.mean(volumes)) if volumes else 0.0
+
+                        results[stock_code] = fv
+
+                        if persist and fv:
+                            await db.save_factor_values(stock_code, today, fv)
+                    except Exception as e:
+                        errors.append({"code": stock_code, "error": str(e)})
+
+                # Compute cross-sectional IC if requested
+                # IC = corr(factor_value[t-period], return[t-period → t])
+                # We use lagged factor values paired with subsequent realized returns
+                ic_results = {}
+                if compute_ic and len(results) >= 10:
+                    for fname in factors:
+                        factor_vals = []
+                        forward_rets = []
+                        for stock_code, fv in results.items():
+                            if fname not in fv:
+                                continue
+                            try:
+                                klines = await db.get_klines(stock_code, limit=period + 60)
+                                if not klines or len(klines) < period + 20:
+                                    continue
+                                closes = [float(k.get("close", 0) or 0) for k in klines]
+                                # Lagged factor: compute factor from data ending period days ago
+                                lagged_closes = closes[:-(period)]
+                                if len(lagged_closes) < 20 or not lagged_closes[-20]:
+                                    continue
+                                # Compute lagged factor value
+                                if fname == "momentum":
+                                    m20 = (lagged_closes[-1] - lagged_closes[-20]) / lagged_closes[-20] if len(lagged_closes) >= 20 and lagged_closes[-20] else 0.0
+                                    lagged_fv = float(m20)
+                                elif fname == "volatility":
+                                    lp = np.array(lagged_closes[-60:] if len(lagged_closes) >= 60 else lagged_closes, dtype=float)
+                                    lr = np.diff(lp) / lp[:-1]
+                                    lagged_fv = float(1.0 / (np.std(lr) * np.sqrt(252))) if len(lr) > 1 and np.std(lr) > 0 else 0.0
+                                elif fname == "liquidity":
+                                    lagged_vols = [float(k.get("volume", 0) or 0) for k in klines[:-(period)][-20:]]
+                                    lagged_fv = float(np.mean(lagged_vols)) if lagged_vols else 0.0
+                                else:
+                                    # For value/quality that depend on financials, use current factor value as proxy
+                                    lagged_fv = fv[fname]
+                                # Forward return: from lagged point to now
+                                c_lagged = closes[-(period + 1)]
+                                c_now = closes[-1]
+                                if c_lagged and c_now:
+                                    factor_vals.append(lagged_fv)
+                                    forward_rets.append((c_now - c_lagged) / c_lagged)
+                            except Exception:
+                                continue
+
+                        if len(factor_vals) >= 10:
+                            from ...services.factor_calculator.analysis import AnalysisFactorsMixin
+                            ic_data = AnalysisFactorsMixin.calculate_factor_ic(factor_vals, forward_rets)
+                            ic_val = ic_data.get("ic", 0.0)
+                            rank_ic = ic_data.get("rank_ic", 0.0)
+                            ic_results[fname] = {"ic": ic_val, "rank_ic": rank_ic, "sample_size": len(factor_vals)}
+                            if persist:
+                                await db.save_factor_ic(fname, str(period), today, ic_val, rank_ic, len(factor_vals))
+
+                return _ok({
+                    "computed_count": len(results),
+                    "error_count": len(errors),
+                    "errors": errors[:10],
+                    "factors": factors,
+                    "ic": ic_results,
+                    "persisted": persist,
+                }, source_chain=["db.get_klines", "db.save_factor_values", "db.save_factor_ic"])
+
             elif action == "factor_ic_history":
                 factor_name = str(_kw.get("factor_name", "")).strip()
                 period = str(_kw.get("period", "20"))
@@ -1236,9 +1371,21 @@ def register_quant_manager(mcp):
                     "count": len(rows),
                 })
 
+            elif action == "scheduler_status":
+                from ...services.factor_scheduler import get_factor_scheduler
+                scheduler = get_factor_scheduler()
+                return _ok(scheduler.status())
+
+            elif action == "scheduler_run_now":
+                from ...services.factor_scheduler import get_factor_scheduler
+                scheduler = get_factor_scheduler()
+                result = await scheduler.run_once()
+                return _ok(result or {"message": "run completed"})
+
             return _fail(
                 "Unknown action: {action}. Supported: help, calculate_factors, alternative_factors, "
-                "factor_ic, backtest_factor, multi_factor_score, automl_discovery, feature_store, replay_experiment, factor_ic_history"
+                "factor_ic, backtest_factor, multi_factor_score, automl_discovery, feature_store, "
+                "replay_experiment, batch_compute_factors, factor_ic_history, scheduler_status, scheduler_run_now"
                 .format(action=action)
             )
         except Exception as e:

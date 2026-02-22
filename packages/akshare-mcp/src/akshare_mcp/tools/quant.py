@@ -2289,6 +2289,11 @@ def register(mcp):
                 "category": meta["category"],
                 "description": meta["description"],
                 "requires_financials": meta["requires_financials"],
+                "default_period": int(meta.get("default_period", 20)),
+                "data_dependency": meta.get(
+                    "data_dependency",
+                    ["kline", "financials"] if meta.get("requires_financials") else ["kline"],
+                ),
                 "sub_factors": meta.get("sub_factors", []),
                 "aliases": meta.get("aliases", []),
                 "status": "supported",

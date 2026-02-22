@@ -77,6 +77,10 @@ except UnicodeDecodeError as e:
 
 
 from .services.data_sync import data_sync_service
+from .services.factor_scheduler import get_factor_scheduler
+from .services.matching_engine import get_matching_engine
+from .services.nav_engine import get_nav_engine
+from .services.signal_tracker import get_signal_tracker
 
 
 def _safe_shutdown_data_sync() -> None:
@@ -233,6 +237,38 @@ def _enforce_http_security_baseline() -> None:
 def main() -> None:
     """Start MCP server."""
     _enforce_http_security_baseline()
+
+    # Start factor scheduler if enabled (default: enabled)
+    if _as_bool(os.getenv("FACTOR_SCHEDULER_ENABLED", "true")):
+        scheduler = get_factor_scheduler()
+        scheduler.start()
+        logging.getLogger(__name__).info("[Server] FactorScheduler started")
+
+    # Start matching engine for paper trading
+    if _as_bool(os.getenv("MATCHING_ENGINE_ENABLED", "true")):
+        engine = get_matching_engine()
+        engine.start()
+        logging.getLogger(__name__).info("[Server] MatchingEngine started")
+
+    # Start NAV engine for daily account valuation
+    if _as_bool(os.getenv("NAV_ENGINE_ENABLED", "true")):
+        nav = get_nav_engine()
+        nav.start()
+        logging.getLogger(__name__).info("[Server] NavEngine started")
+
+    # Start signal tracker for forward signal generation & verification
+    if _as_bool(os.getenv("SIGNAL_TRACKER_ENABLED", "true")):
+        tracker = get_signal_tracker()
+        tracker.start()
+        logging.getLogger(__name__).info("[Server] SignalTracker started")
+
+    # Start strategy factory for daily auto-generation & elimination
+    if _as_bool(os.getenv("STRATEGY_FACTORY_ENABLED", "true")):
+        from .services.strategy_factory import get_strategy_factory_scheduler
+        factory = get_strategy_factory_scheduler()
+        factory.start()
+        logging.getLogger(__name__).info("[Server] StrategyFactory started")
+
     mcp.run()
 
 

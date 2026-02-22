@@ -36,6 +36,32 @@ def _estimate_volatility(closes: list[float], window: int = 20) -> float:
     return float(statistics.pstdev(rets))
 
 
+def _calibrate_buy_probability(
+    score: float,
+    confidence: float,
+    style: str,
+    volatility: float,
+) -> float:
+    """将 score/confidence/波动率压缩为 [0,1] 的买入概率。"""
+    style_bias = {
+        "aggressive": 0.15,
+        "balanced": 0.0,
+        "conservative": -0.15,
+    }.get(style, 0.0)
+
+    # 以 60 分为中性点；置信度作为辅助项；波动率越大概率越低
+    score_term = (float(score) - 60.0) / 12.0
+    confidence_term = (float(confidence) - 60.0) / 25.0
+    vol_term = float(volatility) * 18.0
+    logit = score_term + 0.7 * confidence_term - vol_term + style_bias
+
+    # 数值稳定：避免 exp 溢出
+    logit = _clamp(logit, -30.0, 30.0)
+    prob = 1.0 / (1.0 + math.exp(-logit))
+    return float(_clamp(prob, 0.0, 1.0))
+
+
+
 def _estimate_target_price(
     recommendation: str,
     current_price: float,
@@ -163,7 +189,7 @@ def _build_threshold_backtest(
 
 def register(mcp):
     """注册决策工具"""
-    
+
     @mcp.tool()
     async def should_i_buy(
         code: str,
@@ -257,25 +283,25 @@ def register(mcp):
 
         try:
             db = get_db()
-            
+
             # 1. 获取基础信息
             stock_info = await db.get_stock_info(code)
             if not stock_info:
                 return _fail(f'Stock {code} not found')
-            
+
             # 2. 获取K线数据
             klines = await db.get_klines(code, limit=100)
             if not klines or len(klines) < 20:
                 return _fail('Insufficient kline data')
-            
+
             closes = [k['close'] for k in klines]
             volumes = [k['volume'] for k in klines]
-            
+
             reasons = []
             risks = []
             score = 0
             confidence = 0
-            
+
             # 3. 估值分析（从数据库直接查询）
             async with db.acquire() as conn:
                 valuation_row = await conn.fetchrow(
@@ -284,7 +310,7 @@ def register(mcp):
                 )
                 pe = float(valuation_row['pe_ratio']) if valuation_row and valuation_row['pe_ratio'] else 0
                 pb = float(valuation_row['pb_ratio']) if valuation_row and valuation_row['pb_ratio'] else 0
-            
+
             if pe and 0 < pe < 15:
                 reasons.append(f'估值偏低(PE={pe:.1f})')
                 score += 25
@@ -299,7 +325,7 @@ def register(mcp):
                 risks.append(f'估值偏高(PE={pe:.1f})')
                 score -= 15
                 _record_evidence("valuation", "pe_ratio", pe, -15, confidence_hint=0.70)
-            
+
             if pb and 0 < pb < 2:
                 reasons.append(f'市净率偏低(PB={pb:.1f})')
                 score += 20
@@ -309,7 +335,7 @@ def register(mcp):
                 risks.append(f'市净率偏高(PB={pb:.1f})')
                 score -= 10
                 _record_evidence("valuation", "pb_ratio", pb, -10, confidence_hint=0.65)
-            
+
             # 4. 技术分析
             # RSI
             rsi_result = technical_analysis.calculate_rsi(closes)
@@ -324,7 +350,7 @@ def register(mcp):
                     risks.append(f'RSI超买({rsi_value:.1f})，短期风险')
                     score -= 15
                     _record_evidence("technical", "rsi", float(rsi_value), -15, confidence_hint=0.70)
-            
+
             # MACD
             macd_result = technical_analysis.calculate_macd(closes)
             if macd_result and 'histogram' in macd_result:
@@ -339,7 +365,7 @@ def register(mcp):
                         risks.append('MACD死叉，卖出信号')
                         score -= 20
                         _record_evidence("technical", "macd_histogram", float(hist[-1]), -20, confidence_hint=0.78)
-            
+
             # 均线趋势
             ma20 = technical_analysis.calculate_sma(closes, 20)
             ma60 = technical_analysis.calculate_sma(closes, 60)
@@ -365,7 +391,7 @@ def register(mcp):
                         -20,
                         confidence_hint=0.75,
                     )
-            
+
             # 成交量
             recent_vol = statistics.mean(volumes[:5])
             avg_vol = statistics.mean(volumes)
@@ -380,7 +406,7 @@ def register(mcp):
                     15,
                     confidence_hint=0.6,
                 )
-            
+
             # 5. 基本面分析
             try:
                 async with db.acquire() as conn:
@@ -392,7 +418,7 @@ def register(mcp):
                            LIMIT 1""",
                         code
                     )
-                    
+
                     if financial_row:
                         roe = float(financial_row['roe']) if financial_row['roe'] else 0
                         if roe > 0.15:
@@ -404,13 +430,13 @@ def register(mcp):
                             reasons.append(f'ROE良好({roe*100:.1f}%)')
                             score += 10
                             _record_evidence("fundamental", "roe", roe, 10, confidence_hint=0.65)
-                        
+
                         debt_ratio = float(financial_row['debt_ratio']) if financial_row['debt_ratio'] else 0
                         if debt_ratio > 0.7:
                             risks.append(f'负债率较高({debt_ratio*100:.1f}%)')
                             score -= 10
                             _record_evidence("fundamental", "debt_ratio", debt_ratio, -10, confidence_hint=0.68)
-                        
+
                         revenue_growth = float(financial_row['revenue_growth']) if financial_row['revenue_growth'] else 0
                         if revenue_growth > 0.2:
                             reasons.append(f'营收高增长({revenue_growth*100:.1f}%)')
@@ -419,7 +445,7 @@ def register(mcp):
                             _record_evidence("fundamental", "revenue_growth", revenue_growth, 20, confidence_hint=0.75)
             except:
                 pass
-            
+
             # 6. 因子分析
             try:
                 momentum = factor_calculator.calculate_momentum(closes)
@@ -433,16 +459,16 @@ def register(mcp):
                     _record_evidence("factor", "momentum", float(momentum), -10, confidence_hint=0.62)
             except:
                 pass
-            
+
             # 7. 根据投资风格调整
             style_thresholds = {
                 'aggressive': {'buy': 40, 'confidence': 50},
                 'balanced': {'buy': 60, 'confidence': 60},
                 'conservative': {'buy': 80, 'confidence': 70}
             }
-            
+
             threshold = style_thresholds.get(investment_style, style_thresholds['balanced'])
-            
+
             # 8. 生成建议
             if score >= threshold['buy'] and confidence >= threshold['confidence']:
                 recommendation = 'buy'
@@ -456,7 +482,7 @@ def register(mcp):
             else:
                 recommendation = 'avoid'
                 action_text = '建议回避'
-            
+
             # 9. 目标价位（优先行业中位数PE估值法）
             current_price = closes[0]
             industry_peer_pes: list[float] = []
@@ -501,7 +527,7 @@ def register(mcp):
                 thresholds=[40, 60, 80],
                 horizon=10,
             )
-            
+
             analysis_date = klines[0].get('date', '')
             payload = {
                 'code': code,
@@ -576,10 +602,10 @@ def register(mcp):
             result['meta']['data_timestamp'] = analysis_date
             result['meta']['evidence_chain_saved'] = bool(payload.get('evidence_trace_id'))
             return result
-        
+
         except Exception as e:
             return _fail(str(e))
-    
+
     @mcp.tool()
     async def should_i_sell(
         code: str,
@@ -588,7 +614,7 @@ def register(mcp):
     ):
         """
         卖出建议 - 综合止盈止损、技术信号、持仓时间分析
-        
+
         Args:
             code: 股票代码
             buy_price: 买入价格
@@ -596,28 +622,28 @@ def register(mcp):
         """
         try:
             db = get_db()
-            
+
             # 1. 获取基础信息
             stock_info = await db.get_stock_info(code)
             if not stock_info:
                 return fail(f'Stock {code} not found')
-            
+
             # 2. 获取K线数据
             klines = await db.get_klines(code, limit=100)
             if not klines:
                 return fail('No kline data')
-            
+
             current_price = klines[0]['close']
             closes = [k['close'] for k in klines]
-            
+
             # 3. 计算盈亏
             profit_pct = (current_price - buy_price) / buy_price * 100
             profit_amount = current_price - buy_price
-            
+
             reasons = []
             risks = []
             score = 0  # 正分倾向卖出，负分倾向持有
-            
+
             # 4. 止盈止损分析
             if profit_pct >= 30:
                 reasons.append(f'盈利{profit_pct:.1f}%，建议止盈')
@@ -637,7 +663,7 @@ def register(mcp):
             elif profit_pct <= -5:
                 risks.append(f'亏损{abs(profit_pct):.1f}%，注意风险')
                 score += 10
-            
+
             # 5. 技术分析
             # RSI
             rsi_result = technical_analysis.calculate_rsi(closes)
@@ -675,7 +701,7 @@ def register(mcp):
                 elif closes[-1] > ma20[-1] > ma60[-1]:
                     risks.append('多头排列，趋势向上')
                     score -= 15
-            
+
             # 6. 持仓时间分析
             if holding_days > 0:
                 if holding_days < 7:
@@ -685,7 +711,7 @@ def register(mcp):
                     if profit_pct < 5:
                         reasons.append(f'持仓{holding_days}天收益不佳，考虑换股')
                         score += 15
-            
+
             # 7. 波动风险
             returns = [(closes[i] - closes[i+1]) / closes[i+1] for i in range(min(20, len(closes)-1))]
             if len(returns) > 1:
@@ -693,7 +719,7 @@ def register(mcp):
                 if volatility > 0.04:
                     risks.append('近期波动较大，注意风险')
                     score += 10
-            
+
             # 8. 生成建议
             if score >= 40:
                 recommendation = 'sell'
@@ -710,7 +736,7 @@ def register(mcp):
             else:
                 recommendation = 'strong_hold'
                 action_text = '坚定持有'
-            
+
             # 9. 目标卖出价（如果建议卖出）
             target_sell_price = None
             if recommendation in ['sell', 'reduce']:
@@ -720,7 +746,7 @@ def register(mcp):
                 else:
                     # 亏损状态，等待反弹
                     target_sell_price = buy_price * 0.95  # 回本95%
-            
+
             return ok({
                 'code': code,
                 'name': stock_info.get('name', ''),
@@ -737,6 +763,6 @@ def register(mcp):
                 'risks': risks,
                 'analysis_date': klines[0].get('date', '')
             })
-        
+
         except Exception as e:
             return fail(str(e))

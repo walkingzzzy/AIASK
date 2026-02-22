@@ -36,11 +36,12 @@ class OrderSide(Enum):
 
 class OrderStatus(Enum):
     """订单状态"""
-    PENDING = "pending"      # 待成交
-    PARTIAL = "partial"      # 部分成交
-    FILLED = "filled"        # 完全成交
-    CANCELLED = "cancelled"  # 已取消
-    REJECTED = "rejected"    # 已拒绝
+    PENDING = "pending"          # 待提交
+    SUBMITTED = "submitted"      # 已提交（等待撮合）
+    PARTIAL = "partial"          # 部分成交
+    FILLED = "filled"            # 完全成交
+    CANCELLED = "cancelled"      # 已取消
+    REJECTED = "rejected"        # 已拒绝
 
 
 class Order:
@@ -603,4 +604,126 @@ class TradeLogger:
             'buy_trades': buy_trades,
             'sell_trades': sell_trades
         }
+
+
+class PaperTradingRepository:
+    """模拟交易持久化仓库 — 双写模式 + 进程重启恢复。
+
+    内存操作完成后异步写入 DB；启动时从 DB 加载 active 账户状态。
+    """
+
+    def __init__(self):
+        self._accounts: Dict[str, Dict] = {}
+        self._positions: Dict[str, Dict[str, Position]] = {}  # account_id -> {symbol: Position}
+        self._pending_orders: Dict[str, List[Order]] = {}     # account_id -> [Order]
+        self._loaded = False
+
+    async def restore_from_db(self):
+        """进程启动时从 DB 恢复所有 active 账户的持仓和 pending 订单到内存"""
+        from ..storage import get_db
+        db = get_db()
+
+        async with db.acquire() as conn:
+            accounts = await conn.fetch("SELECT * FROM paper_accounts")
+            for acct in accounts:
+                aid = acct['id']
+                self._accounts[aid] = dict(acct)
+
+                # 恢复持仓
+                positions = await conn.fetch(
+                    "SELECT * FROM paper_positions WHERE account_id=$1", aid
+                )
+                self._positions[aid] = {}
+                for p in positions:
+                    pos = Position(p['stock_code'])
+                    pos.quantity = float(p.get('quantity') or 0)
+                    pos.avg_cost = float(p.get('cost_price') or 0)
+                    self._positions[aid][p['stock_code']] = pos
+
+                # 恢复 pending 订单
+                orders = await conn.fetch(
+                    "SELECT * FROM paper_orders WHERE account_id=$1 AND status IN ('pending','submitted')",
+                    aid,
+                )
+                self._pending_orders[aid] = []
+                for o in orders:
+                    order = Order(
+                        symbol=o.get('code') or o.get('stock_code', ''),
+                        side=OrderSide.BUY if o.get('direction') == 'buy' else OrderSide.SELL,
+                        order_type=OrderType(o.get('order_type', 'limit')),
+                        quantity=float(o.get('shares') or 0),
+                        price=float(o.get('price') or 0) if o.get('price') else None,
+                        stop_price=float(o.get('stop_price') or 0) if o.get('stop_price') else None,
+                    )
+                    order.order_id = str(o['id'])
+                    order.status = OrderStatus(o.get('status', 'pending'))
+                    self._pending_orders[aid].append(order)
+
+        self._loaded = True
+        return {
+            'accounts': len(self._accounts),
+            'positions': sum(len(v) for v in self._positions.values()),
+            'pending_orders': sum(len(v) for v in self._pending_orders.values()),
+        }
+
+    def get_account(self, account_id: str) -> Optional[Dict]:
+        return self._accounts.get(account_id)
+
+    def get_positions(self, account_id: str) -> Dict[str, Position]:
+        return self._positions.get(account_id, {})
+
+    def get_pending_orders(self, account_id: str) -> List[Order]:
+        return self._pending_orders.get(account_id, [])
+
+    async def save_position_to_db(self, account_id: str, position: Position):
+        """将内存持仓异步写入 DB"""
+        from ..storage import get_db
+        db = get_db()
+        async with db.acquire() as conn:
+            if position.quantity > 0:
+                await conn.execute(
+                    """INSERT INTO paper_positions (account_id, stock_code, stock_name, quantity, cost_price, updated_at)
+                       VALUES ($1, $2, $2, $3, $4, NOW())
+                       ON CONFLICT (account_id, stock_code) DO UPDATE
+                       SET quantity=$3, cost_price=$4, updated_at=NOW()""",
+                    account_id, position.symbol, int(position.quantity), position.avg_cost,
+                )
+            else:
+                await conn.execute(
+                    "DELETE FROM paper_positions WHERE account_id=$1 AND stock_code=$2",
+                    account_id, position.symbol,
+                )
+
+    async def save_order_to_db(self, account_id: str, order: Order):
+        """将订单状态异步写入 DB"""
+        from ..storage import get_db
+        db = get_db()
+        async with db.acquire() as conn:
+            await conn.execute(
+                """UPDATE paper_orders SET status=$1, updated_at=NOW() WHERE id=$2""",
+                order.status.value, order.order_id,
+            )
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+    def status(self) -> Dict:
+        return {
+            'loaded': self._loaded,
+            'accounts': len(self._accounts),
+            'positions': sum(len(v) for v in self._positions.values()),
+            'pending_orders': sum(len(v) for v in self._pending_orders.values()),
+        }
+
+
+# Singleton
+_repository: Optional[PaperTradingRepository] = None
+
+
+def get_paper_trading_repository() -> PaperTradingRepository:
+    global _repository
+    if _repository is None:
+        _repository = PaperTradingRepository()
+    return _repository
 

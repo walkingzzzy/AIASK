@@ -13,6 +13,25 @@ from .strategies import (
 )
 from .engine import BacktestEngine, backtest_engine
 from .advanced import AdvancedBacktestEngine, advanced_backtest_engine
+from .strategy_base import IStrategy
+from .strategy_registry import StrategyRegistry
+from .builtin_strategies import (
+    MaCrossStrategy, MomentumStrategy, RsiStrategy, BuyAndHoldStrategy,
+)
+from .single_factor_strategy import (
+    ValueFactorStrategy, QualityFactorStrategy, GrowthFactorStrategy,
+)
+from .multi_factor_strategy import MultiFactorStrategy
+from .macro_timing_strategy import MacroTimingStrategy
+
+# 自动注册内置策略
+for _s in [MaCrossStrategy, MomentumStrategy, RsiStrategy, BuyAndHoldStrategy]:
+    StrategyRegistry.register(_s)
+
+# 注册工厂策略
+for _s in [ValueFactorStrategy, QualityFactorStrategy, GrowthFactorStrategy,
+           MultiFactorStrategy, MacroTimingStrategy]:
+    StrategyRegistry.register(_s)
 
 # 条件导入并行引擎
 from .parallel import RAY_AVAILABLE
@@ -29,4 +48,9 @@ __all__ = [
     'BacktestEngine', 'backtest_engine',
     'AdvancedBacktestEngine', 'advanced_backtest_engine',
     'RAY_AVAILABLE',
+    # P5: 策略接口与注册表
+    'IStrategy', 'StrategyRegistry',
+    'MaCrossStrategy', 'MomentumStrategy', 'RsiStrategy', 'BuyAndHoldStrategy',
+    'ValueFactorStrategy', 'QualityFactorStrategy', 'GrowthFactorStrategy',
+    'MultiFactorStrategy', 'MacroTimingStrategy',
 ]
