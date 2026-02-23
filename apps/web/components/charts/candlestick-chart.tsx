@@ -60,7 +60,7 @@ export function CandlestickChart({
     ];
 
     if (hasVolume) {
-      grids.push({ left: 50, right: 20, top: '76%', bottom: 30 });
+      grids.push({ left: 50, right: 20, top: '76%' as unknown as number, bottom: 30 });
       xAxes.push({ type: 'category', data: dates, gridIndex: 1, boundaryGap: true, axisLabel: { show: false } });
       yAxes.push({ gridIndex: 1, scale: true, splitNumber: 2, axisLabel: { show: false }, splitLine: { show: false } });
       series.push({

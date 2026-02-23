@@ -164,6 +164,7 @@ class CompleteDataSync:
                 return 0
             
             count = 0
+            errors = 0
             async with self.db.acquire() as conn:
                 for idx, row in df.iterrows():
                     try:
@@ -172,7 +173,7 @@ class CompleteDataSync:
                         market = row['market']
                         industry = row['industry']
                         list_date = row['list_date']
-                        
+
                         # 转换日期格式为 date 对象
                         if list_date and len(str(list_date)) == 8:
                             from datetime import date
@@ -180,7 +181,7 @@ class CompleteDataSync:
                             list_date = date(int(list_date_str[:4]), int(list_date_str[4:6]), int(list_date_str[6:]))
                         else:
                             list_date = None
-                        
+
                         await conn.execute("""
                             INSERT INTO stocks (stock_code, stock_name, market, industry, list_date, updated_at)
                             VALUES ($1, $2, $3, $4, $5, NOW())
@@ -191,15 +192,17 @@ class CompleteDataSync:
                                 list_date = EXCLUDED.list_date,
                                 updated_at = NOW()
                         """, code, name, market, industry, list_date)
-                        
+
                         count += 1
                     except Exception as e:
-                        pass
-                    
-                    self.progress(idx + 1, len(df), f"已同步 {count}")
-            
+                        errors += 1
+                        if errors <= 5:
+                            self.log(f"⚠️  stock[{idx}] 写入失败: {e}")
+
+                    self.progress(idx + 1, len(df), f"成功 {count}, 失败 {errors}")
+
             print()
-            self.log(f"✅ 完成: 同步 {count} 只股票")
+            self.log(f"✅ 完成: 同步 {count} 只股票, 失败 {errors} 条")
             return count
             
         except Exception as e:
@@ -227,34 +230,40 @@ class CompleteDataSync:
         end_date = datetime.now().strftime('%Y%m%d')
         count = 0
         skipped = 0
-        
+        inserted_rows = 0
+        errors = 0
+
         for i, row in enumerate(rows):
             code = row['stock_code']
             last_date = row['last_date']
-            
+
             # 如果有数据，只同步最新日期之后的
             if last_date:
+                # 兼容数据库返回 datetime/date 两种类型
+                last_date_date = last_date.date() if isinstance(last_date, datetime) else last_date
+
                 # 检查是否需要更新（最新数据是否在3天内）
-                days_old = (datetime.now().date() - last_date).days
+                days_old = (datetime.now().date() - last_date_date).days
                 if days_old <= 3:
                     skipped += 1
-                    self.progress(i + 1, len(rows), f"成功 {count}, 跳过 {skipped}")
+                    self.progress(i + 1, len(rows), f"成功股票 {count}, 新增记录 {inserted_rows}, 跳过 {skipped}, 失败 {errors}")
                     continue
-                
-                start_date = (last_date + timedelta(days=1)).strftime('%Y%m%d')
+
+                start_date = (last_date_date + timedelta(days=1)).strftime('%Y%m%d')
             else:
                 start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
-            
+
             try:
                 ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
                 df = self.ts_pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
-                
+
                 if df is not None and not df.empty:
+                    row_inserted_for_stock = 0
                     async with self.db.acquire() as conn:
                         for _, row in df.iterrows():
-                            trade_date = row['trade_date']
-                            date_str = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
-                            
+                            trade_date = str(row['trade_date'])
+                            trade_date_obj = datetime.strptime(trade_date, '%Y%m%d').date()
+
                             await conn.execute("""
                                 INSERT INTO kline_1d (time, code, open, high, low, close, volume, amount, change_pct, updated_at)
                                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
@@ -262,95 +271,184 @@ class CompleteDataSync:
                                     open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
                                     close = EXCLUDED.close, volume = EXCLUDED.volume, amount = EXCLUDED.amount,
                                     change_pct = EXCLUDED.change_pct, updated_at = NOW()
-                            """, date_str, code,
+                            """, trade_date_obj, code,
                                 float(row['open']), float(row['high']), float(row['low']), float(row['close']),
                                 int(float(row['vol']) * 100) if row['vol'] else 0,
                                 float(row['amount']) * 1000 if row['amount'] else 0,
                                 float(row['pct_chg']) if row['pct_chg'] else None)
+                            row_inserted_for_stock += 1
+
+                    inserted_rows += row_inserted_for_stock
                     count += 1
-            except:
-                pass
-            
-            self.progress(i + 1, len(rows), f"成功 {count}, 跳过 {skipped}")
-            
+            except Exception as e:
+                errors += 1
+                if errors <= 5:
+                    self.log(f"⚠️  K线同步失败 {code}: {e}")
+
+            self.progress(i + 1, len(rows), f"成功股票 {count}, 新增记录 {inserted_rows}, 跳过 {skipped}, 失败 {errors}")
+
             if (i + 1) % 50 == 0:
                 await asyncio.sleep(0.5)
-        
+
         print()
-        self.log(f"✅ 完成: 同步 {count} 只股票, 跳过 {skipped} 只 (数据已是最新)")
+        self.log(f"✅ 完成: 成功股票 {count} 只, 新增记录 {inserted_rows} 条, 跳过 {skipped} 只, 失败 {errors} 只")
         return count
     
     async def sync_financials(self):
         """3. 同步财务数据 (增量同步)"""
         self.log("\n[3/10] 同步财务数据...")
-        
+
+        # 兼容不同库结构：financials 可能有 stock_code / code / 两者并存
         async with self.db.acquire() as conn:
+            col_rows = await conn.fetch("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'financials'
+            """)
+            financial_cols = {r['column_name'] for r in col_rows}
+
+            has_stock_code = 'stock_code' in financial_cols
+            has_code = 'code' in financial_cols
+            if not has_stock_code and not has_code:
+                raise RuntimeError("financials 表缺少 stock_code/code 字段，无法同步")
+
+            join_col = 'stock_code' if has_stock_code else 'code'
+            where_expr = "(stock_code = $1 OR code = $1)" if (has_stock_code and has_code) else f"{join_col} = $1"
+
             # 获取每只股票最新的财报日期
-            rows = await conn.fetch("""
+            rows = await conn.fetch(f"""
                 SELECT s.stock_code, MAX(f.report_date) as last_report
                 FROM stocks s
-                LEFT JOIN financials f ON s.stock_code = f.stock_code
+                LEFT JOIN financials f ON s.stock_code = f.{join_col}
                 GROUP BY s.stock_code
                 ORDER BY s.stock_code
             """)
-        
+
         if not rows:
             return 0
-        
+
         end_date = datetime.now().strftime('%Y%m%d')
         count = 0
         skipped = 0
-        
+        errors = 0
+
         for i, row in enumerate(rows):
             code = row['stock_code']
             last_report = row['last_report']
-            
+
             # 如果有最新财报且在90天内，跳过
             if last_report:
                 days_old = (datetime.now().date() - last_report).days
                 if days_old <= 90:
                     skipped += 1
-                    self.progress(i + 1, len(rows), f"成功 {count}, 跳过 {skipped}")
+                    self.progress(i + 1, len(rows), f"成功 {count}, 跳过 {skipped}, 失败 {errors}")
                     continue
-            
+
             try:
                 ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
                 start_date = (datetime.now() - timedelta(days=730)).strftime('%Y%m%d')
                 df = self.ts_pro.fina_indicator(ts_code=ts_code, start_date=start_date, end_date=end_date)
-                
+
                 if df is not None and not df.empty:
                     row_data = df.iloc[0]
+
+                    def pick_numeric(series, *keys):
+                        for key in keys:
+                            if key in series:
+                                val = series.get(key)
+                                # None / 空字符串 / NaN 跳过
+                                if val is None or val == '':
+                                    continue
+                                if isinstance(val, float) and val != val:
+                                    continue
+                                try:
+                                    return float(val)
+                                except Exception:
+                                    continue
+                        return None
+
+                    from datetime import date
+                    end_date_str = str(row_data['end_date'])
+                    report_date = date(int(end_date_str[:4]), int(end_date_str[4:6]), int(end_date_str[6:]))
+
+                    # 兼容不同 tushare 版本字段名
+                    revenue = pick_numeric(row_data, 'revenue', 'total_revenue', 'op_income')
+                    net_profit = pick_numeric(row_data, 'n_income', 'netprofit', 'profit_dedt')
+                    roe = pick_numeric(row_data, 'roe')
+                    debt_ratio = pick_numeric(row_data, 'debt_to_assets')
+                    eps = pick_numeric(row_data, 'eps')
+                    revenue_growth = pick_numeric(row_data, 'or_yoy', 'op_yoy', 'tr_yoy', 'q_sales_yoy')
+                    profit_growth = pick_numeric(row_data, 'q_profit_yoy', 'netprofit_yoy', 'dt_netprofit_yoy')
+
                     async with self.db.acquire() as conn:
-                        end_date_str = row_data['end_date']
-                        report_date = f"{end_date_str[:4]}-{end_date_str[4:6]}-{end_date_str[6:]}"
-                        
-                        await conn.execute("""
-                            INSERT INTO financials (stock_code, report_date, revenue, net_profit, roe, debt_ratio, eps, revenue_growth, profit_growth, updated_at)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-                            ON CONFLICT (stock_code, report_date) DO UPDATE SET
-                                revenue = EXCLUDED.revenue, net_profit = EXCLUDED.net_profit, roe = EXCLUDED.roe,
-                                debt_ratio = EXCLUDED.debt_ratio, eps = EXCLUDED.eps,
-                                revenue_growth = EXCLUDED.revenue_growth, profit_growth = EXCLUDED.profit_growth,
+                        update_sql = f"""
+                            UPDATE financials
+                            SET revenue = $3,
+                                net_profit = $4,
+                                roe = $5,
+                                debt_ratio = $6,
+                                eps = $7,
+                                revenue_growth = $8,
+                                profit_growth = $9,
                                 updated_at = NOW()
-                        """, code, report_date,
-                            float(row_data['revenue']) if row_data['revenue'] else None,
-                            float(row_data['n_income']) if row_data['n_income'] else None,
-                            float(row_data['roe']) if row_data['roe'] else None,
-                            float(row_data['debt_to_assets']) if row_data['debt_to_assets'] else None,
-                            float(row_data['eps']) if row_data['eps'] else None,
-                            float(row_data['or_yoy']) if row_data['or_yoy'] else None,
-                            float(row_data['q_profit_yoy']) if row_data['q_profit_yoy'] else None)
+                                {', stock_code = $1' if has_stock_code else ''}
+                                {', code = $1' if has_code else ''}
+                            WHERE {where_expr} AND report_date = $2
+                        """
+                        update_result = await conn.execute(
+                            update_sql,
+                            code, report_date,
+                            revenue, net_profit, roe, debt_ratio, eps, revenue_growth, profit_growth
+                        )
+                        updated_rows = int(update_result.split()[-1]) if update_result else 0
+
+                        if updated_rows == 0:
+                            insert_cols = []
+                            insert_vals = []
+                            params = []
+                            p = 1
+
+                            if has_stock_code:
+                                insert_cols.append('stock_code')
+                                insert_vals.append(f'${p}')
+                                params.append(code)
+                                p += 1
+                            if has_code:
+                                insert_cols.append('code')
+                                insert_vals.append(f'${p}')
+                                params.append(code)
+                                p += 1
+
+                            insert_cols.extend([
+                                'report_date', 'revenue', 'net_profit', 'roe', 'debt_ratio',
+                                'eps', 'revenue_growth', 'profit_growth', 'updated_at'
+                            ])
+                            insert_vals.extend([
+                                f'${p}', f'${p+1}', f'${p+2}', f'${p+3}', f'${p+4}',
+                                f'${p+5}', f'${p+6}', f'${p+7}', 'NOW()'
+                            ])
+                            params.extend([
+                                report_date, revenue, net_profit, roe, debt_ratio,
+                                eps, revenue_growth, profit_growth
+                            ])
+
+                            await conn.execute(
+                                f"INSERT INTO financials ({', '.join(insert_cols)}) VALUES ({', '.join(insert_vals)})",
+                                *params
+                            )
                     count += 1
-            except:
-                pass
-            
-            self.progress(i + 1, len(rows), f"成功 {count}, 跳过 {skipped}")
-            
+            except Exception as e:
+                errors += 1
+                if errors <= 5:
+                    self.log(f"⚠️  财务同步失败 {code}: {e}")
+
+            self.progress(i + 1, len(rows), f"成功 {count}, 跳过 {skipped}, 失败 {errors}")
+
             if (i + 1) % 20 == 0:
                 await asyncio.sleep(1)
-        
+
         print()
-        self.log(f"✅ 完成: 同步 {count} 只股票, 跳过 {skipped} 只 (财报已是最新)")
+        self.log(f"✅ 完成: 同步 {count} 只股票, 跳过 {skipped} 只, 失败 {errors} 只")
         return count
     
     async def sync_valuations(self):
@@ -383,6 +481,7 @@ class CompleteDataSync:
         
         # 尝试最近几个交易日的数据
         trade_date = None
+        probe_errors = 0
         for days_back in range(1, 8):
             test_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y%m%d')
             try:
@@ -392,22 +491,26 @@ class CompleteDataSync:
                     trade_date = test_date
                     self.log(f"  使用交易日: {test_date[:4]}-{test_date[4:6]}-{test_date[6:]}")
                     break
-            except:
+            except Exception as e:
+                probe_errors += 1
+                if probe_errors <= 3:
+                    self.log(f"⚠️  交易日探测失败 {test_date}: {e}")
                 continue
-        
+
         if not trade_date:
             self.log("⚠️  未找到有效的交易日数据")
             return 0
-        
+
         count = 0
+        errors = 0
         batch_size = 100
         for i in range(0, len(codes), batch_size):
             batch = codes[i:i+batch_size]
             ts_codes = [f"{c}.SH" if c.startswith('6') else f"{c}.SZ" for c in batch]
-            
+
             try:
                 df = self.ts_pro.daily_basic(ts_code=','.join(ts_codes), trade_date=trade_date, fields='ts_code,pe,pb,total_mv')
-                
+
                 if df is not None and not df.empty:
                     async with self.db.acquire() as conn:
                         for _, row in df.iterrows():
@@ -415,20 +518,22 @@ class CompleteDataSync:
                             pe = float(row['pe']) if row['pe'] and row['pe'] > 0 else None
                             pb = float(row['pb']) if row['pb'] and row['pb'] > 0 else None
                             cap = float(row['total_mv']) if row['total_mv'] and row['total_mv'] > 0 else None
-                            
+
                             await conn.execute("""
                                 UPDATE stocks SET pe_ratio = $1, pb_ratio = $2, market_cap = $3, updated_at = NOW()
                                 WHERE stock_code = $4
                             """, pe, pb, cap, code)
                             count += 1
-            except:
-                pass
-            
-            self.progress(i + batch_size, len(codes), f"成功 {count}")
+            except Exception as e:
+                errors += 1
+                if errors <= 5:
+                    self.log(f"⚠️  估值批次同步失败 batch[{i//batch_size + 1}]: {e}")
+
+            self.progress(min(i + batch_size, len(codes)), len(codes), f"成功 {count}, 失败 {errors}")
             await asyncio.sleep(0.3)
-        
+
         print()
-        self.log(f"✅ 完成: 同步 {count} 只股票")
+        self.log(f"✅ 完成: 同步 {count} 只股票, 失败批次 {errors} 个")
         return count
     
     async def sync_dragon_tiger(self, days: int = 30):
@@ -442,20 +547,21 @@ class CompleteDataSync:
         
         count = 0
         skipped = 0
-        
+        errors = 0
+
         for i in range(days):
             date_obj = datetime.now() - timedelta(days=i)
             date = date_obj.strftime('%Y%m%d')
-            
+
             # 如果这个日期已经有数据，跳过
             if last_date and date_obj.date() <= last_date:
                 skipped += 1
-                self.progress(i + 1, days, f"成功 {count}, 跳过 {skipped}")
+                self.progress(i + 1, days, f"成功 {count}, 跳过 {skipped}, 失败 {errors}")
                 continue
-            
+
             try:
                 df = self.ts_pro.top_list(trade_date=date)
-                
+
                 if df is not None and not df.empty:
                     async with self.db.acquire() as conn:
                         for _, row in df.iterrows():
@@ -470,14 +576,16 @@ class CompleteDataSync:
                                 float(row['net_amount']) if row.get('net_amount') else None,
                                 row.get('reason'))
                             count += 1
-            except:
-                pass
-            
-            self.progress(i + 1, days, f"成功 {count}, 跳过 {skipped}")
+            except Exception as e:
+                errors += 1
+                if errors <= 5:
+                    self.log(f"⚠️  龙虎榜同步失败 {date}: {e}")
+
+            self.progress(i + 1, days, f"成功 {count}, 跳过 {skipped}, 失败 {errors}")
             await asyncio.sleep(0.2)
-        
+
         print()
-        self.log(f"✅ 完成: 同步 {count} 条记录, 跳过 {skipped} 天 (已有数据)")
+        self.log(f"✅ 完成: 同步 {count} 条记录, 跳过 {skipped} 天, 失败 {errors} 天")
         return count
     
     async def sync_north_fund(self, days: int = 90):
@@ -556,8 +664,8 @@ class CompleteDataSync:
                 if days_old <= 30:
                     self.log(f"⚠️  宏观数据已是最新 (最后更新: {last_period})")
                     return 0
-            except:
-                pass
+            except Exception as e:
+                self.log(f"⚠️  宏观日期解析失败(last_period={last_period}): {e}，继续全量拉取")
         
         count = 0
         try:

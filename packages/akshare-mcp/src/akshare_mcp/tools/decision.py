@@ -443,7 +443,7 @@ def register(mcp):
                             score += 20
                             confidence += 15
                             _record_evidence("fundamental", "revenue_growth", revenue_growth, 20, confidence_hint=0.75)
-            except:
+            except Exception:
                 pass
 
             # 6. 因子分析
@@ -457,7 +457,7 @@ def register(mcp):
                     risks.append('动量因子弱势')
                     score -= 10
                     _record_evidence("factor", "momentum", float(momentum), -10, confidence_hint=0.62)
-            except:
+            except Exception:
                 pass
 
             # 7. 根据投资风格调整

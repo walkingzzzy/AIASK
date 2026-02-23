@@ -21,10 +21,10 @@ def register(mcp):
             try:
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
-                        "SELECT title FROM vector_documents WHERE stock_code = $1 AND doc_type = 'news' ORDER BY date DESC LIMIT 20",
+                        "SELECT content FROM vector_documents WHERE stock_code = $1 AND doc_type = 'news' ORDER BY date DESC LIMIT 20",
                         code,
                     )
-                    news_headlines = [r['title'] for r in rows if r.get('title')]
+                    news_headlines = [r['content'][:200] for r in rows if r.get('content')]
             except Exception:
                 pass
 

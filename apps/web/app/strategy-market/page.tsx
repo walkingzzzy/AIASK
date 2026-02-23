@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { PageContainer, SectionCard, TabBar } from '@/components/ui';
+import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { StrategyCard, type Strategy } from '@/components/strategy-card';
@@ -21,17 +22,14 @@ type RankingResponse = { strategies?: Strategy[] } | Strategy[];
 export default function StrategyMarketPage() {
   const [category, setCategory] = useState<string>('all');
   const [search, setSearch] = useState('');
-  const rankApi = useApiMutation<RankingResponse>();
+  const rankQ = useApiQuery<RankingResponse>(
+    '/strategy-market/ranking?limit=50' + (category === 'all' ? '' : '&strategy_type=' + category),
+  );
   const addToCart = useCartStore((s) => s.addStrategy);
   const cartItems = useCartStore((s) => s.items);
 
-  useEffect(() => {
-    const params = category === 'all' ? '' : `&strategy_type=${category}`;
-    rankApi.trigger(`/strategy-market/ranking?limit=50${params}`);
-  }, [category]); // eslint-disable-line react-hooks/exhaustive-deps
-
   const strategies = useMemo(() => {
-    const d = rankApi.data;
+    const d = rankQ.data;
     const raw = Array.isArray(d) ? d : (d as Record<string, unknown>)?.strategies ?? d ?? [];
     const list = Array.isArray(raw) ? raw as Strategy[] : [];
     if (!search.trim()) return list;
@@ -41,7 +39,7 @@ export default function StrategyMarketPage() {
       (s.description ?? '').toLowerCase().includes(q) ||
       (s.strategy_type ?? '').toLowerCase().includes(q),
     );
-  }, [rankApi.data, search]);
+  }, [rankQ.data, search]);
 
   const [showCart, setShowCart] = useState(false);
 
@@ -72,8 +70,8 @@ export default function StrategyMarketPage() {
 
       <TabBar tabs={CATEGORIES} active={category} onChange={setCategory} />
 
-      {rankApi.isPending && <LoadingState text="加载策略列表..." />}
-      {rankApi.error && <ErrorState text={rankApi.error} />}
+      {rankQ.isPending && <LoadingState text="加载策略列表..." />}
+      {rankQ.error && <ErrorState text={rankQ.error} />}
 
       {strategies.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mt-4">
@@ -87,7 +85,7 @@ export default function StrategyMarketPage() {
         </div>
       )}
 
-      {!rankApi.isPending && strategies.length === 0 && !rankApi.error && (
+      {!rankQ.isPending && strategies.length === 0 && !rankQ.error && (
         <SectionCard className="mt-4 p-6 text-center text-text-secondary">
           暂无已发布的策略
         </SectionCard>

@@ -10,12 +10,12 @@ def register_user_manager(mcp):
     """注册用户管理器工具"""
 
     @mcp.tool()
-    async def user_manager(action: str, **kwargs):
+    async def user_manager(action: str, kwargs: str = '{}'):
         """用户管理器（统一 action + kwargs 协议）
 
         Args:
             action (str, required): 操作类型，可选 help/get_profile/update_preferences/list/list_users/assess_kyc
-            kwargs: JSON 字符串或关键字参数，不同 action 所需参数:
+            kwargs: JSON 字符串，不同 action 所需参数:
                 - help: 无需额外参数
                 - get_profile: user_id(str, optional, 默认 "default")
                 - update_preferences: user_id(str, optional), preferences(dict)
@@ -40,6 +40,17 @@ def register_user_manager(mcp):
         try:
             db = get_db()
 
+            # Normalize kwargs from JSON string
+            if isinstance(kwargs, str):
+                try:
+                    params = json.loads(kwargs)
+                except (json.JSONDecodeError, TypeError):
+                    params = {}
+            elif isinstance(kwargs, dict):
+                params = kwargs
+            else:
+                params = {}
+
             SUPPORTED_ACTIONS = {
                 'get_profile': '获取用户信息',
                 'update_preferences': '更新偏好设置',
@@ -53,7 +64,7 @@ def register_user_manager(mcp):
                 return ok({'supported_actions': SUPPORTED_ACTIONS})
             
             elif action == 'get_profile':
-                user_id = kwargs.get('user_id', 'default')
+                user_id = params.get('user_id', 'default')
                 async with db.acquire() as conn:
                     user = await conn.fetchrow(
                         "SELECT * FROM users WHERE id = $1",
@@ -66,8 +77,8 @@ def register_user_manager(mcp):
                 return ok(profile)
             
             elif action == 'update_preferences':
-                user_id = kwargs.get('user_id', 'default')
-                preferences = kwargs.get('preferences', {})
+                user_id = params.get('user_id', 'default')
+                preferences = params.get('preferences', {})
                 
                 async with db.acquire() as conn:
                     await conn.execute(
@@ -77,7 +88,7 @@ def register_user_manager(mcp):
                 return ok({'user_id': user_id, 'updated': True})
             
             elif action in ['list', 'list_users']:
-                limit = kwargs.get('limit', 50)
+                limit = params.get('limit', 50)
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
                         "SELECT id, username, email, created_at FROM users ORDER BY created_at DESC LIMIT $1",
@@ -87,7 +98,7 @@ def register_user_manager(mcp):
                 return ok({'users': users, 'count': len(users)})
 
             elif action == 'assess_kyc':
-                user_id = kwargs.get('user_id', 'default')
+                user_id = params.get('user_id', 'default')
                 result = await kyc_service.assess_risk_level(user_id, db)
                 # Persist KYC level to users.settings
                 async with db.acquire() as conn:

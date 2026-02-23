@@ -5,6 +5,7 @@ import {
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
+import * as Sentry from '@sentry/nestjs';
 
 type ErrorBody = {
   success: false;
@@ -50,6 +51,14 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
       path: request.url ?? 'UNKNOWN',
       timestamp: new Date().toISOString(),
     };
+
+    if (status >= 500) {
+      Sentry.withScope((scope) => {
+        scope.setTag('traceId', String(traceId));
+        scope.setExtra('path', request.url);
+        Sentry.captureException(exception);
+      });
+    }
 
     response.status(status).json(body);
   }

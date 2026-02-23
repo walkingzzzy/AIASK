@@ -17,9 +17,9 @@ export class AuthGuard implements CanActivate {
     ]);
     if (isPublic) return true;
 
-    const request = context.switchToHttp().getRequest<{ headers: Record<string, string>; user?: unknown }>();
+    const request = context.switchToHttp().getRequest<{ headers: Record<string, string>; cookies?: Record<string, string>; user?: unknown }>();
     const authorization = request.headers?.authorization;
-    const token = this.extractBearer(authorization);
+    const token = this.extractBearer(authorization) || request.cookies?.access_token;
 
     if (!token) {
       throw new UnauthorizedException('缺少 Bearer token');

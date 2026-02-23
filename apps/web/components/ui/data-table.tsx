@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import { fmt } from '@/lib/api';
+import { EmptyState } from '@/components/status-state';
 
 type ColumnDef = {
   key: string;
@@ -22,6 +23,9 @@ export function DataTable({
   className = '',
   emptyText = '暂无数据',
   onExport,
+  searchable,
+  onRowClick,
+  stickyFirstCol,
 }: {
   rows: Record<string, unknown>[];
   columns?: ColumnDef[];
@@ -30,9 +34,13 @@ export function DataTable({
   className?: string;
   emptyText?: string;
   onExport?: () => void;
+  searchable?: boolean;
+  onRowClick?: (row: Record<string, unknown>) => void;
+  stickyFirstCol?: boolean;
 }) {
   const [sort, setSort] = useState<SortState>(null);
   const [page, setPage] = useState(0);
+  const [filterText, setFilterText] = useState('');
 
   const cols: ColumnDef[] = useMemo(() => {
     if (columns) return columns;
@@ -40,9 +48,20 @@ export function DataTable({
     return Object.keys(rows[0]).map((key) => ({ key, label: key, sortable: true }));
   }, [columns, rows]);
 
+  const filtered = useMemo(() => {
+    if (!filterText.trim()) return rows;
+    const lower = filterText.toLowerCase();
+    return rows.filter((row) =>
+      cols.some((c) => {
+        const v = row[c.key];
+        return v != null && String(v).toLowerCase().includes(lower);
+      }),
+    );
+  }, [rows, filterText, cols]);
+
   const sorted = useMemo(() => {
-    if (!sort) return rows;
-    return [...rows].sort((a, b) => {
+    if (!sort) return filtered;
+    return [...filtered].sort((a, b) => {
       const av = a[sort.key];
       const bv = b[sort.key];
       if (av == null && bv == null) return 0;
@@ -51,14 +70,14 @@ export function DataTable({
       if (typeof av === 'number' && typeof bv === 'number') return sort.dir === 'asc' ? av - bv : bv - av;
       return sort.dir === 'asc' ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
     });
-  }, [rows, sort]);
+  }, [filtered, sort]);
 
   const paged = useMemo(() => {
     if (!pageSize) return sorted;
     return sorted.slice(page * pageSize, (page + 1) * pageSize);
   }, [sorted, page, pageSize]);
 
-  const totalPages = pageSize ? Math.ceil(rows.length / pageSize) : 1;
+  const totalPages = pageSize ? Math.ceil(filtered.length / pageSize) : 1;
 
   function toggleSort(key: string) {
     setSort((prev) => {
@@ -67,24 +86,36 @@ export function DataTable({
     });
   }
 
-  if (!rows.length) return <p className="text-text-secondary text-sm mt-2">{emptyText}</p>;
+  if (!rows.length) return <EmptyState text={emptyText} />;
 
   return (
     <div className={`mt-2 ${className}`}>
+      {searchable ? (
+        <div className="mb-2">
+          <input
+            type="text"
+            value={filterText}
+            onChange={(e) => { setFilterText(e.target.value); setPage(0); }}
+            placeholder="搜索筛选..."
+            aria-label="表格搜索筛选"
+            className="w-full max-w-[280px] px-2 py-1 border border-border rounded text-sm"
+          />
+        </div>
+      ) : null}
       {onExport ? (
         <div className="flex justify-end mb-1">
           <button onClick={onExport} className="text-xs text-primary cursor-pointer hover:underline">导出 CSV</button>
         </div>
       ) : null}
-      <div className="overflow-auto border border-border rounded-lg" style={{ maxHeight }}>
+      <div className="overflow-auto glass rounded-xl" style={{ maxHeight }}>
         <table className="w-full border-collapse text-[13px]">
-          <thead className="sticky top-0 bg-surface-alt">
+          <thead className="sticky top-0" style={{ background: 'var(--color-glass-strong)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)' }}>
             <tr>
-              {cols.map((c) => (
+              {cols.map((c, ci) => (
                 <th
                   key={c.key}
-                  className={`px-2 py-1.5 font-semibold border-b border-border whitespace-nowrap ${c.sortable !== false ? 'cursor-pointer select-none hover:bg-gray-200' : ''} text-${c.align ?? 'left'}`}
-                  style={c.width ? { width: c.width } : undefined}
+                  className={`px-2 py-1.5 font-semibold border-b border-glass-border whitespace-nowrap ${c.sortable !== false ? 'cursor-pointer select-none hover:bg-white/10' : ''} text-${c.align ?? 'left'}${stickyFirstCol && ci === 0 ? ' sticky left-0 z-[1]' : ''}`}
+                  style={{ ...(c.width ? { width: c.width } : {}), ...(stickyFirstCol && ci === 0 ? { background: 'var(--color-glass-strong)' } : {}) }}
                   onClick={() => c.sortable !== false && toggleSort(c.key)}
                 >
                   {c.label ?? c.key}
@@ -95,9 +126,10 @@ export function DataTable({
           </thead>
           <tbody>
             {paged.map((row, i) => (
-              <tr key={i} className="hover:bg-surface">
-                {cols.map((c) => (
-                  <td key={c.key} className={`px-2 py-1 border-b border-border-light text-${c.align ?? 'left'}`}>
+              <tr key={i} className={`hover:bg-white/10 transition-colors${onRowClick ? ' cursor-pointer' : ''}`} onClick={() => onRowClick?.(row)}>
+                {cols.map((c, ci) => (
+                  <td key={c.key} className={`px-2 py-1 border-b border-glass-border text-${c.align ?? 'left'}${stickyFirstCol && ci === 0 ? ' sticky left-0 z-[1]' : ''}`}
+                    style={stickyFirstCol && ci === 0 ? { background: 'var(--color-glass-strong)' } : undefined}>
                     {c.render ? c.render(row[c.key], row) : fmt(row[c.key])}
                   </td>
                 ))}
@@ -108,7 +140,7 @@ export function DataTable({
       </div>
       {pageSize && totalPages > 1 ? (
         <div className="flex items-center justify-between mt-2 text-xs text-text-secondary">
-          <span>共 {rows.length} 条，第 {page + 1}/{totalPages} 页</span>
+          <span>共 {filtered.length} 条，第 {page + 1}/{totalPages} 页</span>
           <div className="flex gap-1">
             <button disabled={page === 0} onClick={() => setPage(page - 1)} className="px-2 py-0.5 border border-border rounded disabled:opacity-40 cursor-pointer">上一页</button>
             <button disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)} className="px-2 py-0.5 border border-border rounded disabled:opacity-40 cursor-pointer">下一页</button>

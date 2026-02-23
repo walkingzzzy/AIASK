@@ -1,13 +1,15 @@
 'use client';
 
 import { FormEvent, ReactNode, useMemo, useState } from 'react';
-import { PageContainer, SectionCard, TabBar, DataTable, StockCodeInput } from '@/components/ui';
-import { useApiMutation } from '@/hooks/use-api-mutation';
+import { PageContainer, SectionCard, TabBar, DataTable, StockCodeInput, KpiCard, KpiGrid } from '@/components/ui';
+import { BarChart } from '@/components/charts';
+import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState } from '@/components/status-state';
-import { extractArray } from '@/lib/data-utils';
+import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { fmt, cacheText, type CacheMeta } from '@/lib/api';
+import { StockLink } from '@/components/stock-link';
 
 type ResearchItem = { title: string; date: string; source: string; summary: string };
 type ResearchData = {
@@ -47,11 +49,12 @@ export default function ResearchPage() {
   const [endDate, setEndDate] = useState('');
   const [keyword, setKeyword] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
-  const [updatedAt, setUpdatedAt] = useState('');
+  const [listPath, setListPath] = useState<string | null>(null);
 
-  const listMut = useApiMutation<ResearchData>();
+  const listQ = useApiQuery<ResearchData>(listPath);
   const [newsTab, setNewsTab] = useState<NewsTab>('stock-news');
-  const newsMut = useApiMutation<unknown>();
+  const [newsPath, setNewsPath] = useState<string | null>(null);
+  const newsQ = useApiQuery<unknown>(newsPath);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -68,10 +71,9 @@ export default function ResearchPage() {
     } else {
       params.set('days', range);
     }
-    try {
-      await listMut.triggerAsync(`/research/list?${params.toString()}`);
-      setUpdatedAt(new Date().toLocaleString('zh-CN'));
-    } catch { /* error handled by mutation */ }
+    const newPath = `/research/list?${params.toString()}`;
+    if (newPath === listPath) listQ.refetch();
+    else setListPath(newPath);
   }
 
   function fetchNews(type: string) {
@@ -87,15 +89,17 @@ export default function ResearchPage() {
       'macro': '/research/macro',
       'reports': `/research/reports?code=${encodeURIComponent(c)}`,
     };
-    newsMut.trigger(paths[type] ?? `/research/reports?code=${encodeURIComponent(c)}`);
+    const newPath = paths[type] ?? `/research/reports?code=${encodeURIComponent(c)}`;
+    if (newPath === newsPath) newsQ.refetch();
+    else setNewsPath(newPath);
   }
 
-  const reports = useMemo(() => listMut.data?.reports ?? [], [listMut.data]);
-  const notices = useMemo(() => listMut.data?.notices ?? [], [listMut.data]);
-  const freshness = listMut.data?.meta?.fetchedAt ?? '';
-  const cache = listMut.data?.meta?.cache;
-  const loading = listMut.isPending;
-  const error = formError || codeError || listMut.error;
+  const reports = useMemo(() => listQ.data?.reports ?? [], [listQ.data]);
+  const notices = useMemo(() => listQ.data?.notices ?? [], [listQ.data]);
+  const freshness = listQ.data?.meta?.fetchedAt ?? '';
+  const cache = listQ.data?.meta?.cache;
+  const loading = listQ.isFetching;
+  const error = formError || codeError || listQ.error;
 
   return (
     <PageContainer narrow>
@@ -119,7 +123,7 @@ export default function ResearchPage() {
       </form>
       {error ? <ErrorState text={error} /> : null}
       <div className="mt-2 text-text-secondary">
-        更新：{updatedAt || '-'} ｜ 抓取：{freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'} ｜ 缓存：{cacheText(cache)}
+        更新：{listQ.dataUpdatedAt ? new Date(listQ.dataUpdatedAt).toLocaleString('zh-CN') : '-'} ｜ 抓取：{freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'} ｜ 缓存：{cacheText(cache)}
       </div>
 
       <section className="mt-3.5 grid grid-cols-2 gap-3">
@@ -155,15 +159,93 @@ export default function ResearchPage() {
         <h2>资讯与分析</h2>
         <TabBar tabs={NEWS_TABS} active={newsTab} onChange={setNewsTab} />
         <SectionCard tabAttached>
-          <button type="button" disabled={newsMut.isPending} onClick={() => fetchNews(newsTab)}>
-            {newsMut.isPending ? '加载中...' : '查询'}
+          <button type="button" disabled={newsQ.isFetching} onClick={() => fetchNews(newsTab)}>
+            {newsQ.isFetching ? '加载中...' : '查询'}
           </button>
-          {newsMut.error ? <ErrorState text={newsMut.error} /> : null}
-          {newsMut.data != null ? (() => {
-            const rows = extractArray(newsMut.data);
-            return rows.length
-              ? <DataTable rows={rows} maxHeight={400} onExport={() => exportCSV(rows, `research-${newsTab}`)} />
-              : <pre className="mt-2 text-xs bg-surface-alt p-2 rounded overflow-auto max-h-[300px]">{JSON.stringify(newsMut.data, null, 2)}</pre>;
+          {newsQ.error ? <ErrorState text={newsQ.error} /> : null}
+          {newsQ.data != null ? (() => {
+            const rows = extractArray(newsQ.data, 'items', 'analysts', 'reports', 'data');
+            const columnMap: Record<string, Array<{ key: string; label: string; align?: 'left' | 'right' | 'center'; render?: (v: unknown) => ReactNode }>> = {
+              'stock-news': [
+                { key: 'title', label: '标题' },
+                { key: 'date', label: '日期' },
+                { key: 'source', label: '来源' },
+              ],
+              'market-news': [
+                { key: 'title', label: '标题' },
+                { key: 'date', label: '日期' },
+                { key: 'source', label: '来源' },
+              ],
+              'analyst': [
+                { key: 'rank', label: '排名', align: 'right' as const },
+                { key: 'name', label: '分析师' },
+                { key: 'institution', label: '机构' },
+                { key: 'industry', label: '行业' },
+                { key: 'winRate', label: '胜率', align: 'right' as const, render: (v: unknown) => fmtPct(v as number) },
+              ],
+              'forecast': [
+                { key: 'date', label: '日期' },
+                { key: 'institution', label: '机构' },
+                { key: 'rating', label: '评级' },
+                { key: 'epsForecast', label: 'EPS预测', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 2) },
+                { key: 'netprofitForecast', label: '净利润预测', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
+              ],
+              'search-research': [
+                { key: 'title', label: '标题' },
+                { key: 'institution', label: '机构' },
+                { key: 'rating', label: '评级' },
+                { key: 'date', label: '日期' },
+                { key: 'stockCode', label: '代码', render: (v: unknown) => <StockLink code={String(v)} /> },
+              ],
+              'reports': [
+                { key: 'title', label: '标题' },
+                { key: 'institution', label: '机构' },
+                { key: 'author', label: '作者' },
+                { key: 'rating', label: '评级' },
+                { key: 'date', label: '日期' },
+              ],
+              'macro': [],
+            };
+            const cols = columnMap[newsTab];
+            // Analyst bar chart: top 10 by win rate
+            const analystChart = newsTab === 'analyst' && rows.length > 0
+              ? rows.slice(0, 10).map((r: Record<string, unknown>) => ({
+                  label: String(r.name ?? '').slice(0, 6),
+                  value: Number(r.winRate ?? r.win_rate ?? 0) * 100,
+                }))
+              : null;
+            // Forecast summary KPIs
+            const forecastSummary = newsTab === 'forecast' && rows.length > 0
+              ? {
+                  avgEps: rows.reduce((s: number, r: Record<string, unknown>) => s + Number(r.epsForecast ?? r.eps_forecast ?? 0), 0) / rows.length,
+                  count: rows.length,
+                  ratings: rows.reduce((m: Record<string, number>, r: Record<string, unknown>) => {
+                    const rt = String(r.rating ?? '未知');
+                    m[rt] = (m[rt] || 0) + 1;
+                    return m;
+                  }, {} as Record<string, number>),
+                }
+              : null;
+            return (
+              <>
+                {analystChart && analystChart.length > 0 && (
+                  <div className="mb-3">
+                    <h4 className="text-sm font-medium mb-1">分析师胜率 TOP10</h4>
+                    <BarChart items={analystChart} height={200} yAxisName="胜率 %" horizontal />
+                  </div>
+                )}
+                {forecastSummary && (
+                  <KpiGrid cols={3} className="mb-3">
+                    <KpiCard title="预测机构数" value={forecastSummary.count} />
+                    <KpiCard title="平均EPS预测" value={fmtNum(forecastSummary.avgEps, 2)} />
+                    <KpiCard title="评级分布" value={Object.entries(forecastSummary.ratings).map(([k, v]) => `${k}:${v}`).join(' ')} />
+                  </KpiGrid>
+                )}
+                {rows.length
+                  ? <DataTable rows={rows} columns={cols?.length ? cols : undefined} maxHeight={400} onExport={() => exportCSV(rows, `research-${newsTab}`)} />
+                  : <p className="text-text-secondary text-sm mt-2">暂无数据</p>}
+              </>
+            );
           })() : null}
         </SectionCard>
       </section>

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { clearCookies } from '@/lib/auth';
+import { clearLoggedIn } from '@/lib/auth';
+import { BFF_BASE } from '@/lib/api';
 
 type User = { id: string; username: string; role: 'admin' | 'user' };
 
@@ -14,5 +15,9 @@ export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isAuthenticated: false,
   setUser: (user) => set({ user, isAuthenticated: !!user }),
-  logout: () => { clearCookies(); set({ user: null, isAuthenticated: false }); },
+  logout: () => {
+    fetch(`${BFF_BASE}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
+    clearLoggedIn();
+    set({ user: null, isAuthenticated: false });
+  },
 }));

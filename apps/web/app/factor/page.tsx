@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, Badge } from '@/components/ui';
 import { BarChart, LineChart } from '@/components/charts';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useApiQuery } from '@/hooks/use-api-query';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
@@ -11,7 +12,8 @@ import { exportCSV } from '@/lib/export';
 export default function FactorPage() {
   const [formError, setFormError] = useState<string | null>(null);
 
-  const libMut = useApiMutation<unknown>();
+  const [libPath, setLibPath] = useState<string | null>(null);
+  const libQ = useApiQuery<unknown>(libPath);
 
   const [calcName, setCalcName] = useState('momentum');
   const [calcCodes, setCalcCodes] = useState('600519,000858');
@@ -33,14 +35,14 @@ export default function FactorPage() {
   const [robCodes, setRobCodes] = useState('600519,000858');
   const robMut = useApiMutation<unknown>();
 
-  const loading = libMut.isPending || calcMut.isPending || icMut.isPending || btMut.isPending || oosMut.isPending || robMut.isPending;
-  const error = formError || libMut.error || calcMut.error || icMut.error || btMut.error || oosMut.error || robMut.error;
+  const loading = libQ.isFetching || calcMut.isPending || icMut.isPending || btMut.isPending || oosMut.isPending || robMut.isPending;
+  const error = formError || libQ.error || calcMut.error || icMut.error || btMut.error || oosMut.error || robMut.error;
 
   function splitCodes(raw: string) {
     return raw.split(',').map((s) => s.trim());
   }
 
-  const libFactors = extractArray(libMut.data, 'factors', 'values', 'results') as Array<Record<string, unknown>>;
+  const libFactors = extractArray(libQ.data, 'factors', 'values', 'results') as Array<Record<string, unknown>>;
   const calcRows = extractArray(calcMut.data, 'factors', 'values', 'results') as Array<Record<string, unknown>>;
   const icObj = extractObject(icMut.data) as Record<string, unknown> | null;
   const icTimeSeries = extractArray(icMut.data, 'timeSeries', 'ic_series', 'series') as Array<Record<string, unknown>>;
@@ -59,10 +61,10 @@ export default function FactorPage() {
 
       <SectionCard>
         <h3 className="mt-0">因子库</h3>
-        <button type="button" disabled={loading} onClick={() => { setFormError(null); libMut.trigger('/factor/library'); }}>
+        <button type="button" disabled={loading} onClick={() => { setFormError(null); if (libPath) libQ.refetch(); else setLibPath('/factor/library'); }}>
           加载因子库
         </button>
-        {libMut.data ? (
+        {libQ.data ? (
           libFactors.length ? (
             <DataTable
               rows={libFactors}
@@ -75,8 +77,8 @@ export default function FactorPage() {
             />
           ) : (
             <DataTable
-              rows={extractArray(libMut.data) as Array<Record<string, unknown>>}
-              onExport={() => exportCSV(extractArray(libMut.data) as Array<Record<string, unknown>>, 'factor-library')}
+              rows={extractArray(libQ.data) as Array<Record<string, unknown>>}
+              onExport={() => exportCSV(extractArray(libQ.data) as Array<Record<string, unknown>>, 'factor-library')}
             />
           )
         ) : <EmptyState text="点击按钮加载因子库" />}

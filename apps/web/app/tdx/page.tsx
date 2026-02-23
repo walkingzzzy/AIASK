@@ -4,11 +4,13 @@ import { useMemo, useState } from 'react';
 import { PageContainer, SectionCard, StockCodeInput, DataTable, Badge } from '@/components/ui';
 import { ProgressBar } from '@/components/ui';
 import { LineChart } from '@/components/charts';
+import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState } from '@/components/status-state';
 import { extractArray, extractObject } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { StockLink } from '@/components/stock-link';
 
 export default function TdxPage() {
   const [formError, setFormError] = useState<string | null>(null);
@@ -30,10 +32,11 @@ export default function TdxPage() {
   const wlMut = useApiMutation<unknown>();
 
   const { code: sigCode, setCode: setSigCode, codeError: sigCodeError } = useStockCode('600519');
-  const sigMut = useApiMutation<unknown>();
+  const [sigPath, setSigPath] = useState<string | null>(null);
+  const sigQ = useApiQuery<unknown>(sigPath);
 
-  const loading = indMut.isPending || screenMut.isPending || pushMut.isPending || warnMut.isPending || wlMut.isPending || sigMut.isPending;
-  const error = formError || indMut.error || screenMut.error || pushMut.error || warnMut.error || wlMut.error || sigMut.error;
+  const loading = indMut.isPending || screenMut.isPending || pushMut.isPending || warnMut.isPending || wlMut.isPending || sigQ.isFetching;
+  const error = formError || indMut.error || screenMut.error || pushMut.error || warnMut.error || wlMut.error || sigQ.error;
 
   const indValues = useMemo(() => extractArray(indMut.data, 'values', 'indicators', 'data') as Record<string, unknown>[], [indMut.data]);
   const indHasDate = indValues.length > 0 && ('date' in indValues[0] || 'time' in indValues[0]);
@@ -43,7 +46,7 @@ export default function TdxPage() {
     return Object.keys(first).filter(k => k !== 'date' && k !== 'time' && typeof first[k] === 'number');
   }, [indValues]);
   const screenStocks = useMemo(() => extractArray(screenMut.data, 'stocks', 'results', 'data') as Record<string, unknown>[], [screenMut.data]);
-  const sigSignals = useMemo(() => extractArray(sigMut.data, 'signals', 'data') as Record<string, unknown>[], [sigMut.data]);
+  const sigSignals = useMemo(() => extractArray(sigQ.data, 'signals', 'data') as Record<string, unknown>[], [sigQ.data]);
   const pushResult = pushMut.data ? extractObject(pushMut.data) as Record<string, unknown> | null : null;
   const warnResult = warnMut.data ? extractObject(warnMut.data) as Record<string, unknown> | null : null;
   const wlResult = wlMut.data ? extractObject(wlMut.data) as Record<string, unknown> | null : null;
@@ -90,7 +93,7 @@ export default function TdxPage() {
           <DataTable
             rows={screenStocks}
             columns={[
-              { key: 'code', label: '代码', width: 100 },
+              { key: 'code', label: '代码', width: 100, render: (v: unknown, row: Record<string, unknown>) => <StockLink code={String(v)} name={String(row.name ?? '')} /> },
               { key: 'name', label: '名称', width: 120 },
               { key: 'matchScore', label: '匹配度', render: (v: unknown) => <ProgressBar value={Number(v) || 0} max={100} />, width: 200 },
             ]}
@@ -139,7 +142,7 @@ export default function TdxPage() {
           <button type="button" disabled={loading} onClick={() => {
             if (!wlName.trim() || !wlCodes.trim()) { setFormError('名称和股票代码不能为空'); return; }
             clearAndRun(() => wlMut.trigger('/tdx/create-watchlist', { method: 'POST' }, {
-              name: wlName.trim(), codes: wlCodes.split(',').map((s) => s.trim()),
+              name: wlName.trim(), stock_codes: wlCodes.split(',').map((s) => s.trim()),
             }));
           }}>创建</button>
         </div>
@@ -155,9 +158,11 @@ export default function TdxPage() {
         <h3 className="mt-0">专家信号</h3>
         <div className="flex gap-2 flex-wrap items-center">
           <StockCodeInput value={sigCode} onChange={setSigCode} error={sigCodeError} placeholder="股票代码" />
-          <button type="button" disabled={loading} onClick={() => clearAndRun(() =>
-            sigMut.trigger(`/tdx/expert-signals?code=${encodeURIComponent(sigCode.trim())}`)
-          )}>查询</button>
+          <button type="button" disabled={loading} onClick={() => clearAndRun(() => {
+            const newPath = `/tdx/expert-signals?code=${encodeURIComponent(sigCode.trim())}`;
+            if (newPath === sigPath) sigQ.refetch();
+            else setSigPath(newPath);
+          })}>查询</button>
         </div>
         {sigSignals.length > 0 && (
           <DataTable

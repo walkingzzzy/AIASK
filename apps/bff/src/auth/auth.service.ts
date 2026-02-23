@@ -1,4 +1,4 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException, ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { DbService } from '../db/db.service';
@@ -54,7 +54,7 @@ export class AuthService {
       this.logger.warn('APP_JWT_SECRET 使用默认值，请在生产环境中设置强随机密钥');
     }
 
-    const adminPassword = this.configService.get<string>('APP_ADMIN_PASSWORD', 'admin123');
+    const adminPassword = this.configService.get<string>('APP_ADMIN_PASSWORD', 'admin');
     this.users = [
       { id: 'u_admin', username: 'admin', passwordHash: this.hash(adminPassword), role: 'admin' },
       { id: 'u_demo', username: 'demo', passwordHash: this.hash('demo123'), role: 'user' },
@@ -107,6 +107,39 @@ export class AuthService {
       refreshToken,
       expiresIn: this.accessTtlSec,
     };
+  }
+
+  async register(username: string, password: string) {
+    const normalized = username.trim();
+    if (!normalized) throw new ConflictException('用户名不能为空');
+
+    if (this.dbService.enabled) {
+      const existing = await this.dbService.query<{ id: string }>(
+        `SELECT id FROM app_users WHERE username = $1 LIMIT 1`,
+        [normalized],
+      );
+      if (existing.rows.length > 0) {
+        throw new ConflictException('用户名已存在');
+      }
+      const userId = `u_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+      const passwordHash = this.hash(password);
+      await this.dbService.query(
+        `INSERT INTO app_users (id, username, password_hash, active) VALUES ($1, $2, $3, TRUE)`,
+        [userId, normalized, passwordHash],
+      );
+    } else {
+      const exists = this.users.find((u) => u.username === normalized);
+      if (exists) throw new ConflictException('用户名已存在');
+      const userId = `u_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+      this.users.push({
+        id: userId,
+        username: normalized,
+        passwordHash: this.hash(password),
+        role: 'user',
+      });
+    }
+
+    return this.login(normalized, password);
   }
 
   async refresh(refreshToken: string) {

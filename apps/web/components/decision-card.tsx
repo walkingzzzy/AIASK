@@ -15,10 +15,10 @@ type CardData = {
 };
 
 const ACTION_STYLE: Record<string, { bg: string; text: string; label: string }> = {
-  buy: { bg: 'bg-green-100', text: 'text-green-800', label: '买入' },
-  hold: { bg: 'bg-yellow-100', text: 'text-yellow-800', label: '持有' },
-  reduce: { bg: 'bg-red-100', text: 'text-red-800', label: '减仓' },
-  watch: { bg: 'bg-gray-100', text: 'text-gray-700', label: '观望' },
+  buy: { bg: 'bg-success/15', text: 'text-success', label: '买入' },
+  hold: { bg: 'bg-warning/15', text: 'text-warning', label: '持有' },
+  reduce: { bg: 'bg-danger/15', text: 'text-danger', label: '减仓' },
+  watch: { bg: 'bg-glass', text: 'text-text-secondary', label: '观望' },
 };
 
 export default function DecisionCard({ data }: { data: CardData }) {
@@ -26,10 +26,10 @@ export default function DecisionCard({ data }: { data: CardData }) {
   const pct = data.confidence != null ? `${(data.confidence * 100).toFixed(0)}%` : '-';
 
   return (
-    <div className="border border-gray-300 rounded-[10px] p-4 mt-3">
+    <div className="glass rounded-xl p-4 mt-3">
       <div className="flex gap-2.5 items-center mb-2.5">
         <span className={`${a.bg} ${a.text} px-3 py-1 rounded-md font-bold`}>{a.label}</span>
-        <span className="text-gray-500">置信度 {pct}</span>
+        <span className="text-text-muted">置信度 {pct}</span>
       </div>
       {data.summary ? <p className="my-2 font-medium">{data.summary}</p> : null}
       {data.reasons?.length ? (
@@ -39,7 +39,7 @@ export default function DecisionCard({ data }: { data: CardData }) {
         </div>
       ) : null}
       {data.execution_plan ? (
-        <div className="my-2 p-2.5 bg-gray-50 rounded-md">
+        <div className="my-2 p-2.5 glass rounded-lg">
           <b>执行计划</b>
           <div>仓位：{data.execution_plan.position ?? '-'}</div>
           {data.execution_plan.buy_zone ? <div>买入区间：{data.execution_plan.buy_zone}</div> : null}
@@ -47,21 +47,28 @@ export default function DecisionCard({ data }: { data: CardData }) {
           {data.execution_plan.take_profit?.length ? <div>止盈：{data.execution_plan.take_profit.join(' / ')}</div> : null}
         </div>
       ) : null}
+
       {data.risks?.length ? (
         <div className="my-2">
-          <b>风险提示：</b>
-          <ul className="my-1 pl-5 text-red-700">{data.risks.map((r, i) => <li key={i}>{r}</li>)}</ul>
+          <b className="text-danger">风险提示：</b>
+          <ul className="my-1 pl-5 text-sm text-text-secondary">{data.risks.map((r, i) => <li key={i}>{r}</li>)}</ul>
         </div>
       ) : null}
+
       {data.data_provenance?.length ? (
-        <details className="my-2 text-[13px] text-gray-500">
-          <summary>数据来源</summary>
-          {data.data_provenance.map((d, i) => <div key={i}>{d.source} / {d.dataset} ({d.timestamp})</div>)}
+        <details className="my-2 text-xs text-text-muted">
+          <summary className="cursor-pointer">数据溯源</summary>
+          <div className="mt-1 glass rounded-lg p-2 space-y-1">
+            {data.data_provenance.map((d, i) => (
+              <div key={i}>{d.source} / {d.dataset} — {d.timestamp}</div>
+            ))}
+          </div>
         </details>
       ) : null}
-      <div className="mt-2.5 p-2 bg-gray-100 rounded text-xs text-gray-500">
-        {data.compliance_notice || '本分析结果仅供参考，不构成投资建议。投资有风险，入市需谨慎。'}
-      </div>
+
+      {data.compliance_notice ? (
+        <div className="mt-2 text-xs glass rounded-lg p-2 text-text-muted">{data.compliance_notice}</div>
+      ) : null}
     </div>
   );
 }

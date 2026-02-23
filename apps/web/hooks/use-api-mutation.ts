@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from '@/lib/api';
+import { useToast } from '@/components/ui/toast';
 import type { Envelope } from '@aiask/shared-types';
 
 type FetchOptions = {
@@ -10,53 +10,72 @@ type FetchOptions = {
   headers?: Record<string, string>;
 };
 
+type UseApiMutationOptions<TData> = {
+  /** 成功后自动 invalidate 的 query key 列表 */
+  invalidates?: readonly (readonly unknown[] | unknown[])[];
+  /** 成功回调 */
+  onSuccess?: (data: TData) => void;
+  /** 成功时 toast 文案（传 false 禁用） */
+  successToast?: string | false;
+  /** 失败时自动 toast（默认 true） */
+  errorToast?: boolean;
+};
+
 /**
- * Wraps authedFetch + React Query useMutation.
- * Replaces the manual try/catch/finally + useState loading/error/data pattern.
- *
- * Usage:
- *   const { trigger, data, isPending, error, reset } = useApiMutation<ResponseType>();
- *   trigger('/market/quote?code=600519');
- *   trigger('/factor/calculate', { method: 'POST' }, { factor_name: 'momentum', stock_codes: ['600519'] });
+ * 写操作 hook — 基于 useMutation + authedFetch。
+ * 读请求请使用 useApiQuery。
  */
-export function useApiMutation<TData = unknown>() {
-  const [data, setData] = useState<TData | null>(null);
+export function useApiMutation<TData = unknown>(options: UseApiMutationOptions<TData> = {}) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
 
   const mutation = useMutation<TData, Error, { path: string; options?: FetchOptions; body?: unknown }>({
-    mutationFn: async ({ path, options, body }) => {
-      const method = options?.method ?? (body ? 'POST' : 'GET');
+    mutationFn: async ({ path, options: fetchOpts, body }) => {
+      const method = fetchOpts?.method ?? (body ? 'POST' : 'GET');
       const init: RequestInit = { method };
       if (body) {
-        init.headers = { 'content-type': 'application/json', ...options?.headers };
+        init.headers = { 'content-type': 'application/json', ...fetchOpts?.headers };
         init.body = JSON.stringify(body);
-      } else if (options?.headers) {
-        init.headers = options.headers;
+      } else if (fetchOpts?.headers) {
+        init.headers = fetchOpts.headers;
       }
       const resp = await authedFetch(path, init);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      if (!resp.ok) {
+        let msg = `HTTP ${resp.status}`;
+        try { const b = await resp.json(); if (b?.error?.message) msg = b.error.message; } catch {}
+        throw new Error(msg);
+      }
       const envelope = (await resp.json()) as Envelope<TData>;
       return (envelope.data ?? null) as TData;
     },
-    onSuccess: (result) => setData(result),
+    onSuccess: (result) => {
+      if (options.invalidates) {
+        options.invalidates.forEach((key) => qc.invalidateQueries({ queryKey: [...key] }));
+      }
+      if (options.successToast) toast(options.successToast, 'success');
+      options.onSuccess?.(result);
+    },
+    onError: (err) => {
+      if (options.errorToast !== false) toast(err.message || '操作失败', 'error');
+    },
   });
 
-  function trigger(path: string, options?: FetchOptions, body?: unknown) {
-    mutation.mutate({ path, options, body });
+  function trigger(path: string, fetchOpts?: FetchOptions, body?: unknown) {
+    mutation.mutate({ path, options: fetchOpts, body });
   }
 
-  function triggerAsync(path: string, options?: FetchOptions, body?: unknown) {
-    return mutation.mutateAsync({ path, options, body });
+  function triggerAsync(path: string, fetchOpts?: FetchOptions, body?: unknown) {
+    return mutation.mutateAsync({ path, options: fetchOpts, body });
   }
 
   function reset() {
-    setData(null);
     mutation.reset();
   }
 
   return {
     trigger,
     triggerAsync,
-    data,
+    data: mutation.data ?? null,
     isPending: mutation.isPending,
     error: mutation.error?.message ?? null,
     reset,

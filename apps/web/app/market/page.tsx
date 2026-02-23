@@ -1,14 +1,18 @@
 'use client';
 
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { PageContainer, TabBar, SectionCard, KpiCard, KpiGrid, DataTable, Badge } from '@/components/ui';
 import { CandlestickChart } from '@/components/charts';
+import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useStockCode } from '@/hooks/use-stock-code';
-import { authedFetch, fmt, cacheText } from '@/lib/api';
+import { useSearchParams } from 'next/navigation';
+import { fmt, cacheText } from '@/lib/api';
 import { extractArray, extractObject, fmtNum, fmtAmount, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
-import type { Envelope, CacheMeta, NormalizedQuote, NormalizedKlinePoint, NormalizedOrderBook } from '@aiask/shared-types';
+import { StockLink } from '@/components/stock-link';
+import { WatchlistButton } from '@/components/watchlist-button';
+import type { CacheMeta, NormalizedQuote, NormalizedKlinePoint, NormalizedOrderBook } from '@aiask/shared-types';
 
 type Period = 'daily' | 'weekly' | 'monthly';
 type QuoteData = { quote?: NormalizedQuote; tool?: string; meta?: CacheMeta };
@@ -27,56 +31,86 @@ const TABS = [
 ] as const;
 
 export default function MarketPage() {
+  const searchParams = useSearchParams();
+  const initialTab = (searchParams.get('tab') as MarketTab) || 'main';
+  const initialBlock = searchParams.get('block') || '';
+
   const { code, setCode, codeError, validate } = useStockCode();
   const [period, setPeriod] = useState<Period>('daily');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [quote, setQuote] = useState<QuoteData | null>(null);
-  const [kline, setKline] = useState<KlineData | null>(null);
-  const [ob, setOb] = useState<ObData | null>(null);
-  const [updatedAt, setUpdatedAt] = useState('');
-  const [activeTab, setActiveTab] = useState<MarketTab>('main');
+  const [activeTab, setActiveTab] = useState<MarketTab>(initialTab);
+  const [submittedCode, setSubmittedCode] = useState<string | null>(null);
+  const [submittedPeriod, setSubmittedPeriod] = useState<Period>('daily');
 
-  const limitUp = useApiMutation<unknown>();
-  const limitUpStats = useApiMutation<unknown>();
-  const blocks = useApiMutation<unknown>();
-  const tradeDetails = useApiMutation<unknown>();
-  const indexQuote = useApiMutation<unknown>();
-  const minuteKline = useApiMutation<unknown>();
-  const searchResult = useApiMutation<unknown>();
-  const stockList = useApiMutation<unknown>();
-  const blockStocks = useApiMutation<unknown>();
+  const quoteQ = useApiQuery<QuoteData>(submittedCode ? `/market/quote?code=${encodeURIComponent(submittedCode)}` : null);
+  const klineQ = useApiQuery<KlineData>(submittedCode ? `/market/kline?code=${encodeURIComponent(submittedCode)}&period=${submittedPeriod}` : null);
+  const obQ = useApiQuery<ObData>(submittedCode ? `/market/order-book?code=${encodeURIComponent(submittedCode)}` : null);
+
+  // Tab-level query paths (null = disabled)
+  const [limitUpPath, setLimitUpPath] = useState<string | null>(null);
+  const [limitUpStatsPath, setLimitUpStatsPath] = useState<string | null>(null);
+  const [blocksPath, setBlocksPath] = useState<string | null>(null);
+  const [tradePath, setTradePath] = useState<string | null>(null);
+  const [indexPath, setIndexPath] = useState<string | null>(null);
+  const [minutePath, setMinutePath] = useState<string | null>(null);
+  const [searchPath, setSearchPath] = useState<string | null>(null);
+  const [stockListPath, setStockListPath] = useState<string | null>(null);
+  const [blockStocksPath, setBlockStocksPath] = useState<string | null>(null);
+
+  const limitUpQ = useApiQuery<unknown>(limitUpPath);
+  const limitUpStatsQ = useApiQuery<unknown>(limitUpStatsPath);
+  const blocksQ = useApiQuery<unknown>(blocksPath);
+  const tradeQ = useApiQuery<unknown>(tradePath);
+  const indexQuoteQ = useApiQuery<unknown>(indexPath);
+  const minuteKlineQ = useApiQuery<unknown>(minutePath);
+  const searchQ = useApiQuery<unknown>(searchPath);
+  const stockListQ = useApiQuery<unknown>(stockListPath);
+  const blockStocksQ = useApiQuery<unknown>(blockStocksPath);
   const batchQuotes = useApiMutation<unknown>();
+
   const [indexCode, setIndexCode] = useState('000001');
   const [searchKeyword, setSearchKeyword] = useState('');
   const [minutePeriod, setMinutePeriod] = useState('5');
-  const [blockCode, setBlockCode] = useState('');
+  const [blockCode, setBlockCode] = useState(initialBlock);
   const [batchCodes, setBatchCodes] = useState('');
 
-  const tabPending = limitUp.isPending || blocks.isPending || tradeDetails.isPending || indexQuote.isPending || minuteKline.isPending || searchResult.isPending || stockList.isPending || blockStocks.isPending || batchQuotes.isPending || limitUpStats.isPending;
-  const tabError = limitUp.error || blocks.error || tradeDetails.error || indexQuote.error || minuteKline.error || searchResult.error || blockStocks.error || batchQuotes.error || limitUpStats.error;
+  const tabPending = limitUpQ.isFetching || blocksQ.isFetching || tradeQ.isFetching || indexQuoteQ.isFetching || minuteKlineQ.isFetching || searchQ.isFetching || stockListQ.isFetching || blockStocksQ.isFetching || batchQuotes.isPending || limitUpStatsQ.isFetching;
+  const tabError = limitUpQ.error || blocksQ.error || tradeQ.error || indexQuoteQ.error || minuteKlineQ.error || searchQ.error || blockStocksQ.error || batchQuotes.error || limitUpStatsQ.error;
 
-  async function onSubmit(e: FormEvent<HTMLFormElement>) {
+  const loading = quoteQ.isFetching || klineQ.isFetching || obQ.isFetching;
+
+  // Auto-load limit-up data when switching to that tab
+  useEffect(() => {
+    if (activeTab === 'limitup' && !limitUpPath) {
+      setLimitUpPath('/market/limit-up');
+      setLimitUpStatsPath('/market/limit-up-stats');
+    }
+  }, [activeTab, limitUpPath]);
+
+  // Auto-load blocks + constituent stocks when arriving from homepage with block param
+  useEffect(() => {
+    if (activeTab === 'blocks' && !blocksPath) {
+      setBlocksPath('/market/blocks?blockType=industry');
+      if (initialBlock) {
+        setBlockStocksPath(`/market/block-stocks?blockCode=${encodeURIComponent(initialBlock)}`);
+      }
+    }
+  }, [activeTab, blocksPath, initialBlock]);
+
+  function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!validate()) return;
     const c = code.trim();
-    setLoading(true);
-    setError(null);
-    try {
-      const [q, k, o] = await Promise.all([
-        authedFetch(`/market/quote?code=${encodeURIComponent(c)}`),
-        authedFetch(`/market/kline?code=${encodeURIComponent(c)}&period=${period}`),
-        authedFetch(`/market/order-book?code=${encodeURIComponent(c)}`),
-      ]);
-      setQuote(((await q.json()) as Envelope<QuoteData>).data ?? null);
-      setKline(((await k.json()) as Envelope<KlineData>).data ?? null);
-      setOb(((await o.json()) as Envelope<ObData>).data ?? null);
-      setUpdatedAt(new Date().toLocaleString('zh-CN'));
-    } catch (err) {
-      setQuote(null); setKline(null); setOb(null);
-      setError(err instanceof Error ? err.message : '请求失败');
-    } finally { setLoading(false); }
+    if (c === submittedCode && period === submittedPeriod) {
+      quoteQ.refetch(); klineQ.refetch(); obQ.refetch();
+    } else {
+      setSubmittedCode(c);
+      setSubmittedPeriod(period);
+    }
   }
+
+  const quote = quoteQ.data;
+  const kline = klineQ.data;
+  const ob = obQ.data;
 
   const candles = useMemo(() => kline?.kline ?? [], [kline]);
   const obView = useMemo(() => ob?.orderBook ?? { bids: [], asks: [], timestamp: null }, [ob]);
@@ -84,15 +118,15 @@ export default function MarketPage() {
     date: x.date.slice(0, 10), open: x.open, close: x.close, low: x.low, high: x.high, volume: x.volume,
   })), [candles]);
 
-  const limitUpRows = useMemo(() => extractArray(limitUp.data) as Record<string, unknown>[], [limitUp.data]);
-  const limitUpStatsObj = useMemo(() => extractObject(limitUpStats.data) as Record<string, unknown> | null, [limitUpStats.data]);
-  const blocksRows = useMemo(() => extractArray(blocks.data) as Record<string, unknown>[], [blocks.data]);
-  const blockStocksRows = useMemo(() => extractArray(blockStocks.data) as Record<string, unknown>[], [blockStocks.data]);
-  const tradeRows = useMemo(() => extractArray(tradeDetails.data) as Record<string, unknown>[], [tradeDetails.data]);
-  const indexObj = useMemo(() => extractObject(indexQuote.data) as Record<string, unknown> | null, [indexQuote.data]);
-  const minuteRows = useMemo(() => extractArray(minuteKline.data) as Record<string, unknown>[], [minuteKline.data]);
-  const searchRows = useMemo(() => extractArray(searchResult.data) as Record<string, unknown>[], [searchResult.data]);
-  const stockListRows = useMemo(() => extractArray(stockList.data) as Record<string, unknown>[], [stockList.data]);
+  const limitUpRows = useMemo(() => extractArray(limitUpQ.data) as Record<string, unknown>[], [limitUpQ.data]);
+  const limitUpStatsObj = useMemo(() => extractObject(limitUpStatsQ.data) as Record<string, unknown> | null, [limitUpStatsQ.data]);
+  const blocksRows = useMemo(() => extractArray(blocksQ.data) as Record<string, unknown>[], [blocksQ.data]);
+  const blockStocksRows = useMemo(() => extractArray(blockStocksQ.data) as Record<string, unknown>[], [blockStocksQ.data]);
+  const tradeRows = useMemo(() => extractArray(tradeQ.data) as Record<string, unknown>[], [tradeQ.data]);
+  const indexObj = useMemo(() => extractObject(indexQuoteQ.data) as Record<string, unknown> | null, [indexQuoteQ.data]);
+  const minuteRows = useMemo(() => extractArray(minuteKlineQ.data) as Record<string, unknown>[], [minuteKlineQ.data]);
+  const searchRows = useMemo(() => extractArray(searchQ.data) as Record<string, unknown>[], [searchQ.data]);
+  const stockListRows = useMemo(() => extractArray(stockListQ.data) as Record<string, unknown>[], [stockListQ.data]);
   const batchRows = useMemo(() => extractArray(batchQuotes.data) as Record<string, unknown>[], [batchQuotes.data]);
 
   const quoteCache = quote?.meta?.cache;
@@ -125,16 +159,16 @@ export default function MarketPage() {
     <PageContainer>
       <h1>行情看板</h1>
       <form onSubmit={onSubmit} className="flex gap-2.5 flex-wrap items-center">
-        <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} placeholder="如 600519" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
-        {codeError ? <span className="text-error text-xs">{codeError}</span> : null}
-        <select value={period} onChange={(e) => setPeriod(e.target.value as Period)} className="border border-border rounded px-2 py-1 text-sm">
+        <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} placeholder="如 600519" aria-label="股票代码" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
+        {codeError ? <span className="text-error text-xs" role="alert">{codeError}</span> : null}
+        <select value={period} onChange={(e) => setPeriod(e.target.value as Period)} aria-label="K线周期" className="border border-border rounded px-2 py-1 text-sm">
           <option value="daily">日线</option><option value="weekly">周线</option><option value="monthly">月线</option>
         </select>
         <button type="submit" disabled={loading} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{loading ? '加载中...' : '查询'}</button>
       </form>
-      {error ? <p className="text-error">降级提示：{error}</p> : null}
+      {quoteQ.error ? <p className="text-error">降级提示：{quoteQ.error}</p> : null}
       <div className="mt-2.5 text-text-secondary text-sm">
-        更新：{updatedAt || '-'} ｜ 抓取：{freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'}
+        更新：{quoteQ.dataUpdatedAt ? new Date(quoteQ.dataUpdatedAt).toLocaleString('zh-CN') : '-'} ｜ 抓取：{freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'}
         <br />行情缓存：{cacheText(quoteCache)} ｜ K线缓存：{cacheText(klineCache)} ｜ 盘口缓存：{cacheText(obCache)}
       </div>
 
@@ -155,7 +189,7 @@ export default function MarketPage() {
         <h3 className="mt-0">实时行情摘要</h3>
         {quote?.quote ? (
           <div className="grid grid-cols-3 gap-2 text-sm">
-            <div>代码：{fmt(quote.quote.code)}</div><div>名称：{fmt(quote.quote.name)}</div><div>现价：{fmt(quote.quote.price)}</div>
+            <div>代码：<StockLink code={String(quote.quote.code)} name={String(quote.quote.name ?? '')} /></div><div>名称：{fmt(quote.quote.name)}</div><div>现价：{fmt(quote.quote.price)}</div>
             <div>涨跌：{fmt(quote.quote.change)}</div><div>涨跌幅：{fmt(quote.quote.changePercent)}%</div><div>成交量：{fmt(quote.quote.volume)}</div>
             <div>成交额：{fmt(quote.quote.amount)}</div><div>最高：{fmt(quote.quote.high)}</div><div>最低：{fmt(quote.quote.low)}</div>
             <div>开盘：{fmt(quote.quote.open)}</div><div>昨收：{fmt(quote.quote.prevClose)}</div>
@@ -167,7 +201,10 @@ export default function MarketPage() {
       {tabError ? <p className="text-error text-sm mt-1">{tabError}</p> : null}
       {activeTab === 'limitup' ? (
         <SectionCard tabAttached>
-          <button type="button" disabled={tabPending} onClick={() => { limitUp.trigger('/market/limit-up'); limitUpStats.trigger('/market/limit-up-stats'); }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '加载涨停数据'}</button>
+          <button type="button" disabled={tabPending} onClick={() => {
+            if (limitUpPath) limitUpQ.refetch(); else setLimitUpPath('/market/limit-up');
+            if (limitUpStatsPath) limitUpStatsQ.refetch(); else setLimitUpStatsPath('/market/limit-up-stats');
+          }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '加载涨停数据'}</button>
           {limitUpStatsObj ? (
             <KpiGrid cols={3}>
               <KpiCard title="涨停总数" value={limitUpStatsObj.totalLimitUp as number ?? limitUpStatsObj.total as number ?? '-'} />
@@ -175,26 +212,60 @@ export default function MarketPage() {
               <KpiCard title="封板成功率" value={fmtPct(Number(limitUpStatsObj.successRate ?? limitUpStatsObj.success_rate ?? 0))} />
             </KpiGrid>
           ) : null}
-          {limitUpRows.length ? <DataTable rows={limitUpRows} maxHeight={400} onExport={() => exportCSV(limitUpRows, 'limit-up')} /> : null}
+          {limitUpRows.length ? <DataTable rows={limitUpRows} columns={[
+            { key: 'code', label: '代码', render: (v: unknown, row: Record<string, unknown>) => <StockLink code={String(v)} name={String(row.name ?? '')} /> },
+            { key: 'name', label: '名称' },
+            { key: 'price', label: '现价', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 2) },
+            { key: 'changePercent', label: '涨幅', align: 'right' as const, render: (v: unknown) => <span className={(v as number) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(v as number)}</span> },
+            { key: 'continuousDays', label: '连板', align: 'right' as const },
+            { key: 'industry', label: '行业' },
+            { key: '_watch', label: '', width: 40, render: (_: unknown, row: Record<string, unknown>) => <WatchlistButton code={String(row.code)} name={String(row.name ?? '')} /> },
+          ]} maxHeight={400} onExport={() => exportCSV(limitUpRows, 'limit-up')} /> : null}
         </SectionCard>
       ) : null}
-
       {activeTab === 'blocks' ? (
         <SectionCard tabAttached>
-          <button type="button" disabled={tabPending} onClick={() => blocks.trigger('/market/blocks?blockType=industry')} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '加载板块数据'}</button>
-          {blocksRows.length ? <DataTable rows={blocksRows} maxHeight={400} onExport={() => exportCSV(blocksRows, 'blocks')} /> : null}
+          <button type="button" disabled={tabPending} onClick={() => {
+            if (blocksPath) blocksQ.refetch(); else setBlocksPath('/market/blocks?blockType=industry');
+          }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '加载板块数据'}</button>
+          {blocksRows.length ? <DataTable rows={blocksRows} columns={[
+            { key: 'code', label: '板块代码' },
+            { key: 'name', label: '板块名称' },
+            { key: 'stockCount', label: '股票数', align: 'right' as const },
+            { key: 'avgChange', label: '平均涨幅', align: 'right' as const, render: (v: unknown) => <span className={(v as number) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(v as number)}</span> },
+            { key: 'leaderName', label: '领涨股' },
+          ]} maxHeight={400} onExport={() => exportCSV(blocksRows, 'blocks')} searchable onRowClick={(row) => {
+            const c = String(row.code ?? '');
+            if (c) {
+              setBlockCode(c);
+              const p = `/market/block-stocks?blockCode=${encodeURIComponent(c)}`;
+              if (p === blockStocksPath) blockStocksQ.refetch(); else setBlockStocksPath(p);
+            }
+          }} /> : null}
           <div className="flex gap-2 items-center mt-2">
-            <input value={blockCode} onChange={(e) => setBlockCode(e.target.value)} placeholder="板块代码" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
-            <button type="button" disabled={tabPending} onClick={() => blockStocks.trigger(`/market/block-stocks?blockCode=${encodeURIComponent(blockCode.trim())}`)} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">查看成分股</button>
+            <input value={blockCode} onChange={(e) => setBlockCode(e.target.value)} placeholder="板块代码" aria-label="板块代码" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
+            <button type="button" disabled={tabPending} onClick={() => {
+              const p = `/market/block-stocks?blockCode=${encodeURIComponent(blockCode.trim())}`;
+              if (p === blockStocksPath) blockStocksQ.refetch(); else setBlockStocksPath(p);
+            }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">查看成分股</button>
           </div>
-          {blockStocksRows.length ? <DataTable rows={blockStocksRows} maxHeight={400} onExport={() => exportCSV(blockStocksRows, 'block-stocks')} /> : null}
+          {blockStocksRows.length ? <DataTable rows={blockStocksRows} columns={[
+            { key: 'code', label: '代码', render: (v: unknown, row: Record<string, unknown>) => <StockLink code={String(v)} name={String(row.name ?? '')} /> },
+            { key: 'name', label: '名称' },
+            { key: 'price', label: '现价', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 2) },
+            { key: 'changePercent', label: '涨跌幅', align: 'right' as const, render: (v: unknown) => <span className={(v as number) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(v as number)}</span> },
+          ]} maxHeight={400} onExport={() => exportCSV(blockStocksRows, 'block-stocks')} /> : null}
         </SectionCard>
       ) : null}
       {activeTab === 'trade' ? (
         <SectionCard tabAttached>
           <div className="flex gap-2 items-center">
-            <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} placeholder="股票代码" className="w-[140px] px-2 py-1 border border-border rounded text-sm" />
-            <button type="button" disabled={tabPending} onClick={() => { if (validate()) tradeDetails.trigger(`/market/trade-details?code=${encodeURIComponent(code.trim())}`); }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '查询逐笔明细'}</button>
+            <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} placeholder="股票代码" aria-label="股票代码" className="w-[140px] px-2 py-1 border border-border rounded text-sm" />
+            <button type="button" disabled={tabPending} onClick={() => {
+              if (!validate()) return;
+              const p = `/market/trade-details?code=${encodeURIComponent(code.trim())}`;
+              if (p === tradePath) tradeQ.refetch(); else setTradePath(p);
+            }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '查询逐笔明细'}</button>
           </div>
           {tradeRows.length ? <DataTable rows={tradeRows} columns={tradeColumns} maxHeight={400} onExport={() => exportCSV(tradeRows, 'trade-details')} /> : null}
         </SectionCard>
@@ -203,8 +274,11 @@ export default function MarketPage() {
       {activeTab === 'index' ? (
         <SectionCard tabAttached>
           <div className="flex gap-2 items-center">
-            <input value={indexCode} onChange={(e) => setIndexCode(e.target.value)} placeholder="指数代码 如 000001" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
-            <button type="button" disabled={tabPending} onClick={() => indexQuote.trigger(`/market/index-quote?indexCode=${encodeURIComponent(indexCode.trim())}`)} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '查询指数行情'}</button>
+            <input value={indexCode} onChange={(e) => setIndexCode(e.target.value)} placeholder="指数代码 如 000001" aria-label="指数代码" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
+            <button type="button" disabled={tabPending} onClick={() => {
+              const p = `/market/index-quote?indexCode=${encodeURIComponent(indexCode.trim())}`;
+              if (p === indexPath) indexQuoteQ.refetch(); else setIndexPath(p);
+            }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '查询指数行情'}</button>
           </div>
           {indexObj ? (
             <KpiGrid cols={4}>
@@ -224,11 +298,15 @@ export default function MarketPage() {
       {activeTab === 'minute' ? (
         <SectionCard tabAttached>
           <div className="flex gap-2 items-center">
-            <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} placeholder="股票代码" className="w-[140px] px-2 py-1 border border-border rounded text-sm" />
-            <select value={minutePeriod} onChange={(e) => setMinutePeriod(e.target.value)} className="border border-border rounded px-2 py-1 text-sm">
+            <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} placeholder="股票代码" aria-label="股票代码" className="w-[140px] px-2 py-1 border border-border rounded text-sm" />
+            <select value={minutePeriod} onChange={(e) => setMinutePeriod(e.target.value)} aria-label="分时周期" className="border border-border rounded px-2 py-1 text-sm">
               <option value="1">1分钟</option><option value="5">5分钟</option><option value="15">15分钟</option><option value="30">30分钟</option><option value="60">60分钟</option>
             </select>
-            <button type="button" disabled={tabPending} onClick={() => { if (validate()) minuteKline.trigger(`/market/minute-kline?code=${encodeURIComponent(code.trim())}&period=${minutePeriod}`); }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '查询分时'}</button>
+            <button type="button" disabled={tabPending} onClick={() => {
+              if (!validate()) return;
+              const p = `/market/minute-kline?code=${encodeURIComponent(code.trim())}&period=${minutePeriod}`;
+              if (p === minutePath) minuteKlineQ.refetch(); else setMinutePath(p);
+            }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '查询分时'}</button>
           </div>
           {minuteCandleData.length ? <CandlestickChart data={minuteCandleData} height={360} /> : null}
         </SectionCard>
@@ -237,19 +315,43 @@ export default function MarketPage() {
       {activeTab === 'search' ? (
         <SectionCard tabAttached>
           <div className="flex gap-2 items-center">
-            <input value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)} placeholder="搜索股票" className="w-[200px] px-2 py-1 border border-border rounded text-sm" />
-            <button type="button" disabled={tabPending} onClick={() => searchResult.trigger(`/market/search?keyword=${encodeURIComponent(searchKeyword.trim())}`)} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '搜索中...' : '搜索'}</button>
+            <input value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)} placeholder="搜索股票" aria-label="搜索关键词" className="w-[200px] px-2 py-1 border border-border rounded text-sm" />
+            <button type="button" disabled={tabPending} onClick={() => {
+              const p = `/market/search?keyword=${encodeURIComponent(searchKeyword.trim())}`;
+              if (p === searchPath) searchQ.refetch(); else setSearchPath(p);
+            }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '搜索中...' : '搜索'}</button>
           </div>
-          {searchRows.length ? <DataTable rows={searchRows} maxHeight={300} onExport={() => exportCSV(searchRows, 'search-results')} /> : null}
+          {searchRows.length ? <DataTable rows={searchRows} columns={[
+            { key: 'code', label: '代码', render: (v: unknown, row: Record<string, unknown>) => <StockLink code={String(v)} name={String(row.name ?? '')} /> },
+            { key: 'name', label: '名称' },
+            { key: 'industry', label: '行业' },
+            { key: '_watch', label: '', width: 40, sortable: false, render: (_: unknown, row: Record<string, unknown>) => <WatchlistButton code={String(row.code)} name={String(row.name ?? '')} /> },
+          ]} maxHeight={300} onExport={() => exportCSV(searchRows, 'search-results')} searchable /> : null}
           <div className="flex gap-2 items-center mt-3">
-            <button type="button" disabled={tabPending} onClick={() => stockList.trigger('/market/stock-list')} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">加载全部股票列表</button>
+            <button type="button" disabled={tabPending} onClick={() => {
+              if (stockListPath) stockListQ.refetch(); else setStockListPath('/market/stock-list');
+            }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">加载全部股票列表</button>
           </div>
-          {stockListRows.length ? <DataTable rows={stockListRows} maxHeight={300} onExport={() => exportCSV(stockListRows, 'stock-list')} /> : null}
+          {stockListRows.length ? <DataTable rows={stockListRows} columns={[
+            { key: 'code', label: '代码', render: (v: unknown, row: Record<string, unknown>) => <StockLink code={String(v)} name={String(row.name ?? '')} /> },
+            { key: 'name', label: '名称' },
+            { key: '_watch', label: '', width: 40, sortable: false, render: (_: unknown, row: Record<string, unknown>) => <WatchlistButton code={String(row.code)} name={String(row.name ?? '')} /> },
+          ]} maxHeight={300} onExport={() => exportCSV(stockListRows, 'stock-list')} searchable pageSize={50} /> : null}
           <div className="flex gap-2 items-center mt-3">
-            <input value={batchCodes} onChange={(e) => setBatchCodes(e.target.value)} placeholder="批量代码，逗号分隔" className="w-[300px] px-2 py-1 border border-border rounded text-sm" />
+            <input value={batchCodes} onChange={(e) => setBatchCodes(e.target.value)} placeholder="批量代码，逗号分隔" aria-label="批量股票代码" className="w-[300px] px-2 py-1 border border-border rounded text-sm" />
             <button type="button" disabled={tabPending} onClick={() => batchQuotes.trigger('/market/batch-quotes', { method: 'POST' }, { codes: batchCodes.split(',').map((s) => s.trim()) })} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">批量行情</button>
           </div>
-          {batchRows.length ? <DataTable rows={batchRows} maxHeight={300} onExport={() => exportCSV(batchRows, 'batch-quotes')} /> : null}
+          {batchRows.length ? <DataTable rows={batchRows} columns={[
+            { key: 'code', label: '代码', render: (v: unknown, row: Record<string, unknown>) => <StockLink code={String(v)} name={String(row.name ?? '')} /> },
+            { key: 'name', label: '名称' },
+            { key: 'price', label: '现价', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 2) },
+            { key: 'changePercent', label: '涨跌幅', align: 'right' as const, render: (v: unknown) => <span className={(v as number) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(v as number)}</span> },
+            { key: 'volume', label: '成交量', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 0) },
+            { key: 'amount', label: '成交额', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
+            { key: 'high', label: '最高', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 2) },
+            { key: 'low', label: '最低', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 2) },
+            { key: '_watch', label: '', width: 40, sortable: false, render: (_: unknown, row: Record<string, unknown>) => <WatchlistButton code={String(row.code)} name={String(row.name ?? '')} /> },
+          ]} maxHeight={300} onExport={() => exportCSV(batchRows, 'batch-quotes')} /> : null}
         </SectionCard>
       ) : null}
     </PageContainer>

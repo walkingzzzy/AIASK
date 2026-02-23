@@ -13,7 +13,7 @@ export function KpiCard({
 }) {
   const displayValue = value == null || value === '' ? '-' : String(value);
   return (
-    <div className={`border border-border rounded-lg p-3 ${className}`}>
+    <div className={`glass glass-hover rounded-xl p-3 transition-transform hover:scale-[1.02] ${className}`}>
       <div className="text-text-secondary text-xs mb-1">{title}</div>
       <div className="text-xl font-bold">
         {displayValue}

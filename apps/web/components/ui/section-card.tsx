@@ -9,8 +9,8 @@ export function SectionCard({
 }) {
   return (
     <section
-      className={`border border-border p-3 ${
-        tabAttached ? 'rounded-b-[8px]' : 'rounded-[8px] mt-3'
+      className={`glass glass-hover p-3 ${
+        tabAttached ? 'rounded-b-[12px]' : 'rounded-[12px] mt-3'
       } ${className}`}
     >
       {children}

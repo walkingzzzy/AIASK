@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react';
 import { PageContainer, TabBar, SectionCard, StockCodeInput, Badge, DataTable } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { LineChart, COLORS } from '@/components/charts';
@@ -24,7 +25,9 @@ export default function TechnicalPage() {
   const [period, setPeriod] = useState('daily');
   const [limit, setLimit] = useState('100');
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>(['MA', 'RSI', 'MACD']);
-  const { trigger, data, isPending, error, reset } = useApiMutation<unknown>();
+  const [availablePath, setAvailablePath] = useState<string | null>(null);
+  const availableQ = useApiQuery<unknown>(availablePath);
+  const { trigger, data: mutData, isPending: mutPending, error: mutError, reset } = useApiMutation<unknown>();
 
   function toggleIndicator(ind: string) {
     setSelectedIndicators((prev) =>
@@ -34,7 +37,7 @@ export default function TechnicalPage() {
 
   function submit() {
     if (tab === 'available') {
-      trigger('/technical/available-patterns');
+      if (availablePath) availableQ.refetch(); else setAvailablePath('/technical/available-patterns');
     } else {
       if (!validate()) return;
       const endpoint = tab === 'indicators' ? '/technical/indicators' : '/technical/patterns';
@@ -43,6 +46,10 @@ export default function TechnicalPage() {
       trigger(endpoint, { method: 'POST' }, body);
     }
   }
+
+  const data = tab === 'available' ? availableQ.data : mutData;
+  const isPending = availableQ.isFetching || mutPending;
+  const error = availableQ.error || mutError;
 
   const rows = useMemo(() => {
     if (!data) return [];

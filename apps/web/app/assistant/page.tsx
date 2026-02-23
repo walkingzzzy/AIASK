@@ -54,7 +54,7 @@ export default function AssistantPage() {
         <>
           <DecisionCard data={result as Record<string, unknown>} />
           <details className="mt-3">
-            <summary className="cursor-pointer text-gray-500">查看详细数据</summary>
+            <summary className="cursor-pointer text-text-muted">查看详细数据</summary>
             {(() => {
               const rows = extractArray(result);
               return rows.length
@@ -64,7 +64,7 @@ export default function AssistantPage() {
           </details>
         </>
       ) : null}
-      <div className="fixed bottom-0 left-0 right-0 bg-gray-100 px-4 py-2.5 text-center text-xs text-gray-500 border-t border-gray-200">
+      <div className="fixed bottom-0 left-0 right-0 glass px-4 py-2.5 text-center text-xs text-text-muted border-t border-glass-border">
         本分析结果仅供参考，不构成投资建议。投资有风险，入市需谨慎。
       </div>
     </PageContainer>

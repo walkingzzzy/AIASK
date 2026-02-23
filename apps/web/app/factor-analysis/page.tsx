@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { PageContainer, SectionCard, StockCodeInput, KpiCard, KpiGrid } from '@/components/ui';
 import { LineChart, BarChart } from '@/components/charts';
+import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState, LoadingState } from '@/components/status-state';
@@ -25,31 +26,33 @@ type DecayResponse = {
 };
 
 export default function FactorAnalysisPage() {
-  const libraryApi = useApiMutation<LibraryResponse>();
+  const [libraryLoaded, setLibraryLoaded] = useState(false);
+  const libraryQ = useApiQuery<LibraryResponse>(libraryLoaded ? '/factor/library' : null);
   const icApi = useApiMutation<IcResponse>();
   const btApi = useApiMutation<BacktestResponse>();
-  const icHistoryApi = useApiMutation<IcHistoryResponse>();
-  const decayApi = useApiMutation<DecayResponse>();
+  const [icHistoryPath, setIcHistoryPath] = useState<string | null>(null);
+  const [decayPath, setDecayPath] = useState<string | null>(null);
+  const icHistoryQ = useApiQuery<IcHistoryResponse>(icHistoryPath);
+  const decayQ = useApiQuery<DecayResponse>(decayPath);
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
   const [factor, setFactor] = useState('momentum');
-  const [loaded, setLoaded] = useState(false);
 
   function loadLibrary() {
-    if (!loaded) { libraryApi.trigger('/factor/library'); setLoaded(true); }
+    if (!libraryLoaded) setLibraryLoaded(true);
   }
 
   const factors = useMemo(() => {
-    const raw = libraryApi.data?.data?.factors ?? libraryApi.data?.data ?? [];
+    const raw = libraryQ.data?.data?.factors ?? libraryQ.data?.data ?? [];
     return Array.isArray(raw) ? raw as FactorItem[] : [];
-  }, [libraryApi.data]);
+  }, [libraryQ.data]);
 
   function runAnalysis() {
     if (!validate()) return;
     const body = { factor_name: factor, stock_codes: [trimmedCode] };
     icApi.trigger('/factor/ic', { method: 'POST' }, body);
     btApi.trigger('/factor/backtest', { method: 'POST' }, body);
-    icHistoryApi.trigger(`/factor/ic-history?factor_name=${encodeURIComponent(factor)}&period=20&limit=60`);
-    decayApi.trigger(`/factor/decay?factor_name=${encodeURIComponent(factor)}&period=20&limit=60`);
+    setIcHistoryPath(`/factor/ic-history?factor_name=${encodeURIComponent(factor)}&period=20&limit=60`);
+    setDecayPath(`/factor/decay?factor_name=${encodeURIComponent(factor)}&period=20&limit=60`);
   }
 
   const ic = icApi.data?.data;
@@ -61,7 +64,7 @@ export default function FactorAnalysisPage() {
   }, [groupReturns]);
 
   const icHistory = useMemo(() => {
-    const raw = icHistoryApi.data?.data?.history ?? icHistoryApi.data?.data ?? [];
+    const raw = icHistoryQ.data?.data?.history ?? icHistoryQ.data?.data ?? [];
     const list = Array.isArray(raw) ? raw as IcHistoryItem[] : [];
     if (!list.length) return null;
     const sorted = [...list].sort((a, b) => a.date.localeCompare(b.date));
@@ -70,13 +73,13 @@ export default function FactorAnalysisPage() {
       ic: sorted.map((r) => Number(r.ic_value ?? 0)),
       rankIc: sorted.map((r) => Number(r.rank_ic ?? 0)),
     };
-  }, [icHistoryApi.data]);
+  }, [icHistoryQ.data]);
 
   const decayView = useMemo(() => {
-    const raw = decayApi.data?.data?.decay_curve ?? decayApi.data?.data ?? [];
+    const raw = decayQ.data?.data?.decay_curve ?? decayQ.data?.data ?? [];
     const curve = Array.isArray(raw) ? raw as DecayPoint[] : [];
-    const halfLifeRaw = decayApi.data?.data?.half_life;
-    const sampleCountRaw = decayApi.data?.data?.sample_count;
+    const halfLifeRaw = decayQ.data?.data?.half_life;
+    const sampleCountRaw = decayQ.data?.data?.sample_count;
     if (!curve.length && halfLifeRaw == null && sampleCountRaw == null) return null;
     return {
       halfLife: typeof halfLifeRaw === 'number' ? halfLifeRaw : null,
@@ -84,10 +87,10 @@ export default function FactorAnalysisPage() {
       dates: curve.map((p) => p.date),
       values: curve.map((p) => Number(p.value ?? 0)),
     };
-  }, [decayApi.data]);
+  }, [decayQ.data]);
 
-  const loading = icApi.isPending || btApi.isPending || icHistoryApi.isPending || decayApi.isPending;
-  const error = icApi.error || btApi.error || icHistoryApi.error || decayApi.error;
+  const loading = icApi.isPending || btApi.isPending || icHistoryQ.isFetching || decayQ.isFetching;
+  const error = icApi.error || btApi.error || icHistoryQ.error || decayQ.error;
 
   return (
     <PageContainer>
@@ -159,10 +162,10 @@ export default function FactorAnalysisPage() {
         <SectionCard className="mt-4 p-3">
           <h3 className="mt-0">因子分组回测收益</h3>
           <BarChart
-            categories={groupBars.cats}
-            series={[{ name: '组收益', data: groupBars.vals, color: '#6366f1' }]}
+            items={groupBars.cats.map((cat, i) => ({ label: cat, value: groupBars.vals[i] }))}
             height={280}
             yAxisName="收益率"
+            colorByValue
           />
         </SectionCard>
       )}

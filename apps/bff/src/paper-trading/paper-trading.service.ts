@@ -11,15 +11,20 @@ export class PaperTradingService {
         action,
         kwargs: JSON.stringify(params),
       });
-      if (result && typeof result === 'object' && 'data' in result) {
-        return (result as Record<string, unknown>).data;
+      if (result && typeof result === 'object') {
+        const obj = result as Record<string, unknown>;
+        if (obj.success === false) {
+          throw new Error(String(obj.error || obj.message || `${action} 操作失败`));
+        }
+        if ('data' in obj) return obj.data;
       }
       return result;
     } catch (error) {
+      if (error instanceof BadGatewayException) throw error;
       throw new BadGatewayException({
         success: false,
         message: `调用 paper_trading_manager.${action} 失败`,
-        detail: String(error),
+        detail: String(error instanceof Error ? error.message : error),
       });
     }
   }

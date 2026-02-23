@@ -2,7 +2,8 @@
 
 import { PageContainer, SectionCard, StockCodeInput, KpiCard, KpiGrid, DataTable, Badge } from '@/components/ui';
 import { GaugeChart, BarChart, LineChart, COLORS } from '@/components/charts';
-import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useState } from 'react';
+import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState, LoadingState, EmptyState } from '@/components/status-state';
 import { extractArray, extractObject, fmtNum } from '@/lib/data-utils';
@@ -10,19 +11,24 @@ import { exportCSV } from '@/lib/export';
 
 export default function SentimentPage() {
   const { code, setCode, codeError, validate } = useStockCode();
-  const stockSentiment = useApiMutation<unknown>();
-  const fearGreed = useApiMutation<unknown>();
 
-  const isPending = stockSentiment.isPending || fearGreed.isPending;
-  const error = stockSentiment.error || fearGreed.error;
+  const [stockSentimentPath, setStockSentimentPath] = useState<string | null>(null);
+  const stockSentimentQ = useApiQuery<unknown>(stockSentimentPath);
+
+  const [fearGreedPath, setFearGreedPath] = useState<string | null>(null);
+  const fearGreedQ = useApiQuery<unknown>(fearGreedPath);
+
+  const isPending = stockSentimentQ.isFetching || fearGreedQ.isFetching;
+  const error = stockSentimentQ.error || fearGreedQ.error;
 
   function fetchStockSentiment() {
     if (!validate()) return;
-    stockSentiment.trigger(`/sentiment/stock?code=${encodeURIComponent(code.trim())}`);
+    const p = `/sentiment/stock?code=${encodeURIComponent(code.trim())}`;
+    if (p === stockSentimentPath) stockSentimentQ.refetch(); else setStockSentimentPath(p);
   }
 
   function fetchFearGreed() {
-    fearGreed.trigger('/sentiment/fear-greed');
+    if (fearGreedPath) fearGreedQ.refetch(); else setFearGreedPath('/sentiment/fear-greed');
   }
 
   return (
@@ -44,8 +50,8 @@ export default function SentimentPage() {
             分析情绪
           </button>
         </div>
-        {stockSentiment.data ? (() => {
-          const obj = extractObject(stockSentiment.data);
+        {stockSentimentQ.data ? (() => {
+          const obj = extractObject(stockSentimentQ.data);
           const score = (obj.score as number) ?? (obj.sentiment_score as number) ?? null;
           const positive = (obj.positive as number) ?? (obj.positive_count as number) ?? null;
           const negative = (obj.negative as number) ?? (obj.negative_count as number) ?? null;
@@ -87,7 +93,7 @@ export default function SentimentPage() {
                 />
               )}
               {score == null && keywords.length === 0 && news.length === 0 && (
-                <DataTable rows={extractArray(stockSentiment.data)} onExport={() => exportCSV(extractArray(stockSentiment.data) as Record<string, unknown>[], '个股情绪')} />
+                <DataTable rows={extractArray(stockSentimentQ.data)} onExport={() => exportCSV(extractArray(stockSentimentQ.data) as Record<string, unknown>[], '个股情绪')} />
               )}
             </>
           );
@@ -104,8 +110,8 @@ export default function SentimentPage() {
         >
           查询恐贪指数
         </button>
-        {fearGreed.data ? (() => {
-          const obj = extractObject(fearGreed.data);
+        {fearGreedQ.data ? (() => {
+          const obj = extractObject(fearGreedQ.data);
           const indexValue = (obj.index as number) ?? (obj.value as number) ?? (obj.fear_greed_index as number) ?? null;
           const components = extractArray(obj, 'components', 'factors', 'scores');
           const history = extractArray(obj, 'history', 'trend', 'historical');
@@ -152,7 +158,7 @@ export default function SentimentPage() {
                 />
               )}
               {indexValue == null && components.length === 0 && history.length === 0 && (
-                <DataTable rows={extractArray(fearGreed.data)} onExport={() => exportCSV(extractArray(fearGreed.data) as Record<string, unknown>[], '恐贪指数')} />
+                <DataTable rows={extractArray(fearGreedQ.data)} onExport={() => exportCSV(extractArray(fearGreedQ.data) as Record<string, unknown>[], '恐贪指数')} />
               )}
             </>
           );

@@ -70,7 +70,7 @@ export default function ChatPage() {
 
   return (
     <main className="flex flex-col h-full font-sans">
-      <div className="px-5 py-3 border-b border-gray-200 flex items-center justify-between">
+      <div className="px-5 py-3 border-b border-glass-border flex items-center justify-between">
         <h2 className="m-0 text-lg">AI 对话</h2>
         <div className="flex gap-2">
           <button type="button" onClick={clearMessages} className="cursor-pointer px-3 py-1">清空</button>
@@ -79,7 +79,7 @@ export default function ChatPage() {
       </div>
       <div className="flex-1 overflow-auto px-5 py-4">
         {!messages.length ? (
-          <div className="text-center text-gray-400 mt-20">
+          <div className="text-center text-text-muted mt-20">
             <p className="text-base">你好，我是 AI 股票分析助手</p>
             <p className="text-[13px]">可以问我任何关于股票行情、基本面、技术面的问题</p>
           </div>
@@ -87,19 +87,19 @@ export default function ChatPage() {
         {messages.map((m) => <ChatMessage key={m.id} msg={m} />)}
         <div ref={bottomRef} />
       </div>
-      <div className="px-5 py-3 border-t border-gray-200 flex gap-2">
+      <div className="px-5 py-3 border-t border-glass-border flex gap-2">
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
           placeholder={hasConfig ? '输入你的问题...' : '请先点击右上角设置配置 LLM'}
           disabled={!hasConfig}
-          className="flex-1 px-3 py-2 rounded-md border border-gray-300 text-sm"
+          className="flex-1 px-3 py-2 rounded-md border border-glass-border text-sm"
         />
         {streaming ? (
-          <button type="button" onClick={stop} className="px-4 py-2 cursor-pointer bg-red-600 text-white border-none rounded-md">停止</button>
+          <button type="button" onClick={stop} className="px-4 py-2 cursor-pointer bg-danger text-white border-none rounded-md">停止</button>
         ) : (
-          <button type="button" onClick={send} disabled={!hasConfig || !input.trim()} className="px-4 py-2 cursor-pointer bg-blue-600 text-white border-none rounded-md">发送</button>
+          <button type="button" onClick={send} disabled={!hasConfig || !input.trim()} className="px-4 py-2 cursor-pointer bg-primary text-white border-none rounded-md">发送</button>
         )}
       </div>
       {showConfig ? <ChatConfigModal onClose={() => setShowConfig(false)} /> : null}

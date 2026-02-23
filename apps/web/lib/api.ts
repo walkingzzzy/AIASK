@@ -1,18 +1,28 @@
-import { ensureAccessToken, clearCookies, redirectToLogin } from './auth';
+import { refreshAuth, clearLoggedIn, redirectToLogin } from './auth';
 import type { CacheMeta } from '@aiask/shared-types';
 
 export type { CacheMeta, Envelope } from '@aiask/shared-types';
 
-export const BFF_BASE = process.env.NEXT_PUBLIC_BFF_BASE_URL ?? 'http://127.0.0.1:3001/api';
+export const BFF_BASE = process.env.NEXT_PUBLIC_BFF_BASE_URL ?? 'http://localhost:3001/api';
 
-/** Authenticated fetch wrapper — handles token refresh + 401 redirect */
+/** Authenticated fetch wrapper — relies on HttpOnly cookies, handles 401 auto-refresh */
 export async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
-  const token = await ensureAccessToken();
-  if (!token) { clearCookies(); redirectToLogin(); throw new Error('未登录'); }
-  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  const headers: Record<string, string> = {};
   if (init?.headers) Object.assign(headers, init.headers);
-  const resp = await fetch(`${BFF_BASE}${path}`, { ...init, headers, cache: 'no-store' });
-  if (resp.status === 401) { clearCookies(); redirectToLogin(); throw new Error('登录已过期'); }
+  const resp = await fetch(`${BFF_BASE}${path}`, {
+    ...init, headers, credentials: 'include', cache: 'no-store',
+  });
+  if (resp.status === 401) {
+    const refreshed = await refreshAuth();
+    if (refreshed) {
+      return fetch(`${BFF_BASE}${path}`, {
+        ...init, headers, credentials: 'include', cache: 'no-store',
+      });
+    }
+    clearLoggedIn();
+    redirectToLogin();
+    throw new Error('登录已过期');
+  }
   return resp;
 }
 

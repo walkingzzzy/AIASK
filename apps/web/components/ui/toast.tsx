@@ -14,10 +14,10 @@ export function useToast() {
 }
 
 const TYPE_CLASSES: Record<ToastType, string> = {
-  success: 'bg-emerald-600',
-  error: 'bg-red-600',
-  warning: 'bg-amber-500',
-  info: 'bg-blue-600',
+  success: 'bg-success/80 backdrop-blur-md',
+  error: 'bg-danger/80 backdrop-blur-md',
+  warning: 'bg-warning/80 backdrop-blur-md',
+  info: 'bg-primary/80 backdrop-blur-md',
 };
 
 let nextId = 0;
@@ -36,7 +36,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
         {items.map((t) => (
-          <div key={t.id} className={`${TYPE_CLASSES[t.type]} text-white px-4 py-2 rounded-lg shadow-lg text-sm animate-[fadeIn_0.2s]`}>
+          <div key={t.id} className={`${TYPE_CLASSES[t.type]} text-white px-4 py-2 rounded-xl shadow-lg text-sm border border-white/20 animate-[fadeIn_0.2s]`}>
             {t.message}
           </div>
         ))}

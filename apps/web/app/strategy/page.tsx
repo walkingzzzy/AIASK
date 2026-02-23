@@ -3,6 +3,7 @@
 import { FormEvent, useMemo, useState } from 'react';
 import { PageContainer, SectionCard, StockCodeInput, DataTable, KpiCard, KpiGrid } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
@@ -23,22 +24,30 @@ export default function StrategyPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [portfolioName, setPortfolioName] = useState('我的策略组合');
   const [holdingOp, setHoldingOp] = useState<HoldingOp>({ portfolioId: '', code: '600519', shares: '100', costPrice: '1' });
+  const [backtestListPath, setBacktestListPath] = useState<string | null>(null);
+  const [portfolioListPath, setPortfolioListPath] = useState<string | null>(null);
+  const [portfolioDetailPath, setPortfolioDetailPath] = useState<string | null>(null);
 
+  // GET reads → useApiQuery
+  const metricsQ = useApiQuery<MetricsData>(
+    artifactId ? `/backtest/metrics?artifactId=${encodeURIComponent(artifactId)}` : null,
+  );
+  const backtestListQ = useApiQuery<unknown>(backtestListPath);
+  const portfolioListQ = useApiQuery<unknown>(portfolioListPath);
+  const portfolioDetailQ = useApiQuery<unknown>(portfolioDetailPath);
+
+  // POST / DELETE writes → useApiMutation
   const backtestApi = useApiMutation<BacktestResult>();
-  const metricsApi = useApiMutation<MetricsData>();
-  const backtestListApi = useApiMutation<unknown>();
-  const portfolioListApi = useApiMutation<unknown>();
-  const portfolioDetailApi = useApiMutation<unknown>();
   const optimizeApi = useApiMutation<OptData>();
   const riskAnalysisApi = useApiMutation<RiskData>();
   const stressTestApi = useApiMutation<StressData>();
   const actionApi = useApiMutation<unknown>();
 
-  const loading = backtestApi.isPending || metricsApi.isPending || backtestListApi.isPending ||
-    portfolioListApi.isPending || portfolioDetailApi.isPending || optimizeApi.isPending ||
+  const loading = backtestApi.isPending || metricsQ.isFetching || backtestListQ.isFetching ||
+    portfolioListQ.isFetching || portfolioDetailQ.isFetching || optimizeApi.isPending ||
     riskAnalysisApi.isPending || stressTestApi.isPending || actionApi.isPending;
-  const error = formError || backtestApi.error || metricsApi.error || backtestListApi.error ||
-    portfolioListApi.error || portfolioDetailApi.error || optimizeApi.error ||
+  const error = formError || backtestApi.error || metricsQ.error || backtestListQ.error ||
+    portfolioListQ.error || portfolioDetailQ.error || optimizeApi.error ||
     riskAnalysisApi.error || stressTestApi.error || actionApi.error;
   async function runBacktest(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -48,29 +57,38 @@ export default function StrategyPage() {
       const data = await backtestApi.triggerAsync('/backtest/run', { method: 'POST' }, { code: trimmedCode, strategy });
       const aid = String(data?.artifactId ?? '');
       setArtifactId(aid);
-      if (aid) metricsApi.trigger(`/backtest/metrics?artifactId=${encodeURIComponent(aid)}`);
     } catch { /* captured */ }
   }
-  function loadBacktests() { backtestListApi.trigger('/backtest/list?limit=10'); }
+  function loadBacktests() {
+    const p = '/backtest/list?limit=10';
+    if (p === backtestListPath) backtestListQ.refetch(); else setBacktestListPath(p);
+  }
   function loadMetrics(id = artifactId) {
-    if (!id.trim()) return setFormError('请先提供 artifactId');
-    metricsApi.trigger(`/backtest/metrics?artifactId=${encodeURIComponent(id.trim())}`);
+    const trimId = id.trim();
+    if (!trimId) return setFormError('请先提供 artifactId');
+    if (trimId !== artifactId) setArtifactId(trimId);
+    else metricsQ.refetch();
   }
   async function createPortfolio() {
     setFormError(null);
     if (!portfolioName.trim()) return setFormError('组合名称不能为空');
     try {
       await actionApi.triggerAsync('/portfolio/create', { method: 'POST' }, { name: portfolioName.trim(), initialCapital: '100000' });
-      portfolioListApi.trigger('/portfolio/list');
+      const p = '/portfolio/list';
+      if (p === portfolioListPath) portfolioListQ.refetch(); else setPortfolioListPath(p);
     } catch { /* captured */ }
   }
-  function loadPortfolios() { portfolioListApi.trigger('/portfolio/list'); }
+  function loadPortfolios() {
+    const p = '/portfolio/list';
+    if (p === portfolioListPath) portfolioListQ.refetch(); else setPortfolioListPath(p);
+  }
   async function addHolding() {
     setFormError(null);
     if (!/^\d+$/.test(holdingOp.portfolioId) || !/^\d{6}$/.test(holdingOp.code)) return setFormError('持仓参数不合法');
     try {
       await actionApi.triggerAsync('/portfolio/add-holding', { method: 'POST' }, holdingOp);
-      portfolioListApi.trigger('/portfolio/list');
+      const p = '/portfolio/list';
+      if (p === portfolioListPath) portfolioListQ.refetch(); else setPortfolioListPath(p);
     } catch { /* captured */ }
   }
   async function removeHolding() {
@@ -78,13 +96,15 @@ export default function StrategyPage() {
     if (!/^\d+$/.test(holdingOp.portfolioId) || !/^\d{6}$/.test(holdingOp.code)) return setFormError('持仓参数不合法');
     try {
       await actionApi.triggerAsync(`/portfolio/remove-holding?portfolioId=${encodeURIComponent(holdingOp.portfolioId)}&code=${holdingOp.code}`, { method: 'DELETE' });
-      portfolioListApi.trigger('/portfolio/list');
+      const p = '/portfolio/list';
+      if (p === portfolioListPath) portfolioListQ.refetch(); else setPortfolioListPath(p);
     } catch { /* captured */ }
   }
   function loadPortfolioDetail() {
     setFormError(null);
     if (!holdingOp.portfolioId) return setFormError('请输入 portfolioId');
-    portfolioDetailApi.trigger(`/portfolio/get?portfolioId=${encodeURIComponent(holdingOp.portfolioId)}`);
+    const p = `/portfolio/get?portfolioId=${encodeURIComponent(holdingOp.portfolioId)}`;
+    if (p === portfolioDetailPath) portfolioDetailQ.refetch(); else setPortfolioDetailPath(p);
   }
   function optimizePortfolio() {
     setFormError(null);
@@ -101,13 +121,13 @@ export default function StrategyPage() {
     if (!holdingOp.portfolioId) return setFormError('请输入 portfolioId');
     stressTestApi.trigger('/portfolio/stress-test', { method: 'POST' }, { portfolioId: holdingOp.portfolioId });
   }
-  const metrics = metricsApi.data?.metrics;
+  const metrics = metricsQ.data?.metrics;
   const optData = optimizeApi.data;
   const riskData = riskAnalysisApi.data;
   const stressData = stressTestApi.data;
 
-  const detailObj = useMemo(() => portfolioDetailApi.data ? extractObject(portfolioDetailApi.data) as Record<string, unknown> | null : null, [portfolioDetailApi.data]);
-  const detailHoldings = useMemo(() => extractArray(portfolioDetailApi.data, 'holdings', 'positions', 'data') as Record<string, unknown>[], [portfolioDetailApi.data]);
+  const detailObj = useMemo(() => portfolioDetailQ.data ? extractObject(portfolioDetailQ.data) as Record<string, unknown> | null : null, [portfolioDetailQ.data]);
+  const detailHoldings = useMemo(() => extractArray(portfolioDetailQ.data, 'holdings', 'positions', 'data') as Record<string, unknown>[], [portfolioDetailQ.data]);
 
   const optWeights = useMemo(() => {
     const w = optData?.optimization?.weights;

@@ -159,8 +159,8 @@ class KycDynamic:
                        FROM paper_trades pt
                        JOIN paper_accounts pa ON pt.account_id = pa.id
                        WHERE pa.user_id = $1
-                         AND pt.trade_time > NOW() - INTERVAL '%s days'""" % days,
-                    user_id,
+                         AND pt.trade_time > NOW() - make_interval(days => $2)""",
+                    user_id, int(days),
                 )
             return row and int(row['cnt']) >= 5
         except Exception:

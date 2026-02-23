@@ -65,6 +65,7 @@ def _build_strategy_masks(
     strategy: str,
     closes: np.ndarray,
     params: Dict[str, Any],
+    volumes: Optional[np.ndarray] = None,
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """为策略构建 entry/exit 掩码。"""
     n = len(closes)
@@ -389,7 +390,7 @@ class BacktestEngine:
             long_period = params.get('long_period', 20)
 
             if advanced_exec_enabled:
-                masks = _build_strategy_masks(strategy, closes, params)
+                masks = _build_strategy_masks(strategy, closes, params, volumes=volumes)
                 if masks is None:
                     return {'success': False, 'error': 'Insufficient data for strategy signals'}
                 entry_mask, exit_mask = masks
@@ -543,7 +544,7 @@ class BacktestEngine:
             lookback = params.get('lookback', 20)
             threshold = params.get('threshold', 0.02)
             if advanced_exec_enabled:
-                masks = _build_strategy_masks(strategy, closes, params)
+                masks = _build_strategy_masks(strategy, closes, params, volumes=volumes)
                 if masks is None:
                     return {'success': False, 'error': 'Insufficient data for strategy signals'}
                 entry_mask, exit_mask = masks
@@ -605,7 +606,7 @@ class BacktestEngine:
             oversold = params.get('oversold', 30)
             overbought = params.get('overbought', 70)
             if advanced_exec_enabled:
-                masks = _build_strategy_masks(strategy, closes, params)
+                masks = _build_strategy_masks(strategy, closes, params, volumes=volumes)
                 if masks is None:
                     return {'success': False, 'error': 'Insufficient data for strategy signals'}
                 entry_mask, exit_mask = masks

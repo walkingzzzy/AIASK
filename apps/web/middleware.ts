@@ -1,12 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 function hasSessionToken(request: NextRequest) {
-  const accessToken = request.cookies.get('access_token')?.value;
-  const refreshToken = request.cookies.get('refresh_token')?.value;
-  return Boolean(
-    (accessToken && accessToken.trim().length > 0) ||
-      (refreshToken && refreshToken.trim().length > 0),
-  );
+  return request.cookies.get('logged_in')?.value === '1';
 }
 
 const protectedPrefixes = ['/market', '/fundamental', '/research', '/alerts', '/strategy', '/risk', '/user', '/assistant', '/tdx', '/fund-flow', '/factor', '/valuation', '/technical', '/sentiment', '/search', '/data', '/chat'];
@@ -29,10 +24,17 @@ export function middleware(request: NextRequest) {
     return NextResponse.redirect(marketUrl);
   }
 
+  if (pathname.startsWith('/register') && hasSession) {
+    const marketUrl = request.nextUrl.clone();
+    marketUrl.pathname = '/market';
+    marketUrl.search = '';
+    return NextResponse.redirect(marketUrl);
+  }
+
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ['/market/:path*', '/fundamental/:path*', '/research/:path*', '/alerts/:path*', '/strategy/:path*', '/risk/:path*', '/user/:path*', '/assistant/:path*', '/tdx/:path*', '/fund-flow/:path*', '/factor/:path*', '/valuation/:path*', '/technical/:path*', '/sentiment/:path*', '/search/:path*', '/data/:path*', '/chat/:path*', '/login'],
+  matcher: ['/market/:path*', '/fundamental/:path*', '/research/:path*', '/alerts/:path*', '/strategy/:path*', '/risk/:path*', '/user/:path*', '/assistant/:path*', '/tdx/:path*', '/fund-flow/:path*', '/factor/:path*', '/valuation/:path*', '/technical/:path*', '/sentiment/:path*', '/search/:path*', '/data/:path*', '/chat/:path*', '/login', '/register'],
 };
 

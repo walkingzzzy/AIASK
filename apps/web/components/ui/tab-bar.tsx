@@ -17,10 +17,10 @@ export function TabBar<T extends string>({
         <button
           key={t.key}
           type="button"
-          className={`px-4 py-1.5 cursor-pointer border border-border rounded-t-[6px] text-sm ${
+          className={`px-4 py-1.5 cursor-pointer rounded-t-[8px] text-sm transition-all ${
             active === t.key
-              ? 'border-b-transparent bg-white font-bold'
-              : 'bg-surface-alt font-normal'
+              ? 'glass font-bold border-b-transparent'
+              : 'bg-surface-alt/50 font-normal border border-glass-border'
           }`}
           onClick={() => onChange(t.key as T)}
         >

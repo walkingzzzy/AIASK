@@ -1,11 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge, DataTable } from '@/components/ui';
 import { LineChart, BarChart } from '@/components/charts';
+import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { apiKeys } from '@/lib/query-keys';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
 import { useCartStore } from '@/store/cart-store';
@@ -63,11 +65,9 @@ type SignalsResponse = {
 
 export default function StrategyDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const detailApi = useApiMutation<DetailResponse>();
-  const subscribeApi = useApiMutation();
-  const reviewApi = useApiMutation();
-  const signalStatsApi = useApiMutation<SignalStatsResponse>();
-  const signalsApi = useApiMutation<SignalsResponse>();
+  const detailQ = useApiQuery<DetailResponse>(id ? `/strategy-market/${id}` : null);
+  const subscribeApi = useApiMutation({ invalidates: [[...apiKeys.strategy(id)]] });
+  const reviewApi = useApiMutation({ invalidates: [[...apiKeys.strategy(id)]] });
   const addToCart = useCartStore((st) => st.addStrategy);
   const user = useAuthStore((st) => st.user);
   const userId = user?.id || user?.username || 'default';
@@ -75,21 +75,17 @@ export default function StrategyDetailPage() {
   const [comment, setComment] = useState('');
   const [activeTab, setActiveTab] = useState<'overview' | 'tracking'>('overview');
 
-  useEffect(() => {
-    if (id) detailApi.trigger(`/strategy-market/${id}`);
-  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (id && activeTab === 'tracking') {
-      signalStatsApi.trigger(`/strategy-market/${id}/signal-stats`);
-      signalsApi.trigger(`/strategy-market/${id}/signals?user_id=${userId}&limit=50`);
-    }
-  }, [id, activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  const signalStatsQ = useApiQuery<SignalStatsResponse>(
+    id && activeTab === 'tracking' ? `/strategy-market/${id}/signal-stats` : null,
+  );
+  const signalsQ = useApiQuery<SignalsResponse>(
+    id && activeTab === 'tracking' ? `/strategy-market/${id}/signals?user_id=${userId}&limit=50` : null,
+  );
 
   const s = useMemo(() => {
-    const raw = detailApi.data;
+    const raw = detailQ.data;
     return (raw && typeof raw === 'object' && 'id' in raw ? raw : null) as StrategyDetail | null;
-  }, [detailApi.data]);
+  }, [detailQ.data]);
 
   const allMetrics = useMemo(() => {
     if (!s?.metrics?.length) return null;
@@ -103,18 +99,16 @@ export default function StrategyDetailPage() {
 
   async function handleSubscribe() {
     await subscribeApi.triggerAsync(`/strategy-market/${id}/subscribe`, { method: 'POST' }, { user_id: userId });
-    detailApi.trigger(`/strategy-market/${id}`);
   }
 
   async function handleReview() {
     await reviewApi.triggerAsync(`/strategy-market/${id}/review`, { method: 'POST' }, { user_id: userId, rating, comment });
     setComment('');
     setRating(5);
-    detailApi.trigger(`/strategy-market/${id}`);
   }
 
-  if (detailApi.isPending) return <PageContainer><LoadingState text="加载策略详情..." /></PageContainer>;
-  if (detailApi.error) return <PageContainer><ErrorState text={detailApi.error} /></PageContainer>;
+  if (detailQ.isPending) return <PageContainer><LoadingState text="加载策略详情..." /></PageContainer>;
+  if (detailQ.error) return <PageContainer><ErrorState text={detailQ.error} /></PageContainer>;
   if (!s) return <PageContainer><p className="text-text-secondary">策略不存在</p></PageContainer>;
 
   const statusVariant = (['published', 'listed'].includes(s.status ?? '')) ? 'success'
@@ -202,8 +196,7 @@ export default function StrategyDetailPage() {
         <SectionCard className="mt-4 p-3">
           <h3 className="mt-0">因子暴露度</h3>
           <BarChart
-            categories={factorBars.map((f) => f.name)}
-            series={[{ name: '权重', data: factorBars.map((f) => f.value), color: '#6366f1' }]}
+            items={factorBars.map((f) => ({ label: f.name, value: f.value, color: '#6366f1' }))}
             height={220}
           />
         </SectionCard>
@@ -249,16 +242,15 @@ export default function StrategyDetailPage() {
 
       {activeTab === 'tracking' && (
         <LiveTrackingPanel
-          stats={signalStatsApi.data}
-          signals={signalsApi.data}
-          statsLoading={signalStatsApi.isPending}
-          signalsLoading={signalsApi.isPending}
+          stats={signalStatsQ.data}
+          signals={signalsQ.data}
+          statsLoading={signalStatsQ.isPending}
+          signalsLoading={signalsQ.isPending}
         />
       )}
     </PageContainer>
   );
 }
-
 /* ── LiveTrackingPanel ── */
 
 function LiveTrackingPanel({

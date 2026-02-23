@@ -9,3 +9,5 @@ export { Badge } from './badge';
 export { ConfirmDialog } from './confirm-dialog';
 export { ToastProvider, useToast } from './toast';
 export { ProgressBar } from './progress-bar';
+export { QuickAction, QuickActionGrid } from './quick-action';
+export { Skeleton, SkeletonCard, SkeletonTable } from './skeleton';

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { PageContainer, TabBar, SectionCard, StockCodeInput, KpiCard, KpiGrid, DataTable, Badge } from '@/components/ui';
 import { PieChart, COLORS } from '@/components/charts';
-import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { extractArray, extractObject, fmtNum, fmtAmount } from '@/lib/data-utils';
@@ -23,22 +23,25 @@ export default function DataPage() {
   const [tab, setTab] = useState<Tab>('option');
   const { code, setCode, codeError, setCodeError, validate, trimmedCode } = useStockCode('');
   const [underlying, setUnderlying] = useState('510050');
-  const { trigger, data, isPending, error, reset } = useApiMutation<unknown>();
+  const [queryPath, setQueryPath] = useState<string | null>(null);
+  const { data, isFetching: isPending, error, refetch } = useApiQuery<unknown>(queryPath);
 
   function submit() {
+    let p: string;
     if (tab === 'option') {
-      trigger(`/data/option-chain?underlying=${encodeURIComponent(underlying.trim())}`);
+      p = `/data/option-chain?underlying=${encodeURIComponent(underlying.trim())}`;
     } else if (tab === 'calendar') {
-      trigger('/data/trading-dates?count=30');
+      p = '/data/trading-dates?count=30';
     } else if (tab === 'ipo') {
-      trigger('/data/ipo');
+      p = '/data/ipo';
     } else if (tab === 'cb') {
       if (!trimmedCode) { setCodeError('请输入可转债代码'); return; }
-      trigger(`/data/cb?code=${encodeURIComponent(trimmedCode)}`);
+      p = `/data/cb?code=${encodeURIComponent(trimmedCode)}`;
     } else {
       if (!validate()) return;
-      trigger(`/data/capital?code=${encodeURIComponent(trimmedCode)}`);
+      p = `/data/capital?code=${encodeURIComponent(trimmedCode)}`;
     }
+    if (p === queryPath) refetch(); else setQueryPath(p);
   }
 
   const optionRows = extractArray(data, 'options', 'calls', 'puts', 'chain') as Array<Record<string, unknown>>;
@@ -145,7 +148,7 @@ export default function DataPage() {
   return (
     <PageContainer>
       <h1>数据中心</h1>
-      <TabBar tabs={TABS} active={tab} onChange={(key) => { setTab(key); reset(); }} />
+      <TabBar tabs={TABS} active={tab} onChange={(key) => { setTab(key); setQueryPath(null); }} />
       <SectionCard tabAttached>
         {tab === 'option' ? (
           <div className="flex gap-2 items-center">

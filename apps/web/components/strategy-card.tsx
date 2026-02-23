@@ -49,7 +49,7 @@ export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) 
   return (
     <Link
       href={`/strategy-market/${s.id}`}
-      className="rounded-xl border border-border bg-surface-alt/80 backdrop-blur p-4 flex flex-col gap-2 hover:shadow-md transition-shadow no-underline text-inherit"
+      className="rounded-xl glass glass-hover p-4 flex flex-col gap-2 no-underline text-inherit"
     >
       <div className="flex items-center justify-between">
         <span className="font-semibold text-sm truncate">{s.name}</span>
@@ -79,7 +79,7 @@ export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) 
         </div>
       </div>
 
-      <div className="flex items-center justify-between text-xs text-text-secondary pt-1 border-t border-border">
+      <div className="flex items-center justify-between text-xs text-text-secondary pt-1 border-t border-glass-border">
         <div className="flex items-center gap-2">
           {s.avg_rating != null && <Stars rating={s.avg_rating} />}
           <span>{s.subscriber_count ?? 0} 订阅</span>

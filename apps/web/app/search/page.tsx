@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { PageContainer, TabBar, SectionCard, StockCodeInput, DataTable } from '@/components/ui';
 import { ProgressBar } from '@/components/ui';
-import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { extractArray, fmtNum } from '@/lib/data-utils';
@@ -22,18 +22,21 @@ export default function SearchPage() {
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
   const [query, setQuery] = useState('');
   const [queryError, setQueryError] = useState<string | null>(null);
-  const { trigger, data, isPending, error, reset } = useApiMutation<unknown>();
+  const [queryPath, setQueryPath] = useState<string | null>(null);
+  const { data, isFetching: isPending, error, refetch } = useApiQuery<unknown>(queryPath);
 
   function submit() {
+    let p: string;
     if (tab === 'semantic') {
       if (!query.trim()) { setQueryError('请输入搜索关键词'); return; }
       setQueryError(null);
-      trigger(`/search/semantic?query=${encodeURIComponent(query.trim())}`);
+      p = `/search/semantic?query=${encodeURIComponent(query.trim())}`;
     } else {
       if (!validate()) return;
       const endpoint = tab === 'similar' ? '/search/similar' : '/search/vector-kline';
-      trigger(`${endpoint}?code=${encodeURIComponent(trimmedCode)}`);
+      p = `${endpoint}?code=${encodeURIComponent(trimmedCode)}`;
     }
+    if (p === queryPath) refetch(); else setQueryPath(p);
   }
 
   const rows = useMemo(() => {
@@ -81,7 +84,7 @@ export default function SearchPage() {
   return (
     <PageContainer>
       <h1>智能搜索</h1>
-      <TabBar tabs={TABS} active={tab} onChange={(key) => { setTab(key); reset(); }} />
+      <TabBar tabs={TABS} active={tab} onChange={(key) => { setTab(key); setQueryPath(null); }} />
       <SectionCard tabAttached>
         {tab === 'semantic' ? (
           <div className="flex gap-2 items-center">

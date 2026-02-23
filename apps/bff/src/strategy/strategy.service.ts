@@ -88,16 +88,20 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
         action,
         kwargs: JSON.stringify(params),
       });
-      // MCP returns { success, data, ... } — extract .data if present
-      if (result && typeof result === 'object' && 'data' in result) {
-        return (result as Record<string, unknown>).data;
+      if (result && typeof result === 'object') {
+        const obj = result as Record<string, unknown>;
+        if (obj.success === false) {
+          throw new Error(String(obj.error || obj.message || `${action} 操作失败`));
+        }
+        if ('data' in obj) return obj.data;
       }
       return result;
     } catch (error) {
+      if (error instanceof BadGatewayException) throw error;
       throw new BadGatewayException({
         success: false,
         message: `调用 strategy_manager.${action} 失败`,
-        detail: String(error),
+        detail: String(error instanceof Error ? error.message : error),
       });
     }
   }
@@ -165,8 +169,8 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async create(params: Record<string, unknown>) {
-    return this.call('create', params);
+  async create(params: object) {
+    return this.call('create', params as Record<string, unknown>);
   }
 
   async publish(id: string) {
@@ -177,8 +181,11 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('archive', { strategy_id: id });
   }
 
-  async updateMetrics(id: string, metrics: Record<string, unknown>) {
-    return this.call('update_metrics', { strategy_id: id, ...metrics });
+  async updateMetrics(id: string, metrics: object) {
+    return this.call('update_metrics', {
+      strategy_id: id,
+      ...(metrics as Record<string, unknown>),
+    });
   }
 
   async subscribe(id: string, userId: string) {
