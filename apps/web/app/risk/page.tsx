@@ -5,6 +5,7 @@ import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge } from '@/component
 import { BarChart, PieChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
+import { ensureRecord } from '@/lib/query-parse';
 
 type ModuleKey = 'var' | 'stress' | 'exposure';
 type RiskSummary = {
@@ -31,8 +32,22 @@ export default function RiskPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submittedQs, setSubmittedQs] = useState<string | null>(null);
 
-  const summaryQ = useApiQuery<RiskSummary>(submittedQs ? `/risk/summary?${submittedQs}` : null);
-  const varQ = useApiQuery<unknown>(submittedQs ? `/risk/var?${submittedQs}` : null);
+  const summaryQ = useApiQuery<RiskSummary>(
+    submittedQs ? `/risk/summary?${submittedQs}` : null,
+    {
+      parse: (raw) => {
+        const obj = ensureRecord(raw, '风险汇总');
+        if ('moduleStatus' in obj && obj.moduleStatus != null && typeof obj.moduleStatus !== 'object') {
+          throw new Error('风险汇总.moduleStatus 字段类型异常');
+        }
+        return obj as RiskSummary;
+      },
+    },
+  );
+  const varQ = useApiQuery<unknown>(
+    submittedQs ? `/risk/var?${submittedQs}` : null,
+    { parse: (raw) => ensureRecord(raw, '风险VaR') },
+  );
 
   const loading = summaryQ.isFetching || varQ.isFetching;
   const error = formError || summaryQ.error || varQ.error;

@@ -4,6 +4,7 @@ export type RecentStock = { code: string; name: string; ts: number };
 
 const MAX_RECENT = 20;
 const LS_KEY = 'aiask_recent_stocks';
+const LS_CODE_KEY = 'aiask_current_stock';
 
 function loadRecent(): RecentStock[] {
   if (typeof window === 'undefined') return [];
@@ -15,6 +16,19 @@ function loadRecent(): RecentStock[] {
 function saveRecent(list: RecentStock[]) {
   if (typeof window === 'undefined') return;
   try { localStorage.setItem(LS_KEY, JSON.stringify(list)); } catch {}
+}
+
+function loadCode(): string {
+  if (typeof window === 'undefined') return '';
+  try { return localStorage.getItem(LS_CODE_KEY) || ''; } catch { return ''; }
+}
+
+function saveCode(code: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (code) localStorage.setItem(LS_CODE_KEY, code);
+    else localStorage.removeItem(LS_CODE_KEY);
+  } catch {}
 }
 
 type StockContextState = {
@@ -33,7 +47,7 @@ type StockContextState = {
 };
 
 export const useStockContext = create<StockContextState>((set, get) => ({
-  code: '',
+  code: loadCode(),
   name: '',
   recent: loadRecent(),
 
@@ -44,10 +58,15 @@ export const useStockContext = create<StockContextState>((set, get) => ({
     const prev = get().recent.filter((r) => r.code !== trimmed);
     const next = [{ code: trimmed, name: n, ts: Date.now() }, ...prev].slice(0, MAX_RECENT);
     saveRecent(next);
+    saveCode(trimmed);
     set({ code: trimmed, name: n, recent: next });
   },
 
-  setCode: (code) => set({ code: code.trim() }),
+  setCode: (code) => {
+    const trimmed = code.trim();
+    saveCode(trimmed);
+    set({ code: trimmed });
+  },
 
   clearRecent: () => {
     saveRecent([]);

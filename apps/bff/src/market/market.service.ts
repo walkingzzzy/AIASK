@@ -193,11 +193,27 @@ export class MarketService {
     return result;
   }
 
+  private static readonly INDEX_CODES = new Set(['000001', '399001', '399006', '000688', '000300', '000016', '000905']);
+
   async getBatchQuotes(codes: string[]) {
-    const payload = await this.callTool('get_batch_quotes', { stock_codes: codes });
-    const root = (payload as any)?.data ?? (payload as any)?.quotes ?? payload ?? [];
-    const list = Array.isArray(root) ? root : [];
-    return { quotes: list.map((q: any) => this.normalizeQuote(q)), count: list.length };
+    const indexCodes = codes.filter(c => MarketService.INDEX_CODES.has(c));
+    const stockCodes = codes.filter(c => !MarketService.INDEX_CODES.has(c));
+
+    const [indexResults, stockResult] = await Promise.all([
+      Promise.all(indexCodes.map(c => this.getIndexQuote(c).then(r => r.quote).catch(() => null))),
+      stockCodes.length > 0
+        ? this.callTool('get_batch_quotes', { stock_codes: stockCodes }).then(p => {
+            const root = (p as any)?.data ?? (p as any)?.quotes ?? p ?? [];
+            return Array.isArray(root) ? root : [];
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const list = [
+      ...indexResults.filter(Boolean),
+      ...stockResult.map((q: any) => this.normalizeQuote(q)),
+    ];
+    return { quotes: list, count: list.length };
   }
 
   async getMinuteKline(code: string, period = '5m', limit = 300) {
@@ -329,7 +345,9 @@ export class MarketService {
       blockType,
       meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
     };
-    await this.cacheService.set(cacheKey, result, ttlSeconds);
+    if (blocks.length > 0) {
+      await this.cacheService.set(cacheKey, result, ttlSeconds);
+    }
     return result;
   }
 
@@ -382,7 +400,7 @@ export class MarketService {
       high: this.toNum(d.high ?? d.High),
       low: this.toNum(d.low ?? d.Low),
       open: this.toNum(d.open ?? d.Open),
-      prevClose: this.toNum(d.prevClose ?? d.prev_close ?? d.pre_close),
+      prevClose: this.toNum(d.prevClose ?? d.preClose ?? d.prev_close ?? d.pre_close),
       timestamp: d.timestamp ? String(d.timestamp) : d.date ? String(d.date) : null,
     };
   }

@@ -63,6 +63,23 @@ class ValidateOosDto {
   end_date?: string;
 }
 
+class RobustnessCheckDto {
+  @IsString()
+  factor_name!: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  stock_codes!: string[];
+
+  @IsOptional()
+  @IsString()
+  start_date?: string;
+
+  @IsOptional()
+  @IsString()
+  end_date?: string;
+}
+
 class BatchComputeDto {
   @IsArray() @IsString({ each: true }) codes!: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) factors?: string[];
@@ -159,6 +176,17 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.validateOos(body);
+    const traceId =
+      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    return { success: true, data, traceId: String(traceId) };
+  }
+
+  @Post('robustness-check')
+  async robustnessCheck(
+    @Body() body: RobustnessCheckDto,
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+  ) {
+    const data = await this.factorService.robustnessCheck(body);
     const traceId =
       req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };

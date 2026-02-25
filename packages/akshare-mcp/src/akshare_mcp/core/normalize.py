@@ -23,7 +23,7 @@ QUOTE_ALIASES: dict[str, list[str]] = {
     "high": ["high", "High", "\u6700\u9ad8"],
     "low": ["low", "Low", "\u6700\u4f4e"],
     "open": ["open", "Open", "\u4eca\u5f00"],
-    "prevClose": ["prevClose", "prev_close", "pre_close", "\u6628\u6536"],
+    "prevClose": ["prevClose", "preClose", "prev_close", "pre_close", "\u6628\u6536"],
     "timestamp": ["timestamp", "date", "trade_date"],
 }
 

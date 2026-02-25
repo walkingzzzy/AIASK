@@ -76,7 +76,18 @@
       "WebFetch(domain:platform.worldquantbrain.com)",
       "WebFetch(domain:medium.com)",
       "WebFetch(domain:arxiv.org)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(tasklist)",
+      "Bash(taskkill:*)",
+      "Bash(ss:*)",
+      "Bash(cd:*)",
+      "Bash(grep:*)",
+      "mcp__Playwright__browser_install",
+      "mcp__Playwright__browser_close",
+      "mcp__Playwright__browser_handle_dialog",
+      "mcp__Playwright__browser_press_key",
+      "Bash(powershell:*)",
+      "Bash(git:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

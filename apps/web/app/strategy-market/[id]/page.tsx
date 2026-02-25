@@ -70,7 +70,7 @@ export default function StrategyDetailPage() {
   const reviewApi = useApiMutation({ invalidates: [[...apiKeys.strategy(id)]] });
   const addToCart = useCartStore((st) => st.addStrategy);
   const user = useAuthStore((st) => st.user);
-  const userId = user?.id || user?.username || 'default';
+  const userId = user?.id ?? user?.username ?? null;
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
   const [activeTab, setActiveTab] = useState<'overview' | 'tracking'>('overview');
@@ -79,7 +79,7 @@ export default function StrategyDetailPage() {
     id && activeTab === 'tracking' ? `/strategy-market/${id}/signal-stats` : null,
   );
   const signalsQ = useApiQuery<SignalsResponse>(
-    id && activeTab === 'tracking' ? `/strategy-market/${id}/signals?user_id=${userId}&limit=50` : null,
+    id && activeTab === 'tracking' && userId ? `/strategy-market/${id}/signals?user_id=${encodeURIComponent(userId)}&limit=50` : null,
   );
 
   const s = useMemo(() => {
@@ -98,10 +98,18 @@ export default function StrategyDetailPage() {
   }, [s]);
 
   async function handleSubscribe() {
+    if (!userId) {
+      window.alert('请先登录后再订阅策略');
+      return;
+    }
     await subscribeApi.triggerAsync(`/strategy-market/${id}/subscribe`, { method: 'POST' }, { user_id: userId });
   }
 
   async function handleReview() {
+    if (!userId) {
+      window.alert('请先登录后再提交评价');
+      return;
+    }
     await reviewApi.triggerAsync(`/strategy-market/${id}/review`, { method: 'POST' }, { user_id: userId, rating, comment });
     setComment('');
     setRating(5);
@@ -133,10 +141,10 @@ export default function StrategyDetailPage() {
           </button>
           <button
             onClick={handleSubscribe}
-            disabled={subscribeApi.isPending}
+            disabled={subscribeApi.isPending || !userId}
             className="px-3 py-1 text-sm rounded bg-primary text-white cursor-pointer disabled:opacity-50"
           >
-            {subscribeApi.isPending ? '处理中...' : '订阅策略'}
+            {subscribeApi.isPending ? '处理中...' : !userId ? '登录后订阅' : '订阅策略'}
           </button>
         </div>
       </div>
@@ -217,10 +225,10 @@ export default function StrategyDetailPage() {
           />
           <button
             onClick={handleReview}
-            disabled={reviewApi.isPending}
+            disabled={reviewApi.isPending || !userId}
             className="px-3 py-1 text-sm rounded bg-primary text-white cursor-pointer disabled:opacity-50"
           >
-            提交
+            {reviewApi.isPending ? '提交中...' : !userId ? '登录后可评价' : '提交'}
           </button>
         </div>
 

@@ -1,14 +1,15 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { PageContainer, TabBar, SectionCard, KpiCard, KpiGrid, DataTable, Badge } from '@/components/ui';
 import { CandlestickChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { useSearchParams } from 'next/navigation';
-import { fmt, cacheText } from '@/lib/api';
+import { cacheText } from '@/lib/api';
 import { extractArray, extractObject, fmtNum, fmtAmount, fmtPct } from '@/lib/data-utils';
+import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { exportCSV } from '@/lib/export';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
@@ -35,15 +36,57 @@ export default function MarketPage() {
   const initialTab = (searchParams.get('tab') as MarketTab) || 'main';
   const initialBlock = searchParams.get('block') || '';
 
-  const { code, setCode, codeError, validate } = useStockCode();
+  const { code, setCode, codeError, validate, resolvedCode } = useStockCode();
   const [period, setPeriod] = useState<Period>('daily');
   const [activeTab, setActiveTab] = useState<MarketTab>(initialTab);
   const [submittedCode, setSubmittedCode] = useState<string | null>(null);
   const [submittedPeriod, setSubmittedPeriod] = useState<Period>('daily');
 
-  const quoteQ = useApiQuery<QuoteData>(submittedCode ? `/market/quote?code=${encodeURIComponent(submittedCode)}` : null);
-  const klineQ = useApiQuery<KlineData>(submittedCode ? `/market/kline?code=${encodeURIComponent(submittedCode)}&period=${submittedPeriod}` : null);
-  const obQ = useApiQuery<ObData>(submittedCode ? `/market/order-book?code=${encodeURIComponent(submittedCode)}` : null);
+  // 自动查询：URL 或 Store 携带了有效代码时自动触发
+  const autoFetched = useRef(false);
+  useEffect(() => {
+    if (!autoFetched.current && resolvedCode) {
+      autoFetched.current = true;
+      setSubmittedCode(resolvedCode);
+    }
+  }, [resolvedCode]);
+
+  const quoteQ = useApiQuery<QuoteData>(
+    submittedCode ? `/market/quote?code=${encodeURIComponent(submittedCode)}` : null,
+    {
+      parse: (raw) => {
+        const obj = ensureRecord(raw, '行情报价');
+        if ('quote' in obj && obj.quote != null && typeof obj.quote !== 'object') {
+          throw new Error('行情报价.quote字段应为对象');
+        }
+        return obj as QuoteData;
+      },
+    },
+  );
+  const klineQ = useApiQuery<KlineData>(
+    submittedCode ? `/market/kline?code=${encodeURIComponent(submittedCode)}&period=${submittedPeriod}` : null,
+    {
+      parse: (raw) => {
+        const obj = ensureRecord(raw, '行情K线');
+        if ('kline' in obj && obj.kline != null && !Array.isArray(obj.kline)) {
+          throw new Error('行情K线.kline字段应为数组');
+        }
+        return obj as KlineData;
+      },
+    },
+  );
+  const obQ = useApiQuery<ObData>(
+    submittedCode ? `/market/order-book?code=${encodeURIComponent(submittedCode)}` : null,
+    {
+      parse: (raw) => {
+        const obj = ensureRecord(raw, '行情盘口');
+        if ('orderBook' in obj && obj.orderBook != null && typeof obj.orderBook !== 'object') {
+          throw new Error('行情盘口.orderBook字段应为对象');
+        }
+        return obj as ObData;
+      },
+    },
+  );
 
   // Tab-level query paths (null = disabled)
   const [limitUpPath, setLimitUpPath] = useState<string | null>(null);
@@ -56,20 +99,40 @@ export default function MarketPage() {
   const [stockListPath, setStockListPath] = useState<string | null>(null);
   const [blockStocksPath, setBlockStocksPath] = useState<string | null>(null);
 
-  const limitUpQ = useApiQuery<unknown>(limitUpPath);
-  const limitUpStatsQ = useApiQuery<unknown>(limitUpStatsPath);
-  const blocksQ = useApiQuery<unknown>(blocksPath);
-  const tradeQ = useApiQuery<unknown>(tradePath);
-  const indexQuoteQ = useApiQuery<unknown>(indexPath);
-  const minuteKlineQ = useApiQuery<unknown>(minutePath);
-  const searchQ = useApiQuery<unknown>(searchPath);
-  const stockListQ = useApiQuery<unknown>(stockListPath);
-  const blockStocksQ = useApiQuery<unknown>(blockStocksPath);
-  const batchQuotes = useApiMutation<unknown>();
+  const limitUpQ = useApiQuery<unknown>(limitUpPath, {
+    parse: (raw) => ensureRecordOrArray(raw, '涨停列表'),
+  });
+  const limitUpStatsQ = useApiQuery<unknown>(limitUpStatsPath, {
+    parse: (raw) => ensureRecord(raw, '涨停统计详情'),
+  });
+  const blocksQ = useApiQuery<unknown>(blocksPath, {
+    parse: (raw) => ensureRecordOrArray(raw, '板块列表'),
+  });
+  const tradeQ = useApiQuery<unknown>(tradePath, {
+    parse: (raw) => ensureRecordOrArray(raw, '逐笔成交'),
+  });
+  const indexQuoteQ = useApiQuery<unknown>(indexPath, {
+    parse: (raw) => ensureRecord(raw, '指数行情'),
+  });
+  const minuteKlineQ = useApiQuery<unknown>(minutePath, {
+    parse: (raw) => ensureRecordOrArray(raw, '分时K线'),
+  });
+  const searchQ = useApiQuery<unknown>(searchPath, {
+    parse: (raw) => ensureRecordOrArray(raw, '股票搜索结果'),
+  });
+  const stockListQ = useApiQuery<unknown>(stockListPath, {
+    parse: (raw) => ensureRecordOrArray(raw, '股票列表'),
+  });
+  const blockStocksQ = useApiQuery<unknown>(blockStocksPath, {
+    parse: (raw) => ensureRecordOrArray(raw, '板块成分股'),
+  });
+  const batchQuotes = useApiMutation<unknown>({
+    parse: (raw) => ensureRecordOrArray(raw, '批量行情'),
+  });
 
   const [indexCode, setIndexCode] = useState('000001');
   const [searchKeyword, setSearchKeyword] = useState('');
-  const [minutePeriod, setMinutePeriod] = useState('5');
+  const [minutePeriod, setMinutePeriod] = useState('5m');
   const [blockCode, setBlockCode] = useState(initialBlock);
   const [batchCodes, setBatchCodes] = useState('');
 
@@ -95,6 +158,20 @@ export default function MarketPage() {
       }
     }
   }, [activeTab, blocksPath, initialBlock]);
+
+  // Auto-load index quote when switching to index tab
+  useEffect(() => {
+    if (activeTab === 'index' && !indexPath) {
+      setIndexPath(`/market/index-quote?indexCode=${encodeURIComponent(indexCode.trim())}`);
+    }
+  }, [activeTab, indexPath, indexCode]);
+
+  // Auto-load minute kline when switching to minute tab with a valid code
+  useEffect(() => {
+    if (activeTab === 'minute' && !minutePath && resolvedCode) {
+      setMinutePath(`/market/minute-kline?code=${encodeURIComponent(resolvedCode)}&period=${minutePeriod}`);
+    }
+  }, [activeTab, minutePath, resolvedCode, minutePeriod]);
 
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -123,7 +200,10 @@ export default function MarketPage() {
   const blocksRows = useMemo(() => extractArray(blocksQ.data) as Record<string, unknown>[], [blocksQ.data]);
   const blockStocksRows = useMemo(() => extractArray(blockStocksQ.data) as Record<string, unknown>[], [blockStocksQ.data]);
   const tradeRows = useMemo(() => extractArray(tradeQ.data) as Record<string, unknown>[], [tradeQ.data]);
-  const indexObj = useMemo(() => extractObject(indexQuoteQ.data) as Record<string, unknown> | null, [indexQuoteQ.data]);
+  const indexObj = useMemo(() => {
+    const o = extractObject(indexQuoteQ.data);
+    return (o.quote ? extractObject(o.quote) : o) as Record<string, unknown> | null;
+  }, [indexQuoteQ.data]);
   const minuteRows = useMemo(() => extractArray(minuteKlineQ.data) as Record<string, unknown>[], [minuteKlineQ.data]);
   const searchRows = useMemo(() => extractArray(searchQ.data) as Record<string, unknown>[], [searchQ.data]);
   const stockListRows = useMemo(() => extractArray(stockListQ.data) as Record<string, unknown>[], [stockListQ.data]);
@@ -138,7 +218,6 @@ export default function MarketPage() {
     { key: 'time', label: '时间' },
     { key: 'price', label: '价格', align: 'right' as const },
     { key: 'volume', label: '成交量', align: 'right' as const },
-    { key: 'amount', label: '成交额', align: 'right' as const },
     {
       key: 'direction', label: '方向',
       render: (v: unknown) => {
@@ -169,8 +248,11 @@ export default function MarketPage() {
       {quoteQ.error ? <p className="text-error">降级提示：{quoteQ.error}</p> : null}
       <div className="mt-2.5 text-text-secondary text-sm">
         更新：{quoteQ.dataUpdatedAt ? new Date(quoteQ.dataUpdatedAt).toLocaleString('zh-CN') : '-'} ｜ 抓取：{freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'}
-        <br />行情缓存：{cacheText(quoteCache)} ｜ K线缓存：{cacheText(klineCache)} ｜ 盘口缓存：{cacheText(obCache)}
       </div>
+      <details className="text-xs text-text-muted mt-1">
+        <summary className="cursor-pointer">缓存详情</summary>
+        <span>行情：{cacheText(quoteCache)} ｜ K线：{cacheText(klineCache)} ｜ 盘口：{cacheText(obCache)}</span>
+      </details>
 
       <SectionCard className="mt-4 p-3">
         <h3 className="mt-0">K线图（{period === 'daily' ? '日线' : period === 'weekly' ? '周线' : '月线'}）</h3>
@@ -179,22 +261,43 @@ export default function MarketPage() {
 
       <SectionCard className="mt-4 p-3">
         <h3 className="mt-0">五档盘口</h3>
-        <div className="grid grid-cols-2 gap-3">
-          <div><b>买盘</b>{obView.bids.map((x, i) => <div key={`b${i}`}>买{i + 1}: 价 {fmt(x.price)} / 量 {fmt(x.volume)}</div>)}</div>
-          <div><b>卖盘</b>{obView.asks.map((x, i) => <div key={`a${i}`}>卖{i + 1}: 价 {fmt(x.price)} / 量 {fmt(x.volume)}</div>)}</div>
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div>
+            <div className="font-medium text-danger mb-1">卖盘</div>
+            {[...obView.asks].reverse().map((x, i, arr) => <div key={`a${i}`} className="flex justify-between py-0.5 text-danger/80">
+              <span>卖{arr.length - i}</span><span>{fmtNum(x.price, 2)}</span><span>{fmtAmount(x.volume)}</span>
+            </div>)}
+          </div>
+          <div>
+            <div className="font-medium text-success mb-1">买盘</div>
+            {obView.bids.map((x, i) => <div key={`b${i}`} className="flex justify-between py-0.5 text-success/80">
+              <span>买{i + 1}</span><span>{fmtNum(x.price, 2)}</span><span>{fmtAmount(x.volume)}</span>
+            </div>)}
+          </div>
         </div>
       </SectionCard>
 
       <SectionCard className="mt-4 p-3">
         <h3 className="mt-0">实时行情摘要</h3>
-        {quote?.quote ? (
-          <div className="grid grid-cols-3 gap-2 text-sm">
-            <div>代码：<StockLink code={String(quote.quote.code)} name={String(quote.quote.name ?? '')} /></div><div>名称：{fmt(quote.quote.name)}</div><div>现价：{fmt(quote.quote.price)}</div>
-            <div>涨跌：{fmt(quote.quote.change)}</div><div>涨跌幅：{fmt(quote.quote.changePercent)}%</div><div>成交量：{fmt(quote.quote.volume)}</div>
-            <div>成交额：{fmt(quote.quote.amount)}</div><div>最高：{fmt(quote.quote.high)}</div><div>最低：{fmt(quote.quote.low)}</div>
-            <div>开盘：{fmt(quote.quote.open)}</div><div>昨收：{fmt(quote.quote.prevClose)}</div>
-          </div>
-        ) : <p>暂无行情数据</p>}
+        {quote?.quote ? (() => {
+          const q = quote.quote;
+          const chg = Number(q.change ?? 0);
+          const chgPct = Number(q.changePercent ?? 0);
+          const clr = chg >= 0 ? 'text-danger' : 'text-success';
+          return (
+            <div className="grid grid-cols-3 gap-2 text-sm">
+              <div className="flex items-center gap-1">股票：<StockLink code={String(q.code)} name={String(q.name ?? '')} /><WatchlistButton code={String(q.code)} name={String(q.name ?? '')} /></div>
+              <div>现价：<span className={clr}>{fmtNum(q.price as number | null, 2)}</span></div>
+              <div>涨跌：<span className={clr}>{fmtNum(q.change as number | null, 2)}</span></div>
+              <div>涨跌幅：<span className={clr}>{fmtPct(q.changePercent as number | null)}</span></div>
+              <div>成交量：{fmtAmount(q.volume as number | null)}</div>
+              <div>成交额：{fmtAmount(q.amount as number | null)}</div>
+              <div>最高：{fmtNum(q.high as number | null, 2)}</div>
+              <div>最低：{fmtNum(q.low as number | null, 2)}</div>
+              <div>开盘：{fmtNum(q.open as number | null, 2)}</div>
+              <div>昨收：{fmtNum(q.prevClose as number | null, 2)}</div>
+            </div>);
+        })() : <p>暂无行情数据</p>}
       </SectionCard>
 
       <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
@@ -204,7 +307,7 @@ export default function MarketPage() {
           <button type="button" disabled={tabPending} onClick={() => {
             if (limitUpPath) limitUpQ.refetch(); else setLimitUpPath('/market/limit-up');
             if (limitUpStatsPath) limitUpStatsQ.refetch(); else setLimitUpStatsPath('/market/limit-up-stats');
-          }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '加载涨停数据'}</button>
+          }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '刷新'}</button>
           {limitUpStatsObj ? (
             <KpiGrid cols={3}>
               <KpiCard title="涨停总数" value={limitUpStatsObj.totalLimitUp as number ?? limitUpStatsObj.total as number ?? '-'} />
@@ -283,13 +386,13 @@ export default function MarketPage() {
           {indexObj ? (
             <KpiGrid cols={4}>
               <KpiCard title="指数名称" value={String(indexObj.name ?? indexObj.index_name ?? '-')} />
-              <KpiCard title="最新点位" value={fmtNum(Number(indexObj.price ?? indexObj.close ?? 0))} />
-              <KpiCard title="涨跌幅" value={fmtPct(Number(indexObj.changePercent ?? indexObj.change_pct ?? indexObj.pct_change ?? 0))} change={Number(indexObj.changePercent ?? indexObj.change_pct ?? indexObj.pct_change ?? 0)} />
-              <KpiCard title="成交额" value={fmtAmount(Number(indexObj.amount ?? indexObj.turnover ?? 0))} />
-              <KpiCard title="最高" value={fmtNum(Number(indexObj.high ?? 0))} />
-              <KpiCard title="最低" value={fmtNum(Number(indexObj.low ?? 0))} />
-              <KpiCard title="开盘" value={fmtNum(Number(indexObj.open ?? 0))} />
-              <KpiCard title="昨收" value={fmtNum(Number(indexObj.prevClose ?? indexObj.prev_close ?? 0))} />
+              <KpiCard title="最新点位" value={fmtNum(indexObj.price ?? indexObj.close ?? null)} />
+              <KpiCard title="涨跌幅" value={fmtPct(indexObj.changePercent ?? indexObj.change_pct ?? indexObj.pct_change ?? null)} change={Number(indexObj.changePercent ?? indexObj.change_pct ?? indexObj.pct_change ?? 0)} />
+              <KpiCard title="成交额" value={fmtAmount(indexObj.amount ?? indexObj.turnover ?? null)} />
+              <KpiCard title="最高" value={fmtNum(indexObj.high ?? null)} />
+              <KpiCard title="最低" value={fmtNum(indexObj.low ?? null)} />
+              <KpiCard title="开盘" value={fmtNum(indexObj.open ?? null)} />
+              <KpiCard title="昨收" value={fmtNum(indexObj.prevClose ?? indexObj.prev_close ?? null)} />
             </KpiGrid>
           ) : null}
         </SectionCard>
@@ -300,7 +403,7 @@ export default function MarketPage() {
           <div className="flex gap-2 items-center">
             <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} placeholder="股票代码" aria-label="股票代码" className="w-[140px] px-2 py-1 border border-border rounded text-sm" />
             <select value={minutePeriod} onChange={(e) => setMinutePeriod(e.target.value)} aria-label="分时周期" className="border border-border rounded px-2 py-1 text-sm">
-              <option value="1">1分钟</option><option value="5">5分钟</option><option value="15">15分钟</option><option value="30">30分钟</option><option value="60">60分钟</option>
+              <option value="1m">1分钟</option><option value="5m">5分钟</option><option value="15m">15分钟</option><option value="30m">30分钟</option><option value="60m">60分钟</option>
             </select>
             <button type="button" disabled={tabPending} onClick={() => {
               if (!validate()) return;
@@ -346,7 +449,7 @@ export default function MarketPage() {
             { key: 'name', label: '名称' },
             { key: 'price', label: '现价', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 2) },
             { key: 'changePercent', label: '涨跌幅', align: 'right' as const, render: (v: unknown) => <span className={(v as number) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(v as number)}</span> },
-            { key: 'volume', label: '成交量', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 0) },
+            { key: 'volume', label: '成交量', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
             { key: 'amount', label: '成交额', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
             { key: 'high', label: '最高', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 2) },
             { key: 'low', label: '最低', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 2) },

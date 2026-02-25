@@ -25,8 +25,8 @@ export class HealthController {
     const mcp = await this.mcpGatewayService.checkAvailableTools();
 
     return {
-      ...base,
-      mcp,
+      success: true,
+      data: { ...base, mcp },
     };
   }
 

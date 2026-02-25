@@ -26,16 +26,31 @@ export function useStockCode(initial = '', syncUrl = true) {
 
   const [code, setCodeLocal] = useState(resolvedInitial);
   const [codeError, setCodeError] = useState<string | null>(null);
+  // resolvedCode: 仅当代码来自 URL 或 Store（非页面默认值）时有值，供页面自动查询使用
+  const [resolvedCode, setResolvedCode] = useState<string | null>(null);
   const initialized = useRef(false);
 
-  // 首次挂载：如果 URL 有 code，同步到全局上下文
+  // 首次挂载：双向同步 URL ↔ 全局上下文
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
     if (urlCode && STOCK_CODE_RE.test(urlCode)) {
+      // URL 有 code → 同步到 store
       setCodeLocal(urlCode);
+      setStock(urlCode);
+      setResolvedCode(urlCode);
+    } else if (globalCode && STOCK_CODE_RE.test(globalCode)) {
+      // store 有 code 但 URL 没有 → 同步到 URL
+      setCodeLocal(globalCode);
+      setResolvedCode(globalCode);
+      if (syncUrl) {
+        const params = new URLSearchParams(searchParams.toString());
+        params.set('code', globalCode);
+        router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+      }
     }
-  }, [urlCode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const setCode = useCallback((value: string) => {
     setCodeLocal(value);
@@ -68,5 +83,5 @@ export function useStockCode(initial = '', syncUrl = true) {
     [code, syncToUrl, setStock],
   );
 
-  return { code, setCode, codeError, setCodeError, validate, trimmedCode: code.trim() };
+  return { code, setCode, codeError, setCodeError, validate, trimmedCode: code.trim(), resolvedCode };
 }

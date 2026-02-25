@@ -5,22 +5,31 @@ export type { CacheMeta, Envelope } from '@aiask/shared-types';
 
 export const BFF_BASE = process.env.NEXT_PUBLIC_BFF_BASE_URL ?? 'http://localhost:3001/api';
 
+/** Guard: only one redirect to login at a time */
+let redirecting = false;
+
 /** Authenticated fetch wrapper — relies on HttpOnly cookies, handles 401 auto-refresh */
 export async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
   const headers: Record<string, string> = {};
   if (init?.headers) Object.assign(headers, init.headers);
-  const resp = await fetch(`${BFF_BASE}${path}`, {
-    ...init, headers, credentials: 'include', cache: 'no-store',
-  });
+
+  const requestInit: RequestInit = {
+    ...init,
+    headers,
+    credentials: 'include',
+  };
+
+  const resp = await fetch(`${BFF_BASE}${path}`, requestInit);
   if (resp.status === 401) {
     const refreshed = await refreshAuth();
     if (refreshed) {
-      return fetch(`${BFF_BASE}${path}`, {
-        ...init, headers, credentials: 'include', cache: 'no-store',
-      });
+      return fetch(`${BFF_BASE}${path}`, requestInit);
     }
-    clearLoggedIn();
-    redirectToLogin();
+    if (!redirecting) {
+      redirecting = true;
+      clearLoggedIn();
+      redirectToLogin();
+    }
     throw new Error('登录已过期');
   }
   return resp;

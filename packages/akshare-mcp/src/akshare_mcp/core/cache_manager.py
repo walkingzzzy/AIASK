@@ -103,9 +103,16 @@ def cached(ttl: int = 300, key_prefix: str = ""):
             
             # 执行函数
             result = func(*args, **kwargs)
-            
-            # 存入缓存
-            _global_cache.set(cache_key, result, ttl=ttl)
+
+            # 不缓存失败或标记为 _no_cache 的结果
+            skip = False
+            if isinstance(result, dict):
+                if not result.get("success", True):
+                    skip = True
+                if result.pop("_no_cache", False):
+                    skip = True
+            if not skip:
+                _global_cache.set(cache_key, result, ttl=ttl)
             
             return result
         

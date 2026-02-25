@@ -9,6 +9,13 @@ export type RunBacktestInput = {
   initialCapital?: number;
   shortPeriod?: number;
   longPeriod?: number;
+  lookback?: number;
+  threshold?: number;
+  rsiPeriod?: number;
+  oversold?: number;
+  overbought?: number;
+  commission?: number;
+  slippage?: number;
   artifactId?: string;
 };
 
@@ -22,7 +29,7 @@ export class BacktestService {
   constructor(private readonly mcpGatewayService: McpGatewayService) {}
 
   async run(input: RunBacktestInput) {
-    const normalized = {
+    const normalized: Record<string, unknown> = {
       code: input.code.trim(),
       strategy: input.strategy.trim() || 'ma_cross',
       start_date: input.startDate || null,
@@ -30,15 +37,25 @@ export class BacktestService {
       initial_capital: input.initialCapital ?? 100000,
       short_period: input.shortPeriod ?? 5,
       long_period: input.longPeriod ?? 20,
+      lookback: input.lookback ?? 20,
+      threshold: input.threshold ?? 0.02,
+      rsi_period: input.rsiPeriod ?? 14,
+      oversold: input.oversold ?? 30,
+      overbought: input.overbought ?? 70,
       artifact_id: input.artifactId || undefined,
     };
+    if (input.commission != null) normalized.commission = input.commission;
+    if (input.slippage != null) normalized.slippage = input.slippage;
 
     const args = { action: 'run', kwargs: JSON.stringify(normalized) };
-    const payload = await this.callTool('backtest_manager', args);
+    const payload: any = await this.callTool('backtest_manager', args);
     const artifactId =
       this.pickString(payload, ['data.artifact_id', 'data.artifactId', 'artifact_id', 'artifactId']) ||
       normalized.artifact_id ||
       `art_${normalized.code}_${Date.now()}`;
+
+    // Extract result data (engine output lives under data.result or data)
+    const engineResult = payload?.data?.result ?? payload?.result ?? payload?.data ?? {};
 
     return {
       artifactId,
@@ -47,6 +64,12 @@ export class BacktestService {
       argsMatched: args,
       result: payload,
       metrics: this.normalizeMetrics(payload),
+      equity_curve: Array.isArray(engineResult.equity_curve) ? engineResult.equity_curve : [],
+      dates: Array.isArray(engineResult.dates) ? engineResult.dates : [],
+      trades: Array.isArray(engineResult.trades) ? engineResult.trades : [],
+      profit_factor: this.toNum(engineResult.profit_factor),
+      initial_capital: this.toNum(engineResult.initial_capital),
+      final_capital: this.toNum(engineResult.final_capital),
     };
   }
 
@@ -66,6 +89,24 @@ export class BacktestService {
       result: payload,
       metrics: this.normalizeMetrics(payload),
     };
+  }
+
+  /** P3-5: Send backtest result to TDX */
+  async sendToTdx(input: { code: string; strategy: string }) {
+    const args = {
+      code: input.code, strategy: input.strategy,
+      send_to_tdx: true, send_mode: 'signal',
+    };
+    return this.callTool('run_backtest_and_send_to_tdx', args);
+  }
+
+  /** P3-3: Batch backtest multiple codes */
+  async batch(input: { codes: string[]; strategy: string; initialCapital?: number }) {
+    const args = {
+      codes: input.codes, strategy: input.strategy,
+      initial_capital: input.initialCapital ?? 100000,
+    };
+    return this.callTool('run_batch_backtest', args);
   }
 
   private async callTool(name: string, args: Record<string, unknown>) {

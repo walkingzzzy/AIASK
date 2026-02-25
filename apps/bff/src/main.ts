@@ -10,10 +10,16 @@ import { GlobalHttpExceptionFilter } from './common/global-http-exception.filter
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.use(cookieParser());
+
+  const corsOrigin = process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(',').map((v) => v.trim()).filter(Boolean)
+    : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+
   app.enableCors({
-    origin: process.env.CORS_ORIGIN ?? 'http://localhost:3000',
+    origin: corsOrigin,
     credentials: true,
   });
+
   const config = app.get(ConfigService);
   const port = Number(config.get('BFF_PORT', 3001));
 

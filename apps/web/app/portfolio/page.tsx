@@ -10,6 +10,7 @@ import { ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { useStockCode } from '@/hooks/use-stock-code';
+import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 
 type OptData = { optimization?: { expectedReturn?: number; expectedRisk?: number; sharpe?: number; weights?: Record<string, number> | Array<{ code: string; weight: number }> } };
 type RiskData = { riskMetrics?: { var95?: number; var99?: number; cvar?: number; beta?: number; volatility?: number; riskContribution?: Record<string, number> } };
@@ -33,15 +34,20 @@ export default function PortfolioPage() {
   const addHoldingApi = useApiMutation<unknown>({ invalidates: [[...apiKeys.portfolio()]] });
 
   // Read queries
-  const listQ = useApiQuery<unknown>('/portfolio/list');
+  const listQ = useApiQuery<unknown>('/portfolio/list', {
+    parse: (raw) => ensureRecordOrArray(raw, '组合列表'),
+  });
   const detailQ = useApiQuery<unknown>(
     portfolioId.trim() ? `/portfolio/get?portfolioId=${encodeURIComponent(portfolioId.trim())}` : null,
+    {
+      parse: (raw) => ensureRecordOrArray(raw, '组合详情'),
+    },
   );
 
   // POST computations (user-triggered, keep as mutations)
-  const optimizeApi = useApiMutation<OptData>();
-  const riskApi = useApiMutation<RiskData>();
-  const stressApi = useApiMutation<StressData>();
+  const optimizeApi = useApiMutation<OptData>({ parse: (raw) => ensureRecord(raw, '组合优化') as OptData });
+  const riskApi = useApiMutation<RiskData>({ parse: (raw) => ensureRecord(raw, '组合风险') as RiskData });
+  const stressApi = useApiMutation<StressData>({ parse: (raw) => ensureRecord(raw, '压力测试') as StressData });
 
   const loading = listQ.isFetching || detailQ.isFetching || optimizeApi.isPending || riskApi.isPending || stressApi.isPending || createApi.isPending || addHoldingApi.isPending;
   const error = formError || listQ.error || detailQ.error || optimizeApi.error || riskApi.error || stressApi.error || createApi.error || addHoldingApi.error;
@@ -113,7 +119,7 @@ export default function PortfolioPage() {
         <div className="flex gap-2 flex-wrap items-center">
           <input value={portfolioId} onChange={(e) => { setPortfolioId(e.target.value); setFormError(null); }} placeholder="portfolioId" className="w-[140px] px-2 py-1 border border-border rounded text-sm" />
           <button type="button" onClick={() => listQ.refetch()}>组合列表</button>
-          <button type="button" onClick={() => detailQ.refetch()}>查看详情</button>
+          <button type="button" onClick={() => { if (!portfolioId.trim()) { setFormError('请输入 portfolioId'); return; } detailQ.refetch(); }}>查看详情</button>
           <button type="button" onClick={optimize}>优化配置</button>
           <button type="button" onClick={analyzeRisk}>风险分析</button>
           <button type="button" onClick={runStress}>压力测试</button>

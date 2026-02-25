@@ -15,7 +15,7 @@ import { StockLink } from '@/components/stock-link';
 export default function TdxPage() {
   const [formError, setFormError] = useState<string | null>(null);
 
-  const { code: indCode, setCode: setIndCode, codeError: indCodeError } = useStockCode('600519');
+  const { code: indCode, setCode: setIndCode, codeError: indCodeError, validate: indValidate, trimmedCode: indTrimmed } = useStockCode('600519');
   const [indName, setIndName] = useState('MACD');
   const indMut = useApiMutation<unknown>();
 
@@ -31,7 +31,7 @@ export default function TdxPage() {
   const [wlCodes, setWlCodes] = useState('');
   const wlMut = useApiMutation<unknown>();
 
-  const { code: sigCode, setCode: setSigCode, codeError: sigCodeError } = useStockCode('600519');
+  const { code: sigCode, setCode: setSigCode, codeError: sigCodeError, validate: sigValidate, trimmedCode: sigTrimmed } = useStockCode('600519');
   const [sigPath, setSigPath] = useState<string | null>(null);
   const sigQ = useApiQuery<unknown>(sigPath);
 
@@ -64,9 +64,10 @@ export default function TdxPage() {
         <div className="flex gap-2 flex-wrap items-center">
           <StockCodeInput value={indCode} onChange={setIndCode} error={indCodeError} placeholder="股票代码" />
           <input value={indName} onChange={(e) => setIndName(e.target.value)} placeholder="指标名称，如 MACD" className="w-40" />
-          <button type="button" disabled={loading} onClick={() => clearAndRun(() =>
-            indMut.trigger('/tdx/calculate-indicator', { method: 'POST' }, { code: indCode.trim(), indicator: indName.trim() })
-          )}>计算</button>
+          <button type="button" disabled={loading} onClick={() => clearAndRun(() => {
+            if (!indValidate()) return;
+            indMut.trigger('/tdx/calculate-indicator', { method: 'POST' }, { code: indTrimmed, indicator: indName.trim() });
+          })}>计算</button>
         </div>
         {indValues.length > 0 && indHasDate && indNumericKeys.length > 0 && (
           <LineChart
@@ -159,7 +160,8 @@ export default function TdxPage() {
         <div className="flex gap-2 flex-wrap items-center">
           <StockCodeInput value={sigCode} onChange={setSigCode} error={sigCodeError} placeholder="股票代码" />
           <button type="button" disabled={loading} onClick={() => clearAndRun(() => {
-            const newPath = `/tdx/expert-signals?code=${encodeURIComponent(sigCode.trim())}`;
+            if (!sigValidate()) return;
+            const newPath = `/tdx/expert-signals?code=${encodeURIComponent(sigTrimmed)}`;
             if (newPath === sigPath) sigQ.refetch();
             else setSigPath(newPath);
           })}>查询</button>

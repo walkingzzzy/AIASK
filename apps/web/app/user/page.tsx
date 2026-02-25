@@ -8,6 +8,7 @@ import { PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, Badge } from '
 import { useApiQuery } from '@/hooks/use-api-query';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import { clearLoggedIn } from '@/lib/auth';
+import { useAuthStore } from '@/store/auth-store';
 
 type UserInfo = { username?: string; role?: string; riskLevel?: string };
 const RISK_OPTIONS = ['保守', '稳健', '激进'] as const;
@@ -24,8 +25,14 @@ export default function UserPage() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  const authedUser = useAuthStore((s) => s.user);
+  const userId = authedUser?.id ?? authedUser?.username ?? null;
+
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
-  const subsQ = useApiQuery<unknown>('/strategy-market/my-subscriptions?user_id=default');
+  const subsQ = useApiQuery<unknown>(
+    userId ? `/strategy-market/my-subscriptions?user_id=${encodeURIComponent(userId)}` : null,
+    { enabled: Boolean(userId) },
+  );
   const tradingQ = useApiQuery<unknown>('/paper-trading/summary');
   const portfolioQ = useApiQuery<unknown>('/portfolio/list');
 

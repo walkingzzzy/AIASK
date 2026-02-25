@@ -583,7 +583,11 @@ def register(mcp):
             code: 股票代码
         """
         try:
+            from ..data_source import data_source
+
             db = get_db()
+            pe = pb = mcap = None
+            name = ""
 
             # 从stocks表获取估值指标
             async with db.acquire() as conn:
@@ -593,17 +597,31 @@ def register(mcp):
                        WHERE stock_code = $1""",
                     code
                 )
+                if row:
+                    name = row['stock_name'] or ""
+                    pe = float(row['pe_ratio']) if row['pe_ratio'] else None
+                    pb = float(row['pb_ratio']) if row['pb_ratio'] else None
+                    mcap = float(row['market_cap']) if row['market_cap'] else None
 
-                if not row:
-                    return fail('Stock not found')
+            # DB 值为空时，从 TDX 实时计算
+            if pe is None or pb is None or mcap is None:
+                live = data_source.get_stock_info_priority_tdx(code)
+                if live:
+                    name = name or live.get("name", "")
+                    pe = pe or live.get("pe_ratio")
+                    pb = pb or live.get("pb_ratio")
+                    mcap = mcap or live.get("market_cap")
 
-                return ok({
-                    'code': row['stock_code'],
-                    'name': row['stock_name'],
-                    'pe_ratio': float(row['pe_ratio']) if row['pe_ratio'] else None,
-                    'pb_ratio': float(row['pb_ratio']) if row['pb_ratio'] else None,
-                    'market_cap': float(row['market_cap']) if row['market_cap'] else None,
-                })
+            if not name and pe is None and pb is None and mcap is None:
+                return fail('Stock not found')
+
+            return ok({
+                'code': code,
+                'name': name,
+                'pe_ratio': round(pe, 2) if pe else None,
+                'pb_ratio': round(pb, 2) if pb else None,
+                'market_cap': round(mcap, 2) if mcap else None,
+            })
 
         except Exception as e:
             return fail(str(e))

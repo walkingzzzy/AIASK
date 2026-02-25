@@ -309,10 +309,10 @@ class TdxMixin:
             if not snapshot or snapshot.get("ErrorId") != "0":
                 return None
 
-            price = safe_float(snapshot.get("Now", 0))
-            pre_close = safe_float(snapshot.get("LastClose", 0))
-            change = price - pre_close if price and pre_close else None
-            change_pct = (change / pre_close * 100) if change and pre_close else None
+            price = safe_float(snapshot.get("Now", 0)) or None
+            pre_close = safe_float(snapshot.get("LastClose", 0)) or None
+            change = price - pre_close if price is not None and pre_close is not None else None
+            change_pct = (change / pre_close * 100) if change is not None and pre_close else None
 
             buyp = snapshot.get("Buyp", [])
             buyv = snapshot.get("Buyv", [])
@@ -325,9 +325,9 @@ class TdxMixin:
                 "price": price,
                 "change": change,
                 "changePercent": change_pct,
-                "open": safe_float(snapshot.get("Open", 0)),
-                "high": safe_float(snapshot.get("High", 0)) or safe_float(snapshot.get("Max", 0)),
-                "low": safe_float(snapshot.get("Low", 0)) or safe_float(snapshot.get("Min", 0)),
+                "open": safe_float(snapshot.get("Open", 0)) or None,
+                "high": safe_float(snapshot.get("High", 0)) or safe_float(snapshot.get("Max", 0)) or None,
+                "low": safe_float(snapshot.get("Low", 0)) or safe_float(snapshot.get("Min", 0)) or None,
                 "preClose": pre_close,
                 "volume": safe_int(snapshot.get("Volume", 0)),
                 "amount": safe_float(snapshot.get("Amount", 0)),

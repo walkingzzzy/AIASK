@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, ReactNode, useMemo, useState } from 'react';
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { PageContainer, SectionCard, TabBar, DataTable, StockCodeInput, KpiCard, KpiGrid } from '@/components/ui';
 import { BarChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -10,6 +10,7 @@ import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { fmt, cacheText, type CacheMeta } from '@/lib/api';
 import { StockLink } from '@/components/stock-link';
+import { WatchlistButton } from '@/components/watchlist-button';
 
 type ResearchItem = { title: string; date: string; source: string; summary: string };
 type ResearchData = {
@@ -43,13 +44,22 @@ function highlight(text: string, kw: string): ReactNode {
 }
 
 export default function ResearchPage() {
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
   const [range, setRange] = useState<Range>('30');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [keyword, setKeyword] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [listPath, setListPath] = useState<string | null>(null);
+
+  // 自动查询：URL 或 Store 携带了有效代码时自动触发研报查询
+  const autoFetched = useRef(false);
+  useEffect(() => {
+    if (!autoFetched.current && resolvedCode) {
+      autoFetched.current = true;
+      setListPath(`/research/list?code=${encodeURIComponent(resolvedCode)}&days=30&limit=20&keyword=`);
+    }
+  }, [resolvedCode]);
 
   const listQ = useApiQuery<ResearchData>(listPath);
   const [newsTab, setNewsTab] = useState<NewsTab>('stock-news');
@@ -104,6 +114,12 @@ export default function ResearchPage() {
   return (
     <PageContainer narrow>
       <h1>研报公告</h1>
+      {resolvedCode && (
+        <div className="flex items-center gap-2 mb-2">
+          <StockLink code={resolvedCode} name={resolvedCode} />
+          <WatchlistButton code={resolvedCode} name="" />
+        </div>
+      )}
       <form onSubmit={onSubmit} className="flex gap-2.5 flex-wrap items-center">
         <StockCodeInput value={code} onChange={setCode} error={codeError} placeholder="如 600519" />
         <select value={range} onChange={(e) => setRange(e.target.value as Range)}>

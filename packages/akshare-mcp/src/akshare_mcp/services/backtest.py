@@ -477,6 +477,127 @@ def _simulate_trades_from_signals(
     return final_capital, total_return, max_dd, sharpe, trades, win_rate, equity
 
 
+# ---------------------------------------------------------------------------
+# 交易记录提取 & 盈亏比计算
+# ---------------------------------------------------------------------------
+
+def _calc_profit_factor(trade_list: List[Dict[str, Any]]) -> float:
+    gross_profit = sum(t['profit'] for t in trade_list if t.get('profit', 0) > 0)
+    gross_loss = abs(sum(t['profit'] for t in trade_list if t.get('profit', 0) < 0))
+    if gross_loss == 0:
+        return round(gross_profit, 2) if gross_profit > 0 else 0.0
+    return round(gross_profit / gross_loss, 4)
+
+
+def _build_trade_list(
+    klines: List[Dict[str, Any]],
+    closes: np.ndarray,
+    strategy: str,
+    params: Dict[str, Any],
+    cost_rate: float,
+) -> List[Dict[str, Any]]:
+    """Replay strategy in pure Python to extract trade records."""
+    n = len(closes)
+    trades: List[Dict[str, Any]] = []
+    initial_capital = float(params.get('initial_capital', 100000) or 100000)
+
+    def _date(idx: int) -> str:
+        return str(klines[idx].get('date', ''))[:10] if idx < len(klines) else ''
+
+    def _record(entry_i, exit_i, ep, xp, sh):
+        pnl = sh * (xp - ep)
+        trades.append({
+            'date': _date(entry_i), 'type': 'buy',
+            'price': round(float(ep), 2), 'exit_price': round(float(xp), 2),
+            'shares': int(sh), 'profit': round(float(pnl), 2),
+            'holding_days': exit_i - entry_i,
+        })
+
+    if strategy == 'ma_cross':
+        sp = int(params.get('short_period', 5))
+        lp = int(params.get('long_period', 20))
+        sma = np.zeros(n)
+        lma = np.zeros(n)
+        for i in range(sp - 1, n):
+            sma[i] = np.mean(closes[i - sp + 1:i + 1])
+        for i in range(lp - 1, n):
+            lma[i] = np.mean(closes[i - lp + 1:i + 1])
+        cash, shares, ep, ei = initial_capital, 0, 0.0, 0
+        for i in range(lp, n):
+            if sma[i - 1] <= lma[i - 1] and sma[i] > lma[i] and cash > 0 and shares == 0:
+                ep = closes[i] * (1 + cost_rate)
+                shares = int(cash / ep)
+                cash -= shares * ep
+                ei = i
+            elif sma[i - 1] >= lma[i - 1] and sma[i] < lma[i] and shares > 0:
+                xp = closes[i] * (1 - cost_rate)
+                _record(ei, i, ep, xp, shares)
+                cash += shares * xp
+                shares = 0
+        if shares > 0:
+            xp = closes[-1] * (1 - cost_rate)
+            _record(ei, n - 1, ep, xp, shares)
+
+    elif strategy == 'momentum':
+        lb = int(params.get('lookback', 20))
+        th = float(params.get('threshold', 0.02))
+        cash, shares, ep, ei = initial_capital, 0, 0.0, 0
+        for i in range(lb, n):
+            mom = (closes[i] - closes[i - lb]) / closes[i - lb]
+            if mom > th and shares == 0 and cash > 0:
+                ep = closes[i] * 1.0001 * (1 + cost_rate)
+                shares = int(cash / ep)
+                if shares > 0:
+                    cash -= shares * ep
+                    ei = i
+            elif mom < -th and shares > 0:
+                xp = closes[i] * 0.9999 * (1 - cost_rate)
+                _record(ei, i, ep, xp, shares)
+                cash += shares * xp
+                shares = 0
+        if shares > 0:
+            xp = closes[-1] * 0.9999 * (1 - cost_rate)
+            _record(ei, n - 1, ep, xp, shares)
+
+    elif strategy == 'rsi':
+        rp = int(params.get('rsi_period', 14))
+        os_val = float(params.get('oversold', 30))
+        ob_val = float(params.get('overbought', 70))
+        rsi = np.zeros(n)
+        for i in range(rp, n):
+            g = l = 0.0
+            for j in range(i - rp + 1, i + 1):
+                c = closes[j] - closes[j - 1]
+                if c > 0: g += c
+                else: l -= c
+            ag, al = g / rp, l / rp
+            rsi[i] = 100.0 if al == 0 else 100.0 - (100.0 / (1 + ag / al))
+        cash, shares, ep, ei = initial_capital, 0, 0.0, 0
+        for i in range(rp, n):
+            if rsi[i] < os_val and shares == 0:
+                ep = closes[i] * 1.0001 * (1 + cost_rate)
+                shares = int(cash / ep)
+                if shares > 0:
+                    cash -= shares * ep
+                    ei = i
+            elif rsi[i] > ob_val and shares > 0:
+                xp = closes[i] * 0.9999 * (1 - cost_rate)
+                _record(ei, i, ep, xp, shares)
+                cash += shares * xp
+                shares = 0
+        if shares > 0:
+            xp = closes[-1] * 0.9999 * (1 - cost_rate)
+            _record(ei, n - 1, ep, xp, shares)
+
+    elif strategy == 'buy_and_hold':
+        ep = float(closes[0])
+        shares = int(initial_capital / ep)
+        xp = float(closes[-1])
+        _record(0, n - 1, ep, xp, shares)
+
+    return trades
+
+
 class BacktestEngine:
     """回测引擎"""
     
@@ -542,7 +663,7 @@ class BacktestEngine:
             }
             slippage_calc = SlippageCalculator(type_map[slippage_model_type])
 
-        def _finalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        def _finalize_payload(payload: Dict[str, Any], equity: Any = None, trade_list: Any = None) -> Dict[str, Any]:
             enriched = dict(payload)
             enriched['commission'] = float(commission)
             enriched['slippage'] = float(slippage)
@@ -555,6 +676,13 @@ class BacktestEngine:
             if benchmark_return is not None:
                 enriched['benchmark_return'] = float(benchmark_return)
                 enriched['excess_return'] = float(enriched.get('total_return', 0.0) - benchmark_return)
+            if equity is not None:
+                curve = equity.tolist() if hasattr(equity, 'tolist') else list(equity)
+                enriched['equity_curve'] = [round(v, 2) for v in curve]
+            enriched['dates'] = [str(k.get('date', ''))[:10] for k in klines]
+            if trade_list is not None:
+                enriched['trades'] = trade_list
+                enriched['profit_factor'] = _calc_profit_factor(trade_list)
             return enriched
 
         closes = np.array([k['close'] for k in klines])
@@ -600,7 +728,7 @@ class BacktestEngine:
                 'params': params,
                 'signal_dsl_version': signal_def.get('schema_version', 'unknown'),
             }
-            return {'success': True, 'data': _finalize_payload(payload)}
+            return {'success': True, 'data': _finalize_payload(payload, equity=equity)}
 
         if strategy == 'ma_cross':
             short_period = params.get('short_period', 5)
@@ -624,7 +752,8 @@ class BacktestEngine:
                 'win_rate': float(win_rate),
                 'params': params,
             }
-            return {'success': True, 'data': _finalize_payload(payload)}
+            trade_list = _build_trade_list(klines, closes, 'ma_cross', {**params, 'initial_capital': initial_capital}, total_cost_rate)
+            return {'success': True, 'data': _finalize_payload(payload, equity=equity, trade_list=trade_list)}
 
         elif strategy == 'buy_and_hold':
             final_capital = initial_capital * (closes[-1] / closes[0])
@@ -647,7 +776,8 @@ class BacktestEngine:
                 'win_rate': 1.0 if total_return > 0 else 0.0,
                 'params': params,
             }
-            return {'success': True, 'data': _finalize_payload(payload)}
+            trade_list = _build_trade_list(klines, closes, 'buy_and_hold', {**params, 'initial_capital': initial_capital}, total_cost_rate)
+            return {'success': True, 'data': _finalize_payload(payload, equity=equity, trade_list=trade_list)}
 
         elif strategy == 'momentum':
             lookback = params.get('lookback', 20)
@@ -671,7 +801,8 @@ class BacktestEngine:
                 'win_rate': float(win_rate),
                 'params': params,
             }
-            return {'success': True, 'data': _finalize_payload(payload)}
+            trade_list = _build_trade_list(klines, closes, 'momentum', {**params, 'initial_capital': initial_capital}, total_cost_rate)
+            return {'success': True, 'data': _finalize_payload(payload, equity=equity, trade_list=trade_list)}
 
         elif strategy == 'rsi':
             rsi_period = params.get('rsi_period', 14)
@@ -696,7 +827,8 @@ class BacktestEngine:
                 'win_rate': float(win_rate),
                 'params': params,
             }
-            return {'success': True, 'data': _finalize_payload(payload)}
+            trade_list = _build_trade_list(klines, closes, 'rsi', {**params, 'initial_capital': initial_capital}, total_cost_rate)
+            return {'success': True, 'data': _finalize_payload(payload, equity=equity, trade_list=trade_list)}
 
         return {'success': False, 'error': f'Unknown strategy: {strategy}'}
     

@@ -7,35 +7,20 @@ class RunBacktestDto {
   @Matches(/^\d{6}$/, { message: 'code 必须为 6 位数字' })
   code!: string;
 
-  @IsOptional()
-  @IsString()
-  strategy?: string;
-
-  @IsOptional()
-  @IsString()
-  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'startDate 格式必须为 YYYY-MM-DD' })
-  startDate?: string;
-
-  @IsOptional()
-  @IsString()
-  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'endDate 格式必须为 YYYY-MM-DD' })
-  endDate?: string;
-
-  @IsOptional()
-  @IsNumberString({}, { message: 'initialCapital 必须为数字字符串' })
-  initialCapital?: string;
-
-  @IsOptional()
-  @IsNumberString({}, { message: 'shortPeriod 必须为数字字符串' })
-  shortPeriod?: string;
-
-  @IsOptional()
-  @IsNumberString({}, { message: 'longPeriod 必须为数字字符串' })
-  longPeriod?: string;
-
-  @IsOptional()
-  @IsString()
-  artifactId?: string;
+  @IsOptional() @IsString() strategy?: string;
+  @IsOptional() @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'startDate 格式必须为 YYYY-MM-DD' }) startDate?: string;
+  @IsOptional() @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'endDate 格式必须为 YYYY-MM-DD' }) endDate?: string;
+  @IsOptional() @IsNumberString() initialCapital?: string;
+  @IsOptional() @IsNumberString() shortPeriod?: string;
+  @IsOptional() @IsNumberString() longPeriod?: string;
+  @IsOptional() @IsNumberString() lookback?: string;
+  @IsOptional() @IsNumberString() threshold?: string;
+  @IsOptional() @IsNumberString() rsiPeriod?: string;
+  @IsOptional() @IsNumberString() oversold?: string;
+  @IsOptional() @IsNumberString() overbought?: string;
+  @IsOptional() @IsNumberString() commission?: string;
+  @IsOptional() @IsNumberString() slippage?: string;
+  @IsOptional() @IsString() artifactId?: string;
 }
 
 class ListBacktestDto {
@@ -58,14 +43,22 @@ export class BacktestController {
     @Body() body: RunBacktestDto,
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
+    const toNum = (v?: string) => v != null ? Number(v) : undefined;
     const data = await this.backtestService.run({
       code: body.code,
       strategy: body.strategy ?? 'ma_cross',
       startDate: body.startDate,
       endDate: body.endDate,
-      initialCapital: body.initialCapital ? Number(body.initialCapital) : undefined,
-      shortPeriod: body.shortPeriod ? Number(body.shortPeriod) : undefined,
-      longPeriod: body.longPeriod ? Number(body.longPeriod) : undefined,
+      initialCapital: toNum(body.initialCapital),
+      shortPeriod: toNum(body.shortPeriod),
+      longPeriod: toNum(body.longPeriod),
+      lookback: toNum(body.lookback),
+      threshold: toNum(body.threshold),
+      rsiPeriod: toNum(body.rsiPeriod),
+      oversold: toNum(body.oversold),
+      overbought: toNum(body.overbought),
+      commission: toNum(body.commission),
+      slippage: toNum(body.slippage),
       artifactId: body.artifactId,
     });
 
@@ -93,6 +86,32 @@ export class BacktestController {
     const data = await this.backtestService.metricsByArtifact(query.artifactId);
     const traceId =
       req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    return { success: true, data, traceId: String(traceId) };
+  }
+
+  /** P3-5: Send backtest result to TDX */
+  @Post('send-to-tdx')
+  async sendToTdx(
+    @Body() body: { code: string; strategy: string },
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+  ) {
+    const data = await this.backtestService.sendToTdx(body);
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || 'UNKNOWN';
+    return { success: true, data, traceId: String(traceId) };
+  }
+
+  /** P3-3: Batch backtest */
+  @Post('batch')
+  async batch(
+    @Body() body: { codes: string[]; strategy: string; initialCapital?: string },
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+  ) {
+    const data = await this.backtestService.batch({
+      codes: body.codes,
+      strategy: body.strategy,
+      initialCapital: body.initialCapital ? Number(body.initialCapital) : undefined,
+    });
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 }

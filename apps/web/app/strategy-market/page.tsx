@@ -7,6 +7,7 @@ import { useApiMutation } from '@/hooks/use-api-mutation';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { StrategyCard, type Strategy } from '@/components/strategy-card';
 import { useCartStore } from '@/store/cart-store';
+import { ensureRecordOrArray } from '@/lib/query-parse';
 
 const CATEGORIES = [
   { key: 'all', label: '全部' },
@@ -24,6 +25,9 @@ export default function StrategyMarketPage() {
   const [search, setSearch] = useState('');
   const rankQ = useApiQuery<RankingResponse>(
     '/strategy-market/ranking?limit=50' + (category === 'all' ? '' : '&strategy_type=' + category),
+    {
+      parse: (raw) => ensureRecordOrArray(raw, '策略榜单') as RankingResponse,
+    },
   );
   const addToCart = useCartStore((s) => s.addStrategy);
   const cartItems = useCartStore((s) => s.items);
@@ -68,7 +72,7 @@ export default function StrategyMarketPage() {
         </div>
       </div>
 
-      <TabBar tabs={CATEGORIES} active={category} onChange={setCategory} />
+      <TabBar tabs={CATEGORIES} active={category} onChange={(c) => { setCategory(c); setSearch(''); }} />
 
       {rankQ.isPending && <LoadingState text="加载策略列表..." />}
       {rankQ.error && <ErrorState text={rankQ.error} />}
@@ -117,6 +121,7 @@ function CartDrawer({ onClose }: { onClose: () => void }) {
     await createApi.triggerAsync('/portfolio/create', { method: 'POST' }, {
       name: portfolioName,
       description: `策略组合: ${items.map((i) => `${i.name}(${i.weight}%)`).join(', ')}`,
+      strategies: items.map((i) => ({ strategyId: i.strategyId, weight: i.weight / 100 })),
     });
     clear();
     onClose();

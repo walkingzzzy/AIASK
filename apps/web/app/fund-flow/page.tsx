@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PageContainer, TabBar, SectionCard, StockCodeInput } from '@/components/ui';
 import { KpiCard, KpiGrid, DataTable } from '@/components/ui';
 import { BarChart, LineChart, PieChart, COLORS } from '@/components/charts';
@@ -11,6 +11,7 @@ import { extractArray, extractObject, fmtNum, fmtAmount, fmtPct } from '@/lib/da
 import { exportCSV } from '@/lib/export';
 import { fmt } from '@/lib/api';
 import { StockLink } from '@/components/stock-link';
+import { WatchlistButton } from '@/components/watchlist-button';
 
 type Tab = 'stock' | 'sector' | 'concept' | 'north' | 'dragon' | 'margin' | 'block-trades' | 'north-detail';
 const TABS: { key: Tab; label: string }[] = [
@@ -26,9 +27,18 @@ const TABS: { key: Tab; label: string }[] = [
 
 export default function FundFlowPage() {
   const [tab, setTab] = useState<Tab>('stock');
-  const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
+  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
 
   const [stockPath, setStockPath] = useState<string | null>(null);
+
+  // 自动查询：URL 或 Store 携带了有效代码时自动触发个股资金流
+  const autoFetched = useRef(false);
+  useEffect(() => {
+    if (!autoFetched.current && resolvedCode) {
+      autoFetched.current = true;
+      setStockPath(`/fund-flow/stock?code=${encodeURIComponent(resolvedCode)}`);
+    }
+  }, [resolvedCode]);
   const [sectorPath, setSectorPath] = useState<string | null>(null);
   const [conceptPath, setConceptPath] = useState<string | null>(null);
   const [northPath, setNorthPath] = useState<string | null>(null);
@@ -50,18 +60,39 @@ export default function FundFlowPage() {
   const northHoldingQ = useApiQuery<unknown>(northHoldingPath);
   const northTopQ = useApiQuery<unknown>(northTopPath);
 
-  const loading = stockQ.isFetching || sectorQ.isFetching || conceptQ.isFetching
-    || northQ.isFetching || dragonQ.isFetching || marginQ.isFetching
-    || marginRankQ.isFetching || blockTradesQ.isFetching
-    || northHoldingQ.isFetching || northTopQ.isFetching;
-  const error = codeError || stockQ.error || sectorQ.error || conceptQ.error
-    || northQ.error || dragonQ.error || marginQ.error
-    || marginRankQ.error || blockTradesQ.error
-    || northHoldingQ.error || northTopQ.error;
+  // Per-tab loading & error — 避免跨 Tab 互相阻塞
+  const tabLoading: Record<Tab, boolean> = {
+    stock: stockQ.isFetching,
+    sector: sectorQ.isFetching,
+    concept: conceptQ.isFetching,
+    north: northQ.isFetching,
+    dragon: dragonQ.isFetching,
+    margin: marginQ.isFetching || marginRankQ.isFetching,
+    'block-trades': blockTradesQ.isFetching,
+    'north-detail': northHoldingQ.isFetching || northTopQ.isFetching,
+  };
+  const tabError: Record<Tab, string | null> = {
+    stock: codeError || stockQ.error,
+    sector: sectorQ.error,
+    concept: conceptQ.error,
+    north: northQ.error,
+    dragon: dragonQ.error,
+    margin: marginQ.error || marginRankQ.error,
+    'block-trades': blockTradesQ.error,
+    'north-detail': codeError || northHoldingQ.error || northTopQ.error,
+  };
+  const loading = tabLoading[tab];
+  const error = tabError[tab];
 
   return (
     <PageContainer>
       <h1>资金流向</h1>
+      {resolvedCode && (
+        <div className="flex items-center gap-2 mb-2">
+          <StockLink code={resolvedCode} name={resolvedCode} />
+          <WatchlistButton code={resolvedCode} name="" />
+        </div>
+      )}
       {loading ? <LoadingState text="加载中..." /> : null}
       {error ? <ErrorState text={error} hint="请稍后重试" /> : null}
       <TabBar tabs={TABS} active={tab} onChange={setTab} />
@@ -143,12 +174,12 @@ export default function FundFlowPage() {
                 rows={rows}
                 columns={[
                   { key: 'name', label: '板块名称' },
+                  { key: 'changePercent', label: '涨跌幅', align: 'right' as const,
+                    render: (v: unknown) => <span className={(v as number) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(v as number)}</span> },
                   { key: 'netInflow', label: '净流入', align: 'right' as const,
                     render: (v: unknown) => <span className={(v as number) >= 0 ? 'text-danger' : 'text-success'}>{fmtAmount(v as number)}</span> },
                   { key: 'mainInflow', label: '主力流入', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
-                  { key: 'mainOutflow', label: '主力流出', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
                   { key: 'retailInflow', label: '散户流入', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
-                  { key: 'retailOutflow', label: '散户流出', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
                 ]}
                 maxHeight={400}
                 onExport={() => exportCSV(rows, '板块资金流')}
@@ -173,12 +204,12 @@ export default function FundFlowPage() {
                 rows={rows}
                 columns={[
                   { key: 'name', label: '概念名称' },
+                  { key: 'changePercent', label: '涨跌幅', align: 'right' as const,
+                    render: (v: unknown) => <span className={(v as number) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(v as number)}</span> },
                   { key: 'netInflow', label: '净流入', align: 'right' as const,
                     render: (v: unknown) => <span className={(v as number) >= 0 ? 'text-danger' : 'text-success'}>{fmtAmount(v as number)}</span> },
                   { key: 'mainInflow', label: '主力流入', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
-                  { key: 'mainOutflow', label: '主力流出', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
                   { key: 'retailInflow', label: '散户流入', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
-                  { key: 'retailOutflow', label: '散户流出', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
                 ]}
                 maxHeight={400}
                 onExport={() => exportCSV(rows, '概念资金流')}
@@ -254,16 +285,14 @@ export default function FundFlowPage() {
           </div>
           {marginQ.data ? (() => {
             const rows = extractArray(marginQ.data);
-            const obj = extractObject(marginQ.data);
-            const trend = extractArray(obj, 'trend', 'history');
             return (
               <>
-                {trend.length > 0 && (
+                {rows.length > 1 && (
                   <LineChart
-                    categories={trend.map((x: Record<string, unknown>) => fmt(x.date as string))}
+                    categories={rows.map((x: Record<string, unknown>) => fmt(x.date as string))}
                     series={[{
                       name: '融资余额',
-                      data: trend.map((x: Record<string, unknown>) => (x.balance as number) ?? (x.rzye as number) ?? 0),
+                      data: rows.map((x: Record<string, unknown>) => (x.marginBalance as number) ?? (x.balance as number) ?? 0),
                       color: COLORS.primary,
                     }]}
                     height={300}
@@ -351,12 +380,13 @@ export default function FundFlowPage() {
             <>
               {northHoldingQ.data && (() => {
                 const obj = extractObject(northHoldingQ.data);
+                const shares = obj.shares as number;
+                const change = obj.change as number;
                 return (
-                  <KpiGrid cols={4}>
-                    <KpiCard title="持股数量" value={fmtNum(obj.shares as number)} suffix="股" />
+                  <KpiGrid cols={3}>
+                    <KpiCard title="持股数量" value={fmtAmount(shares)} />
                     <KpiCard title="占流通比" value={fmtPct(obj.ratio as number)} />
-                    <KpiCard title="日增持" value={fmtNum(obj.change as number)} change={obj.change as number} />
-                    <KpiCard title="股票代码" value={String(obj.code ?? '-')} />
+                    <KpiCard title="日增持" value={fmtAmount(change)} change={change != null && shares ? (change / shares) * 100 : null} />
                   </KpiGrid>
                 );
               })()}
@@ -366,7 +396,7 @@ export default function FundFlowPage() {
                   <DataTable rows={rows} columns={[
                     { key: 'code', label: '代码', render: (v: unknown, row: Record<string, unknown>) => <StockLink code={String(v)} name={String(row.name ?? '')} /> },
                     { key: 'name', label: '名称' },
-                    { key: 'shares', label: '持股数', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 0) },
+                    { key: 'shares', label: '持股数', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
                     { key: 'ratio', label: '占比', align: 'right' as const, render: (v: unknown) => fmtPct(v as number) },
                     { key: 'marketCap', label: '市值', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
                   ]} maxHeight={400} onExport={() => exportCSV(rows, '北向持仓TOP')} />

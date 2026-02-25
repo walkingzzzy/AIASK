@@ -5,6 +5,7 @@ import { CommonCacheService } from '../common/cache.service';
 export type NormalizedFlowItem = {
   date: string; name: string; netInflow: number | null; mainInflow: number | null;
   mainOutflow: number | null; retailInflow: number | null; retailOutflow: number | null;
+  changePercent?: number | null;
 };
 
 @Injectable()
@@ -35,7 +36,18 @@ export class FundFlowService {
     ];
 
     const { payload } = await this.callWithArgs('get_stock_fund_flow', attempts);
-    const result = { data: { flows: this.normalizeFlows(payload) }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
+    const d = (payload as any)?.data ?? payload ?? {};
+    // MCP returns a single flat object, not an array — wrap it
+    const flows = Array.isArray(d) ? this.normalizeFlows(payload) : [{
+      date: new Date().toISOString().slice(0, 10),
+      name: String(d.name ?? ''),
+      netInflow: this.toNum(d.mainNetInflow ?? d.main_net_inflow ?? d.net_inflow),
+      mainInflow: this.toNum(d.mainNetInflow ?? d.main_net_inflow),
+      mainOutflow: null,
+      retailInflow: this.toNum(d.smallNetInflow ?? d.small_net_inflow),
+      retailOutflow: null,
+    }];
+    const result = { data: { flows }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
     return result;
   }
@@ -49,6 +61,13 @@ export class FundFlowService {
     }
 
     const payload = await this.mcp.callTool('get_sector_fund_flow', {});
+    // DEBUG: log raw MCP response to understand field names
+    const rawRoot = (payload as any)?.data ?? payload ?? [];
+    const rawList = Array.isArray(rawRoot) ? rawRoot : rawRoot?.items ?? rawRoot?.data ?? [];
+    if (Array.isArray(rawList) && rawList.length > 0) {
+      console.log('[SECTOR_FLOW] Raw MCP item keys:', Object.keys(rawList[0]));
+      console.log('[SECTOR_FLOW] Raw MCP item[0]:', JSON.stringify(rawList[0]));
+    }
     const result = { data: { flows: this.normalizeFlows(payload) }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
     return result;
@@ -77,8 +96,11 @@ export class FundFlowService {
     }
 
     const payload = await this.mcp.callTool('get_north_fund', {});
-    const result = { data: { flows: this.normalizeFlows(payload) }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
-    await this.cacheService.set(cacheKey, result, ttlSeconds);
+    const flows = this.normalizeFlows(payload);
+    const result = { data: { flows }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
+    if (flows.length > 0) {
+      await this.cacheService.set(cacheKey, result, ttlSeconds);
+    }
     return result;
   }
 
@@ -89,7 +111,10 @@ export class FundFlowService {
     const payload = await this.mcp.callTool('get_dragon_tiger', args);
     const root = (payload as any)?.data ?? payload ?? [];
     const list = Array.isArray(root) ? root : [];
-    return { data: { items: list.map((x: any) => ({ code: String(x.code ?? ''), name: String(x.name ?? ''), closePrice: this.toNum(x.closePrice ?? x.close_price ?? x.price), changePercent: this.toNum(x.changePercent ?? x.change_percent), reason: String(x.reason ?? ''), buyAmount: this.toNum(x.buyAmount ?? x.buy_amount), sellAmount: this.toNum(x.sellAmount ?? x.sell_amount), netAmount: this.toNum(x.netAmount ?? x.net_amount) })) } };
+    return { data: { items: list.map((x: any) => {
+      const reason = x.reason == null || String(x.reason) === 'nan' ? '' : String(x.reason);
+      return { code: String(x.code ?? ''), name: String(x.name ?? ''), closePrice: this.toNum(x.closePrice ?? x.close_price ?? x.price), changePercent: this.toNum(x.changePercent ?? x.change_percent), reason, buyAmount: this.toNum(x.buyAmount ?? x.buy_amount), sellAmount: this.toNum(x.sellAmount ?? x.sell_amount), netAmount: this.toNum(x.netAmount ?? x.net_amount) };
+    }) } };
   }
 
   async getMarginData(code?: string, days = 30) {
@@ -135,15 +160,20 @@ export class FundFlowService {
 
   private normalizeFlows(payload: any): NormalizedFlowItem[] {
     const root = payload?.data ?? payload ?? [];
-    const list = Array.isArray(root) ? root : Array.isArray(root?.flows) ? root.flows : Array.isArray(root?.data) ? root.data : Array.isArray(root?.records) ? root.records : [];
+    const list = Array.isArray(root) ? root
+      : Array.isArray(root?.items) ? root.items
+      : Array.isArray(root?.flows) ? root.flows
+      : Array.isArray(root?.data) ? root.data
+      : Array.isArray(root?.records) ? root.records : [];
     return list.map((x: any) => ({
       date: String(x.date ?? x.trade_date ?? x.Date ?? ''),
       name: String(x.name ?? x.sector_name ?? x.concept_name ?? ''),
-      netInflow: this.toNum(x.net_inflow ?? x.netInflow ?? x.net_amount ?? x.value),
-      mainInflow: this.toNum(x.main_inflow ?? x.mainInflow ?? x.main_net_inflow),
+      changePercent: this.toNum(x.changePercent ?? x.change_percent),
+      netInflow: this.toNum(x.net_inflow ?? x.netInflow ?? x.mainNetInflow ?? x.net_amount ?? x.total ?? x.value),
+      mainInflow: this.toNum(x.main_inflow ?? x.mainInflow ?? x.mainNetInflow ?? x.main_net_inflow ?? x.superLargeNetInflow),
       mainOutflow: this.toNum(x.main_outflow ?? x.mainOutflow),
-      retailInflow: this.toNum(x.retail_inflow ?? x.retailInflow),
-      retailOutflow: this.toNum(x.retail_outflow ?? x.retailOutflow),
+      retailInflow: this.toNum(x.retail_inflow ?? x.retailInflow ?? x.smallNetInflow ?? x.inflow),
+      retailOutflow: this.toNum(x.retail_outflow ?? x.retailOutflow ?? x.outflow),
     }));
   }
 

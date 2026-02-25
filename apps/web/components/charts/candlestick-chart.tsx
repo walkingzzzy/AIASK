@@ -29,7 +29,8 @@ export function CandlestickChart({
   showVolume?: boolean;
 }) {
   const hasVolume = showVolume && data.some((d) => d.volume != null && d.volume > 0);
-  const dates = useMemo(() => data.map((d) => d.date.slice(0, 10)), [data]);
+  const hasTime = data.length > 0 && data[0].date.length > 10;
+  const dates = useMemo(() => data.map((d) => hasTime ? d.date.slice(5) : d.date.slice(0, 10)), [data, hasTime]);
 
   const option = useMemo(() => {
     const grids = [{ left: 50, right: 20, top: 40, bottom: hasVolume ? '28%' : 40 }];

@@ -1,14 +1,18 @@
+import { fmtAmount } from '@/lib/data-utils';
+
 export function KpiCard({
   title,
   value,
   suffix,
   change,
+  changeType = 'percent',
   className = '',
 }: {
   title: string;
   value: string | number | null | undefined;
   suffix?: string;
   change?: number | null;
+  changeType?: 'percent' | 'absolute';
   className?: string;
 }) {
   const displayValue = value == null || value === '' ? '-' : String(value);
@@ -21,7 +25,9 @@ export function KpiCard({
       </div>
       {change != null ? (
         <div className={`text-xs mt-1 ${change >= 0 ? 'text-danger' : 'text-success'}`}>
-          {change >= 0 ? '+' : ''}{typeof change === 'number' ? change.toFixed(2) : change}%
+          {change >= 0 ? '+' : ''}
+          {typeof change === 'number' ? (changeType === 'absolute' ? fmtAmount(change) : change.toFixed(2)) : change}
+          {changeType === 'percent' ? '%' : ''}
         </div>
       ) : null}
     </div>

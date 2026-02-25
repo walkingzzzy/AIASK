@@ -673,7 +673,9 @@ def get_north_fund(days: int = 30) -> dict:
                 stale_candidates,
                 key=lambda item: latest_date(item[1]) or date.min
             )
-            return ok({"items": best_rows, "source": f"{best_source}_stale", "stale": True})
+            result = ok({"items": best_rows, "source": f"{best_source}_stale", "stale": True})
+            result["_no_cache"] = True
+            return result
 
         return fail(f"北向资金数据不可用: 所有数据源均失效或数据过期 ({'; '.join(sources_status)})")
     except Exception as e:

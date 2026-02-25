@@ -20,6 +20,10 @@ __pycache__/
 .benchmarks/
 .mcp_cache/
 
+# Claude worktrees
+.claude/worktrees/
+.playwright-mcp/
+
 # Project cleanup outputs
 reports/
 packages/akshare-mcp/htmlcov/

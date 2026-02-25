@@ -36,28 +36,34 @@ export class FactorService {
   }
 
   async calculateFactor(body: { factor_name: string; stock_codes: string[]; start_date?: string; end_date?: string }) {
-    const payload = await this.mcp.callTool('calculate_factor', body);
-    return { data: payload };
+    // calculate_factor accepts a single code + factor; call per stock and merge
+    const results: unknown[] = [];
+    for (const code of body.stock_codes) {
+      const payload = await this.mcp.callTool('calculate_factor', { code, factor: body.factor_name });
+      const flat = this.flattenMcpResult(payload);
+      results.push({ stock_code: code, ...flat });
+    }
+    return { data: results };
   }
 
   async calculateIc(body: { factor_name: string; stock_codes: string[] }) {
-    const payload = await this.mcp.callTool('calculate_factor_ic', body);
-    return { data: payload };
+    const payload = await this.mcp.callTool('calculate_factor_ic', { codes: body.stock_codes, factor: body.factor_name });
+    return { data: this.flattenMcpResult(payload) };
   }
 
   async backtestFactor(body: { factor_name: string; stock_codes: string[]; start_date?: string; end_date?: string }) {
-    const payload = await this.mcp.callTool('backtest_factor', body);
-    return { data: payload };
+    const payload = await this.mcp.callTool('backtest_factor', { codes: body.stock_codes, factor: body.factor_name });
+    return { data: this.flattenMcpResult(payload) };
   }
 
   async validateOos(body: { factor_name: string; stock_codes: string[]; start_date?: string; end_date?: string }) {
-    const payload = await this.mcp.callTool('validate_factor_oos', body);
-    return { data: payload };
+    const payload = await this.mcp.callTool('validate_factor_oos', { codes: body.stock_codes, factor: body.factor_name });
+    return { data: this.flattenMcpResult(payload) };
   }
 
   async robustnessCheck(body: { factor_name: string; stock_codes: string[]; start_date?: string; end_date?: string }) {
-    const payload = await this.mcp.callTool('factor_robustness_check', body);
-    return { data: payload };
+    const payload = await this.mcp.callTool('factor_robustness_check', { codes: body.stock_codes, factor: body.factor_name });
+    return { data: this.flattenMcpResult(payload) };
   }
 
   async icHistory(params: { factor_name: string; period?: string; limit?: number }) {
@@ -124,5 +130,16 @@ export class FactorService {
   private toNum(v: unknown): number | null {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
+  }
+
+  /** Flatten MCP tool result: merge nested `data` object to top level */
+  private flattenMcpResult(payload: unknown): Record<string, unknown> {
+    if (!payload || typeof payload !== 'object') return { raw: payload };
+    const obj = payload as Record<string, unknown>;
+    if (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.data)) {
+      const { data: inner, ...rest } = obj;
+      return { ...rest, ...(inner as Record<string, unknown>) };
+    }
+    return obj;
   }
 }

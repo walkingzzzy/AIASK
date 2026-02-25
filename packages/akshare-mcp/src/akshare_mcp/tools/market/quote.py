@@ -540,6 +540,19 @@ def get_realtime_quote(stock_code: str) -> dict:
 
     def _ok_with_trace(payload: dict, attempted_sources: list[str], source_chain: list[str], fallback_reason: Optional[str] = None) -> dict:
         """P2-1: 返回结构化降级信息，便于前端/调用方解释来源链路。"""
+        # 补充缺失的 preClose（从日K线获取）
+        if isinstance(payload, dict) and not payload.get("preClose"):
+            try:
+                snap = _get_daily_snapshot(code)
+                pc = snap.get("prev_close")
+                if pc:
+                    payload["preClose"] = pc
+                    price = payload.get("price")
+                    if price is not None and payload.get("change") is None:
+                        payload["change"] = price - pc
+                        payload["changePercent"] = (price - pc) / pc * 100
+            except Exception:
+                pass
         result = ok(payload, cached=False)
         if isinstance(result.get("data"), dict):
             data = result["data"]

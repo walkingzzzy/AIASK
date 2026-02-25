@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { ReactNode, useEffect, useState } from 'react';
+import { ReactNode, useEffect, useMemo, useState } from 'react';
 import { useAuthStore } from '@/store/auth-store';
+import { useStockContext } from '@/store/stock-context';
 import { BFF_BASE } from '@/lib/api';
 import { useMobile } from '@/hooks/use-mobile';
 import { useTheme } from '@/hooks/use-theme';
@@ -67,6 +68,18 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
+/** 需要携带股票代码的页面路径 */
+const STOCK_AWARE_PATHS = new Set([
+  '/stock', '/market', '/fundamental', '/technical', '/fund-flow',
+  '/sentiment', '/research', '/valuation', '/backtest', '/factor-analysis',
+  '/paper-trading', '/alerts', '/assistant', '/tdx', '/search', '/data',
+]);
+
+function buildHref(basePath: string, stockCode: string): string {
+  if (!stockCode || !STOCK_AWARE_PATHS.has(basePath)) return basePath;
+  return `${basePath}?code=${encodeURIComponent(stockCode)}`;
+}
+
 /* ── 判断某个分组是否包含当前路径 ── */
 function groupContainsPath(group: NavGroup, path: string) {
   return group.items.some((item) =>
@@ -81,12 +94,14 @@ function NavSection({
   openKey,
   onToggle,
   onNavigate,
+  stockCode,
 }: {
   group: NavGroup;
   pathname: string;
   openKey: string | null;
   onToggle: (label: string) => void;
   onNavigate: () => void;
+  stockCode: string;
 }) {
   const isActive = groupContainsPath(group, pathname);
   const isOpen = openKey === group.label || isActive;
@@ -114,7 +129,7 @@ function NavSection({
             return (
               <Link
                 key={item.href}
-                href={item.href}
+                href={buildHref(item.href, stockCode)}
                 onClick={onNavigate}
                 className={`block px-4 py-1.5 no-underline text-sm rounded-md mx-1 transition-all ${
                   active
@@ -150,7 +165,9 @@ function ThemeToggle() {
 export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { user, setUser, logout } = useAuthStore();
+  const storeCode = useStockContext((s) => s.code);
   const isMobile = useMobile();
+  const [mounted, setMounted] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openGroup, setOpenGroup] = useState<string | null>(null);
 
@@ -163,6 +180,11 @@ export default function AppShell({ children }: { children: ReactNode }) {
       })
       .catch(() => {});
   }, [user, setUser]);
+
+  useEffect(() => { setMounted(true); }, []);
+
+  // 仅在客户端挂载后使用 store 中的股票代码，避免 SSR/CSR hydration 不匹配
+  const currentStockCode = mounted ? storeCode : '';
 
   if (pathname === '/login' || pathname === '/register') return <>{children}</>;
 
@@ -193,6 +215,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             openKey={openGroup}
             onToggle={handleToggle}
             onNavigate={handleNavigate}
+            stockCode={currentStockCode}
           />
         ))}
       </div>

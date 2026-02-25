@@ -21,6 +21,11 @@ export class McpGatewayService implements OnModuleDestroy {
   private connected = false;
   private connectPromise: Promise<void> | null = null;
 
+  /* ── Semaphore: serialize stdio calls (concurrency=1) ── */
+  private semaphoreQueue: Array<{ resolve: () => void }> = [];
+  private semaphoreRunning = 0;
+  private readonly maxConcurrency = 1;
+
   constructor(private readonly configService: ConfigService) {}
 
   async onModuleDestroy(): Promise<void> {
@@ -59,14 +64,51 @@ export class McpGatewayService implements OnModuleDestroy {
   }
 
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
-    await this.ensureConnected();
+    await this.acquire();
     try {
+      await this.ensureConnected();
       const result = await this.client!.callTool({ name, arguments: args });
       return this.normalizeToolResult(result);
     } catch (error) {
-      await this.disposeClient();
+      if (this.isTransportError(error)) await this.disposeClient();
       throw error;
+    } finally {
+      this.release();
     }
+  }
+
+  /* ── Semaphore helpers ── */
+  private async acquire(): Promise<void> {
+    if (this.semaphoreRunning < this.maxConcurrency) {
+      this.semaphoreRunning++;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.semaphoreQueue.push({ resolve });
+    });
+  }
+
+  private release(): void {
+    const next = this.semaphoreQueue.shift();
+    if (next) {
+      next.resolve();
+    } else {
+      this.semaphoreRunning--;
+    }
+  }
+
+  private isTransportError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return true;
+    const msg = String((error as Error).message ?? '').toLowerCase();
+    return (
+      msg.includes('epipe') ||
+      msg.includes('connection') ||
+      msg.includes('closed') ||
+      msg.includes('transport') ||
+      msg.includes('econnreset') ||
+      msg.includes('econnrefused') ||
+      msg.includes('broken pipe')
+    );
   }
 
   private async ensureConnected(): Promise<void> {

@@ -16,16 +16,28 @@ export function redirectToLogin(returnPath?: string) {
   window.location.href = `/login?redirect=${encodeURIComponent(p)}`;
 }
 
+/** Singleton refresh lock — prevents multiple parallel refresh calls */
+let refreshPromise: Promise<boolean> | null = null;
+
 /** 尝试用 HttpOnly refresh cookie 刷新 access token */
 export async function refreshAuth(): Promise<boolean> {
-  try {
-    const resp = await fetch(`${BFF}/auth/refresh`, {
-      method: 'POST',
-      credentials: 'include',
-      cache: 'no-store',
-    });
-    return resp.ok;
-  } catch {
-    return false;
-  }
+  // If a refresh is already in flight, reuse it
+  if (refreshPromise) return refreshPromise;
+
+  refreshPromise = (async () => {
+    try {
+      const resp = await fetch(`${BFF}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      return resp.ok;
+    } catch {
+      return false;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
 }

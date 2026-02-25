@@ -133,7 +133,7 @@ class QuotesMixin:
                 row = df.iloc[0]
                 price = safe_float(row["price"])
                 pre_close = safe_float(row["pre_close"])
-                change = price - pre_close if price and pre_close else 0
+                change = price - pre_close if price is not None and pre_close is not None else 0
                 return {
                     "code": code,
                     "name": row["name"],

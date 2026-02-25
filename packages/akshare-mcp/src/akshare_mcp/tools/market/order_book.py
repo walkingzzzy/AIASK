@@ -334,7 +334,7 @@ def get_order_book(stock_code: str) -> dict:
 
     # 0. 优先使用 TdxQuant (官方实时数据)
     tdx_result = _get_order_book_tdxquant(code)
-    if tdx_result:
+    if tdx_result and len(tdx_result.get("bids", [])) >= 3:
         return ok(tdx_result)
 
     # 1. Try AkShare (if available)
@@ -361,6 +361,10 @@ def get_order_book(stock_code: str) -> dict:
         parsed = direct_fetch(code)
         if parsed:
             return ok(parsed)
+
+    # 3. All full sources failed; return partial TDX data if available
+    if tdx_result:
+        return ok(tdx_result)
 
     return fail(f"未获取到 {code} 的盘口数据 (尝试源: TdxQuant, AkShare, Sina, Tencent)")
 

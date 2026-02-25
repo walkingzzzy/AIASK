@@ -415,9 +415,9 @@ class DataSyncService:
                 pre_close = None
                 if i > 0:
                     pre_close = filtered[i - 1].get('close')
-                elif k.get('pre_close'):
+                elif k.get('pre_close') is not None:
                     pre_close = k.get('pre_close')
-                if close and pre_close and pre_close != 0:
+                if close is not None and pre_close is not None and pre_close != 0:
                     k['change_pct'] = round((close - pre_close) / pre_close * 100, 2)
                 else:
                     k['change_pct'] = 0

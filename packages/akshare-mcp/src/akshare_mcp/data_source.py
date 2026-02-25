@@ -271,10 +271,10 @@ class DataSourceManager:
                 return None
 
             # 解析返回数据（基于实际API文档验证的字段名）
-            price = safe_float(snapshot.get("Now", 0))
-            pre_close = safe_float(snapshot.get("LastClose", 0))
-            change = price - pre_close if price and pre_close else None
-            change_pct = (change / pre_close * 100) if change and pre_close else None
+            price = safe_float(snapshot.get("Now", 0)) or None
+            pre_close = safe_float(snapshot.get("LastClose", 0)) or None
+            change = price - pre_close if price is not None and pre_close is not None else None
+            change_pct = (change / pre_close * 100) if change is not None and pre_close else None
 
             # 五档盘口数据（列表形式）
             buyp = snapshot.get("Buyp", [])
@@ -670,7 +670,7 @@ class DataSourceManager:
                 row = df.iloc[0]
                 price = safe_float(row["price"])
                 pre_close = safe_float(row["pre_close"])
-                change = price - pre_close if price and pre_close else 0
+                change = price - pre_close if price is not None and pre_close is not None else 0
                 return {
                     "code": code,
                     "name": row["name"],
