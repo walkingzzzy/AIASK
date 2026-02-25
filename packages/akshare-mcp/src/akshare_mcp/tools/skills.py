@@ -302,7 +302,7 @@ def _exec_fund_manager_pro(params: Dict[str, Any]) -> Dict[str, Any]:
     from .market.quote import get_realtime_quote
     from .news import get_stock_notices, get_stock_research
     from ..services import backtest_engine
-    from ..services.portfolio_optimizer import portfolio_optimizer
+    from ..services.portfolio_optimization import simple_portfolio_optimizer as portfolio_optimizer
     from ..services.risk_model import risk_model
 
     task = str(params.get("task") or "full_cycle").strip().lower()

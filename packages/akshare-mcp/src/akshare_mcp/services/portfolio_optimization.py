@@ -510,5 +510,101 @@ class PortfolioOptimizer:
         }
 
 
-# 全局实例
+# 全局实例（高级优化器）
 portfolio_optimizer = PortfolioOptimizer()
+
+
+# ---------------------------------------------------------------------------
+# 简化接口（原 portfolio_optimizer.py）— 接受 stocks + returns_matrix
+# ---------------------------------------------------------------------------
+
+def _shrunk_cov(returns_matrix: np.ndarray) -> np.ndarray:
+    """Ledoit-Wolf 收缩协方差估计"""
+    if LedoitWolf is None:
+        return np.cov(returns_matrix)
+    try:
+        return LedoitWolf().fit(returns_matrix.T).covariance_
+    except Exception:
+        return np.cov(returns_matrix)
+
+
+class SimplePortfolioOptimizer:
+    """组合优化器（简化接口，封装 stocks 映射）"""
+
+    @staticmethod
+    def optimize_equal_weight(stocks: List[str]) -> Dict[str, float]:
+        w = 1.0 / len(stocks)
+        return {c: w for c in stocks}
+
+    @staticmethod
+    def optimize_risk_parity(stocks: List[str], returns_matrix: np.ndarray) -> Dict[str, float]:
+        cov = _shrunk_cov(returns_matrix)
+        result = portfolio_optimizer.risk_parity(cov)
+        if result['success']:
+            return {c: float(w) for c, w in zip(stocks, result['weights'])}
+        inv_vol = 1.0 / np.sqrt(np.diag(cov))
+        weights = inv_vol / np.sum(inv_vol)
+        return {c: float(w) for c, w in zip(stocks, weights)}
+
+    @staticmethod
+    def optimize_mean_variance(stocks: List[str], returns_matrix: np.ndarray,
+                               expected_returns: np.ndarray, risk_aversion: float = 1.0) -> Dict[str, float]:
+        cov = _shrunk_cov(returns_matrix)
+        result = portfolio_optimizer.mean_variance_optimization(
+            expected_returns=expected_returns, cov_matrix=cov, risk_aversion=risk_aversion)
+        if result['success']:
+            return {c: float(w) for c, w in zip(stocks, result['weights'])}
+        inv_cov = np.linalg.inv(cov)
+        ones = np.ones(len(stocks))
+        weights = np.dot(inv_cov, ones) / np.dot(ones, np.dot(inv_cov, ones))
+        return {c: float(w) for c, w in zip(stocks, weights / np.sum(weights))}
+
+    @staticmethod
+    def optimize_black_litterman(stocks: List[str], returns_matrix: np.ndarray,
+                                 market_weights: np.ndarray, views: List[Dict[str, Any]],
+                                 risk_aversion: float = 2.5, tau: float = 0.05) -> Dict[str, Any]:
+        cov = _shrunk_cov(returns_matrix)
+        result = portfolio_optimizer.black_litterman(
+            market_weights=market_weights, cov_matrix=cov, views=views,
+            risk_aversion=risk_aversion, tau=tau)
+        return {
+            'weights': {c: float(w) for c, w in zip(stocks, result['optimal_weights'])},
+            'posterior_returns': result['posterior_returns'],
+            'expected_return': result['expected_return'],
+            'volatility': result['volatility'],
+            'sharpe_ratio': result['sharpe_ratio'],
+        }
+
+    @staticmethod
+    def optimize_risk_budget(stocks: List[str], returns_matrix: np.ndarray,
+                             risk_budgets: List[float] = None) -> Dict[str, Any]:
+        cov = _shrunk_cov(returns_matrix)
+        if risk_budgets is None:
+            risk_budgets = [1.0 / len(stocks)] * len(stocks)
+        result = portfolio_optimizer.risk_parity(
+            cov_matrix=cov, target_risk_contributions=np.array(risk_budgets))
+        if result['success']:
+            return {'weights': {c: float(w) for c, w in zip(stocks, result['weights'])},
+                    'risk_contributions': result['risk_contributions'],
+                    'portfolio_volatility': result['portfolio_volatility']}
+        return {'weights': {c: 1.0 / len(stocks) for c in stocks},
+                'risk_contributions': risk_budgets, 'portfolio_volatility': 0.0}
+
+    @staticmethod
+    def optimize_max_sharpe(stocks: List[str], returns_matrix: np.ndarray,
+                            expected_returns: np.ndarray, risk_free_rate: float = 0.03,
+                            max_weight: float = 0.35) -> Dict[str, Any]:
+        cov = _shrunk_cov(returns_matrix)
+        result = portfolio_optimizer.max_sharpe_ratio(
+            expected_returns=expected_returns, cov_matrix=cov,
+            risk_free_rate=risk_free_rate, max_weight=max_weight)
+        if result['success']:
+            return {'weights': {c: float(w) for c, w in zip(stocks, result['weights'])},
+                    'expected_return': result['expected_return'],
+                    'volatility': result['volatility'], 'sharpe_ratio': result['sharpe_ratio']}
+        return {'weights': {c: 1.0 / len(stocks) for c in stocks},
+                'expected_return': 0.0, 'volatility': 0.0, 'sharpe_ratio': 0.0}
+
+
+# 简化接口单例（向后兼容 portfolio_optimizer 名称）
+simple_portfolio_optimizer = SimplePortfolioOptimizer()

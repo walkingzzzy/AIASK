@@ -1,7 +1,7 @@
 """组合管理工具"""
 
 from typing import List, Dict, Any, Optional
-from ..services.portfolio_optimizer import portfolio_optimizer
+from ..services.portfolio_optimization import simple_portfolio_optimizer as portfolio_optimizer
 from ..services.risk_model import risk_model
 from ..storage import get_db
 from ..utils import ok, fail
