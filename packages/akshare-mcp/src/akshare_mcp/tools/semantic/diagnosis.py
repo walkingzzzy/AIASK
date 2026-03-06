@@ -1,276 +1,112 @@
-"""智能股票诊断 — smart_stock_diagnosis"""
+"""智能股票诊断。"""
 
-import statistics
 from datetime import datetime
-from ...storage import get_db
-from ...services import technical_analysis
-from ...utils import ok, fail, normalize_code
-from ...data_source import data_source
-from ..market import get_kline
+
+from ...utils import fail, normalize_code, ok
+from ..decision import get_investment_analysis
+
+
+def _maybe_float(value):
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_evidence(context: dict) -> tuple[list[dict], list[str], list[str], str, str]:
+    valuation = context.get("valuation", {}) if isinstance(context, dict) else {}
+    fundamentals = context.get("fundamentals", {}) if isinstance(context, dict) else {}
+    technical = context.get("technical", {}) if isinstance(context, dict) else {}
+    momentum = context.get("momentum", {}) if isinstance(context, dict) else {}
+    risk = context.get("risk", {}) if isinstance(context, dict) else {}
+    evidence, highlights, risks = [], [], []
+
+    def add(category: str, signal: str, value, interpretation: str, positive: bool | None = None):
+        evidence.append({"category": category, "signal": signal, "value": value, "interpretation": interpretation})
+        if positive is True:
+            highlights.append(interpretation)
+        elif positive is False:
+            risks.append(interpretation)
+
+    pe = _maybe_float(valuation.get("pe"))
+    relative_pe = _maybe_float(valuation.get("industry_relative_pe"))
+    if pe is not None:
+        add("valuation", "pe", round(pe, 2), f"PE为{pe:.2f}", positive=0 < pe < 20)
+    if relative_pe is not None:
+        add("valuation", "industry_relative_pe", round(relative_pe, 4), "相对行业估值偏低" if relative_pe < 0.9 else "相对行业估值偏高", positive=relative_pe < 0.9)
+
+    roe = _maybe_float(fundamentals.get("roe"))
+    debt_ratio = _maybe_float(fundamentals.get("debt_ratio"))
+    revenue_yoy = _maybe_float(fundamentals.get("revenue_yoy"))
+    if roe is not None:
+        add("fundamental", "roe", round(roe, 2), f"ROE为{roe:.2f}", positive=roe >= 12)
+    if revenue_yoy is not None:
+        add("fundamental", "revenue_yoy", round(revenue_yoy, 2), f"营收增速为{revenue_yoy:.2f}%", positive=revenue_yoy >= 10)
+    if debt_ratio is not None:
+        add("fundamental", "debt_ratio", round(debt_ratio, 2), f"负债率为{debt_ratio:.2f}%", positive=debt_ratio < 60)
+
+    rsi = _maybe_float(technical.get("rsi_14"))
+    ma_alignment = technical.get("ma_alignment")
+    if rsi is not None:
+        add("technical", "rsi_14", round(rsi, 2), f"RSI为{rsi:.2f}", positive=rsi < 35)
+    if ma_alignment:
+        add("technical", "ma_alignment", ma_alignment, f"均线结构为{ma_alignment}", positive=ma_alignment == "bullish")
+
+    mom_20d = _maybe_float(momentum.get("mom_20d"))
+    market_regime = momentum.get("market_regime")
+    if mom_20d is not None:
+        add("momentum", "mom_20d", round(mom_20d, 4), f"20日动量为{mom_20d:.4f}", positive=mom_20d > 0)
+    if market_regime:
+        add("momentum", "market_regime", market_regime, f"市场环境判定为{market_regime}", positive=market_regime != "bearish")
+
+    vol20 = _maybe_float(risk.get("volatility_20d"))
+    max_dd = _maybe_float(risk.get("max_drawdown_250d"))
+    if vol20 is not None:
+        add("risk", "volatility_20d", round(vol20, 4), f"20日波动率为{vol20:.4f}", positive=vol20 < 0.04)
+    if max_dd is not None:
+        add("risk", "max_drawdown_250d", round(max_dd, 4), f"250日最大回撤为{max_dd:.4f}", positive=max_dd < 0.25)
+
+    if len(highlights) >= 4 and len(risks) <= 1:
+        recommendation, recommendation_text = "buy", "偏积极，可重点跟踪或分批布局"
+    elif len(risks) >= 4:
+        recommendation, recommendation_text = "sell", "风险偏高，建议回避或降低仓位"
+    elif len(highlights) >= len(risks):
+        recommendation, recommendation_text = "hold", "多空因素交织，适合继续持有观察"
+    else:
+        recommendation, recommendation_text = "wait", "证据尚不充分，建议等待更明确信号"
+    return evidence, highlights, risks, recommendation, recommendation_text
 
 
 async def smart_stock_diagnosis(stock_code: str):
-    """
-    智能股票诊断 - 综合技术面、基本面、估值、情绪四维分析并给出投资建议
-
-    数据源优先级: TimescaleDB → TDX → AkShare/Tushare（降级）
-
-    Args:
-        stock_code (str, required): 股票代码，6位数字，如 "600519"
-
-    Returns:
-        dict: {"success": bool, "data": {
-            "code": str, "name": str,
-            "overall_score": float,                # 综合评分 0-100
-            "recommendation": str,                 # "buy"|"hold"|"wait"|"sell"
-            "recommendation_text": str,            # 中文建议
-            "scores": {"technical": float, "fundamental": float, "valuation": float, "sentiment": float},
-            "analysis": {"technical": list[str], "fundamental": list[str], "valuation": list[str], "sentiment": list[str]},
-            "risks": list[str],                    # 风险提示
-            "current_price": float,
-            "analysis_date": str
-        }}
-
-    Errors:
-        - 股票代码不存在时返回 "Stock {code} not found"
-        - K线数据不足20条时返回 "Insufficient kline data"
-
-    Examples:
-        smart_stock_diagnosis("600519")
-        smart_stock_diagnosis("000001")
-    """
+    """结构化股票诊断，输出证据而非硬编码总分。"""
     try:
-        db = get_db()
         code = normalize_code(stock_code)
-
-        # 1. 获取基础信息
-        stock_info = await db.get_stock_info(code)
-        if not stock_info:
-            stock_info = data_source.get_stock_info_priority_tdx(code)
-        if not stock_info:
-            return fail(f'Stock {stock_code} not found')
-
-        # 2. 获取K线数据
-        klines = await db.get_klines(code, limit=100)
-        if not klines or len(klines) < 20:
-            res = get_kline(code, 'daily', 100)
-            if res.get('success') and res.get('data'):
-                klines = res['data']
-        if not klines or len(klines) < 20:
-            return fail('Insufficient kline data')
-        klines = sorted(klines, key=lambda x: x.get('date') or '')
-        closes = [k['close'] for k in klines]
-        volumes = [k['volume'] for k in klines]
-
-        # 3. 技术面分析
-        technical_score = 0
-        technical_signals = []
-
-        # RSI
-        rsi_result = technical_analysis.calculate_rsi(closes)
-        if rsi_result:
-            rsi_value = rsi_result[-1] if isinstance(rsi_result, list) else rsi_result.get('value', 50)
-            if rsi_value < 30:
-                technical_signals.append('RSI超卖，可能反弹')
-                technical_score += 20
-            elif rsi_value > 70:
-                technical_signals.append('RSI超买，注意回调风险')
-                technical_score -= 10
-            else:
-                technical_signals.append('RSI正常区间')
-                technical_score += 10
-
-        # MACD
-        macd_result = technical_analysis.calculate_macd(closes)
-        if macd_result and 'histogram' in macd_result:
-            hist = macd_result['histogram']
-            if len(hist) >= 2:
-                if hist[-2] < 0 and hist[-1] > 0:
-                    technical_signals.append('MACD金叉，买入信号')
-                    technical_score += 20
-                elif hist[-2] > 0 and hist[-1] < 0:
-                    technical_signals.append('MACD死叉，卖出信号')
-                    technical_score -= 20
-
-        # 均线
-        ma20 = technical_analysis.calculate_sma(closes, 20)
-        ma60 = technical_analysis.calculate_sma(closes, 60)
-        if ma20 and ma60 and len(ma20) > 0 and len(ma60) > 0:
-            if closes[-1] > ma20[-1] > ma60[-1]:
-                technical_signals.append('多头排列，趋势向上')
-                technical_score += 15
-            elif closes[-1] < ma20[-1] < ma60[-1]:
-                technical_signals.append('空头排列，趋势向下')
-                technical_score -= 15
-
-        # 成交量
-        recent_vol = statistics.mean(volumes[:5])
-        avg_vol = statistics.mean(volumes)
-        if recent_vol > avg_vol * 1.5:
-            technical_signals.append('成交量放大')
-            technical_score += 10
-
-        technical_score = max(0, min(100, 50 + technical_score))
-
-        # 4. 基本面分析
-        fundamental_score = 50
-        fundamental_signals = []
-
-        try:
-            fin_list = await db.get_financials(code, limit=1)
-            financial_row = fin_list[0] if fin_list else None
-            if not financial_row:
-                try:
-                    from ..finance import _get_financials_akshare
-                    fin = _get_financials_akshare(code)
-                    if fin:
-                        financial_row = fin
-                except Exception:
-                    pass
-            if financial_row:
-                roe = float(financial_row.get('roe') or 0)
-                if abs(roe) > 1:
-                    roe = roe / 100.0
-                if roe > 0.15:
-                    fundamental_signals.append(f'ROE {roe*100:.1f}%，盈利能力强')
-                    fundamental_score += 15
-                elif roe > 0.10:
-                    fundamental_signals.append(f'ROE {roe*100:.1f}%，盈利能力良好')
-                    fundamental_score += 10
-
-                debt_ratio = float(financial_row.get('debt_ratio') or 0)
-                if debt_ratio > 1:
-                    debt_ratio = debt_ratio / 100.0
-                if debt_ratio < 0.5:
-                    fundamental_signals.append(f'负债率{debt_ratio*100:.1f}%，财务稳健')
-                    fundamental_score += 10
-                elif debt_ratio > 0.7:
-                    fundamental_signals.append(f'负债率{debt_ratio*100:.1f}%，财务风险较高')
-                    fundamental_score -= 10
-
-                revenue_growth = float(financial_row.get('revenue_growth') or 0)
-                if abs(revenue_growth) > 1:
-                    revenue_growth = revenue_growth / 100.0
-                if revenue_growth > 0.2:
-                    fundamental_signals.append(f'营收增长{revenue_growth*100:.1f}%，成长性好')
-                    fundamental_score += 15
-            else:
-                fundamental_signals.append('财务数据不可用')
-        except Exception:
-            fundamental_signals.append('财务数据不可用')
-
-        fundamental_score = max(0, min(100, fundamental_score))
-
-        # 5. 估值分析
-        valuation_score = 50
-        valuation_signals = []
-
-        async with db.acquire() as conn:
-            valuation_row = await conn.fetchrow(
-                """SELECT pe_ratio, pb_ratio FROM stocks WHERE stock_code = $1""",
-                stock_code
-            )
-            pe = float(valuation_row['pe_ratio']) if valuation_row and valuation_row['pe_ratio'] else 0
-            pb = float(valuation_row['pb_ratio']) if valuation_row and valuation_row['pb_ratio'] else 0
-
-        if pe and 0 < pe < 15:
-            valuation_signals.append(f'PE {pe:.1f}，估值偏低')
-            valuation_score += 20
-        elif pe and pe > 50:
-            valuation_signals.append(f'PE {pe:.1f}，估值偏高')
-            valuation_score -= 20
-        elif pe:
-            valuation_signals.append(f'PE {pe:.1f}，估值合理')
-            valuation_score += 10
-
-        if pb and 0 < pb < 2:
-            valuation_signals.append(f'PB {pb:.1f}，估值偏低')
-            valuation_score += 15
-        elif pb and pb > 5:
-            valuation_signals.append(f'PB {pb:.1f}，估值偏高')
-            valuation_score -= 15
-
-        valuation_score = max(0, min(100, valuation_score))
-
-        # 6. 情绪分析（基于价格波动）
-        sentiment_score = 50
-        sentiment_signals = []
-
-        returns = [(closes[i] - closes[i+1]) / closes[i+1] for i in range(len(closes)-1)]
-        volatility = statistics.stdev(returns) if len(returns) > 1 else 0
-
-        if volatility > 0.03:
-            sentiment_signals.append('波动率较高，市场情绪活跃')
-            sentiment_score += 10
-        elif volatility < 0.01:
-            sentiment_signals.append('波动率较低，市场情绪平淡')
-            sentiment_score -= 5
-
-        recent_change = (closes[0] - closes[4]) / closes[4] if len(closes) > 4 else 0
-        if recent_change > 0.1:
-            sentiment_signals.append('近期大涨，市场情绪乐观')
-            sentiment_score += 15
-        elif recent_change < -0.1:
-            sentiment_signals.append('近期大跌，市场情绪悲观')
-            sentiment_score -= 15
-
-        sentiment_score = max(0, min(100, sentiment_score))
-
-        # 7. 综合评分
-        overall_score = (
-            technical_score * 0.3 +
-            fundamental_score * 0.3 +
-            valuation_score * 0.25 +
-            sentiment_score * 0.15
-        )
-
-        # 8. 投资建议
-        if overall_score >= 75:
-            recommendation = 'buy'
-            recommendation_text = '强烈推荐买入'
-        elif overall_score >= 60:
-            recommendation = 'hold'
-            recommendation_text = '可以持有或适量买入'
-        elif overall_score >= 45:
-            recommendation = 'wait'
-            recommendation_text = '观望为主'
-        else:
-            recommendation = 'sell'
-            recommendation_text = '建议卖出或回避'
-
-        # 9. 风险提示
-        risks = []
-        if technical_score < 40:
-            risks.append('技术面偏弱')
-        if fundamental_score < 40:
-            risks.append('基本面欠佳')
-        if valuation_score < 40:
-            risks.append('估值偏高')
-        if volatility > 0.04:
-            risks.append('波动风险较大')
-
+        analysis = await get_investment_analysis(code)
+        if not analysis.get("success"):
+            return fail(analysis.get("error", "diagnosis_failed"))
+        context = analysis.get("data", {}) or {}
+        evidence, highlights, risks, recommendation, recommendation_text = _build_evidence(context)
+        basic_info = context.get("basic_info", {}) if isinstance(context.get("basic_info"), dict) else {}
+        price_context = context.get("price_context", {}) if isinstance(context.get("price_context"), dict) else {}
         return ok({
-            'code': stock_code,
-            'name': stock_info.get('name', ''),
-            'overall_score': round(overall_score, 1),
-            'recommendation': recommendation,
-            'recommendation_text': recommendation_text,
-            'scores': {
-                'technical': round(technical_score, 1),
-                'fundamental': round(fundamental_score, 1),
-                'valuation': round(valuation_score, 1),
-                'sentiment': round(sentiment_score, 1)
+            "code": code,
+            "name": basic_info.get("name", ""),
+            "recommendation": recommendation,
+            "recommendation_text": recommendation_text,
+            "decision_mode": "context_aggregator",
+            "analysis_context": context,
+            "evidence": evidence,
+            "highlights": highlights,
+            "risks": risks,
+            "summary": {
+                "positive_evidence_count": len(highlights),
+                "risk_count": len(risks),
+                "market_regime": context.get("momentum", {}).get("market_regime"),
             },
-            'analysis': {
-                'technical': technical_signals,
-                'fundamental': fundamental_signals,
-                'valuation': valuation_signals,
-                'sentiment': sentiment_signals
-            },
-            'risks': risks,
-            'current_price': closes[0],
-            'analysis_date': datetime.now().strftime('%Y-%m-%d')
+            "current_price": price_context.get("current_price"),
+            "analysis_date": price_context.get("analysis_date") or datetime.now().strftime("%Y-%m-%d"),
         })
-
     except Exception as e:
         return fail(str(e))

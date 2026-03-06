@@ -33,6 +33,7 @@ from akshare_mcp.services.backtest.macro_timing_strategy import MacroTimingStrat
 
 from akshare_mcp.services.strategy_factory import (
     DataCollector, StrategySpawner, BacktestFilter, Deduplicator,
+    StrategySubmitter,
     EliminationChecker, StrategyFactoryScheduler, _auto_name,
     CATEGORY_MINIMUMS, REPRESENTATIVE_STOCKS,
 )
@@ -429,6 +430,66 @@ class TestEliminationChecker:
         eliminated = await checker.check(db, "neutral")
         assert len(eliminated) == 1
         assert any("命中率" in f for f in eliminated[0]["red_flags"])
+
+    @pytest.mark.asyncio
+    async def test_validation_and_risk_flags_can_trigger_elimination(self):
+        checker = EliminationChecker()
+        db = MagicMock()
+        db.list_strategies = AsyncMock(return_value=[
+            {"id": "s6", "strategy_type": "multi_factor"},
+        ])
+        db.get_strategy_metrics = AsyncMock(return_value=[
+            {"period": "backtest", "max_drawdown": -0.12, "sharpe_ratio": 0.3, "win_rate": 0.45},
+            {"period": "validation", "grade": "D", "total_score": 30.0},
+            {"period": "risk", "var_percent": 4.5, "cvar_percent": 6.5, "stress_loss_percent": -28.0},
+        ])
+        db.get_signal_stats = AsyncMock(return_value={"hit_rate": {}, "total_signals": 0})
+        db.update_strategy_status = AsyncMock()
+        db.save_elimination_log = AsyncMock()
+
+        eliminated = await checker.check(db, "neutral")
+        assert len(eliminated) == 1
+        assert any("验证评级" in flag for flag in eliminated[0]["red_flags"])
+        assert any("VaR" in flag for flag in eliminated[0]["red_flags"])
+
+
+class TestStrategySubmitter:
+    @pytest.mark.asyncio
+    async def test_submitter_persists_validation_and_risk_metrics(self, monkeypatch):
+        submitter = StrategySubmitter()
+        db = MagicMock()
+        db.save_strategy = AsyncMock()
+        db.save_strategy_metrics = AsyncMock()
+        db.update_strategy_status = AsyncMock()
+        db.save_strategy_lineage = AsyncMock()
+
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory._run_validation_report",
+            AsyncMock(return_value={"rating": {"grade": "B", "total_score": 58.0, "recommendation": "Strong"}, "walk_forward": {"oos_rank_ic_mean": 0.04}}),
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory._run_risk_report",
+            AsyncMock(return_value={"var_percent": 2.1, "cvar_percent": 3.2, "stress_loss_percent": -20.0}),
+        )
+        monkeypatch.setattr(
+            sm_mod,
+            "_run_quality_gate",
+            AsyncMock(return_value={"passed": True}),
+        )
+
+        result = await submitter.submit([
+            {
+                "strategy_type": "momentum",
+                "params": {"lookback": 20, "threshold": 0.02},
+                "backtest_metrics": {"sharpe_ratio": 1.1, "total_return": 0.2, "max_drawdown": 0.12, "win_rate": 0.55, "trades_count": 8},
+                "spawn_reason": "测试提交",
+            }
+        ], {"fg_level": "neutral"}, db)
+        periods = [call.args[1] for call in db.save_strategy_metrics.await_args_list]
+        assert result["passed_quality_gate"] == 1
+        assert "backtest" in periods
+        assert "validation" in periods
+        assert "risk" in periods
 
 
 # ═══════════════════════════════════════════════════════════════

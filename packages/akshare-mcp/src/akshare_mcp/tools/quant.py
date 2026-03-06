@@ -9,6 +9,8 @@ import numpy as np
 from scipy import stats
 
 from ..services.slippage import SlippageCalculator, SlippageModelType
+from ..services.conditional_returns import calculate_conditional_returns
+from ..services.data_pipeline import compute_signal_hit_rate, normalize_klines
 from ..services.factor_calculator import factor_calculator
 from ..services.factor_analysis import FactorAnalyzer as ICFactorAnalyzer
 from ..services.validation import FactorValidationPipeline, bootstrap_ic_ci
@@ -2279,35 +2281,96 @@ async def run_factor_robustness_check(
     return ok(payload)
 
 
+def _factor_library_payload(category: str = "all") -> dict:
+    category_key = str(category or "all").strip().lower()
+    factors = [
+        {
+            "name": name,
+            "category": meta["category"],
+            "description": meta["description"],
+            "requires_financials": meta["requires_financials"],
+            "default_period": int(meta.get("default_period", 20)),
+            "data_dependency": meta.get(
+                "data_dependency",
+                ["kline", "financials"] if meta.get("requires_financials") else ["kline"],
+            ),
+            "sub_factors": meta.get("sub_factors", []),
+            "aliases": meta.get("aliases", []),
+            "status": "supported",
+        }
+        for name, meta in SUPPORTED_FACTORS.items()
+        if category_key in ("all", meta["category"])
+    ]
+    return {
+        "factors": factors,
+        "count": len(factors),
+        "categories": sorted({meta["category"] for meta in SUPPORTED_FACTORS.values()}),
+        "supported_factors": sorted(SUPPORTED_FACTORS.keys()),
+        "total_categories": len({meta["category"] for meta in SUPPORTED_FACTORS.values()}),
+        "note": f"Factor library includes {len(SUPPORTED_FACTORS)} factors.",
+    }
+
+
+def _build_similar_pattern_report(klines: list[dict], window_days: int, top_n: int, forward_days: list[int]) -> dict:
+    ordered = normalize_klines(klines)
+    closes = np.array([float(k.get("close", 0) or 0) for k in ordered], dtype=np.float64)
+    max_forward = max(forward_days) if forward_days else 10
+    if len(closes) < window_days * 3 + max_forward:
+        return {"matches": [], "aggregate_prediction": {}, "pattern_window": window_days}
+    latest_window = closes[-window_days:]
+    latest_returns = np.diff(latest_window) / np.maximum(latest_window[:-1], 1e-12)
+    latest_start = len(closes) - window_days
+    matches = []
+    for start in range(20, latest_start - max_forward):
+        end = start + window_days
+        if end >= latest_start:
+            break
+        hist_window = closes[start:end]
+        hist_returns = np.diff(hist_window) / np.maximum(hist_window[:-1], 1e-12)
+        if np.std(hist_returns) < 1e-12 or np.std(latest_returns) < 1e-12:
+            similarity = 0.0
+        else:
+            similarity = float(np.corrcoef(latest_returns, hist_returns)[0, 1])
+        if not np.isfinite(similarity):
+            continue
+        end_idx = end - 1
+        future = {}
+        for fd in forward_days:
+            future_idx = end_idx + int(fd)
+            if future_idx >= len(closes) or closes[end_idx] <= 0:
+                continue
+            future[f"{fd}d"] = round(float((closes[future_idx] - closes[end_idx]) / closes[end_idx]), 4)
+        regime_ret = (closes[end_idx] - closes[start]) / closes[start] if closes[start] > 0 else 0.0
+        regime = "bullish" if regime_ret >= 0.05 else ("bearish" if regime_ret <= -0.05 else "neutral")
+        matches.append({
+            "pattern_end_date": ordered[end_idx].get("date") or ordered[end_idx].get("time"),
+            "similarity": round(similarity, 4),
+            "market_regime": regime,
+            "forward_returns": future,
+        })
+    matches = sorted(matches, key=lambda item: item["similarity"], reverse=True)[:top_n]
+    aggregate = {}
+    for fd in forward_days:
+        values = [item["forward_returns"].get(f"{fd}d") for item in matches if f"{fd}d" in item["forward_returns"]]
+        values = [float(v) for v in values if v is not None]
+        aggregate[f"{fd}d"] = {
+            "samples": len(values),
+            "avg_return": round(float(np.mean(values)), 4) if values else None,
+            "hit_rate": round(float(np.mean(np.array(values) > 0)), 4) if values else None,
+        }
+    return {"matches": matches, "aggregate_prediction": aggregate, "pattern_window": window_days}
+
+
 def register(mcp):
     @mcp.tool()
     def get_factor_library(category: str = "all"):
-        category_key = str(category or "all").strip().lower()
-        factors = [
-            {
-                "name": name,
-                "category": meta["category"],
-                "description": meta["description"],
-                "requires_financials": meta["requires_financials"],
-                "default_period": int(meta.get("default_period", 20)),
-                "data_dependency": meta.get(
-                    "data_dependency",
-                    ["kline", "financials"] if meta.get("requires_financials") else ["kline"],
-                ),
-                "sub_factors": meta.get("sub_factors", []),
-                "aliases": meta.get("aliases", []),
-                "status": "supported",
-            }
-            for name, meta in SUPPORTED_FACTORS.items()
-            if category_key in ("all", meta["category"])
-        ]
-        return ok({
-            "factors": factors,
-            "count": len(factors),
-            "supported_factors": sorted(SUPPORTED_FACTORS.keys()),
-            "total_categories": len(SUPPORTED_FACTORS),
-            "note": f"Factor library includes {len(SUPPORTED_FACTORS)} factors across categories: fundamental, technical, risk, volume, alternative.",
-        })
+        return ok(_factor_library_payload(category))
+
+    @mcp.tool()
+    def list_factors(category: str = "all"):
+        payload = _factor_library_payload(category)
+        payload["source"] = "SUPPORTED_FACTORS"
+        return ok(payload)
 
     @mcp.tool()
     async def calculate_factor(code: str, factor: str):
@@ -2491,6 +2554,84 @@ def register(mcp):
                 bootstrap_mode=bootstrap_mode,
                 include_perf_breakdown=include_perf_breakdown,
             )
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def get_conditional_returns(
+        code: str,
+        conditions: Any = None,
+        forward_days: list = None,
+        logic: str = "AND",
+        lookback_days: int = 250,
+    ):
+        """按历史条件统计未来收益分布，向 AI 提供条件概率证据。"""
+        try:
+            if conditions in (None, "", [], {}):
+                return fail("conditions is required")
+            lookback = max(30, int(lookback_days))
+            db = get_db()
+            klines = await db.get_klines(code, limit=lookback)
+            if not klines or len(klines) < 30:
+                return fail(f"K 线数据不足（需要至少 30 条，实际 {len(klines) if klines else 0} 条）")
+            report = calculate_conditional_returns(
+                klines=klines,
+                conditions=conditions,
+                forward_days=forward_days or [5, 10, 20],
+                logic=logic,
+            )
+            return ok({
+                "code": code,
+                "kline_count": len(klines),
+                "lookback_days": lookback,
+                **report,
+            })
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def find_similar_patterns(
+        code: str,
+        window_days: int = 20,
+        top_n: int = 10,
+        forward_days: list = None,
+        lookback_days: int = 360,
+    ):
+        try:
+            forward = [int(day) for day in (forward_days or [5, 10, 20])]
+            db = get_db()
+            klines = await db.get_klines(code, limit=max(int(lookback_days), int(window_days) * 4))
+            if not klines or len(klines) < max(90, int(window_days) * 3):
+                return fail("K 线数据不足，无法进行历史形态匹配")
+            report = _build_similar_pattern_report(klines, int(window_days), int(top_n), forward)
+            return ok({
+                "code": code,
+                "lookback_days": max(int(lookback_days), int(window_days) * 4),
+                **report,
+            })
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def get_signal_hit_rate(
+        code: str,
+        signal: str = "rsi_oversold",
+        forward_days: list = None,
+        lookback_days: int = 250,
+        signal_params: Optional[Dict[str, Any]] = None,
+    ):
+        try:
+            forward = [int(day) for day in (forward_days or [5, 10, 20])]
+            db = get_db()
+            klines = await db.get_klines(code, limit=max(60, int(lookback_days)))
+            if not klines or len(klines) < 30:
+                return fail("K 线数据不足，无法统计命中率")
+            report = compute_signal_hit_rate(klines, signal=signal, forward_days=forward, signal_params=signal_params)
+            return ok({
+                "code": code,
+                "lookback_days": max(60, int(lookback_days)),
+                **report,
+            })
         except Exception as e:
             return fail(str(e))
 

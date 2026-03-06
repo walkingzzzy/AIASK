@@ -9,9 +9,10 @@ description: 技术指标计算、K线形态识别、因子计算与IC/分组回
 # 使用流程
 - 技术指标：用 `calculate_technical_indicators`。
 - K线形态：用 `check_candlestick_patterns`；若需可用形态列表用 `get_available_patterns`。
-- 因子：用 `get_factor_library` 获取支持因子，随后用 `calculate_factor`、`calculate_factor_ic` 或 `backtest_factor`。
+- 因子：用 `get_factor_library` / `list_factors` 获取支持因子，随后用 `calculate_factor`、`calculate_factor_ic`、`backtest_factor`、`get_factor_profile`、`get_conditional_returns` 或 `get_signal_hit_rate`。
 - 相似形态/股票：
   - 相似K线：`search_by_kline`。
+  - 历史形态匹配：`find_similar_patterns`。
   - 相似股票：`search_similar_stocks`。
   - 语义选股：`semantic_stock_search`。
 

@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional
 import numpy as np
 
 from .utils import _compute_slippage_rate
-from .engine import backtest_engine
+from .engine import _build_strategy_masks, backtest_engine
 
 
 class AdvancedBacktestEngine:
@@ -110,44 +110,103 @@ class AdvancedBacktestEngine:
         sizing_method: str = 'fixed',
         risk_per_trade: float = 0.02
     ) -> Dict[str, Any]:
-        """带仓位管理的回测"""
+        """带仓位管理的回测。"""
         if not klines:
             return {'success': False, 'error': 'No kline data'}
 
         params = params or {}
-        initial_capital = params.get('initial_capital', 100000)
+        initial_capital = float(params.get('initial_capital', 100000))
+        commission = float(params.get('commission', 0.0003) or 0.0)
+        closes = np.array([float(k['close']) for k in klines], dtype=np.float64)
+        volumes = np.array([float(k.get('volume', 0.0) or 0.0) for k in klines], dtype=np.float64)
+        masks = _build_strategy_masks(strategy, closes, params, volumes=volumes)
+        if masks is None:
+            return {'success': False, 'error': 'Insufficient data for strategy signals'}
 
-        result = backtest_engine.run_backtest(code, klines, strategy, params)
-        if not result['success']:
-            return result
+        def _position_size(idx: int, realized_returns: list[float]) -> float:
+            if sizing_method == 'fixed':
+                return 1.0
+            if sizing_method == 'kelly':
+                if not realized_returns:
+                    return 0.5
+                wins = [ret for ret in realized_returns if ret > 0]
+                losses = [abs(ret) for ret in realized_returns if ret <= 0]
+                win_rate = len(wins) / len(realized_returns)
+                avg_win = float(np.mean(wins)) if wins else 0.05
+                avg_loss = float(np.mean(losses)) if losses else 0.03
+                edge = win_rate - ((1 - win_rate) / max(avg_win / max(avg_loss, 1e-6), 1e-6))
+                return float(np.clip(edge, 0.1, 1.0))
+            if sizing_method == 'volatility':
+                start = max(1, idx - 20)
+                window = np.diff(closes[start:idx + 1]) / np.maximum(closes[start:idx], 1e-12)
+                vol = float(np.std(window)) if len(window) > 1 else 0.0
+                return float(np.clip(risk_per_trade / max(vol, 1e-4), 0.1, 1.0))
+            return 1.0
 
-        if sizing_method == 'fixed':
-            position_size = 1.0
-        elif sizing_method == 'kelly':
-            win_rate = result['data'].get('win_rate', 0.5)
-            avg_win = 0.05
-            avg_loss = 0.03
-            kelly = (win_rate * avg_win - (1 - win_rate) * avg_loss) / avg_win
-            position_size = max(0.1, min(kelly, 1.0))
-        elif sizing_method == 'volatility':
-            closes = np.array([k['close'] for k in klines])
-            returns = np.diff(closes) / closes[:-1]
-            volatility = np.std(returns)
-            position_size = risk_per_trade / volatility if volatility > 0 else 0.5
-        else:
-            position_size = 1.0
+        entry_mask, exit_mask = masks
+        cash = initial_capital
+        shares = 0
+        buy_cost = 0.0
+        equity = np.zeros(len(closes), dtype=np.float64)
+        trades = 0
+        wins = 0
+        realized_returns: list[float] = []
+        position_sizes: list[float] = []
+        last_size = 0.0
 
-        adjusted_return = result['data']['total_return'] * position_size
-        adjusted_capital = initial_capital * (1 + adjusted_return)
+        for i in range(len(closes)):
+            price = float(closes[i])
+            if entry_mask[i] and shares == 0 and price > 0:
+                last_size = _position_size(i, realized_returns)
+                capital_to_use = cash * last_size
+                trade_price = price * (1 + commission)
+                shares = int(capital_to_use / trade_price) if trade_price > 0 else 0
+                if shares > 0:
+                    cash -= shares * trade_price
+                    buy_cost = trade_price
+                    position_sizes.append(last_size)
+                    trades += 1
+            elif exit_mask[i] and shares > 0:
+                sell_price = price * (1 - commission)
+                cash += shares * sell_price
+                realized = (sell_price - buy_cost) / buy_cost if buy_cost > 0 else 0.0
+                realized_returns.append(float(realized))
+                if realized > 0:
+                    wins += 1
+                shares = 0
+            equity[i] = cash + shares * price
+
+        if shares > 0:
+            sell_price = float(closes[-1]) * (1 - commission)
+            cash += shares * sell_price
+            realized = (sell_price - buy_cost) / buy_cost if buy_cost > 0 else 0.0
+            realized_returns.append(float(realized))
+            if realized > 0:
+                wins += 1
+            shares = 0
+            equity[-1] = cash
+
+        final_capital = float(cash)
+        total_return = (final_capital - initial_capital) / initial_capital if initial_capital > 0 else 0.0
+        peak = np.maximum.accumulate(equity if equity.size else np.array([initial_capital], dtype=np.float64))
+        drawdown = (peak - equity) / np.maximum(peak, 1e-12) if equity.size else np.array([0.0])
+        position_size = float(np.mean(position_sizes)) if position_sizes else 0.0
 
         return {
             'success': True,
             'data': {
-                **result['data'],
+                'code': code,
+                'strategy': f'{strategy}_position_sizing',
+                'initial_capital': initial_capital,
+                'final_capital': final_capital,
+                'total_return': float(total_return),
+                'max_drawdown': float(np.max(drawdown)) if len(drawdown) else 0.0,
+                'trades_count': int(max(len(realized_returns), trades)),
+                'win_rate': wins / len(realized_returns) if realized_returns else 0.0,
                 'sizing_method': sizing_method,
                 'position_size': float(position_size),
-                'adjusted_capital': float(adjusted_capital),
-                'adjusted_return': float(adjusted_return),
+                'adjusted_capital': final_capital,
+                'adjusted_return': float(total_return),
             }
         }
 

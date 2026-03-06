@@ -27,6 +27,11 @@ from uuid import uuid4
 
 import numpy as np
 
+from .backtest.strategy_registry import StrategyRegistry
+from .data_pipeline import normalize_klines
+from .risk_model import RiskModel
+from .validation import FactorValidationPipeline
+
 logger = logging.getLogger(__name__)
 
 # 回测用代表性股票（大盘/中盘/小盘各覆盖）
@@ -484,6 +489,82 @@ def _auto_name(stype: str, params: dict) -> str:
     return f"{stype}策略"
 
 
+async def _build_strategy_panels(strategy_type: str, params: dict, db, sample_size: int = 6) -> dict:
+    klass = StrategyRegistry.get(strategy_type)
+    if klass is None:
+        return {}
+    factor_columns: List[np.ndarray] = []
+    return_columns: List[np.ndarray] = []
+    strategy_series: List[np.ndarray] = []
+    holdings: List[dict] = []
+    for code in REPRESENTATIVE_STOCKS[:sample_size]:
+        try:
+            klines = await db.get_klines(code, limit=220)
+            ordered = normalize_klines(klines)
+            closes = np.array([float(k.get("close", 0) or 0) for k in ordered], dtype=np.float64)
+            volumes = np.array([float(k.get("volume", 0) or 0) for k in ordered], dtype=np.float64)
+            if len(closes) < 90:
+                continue
+            instance = klass()
+            instance.set_parameters(params or {})
+            try:
+                signals = np.asarray(instance.generate_signals(closes, volumes), dtype=np.float64)
+            except TypeError:
+                signals = np.asarray(instance.generate_signals(closes), dtype=np.float64)
+            aligned_signals = signals[:-1]
+            aligned_returns = np.diff(closes) / np.maximum(closes[:-1], 1e-12)
+            if len(aligned_signals) < 60 or len(aligned_signals) != len(aligned_returns):
+                continue
+            factor_columns.append(aligned_signals[-120:])
+            return_columns.append(aligned_returns[-120:])
+            strategy_series.append((aligned_signals[-120:] * aligned_returns[-120:]).astype(np.float64))
+            latest_signal = float(aligned_signals[-1]) if len(aligned_signals) else 0.0
+            if latest_signal != 0:
+                holdings.append({"code": code, "weight": abs(latest_signal), "value": 100000.0 * abs(latest_signal)})
+        except Exception:
+            continue
+    if len(factor_columns) < 3:
+        return {}
+    min_len = min(len(col) for col in factor_columns)
+    factor_panel = np.column_stack([col[-min_len:] for col in factor_columns])
+    return_panel = np.column_stack([col[-min_len:] for col in return_columns])
+    strategy_returns = np.mean(np.column_stack([col[-min_len:] for col in strategy_series]), axis=1)
+    total_weight = sum(h["weight"] for h in holdings) or 1.0
+    holdings = [{**h, "weight": float(h["weight"] / total_weight)} for h in holdings] or [{"code": "cash", "weight": 1.0, "value": 100000.0}]
+    return {
+        "factor_panel": factor_panel,
+        "return_panel": return_panel,
+        "strategy_returns": strategy_returns,
+        "holdings": holdings,
+    }
+
+
+async def _run_validation_report(strategy_type: str, params: dict, db) -> dict | None:
+    panels = await _build_strategy_panels(strategy_type, params, db)
+    factor_panel = panels.get("factor_panel")
+    return_panel = panels.get("return_panel")
+    if factor_panel is None or return_panel is None:
+        return None
+    pipeline = FactorValidationPipeline(validation_parallel=False)
+    return pipeline.run(factor_panel, return_panel, factor_name=f"strategy:{strategy_type}", validation_parallel=False)
+
+
+async def _run_risk_report(strategy_type: str, params: dict, db) -> dict | None:
+    panels = await _build_strategy_panels(strategy_type, params, db)
+    strategy_returns = panels.get("strategy_returns")
+    holdings = panels.get("holdings")
+    if strategy_returns is None or holdings is None or len(strategy_returns) == 0:
+        return None
+    var_report = RiskModel.calculate_var(strategy_returns.tolist(), confidence=0.95, portfolio_value=1000000)
+    stress_report = RiskModel.stress_test(holdings, scenario="market_crash")
+    return {
+        "var_percent": round(float(var_report.get("var_percent", 0.0)), 4),
+        "cvar_percent": round(float(var_report.get("cvar_percent", 0.0)), 4),
+        "stress_loss_percent": round(float(stress_report.get("loss_percent", 0.0)), 4),
+        "scenario": stress_report.get("scenario"),
+    }
+
+
 class StrategySubmitter:
     """创建策略记录并提交质检"""
 
@@ -526,9 +607,25 @@ class StrategySubmitter:
                         "trade_count": int(metrics.get("trades_count", 0)),
                     })
 
+                validation_report = await _run_validation_report(c["strategy_type"], c.get("params", {}), db)
+                if validation_report:
+                    rating = validation_report.get("rating", {})
+                    await db.save_strategy_metrics(sid, "validation", {
+                        "grade": rating.get("grade"),
+                        "total_score": rating.get("total_score"),
+                        "oos_rank_ic": validation_report.get("walk_forward", {}).get("oos_rank_ic_mean"),
+                        "recommendation": rating.get("recommendation"),
+                    })
+
+                risk_report = await _run_risk_report(c["strategy_type"], c.get("params", {}), db)
+                if risk_report:
+                    await db.save_strategy_metrics(sid, "risk", risk_report)
+
                 # 提交质检
                 await db.update_strategy_status(sid, "submitted")
                 gate = await _run_quality_gate(db, {**data, "status": "submitted"})
+                if validation_report and validation_report.get("rating", {}).get("grade") == "D":
+                    gate = {**gate, "passed": False, "reason": "validation_grade_d"}
                 submitted += 1
 
                 if gate.get("passed"):
@@ -558,6 +655,9 @@ class EliminationChecker:
         "value_factor": ("fear", "extreme_fear", "neutral"),
         "rsi": ("fear", "extreme_fear"),
         "macro_timing": ("fear", "extreme_fear", "neutral"),
+        "ma_cross": ("neutral", "greed", "extreme_greed"),
+        "quality_factor": ("neutral", "greed", "extreme_greed"),
+        "multi_factor": ("neutral", "fear", "greed", "extreme_fear", "extreme_greed"),
     }
 
     async def check(self, db, current_fg_level: str = "neutral") -> List[dict]:
@@ -576,10 +676,16 @@ class EliminationChecker:
                     if row.get("period") in ("all", "backtest"):
                         m = row
                         break
+                validation_metrics = next((row for row in metrics_list if row.get("period") == "validation"), {})
+                risk_metrics = next((row for row in metrics_list if row.get("period") == "risk"), {})
 
                 mdd = abs(float(m.get("max_drawdown") or 0))
                 sharpe = float(m.get("sharpe_ratio") or 0)
                 win_rate = float(m.get("win_rate") or 0)
+                validation_grade = validation_metrics.get("grade")
+                var_percent = float(risk_metrics.get("var_percent") or 0)
+                cvar_percent = float(risk_metrics.get("cvar_percent") or 0)
+                stress_loss_percent = float(risk_metrics.get("stress_loss_percent") or 0)
 
                 if mdd > 0.30:
                     red_flags.append(f"回撤{mdd:.1%}>30%")
@@ -587,6 +693,14 @@ class EliminationChecker:
                     red_flags.append(f"Sharpe {sharpe:.2f}<0")
                 if 0 < win_rate < 0.30:
                     red_flags.append(f"胜率{win_rate:.1%}<30%")
+                if validation_grade == "D":
+                    red_flags.append("验证评级为D")
+                if var_percent > 4.0:
+                    red_flags.append(f"VaR {var_percent:.2f}%>4%")
+                if cvar_percent > 6.0:
+                    red_flags.append(f"CVaR {cvar_percent:.2f}%>6%")
+                if stress_loss_percent <= -25.0:
+                    red_flags.append(f"压力测试损失{stress_loss_percent:.1f}%")
 
                 # 信号命中率检查（从 signal_forward_returns 获取实际数据）
                 try:
