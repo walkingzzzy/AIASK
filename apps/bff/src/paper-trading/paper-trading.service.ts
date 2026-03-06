@@ -3,7 +3,7 @@ import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 
 @Injectable()
 export class PaperTradingService {
-  constructor(private readonly mcp: McpGatewayService) {}
+  constructor(private readonly mcp: McpGatewayService) { }
 
   private async call(action: string, params: Record<string, unknown> = {}) {
     try {
@@ -67,6 +67,10 @@ export class PaperTradingService {
     return this.call('cancel_order', { user_id: userId, order_id: orderId });
   }
 
+  async updatePrices(userId: string, accountId?: string) {
+    return this.call('update_prices', { user_id: userId, account_id: accountId });
+  }
+
   async navHistory(userId: string, accountId?: string, limit?: number) {
     return this.call('nav_history', { user_id: userId, account_id: accountId, limit: limit ?? 90 });
   }
@@ -100,5 +104,61 @@ export class PaperTradingService {
     max_drawdown_pct?: number; stop_loss_pct?: number;
   }) {
     return this.call('set_risk_rules', { user_id: userId, ...params });
+  }
+
+  // MCP Compliance Manager Integration
+  async checkCompliance(userId: string, params: {
+    code: string; direction: string; quantity: number;
+    price?: number; account_id?: string;
+  }) {
+    try {
+      const result = await this.mcp.callTool('compliance_manager', {
+        action: 'check_order',
+        kwargs: JSON.stringify({ user_id: userId, ...params }),
+      });
+      return { data: result };
+    } catch (error) {
+      throw new BadGatewayException({
+        success: false,
+        message: '调用 MCP compliance_manager (check_order) 失败',
+        detail: String(error instanceof Error ? error.message : error),
+      });
+    }
+  }
+
+  // MCP Execution Manager Integration
+  async routeExecution(userId: string, params: {
+    code: string; direction: string; quantity: number;
+    price?: number; urgency?: string;
+  }) {
+    try {
+      const result = await this.mcp.callTool('execution_manager', {
+        action: 'route_order',
+        kwargs: JSON.stringify({ user_id: userId, ...params }),
+      });
+      return { data: result };
+    } catch (error) {
+      throw new BadGatewayException({
+        success: false,
+        message: '调用 MCP execution_manager (route_order) 失败',
+        detail: String(error instanceof Error ? error.message : error),
+      });
+    }
+  }
+
+  async executionStatus(userId: string, executionId: string) {
+    try {
+      const result = await this.mcp.callTool('execution_manager', {
+        action: 'execution_status',
+        kwargs: JSON.stringify({ user_id: userId, execution_id: executionId }),
+      });
+      return { data: result };
+    } catch (error) {
+      throw new BadGatewayException({
+        success: false,
+        message: '调用 MCP execution_manager (execution_status) 失败',
+        detail: String(error instanceof Error ? error.message : error),
+      });
+    }
   }
 }

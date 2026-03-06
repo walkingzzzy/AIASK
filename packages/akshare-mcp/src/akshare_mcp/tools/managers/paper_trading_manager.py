@@ -35,6 +35,186 @@ def _normalize_kwargs(kwargs: dict) -> dict:
     return kwargs
 
 
+def _safe_float(value):
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _canonical_stock_code(code: str | None) -> str:
+    text = str(code or '').strip()
+    digits = ''.join(ch for ch in text if ch.isdigit())
+    return digits[-6:] if len(digits) >= 6 else text
+
+
+def _price_limit_pct(code: str, stock_name: str | None = None) -> float:
+    normalized = _canonical_stock_code(code)
+    name = str(stock_name or '').upper()
+    if 'ST' in name:
+        return 0.05
+    if normalized.startswith('688'):
+        return 0.20
+    if normalized.startswith('300'):
+        return 0.20
+    if normalized.startswith(('8', '4')):
+        return 0.30
+    return 0.10
+
+
+async def _get_quote_snapshot(code: str) -> dict:
+    try:
+        from ..market import get_realtime_quote
+        from ...utils import normalize_code
+        res = get_realtime_quote(normalize_code(code))
+        if res and res.get('success') and isinstance(res.get('data'), dict):
+            return res['data']
+    except Exception as e:
+        logger.debug('[PaperTrading] 获取行情快照失败: %s', e)
+    return {}
+
+
+async def _get_previous_close(code: str, db, quote: dict | None = None) -> float | None:
+    quote = quote or {}
+    for key in ('preClose', 'pre_close', 'prev_close'):
+        prev_close = _safe_float(quote.get(key))
+        if prev_close is not None and prev_close > 0:
+            return prev_close
+    try:
+        klines = await db.get_klines(code, limit=2)
+        if klines:
+            if len(klines) >= 2:
+                prev_close = _safe_float(klines[-2].get('close'))
+            else:
+                prev_close = _safe_float(klines[-1].get('close'))
+            if prev_close is not None and prev_close > 0:
+                return prev_close
+    except Exception:
+        pass
+    return None
+
+
+async def _validate_price_limit(code: str, price: float | None, db) -> str | None:
+    if price is None:
+        return None
+    quote = await _get_quote_snapshot(code)
+    prev_close = await _get_previous_close(code, db, quote)
+    if prev_close is None or prev_close <= 0:
+        return None
+    limit_pct = _price_limit_pct(code, quote.get('name'))
+    lower = round(prev_close * (1 - limit_pct), 2)
+    upper = round(prev_close * (1 + limit_pct), 2)
+    normalized_price = round(float(price), 2)
+    if normalized_price < lower - 0.01 or normalized_price > upper + 0.01:
+        return f'涨跌停限制：价格 {normalized_price:.2f} 超出允许范围 [{lower:.2f}, {upper:.2f}]'
+    return None
+
+
+async def _get_sellable_quantity(conn, account_id: str, code: str) -> int:
+    sellable = await conn.fetchval(
+        """SELECT COALESCE(SUM(
+               CASE WHEN trade_type='buy' AND DATE(trade_time) < CURRENT_DATE THEN quantity
+                    WHEN trade_type='sell' THEN -quantity
+                    ELSE 0 END
+           ), 0)
+           FROM paper_trades
+           WHERE account_id=$1 AND stock_code=$2""",
+        account_id, code
+    )
+    try:
+        return max(int(sellable or 0), 0)
+    except Exception:
+        return 0
+
+
+async def _validate_sell_request(conn, account_id: str, code: str, shares: int) -> str | None:
+    existing_pos = await conn.fetchrow(
+        "SELECT * FROM paper_positions WHERE account_id = $1 AND stock_code = $2",
+        account_id, code
+    )
+    position_qty = int(existing_pos.get('quantity') or 0) if existing_pos else 0
+    if position_qty < shares:
+        return '持仓不足，无法卖出'
+    sellable = await _get_sellable_quantity(conn, account_id, code)
+    if shares > sellable:
+        return f'T+1限制：可卖 {sellable} 股，请求卖出 {shares} 股'
+    return None
+
+
+async def _refresh_account_prices(db, account_id: str) -> list[dict]:
+    async with db.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM paper_positions WHERE account_id=$1", account_id)
+        account = await conn.fetchrow("SELECT * FROM paper_accounts WHERE id = $1", account_id)
+
+    positions = [dict(row) for row in rows]
+    if not positions:
+        if account:
+            cash = float(account.get('current_capital') or 0)
+            async with db.acquire() as conn:
+                await conn.execute(
+                    "UPDATE paper_accounts SET current_capital=$1, total_value=$2, updated_at=NOW() WHERE id=$3",
+                    cash, cash, account_id
+                )
+        return []
+
+    try:
+        from ..market.quote import get_batch_quotes_compat
+        quote_result = get_batch_quotes_compat([row.get('stock_code') for row in positions if row.get('stock_code')])
+        quotes = quote_result.get('data') if isinstance(quote_result, dict) else []
+    except Exception as e:
+        logger.warning('[PaperTrading] 批量刷新持仓价格失败: %s', e)
+        quotes = []
+
+    quote_map = {
+        _canonical_stock_code(item.get('code')): item
+        for item in quotes
+        if isinstance(item, dict) and item.get('code')
+    }
+
+    market_value_sum = 0.0
+    refreshed_positions: list[dict] = []
+    async with db.acquire() as conn:
+        for row in positions:
+            price = None
+            quote = quote_map.get(_canonical_stock_code(row.get('stock_code')))
+            if quote:
+                price = _safe_float(quote.get('price'))
+
+            if price is None or price <= 0:
+                refreshed_positions.append(row)
+                market_value_sum += float(row.get('market_value') or 0)
+                continue
+
+            quantity = int(row.get('quantity') or 0)
+            cost_price = float(row.get('cost_price') or 0)
+            market_value = price * quantity
+            profit_rate = ((price - cost_price) / cost_price) if cost_price else 0.0
+            await conn.execute(
+                """UPDATE paper_positions
+                   SET quantity=$1, current_price=$2, market_value=$3, profit_rate=$4, updated_at=NOW()
+                   WHERE account_id=$5 AND stock_code=$6""",
+                quantity, price, market_value, profit_rate, account_id, row.get('stock_code')
+            )
+            refreshed = {
+                **row,
+                'current_price': price,
+                'market_value': market_value,
+                'profit_rate': profit_rate,
+            }
+            refreshed_positions.append(refreshed)
+            market_value_sum += market_value
+
+        current_capital = float(account.get('current_capital') or 0) if account else 0.0
+        await conn.execute(
+            "UPDATE paper_accounts SET current_capital=$1, total_value=$2, updated_at=NOW() WHERE id=$3",
+            current_capital, current_capital + market_value_sum, account_id
+        )
+
+    return refreshed_positions
+
+
 async def _ensure_account(user_id: str, db) -> str:
     """确保用户有默认账户，没有则自动创建"""
     async with db.acquire() as conn:
@@ -66,14 +246,15 @@ async def _fill_order(conn, account_id: str, code: str, trade_type: str,
     if not account:
         raise ValueError("账户不存在")
 
+    if trade_type == 'sell':
+        reject = await _validate_sell_request(conn, account_id, code, shares)
+        if reject:
+            raise ValueError(reject)
+
     existing_pos = await conn.fetchrow(
         "SELECT * FROM paper_positions WHERE account_id = $1 AND stock_code = $2",
         account_id, code
     )
-
-    if trade_type == 'sell':
-        if not existing_pos or int(existing_pos.get('quantity') or 0) < shares:
-            raise ValueError("持仓不足，无法卖出")
 
     await conn.execute(
         """INSERT INTO paper_trades
@@ -166,20 +347,16 @@ async def _check_risk_before_buy(conn, account_id: str, code: str, amount: float
 
 async def _get_price(code: str, db):
     """获取股票当前价格"""
-    try:
-        from ..market import get_realtime_quote
-        from ...utils import normalize_code
-        res = get_realtime_quote(normalize_code(code))
-        if res and res.get('success') and res.get('data'):
-            d = res['data']
-            return d.get('price') or d.get('close') or d.get('now')
-    except Exception as e:
-        logger.warning("[PaperTrading] 获取实时价格失败: %s", e)
+    snapshot = await _get_quote_snapshot(code)
+    price = _safe_float(snapshot.get('price')) if snapshot else None
+    if price is not None and price > 0:
+        return price
     try:
         klines = await db.get_klines(code, limit=1)
         if klines:
             return klines[0].get('close')
-    except Exception:
+    except Exception as e:
+        logger.warning("[PaperTrading] 获取实时价格失败: %s", e)
         pass
     return None
 
@@ -211,8 +388,8 @@ def register_paper_trading_manager(mcp):
 
         Supported actions:
             help, create_account, place_order, cancel_order, pending_orders,
-            get_positions/list/positions, orders, order_events, summary, list_accounts,
-            nav_history, set_risk_rules, matching_status, nav_status
+            get_positions/list/positions, orders, order_events, summary, list_accounts/accounts,
+            nav_history, set_risk_rules, matching_status, nav_status, update_prices
         """
         try:
             db = get_db()
@@ -229,10 +406,12 @@ def register_paper_trading_manager(mcp):
                 'order_events': '查询订单事件',
                 'summary': '账户摘要',
                 'list_accounts': '列出所有账户',
+                'accounts': '列出所有账户',
                 'nav_history': '查看NAV历史',
                 'set_risk_rules': '设置风控规则',
                 'matching_status': '撮合引擎状态',
                 'nav_status': 'NAV引擎状态',
+                'update_prices': '批量刷新持仓现价/市值/盈亏',
                 'help': '显示帮助',
             }
 
@@ -277,6 +456,8 @@ def register_paper_trading_manager(mcp):
                     return fail('shares 必须大于 0')
 
                 trade_type = 'buy' if direction in ('buy', 'long') else 'sell'
+                if trade_type == 'buy' and shares % 100 != 0:
+                    return fail('买入数量必须为100的整数倍（1手=100股）')
 
                 # --- limit / stop 挂单 ---
                 if order_type in ('limit', 'stop'):
@@ -292,8 +473,17 @@ def register_paper_trading_manager(mcp):
                     except Exception:
                         return fail('price/stop_price 必须是数字')
 
+                    rule_price = price if order_type == 'limit' else stop_price
+                    price_limit_error = await _validate_price_limit(code, rule_price, db)
+                    if price_limit_error:
+                        return fail(price_limit_error)
+
                     order_id = str(uuid.uuid4())[:8]
                     async with db.acquire() as conn:
+                        if trade_type == 'sell':
+                            reject = await _validate_sell_request(conn, account_id, code, shares)
+                            if reject:
+                                return fail(reject)
                         row = await conn.fetchrow(
                             """INSERT INTO paper_orders
                                (account_id,code,direction,shares,price,order_type,stop_price,status,created_at,updated_at)
@@ -334,8 +524,16 @@ def register_paper_trading_manager(mcp):
                 if price <= 0:
                     return fail('price 必须大于 0')
 
+                price_limit_error = await _validate_price_limit(code, price, db)
+                if price_limit_error:
+                    return fail(price_limit_error)
+
                 amount = price * shares
                 async with db.acquire() as conn:
+                    if trade_type == 'sell':
+                        reject = await _validate_sell_request(conn, account_id, code, shares)
+                        if reject:
+                            return fail(reject)
                     # 买入前风控检查
                     if trade_type == 'buy':
                         reject = await _check_risk_before_buy(conn, account_id, code, amount)
@@ -428,7 +626,14 @@ def register_paper_trading_manager(mcp):
                     rows = await conn.fetch(
                         "SELECT * FROM paper_positions WHERE account_id=$1", account_id
                     )
-                return ok({'account_id': account_id, 'positions': [dict(r) for r in rows], 'count': len(rows)})
+                    positions = []
+                    for row in rows:
+                        item = dict(row)
+                        sellable = await _get_sellable_quantity(conn, account_id, item.get('stock_code'))
+                        quantity = int(item.get('quantity') or 0)
+                        item['sellable'] = max(0, min(quantity, sellable))
+                        positions.append(item)
+                return ok({'account_id': account_id, 'positions': positions, 'count': len(positions)})
 
             # --- orders (trades) ---
             elif action == 'orders':
@@ -501,12 +706,34 @@ def register_paper_trading_manager(mcp):
                 })
 
             # --- list_accounts ---
-            elif action == 'list_accounts':
+            elif action in ('list_accounts', 'accounts'):
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
                         "SELECT * FROM paper_accounts WHERE user_id=$1 ORDER BY created_at", user_id
                     )
                 return ok({'accounts': [dict(r) for r in rows], 'count': len(rows)})
+
+            # --- update_prices ---
+            elif action == 'update_prices':
+                account_id = kwargs.get('account_id')
+                if not account_id:
+                    account_id = await _ensure_account(user_id, db)
+                positions = await _refresh_account_prices(db, account_id)
+                async with db.acquire() as conn:
+                    enriched_positions = []
+                    for row in positions:
+                        item = dict(row)
+                        sellable = await _get_sellable_quantity(conn, account_id, item.get('stock_code'))
+                        quantity = int(item.get('quantity') or 0)
+                        item['sellable'] = max(0, min(quantity, sellable))
+                        enriched_positions.append(item)
+                    account = await conn.fetchrow("SELECT * FROM paper_accounts WHERE id=$1", account_id)
+                return ok({
+                    'account_id': account_id,
+                    'positions': enriched_positions,
+                    'count': len(enriched_positions),
+                    'account': dict(account) if account else None,
+                })
 
             # --- nav_history ---
             elif action == 'nav_history':

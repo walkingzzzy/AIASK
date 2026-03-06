@@ -4,7 +4,7 @@ function hasSessionToken(request: NextRequest) {
   return request.cookies.get('logged_in')?.value === '1';
 }
 
-const protectedPrefixes = ['/market', '/fundamental', '/research', '/alerts', '/strategy', '/risk', '/user', '/assistant', '/tdx', '/fund-flow', '/factor', '/valuation', '/technical', '/sentiment', '/search', '/data', '/chat'];
+const protectedPrefixes = ['/market', '/fundamental', '/research', '/alerts', '/strategy', '/risk', '/user', '/assistant', '/tdx', '/fund-flow', '/factor', '/valuation', '/technical', '/sentiment', '/search', '/data', '/chat', '/paper-trading'];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -35,6 +35,6 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/market/:path*', '/fundamental/:path*', '/research/:path*', '/alerts/:path*', '/strategy/:path*', '/risk/:path*', '/user/:path*', '/assistant/:path*', '/tdx/:path*', '/fund-flow/:path*', '/factor/:path*', '/valuation/:path*', '/technical/:path*', '/sentiment/:path*', '/search/:path*', '/data/:path*', '/chat/:path*', '/login', '/register'],
+  matcher: ['/market/:path*', '/fundamental/:path*', '/research/:path*', '/alerts/:path*', '/strategy/:path*', '/risk/:path*', '/user/:path*', '/assistant/:path*', '/tdx/:path*', '/fund-flow/:path*', '/factor/:path*', '/valuation/:path*', '/technical/:path*', '/sentiment/:path*', '/search/:path*', '/data/:path*', '/chat/:path*', '/paper-trading/:path*', '/login', '/register'],
 };
 

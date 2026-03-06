@@ -18,11 +18,31 @@ class CancelOrderDto {
   @IsString() order_id!: string;
 }
 
+class UpdatePricesDto {
+  @IsOptional() @IsString() account_id?: string;
+}
+
 class RiskRulesDto {
   @IsOptional() @IsString() account_id?: string;
   @IsOptional() @Type(() => Number) @IsNumber() max_position_pct?: number;
   @IsOptional() @Type(() => Number) @IsNumber() max_drawdown_pct?: number;
   @IsOptional() @Type(() => Number) @IsNumber() stop_loss_pct?: number;
+}
+
+class ComplianceCheckDto {
+  @IsString() code!: string;
+  @IsString() direction!: string;
+  @Type(() => Number) @IsInt() @Min(1) quantity!: number;
+  @IsOptional() @Type(() => Number) @IsNumber() price?: number;
+  @IsOptional() @IsString() account_id?: string;
+}
+
+class RouteExecutionDto {
+  @IsString() code!: string;
+  @IsString() direction!: string;
+  @Type(() => Number) @IsInt() @Min(1) quantity!: number;
+  @IsOptional() @Type(() => Number) @IsNumber() price?: number;
+  @IsOptional() @IsString() urgency?: string;
 }
 
 class OrderEventsQueryDto {
@@ -43,7 +63,7 @@ function userId(req: Req_): string {
 
 @Controller('paper-trading')
 export class PaperTradingController {
-  constructor(private readonly svc: PaperTradingService) {}
+  constructor(private readonly svc: PaperTradingService) { }
 
   @Get('accounts')
   async listAccounts(@Req() req: Req_) {
@@ -94,6 +114,12 @@ export class PaperTradingController {
     return { success: true, data, traceId: traceId(req) };
   }
 
+  @Post('update-prices')
+  async updatePrices(@Body() body: UpdatePricesDto, @Req() req: Req_) {
+    const data = await this.svc.updatePrices(userId(req), body.account_id);
+    return { success: true, data, traceId: traceId(req) };
+  }
+
   @Get('nav-history')
   async navHistory(
     @Query('account_id') accountId: string,
@@ -119,6 +145,24 @@ export class PaperTradingController {
   @Post('risk-rules')
   async setRiskRules(@Body() body: RiskRulesDto, @Req() req: Req_) {
     const data = await this.svc.setRiskRules(userId(req), body);
+    return { success: true, data, traceId: traceId(req) };
+  }
+
+  @Post('check-compliance')
+  async checkCompliance(@Body() body: ComplianceCheckDto, @Req() req: Req_) {
+    const data = await this.svc.checkCompliance(userId(req), body);
+    return { success: true, data, traceId: traceId(req) };
+  }
+
+  @Post('route-execution')
+  async routeExecution(@Body() body: RouteExecutionDto, @Req() req: Req_) {
+    const data = await this.svc.routeExecution(userId(req), body);
+    return { success: true, data, traceId: traceId(req) };
+  }
+
+  @Get('execution-status')
+  async executionStatus(@Query('execution_id') executionId: string, @Req() req: Req_) {
+    const data = await this.svc.executionStatus(userId(req), executionId);
     return { success: true, data, traceId: traceId(req) };
   }
 }

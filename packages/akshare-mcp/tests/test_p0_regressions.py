@@ -52,7 +52,14 @@ class _PortfolioConn:
 
 class _PaperConn:
     def __init__(self):
-        self.accounts = {'acc1': {'id': 'acc1', 'current_capital': 100000.0, 'total_value': 100000.0}}
+        self.accounts = {
+            'acc1': {
+                'id': 'acc1',
+                'user_id': 'default',
+                'current_capital': 100000.0,
+                'total_value': 100000.0,
+            }
+        }
         self.positions = {}
         self.trades = []
 
@@ -64,20 +71,50 @@ class _PaperConn:
         return None
 
     async def fetch(self, query, *args):
+        if 'FROM paper_accounts WHERE user_id' in query:
+            uid = args[0]
+            return [v for v in self.accounts.values() if v.get('user_id') == uid]
         if 'FROM paper_positions WHERE account_id' in query:
             aid = args[0]
             return [v for (k, _), v in self.positions.items() if k == aid]
+        if 'FROM paper_trades WHERE account_id' in query:
+            aid = args[0]
+            return [v for v in reversed(self.trades) if v.get('account_id') == aid]
         return []
 
     async def fetchval(self, query, *args):
-        if 'SUM(market_value)' in query or 'SUM(' in query:
+        if 'FROM paper_trades' in query:
+            aid, code = args
+            today = datetime.now().date()
+            sellable = 0
+            for trade in self.trades:
+                if trade.get('account_id') != aid or trade.get('stock_code') != code:
+                    continue
+                trade_time = trade.get('trade_time') or datetime.now()
+                trade_date = trade_time.date() if hasattr(trade_time, 'date') else today
+                if trade.get('trade_type') == 'buy' and trade_date < today:
+                    sellable += int(trade.get('quantity') or 0)
+                elif trade.get('trade_type') == 'sell':
+                    sellable -= int(trade.get('quantity') or 0)
+            return sellable
+        if 'SUM(market_value)' in query:
             aid = args[0]
             return sum(float(v.get('market_value') or 0) for (k, _), v in self.positions.items() if k == aid)
         return 0
 
     async def execute(self, query, *args):
         if 'INSERT INTO paper_trades' in query:
-            self.trades.append({'id': args[0], 'account_id': args[1], 'stock_code': args[2], 'trade_type': args[4], 'price': args[5], 'quantity': args[6], 'amount': args[7]})
+            self.trades.append({
+                'id': args[0],
+                'account_id': args[1],
+                'stock_code': args[2],
+                'trade_type': args[4],
+                'price': args[5],
+                'quantity': args[6],
+                'amount': args[7],
+                'commission': args[8],
+                'trade_time': datetime.now(),
+            })
         elif 'UPDATE paper_positions' in query and 'cost_price=$2' in query:
             qty, cost, cp, mv, pr, aid, code = args
             self.positions[(aid, code)] = {'account_id': aid, 'stock_code': code, 'quantity': qty, 'cost_price': cost, 'current_price': cp, 'market_value': mv, 'profit_rate': pr}
@@ -102,6 +139,11 @@ class _FakeDB:
 
     def acquire(self):
         return _Acquire(self.conn)
+
+
+class _PaperFakeDB(_FakeDB):
+    async def get_klines(self, code, limit=2):
+        return []
 
 
 @pytest.mark.asyncio
@@ -138,7 +180,16 @@ async def test_p0_3_paper_trading_bookkeeping_consistency(monkeypatch):
     mcp = _DummyMCP()
     ptm.register_paper_trading_manager(mcp)
     conn = _PaperConn()
-    monkeypatch.setattr(ptm, 'get_db', lambda: _FakeDB(conn))
+    monkeypatch.setattr(ptm, 'get_db', lambda: _PaperFakeDB(conn))
+
+    async def _fake_quote(_code):
+        return {'name': '贵州茅台', 'preClose': 11.0, 'price': 11.0}
+
+    async def _always_sellable(_conn, _account_id, _code):
+        return 10_000
+
+    monkeypatch.setattr(ptm, '_get_quote_snapshot', _fake_quote)
+    monkeypatch.setattr(ptm, '_get_sellable_quantity', _always_sellable)
 
     b = await mcp.paper_trading_manager(action='place_order', account_id='acc1', code='600519', direction='buy', quantity=100, price=10)
     assert b['success'] is True
@@ -152,6 +203,85 @@ async def test_p0_3_paper_trading_bookkeeping_consistency(monkeypatch):
 
     bad = await mcp.paper_trading_manager(action='place_order', account_id='acc1', code='600519', direction='sell', quantity=1000, price=12)
     assert bad['success'] is False
+
+
+@pytest.mark.asyncio
+async def test_p0_3_paper_trading_t_plus_one_and_sellable(monkeypatch):
+    mcp = _DummyMCP()
+    ptm.register_paper_trading_manager(mcp)
+    conn = _PaperConn()
+    monkeypatch.setattr(ptm, 'get_db', lambda: _PaperFakeDB(conn))
+
+    async def _fake_quote(_code):
+        return {'name': '贵州茅台', 'preClose': 11.0, 'price': 11.0}
+
+    monkeypatch.setattr(ptm, '_get_quote_snapshot', _fake_quote)
+
+    buy = await mcp.paper_trading_manager(action='place_order', account_id='acc1', code='600519', direction='buy', quantity=100, price=10)
+    assert buy['success'] is True
+
+    positions = await mcp.paper_trading_manager(action='positions', account_id='acc1')
+    assert positions['success'] is True
+    assert positions['data']['positions'][0]['sellable'] == 0
+
+    same_day_sell = await mcp.paper_trading_manager(action='place_order', account_id='acc1', code='600519', direction='sell', quantity=100, price=10)
+    assert same_day_sell['success'] is False
+    assert 'T+1' in str(same_day_sell.get('error') or same_day_sell.get('message') or same_day_sell)
+
+
+@pytest.mark.asyncio
+async def test_p0_3_paper_trading_lot_size_and_price_limit(monkeypatch):
+    mcp = _DummyMCP()
+    ptm.register_paper_trading_manager(mcp)
+    conn = _PaperConn()
+    monkeypatch.setattr(ptm, 'get_db', lambda: _PaperFakeDB(conn))
+
+    async def _fake_quote(_code):
+        return {'name': '贵州茅台', 'preClose': 10.0, 'price': 10.0}
+
+    monkeypatch.setattr(ptm, '_get_quote_snapshot', _fake_quote)
+
+    bad_lot = await mcp.paper_trading_manager(action='place_order', account_id='acc1', code='600519', direction='buy', quantity=150, price=10)
+    assert bad_lot['success'] is False
+    assert '100' in str(bad_lot.get('error') or bad_lot.get('message') or bad_lot)
+
+    bad_limit = await mcp.paper_trading_manager(action='place_order', account_id='acc1', code='600519', direction='buy', quantity=100, price=11.5)
+    assert bad_limit['success'] is False
+    assert '涨跌停限制' in str(bad_limit.get('error') or bad_limit.get('message') or bad_limit)
+
+
+@pytest.mark.asyncio
+async def test_p0_3_paper_trading_update_prices_and_accounts_alias(monkeypatch):
+    mcp = _DummyMCP()
+    ptm.register_paper_trading_manager(mcp)
+    conn = _PaperConn()
+    conn.positions[('acc1', '600519')] = {
+        'account_id': 'acc1',
+        'stock_code': '600519',
+        'stock_name': '贵州茅台',
+        'quantity': 100,
+        'cost_price': 10.0,
+        'current_price': 10.0,
+        'market_value': 1000.0,
+        'profit_rate': 0.0,
+    }
+    monkeypatch.setattr(ptm, 'get_db', lambda: _PaperFakeDB(conn))
+    monkeypatch.setattr(quote_mod, 'get_batch_quotes_compat', lambda codes: {
+        'success': True,
+        'data': [{'code': codes[0], 'price': 12.0, 'name': '贵州茅台'}],
+    })
+
+    accounts = await mcp.paper_trading_manager(action='accounts', user_id='default')
+    assert accounts['success'] is True
+    assert accounts['data']['count'] == 1
+
+    refreshed = await mcp.paper_trading_manager(action='update_prices', account_id='acc1')
+    assert refreshed['success'] is True
+    position = refreshed['data']['positions'][0]
+    assert position['current_price'] == pytest.approx(12.0)
+    assert position['market_value'] == pytest.approx(1200.0)
+    assert position['profit_rate'] == pytest.approx(0.2)
+    assert refreshed['data']['account']['total_value'] == pytest.approx(101200.0)
 
 
 
@@ -388,7 +518,7 @@ class _DecisionConn:
         if "SELECT pe_ratio, pb_ratio FROM stocks" in query:
             return {"pe_ratio": 20.0, "pb_ratio": 1.5}
         if "FROM financials" in query:
-            return {"roe": 0.16, "debt_ratio": 0.3, "revenue_growth": 0.25}
+            return {"roe": 16.0, "debt_ratio": 30.0, "revenue_growth": 25.0}
         return None
 
     async def fetch(self, query, *args):
@@ -439,6 +569,9 @@ class _DecisionDB:
 
     def acquire(self):
         return _Acquire(self._conn)
+
+    async def _financials_code_column(self, conn):
+        return "code"
 
 
 @pytest.mark.asyncio

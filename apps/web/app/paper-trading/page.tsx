@@ -1,8 +1,9 @@
 'use client';
 
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, StockCodeInput, DataTable, Badge } from '@/components/ui';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { useToast } from '@/components/ui/toast';
 import { LineChart, PieChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
@@ -10,6 +11,8 @@ import { apiKeys } from '@/lib/query-keys';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
+import { useTradeSubscription } from '@/lib/ws';
+import { isTradingHours } from '@/lib/trading-hours';
 
 type Account = { account_id?: string; user_id?: string; initial_capital?: number };
 
@@ -24,7 +27,7 @@ type Summary = {
 
 type Position = {
   stock_code?: string; stock_name?: string; quantity?: number;
-  cost_price?: number; current_price?: number; market_value?: number; profit_rate?: number;
+  cost_price?: number; current_price?: number; market_value?: number; profit_rate?: number; sellable?: number;
 };
 
 type Trade = {
@@ -42,6 +45,7 @@ type PendingOrder = {
 type NavPoint = { nav_date?: string; total_value?: number; daily_return?: number };
 
 export default function PaperTradingPage() {
+  const { toast } = useToast();
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy');
   const [quantity, setQuantity] = useState('100');
@@ -52,6 +56,16 @@ export default function PaperTradingPage() {
   const [accountId, setAccountId] = useState('');
   const [pendingOrderBody, setPendingOrderBody] = useState<Record<string, unknown> | null>(null);
   const [cancelOrderId, setCancelOrderId] = useState<number | null>(null);
+  const [tradeNotice, setTradeNotice] = useState<string | null>(null);
+
+  // T-005: WS real-time trade order updates
+  const handleTradeUpdate = useCallback((data: Record<string, unknown>) => {
+    const status = String(data.status ?? '');
+    const code = String(data.code ?? data.stock_code ?? '');
+    setTradeNotice(`订单 ${code} ${status === 'filled' ? '已成交' : status === 'partial' ? '部分成交' : status === 'rejected' ? '被拒绝' : '状态更新'}`);
+    // Auto-dismiss after 5s
+    setTimeout(() => setTradeNotice(null), 5000);
+  }, []);
 
   const qs = accountId ? `?account_id=${accountId}` : '';
 
@@ -64,6 +78,24 @@ export default function PaperTradingPage() {
   const ordersQ = useApiQuery<{ orders?: Trade[] }>('/paper-trading/orders' + qs);
   const pendingQ = useApiQuery<{ orders?: PendingOrder[] }>('/paper-trading/pending-orders' + qs);
   const navQ = useApiQuery<{ nav?: NavPoint[] }>('/paper-trading/nav-history' + qs);
+
+  // Subscribe to trade updates via WS
+  useTradeSubscription({ accountId: accountId || 'default', onUpdate: handleTradeUpdate });
+
+  // Advanced MCP Managers (Compliance & Execution)
+  const [useComplianceCheck, setUseComplianceCheck] = useState(false);
+  const [urgentExecution, setUrgentExecution] = useState(false);
+  const complianceApi = useApiMutation<Record<string, unknown>>();
+  const routeExecutionApi = useApiMutation<Record<string, unknown>>({ invalidates: [[...apiKeys.paper()]] });
+  const refreshPricesApi = useApiMutation<Record<string, unknown>>({
+    invalidates: [[...apiKeys.paper()]],
+    successToast: false,
+  });
+  const autoRefreshPricesApi = useApiMutation<Record<string, unknown>>({
+    invalidates: [[...apiKeys.paper()]],
+    successToast: false,
+    errorToast: false,
+  });
 
   // 2 write mutations — invalidate all paper queries on success
   const placeApi = useApiMutation<Record<string, unknown>>({ invalidates: [[...apiKeys.paper()]] });
@@ -99,8 +131,60 @@ export default function PaperTradingPage() {
   const navCategories = useMemo(() => navData.map(n => n.nav_date?.slice(5) ?? ''), [navData]);
   const navValues = useMemo(() => navData.map(n => n.total_value ?? 0), [navData]);
 
-  const loading = summaryQ.isPending;
-  const error = summaryQ.error || positionsQ.error;
+  const loading = summaryQ.isPending || refreshPricesApi.isPending;
+  const error = summaryQ.error || positionsQ.error || refreshPricesApi.error;
+  const accountIdRef = useRef(accountId);
+  const autoRefreshBusyRef = useRef(false);
+  const manualRefreshPendingRef = useRef(refreshPricesApi.isPending);
+  const autoRefreshTriggerRef = useRef(autoRefreshPricesApi.triggerAsync);
+
+  useEffect(() => {
+    accountIdRef.current = accountId;
+  }, [accountId]);
+
+  useEffect(() => {
+    manualRefreshPendingRef.current = refreshPricesApi.isPending;
+  }, [refreshPricesApi.isPending]);
+
+  useEffect(() => {
+    autoRefreshTriggerRef.current = autoRefreshPricesApi.triggerAsync;
+  }, [autoRefreshPricesApi.triggerAsync]);
+
+  async function handleRefreshPrices() {
+    setFormError(null);
+    try {
+      await refreshPricesApi.triggerAsync('/paper-trading/update-prices', { method: 'POST' }, accountId ? { account_id: accountId } : {});
+      toast('持仓价格已刷新', 'success');
+    } catch (err) {
+      setFormError(String(err));
+    }
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const tick = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (!isTradingHours()) return;
+      if (manualRefreshPendingRef.current || autoRefreshBusyRef.current) return;
+      autoRefreshBusyRef.current = true;
+      try {
+        await autoRefreshTriggerRef.current(
+          '/paper-trading/update-prices',
+          { method: 'POST' },
+          accountIdRef.current ? { account_id: accountIdRef.current } : {},
+        );
+      } catch {
+        // 静默自动刷新：失败时不打断用户当前操作
+      } finally {
+        autoRefreshBusyRef.current = false;
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => {
+      void tick();
+    }, 15_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   async function handleOrder(e: FormEvent) {
     e.preventDefault();
@@ -109,7 +193,7 @@ export default function PaperTradingPage() {
     if (!validate()) return;
     const qty = parseInt(quantity, 10);
     if (!qty || qty <= 0) { setFormError('数量必须大于0'); return; }
-    if (qty % 100 !== 0) { setFormError('数量必须为100的整数倍（手数规则）'); return; }
+    if (direction === 'buy' && qty % 100 !== 0) { setFormError('买入数量必须为100的整数倍（手数规则）'); return; }
     if (orderType === 'limit' && (!price || parseFloat(price) <= 0)) { setFormError('限价单必须填写有效价格'); return; }
     if (orderType === 'stop' && (!stopPrice || parseFloat(stopPrice) <= 0)) { setFormError('止损单必须填写止损价'); return; }
     if (price && parseFloat(price) <= 0) { setFormError('价格必须大于0'); return; }
@@ -126,11 +210,31 @@ export default function PaperTradingPage() {
 
   async function confirmOrder() {
     if (!pendingOrderBody) return;
-    setPendingOrderBody(null);
     try {
-      await placeApi.triggerAsync('/paper-trading/order', { method: 'POST' }, pendingOrderBody);
+      if (useComplianceCheck) {
+        setFormError('正在进行合规检查...');
+        const complianceRes = await complianceApi.triggerAsync('/paper-trading/check-compliance', { method: 'POST' }, pendingOrderBody);
+        const compData = complianceRes?.data as Record<string, unknown> | undefined;
+        if (!complianceRes?.success || compData?.status !== 'passed') {
+          setFormError(`合规检查失败: ${compData?.reason || '触发风控限制'}`);
+          setPendingOrderBody(null);
+          return;
+        }
+      }
+
+      setFormError('正在提交订单...');
+      if (urgentExecution) {
+        // Use intelligent execution manager router
+        await routeExecutionApi.triggerAsync('/paper-trading/route-execution', { method: 'POST' }, { ...pendingOrderBody, urgency: 'high' });
+      } else {
+        // Use standard paper trading local router
+        await placeApi.triggerAsync('/paper-trading/order', { method: 'POST' }, pendingOrderBody);
+      }
+      setFormError(null);
+      setPendingOrderBody(null);
     } catch (err) {
       setFormError(String(err));
+      setPendingOrderBody(null);
     }
   }
 
@@ -157,6 +261,14 @@ export default function PaperTradingPage() {
       <div className="flex items-center gap-3 mb-3 flex-wrap">
         <Badge variant={matchOk ? 'success' : 'warning'}>撮合: {matchOk ? '运行中' : '未知'}</Badge>
         <Badge variant={navOk ? 'success' : 'warning'}>净值: {navOk ? '运行中' : '未知'}</Badge>
+        <button
+          type="button"
+          onClick={handleRefreshPrices}
+          disabled={refreshPricesApi.isPending}
+          className="text-sm px-3 py-1 rounded border border-glass-border bg-surface hover:bg-surface/80 disabled:opacity-50 cursor-pointer"
+        >
+          {refreshPricesApi.isPending ? '刷新中...' : '刷新价格'}
+        </button>
         {accounts.length > 1 && (
           <select value={accountId} onChange={(e) => setAccountId(e.target.value)}
             className="text-sm px-2 py-1 rounded border border-glass-border">
@@ -166,9 +278,17 @@ export default function PaperTradingPage() {
             ))}
           </select>
         )}
+        <span className="text-xs text-text-secondary">交易时段内每 15 秒自动刷新价格，非交易时段仅支持手动刷新。</span>
       </div>
 
       {error && <ErrorState text={error} />}
+
+      {/* WS 交易通知 */}
+      {tradeNotice && (
+        <div className="mb-3 px-4 py-2 rounded-lg bg-primary/10 border border-primary/30 text-sm text-primary flex items-center gap-2">
+          <span>📋</span> {tradeNotice}
+        </div>
+      )}
 
       {/* KPI */}
       <KpiGrid cols={4} className="mb-4">
@@ -207,13 +327,25 @@ export default function PaperTradingPage() {
             <input type="number" step="0.01" value={stopPrice} onChange={e => setStopPrice(e.target.value)}
               aria-label="止损价" placeholder="止损价" className="border border-border rounded px-2 py-1.5 bg-surface text-sm" />
           )}
-          <button type="submit" disabled={placeApi.isPending}
+          <button type="submit" disabled={placeApi.isPending || routeExecutionApi.isPending || complianceApi.isPending}
             className={`col-span-2 sm:col-span-1 px-4 py-1.5 rounded text-sm font-medium text-white ${direction === 'buy' ? 'bg-danger' : 'bg-success'} disabled:opacity-50`}>
-            {placeApi.isPending ? '提交中...' : direction === 'buy' ? '买入' : '卖出'}
+            {placeApi.isPending || routeExecutionApi.isPending ? '提交中...' : complianceApi.isPending ? '风控检查中...' : direction === 'buy' ? '买入' : '卖出'}
           </button>
         </form>
-        {formError && <p className="text-danger text-xs mt-2" role="alert">{formError}</p>}
-        {placeApi.data && <p className="text-success text-xs mt-2">下单成功</p>}
+
+        <div className="flex gap-4 mt-4 items-center text-sm text-muted-foreground border-t pt-3">
+          <label className="flex items-center gap-1 cursor-pointer">
+            <input type="checkbox" checked={useComplianceCheck} onChange={e => setUseComplianceCheck(e.target.checked)} className="rounded border-border accent-primary" />
+            <span>下单前执行合规风控 (Compliance Check)</span>
+          </label>
+          <label className="flex items-center gap-1 cursor-pointer">
+            <input type="checkbox" checked={urgentExecution} onChange={e => setUrgentExecution(e.target.checked)} className="rounded border-border accent-primary" />
+            <span className={urgentExecution ? 'text-primary' : ''}>启用极速智能路由 (Execution Manager)</span>
+          </label>
+        </div>
+
+        {formError && <p className="text-danger text-xs mt-2 font-bold" role="alert">{formError}</p>}
+        {(placeApi.data || routeExecutionApi.data) && <p className="text-success text-xs mt-2">下单成功</p>}
       </SectionCard>
 
       {/* 持仓列表 */}
@@ -225,13 +357,16 @@ export default function PaperTradingPage() {
               { key: 'stock_code', label: '代码' },
               { key: 'stock_name', label: '名称' },
               { key: 'quantity', label: '数量' },
+              { key: 'sellable', label: '可卖' },
               { key: 'cost_price', label: '成本', render: (v: unknown) => fmtNum(Number(v), 2) },
               { key: 'current_price', label: '现价', render: (v: unknown) => fmtNum(Number(v), 2) },
               { key: 'market_value', label: '市值', render: (v: unknown) => fmtNum(Number(v)) },
-              { key: 'profit_rate', label: '盈亏率', render: (v: unknown) => {
-                const n = Number(v) * 100;
-                return <span className={n >= 0 ? 'text-danger font-medium' : 'text-success font-medium'}>{fmtPct(n)}</span>;
-              }},
+              {
+                key: 'profit_rate', label: '盈亏率', render: (v: unknown) => {
+                  const n = Number(v) * 100;
+                  return <span className={n >= 0 ? 'text-danger font-medium' : 'text-success font-medium'}>{fmtPct(n)}</span>;
+                }
+              },
             ]}
             rows={positions as Record<string, unknown>[]}
           />
@@ -265,11 +400,13 @@ export default function PaperTradingPage() {
               { key: 'order_type', label: '类型' },
               { key: 'price', label: '价格', render: (v: unknown) => v ? fmtNum(Number(v), 2) : '-' },
               { key: 'stop_price', label: '止损价', render: (v: unknown) => v ? fmtNum(Number(v), 2) : '-' },
-              { key: 'id', label: '操作', render: (_: unknown, row: Record<string, unknown>) => (
-                <button onClick={() => handleCancel(row.id as number)}
-                  disabled={cancelApi.isPending}
-                  className="text-xs text-danger underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">撤单</button>
-              )},
+              {
+                key: 'id', label: '操作', render: (_: unknown, row: Record<string, unknown>) => (
+                  <button onClick={() => handleCancel(row.id as number)}
+                    disabled={cancelApi.isPending}
+                    className="text-xs text-danger underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">撤单</button>
+                )
+              },
             ]}
             rows={pending as Record<string, unknown>[]}
           />
