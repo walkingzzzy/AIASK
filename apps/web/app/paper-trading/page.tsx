@@ -13,6 +13,7 @@ import { ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import { useTradeSubscription } from '@/lib/ws';
 import { isTradingHours } from '@/lib/trading-hours';
+import { exportCSV } from '@/lib/export';
 
 type Account = { account_id?: string; user_id?: string; initial_capital?: number };
 
@@ -43,6 +44,8 @@ type PendingOrder = {
 };
 
 type NavPoint = { nav_date?: string; total_value?: number; daily_return?: number };
+type PerformancePoint = { date?: string; totalValue?: number; dailyReturn?: number };
+type PerformanceMetrics = { totalReturn?: number; sharpe?: number; maxDrawdown?: number; winRate?: number; avgHoldDays?: number };
 
 export default function PaperTradingPage() {
   const { toast } = useToast();
@@ -57,6 +60,7 @@ export default function PaperTradingPage() {
   const [pendingOrderBody, setPendingOrderBody] = useState<Record<string, unknown> | null>(null);
   const [cancelOrderId, setCancelOrderId] = useState<number | null>(null);
   const [tradeNotice, setTradeNotice] = useState<string | null>(null);
+  const [perfDays, setPerfDays] = useState(30);
 
   // T-005: WS real-time trade order updates
   const handleTradeUpdate = useCallback((data: Record<string, unknown>) => {
@@ -78,6 +82,7 @@ export default function PaperTradingPage() {
   const ordersQ = useApiQuery<{ orders?: Trade[] }>('/paper-trading/orders' + qs);
   const pendingQ = useApiQuery<{ orders?: PendingOrder[] }>('/paper-trading/pending-orders' + qs);
   const navQ = useApiQuery<{ nav?: NavPoint[] }>('/paper-trading/nav-history' + qs);
+  const performanceQ = useApiQuery<{ dailyReturns?: PerformancePoint[]; metrics?: PerformanceMetrics }>(`/paper-trading/performance${qs ? `${qs}&days=${perfDays}` : `?days=${perfDays}`}`);
 
   // Subscribe to trade updates via WS
   useTradeSubscription({ accountId: accountId || 'default', onUpdate: handleTradeUpdate });
@@ -118,6 +123,8 @@ export default function PaperTradingPage() {
   const trades = ordersQ.data?.orders ?? [];
   const pending = pendingQ.data?.orders ?? [];
   const navData = navQ.data?.nav ?? [];
+  const performanceData = performanceQ.data?.dailyReturns ?? [];
+  const performanceMetrics = performanceQ.data?.metrics ?? {};
 
   // 今日盈亏：最新 NAV 的 daily_return * 前一日总资产
   const todayPnl = useMemo(() => {
@@ -130,6 +137,8 @@ export default function PaperTradingPage() {
 
   const navCategories = useMemo(() => navData.map(n => n.nav_date?.slice(5) ?? ''), [navData]);
   const navValues = useMemo(() => navData.map(n => n.total_value ?? 0), [navData]);
+  const perfCategories = useMemo(() => performanceData.map((item) => item.date?.slice(5) ?? ''), [performanceData]);
+  const perfReturns = useMemo(() => performanceData.map((item) => Number(item.dailyReturn ?? 0) * 100), [performanceData]);
 
   const loading = summaryQ.isPending || refreshPricesApi.isPending;
   const error = summaryQ.error || positionsQ.error || refreshPricesApi.error;
@@ -298,6 +307,33 @@ export default function PaperTradingPage() {
         <KpiCard title="总收益率" value={fmtPct(Number(returnPct))} change={Number(returnPct)} />
         <KpiCard title="今日盈亏" value={fmtNum(todayPnl)} change={todayPnl} />
       </KpiGrid>
+
+      <SectionCard className="mb-4">
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+          <h3 className="font-medium m-0">绩效分析</h3>
+          <div className="flex items-center gap-2 flex-wrap">
+            {[7, 30, 90, 0].map((days) => (
+              <button
+                key={days}
+                type="button"
+                onClick={() => setPerfDays(days)}
+                className={`text-xs px-2 py-1 rounded border cursor-pointer ${perfDays === days ? 'border-primary text-primary' : 'border-glass-border text-text-secondary'}`}
+              >
+                {days === 0 ? '全部' : `${days}天`}
+              </button>
+            ))}
+            <button type="button" onClick={() => exportCSV(performanceData.map((item) => ({ 日期: item.date ?? '', 净值: item.totalValue ?? 0, 日收益率: item.dailyReturn ?? 0 })), `paper-trading-performance-${perfDays || 'all'}.csv`)} className="text-xs px-3 py-1 rounded border border-glass-border cursor-pointer">导出 CSV</button>
+          </div>
+        </div>
+        <KpiGrid cols={4} className="mb-3">
+          <KpiCard title="区间收益率" value={fmtPct(Number(performanceMetrics.totalReturn ?? 0) * 100)} change={Number(performanceMetrics.totalReturn ?? 0) * 100} />
+          <KpiCard title="夏普比率" value={fmtNum(Number(performanceMetrics.sharpe ?? 0))} />
+          <KpiCard title="最大回撤" value={fmtPct(Number(performanceMetrics.maxDrawdown ?? 0) * 100)} change={Number(performanceMetrics.maxDrawdown ?? 0) * 100} />
+          <KpiCard title="胜率" value={fmtPct(Number(performanceMetrics.winRate ?? 0) * 100)} change={Number(performanceMetrics.winRate ?? 0) * 100} />
+          <KpiCard title="平均持仓天数" value={fmtNum(Number(performanceMetrics.avgHoldDays ?? 0))} />
+        </KpiGrid>
+        {performanceData.length > 1 ? <LineChart categories={perfCategories} series={[{ name: '日收益率(%)', data: perfReturns }]} /> : <div className="text-sm text-text-secondary">暂无足够绩效数据</div>}
+      </SectionCard>
 
       {/* 下单面板 */}
       <SectionCard className="mb-4">

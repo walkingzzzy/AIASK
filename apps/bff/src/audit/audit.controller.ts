@@ -1,4 +1,4 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Query, Req } from '@nestjs/common';
 import { Type } from 'class-transformer';
 import { IsInt, IsOptional, Max, Min } from 'class-validator';
 import { AuditStore } from './audit.store';
@@ -25,6 +25,19 @@ export class AuditController {
       success: true,
       data: {
         items: await this.auditStore.list(limit),
+        limit,
+      },
+    };
+  }
+
+  @Get('my-logs')
+  async myLogs(@Req() req: { user?: { id?: string; sub?: string } }, @Query() query: ListAuditQueryDto) {
+    const limit = Math.min(query.limit ?? 20, 50);
+    const userId = String(req.user?.sub ?? req.user?.id ?? '');
+    return {
+      success: true,
+      data: {
+        items: await this.auditStore.listByUser(userId, limit),
         limit,
       },
     };

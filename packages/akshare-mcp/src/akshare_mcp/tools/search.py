@@ -7,7 +7,7 @@ from ..data_source import data_source
 
 
 def _search_stocks_tushare_fallback(keyword: str, limit: int) -> list:
-    """DB 无数据时用 Tushare Pro 股票列表按名称/代码筛选"""
+    """DB 无数据时用 Tushare Pro 股票列表按名称/代码/行业筛选"""
     pro = data_source.get_tushare_pro()
     if not pro:
         return []
@@ -35,6 +35,7 @@ def _search_stocks_tushare_fallback(keyword: str, limit: int) -> list:
             keyword_lower in ts_code.lower()
             or keyword_lower in symbol.lower()
             or keyword_lower in name
+            or keyword_lower in industry.lower()
         ):
             results.append({
                 "code": normalize_code(symbol) if symbol else ts_code,
@@ -81,16 +82,18 @@ def register(mcp):
             
             async with db.acquire() as conn:
                 rows = await conn.fetch(
-                    """SELECT stock_code, stock_name, industry, market_cap
+                    """SELECT code, stock_name, industry, market_cap
                        FROM stocks
-                       WHERE stock_code LIKE $1 OR stock_name LIKE $2
+                       WHERE code LIKE $1
+                          OR stock_name LIKE $2
+                          OR (industry IS NOT NULL AND industry LIKE $2)
                        ORDER BY market_cap DESC NULLS LAST
                        LIMIT $3""",
                     f'%{keyword}%', f'%{keyword}%', limit
                 )
                 results = [
                     {
-                        'code': row['stock_code'],
+                        'code': row['code'],
                         'name': row['stock_name'],
                         'industry': row['industry'],
                         'market_cap': float(row['market_cap']) if row['market_cap'] else None,

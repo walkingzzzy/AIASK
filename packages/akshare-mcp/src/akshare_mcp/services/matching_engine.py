@@ -169,7 +169,14 @@ class MatchingEngine:
         async with db.acquire() as conn:
             try:
                 trade_id, commission = await _fill_order(
-                    conn, account_id, code, direction, shares, fill_price
+                    conn,
+                    account_id,
+                    code,
+                    direction,
+                    shares,
+                    fill_price,
+                    strategy_id=order.get('strategy_id'),
+                    source_order_id=str(order_id),
                 )
                 await conn.execute(
                     "UPDATE paper_orders SET status='filled', filled_at=NOW(), commission=$1, updated_at=NOW() WHERE id=$2",

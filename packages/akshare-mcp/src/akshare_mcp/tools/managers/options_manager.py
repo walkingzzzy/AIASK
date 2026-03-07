@@ -150,7 +150,7 @@ def register_options_manager(mcp):
                     try:
                         from ..market import get_kline
                         from ...utils import normalize_code
-                        res = get_kline(normalize_code(code), 'daily', 1)
+                        res = await get_kline(normalize_code(code), 'daily', 1)
                         if res.get('success') and res.get('data'):
                             spot = float(res['data'][-1].get('close', 0) or 0)
                     except Exception:
@@ -264,7 +264,7 @@ def register_options_manager(mcp):
                     try:
                         from ..market import get_kline
                         from ...utils import normalize_code
-                        res = get_kline(normalize_code(code), 'daily', 1)
+                        res = await get_kline(normalize_code(code), 'daily', 1)
                         if res.get('success') and res.get('data'):
                             fetched_spot = float(res['data'][-1].get('close', 0) or 0)
                             if fetched_spot > 0:

@@ -147,10 +147,10 @@ def register_industry_chain_manager(mcp):
                     # 尝试从数据库查找同行业股票
                     async with db.acquire() as conn:
                         rows = await conn.fetch(
-                            "SELECT stock_code, stock_name FROM stocks WHERE industry LIKE $1 LIMIT 10",
+                            "SELECT code, stock_name FROM stocks WHERE industry LIKE $1 LIMIT 10",
                             f'%{industry}%'
                         )
-                        related_stocks = [{'code': row['stock_code'], 'name': row['stock_name']} for row in rows]
+                        related_stocks = [{'code': row['code'], 'name': row['stock_name']} for row in rows]
                     
                     return ok({
                         'industry': industry,
@@ -172,7 +172,7 @@ def register_industry_chain_manager(mcp):
                 # 获取股票所属行业
                 async with db.acquire() as conn:
                     stock_info = await conn.fetchrow(
-                        "SELECT stock_name, industry FROM stocks WHERE stock_code = $1",
+                        "SELECT stock_name, industry FROM stocks WHERE code = $1",
                         code
                     )
                 
@@ -188,10 +188,10 @@ def register_industry_chain_manager(mcp):
                 # 查找同行业股票
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
-                        "SELECT stock_code, stock_name FROM stocks WHERE industry = $1 AND stock_code != $2 LIMIT 20",
+                        "SELECT code, stock_name FROM stocks WHERE industry = $1 AND code != $2 LIMIT 20",
                         industry, code
                     )
-                    related_stocks = [{'code': row['stock_code'], 'name': row['stock_name']} for row in rows]
+                    related_stocks = [{'code': row['code'], 'name': row['stock_name']} for row in rows]
                 
                 return ok({
                     'code': code,

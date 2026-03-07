@@ -164,6 +164,39 @@ export class CommonCacheService implements OnModuleDestroy {
     };
   }
 
+  /**
+   * Clear cache entries. If prefix is provided, only keys matching the prefix are cleared.
+   * Returns the number of keys cleared.
+   */
+  async clear(prefix?: string): Promise<number> {
+    let cleared = 0;
+    const fullPrefix = prefix ? `${this.keyPrefix}${prefix}` : this.keyPrefix;
+
+    if (this.redisReady && this.redis) {
+      try {
+        const pattern = prefix ? `${fullPrefix}*` : `${this.keyPrefix}*`;
+        const keys = await this.redis.keys(pattern);
+        if (keys.length > 0) {
+          await this.redis.del(...keys);
+          cleared += keys.length;
+        }
+      } catch (error) {
+        this.stats.errors += 1;
+        this.logger.warn(`Redis 清除失败: ${this.errMsg(error)}`);
+      }
+    }
+
+    const memKeys = Array.from(this.memory.keys()).filter((k) =>
+      prefix ? k.startsWith(fullPrefix) : k.startsWith(this.keyPrefix),
+    );
+    for (const k of memKeys) {
+      this.memory.delete(k);
+      cleared += 1;
+    }
+
+    return cleared;
+  }
+
   private initRedis() {
     const redisUrl = this.configService.get<string>('REDIS_URL');
     if (!redisUrl) {

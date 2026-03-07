@@ -51,6 +51,11 @@ class OrderEventsQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) limit?: number;
 }
 
+class PerformanceQueryDto {
+  @IsOptional() @IsString() account_id?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) days?: number;
+}
+
 type Req_ = { traceId?: string; headers?: Record<string, string | undefined>; user?: { id?: string } };
 
 function traceId(req: Req_): string {
@@ -127,6 +132,12 @@ export class PaperTradingController {
     @Req() req: Req_,
   ) {
     const data = await this.svc.navHistory(userId(req), accountId, limit ? Number(limit) : undefined);
+    return { success: true, data, traceId: traceId(req) };
+  }
+
+  @Get('performance')
+  async performance(@Query() query: PerformanceQueryDto, @Req() req: Req_) {
+    const data = await this.svc.performance(userId(req), query.account_id, query.days ?? 30);
     return { success: true, data, traceId: traceId(req) };
   }
 

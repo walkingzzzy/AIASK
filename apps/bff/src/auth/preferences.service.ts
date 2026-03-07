@@ -20,7 +20,7 @@ export class PreferencesService {
   }
 
   async getLlmConfig(userId: string): Promise<LlmConfig | null> {
-    const prefs = await this.getPreferences(userId);
+    const prefs = await this.getUserPreferences(userId);
     if (!prefs?.llm?.apiKey) return null;
     try {
       return { ...prefs.llm, apiKey: this.decrypt(prefs.llm.apiKey) };
@@ -30,16 +30,16 @@ export class PreferencesService {
   }
 
   async setLlmConfig(userId: string, config: LlmConfig): Promise<void> {
-    const prefs = await this.getPreferences(userId);
+    const prefs = await this.getUserPreferences(userId);
     const updated: UserPreferences = {
       ...prefs,
       llm: { apiKey: this.encrypt(config.apiKey), baseUrl: config.baseUrl, model: config.model },
     };
-    await this.setPreferences(userId, updated);
+    await this.setUserPreferences(userId, updated);
   }
 
   async getMaskedLlmConfig(userId: string): Promise<{ apiKey: string; baseUrl: string; model: string } | null> {
-    const prefs = await this.getPreferences(userId);
+    const prefs = await this.getUserPreferences(userId);
     if (!prefs?.llm?.apiKey) return null;
     try {
       const realKey = this.decrypt(prefs.llm.apiKey);
@@ -54,7 +54,7 @@ export class PreferencesService {
     return key.slice(0, 3) + '****' + key.slice(-4);
   }
 
-  private async getPreferences(userId: string): Promise<UserPreferences> {
+  async getUserPreferences(userId: string): Promise<UserPreferences> {
     if (this.dbService.enabled) {
       try {
         const result = await this.dbService.query<{ preferences: UserPreferences }>(
@@ -69,7 +69,7 @@ export class PreferencesService {
     return this.memStore.get(userId) ?? {};
   }
 
-  private async setPreferences(userId: string, prefs: UserPreferences): Promise<void> {
+  async setUserPreferences(userId: string, prefs: UserPreferences): Promise<void> {
     if (this.dbService.enabled) {
       try {
         await this.dbService.query(
@@ -80,6 +80,13 @@ export class PreferencesService {
       } catch { /* fall through to memStore */ }
     }
     this.memStore.set(userId, prefs);
+  }
+
+  async mergeUserPreferences(userId: string, patch: UserPreferences): Promise<UserPreferences> {
+    const current = await this.getUserPreferences(userId);
+    const next = { ...current, ...patch };
+    await this.setUserPreferences(userId, next);
+    return next;
   }
 
   private encrypt(text: string): string {

@@ -16,51 +16,69 @@ try:
 except ImportError:
     ak = None
 
-# 东方财富 datacenter API (datacenter-web 域名可通，push2 被 Clash DNS 劫持不通)
-_EM_DC_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
-_EM_DC_REPORT = {
-    'industry': 'RPT_BOARD_INDUSTRY_ALLCONS',
-    'concept':  'RPT_BOARD_CONCEPT_ALLCONS',
-}
-
-
-def _fetch_em_blocks_direct(block_type: str) -> list:
-    """通过东方财富 datacenter-web API 获取板块数据（该域名不受 Clash DNS 劫持影响）"""
-    report = _EM_DC_REPORT.get(block_type)
-    if not report:
+def _fetch_from_sector_spot() -> list:
+    """通过 ak.stock_sector_spot() 获取行业板块数据（新浪接口，不受 Clash 代理影响）"""
+    if ak is None:
         return []
     try:
-        import requests
-        params = {
-            'reportName': report,
-            'columns': 'BOARD_CODE,BOARD_NAME,CHANGE_RATE,DEAL_AMOUNT,LEAD_STOCK_CODE,LEAD_STOCK_NAME,BOARD_STOCK_NUM',
-            'sortColumns': 'CHANGE_RATE',
-            'sortTypes': -1,
-            'pageSize': 500,
-            'pageNumber': 1,
-        }
-        headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://data.eastmoney.com/'}
-        r = requests.get(_EM_DC_URL, params=params, headers=headers, timeout=10)
-        data = r.json()
-        result = data.get('result')
-        items = result.get('data', []) if result else []
-        if not items:
+        df = ak.stock_sector_spot()
+        if df is None or df.empty:
             return []
         blocks = []
-        for it in items:
+        for _, row in df.iterrows():
+            label = str(row.get('label', '') or '')
+            name = str(row.get('板块', '') or '')
+            if not label or not name:
+                continue
             blocks.append({
-                'block_code': str(it.get('BOARD_CODE', '')),
-                'block_name': str(it.get('BOARD_NAME', '')),
+                'block_code': label,
+                'block_name': name,
+                'block_type': 'industry',
+                'stock_count': int(row.get('公司家数', 0) or 0),
+                'avg_change_pct': float(row.get('涨跌幅', 0) or 0),
+                'total_amount': float(row.get('总成交额', 0) or 0),
+                'leader_code': str(row.get('股票代码', '') or '').replace('sh', '').replace('sz', '').replace('bj', ''),
+                'leader_name': str(row.get('股票名称', '') or ''),
+            })
+        blocks.sort(key=lambda b: b['avg_change_pct'], reverse=True)
+        return blocks
+    except Exception as e:
+        safe_stderr_print(f"[MarketBlocks] sector_spot失败: {e}")
+        return []
+
+
+def _fetch_from_ths(block_type: str) -> list:
+    """通过同花顺接口获取板块名称列表（无涨跌幅，仅名称/代码）"""
+    if ak is None:
+        return []
+    try:
+        if block_type == 'industry':
+            df = ak.stock_board_industry_name_ths()
+        elif block_type == 'concept':
+            df = ak.stock_board_concept_name_ths()
+        else:
+            return []
+        if df is None or df.empty:
+            return []
+        blocks = []
+        for _, row in df.iterrows():
+            name = str(row.get('name', '') or '')
+            code = str(row.get('code', '') or '')
+            if not name:
+                continue
+            blocks.append({
+                'block_code': code,
+                'block_name': name,
                 'block_type': block_type,
-                'stock_count': int(it.get('BOARD_STOCK_NUM', 0) or 0),
-                'avg_change_pct': float(it.get('CHANGE_RATE', 0) or 0),
-                'total_amount': float(it.get('DEAL_AMOUNT', 0) or 0),
-                'leader_code': str(it.get('LEAD_STOCK_CODE', '') or ''),
-                'leader_name': str(it.get('LEAD_STOCK_NAME', '') or ''),
+                'stock_count': 0,
+                'avg_change_pct': 0.0,
+                'total_amount': None,
+                'leader_code': None,
+                'leader_name': None,
             })
         return blocks
     except Exception as e:
-        safe_stderr_print(f"[MarketBlocks] 东方财富datacenter失败: {e}")
+        safe_stderr_print(f"[MarketBlocks] 同花顺{block_type}失败: {e}")
         return []
 
 
@@ -192,13 +210,19 @@ async def get_market_blocks(
         if blocks:
             source = 'tdx'
 
-    # 3. 东方财富直接HTTP(绕过代理)
-    if not blocks:
-        blocks = _fetch_em_blocks_direct(block_type)
+    # 3. sector_spot (新浪接口, 不受Clash代理影响, 仅行业)
+    if not blocks and block_type == 'industry':
+        blocks = _fetch_from_sector_spot()
         if blocks:
-            source = 'eastmoney_direct'
+            source = 'sina_sector'
 
-    # 4. AKShare(最后降级)
+    # 4. 同花顺板块 (AKShare THS接口)
+    if not blocks:
+        blocks = _fetch_from_ths(block_type)
+        if blocks:
+            source = 'ths'
+
+    # 5. AKShare 东财接口(最后降级, push2可能被代理拦截)
     if not blocks:
         blocks = _fetch_from_akshare(block_type)
         if blocks:
@@ -234,47 +258,81 @@ async def get_market_blocks(
 async def get_block_stocks(block_code: str) -> Dict[str, Any]:
     """
     获取板块成分股
-    
+
     Args:
-        block_code: 板块代码
-    
+        block_code: 板块代码（支持 new_xxx 格式的新浪label 和 88xxxx 格式的同花顺代码）
+
     Returns:
         成分股列表
     """
-    try:
-        if ak is None:
-            return {'success': False, 'error': 'akshare not available'}
-        df = ak.stock_board_industry_cons_em(symbol=block_code)
-        
-        if df is None or df.empty:
-            return {'success': False, 'error': 'No stocks found in block'}
-        
-        stocks = []
-        for _, row in df.iterrows():
-            stock = {
-                'stock_code': str(row.get('代码', '')),
-                'stock_name': str(row.get('名称', '')),
-                'change_pct': float(row.get('涨跌幅', 0)),
-                'price': float(row.get('最新价', 0)),
-                'volume': int(row.get('成交量', 0)),
-                'amount': float(row.get('成交额', 0)),
-            }
-            stocks.append(stock)
-        
-        return {
-            'success': True,
-            'data': {
-                'block_code': block_code,
-                'stocks': normalize_block_stock_list(stocks),
-                'count': len(stocks),
-            }
+    if ak is None:
+        return {'success': False, 'error': 'akshare not available'}
+
+    stocks = []
+
+    # 路径1: 新浪 sector_detail（适用于 new_xxx 格式 label）
+    if block_code.startswith('new_'):
+        try:
+            df = ak.stock_sector_detail(sector=block_code)
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    code_raw = str(row.get('code', '') or '')
+                    stocks.append({
+                        'stock_code': code_raw,
+                        'stock_name': str(row.get('name', '') or ''),
+                        'change_pct': float(row.get('changepercent', 0) or 0),
+                        'price': float(row.get('trade', 0) or 0),
+                        'volume': int(float(row.get('volume', 0) or 0)),
+                        'amount': float(row.get('amount', 0) or 0),
+                    })
+        except Exception as e:
+            safe_stderr_print(f"[BlockStocks] sector_detail失败: {e}")
+
+    # 路径2: 同花顺行业成分股（适用于 88xxxx / 308xxx 格式代码）
+    if not stocks:
+        try:
+            df = ak.stock_board_industry_cons_em(symbol=block_code)
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    stocks.append({
+                        'stock_code': str(row.get('代码', '') or ''),
+                        'stock_name': str(row.get('名称', '') or ''),
+                        'change_pct': float(row.get('涨跌幅', 0) or 0),
+                        'price': float(row.get('最新价', 0) or 0),
+                        'volume': int(float(row.get('成交量', 0) or 0)),
+                        'amount': float(row.get('成交额', 0) or 0),
+                    })
+        except Exception as e:
+            safe_stderr_print(f"[BlockStocks] stock_board_industry_cons_em失败: {e}")
+
+    # 路径3: 同花顺概念成分股
+    if not stocks:
+        try:
+            df = ak.stock_board_concept_cons_em(symbol=block_code)
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    stocks.append({
+                        'stock_code': str(row.get('代码', '') or ''),
+                        'stock_name': str(row.get('名称', '') or ''),
+                        'change_pct': float(row.get('涨跌幅', 0) or 0),
+                        'price': float(row.get('最新价', 0) or 0),
+                        'volume': int(float(row.get('成交量', 0) or 0)),
+                        'amount': float(row.get('成交额', 0) or 0),
+                    })
+        except Exception as e:
+            safe_stderr_print(f"[BlockStocks] stock_board_concept_cons_em失败: {e}")
+
+    if not stocks:
+        return {'success': False, 'error': f'No stocks found in block {block_code}'}
+
+    return {
+        'success': True,
+        'data': {
+            'block_code': block_code,
+            'stocks': normalize_block_stock_list(stocks),
+            'count': len(stocks),
         }
-    
-    except Exception as e:
-        return {
-            'success': False,
-            'error': f'Failed to get block stocks: {str(e)}'
-        }
+    }
 
 
 async def _save_blocks_to_db(db, blocks: List[Dict[str, Any]]) -> None:

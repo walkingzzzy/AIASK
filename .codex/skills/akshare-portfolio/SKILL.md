@@ -12,7 +12,7 @@ description: 回测、组合优化、风险分析、压力测试以及组合/回
   - 批量回测：`run_batch_backtest`
 - 组合
   - 组合优化：`optimize_portfolio`
-  - 风险分析：`analyze_portfolio_risk`
+  - 风险分析：`analyze_portfolio_risk`；需要 Barra 风格分解时用 `analyze_portfolio_risk_barra`
   - 压力测试：`stress_test_portfolio`
 - 历史/持久化（需要保存或查询时）
   - 组合管理：`portfolio_manager`

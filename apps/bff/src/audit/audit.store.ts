@@ -107,5 +107,54 @@ export class AuditStore {
 
     return this.entries.slice(-safe).reverse();
   }
+
+  async listByUser(userId: string, limit = 20): Promise<AuditEntry[]> {
+    const safe = Math.max(1, Math.min(50, Number(limit) || 20));
+
+    if (this.dbService.enabled) {
+      try {
+        const result = await this.dbService.query<{
+          trace_id: string;
+          method: string;
+          path: string;
+          status: number;
+          duration_ms: number;
+          user_id: string | null;
+          username: string | null;
+          user_role: string | null;
+          ts: string | Date;
+        }>(
+          `SELECT trace_id, method, path, status, duration_ms, user_id, username, user_role, ts
+             FROM audit_logs
+            WHERE user_id = $1
+            ORDER BY ts DESC
+            LIMIT $2`,
+          [userId, safe],
+        );
+
+        return result.rows.map((row) => ({
+          trace_id: row.trace_id,
+          method: row.method,
+          path: row.path,
+          status: Number(row.status),
+          duration_ms: Number(row.duration_ms),
+          user:
+            row.user_id && row.username
+              ? {
+                  id: row.user_id,
+                  username: row.username,
+                  role: row.user_role === 'admin' ? 'admin' : 'user',
+                }
+              : null,
+          ts: new Date(row.ts).toISOString(),
+        }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`读取用户审计日志失败，已降级到内存: ${message}`);
+      }
+    }
+
+    return this.entries.filter((entry) => entry.user?.id === userId).slice(-safe).reverse();
+  }
 }
 

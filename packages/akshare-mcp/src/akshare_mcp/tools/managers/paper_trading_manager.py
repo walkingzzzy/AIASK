@@ -234,7 +234,8 @@ async def _ensure_account(user_id: str, db) -> str:
 
 
 async def _fill_order(conn, account_id: str, code: str, trade_type: str,
-                      shares: int, price: float, order_id: str = None):
+                      shares: int, price: float, order_id: str = None,
+                      strategy_id: str | None = None, source_order_id: str | None = None):
     """统一成交记账：写 trade → 更新 position → 更新 account。返回 (trade_id, commission)。"""
     amount = price * shares
     cost = build_cost_model({}, notional=amount, default_mode="execution")
@@ -258,9 +259,10 @@ async def _fill_order(conn, account_id: str, code: str, trade_type: str,
 
     await conn.execute(
         """INSERT INTO paper_trades
-           (id, account_id, stock_code, stock_name, trade_type, price, quantity, amount, commission, trade_time, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())""",
-        trade_id, account_id, code, code, trade_type, price, shares, amount, commission
+           (id, account_id, stock_code, stock_name, trade_type, price, quantity, amount, commission,
+            strategy_id, source_order_id, trade_time, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())""",
+        trade_id, account_id, code, code, trade_type, price, shares, amount, commission, strategy_id, source_order_id
     )
 
     if trade_type == 'buy':
@@ -486,10 +488,10 @@ def register_paper_trading_manager(mcp):
                                 return fail(reject)
                         row = await conn.fetchrow(
                             """INSERT INTO paper_orders
-                               (account_id,code,direction,shares,price,order_type,stop_price,status,created_at,updated_at)
-                               VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',NOW(),NOW())
+                               (account_id, strategy_id, signal_date, source, code, direction, shares, price, order_type, stop_price, status, created_at, updated_at)
+                               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',NOW(),NOW())
                                RETURNING id""",
-                            account_id, code, trade_type, shares, price, order_type, stop_price
+                            account_id, kwargs.get('strategy_id'), kwargs.get('signal_date'), kwargs.get('source', 'manual'), code, trade_type, shares, price, order_type, stop_price
                         )
                         db_order_id = row['id'] if row else order_id
                         await _record_order_event(
@@ -555,7 +557,8 @@ def register_paper_trading_manager(mcp):
                             return fail(f'风控拒绝: {reject}')
 
                     trade_id, commission = await _fill_order(
-                        conn, account_id, code, trade_type, shares, price
+                        conn, account_id, code, trade_type, shares, price,
+                        strategy_id=kwargs.get('strategy_id'), source_order_id=kwargs.get('source_order_id')
                     )
                     await _record_order_event(
                         conn,
@@ -787,6 +790,7 @@ def register_paper_trading_manager(mcp):
                 return fail(f'Unknown action: {action}. Supported: {", ".join(SUPPORTED_ACTIONS.keys())}')
         except Exception as e:
             logger.error("[PaperTrading] %s error: %s", action, e, exc_info=True)
-            return fail(str(e))
+            message = str(e).strip() or f'{action} 执行失败'
+            return fail(message)
 
 

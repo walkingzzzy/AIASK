@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# ── 内存缓存 ──────────────────────────────────────────────
-_CHAINS: dict[str, dict[str, Any]] = {}          # trace_id -> chain
+# ── 内存缓存（LRU 淘汰）───────────────────────────────────────────
+_MAX_CHAINS: int = 1000  # 最多缓存的证据链数量
+_CHAINS: OrderedDict[str, dict[str, Any]] = OrderedDict()  # trace_id -> chain
 _CODE_INDEX: dict[str, list[str]] = {}            # code -> [trace_id, ...]
 
 
@@ -145,8 +147,11 @@ def save_chain(chain: dict) -> dict:
     payload = deepcopy(chain)
     payload["updated_at"] = _now_iso()
 
-    # 内存缓存
+    # 内存缓存（LRU 淘汰）
     _CHAINS[tid] = deepcopy(payload)
+    _CHAINS.move_to_end(tid)  # 标记为最近使用
+    while len(_CHAINS) > _MAX_CHAINS:
+        _CHAINS.popitem(last=False)  # 淘汰最老的条目
 
     # 代码索引
     code = payload.get("code", "")

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge, Skeleton, SkeletonCard, QuickAction, QuickActionGrid } from '@/components/ui';
 import { GaugeChart, BarChart, COLORS } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -17,6 +17,7 @@ import { tradingInterval, isTradingHours } from '@/lib/trading-hours';
 import { useAuthStore } from '@/store/auth-store';
 import { useDashboardPrefs, DASHBOARD_MODULES } from '@/hooks/use-dashboard-prefs';
 import type { DashboardModuleKey } from '@/hooks/use-dashboard-prefs';
+import { useQuoteSubscription, type QuoteData } from '@/lib/ws';
 
 const poll = tradingInterval(60_000);
 const slowPoll = tradingInterval(180_000);
@@ -62,6 +63,9 @@ export default function HomePage() {
   });
   const healthQ = useApiQuery<unknown>('/health/mcp', { enabled: mounted });
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile', { enabled: mounted, parse: (raw) => ensureRecord(raw, '用户配置') });
+  const paperSummaryQ = useApiQuery<Record<string, unknown>>('/paper-trading/summary', { enabled: mounted, parse: (raw) => ensureRecord(raw, '模拟盘概览(首页)') });
+  const paperPositionsQ = useApiQuery<unknown>('/paper-trading/positions', { enabled: mounted, parse: (raw) => ensureRecordOrArray(raw, '模拟盘持仓(首页)') });
+  const marketNewsQ = useApiQuery<unknown>('/research/market-news?limit=5', { enabled: mounted, parse: (raw) => ensureRecordOrArray(raw, '市场快讯(首页)') });
   const { visibility: dashboardVisibility, toggle: toggleDashboardModule } = useDashboardPrefs(mounted, profileQ);
   const sectorQ = useApiQuery<unknown>('/market/blocks?blockType=industry&limit=20', { enabled: mounted && dashboardVisibility.market, refetchInterval: lazyRefetch, placeholderData: 'keepPrevious', parse: (raw) => ensureRecordOrArray(raw, '板块行情(首页)') });
   const sectorFlowQ = useApiQuery<unknown>('/fund-flow/sector', { enabled: mounted && dashboardVisibility['fund-flow'], refetchInterval: lazyRefetch, placeholderData: 'keepPrevious', parse: (raw) => ensureRecordOrArray(raw, '板块资金流(首页)') });
@@ -76,8 +80,27 @@ export default function HomePage() {
     strategyUserId ? `/strategy-market/my-subscriptions?user_id=${encodeURIComponent(strategyUserId)}` : null,
     { enabled: mounted && dashboardVisibility.strategy && Boolean(strategyUserId), parse: (raw) => ensureRecordOrArray(raw, '策略订阅(首页)') },
   );
-  const watchlistItems = useWatchlistStore((s) => s.items);
+  const watchlistItems = useWatchlistStore((s) => s.groups.flatMap((g) => g.items));
+  const syncFromServer = useWatchlistStore((s) => s.syncFromServer);
   const recentStocks = useStockContext((s) => s.recent);
+
+  // Sync watchlist from server on mount
+  useEffect(() => { syncFromServer(); }, [syncFromServer]);
+
+  // ── WS real-time quotes ──
+  const wsQuotesRef = useRef<Map<string, Record<string, unknown>>>(new Map());
+  const [wsQuoteTick, setWsQuoteTick] = useState(0);
+
+  const handleWsQuote = useCallback((data: QuoteData) => {
+    wsQuotesRef.current.set(data.code, data as Record<string, unknown>);
+    setWsQuoteTick((t) => t + 1);
+  }, []);
+
+  useQuoteSubscription({
+    codes: [...INDEX_CODES],
+    type: 'index',
+    onUpdate: handleWsQuote,
+  });
 
   // Collect unique codes from watchlist + recent for batch quote
   const quoteCodes = useMemo(() => {
@@ -157,6 +180,10 @@ export default function HomePage() {
   const mcp = (health?.mcp ?? {}) as Record<string, unknown>;
 
   const activeAlerts = useMemo(() => extractArray(alertsQ.data, 'items', 'alerts', 'data'), [alertsQ.data]);
+  const paperSummary = useMemo(() => extractObject(paperSummaryQ.data), [paperSummaryQ.data]);
+  const paperAccount = useMemo(() => extractObject(paperSummary.account), [paperSummary]);
+  const paperPositions = useMemo(() => extractArray(paperPositionsQ.data, 'positions', 'items', 'data'), [paperPositionsQ.data]);
+  const marketNews = useMemo(() => extractArray(marketNewsQ.data, 'items', 'news', 'data'), [marketNewsQ.data]);
   const riskSummary = useMemo(() => extractObject(riskQ.data), [riskQ.data]);
   const riskDegraded = Boolean(riskSummary.degraded);
   const riskModuleStatusRaw = extractObject(riskSummary.moduleStatus);
@@ -352,7 +379,62 @@ export default function HomePage() {
 
   return (
     <PageContainer>
-      <h1>市场概览</h1>
+      <div className="mb-4">
+        <h1 className="mb-1">欢迎回来，{String(profileQ.data?.nickname ?? user?.nickname ?? user?.username ?? '投资者')}</h1>
+        <div className="text-sm text-text-secondary">这里会优先展示你的资产、自选、告警和市场快讯。</div>
+      </div>
+
+      <div data-tour="dashboard">
+        <SectionCard className="p-4 mb-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+            <h3 className="mt-0 mb-0">个人总览</h3>
+            <Link href="/paper-trading" className="text-xs text-primary no-underline">进入模拟盘</Link>
+          </div>
+          <KpiGrid cols={4}>
+            <KpiCard title="总资产" value={fmtAmount(paperSummary.total_value ?? paperAccount.total_value)} />
+            <KpiCard title="总收益率" value={fmtPct(paperSummary.total_return_pct ?? 0)} change={Number(paperSummary.total_return_pct ?? 0)} />
+            <KpiCard title="持仓数" value={paperPositions.length} />
+            <KpiCard title="活跃告警" value={activeAlerts.length} />
+          </KpiGrid>
+        </SectionCard>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+        <SectionCard className="p-4 lg:col-span-1">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="mt-0 mb-0">自选股行情</h3>
+            <Link href="/watchlist" className="text-xs text-primary no-underline">更多</Link>
+          </div>
+          <div className="space-y-1.5">
+            {watchlistItems.slice(0, 5).map((item) => {
+              const q = quoteMap.get(item.code);
+              const chg = Number(q?.changePercent ?? q?.change_pct ?? 0);
+              return <div key={item.code} className="flex items-center justify-between text-sm py-1 border-b border-border/30"><StockLink code={item.code} name={item.name || item.code} /><span className={chg >= 0 ? 'text-danger text-xs' : 'text-success text-xs'}>{q ? `${fmtNum(q.price, 2)} ${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%` : '--'}</span></div>;
+            })}
+            {watchlistItems.length === 0 ? <EmptyState text="暂无自选股" /> : null}
+          </div>
+        </SectionCard>
+        <SectionCard className="p-4 lg:col-span-1">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="mt-0 mb-0">持仓概览</h3>
+            <Link href="/paper-trading" className="text-xs text-primary no-underline">更多</Link>
+          </div>
+          <div className="space-y-1.5">
+            {paperPositions.slice(0, 5).map((item, i) => <div key={String(item.stock_code ?? i)} className="flex items-center justify-between text-sm py-1 border-b border-border/30"><StockLink code={String(item.stock_code ?? '')} name={String(item.stock_name ?? item.stock_code ?? '')} /><span className={Number(item.profit_rate ?? 0) >= 0 ? 'text-danger text-xs' : 'text-success text-xs'}>{fmtPct(item.profit_rate ?? 0)}</span></div>)}
+            {paperPositions.length === 0 ? <EmptyState text="暂无持仓" /> : null}
+          </div>
+        </SectionCard>
+        <SectionCard className="p-4 lg:col-span-1">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="mt-0 mb-0">市场快讯</h3>
+            <Link href="/research" className="text-xs text-primary no-underline">更多</Link>
+          </div>
+          <div className="space-y-2">
+            {marketNews.slice(0, 5).map((item, i) => <div key={String(item.id ?? item.title ?? i)} className="text-sm pb-2 border-b border-border/30"><div className="font-medium line-clamp-2">{String(item.title ?? item.name ?? '未命名快讯')}</div><div className="text-xs text-text-secondary mt-1">{String(item.publish_time ?? item.time ?? item.date ?? '-')}</div></div>)}
+            {marketNews.length === 0 ? <EmptyState text="暂无市场快讯" /> : null}
+          </div>
+        </SectionCard>
+      </div>
 
       {/* Market Pulse Bar */}
       <div className="glass rounded-xl p-4 mb-4 flex items-center justify-between flex-wrap gap-3">
@@ -649,7 +731,7 @@ export default function HomePage() {
                       <StockLink code={item.code} name={item.name ? `${item.name} ${item.code}` : item.code} />
                       {q ? <span className={`text-xs font-medium ${chg >= 0 ? 'text-danger' : 'text-success'}`}>{fmtNum(q.price, 2)} {chg >= 0 ? '+' : ''}{chg.toFixed(2)}%</span>
                         : batchQ.isFetching ? <Skeleton width={80} height={16} />
-                        : <span className="text-xs text-text-muted">{new Date(item.ts).toLocaleDateString('zh-CN')}</span>}
+                          : <span className="text-xs text-text-muted">{new Date(item.ts).toLocaleDateString('zh-CN')}</span>}
                     </div>
                   );
                 })}

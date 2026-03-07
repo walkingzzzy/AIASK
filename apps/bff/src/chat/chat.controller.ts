@@ -22,6 +22,22 @@ class ChatCompletionsDto {
   messages!: ChatMessageDto[];
 }
 
+class ChatConversationMessageDto {
+  @IsIn(['user', 'assistant']) role!: 'user' | 'assistant';
+  @IsString() content!: string;
+}
+
+class ChatConversationDto {
+  @IsString() id!: string;
+  @IsOptional() @IsString() title?: string;
+  @IsString() updatedAt!: string;
+  @IsArray() @ValidateNested({ each: true }) @Type(() => ChatConversationMessageDto) messages!: ChatConversationMessageDto[];
+}
+
+class SyncChatConversationsDto {
+  @IsArray() @ValidateNested({ each: true }) @Type(() => ChatConversationDto) conversations!: ChatConversationDto[];
+}
+
 const MODEL_PRESETS = [
   { provider: 'OpenAI', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
   { provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-chat', 'deepseek-reasoner'] },
@@ -59,6 +75,28 @@ export class ChatController {
   @Get('models')
   getModels() {
     return { success: true, data: MODEL_PRESETS };
+  }
+
+  @Get('conversations')
+  async getConversations(@Req() req: { user?: any }) {
+    const userId = String(req.user?.sub ?? req.user?.id ?? '');
+    const prefs = await this.preferencesService.getUserPreferences(userId);
+    const chatHistory = ((prefs.chatHistory ?? {}) as Record<string, unknown>).conversations;
+    return { success: true, data: { conversations: Array.isArray(chatHistory) ? chatHistory : [] } };
+  }
+
+  @Post('conversations/sync')
+  async syncConversations(@Req() req: { user?: any }, @Body() body: SyncChatConversationsDto) {
+    const userId = String(req.user?.sub ?? req.user?.id ?? '');
+    const prefs = await this.preferencesService.getUserPreferences(userId);
+    await this.preferencesService.setUserPreferences(userId, {
+      ...prefs,
+      chatHistory: {
+        conversations: body.conversations.slice(0, 50),
+        syncedAt: new Date().toISOString(),
+      },
+    });
+    return { success: true, data: { saved: true, count: body.conversations.length } };
   }
 
   @Post('completions')

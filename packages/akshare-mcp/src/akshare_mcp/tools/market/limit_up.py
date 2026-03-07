@@ -175,6 +175,51 @@ def get_limit_up_stocks(date: str = "") -> dict:
                 for r in results:
                     r["name"] = name_map.get(r["code"], "")
 
+            # 6.5) 补全 turnoverRate / industry 从 daily_basic
+            try:
+                basic_df = _tushare_http_call(
+                    "daily_basic",
+                    {"trade_date": check_date},
+                    fields="ts_code,turnover_rate,pe,total_mv",
+                )
+                if basic_df is not None and not basic_df.empty:
+                    basic_map = {}
+                    for _, brow in basic_df.iterrows():
+                        bc = str(brow.get("ts_code", "")).split(".")[0]
+                        if bc:
+                            basic_map[bc] = brow
+                    for r in results:
+                        brow = basic_map.get(r["code"])
+                        if brow is not None:
+                            tr = parse_numeric(brow.get("turnover_rate"))
+                            if tr is not None:
+                                r["turnoverRate"] = float(tr)
+                            mv = parse_numeric(brow.get("total_mv"))
+                            if mv is not None:
+                                r["marketCap"] = float(mv)
+            except Exception:
+                pass
+
+            # 6.6) 补全 industry 从 stock_basic
+            try:
+                industry_df = _tushare_http_call(
+                    "stock_basic",
+                    {"exchange": "", "list_status": "L"},
+                    fields="ts_code,industry",
+                )
+                if industry_df is not None and not industry_df.empty:
+                    ind_map = {}
+                    for _, irow in industry_df.iterrows():
+                        ic = str(irow.get("ts_code", "")).split(".")[0]
+                        if ic:
+                            ind_map[ic] = str(irow.get("industry", "") or "")
+                    for r in results:
+                        ind = ind_map.get(r["code"], "")
+                        if ind:
+                            r["industry"] = ind
+            except Exception:
+                pass
+
             # 7) 尝试计算连板天数（往前查最多 10 天）
             _fill_continuous_days(results, check_date)
 

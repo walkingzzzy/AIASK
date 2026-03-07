@@ -37,6 +37,30 @@ export class ValuationService {
     return { sourceTool: 'scenario_dcf_valuation' as const, result: payload };
   }
 
+  async overview(code: string) {
+    const [metrics, historical] = await Promise.all([
+      this.fetchMetrics(code),
+      this.fetchHistorical(code),
+    ]);
+    return { metrics, historical };
+  }
+
+  private async fetchMetrics(code: string) {
+    try {
+      return await this.mcpGatewayService.callTool('get_valuation_metrics', { code });
+    } catch {
+      return null;
+    }
+  }
+
+  private async fetchHistorical(code: string) {
+    try {
+      return await this.mcpGatewayService.callTool('get_historical_valuation', { code, days: 365 });
+    } catch {
+      return null;
+    }
+  }
+
   private async callTool(name: string, args: Record<string, unknown>) {
     try {
       return await this.mcpGatewayService.callTool(name, args);

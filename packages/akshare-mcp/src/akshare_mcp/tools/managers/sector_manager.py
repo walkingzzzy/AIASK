@@ -21,6 +21,15 @@ def _normalize_kwargs(kwargs: dict) -> dict:
     return kwargs
 
 
+def _normalize_period(kwargs: dict, default: int = 20) -> int:
+    raw = kwargs.get('period', kwargs.get('days', default))
+    try:
+        period = int(raw)
+    except Exception:
+        period = default
+    return max(1, period)
+
+
 def register_sector_manager(mcp):
     """注册板块管理器工具"""
     
@@ -78,7 +87,7 @@ def register_sector_manager(mcp):
                 })
             
             elif action == 'sector_performance':
-                period = kwargs.get('period', 20)
+                period = _normalize_period(kwargs, 20)
                 sector_type = kwargs.get('type', 'industry')
                 
                 async with db.acquire() as conn:
@@ -160,7 +169,7 @@ def register_sector_manager(mcp):
                 })
             
             elif action == 'sector_rotation':
-                period = kwargs.get('period', 20)
+                period = _normalize_period(kwargs, 20)
                 
                 performance_result = await sector_manager(
                     action='sector_performance',

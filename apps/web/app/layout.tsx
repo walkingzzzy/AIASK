@@ -4,6 +4,10 @@ import './globals.css';
 import QueryProvider from '@/lib/query-provider';
 import AppShell from '@/components/app-shell';
 import { ToastProvider } from '@/components/ui/toast';
+import { AlertToastProvider } from '@/components/alert-toast';
+import { Spotlight } from '@/components/spotlight';
+import { MobileBottomNav } from '@/components/mobile-nav';
+import { WatchlistInit } from '@/components/watchlist-init';
 
 export const viewport: Viewport = {
   width: 'device-width',
@@ -12,8 +16,23 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: { default: 'AIASK 智能股票分析', template: '%s | AIASK' },
-  description: '基于 AI 的智能股票分析平台',
+  title: { default: 'AIASK 智能股票分析平台', template: '%s | AIASK' },
+  description: 'AI 驱动的智能股票分析平台 — 实时行情、技术分析、AI 诊断、模拟交易、风控管理',
+  keywords: ['股票分析', 'AI投资', '量化交易', '技术分析', '模拟交易', 'AIASK'],
+  authors: [{ name: 'AIASK Team' }],
+  icons: {
+    icon: '/favicon.ico',
+    apple: '/apple-touch-icon.png',
+  },
+  openGraph: {
+    type: 'website',
+    title: 'AIASK 智能股票分析平台',
+    description: 'AI 驱动的智能股票分析 — 实时行情 · 多维度诊断 · 量化回测 · 模拟交易',
+    siteName: 'AIASK',
+    locale: 'zh_CN',
+  },
+  robots: { index: true, follow: true },
+  manifest: '/manifest.json',
 };
 
 function LoadingFallback() {
@@ -42,6 +61,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Suspense fallback={<LoadingFallback />}>
               <AppShell>{children}</AppShell>
             </Suspense>
+            <AlertToastProvider />
+            <Spotlight />
+            <MobileBottomNav />
+            <WatchlistInit />
           </ToastProvider>
         </QueryProvider>
       </body>

@@ -27,7 +27,7 @@ class FactorStandardizer:
     @staticmethod
     def z_score(factor_values: np.ndarray, clip: float = 3.0) -> np.ndarray:
         """
-        Z-Score标准化
+        Z-Score标准化（截面标准化，适用于同一时点的截面数据）
         
         Args:
             factor_values: 因子值数组
@@ -49,6 +49,36 @@ class FactorStandardizer:
             z_scores = np.clip(z_scores, -clip, clip)
         
         return z_scores
+
+    @staticmethod
+    def z_score_rolling(
+        factor_values: np.ndarray, window: int = 0, clip: float = 3.0
+    ) -> np.ndarray:
+        """
+        Z-Score标准化（时间序列版，无前视偏差）
+
+        使用 expanding 窗口（window=0）或固定 rolling 窗口标准化，
+        每个时点只使用当前及之前的数据。
+
+        Args:
+            factor_values: 因子值序列（时间顺序）
+            window: rolling 窗口大小，0 表示 expanding（使用全部历史）
+            clip: 截断阈值
+
+        Returns:
+            标准化后的因子值（前 min_periods-1 个值为 NaN）
+        """
+        s = pd.Series(factor_values, dtype=np.float64)
+        if window > 0:
+            roll_mean = s.rolling(window, min_periods=2).mean()
+            roll_std = s.rolling(window, min_periods=2).std()
+        else:
+            roll_mean = s.expanding(min_periods=2).mean()
+            roll_std = s.expanding(min_periods=2).std()
+        z = (s - roll_mean) / roll_std.replace(0, np.nan)
+        if clip is not None:
+            z = z.clip(-clip, clip)
+        return z.to_numpy()
     
     @staticmethod
     def rank_normalize(factor_values: np.ndarray) -> np.ndarray:
@@ -493,8 +523,9 @@ class FactorBacktester:
         # 年化波动率
         annual_vol = np.std(returns) * np.sqrt(252)
 
-        # 夏普比率
-        sharpe = annual_return / annual_vol if annual_vol > 0 else 0
+        # 夏普比率（扣除无风险利率，默认年化 2.0%）
+        risk_free_rate = 0.02
+        sharpe = (annual_return - risk_free_rate) / annual_vol if annual_vol > 0 else 0
 
         # 最大回撤
         cumulative = np.cumprod(1 + returns)

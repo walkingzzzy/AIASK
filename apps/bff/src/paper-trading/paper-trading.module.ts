@@ -8,5 +8,6 @@ import { PaperTradingGateway } from './paper-trading.gateway';
   imports: [McpGatewayModule],
   controllers: [PaperTradingController],
   providers: [PaperTradingService, PaperTradingGateway],
+  exports: [PaperTradingService],
 })
 export class PaperTradingModule {}

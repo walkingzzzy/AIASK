@@ -33,7 +33,5 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "prettier": "^3.8.1"
   },
-  "dependencies": {
-    "socket.io-client": "^4.8.3"
-  }
+  "dependencies": {}
 }

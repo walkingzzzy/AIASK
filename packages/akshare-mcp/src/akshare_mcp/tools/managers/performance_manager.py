@@ -78,7 +78,7 @@ async def _fetch_klines_raw(db, code: str, lookback_days: int):
     """获取原始 K 线数据（优先 DB，失败回退工具层）。"""
     klines = await db.get_klines(code, limit=lookback_days + 1)
     if not klines or len(klines) < 2:
-        res = get_kline(normalize_code(code), 'daily', lookback_days + 1)
+        res = await get_kline(normalize_code(code), 'daily', lookback_days + 1)
         if res.get('success') and res.get('data'):
             klines = res['data']
     return klines

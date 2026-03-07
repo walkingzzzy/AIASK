@@ -32,7 +32,15 @@ import { ChatModule } from './chat/chat.module';
 import { StrategyModule } from './strategy/strategy.module';
 import { PaperTradingModule } from './paper-trading/paper-trading.module';
 import { WsModule } from './ws/ws.module';
+import { OptionsModule } from './options/options.module';
+import { MacroModule } from './macro/macro.module';
+import { ScreenerModule } from './screener/screener.module';
+import { SkillsModule } from './skills/skills.module';
 import { TradingThrottleGuard } from './common/trading-throttle.guard';
+import { WatchlistModule } from './watchlist/watchlist.module';
+import { NotificationModule } from './notification/notification.module';
+import { ExportModule } from './export/export.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -64,6 +72,14 @@ import { TradingThrottleGuard } from './common/trading-throttle.guard';
     StrategyModule,
     PaperTradingModule,
     WsModule,
+    OptionsModule,
+    MacroModule,
+    ScreenerModule,
+    SkillsModule,
+    WatchlistModule,
+    NotificationModule,
+    ExportModule,
+    AdminModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AuthGuard },
@@ -73,5 +89,5 @@ import { TradingThrottleGuard } from './common/trading-throttle.guard';
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
   ],
 })
-export class AppModule {}
+export class AppModule { }
 

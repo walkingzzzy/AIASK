@@ -277,7 +277,7 @@ def register_sentiment_manager(mcp):
                 # 获取板块内股票的情绪
                 async with db.acquire() as conn:
                     stocks = await conn.fetch(
-                        "SELECT stock_code FROM stocks WHERE industry = $1 LIMIT 20",
+                        "SELECT code FROM stocks WHERE industry = $1 LIMIT 20",
                         sector
                     )
                 
@@ -286,7 +286,7 @@ def register_sentiment_manager(mcp):
                 
                 sentiment_scores = []
                 for stock in stocks:
-                    result = await sentiment_manager('stock_sentiment', code=stock['stock_code'])
+                    result = await sentiment_manager('stock_sentiment', code=stock['code'])
                     if result.get('success'):
                         sentiment_scores.append(result['data']['score'])
                 

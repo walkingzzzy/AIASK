@@ -821,6 +821,9 @@ class SchemaBase:
                 ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS filled_at TIMESTAMPTZ;
                 ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS commission DOUBLE PRECISION DEFAULT 0;
                 ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS reason TEXT;
+                ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS strategy_id TEXT;
+                ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS signal_date DATE;
+                ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual';
             """)
 
             # 22.1.1 复合索引优化（PaperTradingRepository 查询加速）
@@ -832,6 +835,22 @@ class SchemaBase:
             # 22.2 兼容旧库：补齐 paper_accounts.risk_rules
             await conn.execute("""
                 ALTER TABLE paper_accounts ADD COLUMN IF NOT EXISTS risk_rules JSONB DEFAULT '{}'::jsonb;
+                ALTER TABLE paper_accounts ADD COLUMN IF NOT EXISTS strategy_id TEXT;
+                ALTER TABLE paper_accounts ADD COLUMN IF NOT EXISTS account_type TEXT DEFAULT 'manual';
+                ALTER TABLE paper_accounts ADD COLUMN IF NOT EXISTS incubation_stage TEXT DEFAULT 'warmup';
+                ALTER TABLE paper_accounts ADD COLUMN IF NOT EXISTS promotion_candidate BOOLEAN DEFAULT FALSE;
+                ALTER TABLE paper_accounts ADD COLUMN IF NOT EXISTS archived_reason TEXT;
+                ALTER TABLE paper_accounts ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+            """)
+            await conn.execute("""
+                ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS strategy_id TEXT;
+                ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS source_order_id TEXT;
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_paper_accounts_strategy ON paper_accounts(strategy_id);
+                CREATE INDEX IF NOT EXISTS idx_paper_accounts_type ON paper_accounts(account_type, status);
+                CREATE INDEX IF NOT EXISTS idx_paper_orders_strategy ON paper_orders(strategy_id, status, created_at);
+                CREATE INDEX IF NOT EXISTS idx_paper_trades_strategy ON paper_trades(strategy_id, created_at DESC);
             """)
 
             # 22.3 创建模拟交易 NAV 快照表
@@ -1069,8 +1088,292 @@ class SchemaBase:
                     cold_sectors JSONB DEFAULT '[]'::jsonb,
                     listed_count INTEGER DEFAULT 0,
                     category_counts JSONB DEFAULT '{}'::jsonb,
+                    summary JSONB DEFAULT '{}'::jsonb,
+                    completeness JSONB DEFAULT '{}'::jsonb,
+                    sources JSONB DEFAULT '{}'::jsonb,
+                    failure_reasons JSONB DEFAULT '[]'::jsonb,
+                    missing_fields JSONB DEFAULT '[]'::jsonb,
+                    degraded BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
+            """)
+            await conn.execute("""
+                ALTER TABLE daily_snapshot_history
+                ADD COLUMN IF NOT EXISTS summary JSONB DEFAULT '{}'::jsonb;
+            """)
+            await conn.execute("""
+                ALTER TABLE daily_snapshot_history
+                ADD COLUMN IF NOT EXISTS completeness JSONB DEFAULT '{}'::jsonb;
+            """)
+            await conn.execute("""
+                ALTER TABLE daily_snapshot_history
+                ADD COLUMN IF NOT EXISTS sources JSONB DEFAULT '{}'::jsonb;
+            """)
+            await conn.execute("""
+                ALTER TABLE daily_snapshot_history
+                ADD COLUMN IF NOT EXISTS failure_reasons JSONB DEFAULT '[]'::jsonb;
+            """)
+            await conn.execute("""
+                ALTER TABLE daily_snapshot_history
+                ADD COLUMN IF NOT EXISTS missing_fields JSONB DEFAULT '[]'::jsonb;
+            """)
+            await conn.execute("""
+                ALTER TABLE daily_snapshot_history
+                ADD COLUMN IF NOT EXISTS degraded BOOLEAN DEFAULT FALSE;
+            """)
+
+            # 33. 策略质检报告（策略工厂结构化评审结果）
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_quality_reports (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+                    report_type TEXT NOT NULL DEFAULT 'submission',
+                    passed BOOLEAN DEFAULT FALSE,
+                    summary JSONB DEFAULT '{}'::jsonb,
+                    quality_gate JSONB DEFAULT '{}'::jsonb,
+                    validation_report JSONB DEFAULT '{}'::jsonb,
+                    risk_report JSONB DEFAULT '{}'::jsonb,
+                    dedup_report JSONB DEFAULT '{}'::jsonb,
+                    backtest_metrics JSONB DEFAULT '{}'::jsonb,
+                    snapshot JSONB DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(strategy_id, report_type)
+                );
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_quality_reports_sid ON strategy_quality_reports(strategy_id, updated_at DESC);"
+            )
+
+            # 34. 策略状态事件（轻量 append-only 审计流）
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_status_events (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+                    from_status TEXT,
+                    to_status TEXT NOT NULL,
+                    event_type TEXT NOT NULL DEFAULT 'status_change',
+                    actor_id TEXT DEFAULT 'system',
+                    reason TEXT,
+                    metadata JSONB DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_status_events_sid ON strategy_status_events(strategy_id, created_at DESC);"
+            )
+            await conn.execute("""
+                UPDATE strategy_status_events SET from_status = 'listed' WHERE from_status = 'published';
+            """)
+            await conn.execute("""
+                UPDATE strategy_status_events SET to_status = 'listed' WHERE to_status = 'published';
+            """)
+            await conn.execute("""
+                DELETE FROM strategy_status_events
+                WHERE event_type = 'status_change'
+                  AND from_status = 'listed'
+                  AND to_status = 'listed';
+            """)
+
+            # 34.1 策略领域事件（通用 append-only 事件流 / outbox 基础）
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_domain_events (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT REFERENCES strategies(id) ON DELETE CASCADE,
+                    aggregate_type TEXT NOT NULL DEFAULT 'strategy',
+                    aggregate_id TEXT,
+                    event_type TEXT NOT NULL,
+                    source TEXT DEFAULT 'system',
+                    severity TEXT DEFAULT 'info',
+                    correlation_id TEXT,
+                    payload JSONB DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_domain_events_sid ON strategy_domain_events(strategy_id, created_at DESC);"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_domain_events_aggregate ON strategy_domain_events(aggregate_type, aggregate_id, created_at DESC);"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_domain_events_type ON strategy_domain_events(event_type, created_at DESC);"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_domain_events_correlation ON strategy_domain_events(correlation_id, created_at DESC);"
+            )
+
+            # 35. 策略工厂运行历史（持久化最近多次调度结果）
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_factory_runs (
+                    id SERIAL PRIMARY KEY,
+                    run_id TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL,
+                    started_at TIMESTAMPTZ NOT NULL,
+                    completed_at TIMESTAMPTZ,
+                    elapsed_seconds DOUBLE PRECISION DEFAULT 0,
+                    summary JSONB DEFAULT '{}'::jsonb,
+                    stages JSONB DEFAULT '{}'::jsonb,
+                    snapshot_summary JSONB DEFAULT '{}'::jsonb,
+                    error TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_factory_runs_started_at ON strategy_factory_runs(started_at DESC);"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_factory_runs_status ON strategy_factory_runs(status, started_at DESC);"
+            )
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_incubation_accounts (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+                    account_id TEXT NOT NULL,
+                    stage TEXT DEFAULT 'warmup',
+                    status TEXT DEFAULT 'active',
+                    source_run_id TEXT,
+                    metadata JSONB DEFAULT '{}'::jsonb,
+                    bound_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(strategy_id, account_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_incubation_accounts_sid
+                    ON strategy_incubation_accounts(strategy_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_strategy_incubation_accounts_acct
+                    ON strategy_incubation_accounts(account_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS strategy_incubation_metrics (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
+                    account_id TEXT,
+                    metric_date DATE NOT NULL,
+                    stage TEXT DEFAULT 'warmup',
+                    total_value DOUBLE PRECISION,
+                    cash DOUBLE PRECISION,
+                    market_value DOUBLE PRECISION,
+                    nav DOUBLE PRECISION,
+                    daily_return DOUBLE PRECISION,
+                    max_drawdown DOUBLE PRECISION,
+                    sharpe_ratio DOUBLE PRECISION,
+                    hit_rate_5d DOUBLE PRECISION,
+                    forward_ic_5d DOUBLE PRECISION,
+                    forward_sharpe_5d DOUBLE PRECISION,
+                    total_signals INTEGER DEFAULT 0,
+                    total_orders INTEGER DEFAULT 0,
+                    total_trades INTEGER DEFAULT 0,
+                    turnover_rate DOUBLE PRECISION,
+                    exposure_rate DOUBLE PRECISION,
+                    alpha_decay DOUBLE PRECISION,
+                    drift_score DOUBLE PRECISION,
+                    blockers JSONB DEFAULT '[]'::jsonb,
+                    risk_flags JSONB DEFAULT '[]'::jsonb,
+                    decision TEXT,
+                    metadata JSONB DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(strategy_id, metric_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_incubation_metrics_sid
+                    ON strategy_incubation_metrics(strategy_id, metric_date DESC);
+
+                CREATE TABLE IF NOT EXISTS strategy_runtime_risk_events (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT REFERENCES strategies(id) ON DELETE CASCADE,
+                    account_id TEXT,
+                    severity TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    action TEXT,
+                    status TEXT DEFAULT 'open',
+                    title TEXT,
+                    reason TEXT,
+                    payload JSONB DEFAULT '{}'::jsonb,
+                    detected_at TIMESTAMPTZ DEFAULT NOW(),
+                    resolved_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_runtime_risk_events_sid
+                    ON strategy_runtime_risk_events(strategy_id, detected_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_strategy_runtime_risk_events_status
+                    ON strategy_runtime_risk_events(status, severity, detected_at DESC);
+
+                CREATE TABLE IF NOT EXISTS strategy_vector_profiles (
+                    id SERIAL PRIMARY KEY,
+                    strategy_id TEXT REFERENCES strategies(id) ON DELETE CASCADE,
+                    profile_type TEXT NOT NULL,
+                    vector_method TEXT NOT NULL,
+                    metric TEXT DEFAULT 'cosine',
+                    vector_dim INTEGER DEFAULT 0,
+                    embedding JSONB DEFAULT '[]'::jsonb,
+                    signature TEXT,
+                    backend TEXT DEFAULT 'index',
+                    index_version TEXT,
+                    metadata JSONB DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_vector_profiles_sid
+                    ON strategy_vector_profiles(strategy_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_strategy_vector_profiles_type
+                    ON strategy_vector_profiles(profile_type, vector_method, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS vector_index_registry (
+                    id SERIAL PRIMARY KEY,
+                    index_name TEXT NOT NULL,
+                    backend TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'building',
+                    profile_type TEXT,
+                    vector_method TEXT,
+                    metric TEXT DEFAULT 'cosine',
+                    sample_count INTEGER DEFAULT 0,
+                    index_version TEXT NOT NULL,
+                    metadata JSONB DEFAULT '{}'::jsonb,
+                    built_at TIMESTAMPTZ,
+                    activated_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(index_name, index_version)
+                );
+                CREATE INDEX IF NOT EXISTS idx_vector_index_registry_name
+                    ON vector_index_registry(index_name, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS strategy_generation_experiments (
+                    id SERIAL PRIMARY KEY,
+                    experiment_id TEXT NOT NULL UNIQUE,
+                    strategy_id TEXT REFERENCES strategies(id) ON DELETE SET NULL,
+                    source TEXT NOT NULL,
+                    generator_type TEXT NOT NULL,
+                    optimizer_type TEXT,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    hypothesis TEXT,
+                    prompt TEXT,
+                    parameters JSONB DEFAULT '{}'::jsonb,
+                    strategy_spec JSONB DEFAULT '{}'::jsonb,
+                    evaluation JSONB DEFAULT '{}'::jsonb,
+                    result JSONB DEFAULT '{}'::jsonb,
+                    parent_experiment_id TEXT,
+                    artifact_id TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_generation_experiments_status
+                    ON strategy_generation_experiments(status, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS strategy_task_runs (
+                    id SERIAL PRIMARY KEY,
+                    task_name TEXT NOT NULL,
+                    task_scope TEXT,
+                    task_key TEXT,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    trace_id TEXT,
+                    payload JSONB DEFAULT '{}'::jsonb,
+                    result JSONB DEFAULT '{}'::jsonb,
+                    error TEXT,
+                    started_at TIMESTAMPTZ DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_task_runs_name
+                    ON strategy_task_runs(task_name, started_at DESC);
             """)
 
             logger.info("All tables initialized successfully (aligned with Node version)")

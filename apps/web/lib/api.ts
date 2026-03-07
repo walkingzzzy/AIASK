@@ -5,6 +5,7 @@ export type { CacheMeta, Envelope } from '@aiask/shared-types';
 
 export const BFF_BASE = process.env.NEXT_PUBLIC_BFF_BASE_URL ?? 'http://localhost:3001/api';
 
+
 /** Guard: only one redirect to login at a time */
 let redirecting = false;
 

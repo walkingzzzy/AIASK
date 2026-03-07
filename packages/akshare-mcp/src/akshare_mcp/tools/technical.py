@@ -29,6 +29,13 @@ def register(mcp):
             db = get_db()
             klines = await db.get_klines(code, limit=limit)
             
+            # DB 无数据时降级到 API
+            if not klines:
+                from .market.kline import get_kline
+                api_result = await get_kline(code, period, limit)
+                if api_result.get("success") and api_result.get("data"):
+                    klines = api_result["data"]
+            
             if not klines:
                 return fail('No kline data found')
             
@@ -60,6 +67,13 @@ def register(mcp):
         try:
             db = get_db()
             klines = await db.get_klines(code, limit=limit)
+            
+            # DB 无数据时降级到 API
+            if not klines:
+                from .market.kline import get_kline
+                api_result = await get_kline(code, period, limit)
+                if api_result.get("success") and api_result.get("data"):
+                    klines = api_result["data"]
             
             if not klines:
                 return fail('No kline data found')

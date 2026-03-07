@@ -75,6 +75,7 @@ class KlineMixin:
                     'amount': float(row['amount']) if row['amount'] else None,
                     'turnover': float(row['turnover']) if row['turnover'] else None,
                     'change_pct': float(row['change_pct']) if row['change_pct'] else None,
+                    'source': 'timescaledb',
                 }
                 for row in rows
             ]

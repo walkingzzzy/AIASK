@@ -179,11 +179,11 @@ def _extract_codes_and_weights(kwargs: dict) -> tuple[list[str], list[float], st
     return ["000300"], [1.0], "proxy_benchmark"
 
 
-def _series_returns_from_kline(code: str, limit: int = 21) -> list[float]:
+async def _series_returns_from_kline(code: str, limit: int = 21) -> list[float]:
     try:
         from ..market.kline import get_kline_data
 
-        res = get_kline_data(code=code, period="daily", start_date="", end_date="", limit=limit, adjust="")
+        res = await get_kline_data(code=code, period="daily", start_date="", end_date="", limit=limit, adjust="")
         if not res.get("success") or not isinstance(res.get("data"), list):
             return []
         data = sorted(res["data"], key=lambda x: str(x.get("date", "")))
@@ -196,11 +196,11 @@ def _series_returns_from_kline(code: str, limit: int = 21) -> list[float]:
         return []
 
 
-def _portfolio_returns(codes: list[str], weights: list[float]) -> list[float]:
+async def _portfolio_returns(codes: list[str], weights: list[float]) -> list[float]:
     series_list = []
     valid_weights = []
     for c, w in zip(codes, weights):
-        rets = _series_returns_from_kline(c, limit=25)
+        rets = await _series_returns_from_kline(c, limit=25)
         if rets:
             series_list.append(rets)
             valid_weights.append(max(0.0, float(w)))
@@ -286,8 +286,8 @@ async def _enrich_daily_kwargs(kwargs: dict) -> dict:
 
     # 4) 组合收益、基准、贡献
     codes, weights, basis = _extract_codes_and_weights(kwargs)
-    port_rets = _portfolio_returns(codes, weights)
-    bench_rets = _portfolio_returns(["000300"], [1.0])
+    port_rets = await _portfolio_returns(codes, weights)
+    bench_rets = await _portfolio_returns(["000300"], [1.0])
 
     last_port = port_rets[-1] if port_rets else (bench_rets[-1] if bench_rets else 0.0)
     last_bench = bench_rets[-1] if bench_rets else 0.0

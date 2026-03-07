@@ -64,7 +64,7 @@ async def _fetch_klines_for_code(
     if normalized:
         return normalized, "timescaledb"
 
-    fallback = get_kline_data(
+    fallback = await get_kline_data(
         code=code,
         period="daily",
         start_date=start_date,

@@ -30,6 +30,7 @@ description: 顶级基金经理专业流程：投研、组合、执行、风控�
   - 用 `screener_manager` 做条件筛选，用 `get_stock_capital` 过滤股本结构风险。
 - 阶段 4（深度研究与决策）：
   - 用 `comprehensive_manager`、`decision_manager` 输出多维结论。
+  - 需要策略生命周期扫描、淘汰或批量治理时，用 `strategy_manager`。
   - 用 `fundamental_analysis_manager`、`technical_analysis_manager` 做交叉验证。
   - 用 `trading_data_manager` 与 `limit_up_manager` 补充交易行为信息。
   - 用 `should_i_buy`、`should_i_sell` 生成买卖建议草案（仅供参考，不替代风控/合规）。

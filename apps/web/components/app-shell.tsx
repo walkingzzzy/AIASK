@@ -8,10 +8,21 @@ import { useStockContext } from '@/store/stock-context';
 import { BFF_BASE } from '@/lib/api';
 import { useMobile } from '@/hooks/use-mobile';
 import { useTheme } from '@/hooks/use-theme';
+import { useWsStatus, type WsConnectionStatus } from '@/lib/ws';
+import { NotificationBell } from '@/components/notification-bell';
+import { Onboarding } from '@/components/onboarding';
 
 /* ── 分组导航定义 ── */
 type NavItem = { href: string; label: string };
 type NavGroup = { label: string; icon: string; items: NavItem[] };
+
+const TOUR_ATTRS: Record<string, string> = {
+  '/': 'dashboard',
+  '/chat': 'chat',
+  '/watchlist': 'watchlist',
+  '/paper-trading': 'paper-trading',
+  '/settings': 'settings',
+};
 
 const NAV_GROUPS: NavGroup[] = [
   {
@@ -20,6 +31,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: '/', label: '首页' },
       { href: '/market', label: '行情看板' },
+      { href: '/watchlist', label: '自选股' },
       { href: '/stock', label: '个股详情' },
     ],
   },
@@ -53,6 +65,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: '/portfolio', label: '组合管理' },
       { href: '/risk', label: '风控中心' },
       { href: '/alerts', label: '告警管理' },
+      { href: '/notifications', label: '通知中心' },
     ],
   },
   {
@@ -70,7 +83,7 @@ const NAV_GROUPS: NavGroup[] = [
 
 /** 需要携带股票代码的页面路径 */
 const STOCK_AWARE_PATHS = new Set([
-  '/stock', '/market', '/fundamental', '/technical', '/fund-flow',
+  '/stock', '/market', '/watchlist', '/fundamental', '/technical', '/fund-flow',
   '/sentiment', '/research', '/valuation', '/backtest', '/factor-analysis',
   '/paper-trading', '/alerts', '/assistant', '/tdx', '/search', '/data',
 ]);
@@ -78,6 +91,10 @@ const STOCK_AWARE_PATHS = new Set([
 function buildHref(basePath: string, stockCode: string): string {
   if (!stockCode || !STOCK_AWARE_PATHS.has(basePath)) return basePath;
   return `${basePath}?code=${encodeURIComponent(stockCode)}`;
+}
+
+function getTourAttr(href: string) {
+  return TOUR_ATTRS[href];
 }
 
 /* ── 判断某个分组是否包含当前路径 ── */
@@ -110,15 +127,16 @@ function NavSection({
     <div className="mb-0.5">
       <button
         onClick={() => onToggle(group.label)}
-        className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold uppercase tracking-wider cursor-pointer rounded-md mx-1 transition-colors ${
-          isActive
-            ? 'text-nav-active bg-nav-active-bg/30'
-            : 'text-text-secondary hover:text-nav-text hover:bg-white/5'
-        }`}
+        aria-expanded={isOpen}
+        aria-label={`${group.label}导航分组`}
+        className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold uppercase tracking-wider cursor-pointer rounded-md mx-1 transition-colors ${isActive
+          ? 'text-nav-active bg-nav-active-bg/30'
+          : 'text-text-secondary hover:text-nav-text hover:bg-white/5'
+          }`}
       >
-        <span className="text-sm">{group.icon}</span>
+        <span className="text-sm" aria-hidden="true">{group.icon}</span>
         <span className="flex-1 text-left">{group.label}</span>
-        <span className={`text-[10px] transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+        <span className={`text-[10px] transition-transform ${isOpen ? 'rotate-90' : ''}`} aria-hidden="true">▶</span>
       </button>
       {isOpen ? (
         <div className="ml-2 mt-0.5">
@@ -130,12 +148,12 @@ function NavSection({
               <Link
                 key={item.href}
                 href={buildHref(item.href, stockCode)}
+                data-tour={getTourAttr(item.href)}
                 onClick={onNavigate}
-                className={`block px-4 py-1.5 no-underline text-sm rounded-md mx-1 transition-all ${
-                  active
-                    ? 'text-nav-active bg-nav-active-bg/60 font-semibold'
-                    : 'text-nav-text font-normal hover:bg-white/10'
-                }`}
+                className={`block px-4 py-1.5 no-underline text-sm rounded-md mx-1 transition-all ${active
+                  ? 'text-nav-active bg-nav-active-bg/60 font-semibold'
+                  : 'text-nav-text font-normal hover:bg-white/10'
+                  }`}
               >
                 {item.label}
               </Link>
@@ -162,6 +180,23 @@ function ThemeToggle() {
   );
 }
 
+const WS_STATUS_MAP: Record<WsConnectionStatus, { color: string; label: string }> = {
+  connected: { color: '#22c55e', label: '已连接' },
+  connecting: { color: '#eab308', label: '重连中' },
+  disconnected: { color: '#ef4444', label: '断开' },
+};
+
+function WsIndicator() {
+  const status = useWsStatus();
+  const { color, label } = WS_STATUS_MAP[status];
+  return (
+    <span className="flex items-center gap-1 text-xs text-text-secondary" title={`WebSocket: ${label}`}>
+      <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, display: 'inline-block' }} />
+      <span className="hidden sm:inline">{label}</span>
+    </span>
+  );
+}
+
 export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { user, setUser, logout } = useAuthStore();
@@ -178,7 +213,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       .then((d) => {
         if (d?.authenticated && d.user) setUser(d.user);
       })
-      .catch(() => {});
+      .catch(() => { });
   }, [user, setUser]);
 
   useEffect(() => { setMounted(true); }, []);
@@ -203,7 +238,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </span>
         </Link>
         {isMobile ? (
-          <button onClick={() => setDrawerOpen(false)} className="text-lg cursor-pointer">✕</button>
+          <button onClick={() => setDrawerOpen(false)} className="text-lg cursor-pointer" aria-label="关闭导航菜单">✕</button>
         ) : null}
       </div>
       <div className="flex flex-col gap-0.5">
@@ -222,15 +257,15 @@ export default function AppShell({ children }: { children: ReactNode }) {
       {/* 用户中心固定在底部 */}
       <div className="mt-auto pt-3 border-t border-glass-border mx-2">
         <Link
-          href="/user"
+          href="/settings"
+          data-tour="settings"
           onClick={handleNavigate}
-          className={`block px-4 py-2 no-underline text-sm rounded-md mx-1 transition-all ${
-            pathname === '/user'
-              ? 'text-nav-active bg-nav-active-bg/60 font-semibold'
-              : 'text-nav-text font-normal hover:bg-white/10'
-          }`}
+          className={`block px-4 py-2 no-underline text-sm rounded-md mx-1 transition-all ${pathname.startsWith('/settings')
+            ? 'text-nav-active bg-nav-active-bg/60 font-semibold'
+            : 'text-nav-text font-normal hover:bg-white/10'
+            }`}
         >
-          👤 用户中心
+          ⚙ 设置中心
         </Link>
       </div>
     </>
@@ -238,36 +273,51 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-screen">
+      <Onboarding />
       {isMobile ? (
         <>
           {drawerOpen ? (
             <div className="fixed inset-0 z-50 flex">
               <div className="fixed inset-0 bg-black/40" onClick={() => setDrawerOpen(false)} />
-              <nav className="relative w-[220px] glass-strong py-4 overflow-y-auto z-10 border-r border-glass-border flex flex-col">
+              <nav className="relative w-[220px] glass-strong py-4 overflow-y-auto z-10 border-r border-glass-border flex flex-col" aria-label="主导航菜单">
                 {navContent}
               </nav>
             </div>
           ) : null}
         </>
       ) : (
-        <nav className="w-[200px] glass-strong py-4 shrink-0 overflow-y-auto border-r border-glass-border flex flex-col">
+        <nav className="w-[200px] glass-strong py-4 shrink-0 overflow-y-auto border-r border-glass-border flex flex-col" aria-label="主导航菜单">
           {navContent}
         </nav>
       )}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-12 glass flex items-center justify-between px-4 gap-3 shrink-0 sticky top-0 z-10">
+        <header className="h-12 glass flex items-center justify-between px-4 gap-3 shrink-0 sticky top-0 z-10" role="banner">
           <div className="flex items-center gap-2">
             {isMobile ? (
-              <button onClick={() => setDrawerOpen(true)} className="text-lg cursor-pointer">☰</button>
+              <button onClick={() => setDrawerOpen(true)} className="text-lg cursor-pointer" aria-label="打开导航菜单" aria-expanded={drawerOpen}>☰</button>
             ) : null}
           </div>
           <div className="flex items-center gap-3">
+            <WsIndicator />
+            <NotificationBell />
             <ThemeToggle />
-            {user ? <span className="text-text-secondary text-sm">{user.username}</span> : null}
+            {user ? (
+              <Link href="/settings" className="flex items-center gap-2 no-underline text-inherit">
+                {user.avatarUrl ? (
+                  <img src={user.avatarUrl} alt="用户头像" className="w-7 h-7 rounded-full object-cover border border-glass-border" />
+                ) : (
+                  <span className="w-7 h-7 rounded-full bg-primary text-white text-xs flex items-center justify-center font-semibold">
+                    {(user.nickname ?? user.username).slice(0, 1).toUpperCase()}
+                  </span>
+                )}
+                <span className="text-text-secondary text-sm">{user.nickname || user.username}</span>
+              </Link>
+            ) : null}
             {user ? (
               <button
                 onClick={() => { logout(); window.location.href = '/login'; }}
                 className="cursor-pointer text-sm"
+                aria-label="退出登录"
               >
                 退出
               </button>

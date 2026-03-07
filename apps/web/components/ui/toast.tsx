@@ -6,7 +6,7 @@ type ToastType = 'success' | 'error' | 'warning' | 'info';
 type ToastItem = { id: number; message: string; type: ToastType };
 
 const ToastContext = createContext<{ toast: (message: string, type?: ToastType) => void }>({
-  toast: () => {},
+  toast: () => { },
 });
 
 export function useToast() {
@@ -34,9 +34,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ toast }}>
       {children}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2" role="status" aria-live="polite" aria-label="通知消息">
         {items.map((t) => (
-          <div key={t.id} className={`${TYPE_CLASSES[t.type]} text-white px-4 py-2 rounded-xl shadow-lg text-sm border border-white/20 animate-[fadeIn_0.2s]`}>
+          <div key={t.id} role="alert" className={`${TYPE_CLASSES[t.type]} text-white px-4 py-2 rounded-xl shadow-lg text-sm border border-white/20 animate-[fadeIn_0.2s]`}>
             {t.message}
           </div>
         ))}

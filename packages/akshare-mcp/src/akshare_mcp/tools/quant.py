@@ -1,4 +1,4 @@
-﻿"""Quant factor tools."""
+"""Quant factor tools."""
 
 import asyncio
 import os
@@ -577,7 +577,31 @@ def _build_perf_breakdown(
 
 
 def _normalize_factor_name(factor: str) -> str:
-    return str(factor or "").strip().lower()
+    raw = str(factor or "").strip().lower()
+    if not raw:
+        return raw
+    if raw in SUPPORTED_FACTORS:
+        return raw
+
+    alias_map: Dict[str, str] = {}
+    for canonical_name, meta in SUPPORTED_FACTORS.items():
+        alias_map.setdefault(str(canonical_name).strip().lower(), canonical_name)
+        for alias in meta.get("aliases", []):
+            alias_key = str(alias or "").strip().lower()
+            if alias_key:
+                alias_map.setdefault(alias_key, canonical_name)
+
+    synthetic_aliases = {
+        "momentum_1d": "mom_1d",
+        "momentum_5d": "mom_5d",
+        "momentum_10d": "mom_10d",
+        "momentum_20d": "momentum",
+        "momentum_60d": "mom_60d",
+    }
+    if raw in synthetic_aliases:
+        return synthetic_aliases[raw]
+
+    return alias_map.get(raw, raw)
 
 
 def _to_bool(value: Any, default: bool = False) -> bool:
@@ -2565,7 +2589,19 @@ def register(mcp):
         logic: str = "AND",
         lookback_days: int = 250,
     ):
-        """按历史条件统计未来收益分布，向 AI 提供条件概率证据。"""
+        """按历史条件统计未来收益分布，向 AI 提供条件概率证据。
+
+        Args:
+            code (str): 6位股票代码，如 "600519"
+            conditions (list[dict]): 条件列表，每项格式 {"field": str, "op": str, "value": number}
+                - field: 指标名，如 "rsi_14", "volume_ratio", "pct_change", "close", "ma_5"
+                - op: 比较运算符，如 "<", ">", "<=", ">=", "==", "!="
+                - value: 阈值数值
+                示例: [{"field": "rsi_14", "op": "<", "value": 30}, {"field": "volume_ratio", "op": ">", "value": 2.0}]
+            forward_days (list[int], optional): 向前看天数列表，默认 [5, 10, 20]
+            logic (str, optional): 多条件逻辑 "AND" 或 "OR"，默认 "AND"
+            lookback_days (int, optional): 回溯K线天数，默认 250，最小 30
+        """
         try:
             if conditions in (None, "", [], {}):
                 return fail("conditions is required")

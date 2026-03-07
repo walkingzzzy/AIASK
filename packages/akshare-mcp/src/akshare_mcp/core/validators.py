@@ -73,6 +73,8 @@ class KlineData(BaseModel):
     low: Optional[float] = Field(None, description="最低价")
     volume: Optional[int] = Field(None, description="成交量")
     amount: Optional[float] = Field(None, description="成交额")
+    turnover: Optional[float] = Field(None, description="换手率(%)")
+    change_pct: Optional[float] = Field(None, description="涨跌幅(%)")
     source: str = Field(default="unknown", description="数据源")
 
     model_config = ConfigDict(extra='allow')

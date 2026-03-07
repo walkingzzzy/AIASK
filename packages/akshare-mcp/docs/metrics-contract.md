@@ -58,6 +58,50 @@ total_return = (final_capital - initial_capital) / initial_capital
 - 每个点为当日 mark-to-market 值：`cash + shares × close[i]`
 - 附带 `slippage_model_note` 说明滑点模型局限性
 
+### 7. annual_return（年化收益率）
+
+```
+annual_return = (final_capital / initial_capital) ^ (252 / valid_return_days) - 1
+```
+
+- `valid_return_days` 为权益曲线中可计算日收益的有效天数
+- 仅在 `initial_capital > 0` 且存在有效收益序列时计算
+
+### 8. annual_volatility（年化波动率）
+
+```
+annual_volatility = std(daily_returns) × √252
+```
+
+### 9. sortino_ratio（索提诺比率）
+
+```
+sortino = (annual_return - risk_free_rate) / downside_volatility
+```
+
+- `risk_free_rate` 当前固定为年化 `2%`
+- `downside_volatility` 仅使用负收益日计算
+
+### 10. calmar_ratio（卡玛比率）
+
+```
+calmar = annual_return / max_drawdown
+```
+
+### 11. omega_ratio（Omega 比率）
+
+```
+omega = sum(max(daily_returns, 0)) / sum(max(-daily_returns, 0))
+```
+
+### 12. benchmark_return / excess_return（可选）
+
+- 若 `params` 中提供 `benchmark_returns` 或 `benchmark_klines`，则输出：
+  - `benchmark_return`
+  - `excess_return`
+  - `information_ratio`
+- 若未提供基准数据，上述字段允许为 `null`
+
 ## 信号执行规则
 
 - 信号在 bar[i] 产生 → 以 bar[i+1] 的 close 价格执行
@@ -73,6 +117,8 @@ total_return = (final_capital - initial_capital) / initial_capital
 | win_rate | `wins / max(1, trades//2)` | `wins / max(1, trades//2)` | 0 |
 | max_drawdown | 逐 bar 遍历 | 逐 bar 遍历 | < 0.001 |
 | total_return | 强制平仓后计算 | 强制平仓后计算 | < 0.001 |
+| annual_return | 由同一权益曲线推导 | 由同一权益曲线推导 | < 0.01 |
+| calmar_ratio | 由同一收益/回撤推导 | 由同一收益/回撤推导 | < 0.05 |
 
 ## 回归基线
 

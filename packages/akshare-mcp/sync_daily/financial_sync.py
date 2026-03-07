@@ -23,9 +23,9 @@ class FinancialSyncMixin:
 
         async with self.db.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT s.stock_code, MAX(f.report_date) as last_report
-                FROM stocks s LEFT JOIN financials f ON s.stock_code = f.stock_code
-                GROUP BY s.stock_code ORDER BY s.stock_code
+                SELECT s.code, MAX(f.report_date) as last_report
+                FROM stocks s LEFT JOIN financials f ON s.code = f.code
+                GROUP BY s.code ORDER BY s.code
             """)
 
         if not rows:
@@ -37,7 +37,7 @@ class FinancialSyncMixin:
         errors = []
 
         for i, row in enumerate(rows):
-            code = row['stock_code']
+            code = row['code']
             last_report = row['last_report']
 
             # 90天内有财报则跳过
@@ -61,10 +61,10 @@ class FinancialSyncMixin:
                         if report_date:
                             async with self.db.acquire() as conn:
                                 await conn.execute("""
-                                    INSERT INTO financials (code, stock_code, report_date, revenue, net_profit, roe,
+                                    INSERT INTO financials (code, report_date, revenue, net_profit, roe,
                                         debt_ratio, eps, revenue_growth, profit_growth, updated_at)
-                                    VALUES ($1,$1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-                                    ON CONFLICT (stock_code, report_date) DO UPDATE SET
+                                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+                                    ON CONFLICT (code, report_date) DO UPDATE SET
                                         revenue=EXCLUDED.revenue, net_profit=EXCLUDED.net_profit, roe=EXCLUDED.roe,
                                         debt_ratio=EXCLUDED.debt_ratio, eps=EXCLUDED.eps,
                                         revenue_growth=EXCLUDED.revenue_growth, profit_growth=EXCLUDED.profit_growth,
@@ -95,9 +95,9 @@ class FinancialSyncMixin:
                     if report_date:
                         async with self.db.acquire() as conn:
                             await conn.execute("""
-                                INSERT INTO financials (code, stock_code, report_date, eps, roe, updated_at)
-                                VALUES ($1,$1,$2,$3,$4,NOW())
-                                ON CONFLICT (stock_code, report_date) DO UPDATE SET
+                                INSERT INTO financials (code, report_date, eps, roe, updated_at)
+                                VALUES ($1,$2,$3,$4,NOW())
+                                ON CONFLICT (code, report_date) DO UPDATE SET
                                     eps=EXCLUDED.eps, roe=EXCLUDED.roe, updated_at=NOW()
                             """, code, report_date,
                                 _safe_float(r.get('基本每股收益')),
@@ -134,8 +134,8 @@ class FinancialSyncMixin:
                 return 0
 
         async with self.db.acquire() as conn:
-            rows = await conn.fetch("SELECT stock_code FROM stocks ORDER BY stock_code")
-            codes = [r['stock_code'] for r in rows]
+            rows = await conn.fetch("SELECT code FROM stocks ORDER BY code")
+            codes = [r['code'] for r in rows]
 
         if not codes:
             return 0
@@ -186,7 +186,7 @@ class FinancialSyncMixin:
                         pb = pb if pb and pb > 0 else None
                         cap = cap if cap and cap > 0 else None
                         await conn.execute(
-                            "UPDATE stocks SET pe_ratio=$1, pb_ratio=$2, market_cap=$3, updated_at=NOW() WHERE stock_code=$4",
+                            "UPDATE stocks SET pe_ratio=$1, pb_ratio=$2, market_cap=$3, updated_at=NOW() WHERE code=$4",
                             pe, pb, cap, code)
                         count += 1
                         if (idx + 1) % 500 == 0:
@@ -218,7 +218,7 @@ class FinancialSyncMixin:
                     cap = _safe_float(row.get('总市值'))
                     if pe or pb or cap:
                         await conn.execute(
-                            "UPDATE stocks SET pe_ratio=$1, pb_ratio=$2, market_cap=$3, updated_at=NOW() WHERE stock_code=$4",
+                            "UPDATE stocks SET pe_ratio=$1, pb_ratio=$2, market_cap=$3, updated_at=NOW() WHERE code=$4",
                             pe, pb, cap, code)
                         count += 1
             self.log(f"  ✅ 完成 (akshare): {count} 只")

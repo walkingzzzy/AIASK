@@ -68,7 +68,7 @@ def register_comprehensive_manager(mcp):
                 # 综合分析：K 线优先 DB，无则 TDX/akshare
                 klines = await db.get_klines(code, limit=60)
                 if not klines:
-                    res = get_kline(code, 'daily', 60)
+                    res = await get_kline(code, 'daily', 60)
                     if res.get('success') and res.get('data'):
                         klines = res['data']
                 financials = await db.get_financials(code, limit=1)
@@ -131,6 +131,14 @@ def register_comprehensive_manager(mcp):
             
             elif action == 'quick_scan':
                 codes = kwargs.get('codes', [])
+                if isinstance(codes, str):
+                    codes = [codes]
+                elif codes is None:
+                    codes = []
+                elif not isinstance(codes, list):
+                    codes = list(codes)
+                if not codes and code:
+                    codes = [normalize_code(code)]
                 
                 # 如果未提供codes，使用默认样本
                 if not codes:
@@ -145,7 +153,7 @@ def register_comprehensive_manager(mcp):
                     # 降级到数据源
                     if not klines:
                         logger.info(f"[ComprehensiveManager] DB无数据，从数据源获取: {c}")
-                        res = get_kline(c, 'daily', 1)
+                        res = await get_kline(c, 'daily', 1)
                         if res.get('success') and res.get('data'):
                             klines = res['data']
                     if klines:

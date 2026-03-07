@@ -1,52 +1,120 @@
-version: '3.8'
-
 services:
+  # ── TimescaleDB (PostgreSQL) ──
   timescaledb:
     image: timescale/timescaledb:latest-pg16
-    container_name: akshare-timescaledb
+    container_name: aiask-timescaledb
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     environment:
-      # 匹配 packages/akshare-mcp/.env 的配置
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: stockdb
-      # TimescaleDB 优化配置
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-stockdb}
       POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
-      # 性能优化（可选）
-      POSTGRES_SHARED_BUFFERS: 256MB
-      POSTGRES_EFFECTIVE_CACHE_SIZE: 1GB
-      POSTGRES_WORK_MEM: 16MB
-      POSTGRES_MAINTENANCE_WORK_MEM: 128MB
     volumes:
-      # 持久化数据存储
       - timescaledb-data:/var/lib/postgresql/data
-      # 可选：自定义初始化脚本
-      # - ./init-scripts:/docker-entrypoint-initdb.d
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d stockdb"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-stockdb}"]
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - akshare-network
-    # 资源限制（可选）
     deploy:
       resources:
         limits:
           cpus: '2'
           memory: 2G
-        reservations:
-          cpus: '1'
-          memory: 512M
+
+  # ── Redis ──
+  redis:
+    image: redis:7-alpine
+    container_name: aiask-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_secret}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── MCP Server ──
+  mcp:
+    build:
+      context: .
+      dockerfile: apps/mcp/Dockerfile
+      target: runner
+    container_name: aiask-mcp
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@timescaledb:5432/${POSTGRES_DB:-stockdb}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379
+      MCP_PORT: ${MCP_PORT:-3100}
+      NODE_ENV: production
+    ports:
+      - "${MCP_PORT:-3100}:3100"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── BFF Server ──
+  bff:
+    build:
+      context: .
+      dockerfile: apps/bff/Dockerfile
+      target: runner
+    container_name: aiask-bff
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@timescaledb:5432/${POSTGRES_DB:-stockdb}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379
+      MCP_SERVER_URL: http://mcp:${MCP_PORT:-3100}
+      JWT_SECRET: ${JWT_SECRET:-change_me_in_production}
+      BFF_PORT: ${BFF_PORT:-4000}
+      NODE_ENV: production
+    ports:
+      - "${BFF_PORT:-4000}:4000"
+    depends_on:
+      mcp:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Web Frontend ──
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: runner
+    container_name: aiask-web
+    environment:
+      NEXT_PUBLIC_BFF_URL: ${NEXT_PUBLIC_BFF_URL:-http://localhost:4000}
+      NODE_ENV: production
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      bff:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   timescaledb-data:
     driver: local
-    name: akshare-timescaledb-data
-
-networks:
-  akshare-network:
-    driver: bridge
-    name: akshare-network
+    name: aiask-timescaledb-data
+  redis-data:
+    driver: local
+    name: aiask-redis-data

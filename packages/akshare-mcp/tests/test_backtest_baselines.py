@@ -95,6 +95,7 @@ STRATEGIES_AND_DATA = [
 ]
 
 METRIC_KEYS = ['total_return', 'sharpe_ratio', 'max_drawdown', 'win_rate', 'trades_count']
+ADVANCED_METRIC_KEYS = ['annual_return', 'annual_volatility', 'sortino_ratio', 'calmar_ratio', 'omega_ratio']
 
 
 class TestBacktestBaselines:
@@ -126,6 +127,36 @@ class TestBacktestBaselines:
         for key in METRIC_KEYS:
             assert key in data, f"Missing metric: {key}"
         assert 0.0 <= data['win_rate'] <= 1.0
+
+    @pytest.mark.parametrize('strategy,data_fn,params', STRATEGIES_AND_DATA)
+    def test_advanced_metrics_present(self, strategy, data_fn, params):
+        """高级绩效指标应存在，且数值合理。"""
+        klines = data_fn()
+        result = BacktestEngine.run_backtest('test000', klines, strategy, params)
+        assert result['success']
+        data = result['data']
+        for key in ADVANCED_METRIC_KEYS:
+            assert key in data, f"Missing advanced metric: {key}"
+        assert data['annual_volatility'] >= 0.0
+        assert data['omega_ratio'] >= 0.0
+
+    def test_benchmark_metrics_available_when_input_provided(self):
+        """提供 benchmark_returns 后，应输出 benchmark/excess 指标。"""
+        klines = _make_trend_klines()
+        benchmark_returns = [0.001] * (len(klines) - 1)
+        params = {
+            'lookback': 20,
+            'threshold': 0.02,
+            'initial_capital': 100000,
+            'commission': 0.0003,
+            'benchmark_returns': benchmark_returns,
+        }
+        result = BacktestEngine.run_backtest('test000', klines, 'momentum', params)
+        assert result['success']
+        data = result['data']
+        assert data['benchmark_return'] is not None
+        assert data['excess_return'] is not None
+        assert 'information_ratio' in data
 
     @pytest.mark.parametrize('strategy,data_fn,params', STRATEGIES_AND_DATA)
     def test_jit_vs_mask_consistency(self, strategy, data_fn, params):

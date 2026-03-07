@@ -124,6 +124,18 @@ class RiskExecutor:
                     if actions:
                         self._set_cooldown(account_id)
                         self.total_actions += len(actions)
+                        if account.get('strategy_id') and hasattr(db, 'save_strategy_runtime_risk_event'):
+                            await db.save_strategy_runtime_risk_event({
+                                'strategy_id': account.get('strategy_id'),
+                                'account_id': account_id,
+                                'severity': 'critical',
+                                'event_type': 'risk_executor_force_liquidate',
+                                'action': 'force_liquidate',
+                                'status': 'open',
+                                'title': '风险执行器触发强平',
+                                'reason': f'触发 {len(actions)} 笔自动平仓',
+                                'payload': {'actions': [item.to_dict() for item in actions]},
+                            })
                     return actions
 
             # ── 检查 2: 单持仓超限 → 减仓至上限 ──────────────
@@ -153,6 +165,18 @@ class RiskExecutor:
         if actions:
             self._set_cooldown(account_id)
             self.total_actions += len(actions)
+            if account.get('strategy_id') and hasattr(db, 'save_strategy_runtime_risk_event'):
+                await db.save_strategy_runtime_risk_event({
+                    'strategy_id': account.get('strategy_id'),
+                    'account_id': account_id,
+                    'severity': 'high',
+                    'event_type': 'risk_executor_reduce_position',
+                    'action': 'reduce_position',
+                    'status': 'open',
+                    'title': '风险执行器触发减仓',
+                    'reason': f'触发 {len(actions)} 笔自动减仓',
+                    'payload': {'actions': [item.to_dict() for item in actions]},
+                })
 
         return actions
 

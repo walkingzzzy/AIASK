@@ -163,9 +163,9 @@ class HistoricalDataSync:
                             list_date = None
                         
                         await conn.execute("""
-                            INSERT INTO stocks (stock_code, stock_name, market, industry, list_date, updated_at)
+                            INSERT INTO stocks (code, stock_name, market, industry, list_date, updated_at)
                             VALUES ($1, $2, $3, $4, $5, NOW())
-                            ON CONFLICT (stock_code) DO UPDATE SET
+                            ON CONFLICT (code) DO UPDATE SET
                                 stock_name = EXCLUDED.stock_name,
                                 market = EXCLUDED.market,
                                 industry = EXCLUDED.industry,
@@ -192,8 +192,8 @@ class HistoricalDataSync:
         self.log(f"\n[2/7] 同步K线数据 (近{years}年)...")
         
         async with self.db.acquire() as conn:
-            rows = await conn.fetch("SELECT stock_code FROM stocks ORDER BY stock_code")
-            codes = [row['stock_code'] for row in rows]
+            rows = await conn.fetch("SELECT code FROM stocks ORDER BY code")
+            codes = [row['code'] for row in rows]
         
         if not codes:
             self.log("⚠️  没有股票数据")
@@ -262,8 +262,8 @@ class HistoricalDataSync:
         self.log(f"\n[3/7] 同步财务数据 (近{years}年)...")
         
         async with self.db.acquire() as conn:
-            rows = await conn.fetch("SELECT stock_code FROM stocks ORDER BY stock_code")
-            codes = [row['stock_code'] for row in rows]
+            rows = await conn.fetch("SELECT code FROM stocks ORDER BY code")
+            codes = [row['code'] for row in rows]
         
         if not codes:
             return 0
@@ -290,9 +290,9 @@ class HistoricalDataSync:
                             report_date = date(int(end_date_str[:4]), int(end_date_str[4:6]), int(end_date_str[6:]))
                             
                             result = await conn.fetchrow("""
-                                INSERT INTO financials (stock_code, report_date, revenue, net_profit, roe, debt_ratio, eps, revenue_growth, profit_growth, updated_at)
+                                INSERT INTO financials (code, report_date, revenue, net_profit, roe, debt_ratio, eps, revenue_growth, profit_growth, updated_at)
                                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-                                ON CONFLICT (stock_code, report_date) DO UPDATE SET
+                                ON CONFLICT (code, report_date) DO UPDATE SET
                                     revenue = EXCLUDED.revenue, net_profit = EXCLUDED.net_profit, roe = EXCLUDED.roe,
                                     debt_ratio = EXCLUDED.debt_ratio, eps = EXCLUDED.eps,
                                     revenue_growth = EXCLUDED.revenue_growth, profit_growth = EXCLUDED.profit_growth,
@@ -331,8 +331,8 @@ class HistoricalDataSync:
         self.log("\n[4/7] 同步估值数据 (PE/PB/市值)...")
         
         async with self.db.acquire() as conn:
-            rows = await conn.fetch("SELECT stock_code FROM stocks ORDER BY stock_code")
-            codes = [row['stock_code'] for row in rows]
+            rows = await conn.fetch("SELECT code FROM stocks ORDER BY code")
+            codes = [row['code'] for row in rows]
         
         if not codes:
             return 0
@@ -373,8 +373,8 @@ class HistoricalDataSync:
                             
                             await conn.execute("""
                                 UPDATE stocks SET pe_ratio = $1, pb_ratio = $2, market_cap = $3, updated_at = NOW()
-                                WHERE stock_code = $4
-                            """, pe, pb, cap, code)
+                                WHERE code = $4
+                                """, pe, pb, cap, code)
                             count += 1
             except:
                 pass

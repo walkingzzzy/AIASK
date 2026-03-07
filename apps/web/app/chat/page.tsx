@@ -19,6 +19,7 @@ export default function ChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    void useChatStore.getState().initSync();
     if (!configLoaded) {
       getLlmConfig().then((c) => {
         setConfigLoaded(true, !!c);

@@ -75,6 +75,54 @@ export class PaperTradingService {
     return this.call('nav_history', { user_id: userId, account_id: accountId, limit: limit ?? 90 });
   }
 
+  async performance(userId: string, accountId?: string, days = 30) {
+    const [navPayload, orderPayload] = await Promise.all([
+      this.navHistory(userId, accountId, days > 0 ? Math.max(days, 30) : 365),
+      this.orders(userId, accountId),
+    ]);
+
+    const nav = Array.isArray((navPayload as Record<string, unknown>)?.nav)
+      ? ((navPayload as Record<string, unknown>).nav as Record<string, unknown>[])
+      : Array.isArray(navPayload) ? (navPayload as Record<string, unknown>[]) : [];
+    const series = (days > 0 ? nav.slice(-days) : nav).map((item) => ({
+      date: String(item.nav_date ?? item.date ?? ''),
+      totalValue: Number(item.total_value ?? item.value ?? 0),
+      dailyReturn: Number(item.daily_return ?? 0),
+    }));
+
+    const equityCurve = series.map((item) => item.totalValue);
+    const dailyReturns = series.map((item) => item.dailyReturn);
+    const totalReturn = equityCurve.length >= 2 && equityCurve[0] > 0
+      ? (equityCurve[equityCurve.length - 1] - equityCurve[0]) / equityCurve[0]
+      : 0;
+    const mean = dailyReturns.length ? dailyReturns.reduce((sum, item) => sum + item, 0) / dailyReturns.length : 0;
+    const variance = dailyReturns.length > 1
+      ? dailyReturns.reduce((sum, item) => sum + (item - mean) ** 2, 0) / (dailyReturns.length - 1)
+      : 0;
+    const std = Math.sqrt(Math.max(variance, 0));
+    const sharpe = std > 0 ? mean / std * Math.sqrt(252) : 0;
+
+    let peak = equityCurve[0] ?? 0;
+    let maxDrawdown = 0;
+    equityCurve.forEach((value) => {
+      peak = Math.max(peak, value);
+      if (peak > 0) maxDrawdown = Math.min(maxDrawdown, (value - peak) / peak);
+    });
+
+    const positiveDays = dailyReturns.filter((item) => item > 0).length;
+    const winRate = dailyReturns.length ? positiveDays / dailyReturns.length : 0;
+
+    const orders = Array.isArray((orderPayload as Record<string, unknown>)?.orders)
+      ? ((orderPayload as Record<string, unknown>).orders as Record<string, unknown>[])
+      : Array.isArray(orderPayload) ? (orderPayload as Record<string, unknown>[]) : [];
+    const avgHoldDays = this.estimateAverageHoldDays(orders);
+
+    return {
+      dailyReturns: series,
+      metrics: { totalReturn, sharpe, maxDrawdown, winRate, avgHoldDays },
+    };
+  }
+
   async matchingStatus() {
     return this.call('matching_status');
   }
@@ -160,5 +208,32 @@ export class PaperTradingService {
         detail: String(error instanceof Error ? error.message : error),
       });
     }
+  }
+
+  private estimateAverageHoldDays(orders: Record<string, unknown>[]) {
+    const buyQueues = new Map<string, number[]>();
+    const holdDays: number[] = [];
+
+    orders.forEach((item) => {
+      const code = String(item.stock_code ?? item.code ?? '');
+      const tradeType = String(item.trade_type ?? item.direction ?? '').toLowerCase();
+      const tradeTime = new Date(String(item.trade_time ?? item.created_at ?? '')).getTime();
+      if (!code || !Number.isFinite(tradeTime)) return;
+      if (tradeType.includes('buy') || tradeType.includes('买')) {
+        const queue = buyQueues.get(code) ?? [];
+        queue.push(tradeTime);
+        buyQueues.set(code, queue);
+        return;
+      }
+      if (tradeType.includes('sell') || tradeType.includes('卖')) {
+        const queue = buyQueues.get(code) ?? [];
+        const openedAt = queue.shift();
+        if (openedAt) holdDays.push(Math.max(1, (tradeTime - openedAt) / 86400000));
+        buyQueues.set(code, queue);
+      }
+    });
+
+    if (!holdDays.length) return 0;
+    return holdDays.reduce((sum, item) => sum + item, 0) / holdDays.length;
   }
 }

@@ -437,7 +437,7 @@ def register_decision_manager(mcp):
                             async with db.acquire() as conn:
                                 rows = await conn.fetch(
                                     """
-                                    SELECT stock_code, stock_name, industry, market_cap
+                                    SELECT code, stock_name, industry, market_cap
                                     FROM stocks
                                     ORDER BY market_cap DESC NULLS LAST
                                     LIMIT $1
@@ -449,7 +449,7 @@ def register_decision_manager(mcp):
                                 row_dict = dict(r)
                                 mc = row_dict.get('market_cap')
                                 candidate_rows.append({
-                                    'code': row_dict.get('stock_code'),
+                                    'code': row_dict.get('code'),
                                     'name': row_dict.get('stock_name'),
                                     'industry': row_dict.get('industry'),
                                     'market_cap': float(mc) if mc else None,

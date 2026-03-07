@@ -234,10 +234,10 @@ def register_screener_manager(mcp):
                     # 兼容 financials 表为 stock_code 或 code 列
                     f_code_col = await db._financials_code_column(conn)
                     query = f"""
-                        SELECT s.stock_code, s.stock_name, s.market_cap, s.pe_ratio, s.pb_ratio,
+                        SELECT s.code, s.stock_name, s.market_cap, s.pe_ratio, s.pb_ratio,
                                f.roe, f.revenue_growth, f.debt_ratio, s.industry
                         FROM stocks s
-                        LEFT JOIN financials f ON s.stock_code = f.{f_code_col}
+                        LEFT JOIN financials f ON s.code = f.{f_code_col}
                         WHERE s.market_cap >= $1 AND s.market_cap <= $2
                           AND s.pe_ratio >= $3 AND s.pe_ratio <= $4
                           AND s.pb_ratio >= $5 AND s.pb_ratio <= $6
@@ -310,7 +310,7 @@ def register_screener_manager(mcp):
                     stock['score'] = score
                     stock['rating'] = 'A' if score >= 80 else ('B' if score >= 60 else ('C' if score >= 40 else 'D'))
                     # 向后兼容：统一输出 code/name 字段，避免仅有 stock_code/stock_name
-                    stock['code'] = stock.get('stock_code') or stock.get('code')
+                    stock['code'] = stock.get('code') or stock.get('stock_code')
                     stock['name'] = stock.get('stock_name') or stock.get('name') or ''
                 
                 stocks.sort(key=lambda x: x['score'], reverse=True)
@@ -519,7 +519,7 @@ def register_screener_manager(mcp):
                     fund_result = await screener_manager(action='screen', criteria=fundamental_criteria)
                     if fund_result.get('success') and fund_result.get('data'):
                         stocks = fund_result['data'].get('stocks', [])
-                        fundamental_codes = [s['stock_code'] for s in stocks]
+                        fundamental_codes = [s.get('code') or s.get('stock_code') for s in stocks]
 
                 # 第二步：技术面筛选
                 if tech_conditions:

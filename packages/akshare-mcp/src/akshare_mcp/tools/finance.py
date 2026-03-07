@@ -118,9 +118,11 @@ def _get_financials_tushare(code: str) -> Optional[dict]:
     }
 
 @cached(ttl=86400.0)  # 24h cache for financial data
-def get_financials(stock_code: str) -> dict:
+async def get_financials(stock_code: str) -> dict:
     """
     获取股票财务指标数据
+
+    数据源优先级: TimescaleDB → Tushare Pro → AkShare → Baostock
     """
     # Rate limiting
     limiter = get_limiter("finance", max_calls=5, period=1.0)
@@ -133,6 +135,28 @@ def get_financials(stock_code: str) -> dict:
     if cached_data:
         cached_data["cached"] = True
         return ok(cached_data)
+
+    # 0.5. DB 优先：查 TimescaleDB financials 表
+    try:
+        from ..storage import get_db
+        db = get_db()
+        db_data = await db.get_financials(code)
+        if db_data:
+            row = db_data[0]
+            result = {
+                "code": code,
+                "reportDate": row.get("report_date"),
+                "revenue": row.get("revenue"),
+                "netProfit": row.get("net_profit"),
+                "roe": row.get("roe"),
+                "debtRatio": row.get("debt_ratio"),
+                "source": "timescaledb",
+            }
+            cache.set(f"financials_{code}", result)
+            return ok(result)
+    except Exception as e_db:
+        import sys
+        print(f"[Finance] TimescaleDB query failed for {code}: {e_db}", file=sys.stderr)
 
     # Strategy:
     # 1. Try Tushare Pro (custom/official) - 优先使用
@@ -309,16 +333,42 @@ def get_stock_info(stock_code: str) -> dict:
 
         if df is not None and not df.empty:
             row = df.iloc[0]
+            total_shares = ""
+            float_shares = ""
+            total_market_cap = ""
+            float_market_cap = ""
+            # Try to enrich with daily_basic for share/cap data
+            try:
+                if pro:
+                    ts_code = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
+                    from datetime import datetime, timedelta
+                    for days_back in range(1, 8):
+                        trade_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y%m%d')
+                        db_df = pro.daily_basic(ts_code=ts_code, trade_date=trade_date,
+                                                fields='ts_code,total_share,float_share,total_mv,circ_mv')
+                        if db_df is not None and not db_df.empty:
+                            db_row = db_df.iloc[0]
+                            ts_val = db_row.get('total_share')
+                            total_shares = f"{float(ts_val) * 10000:.0f}" if ts_val and ts_val == ts_val else ""
+                            fs_val = db_row.get('float_share')
+                            float_shares = f"{float(fs_val) * 10000:.0f}" if fs_val and fs_val == fs_val else ""
+                            tm_val = db_row.get('total_mv')
+                            total_market_cap = f"{float(tm_val) * 10000:.0f}" if tm_val and tm_val == tm_val else ""
+                            cm_val = db_row.get('circ_mv')
+                            float_market_cap = f"{float(cm_val) * 10000:.0f}" if cm_val and cm_val == cm_val else ""
+                            break
+            except Exception:
+                pass
             return ok(
                 {
                     "code": code,
                     "name": str(row.get("name") or ""),
                     "industry": str(row.get("industry") or ""),
                     "listDate": str(row.get("list_date") or ""),
-                    "totalShares": "",
-                    "floatShares": "",
-                    "totalMarketCap": "",
-                    "floatMarketCap": "",
+                    "totalShares": total_shares,
+                    "floatShares": float_shares,
+                    "totalMarketCap": total_market_cap,
+                    "floatMarketCap": float_market_cap,
                     "raw": {k: str(row.get(k, "")) for k in df.columns},
                 }
             )
@@ -363,13 +413,16 @@ def get_stock_info(stock_code: str) -> dict:
 
 
 def _parse_yyyymmdd_to_year_mmdd(date: str) -> tuple[int, int]:
-    """将 YYYYMMDD 转换为 (year, mmdd)。"""
-    if not date or len(date) != 8 or not date.isdigit():
-        raise ValueError("date 必须为 YYYYMMDD 格式")
-    return int(date[:4]), int(date[4:])
+    """将 YYYYMMDD 或 YYYY-MM-DD 转换为 (year, mmdd)。"""
+    if not date:
+        raise ValueError("date 不能为空")
+    cleaned = date.replace("-", "").replace("/", "").strip()
+    if len(cleaned) != 8 or not cleaned.isdigit():
+        raise ValueError(f"date 格式无法识别（收到 '{date}'），请使用 YYYYMMDD 或 YYYY-MM-DD")
+    return int(cleaned[:4]), int(cleaned[4:])
 
 
-def tdx_get_financial_snapshot(stock_code: str) -> dict:
+async def tdx_get_financial_snapshot(stock_code: str) -> dict:
     """
     [TDX] 获取单只股票最新财务快照
 
@@ -415,7 +468,7 @@ def tdx_get_financial_snapshot(stock_code: str) -> dict:
         # 降级链 1：finance.get_financials
         source_chain.append("finance.get_financials")
         try:
-            fin_res = get_financials(code)
+            fin_res = await get_financials(code)
             if fin_res and fin_res.get("success") and isinstance(fin_res.get("data"), dict):
                 payload_data = fin_res.get("data") or {}
                 payload_data.setdefault("source", payload_data.get("source") or "finance_fallback")

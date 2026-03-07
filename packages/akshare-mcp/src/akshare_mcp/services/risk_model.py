@@ -135,6 +135,17 @@ class RiskModel:
             - interest_rate_hike: 利率上升
             - black_swan: 黑天鹅事件 (-30%)
         """
+        # Scenario alias mapping for caller convenience
+        _SCENARIO_ALIASES = {
+            'rate_hike': 'interest_rate_hike',
+            'liquidity_crisis': 'market_crash',
+            'crash': 'market_crash',
+            'rate': 'interest_rate_hike',
+            'swan': 'black_swan',
+            'rotation': 'sector_rotation',
+        }
+        scenario = _SCENARIO_ALIASES.get(scenario, scenario)
+
         portfolio_value = sum(h.get('value', 0) for h in holdings)
         
         if scenario == 'market_crash':

@@ -371,7 +371,7 @@ def register_fundamental_analysis_manager(mcp):
                 if not metrics.get('revenue') and not metrics.get('net_income'):
                     try:
                         from ..finance import get_financials
-                        fin_res = get_financials(code)
+                        fin_res = await get_financials(code)
                         if fin_res.get('success') and fin_res.get('data'):
                             fin_data = fin_res['data']
                             metrics['revenue'] = metrics.get('revenue') or fin_data.get('revenue') or 0

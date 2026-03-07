@@ -15,6 +15,7 @@ from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...core.validators import validate_kline
 from ...data_source import data_source
+from ...storage import get_db
 from ...utils import safe_stderr_print
 try:
     from ...baostock_api import baostock_client
@@ -47,6 +48,8 @@ def _process_kline_akshare(df: pd.DataFrame, code: str) -> list[dict]:
                 "low": low,
                 "volume": safe_int(row.get("成交量")),
                 "amount": safe_float(row.get("成交额")),
+                "turnover": safe_float(row.get("换手率")),
+                "change_pct": safe_float(row.get("涨跌幅")),
                 "source": "akshare"
             }
         )
@@ -54,12 +57,12 @@ def _process_kline_akshare(df: pd.DataFrame, code: str) -> list[dict]:
 
 
 @cached(ttl=3600.0)
-def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
+async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
     """获取股票/ETF历史K线数据（日线/周线/月线）
 
     适用场景: 趋势分析、波动率估算、回测数据准备、技术指标计算
 
-    数据源优先级: DataSource(TDX → Tushare) → AkShare → Tencent → Baostock
+    数据源优先级: TimescaleDB → DataSource(TDX → Tushare) → AkShare → Tencent → Baostock
     时效性: 日线通常 T+0~T+1；周线/月线按自然周期更新
 
     Args:
@@ -88,16 +91,71 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
 
     code = normalize_code(raw_code)
 
+    # 0. DB 优先：查 TimescaleDB（仅日线）
+    if period == "daily":
+        try:
+            db = get_db()
+            db_data = await db.get_klines(code, limit=limit)
+            if db_data:
+                has_turnover = any(item.get('turnover') is not None for item in db_data)
+                if has_turnover:
+                    validated_results = [validate_kline(item).model_dump() for item in db_data]
+                    return ok(validated_results)
+                # DB 数据缺换手率，记录但继续向下层获取
+                safe_stderr_print(f"[Kline] DB data for {code} has null turnover, falling through to fetch complete data")
+        except Exception as e_db:
+            safe_stderr_print(f"TimescaleDB K-line query failed for {code}: {e_db}")
+
+    _ds_fallback: Optional[list] = None  # 备用：DataSource有数据但无换手率时保存，Baostock失败时返回
     try:
-        # 1. DataSource 优先：TDX → Tushare
+        # 1. DataSource 优先：TDX → Tushare（仅当结果包含换手率时才直接返回）
         ds_results = data_source.get_kline(code, period, limit)
         if ds_results:
+            ds_has_turnover = any(item.get('turnover') is not None for item in ds_results)
             validated_results = [validate_kline(item).model_dump() for item in ds_results]
-            return ok(validated_results)
+            await _async_save_klines_to_db(code, validated_results)
+            if ds_has_turnover:
+                return ok(validated_results)
+            # DataSource 无换手率 → 先保存结果以备 Baostock 失败时回退
+            _ds_fallback = validated_results
+            safe_stderr_print(f"[Kline] DataSource for {code} has no turnover, trying Baostock")
     except Exception as e:
         safe_stderr_print(f"DataSource K-line fetch failed for {code}: {e}")
 
-    # 2. AkShare 降级
+    # 2. Baostock 优先降级（仅日线，包含换手率/涨跌幅，质量最高）
+    if period == "daily" and baostock_client is not None:
+        try:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=limit * 1.5 + 30)).strftime("%Y-%m-%d")
+            df_bs = baostock_client.get_history_k_data(code, start_date, end_date)
+            if not df_bs.empty:
+                results = []
+                for _, row in df_bs.tail(limit).iterrows():
+                    results.append({
+                        "date": row["date"],
+                        "open": safe_float(row["open"]),
+                        "close": safe_float(row["close"]),
+                        "high": safe_float(row["high"]),
+                        "low": safe_float(row["low"]),
+                        "volume": safe_int(row["volume"]),
+                        "amount": safe_float(row["amount"]),
+                        "turnover": safe_float(row.get("turn")),
+                        "change_pct": safe_float(row.get("pctChg")),
+                        "source": "baostock"
+                    })
+                validated_results = [validate_kline(item).model_dump() for item in results]
+                await _async_save_klines_to_db(code, validated_results)
+                return ok(validated_results)
+        except Exception as e2:
+            safe_stderr_print(f"Baostock K-line fetch failed for {code}: {e2}")
+            if _ds_fallback:
+                return ok(_ds_fallback)
+
+    # Baostock 跳过 + 有DataSource备用数据时直接返回
+    if _ds_fallback:
+        return ok(_ds_fallback)
+
+    # 3. AkShare 降级
     if ak is not None:
         try:
             df = _run_with_retry(
@@ -109,11 +167,12 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
                 results = _process_kline_akshare(df, code)
                 if results:
                     validated_results = [validate_kline(item).model_dump() for item in results]
+                    await _async_save_klines_to_db(code, validated_results)
                     return ok(validated_results)
         except Exception as e:
             safe_stderr_print(f"AkShare K-line fetch failed for {code}: {e}")
 
-        # 2.5 Tencent K线（仅日线）
+        # 3.5 Tencent K线（仅日线，无换手率，最后备用）
         if period == "daily" and ak is not None:
             try:
                 end_date = datetime.now().strftime("%Y%m%d")
@@ -139,35 +198,21 @@ def get_kline(stock_code: str, period: str = "daily", limit: int = 100) -> dict:
                         })
                     if results:
                         validated_results = [validate_kline(item).model_dump() for item in results]
+                        await _async_save_klines_to_db(code, validated_results)
                         return ok(validated_results)
             except Exception as e_tx:
                 safe_stderr_print(f"Tencent K-line fetch failed for {code}: {e_tx}")
 
-    # 3. Baostock 降级（仅日线）
-    if period == "daily" and baostock_client is not None:
-        try:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-            start_date = (datetime.now() - timedelta(days=limit * 1.5 + 30)).strftime("%Y-%m-%d")
-            df_bs = baostock_client.get_history_k_data(code, start_date, end_date)
-            if not df_bs.empty:
-                results = []
-                for _, row in df_bs.tail(limit).iterrows():
-                    results.append({
-                        "date": row["date"],
-                        "open": safe_float(row["open"]),
-                        "close": safe_float(row["close"]),
-                        "high": safe_float(row["high"]),
-                        "low": safe_float(row["low"]),
-                        "volume": safe_int(row["volume"]),
-                        "amount": safe_float(row["amount"]),
-                        "source": "baostock"
-                    })
-                validated_results = [validate_kline(item).model_dump() for item in results]
-                return ok(validated_results)
-        except Exception as e2:
-            safe_stderr_print(f"Baostock K-line fetch failed for {code}: {e2}")
-
     return fail(f"所有数据源均无法获取 {code} 的K线数据")
+
+
+async def _async_save_klines_to_db(code: str, klines: list) -> None:
+    """异步回写 K线数据到 TimescaleDB（静默失败，不影响主流程）"""
+    try:
+        from ...services.data_sync import data_sync_service
+        await data_sync_service._enqueue_save_task(code, klines)
+    except Exception as e:
+        safe_stderr_print(f"Async DB writeback failed for {code}: {e}")
 
 
 def _parse_minute_period(period: str) -> Optional[int]:
@@ -313,7 +358,7 @@ def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> d
     return ok(validated_results)
 
 
-def get_kline_data(
+async def get_kline_data(
     code: str,
     period: str = "daily",
     start_date: str = None,
@@ -326,7 +371,7 @@ def get_kline_data(
     与 get_kline 的区别: 支持 start_date/end_date 日期区间过滤和复权类型选择。
     Node 兼容映射: 已作为独立工具注册；无日期参数时内部 fallback 到 get_kline。
 
-    数据源优先级: DataSource(TDX → Tushare) → AkShare → Tencent → Baostock
+    数据源优先级: TimescaleDB → DataSource(TDX → Tushare) → AkShare → Tencent → Baostock
 
     Args:
         code (str, required): 股票/ETF 代码，6位数字，如 "600519"、"510050"
@@ -368,7 +413,23 @@ def get_kline_data(
         limiter.acquire()
 
         code_normalized = normalize_code(code)
-        # 优先 TDX（与 docs/tdx-quant get_market_data 一致），再 akshare
+
+        # 0. DB 优先：查 TimescaleDB（日期区间）
+        if mapped_period == "daily":
+            try:
+                db = get_db()
+                sd_norm = (start_date or "").replace("-", "")[:8]
+                ed_norm = (end_date or "").replace("-", "")[:8]
+                sd_fmt = f"{sd_norm[:4]}-{sd_norm[4:6]}-{sd_norm[6:8]}" if len(sd_norm) >= 8 else None
+                ed_fmt = f"{ed_norm[:4]}-{ed_norm[4:6]}-{ed_norm[6:8]}" if len(ed_norm) >= 8 else None
+                db_data = await db.get_klines(code_normalized, start_date=sd_fmt, end_date=ed_fmt)
+                if db_data:
+                    validated_results = [validate_kline(item).model_dump() for item in db_data]
+                    return ok(validated_results)
+            except Exception as e_db:
+                safe_stderr_print(f"TimescaleDB K-line (date range) query failed for {code_normalized}: {e_db}")
+
+        # 1. DataSource 优先：TDX → Tushare
         try:
             from datetime import datetime as _dt
             start_d = (start_date or "").replace("-", "")[:8] or "19900101"
@@ -383,6 +444,7 @@ def get_kline_data(
                 filtered = [r for r in ds_results if start_norm <= (r.get("date") or "")[:10] <= end_norm]
                 if filtered:
                     validated_results = [validate_kline(item).model_dump() for item in filtered]
+                    await _async_save_klines_to_db(code_normalized, validated_results)
                     return ok(validated_results)
         except Exception as e_ds:
             safe_stderr_print(f"DataSource K-line (date range) failed for {code_normalized}: {e_ds}")
@@ -401,11 +463,12 @@ def get_kline_data(
                 return fail(f'No kline data for {code}')
             results = _process_kline_akshare(df, code_normalized)
             validated_results = [validate_kline(item).model_dump() for item in results]
+            await _async_save_klines_to_db(code_normalized, validated_results)
             return ok(validated_results)
         except Exception as e:
             return fail(f'Failed to get kline data: {str(e)}')
 
-    return get_kline(code, mapped_period, limit)
+    return await get_kline(code, mapped_period, limit)
 
 # ============================================================
 # 指数 K 线（独立于个股 K 线，避免代码混淆）
@@ -434,7 +497,7 @@ _INDEX_AK_MAP = {
 }
 
 
-def get_index_kline(index_code: str, period: str = "daily", limit: int = 60) -> dict:
+async def get_index_kline(index_code: str, period: str = "daily", limit: int = 60) -> dict:
     """获取指数K线数据（专用函数，避免与个股代码混淆）
 
     适用场景: 指数趋势分析、大盘走势回顾
@@ -460,6 +523,17 @@ def get_index_kline(index_code: str, period: str = "daily", limit: int = 60) -> 
         get_index_kline("399006", limit=120)
     """
     code = normalize_code(index_code)
+
+    # 0. DB 优先：查 TimescaleDB（仅日线）
+    if period == "daily":
+        try:
+            db = get_db()
+            db_data = await db.get_klines(code, limit=limit)
+            if db_data:
+                validated_results = [validate_kline(item).model_dump() for item in db_data]
+                return ok(validated_results)
+        except Exception as e_db:
+            safe_stderr_print(f"TimescaleDB index K-line query failed for {code}: {e_db}")
 
     # 1. TDX 优先
     if data_source.is_tdx_available():

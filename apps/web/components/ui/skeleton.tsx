@@ -11,6 +11,8 @@ export function Skeleton({
     <div
       className={`animate-pulse rounded-lg bg-glass-border/40 ${className}`}
       style={{ width, height }}
+      aria-hidden="true"
+      aria-label="加载中"
     />
   );
 }

@@ -1,9 +1,66 @@
 """情绪分析与用户画像工具"""
+
+import asyncio
 import math
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
+
 from ..services.sentiment import sentiment_analyzer
 from ..storage import get_db
 from ..utils import ok, fail
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _round_or_none(value: Any, digits: int = 2) -> float | None:
+    num = _to_float(value)
+    return round(num, digits) if num is not None else None
+
+
+def _pct_change(data: list[float], days: int) -> float | None:
+    if len(data) <= days:
+        return None
+    base = float(data[-1 - days])
+    if base <= 0:
+        return None
+    return round((float(data[-1]) - base) / base * 100, 2)
+
+
+def _pick_text(item: dict[str, Any]) -> str:
+    for key in ('text', 'content', 'summary', 'title', 'headline'):
+        value = item.get(key)
+        if value:
+            return str(value).strip()
+    return ''
+
+
+def _detect_event_tags(texts: list[str]) -> list[dict[str, Any]]:
+    tag_rules = {
+        '业绩景气': ['业绩', '增长', '盈利', '预增', '扭亏', '超预期'],
+        '订单合同': ['中标', '签约', '订单', '合同'],
+        '资本运作': ['回购', '增持', '减持', '定增', '融资'],
+        '产品技术': ['突破', '创新', '发布', '获批', '研发'],
+        '监管风险': ['处罚', '违规', '诉讼', '质押', 'ST', '退市', '风险'],
+    }
+    counts: dict[str, int] = {key: 0 for key in tag_rules}
+    for text in texts:
+        content = str(text or '')
+        for tag, keywords in tag_rules.items():
+            if any(keyword in content for keyword in keywords):
+                counts[tag] += 1
+    ranked = [
+        {'tag': tag, 'count': count}
+        for tag, count in sorted(counts.items(), key=lambda x: x[1], reverse=True)
+        if count > 0
+    ]
+    return ranked[:8]
 
 def register(mcp):
     @mcp.tool()
@@ -66,6 +123,267 @@ def register(mcp):
                 breadth_data=breadth_data,
             )
             return ok(result)
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def get_market_sentiment_context(
+        north_days: int = 5,
+        margin_days: int = 10,
+        top_sector_n: int = 5,
+    ):
+        """获取市场级情绪上下文，聚合恐贪、北向资金、融资余额与板块热度。"""
+        try:
+            from .fund_flow import get_margin_data, get_north_fund, get_sector_fund_flow
+
+            db = get_db()
+            warnings: list[str] = []
+
+            index_klines = await db.get_klines('sh000001', limit=60)
+            breadth_data = None
+            try:
+                breadth_data = await db.get_limit_up_stats()
+            except Exception as exc:
+                warnings.append(f"breadth:{exc}")
+
+            fear_greed = sentiment_analyzer.calculate_fear_greed_index(
+                index_klines=index_klines or None,
+                breadth_data=breadth_data,
+            )
+
+            closes = [float(k.get('close', 0) or 0) for k in (index_klines or []) if isinstance(k, dict)]
+            valid_closes = [x for x in closes if x > 0]
+            index_context = {
+                'code': 'sh000001',
+                'close': _round_or_none(valid_closes[-1], 2) if valid_closes else None,
+                'change_5d_pct': _pct_change(valid_closes, 5) if len(valid_closes) >= 6 else None,
+                'change_20d_pct': _pct_change(valid_closes, 20) if len(valid_closes) >= 21 else None,
+            }
+
+            northbound = {
+                'northbound_flow_1d': None,
+                'northbound_flow_3d': None,
+                'northbound_flow_5d': None,
+                'source': None,
+                'stale': False,
+                'recent_items': [],
+            }
+            try:
+                nf = await asyncio.to_thread(get_north_fund, max(1, int(north_days)))
+                if nf.get('success'):
+                    payload = nf.get('data', {}) or {}
+                    items = payload.get('items', []) if isinstance(payload, dict) else []
+                    recent_items = items[-max(1, int(north_days)):] if items else []
+                    northbound.update({
+                        'northbound_flow_1d': _round_or_none(recent_items[-1].get('total'), 2) if recent_items else None,
+                        'northbound_flow_3d': _round_or_none(sum(float(x.get('total') or 0) for x in recent_items[-3:]), 2) if recent_items else None,
+                        'northbound_flow_5d': _round_or_none(sum(float(x.get('total') or 0) for x in recent_items[-5:]), 2) if recent_items else None,
+                        'source': payload.get('source'),
+                        'stale': bool(payload.get('stale', False)),
+                        'recent_items': recent_items[-5:],
+                    })
+                else:
+                    warnings.append(f"north_fund:{nf.get('error', 'unknown')}")
+            except Exception as exc:
+                warnings.append(f"north_fund:{exc}")
+
+            margin_context = {
+                'margin_balance_latest': None,
+                'margin_buy_latest': None,
+                'margin_balance_change_5d': None,
+                'recent_rows': [],
+            }
+            try:
+                mg = await asyncio.to_thread(get_margin_data, '', max(6, int(margin_days)))
+                if mg.get('success') and isinstance(mg.get('data'), list) and mg.get('data'):
+                    rows = mg.get('data') or []
+                    latest = rows[0]
+                    older = rows[min(5, len(rows) - 1)]
+                    recent_bal = float(latest.get('marginBalance') or 0)
+                    older_bal = float(older.get('marginBalance') or 0)
+                    margin_context.update({
+                        'margin_balance_latest': _round_or_none(latest.get('marginBalance'), 2),
+                        'margin_buy_latest': _round_or_none(latest.get('marginBuy'), 2),
+                        'margin_balance_change_5d': round((recent_bal - older_bal) / older_bal * 100, 2) if older_bal > 0 else None,
+                        'recent_rows': rows[:5],
+                    })
+                else:
+                    warnings.append(f"margin_data:{mg.get('error', 'unknown')}")
+            except Exception as exc:
+                warnings.append(f"margin_data:{exc}")
+
+            sector_context = {
+                'hot_sectors': [],
+                'cold_sectors': [],
+            }
+            try:
+                sf = await asyncio.to_thread(get_sector_fund_flow, max(10, int(top_sector_n) * 2))
+                if sf.get('success') and isinstance(sf.get('data'), list):
+                    sectors = list(sf.get('data') or [])
+                    sectors = [s for s in sectors if isinstance(s, dict)]
+                    sectors_sorted = sorted(sectors, key=lambda x: float(x.get('mainNetInflow') or 0), reverse=True)
+                    top_n = max(1, int(top_sector_n))
+                    sector_context['hot_sectors'] = sectors_sorted[:top_n]
+                    sector_context['cold_sectors'] = list(reversed(sectors_sorted[-top_n:]))
+                else:
+                    warnings.append(f"sector_flow:{sf.get('error', 'unknown')}")
+            except Exception as exc:
+                warnings.append(f"sector_flow:{exc}")
+
+            return ok({
+                'fear_greed_index': fear_greed.get('index'),
+                'fear_greed_level': fear_greed.get('level'),
+                'fear_greed_components': fear_greed.get('components', {}),
+                'index_context': index_context,
+                'northbound_flow_1d': northbound['northbound_flow_1d'],
+                'northbound_flow_3d': northbound['northbound_flow_3d'],
+                'northbound_flow_5d': northbound['northbound_flow_5d'],
+                'northbound_context': northbound,
+                'margin_balance_latest': margin_context['margin_balance_latest'],
+                'margin_buy_latest': margin_context['margin_buy_latest'],
+                'margin_balance_change_5d': margin_context['margin_balance_change_5d'],
+                'margin_context': margin_context,
+                'hot_sectors': sector_context['hot_sectors'],
+                'cold_sectors': sector_context['cold_sectors'],
+                'breadth': breadth_data or {},
+                'warnings': warnings,
+                'source_chain': [
+                    'sentiment.calculate_fear_greed_index',
+                    'fund_flow.get_north_fund',
+                    'fund_flow.get_margin_data',
+                    'fund_flow.get_sector_fund_flow',
+                ],
+            })
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def get_stock_text_signals(
+        code: str,
+        news_limit: int = 20,
+        notice_days: int = 30,
+        report_limit: int = 10,
+    ):
+        """聚合个股新闻/公告/研报原文，输出文本信号与事件标签。"""
+        try:
+            from ..services.llm_alpha import TextSignalPipeline
+            from .news.news_feed import get_stock_news
+            from .news.notices import get_stock_notices
+            from .news.research import get_research_reports
+
+            normalized_code = str(code or '').strip()
+            if not normalized_code:
+                return fail('code is required')
+
+            warnings: list[str] = []
+            news_items: list[dict[str, Any]] = []
+            notice_items: list[dict[str, Any]] = []
+            report_items: list[dict[str, Any]] = []
+
+            news_resp = await asyncio.to_thread(get_stock_news, normalized_code, max(1, int(news_limit)))
+            if news_resp.get('success') and isinstance(news_resp.get('data'), list):
+                news_items = [dict(item) for item in (news_resp.get('data') or []) if isinstance(item, dict)]
+            else:
+                warnings.append(f"stock_news:{news_resp.get('error', 'unknown')}")
+
+            end_date = date.today()
+            start_date = end_date - timedelta(days=max(1, int(notice_days)))
+            notice_resp = await asyncio.to_thread(
+                get_stock_notices,
+                start_date.isoformat(),
+                end_date.isoformat(),
+                ['全部'],
+                normalized_code,
+            )
+            if notice_resp.get('success') and isinstance(notice_resp.get('data'), dict):
+                notice_items = [
+                    dict(item) for item in (notice_resp.get('data', {}).get('events') or []) if isinstance(item, dict)
+                ]
+            else:
+                warnings.append(f"stock_notices:{notice_resp.get('error', 'unknown')}")
+
+            report_resp = await asyncio.to_thread(get_research_reports, normalized_code, '', max(1, int(report_limit)))
+            if report_resp.get('success'):
+                report_data = report_resp.get('data')
+                if isinstance(report_data, dict):
+                    report_items = [dict(item) for item in (report_data.get('reports') or []) if isinstance(item, dict)]
+                elif isinstance(report_data, list):
+                    report_items = [dict(item) for item in report_data if isinstance(item, dict)]
+            else:
+                warnings.append(f"research_reports:{report_resp.get('error', 'unknown')}")
+
+            merged_items: list[dict[str, Any]] = []
+            for item in news_items[: max(1, int(news_limit))]:
+                merged_items.append({
+                    'type': 'news',
+                    'date': item.get('date'),
+                    'title': item.get('title') or item.get('headline') or '',
+                    'source': item.get('source') or 'stock_news',
+                    'text': _pick_text(item),
+                })
+            for item in notice_items[: max(3, int(news_limit))]:
+                merged_items.append({
+                    'type': 'notice',
+                    'date': item.get('date'),
+                    'title': item.get('title') or item.get('name') or '',
+                    'source': item.get('source') or 'stock_notices',
+                    'text': _pick_text(item),
+                })
+            for item in report_items[: max(1, int(report_limit))]:
+                report_text = ' '.join(
+                    str(x).strip() for x in [item.get('title'), item.get('rating'), item.get('institution')] if x
+                ).strip()
+                merged_items.append({
+                    'type': 'research',
+                    'date': item.get('date'),
+                    'title': item.get('title') or '',
+                    'source': item.get('institution') or 'research_reports',
+                    'text': report_text,
+                    'rating': item.get('rating'),
+                    'target_price': item.get('targetPrice'),
+                })
+
+            texts = [item['text'] for item in merged_items if item.get('text')]
+            text_signal = TextSignalPipeline.aggregate_signals(texts)
+            event_tags = _detect_event_tags(texts)
+
+            rating_counts: dict[str, int] = {}
+            target_prices = []
+            for item in report_items:
+                rating = str(item.get('rating') or '').strip()
+                if rating:
+                    rating_counts[rating] = rating_counts.get(rating, 0) + 1
+                tp = _to_float(item.get('targetPrice'))
+                if tp is not None and tp > 0:
+                    target_prices.append(tp)
+
+            return ok({
+                'code': normalized_code,
+                'signal_score': text_signal.get('signal_score', 0.0),
+                'sentiment': text_signal.get('sentiment', 'neutral'),
+                'positive_count': text_signal.get('positive_count', 0),
+                'negative_count': text_signal.get('negative_count', 0),
+                'evidence': text_signal.get('evidence', []),
+                'event_tags': event_tags,
+                'source_counts': {
+                    'news': len(news_items),
+                    'notices': len(notice_items),
+                    'research_reports': len(report_items),
+                    'total_texts': len(texts),
+                },
+                'rating_summary': {
+                    'counts': rating_counts,
+                    'avg_target_price': _round_or_none(sum(target_prices) / len(target_prices), 2) if target_prices else None,
+                },
+                'raw_texts': merged_items[: max(int(news_limit) + int(report_limit), 10)],
+                'warnings': warnings,
+                'source_chain': [
+                    'news.get_stock_news',
+                    'news.get_stock_notices',
+                    'news.get_research_reports',
+                    'services.llm_alpha.TextSignalPipeline',
+                ],
+            })
         except Exception as e:
             return fail(str(e))
 

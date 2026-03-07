@@ -2,7 +2,15 @@ import { create } from 'zustand';
 import { clearLoggedIn } from '@/lib/auth';
 import { BFF_BASE } from '@/lib/api';
 
-type User = { id: string; username: string; role: 'admin' | 'user' };
+type User = {
+  id: string;
+  username: string;
+  role: 'admin' | 'user';
+  riskLevel?: string | null;
+  nickname?: string | null;
+  avatarUrl?: string | null;
+  preferences?: Record<string, unknown>;
+};
 
 type AuthState = {
   user: User | null;

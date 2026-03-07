@@ -1,6 +1,7 @@
-import { BadGatewayException, Injectable } from '@nestjs/common';
+import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
+import { DbService } from '../db/db.service';
 
 export type FundamentalOverviewDto = {
   code: string;
@@ -61,13 +62,15 @@ const FN_TO_FIELD: Record<string, string> = Object.fromEntries(
 
 @Injectable()
 export class FundamentalService {
+  private readonly logger = new Logger(FundamentalService.name);
   private static readonly OVERVIEW_TTL_SECONDS = 300;
   private static readonly HISTORY_TTL_SECONDS = 300;
 
   constructor(
     private readonly mcpGatewayService: McpGatewayService,
     private readonly cacheService: CommonCacheService,
-  ) {}
+    private readonly dbService: DbService,
+  ) { }
 
   async getOverview(code: string): Promise<FundamentalOverviewDto> {
     const normalized = code.trim();
@@ -94,7 +97,22 @@ export class FundamentalService {
     const valuationCall = await this.callWithArgs('get_valuation_metrics', attempts);
     let valuation = this.normalizeValuation(valuationCall.payload);
 
-    // Fallback: if PE/PB still null, try F10 data (TDX has MorePE, PB_MRQ, StaticPE_TTM)
+    // Fallback 1: DB 直查 stocks 表补充 pe/pb/market_cap
+    if (valuation.pe == null || valuation.pb == null || valuation.marketCap == null) {
+      try {
+        const dbVal = await this.dbFallbackValuation(normalized);
+        valuation = {
+          pe: valuation.pe ?? dbVal.pe,
+          pb: valuation.pb ?? dbVal.pb,
+          ps: valuation.ps,
+          marketCap: valuation.marketCap ?? dbVal.marketCap,
+        };
+      } catch (e) {
+        this.logger.warn(`DB valuation fallback failed for ${normalized}: ${e}`);
+      }
+    }
+
+    // Fallback 2: if PE/PB still null, try F10 data (TDX has MorePE, PB_MRQ, StaticPE_TTM)
     if (valuation.pe == null || valuation.pb == null) {
       try {
         const f10 = await this.callWithArgs('tdx_get_f10_info', attempts);
@@ -266,7 +284,7 @@ export class FundamentalService {
     const klineList: any[] = Array.isArray(klineRoot)
       ? klineRoot
       : Array.isArray(klineRoot?.klines) ? klineRoot.klines
-      : Array.isArray(klineRoot?.data) ? klineRoot.data : [];
+        : Array.isArray(klineRoot?.data) ? klineRoot.data : [];
     if (klineList.length === 0) return [];
 
     // Get current valuation
@@ -360,6 +378,26 @@ export class FundamentalService {
     return { [code]: results };
   }
 
+  /** DB fallback: 从 stocks 表直查估值指标 */
+  private async dbFallbackValuation(code: string): Promise<NormalizedValuation> {
+    try {
+      const res = await this.dbService.query<{ pe_ratio: number | null; pb_ratio: number | null; market_cap: number | null }>(
+        `SELECT pe_ratio, pb_ratio, market_cap FROM stocks WHERE code = $1 LIMIT 1`,
+        [code],
+      );
+      const row = res.rows[0];
+      if (!row) return { pe: null, pb: null, ps: null, marketCap: null };
+      return {
+        pe: row.pe_ratio != null ? Number(row.pe_ratio) : null,
+        pb: row.pb_ratio != null ? Number(row.pb_ratio) : null,
+        ps: null,
+        marketCap: row.market_cap != null ? Number(row.market_cap) : null,
+      };
+    } catch {
+      return { pe: null, pb: null, ps: null, marketCap: null };
+    }
+  }
+
   private normalizeValuation(payload: any): NormalizedValuation {
     const d = payload?.data ?? payload ?? {};
     return {
@@ -400,6 +438,7 @@ export class FundamentalService {
   }
 
   private toNum(v: unknown): number | null {
+    if (v === null || v === undefined || v === '') return null;
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   }

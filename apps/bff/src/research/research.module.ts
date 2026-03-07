@@ -7,6 +7,7 @@ import { ResearchService } from './research.service';
   imports: [McpGatewayModule],
   controllers: [ResearchController],
   providers: [ResearchService],
+  exports: [ResearchService],
 })
 export class ResearchModule {}
 

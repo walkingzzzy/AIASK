@@ -126,7 +126,19 @@ def _step_result(step: str, output: Any = None, error: str | None = None) -> Dic
 
 def _run_step(step: str, fn: Callable[..., Any], **kwargs: Any) -> Dict[str, Any]:
     try:
-        return _step_result(step, output=fn(**kwargs))
+        result = fn(**kwargs)
+        return _step_result(step, output=result)
+    except Exception as e:
+        return _step_result(step, error=f"{type(e).__name__}: {e}")
+
+
+async def _run_step_async(step: str, fn: Callable[..., Any], **kwargs: Any) -> Dict[str, Any]:
+    import inspect
+    try:
+        result = fn(**kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        return _step_result(step, output=result)
     except Exception as e:
         return _step_result(step, error=f"{type(e).__name__}: {e}")
 
@@ -191,7 +203,7 @@ def _exec_tdx_runtime_ops(params: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _exec_market(params: Dict[str, Any]) -> Dict[str, Any]:
+async def _exec_market(params: Dict[str, Any]) -> Dict[str, Any]:
     from .market.kline import get_kline, get_kline_data, get_minute_kline
     from .market.order_book import get_order_book
     from .market.quote import get_realtime_quote
@@ -210,7 +222,7 @@ def _exec_market(params: Dict[str, Any]) -> Dict[str, Any]:
         steps.append(_run_step("get_realtime_quote", get_realtime_quote, stock_code=code))
         if start_date or end_date:
             steps.append(
-                _run_step(
+                await _run_step_async(
                     "get_kline_data",
                     get_kline_data,
                     code=code,
@@ -221,7 +233,7 @@ def _exec_market(params: Dict[str, Any]) -> Dict[str, Any]:
                 )
             )
         else:
-            steps.append(_run_step("get_kline", get_kline, stock_code=code, period="daily", limit=daily_limit))
+            steps.append(await _run_step_async("get_kline", get_kline, stock_code=code, period="daily", limit=daily_limit))
         steps.append(
             _run_step("get_minute_kline", get_minute_kline, stock_code=code, period=minute_period, limit=minute_limit)
         )
@@ -297,7 +309,7 @@ def _exec_tdx_formula_research(params: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _exec_fund_manager_pro(params: Dict[str, Any]) -> Dict[str, Any]:
+async def _exec_fund_manager_pro(params: Dict[str, Any]) -> Dict[str, Any]:
     from .market.kline import get_kline
     from .market.quote import get_realtime_quote
     from .news import get_stock_notices, get_stock_research
@@ -373,14 +385,14 @@ def _exec_fund_manager_pro(params: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
 
-    def _portfolio_step() -> Dict[str, Any]:
+    async def _portfolio_step() -> Dict[str, Any]:
         market_data: Dict[str, Dict[str, Any]] = {}
         dropped: List[str] = []
         returns_list: List[np.ndarray] = []
         valid_codes: List[str] = []
 
         for code in dedup_codes:
-            kline_res = get_kline(stock_code=code, period="daily", limit=max(lookback_days + 10, 80))
+            kline_res = await get_kline(stock_code=code, period="daily", limit=max(lookback_days + 10, 80))
             if not (isinstance(kline_res, dict) and kline_res.get("success")):
                 dropped.append(code)
                 continue
@@ -630,7 +642,7 @@ def _exec_fund_manager_pro(params: Dict[str, Any]) -> Dict[str, Any]:
         }
         return ok(context["execution"])
 
-    def _review_step() -> Dict[str, Any]:
+    async def _review_step() -> Dict[str, Any]:
         portfolio_ctx = context.get("portfolio") or {}
         market_data = portfolio_ctx.get("market_data") or {}
         lead_rows = (market_data.get(lead_code) or {}).get("rows") or []
@@ -639,7 +651,7 @@ def _exec_fund_manager_pro(params: Dict[str, Any]) -> Dict[str, Any]:
 
         benchmark = normalize_code(str(params.get("benchmark") or "000300"))
         benchmark_rows: List[Dict[str, Any]] = []
-        benchmark_res = get_kline(stock_code=benchmark, period="daily", limit=len(lead_rows))
+        benchmark_res = await get_kline(stock_code=benchmark, period="daily", limit=len(lead_rows))
         if isinstance(benchmark_res, dict) and benchmark_res.get("success"):
             benchmark_rows = benchmark_res.get("data") or []
 
@@ -675,11 +687,11 @@ def _exec_fund_manager_pro(params: Dict[str, Any]) -> Dict[str, Any]:
 
     if task in {"full_cycle", "daily_brief", "smoke_test"}:
         steps.append(_run_step("research", _research_step))
-        steps.append(_run_step("portfolio_construction", _portfolio_step))
+        steps.append(await _run_step_async("portfolio_construction", _portfolio_step))
         steps.append(_run_step("risk_assessment", _risk_step))
         steps.append(_run_step("compliance_check", _compliance_step))
         steps.append(_run_step("execution_plan", _execution_step))
-        steps.append(_run_step("performance_review", _review_step))
+        steps.append(await _run_step_async("performance_review", _review_step))
 
         result = _finalize_skill_result(task, steps)
         ring_names = [
@@ -749,7 +761,7 @@ def register(mcp):
         return ok({"skills": matched, "keyword": keyword, "count": len(matched)})
 
     @mcp.tool()
-    def run_skill(skill_id: str, params: dict = None):
+    async def run_skill(skill_id: str, params: dict = None):
         normalized_params = _normalize_params(params)
         skills = _load_skills()
         skill = next((s for s in skills if s.get("id") == skill_id), None)
@@ -778,7 +790,12 @@ def register(mcp):
             )
 
         try:
-            execution = executor(normalized_params)
+            executor = _SKILL_EXECUTORS.get(skill_id)
+            import inspect
+            if inspect.iscoroutinefunction(executor):
+                execution = await executor(normalized_params)
+            else:
+                execution = executor(normalized_params)
         except Exception as e:
             return fail(f"Skill {skill_id} execution failed: {type(e).__name__}: {e}")
 

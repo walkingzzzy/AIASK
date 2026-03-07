@@ -194,9 +194,25 @@ def register_alerts_manager(mcp):
                 alert = _alerts_store.get(alert_id)
                 if not alert:
                     return fail(f'告警不存在: {alert_id}')
-                new_status = kwargs.get('status', 'inactive')
-                alert['active'] = (new_status == 'active')
-                return ok({'alert_id': alert_id, 'status': new_status})
+                if 'code' in kwargs and kwargs.get('code'):
+                    alert['code'] = normalize_code(kwargs.get('code'))
+                if 'indicator' in kwargs and kwargs.get('indicator'):
+                    alert['indicator'] = kwargs.get('indicator')
+                if 'condition' in kwargs and kwargs.get('condition'):
+                    alert['condition'] = kwargs.get('condition')
+                if 'value' in kwargs and kwargs.get('value') is not None:
+                    try:
+                        alert['value'] = float(kwargs.get('value'))
+                    except Exception:
+                        return fail('value 必须是数字')
+
+                if kwargs.get('status') is not None:
+                    alert['active'] = str(kwargs.get('status')).lower() == 'active'
+                elif kwargs.get('active') is not None:
+                    alert['active'] = bool(kwargs.get('active'))
+
+                status = 'active' if alert.get('active', True) else 'inactive'
+                return ok({'alert_id': alert_id, 'status': status, 'alert': alert})
 
             elif action == 'delete':
                 alert_id = kwargs.get('alert_id')

@@ -1,30 +1,31 @@
-# AIASK - AI驱动的A股量化分析系统（akshare-mcp v2.0）
+# AIASK - AI驱动的A股智能投研平台
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
-[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)](.)
+[![Next.js](https://img.shields.io/badge/Next.js-14-black.svg)](https://nextjs.org/)
+[![NestJS](https://img.shields.io/badge/NestJS-10-red.svg)](https://nestjs.com/)
 [![MCP](https://img.shields.io/badge/Protocol-MCP-purple.svg)](https://modelcontextprotocol.io/)
-[![Status](https://img.shields.io/badge/Status-Production_Ready-success.svg)](.)
 
-> 一个面向 A 股量化研究与智能投研场景的 **MCP (Model Context Protocol) 服务端系统**，以 `packages/akshare-mcp` 为核心实现，提供 **158 个 MCP 工具**、30+ 技术指标、回测/因子/风险/组合优化与 AI 增强分析能力。
+> 全栈 A 股量化投研平台，采用 **Web (Next.js) → BFF (NestJS) → MCP Server (Python)** 三层 Monorepo 架构。前端 30+ 页面覆盖行情、研究、回测、风控等场景；BFF 层 22 个模块统一编排；底层 **158 个 MCP 工具** + **20 个 Skills** 提供数据获取、分析计算、策略验证与智能决策能力。
 
 ---
 
 ## 目录
 
 - [1. 项目介绍](#1-项目介绍)
-- [2. 数据源处理策略](#2-数据源处理策略)
-- [3. 必备条件与环境要求](#3-必备条件与环境要求)
-- [4. 工具能力覆盖（158 个 MCP 工具）](#4-工具能力覆盖158-个-mcp-工具)
-- [5. 技术方案与架构（含 Skills 层）](#5-技术方案与架构含-skills-层)
-- [6. Skills 架构与使用](#6-skills-架构与使用)
-- [7. AI 平台使用指南（含 Skills 路由）](#7-ai-平台使用指南含-skills-路由)
-- [8. 文档导航](#8-文档导航)
-- [9. 开发与测试](#9-开发与测试)
-- [10. 项目特点与优势](#10-项目特点与优势)
-- [11. 未来开发计划（Roadmap）](#11-未来开发计划roadmap)
-- [12. FAQ（故障排查）](#12-faq故障排查)
-- [13. 许可证与致谢](#13-许可证与致谢)
+- [2. 全栈架构与项目结构](#2-全栈架构与项目结构)
+- [3. 数据源处理策略](#3-数据源处理策略)
+- [4. 必备条件与环境要求](#4-必备条件与环境要求)
+- [5. 工具能力覆盖（158 个 MCP 工具）](#5-工具能力覆盖158-个-mcp-工具)
+- [6. 技术方案与架构（含 Skills 层）](#6-技术方案与架构含-skills-层)
+- [7. Skills 架构与使用](#7-skills-架构与使用)
+- [8. AI 平台使用指南（含 Skills 路由）](#8-ai-平台使用指南含-skills-路由)
+- [9. 文档导航](#9-文档导航)
+- [10. 开发与测试](#10-开发与测试)
+- [11. 项目特点与优势](#11-项目特点与优势)
+- [12. 未来开发计划（Roadmap）](#12-未来开发计划roadmap)
+- [13. FAQ（故障排查）](#13-faq故障排查)
+- [14. 许可证与致谢](#14-许可证与致谢)
 
 ---
 

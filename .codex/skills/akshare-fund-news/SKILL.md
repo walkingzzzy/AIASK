@@ -19,12 +19,14 @@ description: 资金流、北向资金、龙虎榜、融资融券、大宗交易�
   - 研报检索：`search_research`（支持关键词与股票代码）。
   - 公告日历：`get_stock_notices`（必须给起止日期）。
   - 个股新闻：`get_stock_news`；市场新闻：`get_market_news`。
+  - 文本聚合信号：`get_stock_text_signals`（新闻/公告/研报统一聚合）。
   - 分析师排名：`get_analyst_ranking`；盈利预测：`get_profit_forecast`。
+- 市场情绪聚合：需要把北向资金、两融、板块冷热与恐慌贪婪指数一起看时，用 `get_market_sentiment_context`。
 
 # 失败与兜底
 - 研报/新闻为空：提示接口可能受限，并建议缩小日期范围或改用公告数据。
 - 公告日期跨度过大：缩短到允许范围（参考 env 配置）。
-- 工具分流：研报链路按 `get_stock_research -> get_research_reports -> search_research` 降级；公告失败时用 `get_stock_news` 或 `get_market_news` 兜底。
+- 工具分流：研报链路按 `get_stock_research -> get_research_reports -> search_research` 降级；公告失败时用 `get_stock_news` 或 `get_market_news` 兜底；文本聚合失败时拆回 `get_stock_news` + `get_stock_notices` + `get_research_reports`。
 
 # 参考
 - 读取 `references/tools.md` 了解参数与返回要点。

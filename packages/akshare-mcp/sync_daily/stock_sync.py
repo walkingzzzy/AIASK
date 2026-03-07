@@ -49,20 +49,20 @@ class StockSyncMixin:
         # --- 数据源2: AkShare 兜底 ---
         try:
             import akshare as ak
-            df = ak.stock_zh_a_spot_em()
+            df = ak.stock_info_a_code_name()
             if df is not None and not df.empty:
                 count = 0
                 async with self.db.acquire() as conn:
                     for _, row in df.iterrows():
-                        code = str(row.get('代码', ''))
-                        name = str(row.get('名称', ''))
+                        code = str(row.get('code', ''))
+                        name = str(row.get('name', ''))
                         if not code or not name:
                             continue
                         try:
                             await conn.execute("""
-                                INSERT INTO stocks (stock_code, stock_name, updated_at)
+                                INSERT INTO stocks (code, stock_name, updated_at)
                                 VALUES ($1, $2, NOW())
-                                ON CONFLICT (stock_code) DO UPDATE SET
+                                ON CONFLICT (code) DO UPDATE SET
                                     stock_name = EXCLUDED.stock_name, updated_at = NOW()
                             """, code, name)
                             count += 1
@@ -90,9 +90,9 @@ class StockSyncMixin:
                     list_date = _to_date(row.get('list_date'))
 
                     await conn.execute("""
-                        INSERT INTO stocks (stock_code, stock_name, market, industry, list_date, updated_at)
+                        INSERT INTO stocks (code, stock_name, market, industry, list_date, updated_at)
                         VALUES ($1, $2, $3, $4, $5, NOW())
-                        ON CONFLICT (stock_code) DO UPDATE SET
+                        ON CONFLICT (code) DO UPDATE SET
                             stock_name = EXCLUDED.stock_name,
                             market = EXCLUDED.market,
                             industry = EXCLUDED.industry,
@@ -117,9 +117,9 @@ class StockSyncMixin:
 
         async with self.db.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT s.stock_code, MAX(k.time) as last_date
-                FROM stocks s LEFT JOIN kline_1d k ON s.stock_code = k.code
-                GROUP BY s.stock_code ORDER BY s.stock_code
+                SELECT s.code, MAX(k.time) as last_date
+                FROM stocks s LEFT JOIN kline_1d k ON s.code = k.code
+                GROUP BY s.code ORDER BY s.code
             """)
 
         if not rows:
@@ -131,7 +131,7 @@ class StockSyncMixin:
         errors = []
 
         for i, row in enumerate(rows):
-            code = row['stock_code']
+            code = row['code']
             last_date = row['last_date']
 
             # 3天内有数据则跳过
@@ -167,17 +167,18 @@ class StockSyncMixin:
                                 continue
 
                             await conn.execute("""
-                                INSERT INTO kline_1d (time, code, open, high, low, close, volume, amount, change_pct, updated_at)
-                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+                                INSERT INTO kline_1d (time, code, open, high, low, close, volume, amount, turnover, change_pct, updated_at)
+                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
                                 ON CONFLICT (time, code) DO UPDATE SET
                                     open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
                                     close=EXCLUDED.close, volume=EXCLUDED.volume, amount=EXCLUDED.amount,
-                                    change_pct=EXCLUDED.change_pct, updated_at=NOW()
+                                    turnover=EXCLUDED.turnover, change_pct=EXCLUDED.change_pct, updated_at=NOW()
                             """, dt, code,
                                 _safe_float(kl.get('open')), _safe_float(kl.get('high')),
                                 _safe_float(kl.get('low')), _safe_float(kl.get('close')),
                                 _safe_int(kl.get('volume')) or 0,
                                 _safe_float(kl.get('amount')),
+                                _safe_float(kl.get('turnover')),
                                 _safe_float(kl.get('change_pct')))
                     count += 1
             except Exception as e:

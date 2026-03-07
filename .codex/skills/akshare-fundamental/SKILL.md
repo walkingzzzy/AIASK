@@ -8,12 +8,13 @@ description: 基本面、财务指标、估值模型、情绪指数，以及智�
 
 # 使用流程
 - 基本信息与财务：用 `get_stock_info` 与 `get_financials`。
+- 投资分析上下文：用 `get_investment_analysis` 聚合估值、基本面、技术、风险与价格上下文。
 - 估值：
   - 指标：`get_valuation_metrics` / `get_historical_valuation`。
   - 模型：`dcf_valuation` / `ddm_valuation` / `scenario_dcf_valuation`。
   - 行业模板：先用 `list_industry_templates` 查看参数模板，再按需调用 `scenario_dcf_valuation`。
   - 对比估值：`relative_valuation`。
-- 情绪：个股用 `analyze_stock_sentiment`，全市场用 `calculate_fear_greed_index`。
+- 情绪：个股用 `analyze_stock_sentiment`，全市场用 `calculate_fear_greed_index`，需要聚合市场环境时用 `get_market_sentiment_context`。
 - 语义能力：
   - 自然语言选股解析：`parse_selection_query`。
   - 智能诊断：`smart_stock_diagnosis`。
@@ -22,7 +23,7 @@ description: 基本面、财务指标、估值模型、情绪指数，以及智�
 # 失败与兜底
 - 财务/估值数据为空：提示数据源可能缺失，建议改用 `get_stock_info` 基础字段。
 - DDM 增长率 >= 要求回报率：要求用户调整参数。
-- 工具分流：`get_financials` 失败时改用 `fundamental_analysis_manager(action=analyze)`；`dcf_valuation`/`ddm_valuation` 失败时降级为 `get_valuation_metrics` + `relative_valuation`。
+- 工具分流：`get_financials` 失败时改用 `fundamental_analysis_manager(action=analyze)`；`get_investment_analysis` 缺字段时回退到 `get_stock_info` + `get_financials`；`dcf_valuation`/`ddm_valuation` 失败时降级为 `get_valuation_metrics` + `relative_valuation`。
 
 # 参考
 - 读取 `references/tools.md` 了解参数与返回要点。

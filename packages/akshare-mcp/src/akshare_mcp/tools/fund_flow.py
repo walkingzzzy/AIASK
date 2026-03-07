@@ -270,6 +270,21 @@ def _normalize_north_fund_results(rows: list[dict], days: int) -> list[dict]:
             }
         )
     normalized.sort(key=lambda x: x["date"])
+
+    # Fill missing cumulative values as running sums of daily net-buy
+    has_any_cumulative = any(r.get("cumulative") is not None for r in normalized)
+    if not has_any_cumulative and normalized:
+        sh_sum = 0.0
+        sz_sum = 0.0
+        for r in normalized:
+            sh_val = r.get("shConnect") or 0.0
+            sz_val = r.get("szConnect") or 0.0
+            sh_sum += sh_val
+            sz_sum += sz_val
+            r["shCumulative"] = sh_sum
+            r["szCumulative"] = sz_sum
+            r["cumulative"] = sh_sum + sz_sum
+
     return normalized[-days:] if days > 0 else normalized
 
 
@@ -981,6 +996,8 @@ def get_dragon_tiger(date: str = "", stock_code: str = "") -> dict:
                     # Given '指标' is the reason.
                     change = safe_float(row.get("对应值")) 
                     reason = str(row.get("指标", ""))
+                    if reason.lower() == "nan":
+                        reason = ""
                     
                     # Sina summary API doesn't provide specific seat buy/sell info in this endpoint
                     buy = None
@@ -993,6 +1010,8 @@ def get_dragon_tiger(date: str = "", stock_code: str = "") -> dict:
                     close = safe_float(row.get("收盘价"))
                     change = safe_float(row.get("涨跌幅"))
                     reason = str(row.get("上榜原因", ""))
+                    if reason.lower() == "nan":
+                        reason = ""
                     buy = safe_float(row.get("买入额"))
                     sell = safe_float(row.get("卖出额"))
                     net = safe_float(row.get("净买额"))
@@ -1009,9 +1028,9 @@ def get_dragon_tiger(date: str = "", stock_code: str = "") -> dict:
                         "closePrice": close,
                         "changePercent": change,
                         "reason": reason,
-                        "buyAmount": buy,
-                        "sellAmount": sell,
-                        "netAmount": net,
+                        "buyAmount": buy if buy is not None else 0.0,
+                        "sellAmount": sell if sell is not None else 0.0,
+                        "netAmount": net if net is not None else 0.0,
                         "source": source
                     }
                 )

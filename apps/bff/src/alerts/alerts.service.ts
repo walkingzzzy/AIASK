@@ -1,6 +1,7 @@
-import { BadGatewayException, Injectable } from '@nestjs/common';
+import { BadGatewayException, Injectable, Optional } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
+import { WsGateway } from '../ws/ws.gateway';
 
 export type CreateAlertInput = {
   code: string;
@@ -31,7 +32,8 @@ export class AlertsService {
   constructor(
     private readonly mcpGatewayService: McpGatewayService,
     private readonly cacheService: CommonCacheService,
-  ) {}
+    @Optional() private readonly wsGateway?: WsGateway,
+  ) { }
 
   async create(input: CreateAlertInput) {
     const normalized = {
@@ -61,6 +63,30 @@ export class AlertsService {
       argsMatched: args,
       result: payload,
     };
+  }
+
+  /** 检查告警并推送触发的告警到 WebSocket */
+  async checkAndPush(userId?: string) {
+    const args = { action: 'check', kwargs: JSON.stringify({}) };
+    const payload = await this.callTool('alerts_manager', args);
+    const triggered = this.pickArray(payload, ['data.triggered', 'data.items', 'triggered', 'items']);
+
+    if (triggered.length > 0 && this.wsGateway) {
+      for (const alert of triggered) {
+        const item = this.normalizeAlertItem(alert);
+        this.wsGateway.pushAlert(userId ?? null, {
+          alertId: item.id,
+          code: item.code,
+          indicator: item.indicator,
+          condition: item.condition,
+          value: item.value,
+          message: `告警触发: ${item.code} ${item.indicator} ${item.condition} ${item.value}`,
+          level: 'warn',
+        });
+      }
+    }
+
+    return { triggered: triggered.length, items: triggered.map((x) => this.normalizeAlertItem(x)) };
   }
 
   async list(status = 'active'): Promise<AlertsListDto> {

@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -12,42 +12,60 @@ type McpHealth = {
   matched: boolean;
   source: string;
   message: string;
+  poolSize?: number;
+  activeConnections?: number;
 };
+
+interface PooledConnection {
+  id: number;
+  client: Client;
+  transport: StdioClientTransport;
+  busy: boolean;
+  connectPromise: Promise<void> | null;
+}
 
 @Injectable()
 export class McpGatewayService implements OnModuleDestroy {
-  private client: Client | null = null;
-  private transport: StdioClientTransport | null = null;
-  private connected = false;
-  private connectPromise: Promise<void> | null = null;
+  private readonly logger = new Logger(McpGatewayService.name);
 
-  /* ── Semaphore: serialize stdio calls (concurrency=1) ── */
-  private semaphoreQueue: Array<{ resolve: () => void }> = [];
-  private semaphoreRunning = 0;
-  private readonly maxConcurrency = 1;
+  private pool: PooledConnection[] = [];
+  private readonly poolSize: number;
+  private waitQueue: Array<{ resolve: (conn: PooledConnection) => void }> = [];
+  private initialized = false;
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(private readonly configService: ConfigService) {
+    this.poolSize = Math.max(
+      1,
+      Number(this.configService.get<string>('MCP_POOL_SIZE', '3')),
+    );
+  }
 
   async onModuleDestroy(): Promise<void> {
-    await this.disposeClient();
+    await this.disposeAll();
   }
 
   async checkAvailableTools(): Promise<McpHealth> {
-    const expectedTools = Number(this.configService.get<string>('MCP_EXPECTED_TOOLS', '158'));
+    const expectedTools = Number(this.configService.get<string>('MCP_EXPECTED_TOOLS', '171'));
 
     try {
-      await this.ensureConnected();
-      const tools = await this.client!.listTools();
-      const count = Array.isArray(tools?.tools) ? tools.tools.length : null;
-      if (count !== null) {
-        return {
-          reachable: true,
-          toolCount: count,
-          expectedTools,
-          matched: count === expectedTools,
-          source: 'stdio',
-          message: 'ok',
-        };
+      const conn = await this.acquire();
+      try {
+        const tools = await conn.client.listTools();
+        const count = Array.isArray(tools?.tools) ? tools.tools.length : null;
+        if (count !== null) {
+          return {
+            reachable: true,
+            toolCount: count,
+            expectedTools,
+            matched: count === expectedTools,
+            source: 'stdio',
+            message: 'ok',
+            poolSize: this.poolSize,
+            activeConnections: this.pool.length,
+          };
+        }
+      } finally {
+        this.release(conn);
       }
     } catch {
       // ignore and fallthrough
@@ -60,42 +78,144 @@ export class McpGatewayService implements OnModuleDestroy {
       matched: false,
       source: 'none',
       message: 'MCP not reachable or available_tools response format unknown',
+      poolSize: this.poolSize,
+      activeConnections: this.pool.length,
     };
   }
 
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
-    await this.acquire();
+    const conn = await this.acquire();
     try {
-      await this.ensureConnected();
-      const result = await this.client!.callTool({ name, arguments: args });
+      const result = await conn.client.callTool({ name, arguments: args });
       return this.normalizeToolResult(result);
     } catch (error) {
-      if (this.isTransportError(error)) await this.disposeClient();
+      if (this.isTransportError(error)) {
+        this.logger.warn(`Transport error on pool[${conn.id}], recycling connection`);
+        await this.recycleConnection(conn);
+      }
       throw error;
     } finally {
-      this.release();
+      this.release(conn);
     }
   }
 
-  /* ── Semaphore helpers ── */
-  private async acquire(): Promise<void> {
-    if (this.semaphoreRunning < this.maxConcurrency) {
-      this.semaphoreRunning++;
-      return;
+  /* ── Pool Management ── */
+
+  private async acquire(): Promise<PooledConnection> {
+    if (!this.initialized) {
+      await this.initPool();
     }
-    return new Promise<void>((resolve) => {
-      this.semaphoreQueue.push({ resolve });
+
+    const idle = this.pool.find((c) => !c.busy);
+    if (idle) {
+      idle.busy = true;
+      return idle;
+    }
+
+    if (this.pool.length < this.poolSize) {
+      const conn = await this.createConnection(this.pool.length);
+      conn.busy = true;
+      this.pool.push(conn);
+      return conn;
+    }
+
+    return new Promise<PooledConnection>((resolve) => {
+      this.waitQueue.push({ resolve });
     });
   }
 
-  private release(): void {
-    const next = this.semaphoreQueue.shift();
-    if (next) {
-      next.resolve();
-    } else {
-      this.semaphoreRunning--;
+  private release(conn: PooledConnection): void {
+    conn.busy = false;
+    const waiter = this.waitQueue.shift();
+    if (waiter) {
+      conn.busy = true;
+      waiter.resolve(conn);
     }
   }
+
+  private async initPool(): Promise<void> {
+    if (this.initialized) return;
+    this.initialized = true;
+
+    const first = await this.createConnection(0);
+    this.pool.push(first);
+    this.logger.log(`MCP pool initialized (1/${this.poolSize} connections, lazy expansion)`);
+  }
+
+  private async createConnection(id: number): Promise<PooledConnection> {
+    const cwd = this.resolveMcpCwd();
+    const command = this.configService.get<string>('MCP_STDIO_COMMAND', 'python');
+    const args = this.parseArgs(
+      this.configService.get<string>('MCP_STDIO_ARGS', '["-m","akshare_mcp.server"]'),
+    );
+    const env: Record<string, string> = {
+      ...Object.entries(process.env).reduce<Record<string, string>>((acc, [k, v]) => {
+        if (typeof v === 'string') acc[k] = v;
+        return acc;
+      }, {}),
+      PYTHONPATH:
+        this.configService.get<string>('MCP_STDIO_PYTHONPATH') || resolve(cwd, 'src'),
+      PYTHONIOENCODING:
+        this.configService.get<string>('MCP_STDIO_PYTHONIOENCODING', 'utf-8'),
+    };
+
+    const transport = new StdioClientTransport({
+      command,
+      args,
+      cwd,
+      env,
+      stderr: 'inherit',
+    });
+
+    const client = new Client(
+      { name: `aiask-bff-pool-${id}`, version: '0.1.0' },
+      { capabilities: {} },
+    );
+
+    try {
+      await client.connect(transport);
+    } catch (error) {
+      try { await transport.close(); } catch { /* ignore */ }
+      throw error;
+    }
+
+    this.logger.log(`MCP pool connection[${id}] established`);
+    return { id, client, transport, busy: false, connectPromise: null };
+  }
+
+  private async recycleConnection(conn: PooledConnection): Promise<void> {
+    try { await conn.transport.close(); } catch { /* ignore */ }
+
+    const idx = this.pool.indexOf(conn);
+    if (idx !== -1) {
+      this.pool.splice(idx, 1);
+    }
+
+    try {
+      const fresh = await this.createConnection(conn.id);
+      fresh.busy = conn.busy;
+      this.pool.push(fresh);
+
+      Object.assign(conn, {
+        client: fresh.client,
+        transport: fresh.transport,
+      });
+    } catch (err) {
+      this.logger.error(`Failed to recycle pool[${conn.id}]: ${err}`);
+    }
+  }
+
+  private async disposeAll(): Promise<void> {
+    for (const conn of this.pool) {
+      try {
+        await conn.transport.close();
+      } catch { /* ignore */ }
+    }
+    this.pool = [];
+    this.initialized = false;
+  }
+
+  /* ── Utilities ── */
 
   private isTransportError(error: unknown): boolean {
     if (!error || typeof error !== 'object') return true;
@@ -109,75 +229,6 @@ export class McpGatewayService implements OnModuleDestroy {
       msg.includes('econnrefused') ||
       msg.includes('broken pipe')
     );
-  }
-
-  private async ensureConnected(): Promise<void> {
-    if (this.connected && this.client) return;
-    if (this.connectPromise) {
-      await this.connectPromise;
-      return;
-    }
-
-    this.connectPromise = this.connectInternal();
-    try {
-      await this.connectPromise;
-    } finally {
-      this.connectPromise = null;
-    }
-  }
-
-  private async connectInternal(): Promise<void> {
-    await this.disposeClient();
-
-    const cwd = this.resolveMcpCwd();
-    const command = this.configService.get<string>('MCP_STDIO_COMMAND', 'python');
-    const args = this.parseArgs(
-      this.configService.get<string>('MCP_STDIO_ARGS', '["-m","akshare_mcp.server"]'),
-    );
-    const env: Record<string, string> = {
-      ...Object.entries(process.env).reduce<Record<string, string>>((acc, [k, v]) => {
-        if (typeof v === 'string') acc[k] = v;
-        return acc;
-      }, {}),
-      PYTHONPATH:
-        this.configService.get<string>('MCP_STDIO_PYTHONPATH') ||
-        resolve(cwd, 'src'),
-      PYTHONIOENCODING:
-        this.configService.get<string>('MCP_STDIO_PYTHONIOENCODING', 'utf-8'),
-    };
-
-    this.transport = new StdioClientTransport({
-      command,
-      args,
-      cwd,
-      env,
-      stderr: 'inherit',
-    });
-
-    this.client = new Client({ name: 'aiask-bff', version: '0.1.0' }, { capabilities: {} });
-
-    try {
-      await this.client.connect(this.transport);
-      this.connected = true;
-    } catch (error) {
-      await this.disposeClient();
-      throw error;
-    }
-  }
-
-  private async disposeClient(): Promise<void> {
-    this.connected = false;
-    this.client = null;
-
-    if (this.transport) {
-      try {
-        await this.transport.close();
-      } catch {
-        // ignore close errors
-      }
-    }
-
-    this.transport = null;
   }
 
   private resolveMcpCwd(): string {
@@ -240,41 +291,4 @@ export class McpGatewayService implements OnModuleDestroy {
 
     return result;
   }
-
-  private extractToolCount(payload: unknown): number | null {
-    const queue: unknown[] = [payload];
-
-    while (queue.length > 0) {
-      const current = queue.shift();
-      if (!current || typeof current !== 'object') continue;
-
-      const node = current as Record<string, unknown>;
-
-      if (Array.isArray(node.tools)) {
-        return node.tools.length;
-      }
-
-      if (Array.isArray(node.data) && node.data.every((item) => typeof item === 'object')) {
-        queue.push(...node.data);
-      }
-
-      for (const value of Object.values(node)) {
-        if (Array.isArray(value)) {
-          queue.push(...value);
-        } else if (typeof value === 'object' && value !== null) {
-          queue.push(value);
-        } else if (typeof value === 'string' && value.includes('"tools"')) {
-          try {
-            const parsed = JSON.parse(value) as Record<string, unknown>;
-            if (Array.isArray(parsed.tools)) return parsed.tools.length;
-          } catch {
-            // ignore non-json string
-          }
-        }
-      }
-    }
-
-    return null;
-  }
 }
-

@@ -3,6 +3,8 @@
 使用LRU策略和TTL过期机制
 """
 
+import asyncio
+import inspect
 import time
 from collections import OrderedDict
 from functools import wraps, lru_cache
@@ -79,7 +81,7 @@ _global_cache = ProcessCache(max_size=1000)
 
 def cached(ttl: int = 300, key_prefix: str = ""):
     """
-    缓存装饰器
+    缓存装饰器（支持同步和异步函数）
     
     Args:
         ttl: 缓存过期时间（秒）
@@ -89,34 +91,48 @@ def cached(ttl: int = 300, key_prefix: str = ""):
         @cached(ttl=60, key_prefix="quote")
         def get_quote(symbol: str):
             return fetch_quote(symbol)
+        
+        @cached(ttl=60, key_prefix="kline")
+        async def get_kline_async(code: str):
+            return await fetch_kline(code)
     """
     def decorator(func: Callable) -> Callable:
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            # 生成缓存键
-            cache_key = f"{key_prefix}:{func.__name__}:{args}:{kwargs}"
-            
-            # 尝试从缓存获取
-            cached_value = _global_cache.get(cache_key)
-            if cached_value is not None:
-                return cached_value
-            
-            # 执行函数
-            result = func(*args, **kwargs)
-
-            # 不缓存失败或标记为 _no_cache 的结果
-            skip = False
-            if isinstance(result, dict):
-                if not result.get("success", True):
-                    skip = True
-                if result.pop("_no_cache", False):
-                    skip = True
-            if not skip:
-                _global_cache.set(cache_key, result, ttl=ttl)
-            
-            return result
-        
-        return wrapper
+        if inspect.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                cache_key = f"{key_prefix}:{func.__name__}:{args}:{kwargs}"
+                cached_value = _global_cache.get(cache_key)
+                if cached_value is not None:
+                    return cached_value
+                result = await func(*args, **kwargs)
+                skip = False
+                if isinstance(result, dict):
+                    if not result.get("success", True):
+                        skip = True
+                    if result.pop("_no_cache", False):
+                        skip = True
+                if not skip:
+                    _global_cache.set(cache_key, result, ttl=ttl)
+                return result
+            return async_wrapper
+        else:
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                cache_key = f"{key_prefix}:{func.__name__}:{args}:{kwargs}"
+                cached_value = _global_cache.get(cache_key)
+                if cached_value is not None:
+                    return cached_value
+                result = func(*args, **kwargs)
+                skip = False
+                if isinstance(result, dict):
+                    if not result.get("success", True):
+                        skip = True
+                    if result.pop("_no_cache", False):
+                        skip = True
+                if not skip:
+                    _global_cache.set(cache_key, result, ttl=ttl)
+                return result
+            return wrapper
     return decorator
 
 

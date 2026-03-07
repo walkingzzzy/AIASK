@@ -1,5 +1,6 @@
 """市场洞察管理器 - 市场趋势、板块分析（接入真实行情与资金流）"""
 
+import json
 import logging
 import numpy as np
 from ...utils import ok, fail
@@ -12,6 +13,20 @@ def _safe_float(val, default=0.0):
         return float(val) if val is not None else default
     except (ValueError, TypeError):
         return default
+
+
+def _normalize_kwargs(kwargs: dict) -> dict:
+    raw = kwargs.get("kwargs")
+    if isinstance(raw, dict):
+        kwargs = {**kwargs, **raw}
+    elif isinstance(raw, str):
+        try:
+            extra = json.loads(raw or "{}")
+            if isinstance(extra, dict):
+                kwargs = {**kwargs, **extra}
+        except Exception:
+            pass
+    return kwargs
 
 
 def register_market_insight_manager(mcp):
@@ -40,6 +55,7 @@ def register_market_insight_manager(mcp):
             market_insight_manager(action="sector_analysis", kwargs="{}")
         """
         try:
+            kwargs = _normalize_kwargs(dict(kwargs))
             if action == 'help':
                 return ok({
                     'supported_actions': {
@@ -53,7 +69,8 @@ def register_market_insight_manager(mcp):
                 return await _market_trend()
 
             elif action == 'sector_analysis':
-                return await _sector_analysis()
+                sector = kwargs.get('sector') or kwargs.get('block_name') or kwargs.get('name')
+                return await _sector_analysis(sector=sector)
 
             else:
                 return fail(f'Unknown action: {action}. Supported: help, market_trend, sector_analysis')
@@ -76,7 +93,7 @@ def register_market_insight_manager(mcp):
             change_pct = _safe_float(d.get('changePercent') or d.get('change_pct') or d.get('涨跌幅'))
 
         # 2. 获取近60日指数K线计算趋势（使用指数专用接口，避免与个股000001混淆）
-        kline_res = get_index_kline(index_code="000001", period="daily", limit=60)
+        kline_res = await get_index_kline(index_code="000001", period="daily", limit=60)
         trend = 'unknown'
         strength = 'unknown'
         support = 0.0
@@ -136,7 +153,7 @@ def register_market_insight_manager(mcp):
             'index': '上证指数(000001)',
         })
 
-    async def _sector_analysis():
+    async def _sector_analysis(sector: str | None = None):
         """基于真实板块资金流向数据"""
         from ..fund_flow import get_sector_fund_flow, get_concept_fund_flow
 
@@ -183,9 +200,44 @@ def register_market_insight_manager(mcp):
             else:
                 rotation = 'balanced'
 
-        return ok({
+        requested_sector = str(sector or '').strip()
+        matched_count = 0
+        if requested_sector:
+            keyword = requested_sector.lower()
+
+            def _match_name(item):
+                return keyword in str(item.get('name') or '').lower()
+
+            def _dedupe_items(items):
+                deduped = []
+                seen = set()
+                for item in items:
+                    name_key = str(item.get('name') or '').lower()
+                    if name_key in seen:
+                        continue
+                    seen.add(name_key)
+                    deduped.append(item)
+                return deduped
+
+            hot_sectors = _dedupe_items([item for item in hot_sectors if _match_name(item)])
+            cold_sectors = _dedupe_items([item for item in cold_sectors if _match_name(item)])
+            concept_hot = _dedupe_items([item for item in concept_hot if _match_name(item)])
+            matched_names = {
+                str(item.get('name') or '').lower()
+                for item in [*hot_sectors, *cold_sectors, *concept_hot]
+                if item.get('name')
+            }
+            matched_count = len(matched_names)
+
+        payload = {
             'hotSectors': hot_sectors,
             'coldSectors': cold_sectors,
             'hotConcepts': concept_hot,
             'rotation': rotation,
-        })
+        }
+        if requested_sector:
+            payload['requestedSector'] = requested_sector
+            payload['matchedCount'] = matched_count
+            if matched_count == 0:
+                payload['message'] = f'未在当前热点板块中匹配到 {requested_sector}'
+        return ok(payload)

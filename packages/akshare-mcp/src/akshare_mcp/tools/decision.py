@@ -778,7 +778,7 @@ def register(mcp):
                 recommendation = 'avoid'
                 action_text = '建议回避'
 
-            if context_decision:
+            if context_decision and recommendation in {'hold', 'wait'}:
                 recommendation = context_decision["recommendation"]
                 action_text = context_decision["action_text"]
                 for item in context_decision["positives"]:

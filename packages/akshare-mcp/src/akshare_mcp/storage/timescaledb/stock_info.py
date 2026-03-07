@@ -16,10 +16,10 @@ class StockInfoMixin:
             row = await conn.fetchrow(
                 """
                 SELECT
-                    stock_code, stock_name, industry, market_cap,
+                    code, stock_name, industry, market_cap,
                     pe_ratio, pb_ratio, list_date
                 FROM stocks
-                WHERE stock_code = $1
+                WHERE code = $1
                 """,
                 code
             )
@@ -28,7 +28,7 @@ class StockInfoMixin:
                 return None
 
             return {
-                'code': row['stock_code'],
+                'code': row['code'],
                 'name': row['stock_name'],
                 'industry': row['industry'],
                 'market_cap': float(row['market_cap']) if row['market_cap'] else None,
@@ -42,9 +42,9 @@ class StockInfoMixin:
         async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT stock_code, stock_name, industry, market_cap
+                SELECT code, stock_name, industry, market_cap
                 FROM stocks
-                WHERE stock_code LIKE $1 OR stock_name LIKE $2
+                WHERE code LIKE $1 OR stock_name LIKE $2
                 ORDER BY market_cap DESC NULLS LAST
                 LIMIT $3
                 """,
@@ -53,7 +53,7 @@ class StockInfoMixin:
 
             return [
                 {
-                    'code': row['stock_code'],
+                    'code': row['code'],
                     'name': row['stock_name'],
                     'industry': row['industry'],
                     'market_cap': float(row['market_cap']) if row['market_cap'] else None,

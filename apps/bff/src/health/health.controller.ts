@@ -10,7 +10,7 @@ export class HealthController {
     private readonly healthService: HealthService,
     private readonly mcpGatewayService: McpGatewayService,
     private readonly cacheService: CommonCacheService,
-  ) {}
+  ) { }
 
   @Public()
   @Get()
@@ -38,6 +38,12 @@ export class HealthController {
       ...base,
       cache: this.cacheService.getStats(),
     };
+  }
+
+  @Public()
+  @Get('db')
+  async getDbHealth() {
+    return this.healthService.getDbHealth();
   }
 }
 

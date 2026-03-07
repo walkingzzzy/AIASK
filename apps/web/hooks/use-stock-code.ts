@@ -30,24 +30,25 @@ export function useStockCode(initial = '', syncUrl = true) {
   const [resolvedCode, setResolvedCode] = useState<string | null>(null);
   const initialized = useRef(false);
 
-  // 首次挂载：双向同步 URL ↔ 全局上下文
+  // 首次挂载：单向同步 URL → 全局上下文
+  // 注意：只允许 URL code 触发自动查询（resolvedCode）和 URL 同步。
+  // 若 URL 无 code 但全局上下文有 code，仅预填输入框，不自动触发查询，
+  // 也不修改 URL，避免行情/个股详情等页面相互污染全局 code 状态。
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
     if (urlCode && STOCK_CODE_RE.test(urlCode)) {
-      // URL 有 code → 同步到 store
+      // URL 有 code → 同步到 store，并标记 resolvedCode 供页面自动查询
       setCodeLocal(urlCode);
       setStock(urlCode);
       setResolvedCode(urlCode);
     } else if (globalCode && STOCK_CODE_RE.test(globalCode)) {
-      // store 有 code 但 URL 没有 → 同步到 URL
+      // store 有 code 但 URL 没有 → 预填输入框 + 触发自动查询（恢复跨页连续体验）
+      // 注意：只设 resolvedCode（自动查询），不调用 router.replace（不改 URL）
+      // 这样避免了 URL 被污染导致的页面跳转 bug，同时保留了"延续上次浏览"的体验
       setCodeLocal(globalCode);
       setResolvedCode(globalCode);
-      if (syncUrl) {
-        const params = new URLSearchParams(searchParams.toString());
-        params.set('code', globalCode);
-        router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-      }
+      // 不调用 router.replace，URL 保持干净
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

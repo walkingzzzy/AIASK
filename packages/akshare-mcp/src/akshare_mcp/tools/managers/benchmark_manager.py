@@ -133,7 +133,7 @@ async def _get_benchmark_return(db, benchmark: str, lookback: int) -> Optional[f
     code = normalize_code(benchmark)
     klines = await db.get_klines(code, limit=lookback)
     if not klines or len(klines) < 2:
-        res = get_kline(code, "daily", lookback)
+        res = await get_kline(code, "daily", lookback)
         if res.get("success") and res.get("data"):
             klines = res["data"]
     if not klines or len(klines) < 2:

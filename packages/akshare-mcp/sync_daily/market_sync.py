@@ -375,18 +375,18 @@ class MarketSyncMixin:
         try:
             count = 0
             async with self.db.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT stock_code, stock_name, industry FROM stocks
+                stocks = await conn.fetch("""
+                    SELECT code as stock_code, stock_name, industry FROM stocks
                     WHERE industry IS NOT NULL AND industry != ''
                 """)
-                for row in rows:
+                for row in stocks:
                     block_code = f"IND_{row['industry']}"
                     await conn.execute("""
                         INSERT INTO block_stocks (block_code, stock_code, stock_name, updated_at)
                         VALUES ($1, $2, $3, NOW())
                         ON CONFLICT (block_code, stock_code) DO UPDATE SET
                             stock_name=EXCLUDED.stock_name, updated_at=NOW()
-                    """, block_code, row['stock_code'], row['stock_name'])
+                    """, block_code, row['code'], row['stock_name'])
                     count += 1
             self.log(f"  ✅ 完成: {count} 条成分股映射")
             return count

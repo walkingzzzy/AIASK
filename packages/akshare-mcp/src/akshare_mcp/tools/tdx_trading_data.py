@@ -69,12 +69,19 @@ SC_FIELDS = {
 }
 
 
+def _normalize_date_input(date_str: str) -> str:
+    """兼容 YYYYMMDD / YYYY-MM-DD / YYYY/MM/DD，统一返回 YYYYMMDD。"""
+    if not date_str:
+        return ""
+    return date_str.replace("-", "").replace("/", "").strip()
+
+
 def _validate_yyyymmdd(date_str: str, field_name: str) -> str | None:
-    """校验 YYYYMMDD 日期格式与有效性。"""
+    """校验日期格式，输入应先经过 _normalize_date_input。"""
     if not date_str:
         return None
     if len(date_str) != 8 or not date_str.isdigit():
-        return f"{field_name} 格式错误，应为 YYYYMMDD"
+        return f"{field_name} 格式错误，应为 YYYYMMDD 或 YYYY-MM-DD"
     try:
         datetime.strptime(date_str, "%Y%m%d")
     except ValueError:
@@ -165,6 +172,22 @@ def tdx_get_stock_trading_data(
     从通达信本地数据包获取股票级别的交易数据，包括股东户数、龙虎榜、融资融券、
     大宗交易、增减持、陆股通等 AkShare/Tushare 无法替代的独有数据。
     需要先在通达信客户端中下载「盘后数据包」。
+
+    Args:
+        stock_codes (list[str]): 股票代码列表，如 ["600519", "000858"]
+        fields (list[str]): GP 字段标识列表，必须使用 GP+数字 格式：
+            - GP1: 股东人数/股东户数(户)
+            - GP2: 龙虎榜 买入总计/卖出总计(万元)
+            - GP3: 融资融券 融资余额(万元)/融券余量(股)
+            - GP4: 大宗交易 成交均价(元)/成交额(万元)
+            - GP5: 增减持 成交均价(元)/变动股数(股)
+            - GP6: 陆股通持股量 持股数量(股)
+            - GP7: 陆股通市场净买入(万元)
+            - GP15: 涨跌停 涨跌停状态/封单金额(万元)
+            - GP16: 总市值(万元)
+            - GP21: 股息率(%)
+        start_date (str, optional): 起始日期，YYYYMMDD 或 YYYY-MM-DD
+        end_date (str, optional): 结束日期，YYYYMMDD 或 YYYY-MM-DD
     """
     source_chain: list[str] = []
     fallback_reason: list[str] = []
@@ -176,6 +199,8 @@ def tdx_get_stock_trading_data(
     if not stock_codes:
         return {"success": False, "error": "stock_codes 不能为空"}
 
+    start_date = _normalize_date_input(start_date)
+    end_date = _normalize_date_input(end_date)
     start_err = _validate_yyyymmdd(start_date, "start_date")
     if start_err:
         return {"success": False, "error": start_err}
@@ -271,6 +296,8 @@ def tdx_get_sector_trading_data(
     if not sector_codes:
         return {"success": False, "error": "sector_codes 不能为空"}
 
+    start_date = _normalize_date_input(start_date)
+    end_date = _normalize_date_input(end_date)
     start_err = _validate_yyyymmdd(start_date, "start_date")
     if start_err:
         return {"success": False, "error": start_err}
@@ -360,6 +387,8 @@ def tdx_get_market_trading_data(
     if not fields:
         return {"success": False, "error": "fields 不能为空，请指定 SC 字段列表，如 ['SC1', 'SC3']"}
 
+    start_date = _normalize_date_input(start_date)
+    end_date = _normalize_date_input(end_date)
     start_err = _validate_yyyymmdd(start_date, "start_date")
     if start_err:
         return {"success": False, "error": start_err}

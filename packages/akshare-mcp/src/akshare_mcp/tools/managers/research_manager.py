@@ -23,6 +23,14 @@ def _normalize_manager_kwargs(code: Optional[str], kwargs: dict) -> tuple[Option
     return code, kwargs
 
 
+def _normalize_limit(value, default: int = 10, minimum: int = 1, maximum: int = 50) -> int:
+    try:
+        limit = int(value)
+    except Exception:
+        limit = default
+    return max(minimum, min(limit, maximum))
+
+
 def register_research_manager(mcp):
     """注册研究管理器工具"""
     
@@ -67,7 +75,7 @@ def register_research_manager(mcp):
                     return fail('需要提供股票代码')
                 
                 code = normalize_code(code)
-                limit = kwargs.get('limit', 10)
+                limit = _normalize_limit(kwargs.get('limit', 10))
                 
                 # 调用真实数据源获取研报
                 try:

@@ -24,6 +24,101 @@ def _attach_equity_curve(payload: Dict[str, Any], equity: np.ndarray) -> None:
     payload['slippage_model_note'] = _SLIPPAGE_NOTE
 
 
+def _extract_benchmark_returns(params: Optional[Dict[str, Any]], expected_len: int) -> Optional[np.ndarray]:
+    if not params or expected_len <= 0:
+        return None
+    raw = params.get('benchmark_returns')
+    if isinstance(raw, (list, tuple, np.ndarray)):
+        arr = np.asarray(raw, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        return arr[-expected_len:] if arr.size else None
+
+    bench_klines = params.get('benchmark_klines')
+    if isinstance(bench_klines, list) and bench_klines:
+        items = _ensure_dict_list(bench_klines)
+        closes = np.array([float(k.get('close', 0) or 0) for k in items], dtype=float)
+        if closes.size >= 2:
+            prev = closes[:-1]
+            curr = closes[1:]
+            mask = prev > 0
+            returns = np.zeros(curr.shape[0], dtype=float)
+            returns[mask] = (curr[mask] - prev[mask]) / prev[mask]
+            returns = returns[np.isfinite(returns)]
+            return returns[-expected_len:] if returns.size else None
+    return None
+
+
+def _attach_advanced_metrics(payload: Dict[str, Any], equity: np.ndarray, params: Optional[Dict[str, Any]] = None) -> None:
+    eq = np.asarray(equity, dtype=float)
+    if eq.size < 2:
+        payload.setdefault('annual_return', 0.0)
+        payload.setdefault('annual_volatility', 0.0)
+        payload.setdefault('sortino_ratio', 0.0)
+        payload.setdefault('calmar_ratio', 0.0)
+        payload.setdefault('omega_ratio', 0.0)
+        payload.setdefault('benchmark_return', None)
+        payload.setdefault('excess_return', None)
+        payload.setdefault('information_ratio', None)
+        return
+
+    valid_prev = eq[:-1] > 0
+    daily_returns = np.array([], dtype=float)
+    if np.any(valid_prev):
+        daily_returns = (eq[1:][valid_prev] - eq[:-1][valid_prev]) / eq[:-1][valid_prev]
+        daily_returns = daily_returns[np.isfinite(daily_returns)]
+
+    annual_return = 0.0
+    final_capital = float(payload.get('final_capital') or 0.0)
+    initial_capital = float(payload.get('initial_capital') or 0.0)
+    if daily_returns.size > 0 and initial_capital > 0 and final_capital > 0:
+        annual_return = float((final_capital / initial_capital) ** (252 / daily_returns.size) - 1)
+
+    annual_volatility = float(np.std(daily_returns) * np.sqrt(252)) if daily_returns.size > 1 else 0.0
+    risk_free_rate = 0.02
+    downside = daily_returns[daily_returns < 0]
+    downside_volatility = float(np.std(downside) * np.sqrt(252)) if downside.size > 0 else 0.0
+    if downside_volatility > 0:
+        sortino_ratio = (annual_return - risk_free_rate) / downside_volatility
+    else:
+        sortino_ratio = 999.0 if annual_return > risk_free_rate else 0.0
+
+    max_drawdown = abs(float(payload.get('max_drawdown') or 0.0))
+    calmar_ratio = annual_return / max_drawdown if max_drawdown > 0 else (999.0 if annual_return > 0 else 0.0)
+
+    gains = float(np.clip(daily_returns, 0, None).sum()) if daily_returns.size > 0 else 0.0
+    losses = float(np.clip(-daily_returns, 0, None).sum()) if daily_returns.size > 0 else 0.0
+    omega_ratio = gains / losses if losses > 0 else (999.0 if gains > 0 else 0.0)
+
+    payload['annual_return'] = round(float(annual_return), 6)
+    payload['annual_volatility'] = round(float(annual_volatility), 6)
+    payload['sortino_ratio'] = round(float(sortino_ratio), 6)
+    payload['calmar_ratio'] = round(float(calmar_ratio), 6)
+    payload['omega_ratio'] = round(float(omega_ratio), 6)
+
+    benchmark_returns = _extract_benchmark_returns(params, daily_returns.size)
+    if benchmark_returns is not None and benchmark_returns.size > 0 and daily_returns.size > 0:
+        aligned = min(int(benchmark_returns.size), int(daily_returns.size))
+        strat_slice = daily_returns[-aligned:]
+        bench_slice = benchmark_returns[-aligned:]
+        benchmark_return = float(np.prod(1 + bench_slice) - 1)
+        strategy_return = float(np.prod(1 + strat_slice) - 1)
+        excess_returns = strat_slice - bench_slice
+        tracking_error = float(np.std(excess_returns) * np.sqrt(252)) if aligned > 1 else 0.0
+        information_ratio = ((float(np.mean(excess_returns)) * 252) / tracking_error) if tracking_error > 0 else 0.0
+        payload['benchmark_return'] = round(benchmark_return, 6)
+        payload['excess_return'] = round(strategy_return - benchmark_return, 6)
+        payload['information_ratio'] = round(float(information_ratio), 6)
+    else:
+        payload['benchmark_return'] = None
+        payload['excess_return'] = None
+        payload['information_ratio'] = None
+
+
+def _finalize_backtest_payload(payload: Dict[str, Any], equity: np.ndarray, params: Optional[Dict[str, Any]] = None) -> None:
+    _attach_equity_curve(payload, equity)
+    _attach_advanced_metrics(payload, equity, params=params)
+
+
 def _get_limit_ratio(code: str) -> float:
     """根据股票代码判断涨跌停幅度。"""
     c = str(code).strip()
@@ -319,7 +414,10 @@ def _simulate_trades_from_masks(
             if len(rets) > 1:
                 std = float(np.std(rets))
                 if std > 0:
-                    sharpe = float((np.mean(rets) * 252.0) / (std * np.sqrt(252.0)))
+                    annual_ret = float(np.mean(rets)) * 252.0
+                    annual_std = std * np.sqrt(252.0)
+                    risk_free_rate = 0.02  # 年化无风险利率
+                    sharpe = float((annual_ret - risk_free_rate) / annual_std)
 
     win_rate = wins / max(1, trades // 2) if trades > 0 else 0.0  # round-trip = trades//2
     return {
@@ -425,7 +523,7 @@ class BacktestEngine:
                     payload['tradability_filter'] = True
                     payload['tradable_days'] = int(np.sum(tradability_mask))
                     payload['total_days'] = int(len(tradability_mask))
-                _attach_equity_curve(payload, sim['equity'])
+                _finalize_backtest_payload(payload, sim['equity'], params=params)
                 return {'success': True, 'data': payload}
 
             if return_trades:
@@ -459,7 +557,7 @@ class BacktestEngine:
                     'params': params,
                     'trades': trades_detail
                 }
-                _attach_equity_curve(data, equity)
+                _finalize_backtest_payload(data, equity, params=params)
                 return {'success': True, 'data': data}
 
             result = _backtest_ma_cross_jit(
@@ -478,7 +576,7 @@ class BacktestEngine:
                 'win_rate': float(win_rate),
                 'params': params,
             }
-            _attach_equity_curve(data, equity)
+            _finalize_backtest_payload(data, equity, params=params)
             return {'success': True, 'data': data}
 
         elif strategy == 'buy_and_hold':
@@ -535,6 +633,7 @@ class BacktestEngine:
                 data['exit_index'] = exit_idx
             if slippage_calc is not None:
                 data['slippage_model'] = str(slippage_model_raw).strip().lower()
+            _finalize_backtest_payload(data, equity, params=params)
             return {
                 'success': True,
                 'data': data
@@ -579,7 +678,7 @@ class BacktestEngine:
                     payload['tradability_filter'] = True
                     payload['tradable_days'] = int(np.sum(tradability_mask))
                     payload['total_days'] = int(len(tradability_mask))
-                _attach_equity_curve(payload, sim['equity'])
+                _finalize_backtest_payload(payload, sim['equity'], params=params)
                 return {'success': True, 'data': payload}
 
             result = _backtest_momentum_jit(
@@ -598,7 +697,7 @@ class BacktestEngine:
                 'win_rate': float(win_rate),
                 'params': params,
             }
-            _attach_equity_curve(data, equity)
+            _finalize_backtest_payload(data, equity, params=params)
             return {'success': True, 'data': data}
 
         elif strategy == 'rsi':
@@ -641,7 +740,7 @@ class BacktestEngine:
                     payload['tradability_filter'] = True
                     payload['tradable_days'] = int(np.sum(tradability_mask))
                     payload['total_days'] = int(len(tradability_mask))
-                _attach_equity_curve(payload, sim['equity'])
+                _finalize_backtest_payload(payload, sim['equity'], params=params)
                 return {'success': True, 'data': payload}
 
             result = _backtest_rsi_jit(
@@ -660,7 +759,7 @@ class BacktestEngine:
                 'win_rate': float(win_rate),
                 'params': params,
             }
-            _attach_equity_curve(data, equity)
+            _finalize_backtest_payload(data, equity, params=params)
             return {'success': True, 'data': data}
 
         # Generic registry fallback for custom/factory strategies
@@ -695,7 +794,7 @@ class BacktestEngine:
                 }
                 if return_trades:
                     _payload['trades'] = _sim.get('trades') or []
-                _attach_equity_curve(_payload, _sim['equity'])
+                _finalize_backtest_payload(_payload, _sim['equity'], params=params)
                 return {'success': True, 'data': _payload}
 
         return {'success': False, 'error': f'Unknown strategy: {strategy}'}
@@ -761,9 +860,14 @@ class BacktestEngine:
         klines: List[Union[Dict[str, Any], Any]],
         strategy: str = 'ma_cross',
         params: Optional[Dict[str, Any]] = None,
-        runs: int = 1000
+        runs: int = 1000,
+        bootstrap_method: str = 'normal',
     ) -> Dict[str, Any]:
-        """蒙特卡洛模拟"""
+        """蒙特卡洛模拟
+
+        Args:
+            bootstrap_method: 'normal' (正态分布) 或 'block' (Block Bootstrap，保留序列自相关)
+        """
         if not klines:
             return {'success': False, 'error': 'No kline data'}
 
@@ -775,11 +879,24 @@ class BacktestEngine:
         mean_return = np.mean(returns)
         std_return = np.std(returns)
 
+        # Block Bootstrap 参数
+        block_size = max(5, int(params.get('block_size', 20)))
+
         final_capitals = []
         max_drawdowns = []
 
         for _ in range(runs):
-            simulated_returns = np.random.normal(mean_return, std_return, len(returns))
+            if bootstrap_method == 'block' and len(returns) >= block_size:
+                # Block Bootstrap: 随机抽取连续块拼接，保留序列自相关
+                n_blocks = max(1, len(returns) // block_size + 1)
+                sim_parts = []
+                for _ in range(n_blocks):
+                    start = np.random.randint(0, max(1, len(returns) - block_size + 1))
+                    sim_parts.append(returns[start:start + block_size])
+                simulated_returns = np.concatenate(sim_parts)[:len(returns)]
+            else:
+                simulated_returns = np.random.normal(mean_return, std_return, len(returns))
+
             simulated_closes = closes[0] * np.cumprod(1 + simulated_returns)
             simulated_closes = np.insert(simulated_closes, 0, closes[0])
 
@@ -803,6 +920,7 @@ class BacktestEngine:
             'success': True,
             'data': {
                 'runs': runs,
+                'bootstrap_method': bootstrap_method,
                 'best_case': float(np.max(final_capitals)),
                 'worst_case': float(np.min(final_capitals)),
                 'average': float(np.mean(final_capitals)),

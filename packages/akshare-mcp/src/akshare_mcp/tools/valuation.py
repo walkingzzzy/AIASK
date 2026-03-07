@@ -106,7 +106,12 @@ def _present_value_from_projection(
 
     last_fcf = projection[-1]["fcf"]
     terminal_fcf = last_fcf * (1 + terminal_growth_rate)
-    terminal_value = terminal_fcf / (discount_rate - terminal_growth_rate)
+    denom = discount_rate - terminal_growth_rate
+    if abs(denom) < 1e-9:
+        # Guard: when discount_rate ≈ terminal_growth_rate, cap terminal value
+        terminal_value = terminal_fcf * 100  # conservative cap: 100x terminal FCF
+    else:
+        terminal_value = terminal_fcf / denom
     pv_terminal = terminal_value / ((1 + discount_rate) ** projection[-1]["year"])
 
     return {
@@ -592,9 +597,9 @@ def register(mcp):
             # 从stocks表获取估值指标
             async with db.acquire() as conn:
                 row = await conn.fetchrow(
-                    """SELECT stock_code, stock_name, pe_ratio, pb_ratio, market_cap
+                    """SELECT code, stock_name, pe_ratio, pb_ratio, market_cap
                        FROM stocks
-                       WHERE stock_code = $1""",
+                       WHERE code = $1""",
                     code
                 )
                 if row:
@@ -705,7 +710,7 @@ def register(mcp):
                 try:
                     source_chain.append('finance.get_financials')
                     from .finance import get_financials as _api_get_financials
-                    fin_res = _api_get_financials(code)
+                    fin_res = await _api_get_financials(code)
                     if fin_res and fin_res.get('success') and fin_res.get('data'):
                         api_data = fin_res['data']
                         financials = api_data if isinstance(api_data, list) else [api_data]
@@ -947,9 +952,10 @@ def register(mcp):
             if not dividend:
                 # 尝试从财务数据估算股息
                 async with db.acquire() as conn:
+                    f_code_col = await db._financials_code_column(conn)
                     row = await conn.fetchrow(
-                        """SELECT eps FROM financials
-                           WHERE stock_code = $1
+                        f"""SELECT eps FROM financials
+                           WHERE {f_code_col} = $1
                            ORDER BY report_date DESC
                            LIMIT 1""",
                         code
@@ -1015,7 +1021,7 @@ def register(mcp):
             if not target_financial:
                 try:
                     from .finance import get_financials as _api_get_financials
-                    fin_res = _api_get_financials(code)
+                    fin_res = await _api_get_financials(code)
                     if fin_res and fin_res.get('success') and fin_res.get('data'):
                         target_financial = [fin_res['data']]
                 except Exception:
@@ -1087,18 +1093,47 @@ def register(mcp):
                 return fail(f'No valid valuation metrics for {code}')
 
             # 查找可比公司（优先同行业，扩大样本后再做层层过滤）
+            peer_source = 'explicit'
+            peer_fallback_reasons: list[str] = []
             if not peers:
                 async with db.acquire() as conn:
-                    rows = await conn.fetch(
-                        """SELECT stock_code FROM stocks
-                           WHERE industry = $1 AND stock_code != $2
-                           LIMIT 200""",
-                        target_industry, code
-                    )
-                    peers = [row['stock_code'] for row in rows]
+                    rows = []
+                    if target_industry:
+                        rows = await conn.fetch(
+                            """SELECT code FROM stocks
+                               WHERE industry = $1 AND code != $2
+                               LIMIT 200""",
+                            target_industry, code
+                        )
+                        peers = [row['code'] for row in rows]
+                        peer_source = 'industry'
+                        if not peers:
+                            peer_fallback_reasons.append('industry_peer_empty')
+                    else:
+                        peer_fallback_reasons.append('industry_missing')
+
+                    if not peers:
+                        if target_market_cap > 0:
+                            rows = await conn.fetch(
+                                """SELECT code FROM stocks
+                                   WHERE code != $1
+                                   ORDER BY ABS(COALESCE(market_cap, 0) - $2) ASC
+                                   LIMIT 200""",
+                                code, target_market_cap
+                            )
+                        else:
+                            rows = await conn.fetch(
+                                """SELECT code FROM stocks
+                                   WHERE code != $1
+                                   ORDER BY market_cap DESC NULLS LAST
+                                   LIMIT 200""",
+                                code
+                            )
+                        peers = [row['code'] for row in rows]
+                        peer_source = 'market_cap_fallback'
 
             if not peers:
-                return fail(f'No peer companies found for industry: {target_industry}')
+                return fail(f'No peer companies found for {code}')
 
             # 获取候选可比公司估值与质量数据
             peer_candidates = []
@@ -1125,7 +1160,7 @@ def register(mcp):
                     if not peer_financial:
                         try:
                             from .finance import get_financials as _api_get_financials
-                            fin_res = _api_get_financials(peer_code)
+                            fin_res = await _api_get_financials(peer_code)
                             if fin_res and fin_res.get('success') and fin_res.get('data'):
                                 peer_financial = [fin_res['data']]
                         except Exception:
@@ -1145,6 +1180,8 @@ def register(mcp):
 
             peer_pool_build = {
                 'candidate_count': len(peer_candidates),
+                'peer_source': peer_source,
+                'fallback_reasons': peer_fallback_reasons,
                 'size_filter_relaxed': False,
                 'quality_filter_relaxed': False,
                 'growth_filter_relaxed': False,
@@ -1410,15 +1447,19 @@ def register(mcp):
             source_chain: list[str] = ['db.stock_quotes']
             fallback_reason: list[str] = []
 
-            async with db.acquire() as conn:
-                rows = await conn.fetch(
-                    """SELECT time, pe, pb, mkt_cap, price
-                       FROM stock_quotes
-                       WHERE code = $1
-                       AND time >= NOW() - INTERVAL '1 day' * $2
-                       ORDER BY time DESC""",
-                    code, days
-                )
+            try:
+                async with db.acquire() as conn:
+                    rows = await conn.fetch(
+                        """SELECT time, pe, pb, mkt_cap, price
+                           FROM stock_quotes
+                           WHERE code = $1
+                           AND time >= NOW() - INTERVAL '1 day' * $2
+                           ORDER BY time DESC""",
+                        code, days
+                    )
+            except Exception as e:
+                rows = []
+                fallback_reason.append(f'stock_quotes查询失败: {e}')
 
             def _to_float(value):
                 try:
@@ -1582,7 +1623,7 @@ def register(mcp):
                 'data_quality': data_quality,
             }
             if not rows:
-                payload['message'] = 'stock_quotes 无历史数据，已返回降级结果'
+                payload['message'] = 'stock_quotes 无历史数据或查询失败，已返回降级结果'
                 payload['source'] = 'fallback'
 
             return ok(payload)

@@ -274,25 +274,62 @@ def get_analyst_ranking(year: str = "") -> dict:
 
 
 @cached(ttl=3600.0)
-def get_research_reports(symbol: str = "", limit: int = 10) -> dict:
+def get_research_reports(symbol: str = "", stock_code: str = "", limit: int = 10) -> dict:
     """
     获取个股研报
 
-    数据源优先级: Tushare report_rc → 东财 datacenter → AkShare (降级)
+    数据源优先级: AkShare 东财研报 → Tushare report_rc → 东财 datacenter
     时效性: 缓存1小时
+
+    Args:
+        symbol: 股票代码（6位）
+        stock_code: 股票代码别名（与 symbol 等价）
+        limit: 返回条数
     """
     limiter = get_limiter("news", rate=3.0)
     limiter.acquire()
 
     try:
-        code = normalize_code(symbol) if symbol else ""
+        raw = symbol or stock_code
+        code = normalize_code(raw) if raw else ""
         limit = int(limit)
 
-        # 1. Tushare report_rc
+        # 1. AkShare 东财研报（支持 per-stock 过滤，字段完整）
+        if ak is not None and code:
+            try:
+                df = ak.stock_research_report_em(symbol=code)
+                if df is not None and not df.empty:
+                    records = []
+                    for _, row in df.head(limit * 2).iterrows():
+                        rec_code = str(row.get("股票代码", "") or "").strip()
+                        if rec_code and normalize_code(rec_code) != code:
+                            continue
+                        records.append({
+                            "title": str(row.get("报告名称", "") or "").strip(),
+                            "institution": str(row.get("机构", "") or "").strip(),
+                            "author": "",
+                            "rating": str(row.get("东财评级", "") or "").strip(),
+                            "targetPrice": None,
+                            "date": format_period(row.get("日期")),
+                        })
+                    records = _dedup_reports(records)[:limit]
+                    if records:
+                        return ok({"stockCode": code, "reports": records, "total": len(records)})
+            except Exception:
+                pass
+
+        # 2. Tushare report_rc（需要日期范围才能有效过滤）
         try:
             ts_pro = data_source.get_tushare_pro()
             if ts_pro:
-                kwargs = {"fields": "ts_code,report_title,org_name,author_name,report_date,rating"}
+                from datetime import date as _date, timedelta as _td
+                end_dt = _date.today().strftime("%Y%m%d")
+                start_dt = (_date.today() - _td(days=365)).strftime("%Y%m%d")
+                kwargs = {
+                    "fields": "ts_code,report_title,org_name,author_name,report_date,rating",
+                    "start_date": start_dt,
+                    "end_date": end_dt,
+                }
                 if code:
                     ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
                     kwargs["ts_code"] = ts_code
@@ -309,28 +346,17 @@ def get_research_reports(symbol: str = "", limit: int = 10) -> dict:
                         })
                     records = _dedup_reports(records)[:limit]
                     if records:
-                        return ok(records)
+                        return ok({"stockCode": code, "reports": records, "total": len(records)})
         except Exception:
             pass
 
-        # 2. 东财 datacenter
+        # 3. 东财 datacenter（RPT_RATINGCHANGE_DET）
         if code:
             items = _fetch_eastmoney_research(code, limit * 2)
             if items:
-                return ok(_dedup_reports(items)[:limit])
+                return ok({"stockCode": code, "reports": _dedup_reports(items)[:limit], "total": len(items)})
 
-        # 3. AkShare
-        if ak is not None:
-            try:
-                df = ak.stock_research_report_em(symbol=code)
-                if df is not None and not df.empty:
-                    df = df.head(limit * 2)
-                    records = df.to_dict(orient="records")
-                    return ok(_dedup_reports(records)[:limit])
-            except Exception:
-                pass
-
-        return fail("未找到研报数据")
+        return fail(f"未找到股票 {code or raw} 的研报数据")
     except Exception as e:
         return fail(e)
 

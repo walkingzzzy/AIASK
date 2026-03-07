@@ -30,8 +30,8 @@ def get_stock_notices(
     时效性: 日频
 
     Args:
-        start_date (str, required): 开始日期，格式 YYYY-MM-DD 或 YYYYMMDD
-        end_date (str, required): 结束日期，格式 YYYY-MM-DD 或 YYYYMMDD（跨度上限由环境变量 AKSHARE_NOTICE_MAX_DAYS 控制，默认31天）
+        start_date (str, required): 开始日期，格式 YYYY-MM-DD 或 YYYYMMDD（必填）
+        end_date (str, required): 结束日期，格式 YYYY-MM-DD 或 YYYYMMDD（必填，跨度上限由环境变量 AKSHARE_NOTICE_MAX_DAYS 控制，默认31天）
         types (list[str]|None, optional): 公告类型列表
         stock_code (str, optional): 股票代码过滤
 

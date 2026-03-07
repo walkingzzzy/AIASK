@@ -168,10 +168,11 @@ export default function MarketPage() {
 
   // Auto-load minute kline when switching to minute tab with a valid code
   useEffect(() => {
-    if (activeTab === 'minute' && !minutePath && resolvedCode) {
-      setMinutePath(`/market/minute-kline?code=${encodeURIComponent(resolvedCode)}&period=${minutePeriod}`);
+    const c = resolvedCode || submittedCode;
+    if (activeTab === 'minute' && !minutePath && c) {
+      setMinutePath(`/market/minute-kline?code=${encodeURIComponent(c)}&period=${minutePeriod}`);
     }
-  }, [activeTab, minutePath, resolvedCode, minutePeriod]);
+  }, [activeTab, minutePath, resolvedCode, submittedCode, minutePeriod]);
 
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -191,9 +192,10 @@ export default function MarketPage() {
 
   const candles = useMemo(() => kline?.kline ?? [], [kline]);
   const obView = useMemo(() => ob?.orderBook ?? { bids: [], asks: [], timestamp: null }, [ob]);
-  const candleData = useMemo(() => candles.map((x) => ({
-    date: x.date.slice(0, 10), open: x.open, close: x.close, low: x.low, high: x.high, volume: x.volume,
-  })), [candles]);
+  // Sort ascending by date so newest candle appears on the right (standard chart convention)
+  const candleData = useMemo(() => candles
+    .map((x) => ({ date: x.date.slice(0, 10), open: x.open, close: x.close, low: x.low, high: x.high, volume: x.volume }))
+    .sort((a, b) => a.date.localeCompare(b.date)), [candles]);
 
   const limitUpRows = useMemo(() => extractArray(limitUpQ.data) as Record<string, unknown>[], [limitUpQ.data]);
   const limitUpStatsObj = useMemo(() => extractObject(limitUpStatsQ.data) as Record<string, unknown> | null, [limitUpStatsQ.data]);
@@ -254,6 +256,11 @@ export default function MarketPage() {
         <span>行情：{cacheText(quoteCache)} ｜ K线：{cacheText(klineCache)} ｜ 盘口：{cacheText(obCache)}</span>
       </details>
 
+      {/* ── Tab bar moved immediately after cache info for quick access ── */}
+      <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
+      {tabError ? <p className="text-error text-sm mt-1">{tabError}</p> : null}
+
+      {/* ── 基础行情 cards always shown below the tab bar ── */}
       <SectionCard className="mt-4 p-3">
         <h3 className="mt-0">K线图（{period === 'daily' ? '日线' : period === 'weekly' ? '周线' : '月线'}）</h3>
         {candleData.length ? <CandlestickChart data={candleData} height={360} /> : <p>暂无K线数据</p>}
@@ -300,8 +307,6 @@ export default function MarketPage() {
         })() : <p>暂无行情数据</p>}
       </SectionCard>
 
-      <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
-      {tabError ? <p className="text-error text-sm mt-1">{tabError}</p> : null}
       {activeTab === 'limitup' ? (
         <SectionCard tabAttached>
           <button type="button" disabled={tabPending} onClick={() => {
@@ -330,7 +335,7 @@ export default function MarketPage() {
         <SectionCard tabAttached>
           <button type="button" disabled={tabPending} onClick={() => {
             if (blocksPath) blocksQ.refetch(); else setBlocksPath('/market/blocks?blockType=industry');
-          }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '加载板块数据'}</button>
+          }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '加载行业板块'}</button>
           {blocksRows.length ? <DataTable rows={blocksRows} columns={[
             { key: 'code', label: '板块代码' },
             { key: 'name', label: '板块名称' },
@@ -344,7 +349,8 @@ export default function MarketPage() {
               const p = `/market/block-stocks?blockCode=${encodeURIComponent(c)}`;
               if (p === blockStocksPath) blockStocksQ.refetch(); else setBlockStocksPath(p);
             }
-          }} /> : null}
+          }} />
+            : (!tabPending && !blocksQ.error ? <p className="text-text-muted text-sm mt-3 text-center">点击"加载行业板块"查看板块行情，可点击行搜索成分股</p> : null)}
           <div className="flex gap-2 items-center mt-2">
             <input value={blockCode} onChange={(e) => setBlockCode(e.target.value)} placeholder="板块代码" aria-label="板块代码" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
             <button type="button" disabled={tabPending} onClick={() => {
@@ -370,7 +376,8 @@ export default function MarketPage() {
               if (p === tradePath) tradeQ.refetch(); else setTradePath(p);
             }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '查询逐笔明细'}</button>
           </div>
-          {tradeRows.length ? <DataTable rows={tradeRows} columns={tradeColumns} maxHeight={400} onExport={() => exportCSV(tradeRows, 'trade-details')} /> : null}
+          {tradeRows.length ? <DataTable rows={tradeRows} columns={tradeColumns} maxHeight={400} onExport={() => exportCSV(tradeRows, 'trade-details')} />
+            : (!tabPending && !tradeQ.error ? <p className="text-text-muted text-sm mt-3 text-center">输入股票代码，点击"查询逐笔明细"查看实时成交记录</p> : null)}
         </SectionCard>
       ) : null}
 
@@ -394,7 +401,7 @@ export default function MarketPage() {
               <KpiCard title="开盘" value={fmtNum(indexObj.open ?? null)} />
               <KpiCard title="昨收" value={fmtNum(indexObj.prevClose ?? indexObj.prev_close ?? null)} />
             </KpiGrid>
-          ) : null}
+          ) : (!tabPending && !indexQuoteQ.error ? <p className="text-text-muted text-sm mt-3 text-center">输入指数代码，点击"查询指数行情"</p> : null)}
         </SectionCard>
       ) : null}
 
@@ -411,7 +418,8 @@ export default function MarketPage() {
               if (p === minutePath) minuteKlineQ.refetch(); else setMinutePath(p);
             }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '查询分时'}</button>
           </div>
-          {minuteCandleData.length ? <CandlestickChart data={minuteCandleData} height={360} /> : null}
+          {minuteCandleData.length ? <CandlestickChart data={minuteCandleData} height={360} />
+            : (!tabPending && !minuteKlineQ.error ? <p className="text-text-muted text-sm mt-3 text-center">选择周期并点击"查询分时"加载分钟级 K 线</p> : null)}
         </SectionCard>
       ) : null}
 
@@ -460,3 +468,4 @@ export default function MarketPage() {
     </PageContainer>
   );
 }
+

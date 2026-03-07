@@ -1,8 +1,12 @@
 """事件管理器 - 财报、分红、重组"""
 
+from datetime import date, timedelta
+
+import json
+
 from ...storage import get_db
 from ...utils import ok, fail
-import json
+from ..news import get_research_reports, get_stock_news, get_stock_notices, get_stock_research
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
@@ -18,6 +22,84 @@ def _normalize_kwargs(kwargs: dict) -> dict:
     if "code" not in kwargs or kwargs.get("code") is None:
         kwargs["code"] = kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
     return kwargs
+
+
+def _pick_first(payload: dict, keys: list[str], default=None):
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _normalize_content_event(code: str, row: dict, event_type: str, default_source: str) -> dict | None:
+    if not isinstance(row, dict):
+        return None
+    title = _pick_first(row, ['title', '报告名称', '公告标题', '标题', 'name'])
+    event_date = _pick_first(row, ['event_date', 'date', 'time', '公告日期', '发布日期', '日期'])
+    source = _pick_first(row, ['source', 'institution', '机构', '媒体名称', '来源'], default_source)
+    url = _pick_first(row, ['url', '链接', '网址'], '')
+    if not title and not url:
+        return None
+    return {
+        'code': code,
+        'event_type': event_type,
+        'title': str(title or ''),
+        'event_date': str(event_date or ''),
+        'source': str(source or default_source),
+        'url': str(url or ''),
+    }
+
+
+def _aggregate_events_from_content(code: str, limit: int = 20) -> tuple[list[dict], list[str]]:
+    end_date = date.today()
+    start_date = end_date - timedelta(days=30)
+    events: list[dict] = []
+    source_chain: list[str] = []
+
+    def _append_items(items: list[dict], event_type: str, default_source: str, chain_name: str):
+        added = 0
+        for item in items:
+            normalized = _normalize_content_event(code, item, event_type, default_source)
+            if normalized:
+                events.append(normalized)
+                added += 1
+        if added > 0:
+            source_chain.append(chain_name)
+
+    news_res = get_stock_news(code, limit=min(limit, 10))
+    if news_res.get('success') and isinstance(news_res.get('data'), list):
+        _append_items(news_res.get('data', []), 'news', 'stock_news', 'news.get_stock_news')
+
+    notice_res = get_stock_notices(
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+        types=['全部'],
+        stock_code=code,
+    )
+    notice_events = (notice_res.get('data') or {}).get('events', []) if notice_res.get('success') else []
+    _append_items(notice_events, 'notice', 'stock_notice', 'news.get_stock_notices')
+
+    research_res = get_stock_research(code, limit=min(limit, 10))
+    reports = (research_res.get('data') or {}).get('reports', []) if research_res.get('success') else []
+    if reports:
+        _append_items(reports, 'research', 'stock_research', 'news.get_stock_research')
+    else:
+        fallback_reports = get_research_reports(symbol=code, limit=min(limit, 10))
+        fallback_items = fallback_reports.get('data') if fallback_reports.get('success') else []
+        if isinstance(fallback_items, list):
+            _append_items(fallback_items, 'research', 'research_reports', 'news.get_research_reports')
+
+    deduped: list[dict] = []
+    seen_keys: set[tuple[str, str, str]] = set()
+    for item in events:
+        dedup_key = (item.get('event_type', ''), item.get('title', ''), item.get('event_date', ''))
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
+        deduped.append(item)
+    deduped.sort(key=lambda item: item.get('event_date', ''), reverse=True)
+    return deduped[:limit], source_chain
 
 
 def register_event_manager(mcp):
@@ -83,16 +165,34 @@ def register_event_manager(mcp):
                 code = kwargs.get('code')
                 if not code:
                     return fail('需要提供股票代码')
+                limit = int(kwargs.get('limit') or 20)
                 
                 db = get_db()
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
-                        "SELECT * FROM events WHERE code = $1 ORDER BY event_date DESC LIMIT 20",
-                        code
+                        "SELECT * FROM events WHERE code = $1 ORDER BY event_date DESC LIMIT $2",
+                        code, limit
                     )
                     events = [dict(row) for row in rows]
+
+                source = 'db.events'
+                source_chain = ['db.events']
+                fallback_used = False
+                if not events:
+                    events, aggregated_chain = _aggregate_events_from_content(code, limit=limit)
+                    if events:
+                        fallback_used = True
+                        source = 'aggregated_content'
+                        source_chain.extend(aggregated_chain)
                 
-                return ok({'code': code, 'events': events, 'count': len(events)})
+                return ok({
+                    'code': code,
+                    'events': events,
+                    'count': len(events),
+                    'source': source,
+                    'source_chain': source_chain,
+                    'fallback_used': fallback_used,
+                })
             
             else:
                 return fail(f'Unknown action: {action}. Supported: {", ".join(SUPPORTED_ACTIONS.keys())}')

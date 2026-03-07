@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 
 @theme {
+  /* ── Colors ── */
   --color-primary: #1a73e8;
   --color-primary-light: #e8f0fe;
   --color-error: #b00020;
@@ -25,8 +26,43 @@
   --color-glass-border: rgba(255, 255, 255, 0.35);
   --color-glass-shadow: rgba(0, 0, 0, 0.06);
   --color-glass-hover: rgba(255, 255, 255, 0.72);
+
+  /* ── T-021: Stock Semantic Colors ── */
+  --color-stock-up: #ef4444;
+  --color-stock-down: #10b981;
+  --color-stock-flat: #9ca3af;
+  --color-stock-limit-up: #c0392b;
+  --color-stock-limit-down: #1e8449;
+
+  /* ── T-021: Typography ── */
   --font-sans: system-ui, -apple-system, sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  --text-caption: 0.6875rem;
+  --text-body: 0.875rem;
+  --text-subtitle: 1rem;
+  --text-title: 1.25rem;
+  --text-headline: 1.5rem;
+
+  /* ── T-021: Spacing (4px baseline) ── */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+
+  /* ── T-021: Radius ── */
+  --radius-sm: 6px;
+  --radius-md: 8px;
   --radius-card: 12px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+
+  /* ── T-021: Shadows ── */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.16);
 }
 
 * {
@@ -79,6 +115,7 @@ body {
 }
 
 @media (prefers-color-scheme: dark) {
+
   html:not(.light) body,
   html:not(.light) {
     --color-primary: #5b9cf6;
@@ -131,6 +168,7 @@ body {
 .glass-hover {
   transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
+
 .glass-hover:hover {
   background: var(--color-glass-hover);
   box-shadow: 0 8px 24px var(--color-glass-shadow), 0 2px 8px var(--color-glass-shadow);
@@ -211,15 +249,115 @@ button:disabled {
 
 /* ── Animations ── */
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
+
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
+
 @keyframes pulse-ring {
-  0% { transform: scale(0.8); opacity: 1; }
-  100% { transform: scale(1.4); opacity: 0; }
+  0% {
+    transform: scale(0.8);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
+}
+
+.animate-fade-up {
+  animation: fade-up 0.3s ease-out;
+}
+
+/* ── T-024: Safe area for mobile nav ── */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* ── T-026: Page transition ── */
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-page-enter {
+  animation: page-enter 0.25s ease-out;
+}
+
+/* ── T-026: Number counter ── */
+@keyframes count-pulse {
+  0% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.05);
+    color: var(--color-primary);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-count {
+  animation: count-pulse 0.4s ease-out;
+}
+
+/* ── T-024: Mobile responsive ── */
+@media (max-width: 768px) {
+  body {
+    padding-bottom: 56px;
+    /* space for mobile nav */
+  }
 }
 
 /* ── Scrollbar styling ── */
@@ -227,13 +365,16 @@ button:disabled {
   width: 6px;
   height: 6px;
 }
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
   background: var(--color-glass-border);
   border-radius: 3px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-muted);
 }

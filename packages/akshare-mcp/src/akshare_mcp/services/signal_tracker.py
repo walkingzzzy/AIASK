@@ -14,6 +14,7 @@ Usage:
 import asyncio
 import logging
 from datetime import date, datetime, time, timedelta
+from uuid import uuid4
 from typing import List, Optional
 
 import numpy as np
@@ -77,11 +78,20 @@ class SignalTracker:
         start = datetime.now()
         db = get_db()
         today = date.today()
-        results = {"signals_generated": 0, "forward_returns_computed": 0, "transitions": 0, "errors": []}
+        task_run = await db.save_strategy_task_run({
+            'task_name': 'strategy_runtime_cycle',
+            'task_scope': 'signal_tracker',
+            'task_key': str(today),
+            'status': 'running',
+            'trace_id': uuid4().hex[:12],
+            'payload': {'signal_date': str(today)},
+        }) if hasattr(db, 'save_strategy_task_run') else {'id': None, 'trace_id': None}
+        results = {"signals_generated": 0, "forward_returns_computed": 0, "incubation_orders": 0, "incubation_metrics": 0, "risk_events": 0, "risk_actions": 0, "transitions": 0, "vector_registry_updates": 0, "task_run_id": task_run.get('id'), "errors": []}
+
+        strategies = []
 
         # Phase A: Generate signals for listed/incubating strategies
         try:
-            strategies = []
             for status in ("listed", "incubating"):
                 rows = await db.list_strategies(status, limit=200)
                 strategies.extend(rows)
@@ -154,21 +164,60 @@ class SignalTracker:
         except Exception as e:
             results["errors"].append(f"Phase B: {e}")
 
-        # Phase C: Lifecycle scan
+        # Phase C: Sync incubation orders and metrics
+        try:
+            from .incubation import get_strategy_incubation_service
+            incubation_result = await get_strategy_incubation_service().process_strategies(db, strategies, signal_date=today)
+            results["incubation_orders"] = int(incubation_result.get("orders_created") or 0)
+            results["incubation_metrics"] = int(incubation_result.get("metrics_recorded") or 0)
+        except Exception as e:
+            results["errors"].append(f"Phase C: {e}")
+
+        # Phase D: Runtime risk scan
+        try:
+            from .runtime_risk import get_strategy_runtime_risk_service
+            risk_result = await get_strategy_runtime_risk_service().scan(db, strategies, enforce_actions=True)
+            results["risk_events"] = int(risk_result.get("event_count") or 0)
+            results["risk_actions"] = int(risk_result.get("action_count") or 0)
+        except Exception as e:
+            results["errors"].append(f"Phase D: {e}")
+
+        # Phase E: Lifecycle scan
         try:
             from ..tools.managers.strategy_manager import _lifecycle_scan
             scan_result = await _lifecycle_scan(db)
             results["transitions"] = len(scan_result.get("transitions", []))
         except Exception as e:
-            results["errors"].append(f"Phase C: {e}")
+            results["errors"].append(f"Phase E: {e}")
+
+        # Phase F: 向量索引注册表校准
+        try:
+            from .vector_governance import get_strategy_vector_governance_service
+            vector_result = await get_strategy_vector_governance_service().reconcile_registry(db, index_name='strategy_behavior', profile_type='behavior')
+            results["vector_registry_updates"] = int(vector_result.get("registry_updated") or 0)
+        except Exception as e:
+            results["errors"].append(f"Phase F: {e}")
 
         elapsed = (datetime.now() - start).total_seconds()
         self.last_run = datetime.now()
         self.last_result = {**results, "elapsed_seconds": round(elapsed, 1)}
+        if task_run.get('id') is not None and hasattr(db, 'update_strategy_task_run'):
+            await db.update_strategy_task_run(task_run['id'], status='completed', result=self.last_result, completed_at=datetime.now().isoformat())
+        if hasattr(db, 'save_strategy_domain_event'):
+            await db.save_strategy_domain_event({
+                'strategy_id': None,
+                'aggregate_type': 'runtime_cycle',
+                'aggregate_id': str(task_run.get('id') or today),
+                'event_type': 'runtime_cycle.completed',
+                'source': 'signal_tracker',
+                'severity': 'info',
+                'correlation_id': task_run.get('trace_id'),
+                'payload': self.last_result,
+            })
         logger.info(
-            "SignalTracker: completed in %.1fs — %d signals, %d fwd returns, %d transitions, %d errors",
+            "SignalTracker: completed in %.1fs — %d signals, %d fwd returns, %d incubation orders, %d risk events, %d risk actions, %d transitions, %d errors",
             elapsed, results["signals_generated"], results["forward_returns_computed"],
-            results["transitions"], len(results["errors"]),
+            results["incubation_orders"], results["risk_events"], results["risk_actions"], results["transitions"], len(results["errors"]),
         )
         return self.last_result
 

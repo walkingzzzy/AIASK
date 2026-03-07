@@ -1,4 +1,4 @@
-import { Body, Controller, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
 import { IsArray, IsNumber, IsOptional, IsString, Matches } from 'class-validator';
 import { ValuationService } from './valuation.service';
 
@@ -29,6 +29,10 @@ class ScenarioDcfDto {
   @IsOptional() @IsNumber() years?: number;
 }
 
+class OverviewQueryDto {
+  @IsString() @Matches(/^\d{6}$/, { message: 'code must be a 6-digit stock code' }) code!: string;
+}
+
 @Controller('valuation')
 export class ValuationController {
   constructor(private readonly valuationService: ValuationService) {}
@@ -57,6 +61,16 @@ export class ValuationController {
   @Post('scenario-dcf')
   async scenarioDcf(@Body() body: ScenarioDcfDto, @Req() req: { traceId?: string; headers?: Record<string, string | undefined> }) {
     const data = await this.valuationService.scenarioDcf(body);
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    return { success: true, data, traceId: String(traceId) };
+  }
+
+  @Get('overview')
+  async overview(
+    @Query() query: OverviewQueryDto,
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+  ) {
+    const data = await this.valuationService.overview(query.code);
     const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }

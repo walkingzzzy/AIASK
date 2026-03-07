@@ -100,9 +100,16 @@ class VolumeFactorsMixin:
             ad_values.append(ad)
         if len(ad_values) < slow:
             return 0.0
-        fast_ema = np.mean(ad_values[-fast:])
-        slow_ema = np.mean(ad_values[-slow:])
-        return float(fast_ema - slow_ema)
+        ad_arr = np.array(ad_values, dtype=np.float64)
+        # 使用真正的 EMA 而非 SMA
+        alpha_fast = 2.0 / (fast + 1)
+        alpha_slow = 2.0 / (slow + 1)
+        ema_fast = float(ad_arr[0])
+        ema_slow = float(ad_arr[0])
+        for val in ad_arr[1:]:
+            ema_fast = alpha_fast * float(val) + (1.0 - alpha_fast) * ema_fast
+            ema_slow = alpha_slow * float(val) + (1.0 - alpha_slow) * ema_slow
+        return float(ema_fast - ema_slow)
 
     @staticmethod
     def calculate_cmf(highs: List[float], lows: List[float], closes: List[float],

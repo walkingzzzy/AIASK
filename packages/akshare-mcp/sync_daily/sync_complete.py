@@ -183,9 +183,9 @@ class CompleteDataSync:
                             list_date = None
 
                         await conn.execute("""
-                            INSERT INTO stocks (stock_code, stock_name, market, industry, list_date, updated_at)
+                            INSERT INTO stocks (code, stock_name, market, industry, list_date, updated_at)
                             VALUES ($1, $2, $3, $4, $5, NOW())
-                            ON CONFLICT (stock_code) DO UPDATE SET
+                            ON CONFLICT (code) DO UPDATE SET
                                 stock_name = EXCLUDED.stock_name,
                                 market = EXCLUDED.market,
                                 industry = EXCLUDED.industry,
@@ -216,11 +216,11 @@ class CompleteDataSync:
         async with self.db.acquire() as conn:
             # 获取每只股票最新的K线日期
             rows = await conn.fetch("""
-                SELECT s.stock_code, MAX(k.time) as last_date
+                SELECT s.code, MAX(k.time) as last_date
                 FROM stocks s
-                LEFT JOIN kline_1d k ON s.stock_code = k.code
-                GROUP BY s.stock_code
-                ORDER BY s.stock_code
+                LEFT JOIN kline_1d k ON s.code = k.code
+                GROUP BY s.code
+                ORDER BY s.code
             """)
         
         if not rows:
@@ -234,7 +234,7 @@ class CompleteDataSync:
         errors = 0
 
         for i, row in enumerate(rows):
-            code = row['stock_code']
+            code = row['code']
             last_date = row['last_date']
 
             # 如果有数据，只同步最新日期之后的
@@ -317,11 +317,11 @@ class CompleteDataSync:
 
             # 获取每只股票最新的财报日期
             rows = await conn.fetch(f"""
-                SELECT s.stock_code, MAX(f.report_date) as last_report
+                SELECT s.code, MAX(f.report_date) as last_report
                 FROM stocks s
-                LEFT JOIN financials f ON s.stock_code = f.{join_col}
-                GROUP BY s.stock_code
-                ORDER BY s.stock_code
+                LEFT JOIN financials f ON s.code = f.{join_col}
+                GROUP BY s.code
+                ORDER BY s.code
             """)
 
         if not rows:
@@ -333,7 +333,7 @@ class CompleteDataSync:
         errors = 0
 
         for i, row in enumerate(rows):
-            code = row['stock_code']
+            code = row['code']
             last_report = row['last_report']
 
             # 如果有最新财报且在90天内，跳过
@@ -473,8 +473,8 @@ class CompleteDataSync:
                 return 0
         
         async with self.db.acquire() as conn:
-            rows = await conn.fetch("SELECT stock_code FROM stocks ORDER BY stock_code")
-            codes = [row['stock_code'] for row in rows]
+            rows = await conn.fetch("SELECT code FROM stocks ORDER BY code")
+            codes = [row['code'] for row in rows]
         
         if not codes:
             return 0
@@ -521,8 +521,8 @@ class CompleteDataSync:
 
                             await conn.execute("""
                                 UPDATE stocks SET pe_ratio = $1, pb_ratio = $2, market_cap = $3, updated_at = NOW()
-                                WHERE stock_code = $4
-                            """, pe, pb, cap, code)
+                                WHERE code = $4
+                                """, pe, pb, cap, code)
                             count += 1
             except Exception as e:
                 errors += 1

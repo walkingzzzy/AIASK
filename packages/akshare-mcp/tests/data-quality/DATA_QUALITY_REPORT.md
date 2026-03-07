@@ -1,23 +1,23 @@
 # 数据质量测试报告
 
-- 运行时间: 2026-02-09 09:34:18
-- 耗时: 36.2 秒
-- 结果: 11 通过, 1 失败, 0 跳过
+- 运行时间: 2026-03-03 12:07:13
+- 耗时: 14.2 秒
+- 结果: 0 通过, 12 失败, 0 跳过
 
 | 测试文件 | 描述 | 结果 |
 |---------|------|------|
-| test_01_tushare_macro.py | 宏观数据质量 | PASS |
-| test_02_tushare_finance.py | 财务数据质量 | PASS |
-| test_03_tushare_valuation.py | 历史估值质量 | PASS |
-| test_04_tushare_limit_up.py | 涨停板数据质量 | PASS |
-| test_05_tushare_block_trades.py | 大宗交易+名称映射 | PASS |
+| test_01_tushare_macro.py | 宏观数据质量 | FAIL |
+| test_02_tushare_finance.py | 财务数据质量 | FAIL |
+| test_03_tushare_valuation.py | 历史估值质量 | FAIL |
+| test_04_tushare_limit_up.py | 涨停板数据质量 | FAIL |
+| test_05_tushare_block_trades.py | 大宗交易+名称映射 | FAIL |
 | test_06_tdx_kline.py | TDX K线全面质量 | FAIL |
-| test_07_tdx_technical.py | TDX 公式系统与技术指标 | PASS |
-| test_08_cross_source.py | 跨源一致性 | PASS |
-| test_10_tdx_finance.py | TDX 财务数据与股票信息 | PASS |
-| test_11_tdx_trading.py | TDX 交易数据与市场数据 | PASS |
-| test_12_tdx_misc.py | TDX 其他接口(IPO/可转债/板块/公式) | PASS |
-| test_09_mcp_integration.py | MCP 集成测试 | PASS |
+| test_07_tdx_technical.py | TDX 公式系统与技术指标 | FAIL |
+| test_08_cross_source.py | 跨源一致性 | FAIL |
+| test_10_tdx_finance.py | TDX 财务数据与股票信息 | FAIL |
+| test_11_tdx_trading.py | TDX 交易数据与市场数据 | FAIL |
+| test_12_tdx_misc.py | TDX 其他接口(IPO/可转债/板块/公式) | FAIL |
+| test_09_mcp_integration.py | MCP 集成测试 | FAIL |
 
 ## 测试覆盖的问题
 

@@ -53,6 +53,7 @@ _tool_names = (
     "search", "semantic", "data_warmup", "alerts",
     "vector", "skills", "quant", "sentiment", "market_blocks",
     "tdx_formula", "basic_data", "data_sync", "tdx_integration", "tdx_trading_data", "tdx_file_sector", "tdx_realtime", "managers",
+    "factor_profile",
 )
 try:
     from .tools import (
@@ -61,6 +62,7 @@ try:
         search, semantic, data_warmup, alerts,
         vector, skills, quant, sentiment, market_blocks,
         tdx_formula, basic_data, data_sync, tdx_integration, tdx_trading_data, tdx_file_sector, tdx_realtime, managers,
+        factor_profile,
     )
 except UnicodeDecodeError as e:
     # 定位是哪个子模块触发的解码错误（多为路径或插件内文件编码问题）
@@ -123,6 +125,9 @@ vector.register(mcp)
 skills.register(mcp)
 quant.register(mcp)
 sentiment.register(mcp)
+
+# 注册因子画像工具 (Phase 3)
+factor_profile.register(mcp)
 
 # 注册 TDX 公式计算工具 (Phase 1)
 tdx_formula.register(mcp)
@@ -268,6 +273,20 @@ def main() -> None:
         factory = get_strategy_factory_scheduler()
         factory.start()
         logging.getLogger(__name__).info("[Server] StrategyFactory started")
+
+    # Run startup validation (DB connectivity, schema, data freshness, coverage)
+    if _as_bool(os.getenv("STARTUP_VALIDATION_ENABLED", "true")):
+        from .services.startup_validator import get_startup_validator
+        _validator = get_startup_validator()
+        asyncio.ensure_future(_validator.run_async())
+        logging.getLogger(__name__).info("[Server] StartupValidator scheduled")
+
+    # Start data sync scheduler for automatic DB sync on startup & daily after market close
+    if _as_bool(os.getenv("DATA_SYNC_SCHEDULER_ENABLED", "true")):
+        from .services.data_sync_scheduler import get_data_sync_scheduler
+        sync_scheduler = get_data_sync_scheduler()
+        sync_scheduler.start()
+        logging.getLogger(__name__).info("[Server] DataSyncScheduler started")
 
     mcp.run()
 

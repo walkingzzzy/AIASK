@@ -9,5 +9,6 @@ import { AuthModule } from '../auth/auth.module';
   imports: [McpGatewayModule, AuthModule],
   controllers: [ChatController],
   providers: [ChatService, UserContextService],
+  exports: [ChatService],
 })
-export class ChatModule {}
+export class ChatModule { }

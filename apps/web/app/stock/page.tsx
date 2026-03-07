@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge, TabBar } from '@/components/ui';
 import { CandlestickChart, BarChart, GaugeChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -13,6 +13,9 @@ import { WatchlistButton } from '@/components/watchlist-button';
 import { tradingInterval } from '@/lib/trading-hours';
 import { fmt } from '@/lib/api';
 import Link from 'next/link';
+import { AIDiagnosisPanel } from '@/components/ai-diagnosis-panel';
+import { PeerComparisonTable } from '@/components/peer-comparison';
+import { StockCapitalPanel } from '@/components/stock-capital-panel';
 
 type Period = 'daily' | 'weekly' | 'monthly';
 type QuoteData = { quote?: import('@aiask/shared-types').NormalizedQuote; meta?: { cache?: unknown; fetchedAt?: string } };
@@ -83,6 +86,10 @@ export default function StockPage() {
     submittedCode ? `/market/order-book?code=${encodeURIComponent(submittedCode)}` : null,
     { refetchInterval: tradingInterval(10_000), parse: (raw) => ensureRecord(raw, '个股盘口') },
   );
+  const valuationQ = useApiQuery<unknown>(
+    submittedCode ? `/valuation/overview?code=${encodeURIComponent(submittedCode)}` : null,
+    { parse: (raw) => ensureRecord(raw, '估值概览') },
+  );
   const [infoTab, setInfoTab] = useState<string>('chart');
 
   const INFO_TABS = useMemo(() => [
@@ -90,6 +97,10 @@ export default function StockPage() {
     { key: 'tech', label: '技术面' },
     { key: 'fund', label: '资金流' },
     { key: 'basic', label: '基本面' },
+    { key: 'shares', label: '股本' },
+    { key: 'valuation', label: '估值' },
+    { key: 'peers', label: '同行对比' },
+    { key: 'ai', label: 'AI诊断' },
     { key: 'news', label: '资讯' },
   ] as const, []);
 
@@ -161,8 +172,8 @@ export default function StockPage() {
   const orderBook = useMemo(() => {
     const raw = extractObject(orderBookQ.data);
     const ob = raw.orderBook ? extractObject(raw.orderBook) : raw;
-    const bids = Array.isArray(ob.bids) ? ob.bids as Array<{price: number; volume: number}> : [];
-    const asks = Array.isArray(ob.asks) ? (ob.asks as Array<{price: number; volume: number}>).slice().reverse() : [];
+    const bids = Array.isArray(ob.bids) ? ob.bids as Array<{ price: number; volume: number }> : [];
+    const asks = Array.isArray(ob.asks) ? (ob.asks as Array<{ price: number; volume: number }>).slice().reverse() : [];
     return { bids, asks };
   }, [orderBookQ.data]);
 
@@ -389,7 +400,7 @@ export default function StockPage() {
                 const num = Number(v);
                 const display = v == null ? '-'
                   : !isNaN(num) && v !== '' ? (Math.abs(num) > 1e6 ? fmtAmount(num) : fmtNum(num, 2))
-                  : String(v);
+                    : String(v);
                 const labels: Record<string, string> = { roe: 'ROE', netProfit: '净利润', revenue: '营收', debtRatio: '资产负债率', pe: 'PE', pb: 'PB', ps: 'PS', marketCap: '总市值', eps: 'EPS', bps: '每股净资产', totalShares: '总股本', floatShares: '流通股本' };
                 return <KpiCard key={k} title={labels[k] ?? k} value={display} />;
               })}
@@ -418,6 +429,76 @@ export default function StockPage() {
               ))}
             </div>
           ) : <p className="text-text-secondary text-sm">{newsQ.isFetching ? '加载中...' : '查询股票后显示相关资讯'}</p>}
+        </SectionCard>
+      )}
+
+      {infoTab === 'shares' && (
+        <SectionCard tabAttached className="p-3">
+          <h3 className="mt-0">🏦 股本结构</h3>
+          {submittedCode ? (
+            <StockCapitalPanel code={submittedCode} />
+          ) : <p className="text-text-secondary text-sm">查询股票后显示股本数据</p>}
+        </SectionCard>
+      )}
+
+      {infoTab === 'valuation' && (
+        <SectionCard tabAttached className="p-3">
+          <h3 className="mt-0">估值分析</h3>
+          {valuationQ.data ? (() => {
+            const val = extractObject(valuationQ.data) as Record<string, unknown>;
+            const pe = Number(val.pe ?? val.PE ?? val.pe_ttm ?? 0);
+            const pb = Number(val.pb ?? val.PB ?? 0);
+            const ps = Number(val.ps ?? val.PS ?? 0);
+            const pcf = Number(val.pcf ?? val.PCF ?? 0);
+            const mktCap = Number(val.marketCap ?? val.market_cap ?? val.total_mv ?? 0);
+            const cirMktCap = Number(val.cirMarketCap ?? val.circ_mv ?? 0);
+            const peHist = val.pe_percentile ?? val.pePercentile;
+            const pbHist = val.pb_percentile ?? val.pbPercentile;
+            return (
+              <div className="space-y-4">
+                <KpiGrid cols={4}>
+                  <KpiCard title="PE(TTM)" value={pe > 0 ? fmtNum(pe, 2) : '亏损'} />
+                  <KpiCard title="PB" value={fmtNum(pb, 2)} />
+                  <KpiCard title="PS" value={fmtNum(ps, 2)} />
+                  <KpiCard title="PCF" value={pcf > 0 ? fmtNum(pcf, 2) : '-'} />
+                  <KpiCard title="总市值" value={fmtAmount(mktCap)} suffix="元" />
+                  <KpiCard title="流通市值" value={cirMktCap > 0 ? fmtAmount(cirMktCap) : '-'} suffix="元" />
+                  {peHist != null && <KpiCard title="PE历史分位" value={fmtPct(Number(peHist))} />}
+                  {pbHist != null && <KpiCard title="PB历史分位" value={fmtPct(Number(pbHist))} />}
+                </KpiGrid>
+                {pe > 0 && (
+                  <div className="mt-2">
+                    <GaugeChart
+                      value={Math.min(pe, 100)}
+                      min={0}
+                      max={100}
+                      title={pe < 15 ? '低估' : pe < 30 ? '合理' : pe < 60 ? '偏高' : '高估'}
+                      height={180}
+                    />
+                    <p className="text-xs text-text-secondary text-center mt-1">PE估值水平参考</p>
+                  </div>
+                )}
+              </div>
+            );
+          })() : <p className="text-text-secondary text-sm">{valuationQ.isFetching ? '加载中...' : '查询股票后显示估值数据'}</p>}
+        </SectionCard>
+      )}
+
+      {infoTab === 'ai' && (
+        <SectionCard tabAttached className="p-3">
+          <h3 className="mt-0">🤖 AI 智能诊断</h3>
+          {submittedCode ? (
+            <AIDiagnosisPanel code={submittedCode} />
+          ) : <p className="text-text-secondary text-sm">请先查询股票代码</p>}
+        </SectionCard>
+      )}
+
+      {infoTab === 'peers' && (
+        <SectionCard tabAttached className="p-3">
+          <h3 className="mt-0">🏭 同行业对比</h3>
+          {submittedCode ? (
+            <PeerComparisonTable code={submittedCode} />
+          ) : <p className="text-text-secondary text-sm">查询股票后显示同行对比</p>}
         </SectionCard>
       )}
     </PageContainer>

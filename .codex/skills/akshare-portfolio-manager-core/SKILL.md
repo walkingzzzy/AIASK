@@ -8,7 +8,8 @@ description: 顶级基金经理核心流程：目标与约束、组合构建、�
 
 # 强制阶段流程（必须按顺序执行）
 - 阶段 0（账户与偏好）：
-  - 用 `user_manager(action=get_profile)` 获取风险偏好与账户设定。
+  - 用 `user_manager(action=get_profile)`、`get_user_profile` 获取风险偏好与投资者画像。
+  - 用 `update_user_profile` 写入或更新画像快照。
   - 若无历史配置，先落地 IPS 关键字段（目标收益、最大回撤、流动性约束）。
 - 阶段 1（研究与事件）：
   - 候选池先用 `search_stocks` 或 `semantic_stock_search` 归一化代码。
@@ -16,9 +17,10 @@ description: 顶级基金经理核心流程：目标与约束、组合构建、�
   - 用 `event_manager(action=upcoming_events)` 检查未来催化与风险事件。
 - 阶段 2（组合构建）：
   - 用 `optimize_portfolio` 生成目标权重。
-  - 用 `analyze_portfolio_risk` 与 `stress_test_portfolio` 做事前风险评估。
+  - 用 `analyze_portfolio_risk`、`analyze_portfolio_risk_barra` 与 `stress_test_portfolio` 做事前风险评估。
 - 阶段 3（合规闸门）：
   - 用 `compliance_manager(action=check_order)` 做拟下单合规检查。
+  - 输出建议前用 `log_recommendation_audit` 记录推荐审计日志。
   - 不通过则回到阶段 2 调整权重/仓位规模。
 - 阶段 4（执行计划）：
   - 大额单优先 `execution_manager(action=twap|vwap)`，小额单可直接执行。
@@ -45,3 +47,4 @@ description: 顶级基金经理核心流程：目标与约束、组合构建、�
 
 # 参考
 - 管理器工具：`user_manager`、`research_manager`、`event_manager`、`portfolio_manager`、`compliance_manager`、`execution_manager`、`watchlist_manager`、`live_trading_manager`、`alerts_manager`、`risk_manager`、`performance_manager`、`benchmark_manager`、`data_sync_manager`。
+- 配套原子工具：`get_user_profile`、`update_user_profile`、`log_recommendation_audit`、`analyze_portfolio_risk_barra`。

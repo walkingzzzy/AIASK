@@ -127,7 +127,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       await this.cache.del(cacheKey);
     }
 
-    const data = await this.call('rank', { status: 'published', ...params });
+    const data = await this.call('rank', { status: 'listed', ...params });
     await this.cache.set(cacheKey, data, ttl);
     return { data, cacheKey, ttl, cacheHit: false };
   }
@@ -140,6 +140,30 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     const result = await this.call('detail', { strategy_id: id });
     if (!result) throw new NotFoundException(`策略 ${id} 不存在`);
     return result;
+  }
+
+  async reviewReport(id: string) {
+    return this.call('review_report', { strategy_id: id });
+  }
+
+  async reviewReportRecheck(id: string) {
+    return this.call('review_report_recheck', { strategy_id: id });
+  }
+
+  async events(id: string, filters?: {
+    event_type?: string;
+    from_status?: string;
+    to_status?: string;
+    actor_id?: string;
+    start_time?: string;
+    end_time?: string;
+    limit?: number;
+  }) {
+    return this.call('events', { strategy_id: id, ...(filters || {}) });
+  }
+
+  async incubationOverview(id: string) {
+    return this.call('incubation_overview', { strategy_id: id });
   }
 
   async rank(params: { strategy_type?: string; limit?: number; rank_keys?: string[]; offset?: number }) {
@@ -208,6 +232,22 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('submit', { strategy_id: id });
   }
 
+  async factoryStatus() {
+    return this.call('factory_status');
+  }
+
+  async factoryRunOnce() {
+    return this.call('factory_run_once');
+  }
+
+  async factoryRuns(limit?: number) {
+    return this.call('factory_runs', { limit });
+  }
+
+  async factoryRunDetail(runId: string) {
+    return this.call('factory_run_detail', { run_id: runId });
+  }
+
   async getSignals(id: string, userId: string, params: { limit?: number } = {}) {
     return this.call('get_signals', { strategy_id: id, user_id: userId, ...params });
   }
@@ -218,6 +258,75 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
 
   async getSignalStats(id: string) {
     return this.call('get_signal_stats', { strategy_id: id });
+  }
+
+
+  async capabilities() {
+    return this.call('capabilities');
+  }
+
+  async dailySnapshots(params: { limit?: number; start_date?: string; end_date?: string } = {}) {
+    return this.call('daily_snapshots', params);
+  }
+
+  async dailySnapshot(snapshotDate?: string) {
+    return this.call('daily_snapshot', { snapshot_date: snapshotDate });
+  }
+
+  async incubationAccounts(id: string, params: { status?: string; limit?: number } = {}) {
+    return this.call('incubation_accounts', { strategy_id: id, ...params });
+  }
+
+  async incubationMetrics(id: string, params: { limit?: number; start_date?: string; end_date?: string } = {}) {
+    return this.call('incubation_metrics', { strategy_id: id, ...params });
+  }
+
+  async riskEvents(id: string, params: { account_id?: string; status?: string; severity?: string; limit?: number } = {}) {
+    return this.call('risk_events', { strategy_id: id, ...params });
+  }
+
+  async resolveRiskEvent(eventId: number, resolution?: string) {
+    return this.call('resolve_risk_event', { event_id: eventId, resolution });
+  }
+
+  async vectorProfiles(id: string, params: { profile_type?: string; limit?: number; similar_to?: string } = {}) {
+    return this.call('vector_profiles', { strategy_id: id, ...params });
+  }
+
+  async vectorIndexes(params: { index_name?: string; status?: string; limit?: number } = {}) {
+    return this.call('vector_indexes', params);
+  }
+
+  async vectorReconcile(params: { index_name?: string; profile_type?: string; limit_profiles?: number } = {}) {
+    return this.call('vector_reconcile', params);
+  }
+
+  async vectorRebuild(params: { index_name?: string; index_version?: string; statuses?: string[]; limit?: number; profile_type?: string; vector_method?: string } = {}) {
+    return this.call('vector_rebuild', params);
+  }
+
+  async domainEvents(id: string, params: { aggregate_type?: string; event_type?: string; source?: string; correlation_id?: string; limit?: number } = {}) {
+    return this.call('domain_events', { strategy_id: id, ...params });
+  }
+
+  async runtimeCycleRun() {
+    return this.call('runtime_cycle_run');
+  }
+
+  async runtimeCycleStatus() {
+    return this.call('runtime_cycle_status');
+  }
+
+  async aiGenerate(params: { limit?: number; parent_strategy_id?: string; auto_submit?: boolean } = {}) {
+    return this.call('ai_generate', params);
+  }
+
+  async aiExperiments(params: { experiment_id?: string; strategy_id?: string; status?: string; source?: string; limit?: number } = {}) {
+    return this.call('ai_experiments', params);
+  }
+
+  async taskRuns(params: { task_name?: string; task_scope?: string; status?: string; limit?: number } = {}) {
+    return this.call('task_runs', params);
   }
 
   async lifecycleScan() {

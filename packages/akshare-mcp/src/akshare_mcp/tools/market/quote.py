@@ -903,6 +903,41 @@ def get_index_quote(index_code: str) -> dict:
     except Exception as e:
         err = str(e)
         if "decode" in err.lower() or "starting with" in err or "'<'" in err:
+            # Fallback: try Tushare index_daily for the latest data point
+            try:
+                ts_pro = data_source.get_tushare_pro()
+                if ts_pro is not None:
+                    code_fb = normalize_code(index_code)
+                    ts_code = f"{code_fb}.SZ" if code_fb.startswith("39") else f"{code_fb}.SH"
+                    from datetime import datetime as _dt, timedelta as _td
+                    end_d = _dt.now().strftime("%Y%m%d")
+                    start_d = (_dt.now() - _td(days=10)).strftime("%Y%m%d")
+                    df_ts = ts_pro.index_daily(ts_code=ts_code, start_date=start_d, end_date=end_d)
+                    if df_ts is not None and not df_ts.empty:
+                        row_ts = df_ts.iloc[0]  # latest date first
+                        ts_price = safe_float(row_ts.get("close"))
+                        ts_pre = safe_float(row_ts.get("pre_close"))
+                        ts_change, ts_pct = _calc_change(ts_price, ts_pre)
+                        if ts_price is not None:
+                            return ok(
+                                {
+                                    "code": code_fb,
+                                    "name": "",
+                                    "price": ts_price,
+                                    "change": ts_change,
+                                    "changePercent": ts_pct,
+                                    "open": safe_float(row_ts.get("open")),
+                                    "high": safe_float(row_ts.get("high")),
+                                    "low": safe_float(row_ts.get("low")),
+                                    "preClose": ts_pre,
+                                    "volume": safe_float(row_ts.get("vol")),
+                                    "amount": safe_float(row_ts.get("amount")),
+                                    "source": "tushare_index_daily_fallback",
+                                },
+                                cached=False,
+                            )
+            except Exception:
+                pass
             return ok(
                 {
                     "code": index_code,

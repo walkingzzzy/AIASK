@@ -212,6 +212,7 @@ class QuotesMixin:
                             "low": safe_float(row['low']),
                             "volume": safe_float(vol) if vol is not None else None,
                             "amount": amt * 1000 if amt is not None else None,
+                            "change_pct": safe_float(row.get('pct_chg')),
                             "source": "tushare_pro"
                         })
                     return results
@@ -262,6 +263,8 @@ class QuotesMixin:
                             "low": safe_float(row["low"]),
                             "volume": safe_int(row["volume"]),
                             "amount": safe_float(row["amount"]),
+                            "turnover": safe_float(row.get("turn")),
+                            "change_pct": safe_float(row.get("pctChg")),
                             "source": "baostock"
                         })
                     return results

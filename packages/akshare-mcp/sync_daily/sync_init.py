@@ -153,9 +153,9 @@ class InitSync:
                         for idx, row in df.iterrows():
                             try:
                                 await conn.execute("""
-                                    INSERT INTO stocks (stock_code, stock_name, market, industry, list_date, updated_at)
+                                    INSERT INTO stocks (code, stock_name, market, industry, list_date, updated_at)
                                     VALUES ($1,$2,$3,$4,$5,NOW())
-                                    ON CONFLICT (stock_code) DO UPDATE SET
+                                    ON CONFLICT (code) DO UPDATE SET
                                         stock_name=EXCLUDED.stock_name, market=EXCLUDED.market,
                                         industry=EXCLUDED.industry, list_date=EXCLUDED.list_date, updated_at=NOW()
                                 """, row['symbol'], row['name'], row.get('market'),
@@ -184,8 +184,8 @@ class InitSync:
         self.log(f"\n[2/10] 同步K线数据 (近{years}年全量)...")
 
         async with self.db.acquire() as conn:
-            rows = await conn.fetch("SELECT stock_code FROM stocks ORDER BY stock_code")
-            codes = [r['stock_code'] for r in rows]
+            rows = await conn.fetch("SELECT code FROM stocks ORDER BY code")
+            codes = [r['code'] for r in rows]
 
         if not codes:
             self.log("  ⚠️ 无股票数据")
@@ -279,8 +279,8 @@ class InitSync:
         self.log(f"\n[3/10] 同步财务数据 (近{years}年)...")
 
         async with self.db.acquire() as conn:
-            rows = await conn.fetch("SELECT stock_code FROM stocks ORDER BY stock_code")
-            codes = [r['stock_code'] for r in rows]
+            rows = await conn.fetch("SELECT code FROM stocks ORDER BY code")
+            codes = [r['code'] for r in rows]
 
         if not codes:
             return 0
@@ -305,10 +305,10 @@ class InitSync:
                                 if not report_date:
                                     continue
                                 await conn.execute("""
-                                    INSERT INTO financials (stock_code, report_date, revenue, net_profit, roe,
+                                    INSERT INTO financials (code, report_date, revenue, net_profit, roe,
                                         debt_ratio, eps, revenue_growth, profit_growth, updated_at)
                                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-                                    ON CONFLICT (stock_code, report_date) DO UPDATE SET
+                                    ON CONFLICT (code, report_date) DO UPDATE SET
                                         revenue=EXCLUDED.revenue, net_profit=EXCLUDED.net_profit, roe=EXCLUDED.roe,
                                         debt_ratio=EXCLUDED.debt_ratio, eps=EXCLUDED.eps,
                                         revenue_growth=EXCLUDED.revenue_growth, profit_growth=EXCLUDED.profit_growth,
