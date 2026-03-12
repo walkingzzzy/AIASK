@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit, forwardRef } from '@nestjs/common';
 import { MarketService } from './market.service';
 import { WsGateway } from '../ws/ws.gateway';
 
@@ -23,6 +23,7 @@ export class MarketScheduler implements OnModuleInit, OnModuleDestroy {
 
     constructor(
         private readonly marketService: MarketService,
+        @Inject(forwardRef(() => WsGateway))
         private readonly wsGateway: WsGateway,
     ) { }
 
@@ -53,11 +54,17 @@ export class MarketScheduler implements OnModuleInit, OnModuleDestroy {
 
     /** 接受前端订阅的代码，供定时推送使用 */
     addSubscribedCodes(codes: string[]) {
-        codes.forEach((c) => this.subscribedCodes.add(c));
+        codes
+            .map((c) => String(c).trim())
+            .filter(Boolean)
+            .forEach((c) => this.subscribedCodes.add(c));
     }
 
     removeSubscribedCodes(codes: string[]) {
-        codes.forEach((c) => this.subscribedCodes.delete(c));
+        codes
+            .map((c) => String(c).trim())
+            .filter(Boolean)
+            .forEach((c) => this.subscribedCodes.delete(c));
     }
 
     private async pushBatchQuotes() {
@@ -68,6 +75,11 @@ export class MarketScheduler implements OnModuleInit, OnModuleDestroy {
             const data = await this.marketService.getBatchQuotes(codes.slice(0, 50));
             const items = this.extractQuoteItems(data);
             if (items.length > 0) {
+                for (const item of items) {
+                    const code = typeof item.code === 'string' ? item.code.trim() : '';
+                    if (!code) continue;
+                    this.wsGateway.pushQuote(code, 'stock', item);
+                }
                 this.wsGateway.pushBatchQuotes(items);
             }
         } catch (err) {

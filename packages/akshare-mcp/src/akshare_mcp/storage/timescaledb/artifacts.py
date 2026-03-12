@@ -12,16 +12,31 @@ logger = logging.getLogger(__name__)
 class ArtifactMixin:
     """策略工件 CRUD（strategy_artifacts 表）"""
 
+    @staticmethod
+    def _coerce_timestamp(value: Any) -> Optional[datetime]:
+        if value is None or isinstance(value, datetime):
+            return value
+        raw = str(value or '').strip()
+        if not raw:
+            return None
+        normalized = raw[:-1] + '+00:00' if raw.endswith('Z') else raw
+        try:
+            return datetime.fromisoformat(normalized)
+        except Exception:
+            return None
+
     async def save_artifact(self, artifact: dict) -> dict:
         """写入或更新策略工件。"""
         aid = str((artifact or {}).get("artifact_id") or "").strip()
         if not aid:
             raise ValueError("artifact_id is required")
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
         payload = deepcopy(artifact)
-        payload.setdefault("registered_at", now)
-        payload["updated_at"] = now
+        payload.setdefault("registered_at", now.isoformat())
+        payload["updated_at"] = now.isoformat()
+        registered_at = self._coerce_timestamp(payload.get("registered_at")) or now
+        updated_at = self._coerce_timestamp(payload.get("updated_at")) or now
 
         async with self.acquire() as conn:
             await conn.execute(
@@ -40,8 +55,8 @@ class ArtifactMixin:
                 str(payload.get("strategy_version") or ""),
                 str(payload.get("code") or ""),
                 json.dumps(payload, ensure_ascii=False, default=str),
-                now,
-                now,
+                registered_at,
+                updated_at,
             )
         return payload
 

@@ -6,6 +6,7 @@ import sys
 
 async def check_connection(user, password, db, host, port):
     print(f"Testing connection to {host}:{port} as {user} for {db}...")
+    conn = None
     try:
         conn = await asyncpg.connect(
             user=user,
@@ -16,12 +17,14 @@ async def check_connection(user, password, db, host, port):
             timeout=5
         )
         await conn.execute("SELECT 1")
-        await conn.close()
         print(f"✅ Connection successful!")
         return True
     except Exception as e:
         print(f"❌ Connection failed: {e}")
         return False
+    finally:
+        if conn is not None:
+            await conn.close()
 
 async def main():
     # Candidates for credentials

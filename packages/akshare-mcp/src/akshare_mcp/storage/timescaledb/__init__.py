@@ -13,7 +13,10 @@
 仍然有效。
 """
 
-from typing import Optional
+import asyncio
+import atexit
+import logging
+from typing import Awaitable, Optional, TypeVar
 
 from .schema import SchemaBase
 from .kline import KlineMixin
@@ -24,6 +27,9 @@ from .artifacts import ArtifactMixin
 from .strategy import StrategyMixin
 from .factor_storage import FactorStorageMixin
 from .signal_tracking import SignalTrackingMixin
+
+logger = logging.getLogger(__name__)
+T = TypeVar('T')
 
 
 class TimescaleDBAdapter(
@@ -55,6 +61,27 @@ class TimescaleDBAdapter(
 
 # 全局单例
 _db_instance: Optional[TimescaleDBAdapter] = None
+_shutdown_registered = False
+
+
+def _safe_shutdown_db_atexit() -> None:
+    """独立脚本退出时尽力关闭数据库连接池。"""
+    if _db_instance is None:
+        return
+    try:
+        asyncio.run(close_db())
+    except RuntimeError:
+        logger.warning("[storage] skip db shutdown: event loop unavailable")
+    except Exception as exc:
+        logger.warning("[storage] db shutdown failed: %s", exc)
+
+
+def _ensure_shutdown_hook_registered() -> None:
+    global _shutdown_registered
+    if _shutdown_registered:
+        return
+    atexit.register(_safe_shutdown_db_atexit)
+    _shutdown_registered = True
 
 
 def get_db() -> TimescaleDBAdapter:
@@ -64,12 +91,40 @@ def get_db() -> TimescaleDBAdapter:
     因此单例模式是安全的。
     """
     global _db_instance
+    _ensure_shutdown_hook_registered()
     if _db_instance is None:
         _db_instance = TimescaleDBAdapter()
     return _db_instance
 
 
+async def close_db() -> None:
+    """关闭全局数据库实例并释放连接池。"""
+    global _db_instance
+    if _db_instance is None:
+        return
+    try:
+        await _db_instance.close()
+    finally:
+        _db_instance = None
+
+
+async def await_with_db_cleanup(awaitable: Awaitable[T]) -> T:
+    """在当前事件循环中运行 awaitable，并在结束前显式关闭 DB。"""
+    try:
+        return await awaitable
+    finally:
+        await close_db()
+
+
+def run_with_db_cleanup(awaitable: Awaitable[T]) -> T:
+    """独立脚本入口：使用 asyncio.run 包裹，并确保同 loop 收尾。"""
+    return asyncio.run(await_with_db_cleanup(awaitable))
+
+
 __all__ = [
     'TimescaleDBAdapter',
     'get_db',
+    'close_db',
+    'await_with_db_cleanup',
+    'run_with_db_cleanup',
 ]

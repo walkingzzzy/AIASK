@@ -18,6 +18,7 @@ from .strategy_registry import StrategyRegistry
 from .builtin_strategies import (
     MaCrossStrategy, MomentumStrategy, RsiStrategy, BuyAndHoldStrategy,
 )
+from .dsl_strategy import DslRuleStrategy
 from .single_factor_strategy import (
     ValueFactorStrategy, QualityFactorStrategy, GrowthFactorStrategy,
 )
@@ -25,7 +26,7 @@ from .multi_factor_strategy import MultiFactorStrategy
 from .macro_timing_strategy import MacroTimingStrategy
 
 # 自动注册内置策略
-for _s in [MaCrossStrategy, MomentumStrategy, RsiStrategy, BuyAndHoldStrategy]:
+for _s in [MaCrossStrategy, MomentumStrategy, RsiStrategy, BuyAndHoldStrategy, DslRuleStrategy]:
     StrategyRegistry.register(_s)
 
 # 注册工厂策略
@@ -50,7 +51,7 @@ __all__ = [
     'RAY_AVAILABLE',
     # P5: 策略接口与注册表
     'IStrategy', 'StrategyRegistry',
-    'MaCrossStrategy', 'MomentumStrategy', 'RsiStrategy', 'BuyAndHoldStrategy',
+    'MaCrossStrategy', 'MomentumStrategy', 'RsiStrategy', 'BuyAndHoldStrategy', 'DslRuleStrategy',
     'ValueFactorStrategy', 'QualityFactorStrategy', 'GrowthFactorStrategy',
     'MultiFactorStrategy', 'MacroTimingStrategy',
 ]

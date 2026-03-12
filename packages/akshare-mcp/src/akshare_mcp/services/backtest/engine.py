@@ -768,7 +768,10 @@ class BacktestEngine:
         if _klass is not None:
             _inst = _klass()
             _inst.set_parameters(params)
-            _masks = _inst.generate_entry_exit_masks(closes, volumes)
+            if hasattr(_inst, 'generate_entry_exit_masks_from_klines'):
+                _masks = _inst.generate_entry_exit_masks_from_klines(klines)
+            else:
+                _masks = _inst.generate_entry_exit_masks(closes, volumes)
             if _masks is not None and _masks[0] is not None:
                 _entry, _exit = _masks
                 _sim = _simulate_trades_from_masks(

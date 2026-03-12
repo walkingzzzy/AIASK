@@ -46,6 +46,7 @@ if env_path.exists():
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
+from akshare_mcp.storage import run_with_db_cleanup
 from akshare_mcp.storage.timescaledb import get_db
 from akshare_mcp.data_source import data_source
 
@@ -651,4 +652,4 @@ async def main():
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    run_with_db_cleanup(main())

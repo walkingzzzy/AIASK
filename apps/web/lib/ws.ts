@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useCallback, useState, createContext, useContext } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo, createContext, useContext } from 'react';
 import { io, Socket } from 'socket.io-client';
 
 const WS_URL = (() => {
@@ -164,6 +164,8 @@ interface UseQuoteSubscriptionOptions {
   codes?: string[];
   /** 类型: 'stock' | 'index' */
   type?: 'stock' | 'index';
+  /** 是否启用订阅，默认 true */
+  enabled?: boolean;
   /** 收到行情更新时的回调 */
   onUpdate?: (data: QuoteData) => void;
   /** 收到批量行情时的回调 */
@@ -171,15 +173,17 @@ interface UseQuoteSubscriptionOptions {
 }
 
 export function useQuoteSubscription(options: UseQuoteSubscriptionOptions = {}) {
-  const { codes = [], type = 'stock', onUpdate, onBatch } = options;
+  const { codes = [], type = 'stock', enabled = true, onUpdate, onBatch } = options;
   const cbRef = useRef({ onUpdate, onBatch });
+  const activeSubRef = useRef<{ codes: string[]; type: 'stock' | 'index' } | null>(null);
   cbRef.current = { onUpdate, onBatch };
 
-  return useWebSocket({
-    subscribe: {
-      event: 'subscribe:quote',
-      payload: { codes, type },
-    },
+  const normalizedCodes = useMemo(
+    () => Array.from(new Set(codes.map((code) => String(code).trim()).filter(Boolean))),
+    [codes],
+  );
+
+  const socket = useWebSocket({
     events: {
       'quote:update': (data) => cbRef.current.onUpdate?.(data as QuoteData),
       'quote:batch': (data) => {
@@ -188,6 +192,43 @@ export function useQuoteSubscription(options: UseQuoteSubscriptionOptions = {}) 
       },
     },
   });
+  const { connected, emit } = socket;
+
+  useEffect(() => {
+    const prev = activeSubRef.current;
+
+    if (!enabled || !connected) {
+      if (prev) {
+        emit('unsubscribe:quote', { codes: prev.codes, type: prev.type });
+        activeSubRef.current = null;
+      }
+      return;
+    }
+
+    const changed = !prev
+      || prev.type !== type
+      || prev.codes.length !== normalizedCodes.length
+      || prev.codes.some((code, index) => code !== normalizedCodes[index]);
+
+    if (!changed) return;
+
+    if (prev) {
+      emit('unsubscribe:quote', { codes: prev.codes, type: prev.type });
+    }
+
+    emit('subscribe:quote', { codes: normalizedCodes, type });
+    activeSubRef.current = { codes: normalizedCodes, type };
+  }, [connected, emit, enabled, normalizedCodes, type]);
+
+  useEffect(() => () => {
+    const prev = activeSubRef.current;
+    if (prev) {
+      emit('unsubscribe:quote', { codes: prev.codes, type: prev.type });
+      activeSubRef.current = null;
+    }
+  }, [emit]);
+
+  return socket;
 }
 
 // ── 告警订阅 Hook ────────────────────────────────────────────

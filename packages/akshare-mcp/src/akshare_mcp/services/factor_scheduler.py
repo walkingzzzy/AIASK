@@ -12,6 +12,7 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, time, timedelta
 from typing import List, Optional
@@ -55,7 +56,7 @@ DEFAULT_UNIVERSE = [
     "603501", "603799", "603833", "603899", "603986",
 ]
 
-DEFAULT_FACTORS = ["momentum", "value", "quality", "volatility", "liquidity"]
+DEFAULT_FACTORS = ["momentum", "value", "quality", "volatility", "reversal"]
 
 
 class FactorScheduler:
@@ -133,10 +134,17 @@ class FactorScheduler:
                 from ..tools.managers.quant_manager import quant_manager
                 result = await quant_manager(
                     action="batch_compute_factors",
-                    kwargs=f'{{"codes": {batch}, "factors": {self.factors}, "persist": true, "compute_ic": true}}'
+                    kwargs=json.dumps({
+                        "codes": batch,
+                        "factors": self.factors,
+                        "persist": True,
+                        "compute_ic": True,
+                    }, ensure_ascii=False),
                 )
                 if isinstance(result, dict):
-                    data = result.get("data", result)
+                    if result.get("success") is False:
+                        raise RuntimeError(result.get("error") or "batch_compute_factors failed")
+                    data = result.get("data") or {}
                     total_computed += data.get("computed_count", 0)
                     total_errors += data.get("error_count", 0)
             except Exception as e:

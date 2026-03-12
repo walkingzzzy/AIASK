@@ -31,7 +31,10 @@ class StrategyVectorGovernanceService:
         profile_type: Optional[str] = None,
         limit_profiles: int = 2000,
     ) -> dict:
-        rows = await db.list_strategy_vector_profiles(profile_type=profile_type, limit=max(1, min(int(limit_profiles or 2000), 5000))) if hasattr(db, 'list_strategy_vector_profiles') else []
+        rows = await db.list_strategy_vector_profiles(
+            profile_type=profile_type,
+            limit=max(1, min(int(limit_profiles or 2000), 5000)),
+        ) if hasattr(db, 'list_strategy_vector_profiles') else []
         grouped: dict[tuple[str, str], dict] = {}
         now = datetime.now(timezone.utc).isoformat()
         for row in rows:
@@ -61,6 +64,19 @@ class StrategyVectorGovernanceService:
                 bucket['metadata']['strategy_ids'].append(row.get('strategy_id'))
             if row.get('id') is not None:
                 bucket['metadata']['profile_ids'].append(row.get('id'))
+
+        if hasattr(db, 'list_strategy_vector_index_snapshots'):
+            snapshots = await db.list_strategy_vector_index_snapshots(index_name=index_name, limit=5000)
+            for snapshot in snapshots:
+                key = (str(snapshot.get('index_name') or 'strategy_behavior'), str(snapshot.get('index_version') or 'v1'))
+                if key not in grouped:
+                    continue
+                grouped[key]['metadata'].update({
+                    'ann_snapshot_id': snapshot.get('id'),
+                    'bucket_count': snapshot.get('bucket_count'),
+                    'vector_dim': snapshot.get('vector_dim'),
+                    'index_snapshot_status': snapshot.get('status'),
+                })
 
         updated = []
         for item in grouped.values():
@@ -115,11 +131,19 @@ class StrategyVectorGovernanceService:
         statuses: Optional[list[str]] = None,
         limit: int = 200,
         profile_type: str = 'behavior',
-        vector_method: str = 'price_volume',
+        vector_method: Optional[str] = None,
     ) -> dict:
         statuses = list(statuses or ['incubating', 'listed'])
         resolved_version = str(index_version or f"auto_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}")
         correlation_id = uuid4().hex[:12]
+        from .vector_platform import get_strategy_vector_platform
+
+        platform = get_strategy_vector_platform()
+        resolved_vector_method = (
+            platform.ensure_vector_method_available(vector_method)
+            if hasattr(platform, 'ensure_vector_method_available')
+            else str(vector_method or 'price_volume')
+        )
         task_run = await db.save_strategy_task_run({
             'task_name': 'strategy_vector_rebuild',
             'task_scope': index_name,
@@ -132,7 +156,7 @@ class StrategyVectorGovernanceService:
                 'statuses': statuses,
                 'limit': limit,
                 'profile_type': profile_type,
-                'vector_method': vector_method,
+                'vector_method': resolved_vector_method,
             },
         }) if hasattr(db, 'save_strategy_task_run') else {'id': None}
 
@@ -146,15 +170,25 @@ class StrategyVectorGovernanceService:
                     if sid and sid not in seen:
                         seen.add(sid)
                         strategies.append(row)
-            from .vector_platform import get_strategy_vector_platform
-            build_result = await get_strategy_vector_platform().build_profiles_for_strategies(
+
+            build_result = await platform.build_profiles_for_strategies(
                 db,
                 strategies,
                 profile_type=profile_type,
-                vector_method=vector_method,
+                vector_method=resolved_vector_method,
                 index_name=index_name,
                 index_version=resolved_version,
             )
+            persist_result = await platform.build_persisted_ann_index(
+                db,
+                index_name=index_name,
+                index_version=resolved_version,
+                profile_type=profile_type,
+                task_run_id=task_run.get('id'),
+                source='vector_governance',
+                limit_profiles=max(1, min(int(limit or 200), 5000)),
+            )
+
             existing = await db.list_vector_index_registry(index_name=index_name, limit=5000) if hasattr(db, 'list_vector_index_registry') else []
             for item in existing:
                 version = str(item.get('index_version') or 'v1')
@@ -169,13 +203,53 @@ class StrategyVectorGovernanceService:
                         'stale_reason': 'rebuild_replaced',
                     },
                 })
+
+            if hasattr(db, 'list_strategy_vector_index_snapshots') and hasattr(db, 'save_strategy_vector_index_snapshot'):
+                snapshots = await db.list_strategy_vector_index_snapshots(index_name=index_name, limit=5000)
+                for snapshot in snapshots:
+                    version = str(snapshot.get('index_version') or 'v1')
+                    if version == resolved_version or snapshot.get('status') == 'stale':
+                        continue
+                    await db.save_strategy_vector_index_snapshot({
+                        **snapshot,
+                        'status': 'stale',
+                        'metadata': {
+                            **dict(snapshot.get('metadata') or {}),
+                            'replaced_by': resolved_version,
+                            'stale_reason': 'rebuild_replaced',
+                        },
+                    })
+
             reconcile = await self.reconcile_registry(db, index_name=index_name, profile_type=profile_type)
+            active_registry = await db.save_vector_index_registry({
+                'index_name': index_name,
+                'backend': platform.backend_name(db) if hasattr(platform, 'backend_name') else getattr(getattr(platform, 'engine', None), 'backend', 'index'),
+                'status': 'active',
+                'profile_type': profile_type,
+                'vector_method': resolved_vector_method,
+                'metric': 'cosine',
+                'sample_count': int(build_result.get('count') or 0),
+                'index_version': resolved_version,
+                'metadata': {
+                    'profile_ids': [item.get('id') for item in build_result.get('items') or [] if item.get('id') is not None],
+                    'ann_snapshot_id': ((persist_result.get('snapshot') or {}).get('id')),
+                    'bucket_count': persist_result.get('bucket_count'),
+                    'persisted_items': persist_result.get('items_count'),
+                    'task_run_id': task_run.get('id'),
+                },
+                'built_at': datetime.now(timezone.utc).isoformat(),
+                'activated_at': datetime.now(timezone.utc).isoformat(),
+            })
             result = {
                 'task_run_id': task_run.get('id'),
                 'index_name': index_name,
                 'index_version': resolved_version,
                 'strategy_count': len(strategies),
                 'built_profiles': int(build_result.get('count') or 0),
+                'persisted_snapshot_id': (persist_result.get('snapshot') or {}).get('id'),
+                'persisted_items': int(persist_result.get('items_count') or 0),
+                'bucket_count': int(persist_result.get('bucket_count') or 0),
+                'active_registry': active_registry,
                 'reconcile': reconcile,
             }
             if task_run.get('id') is not None and hasattr(db, 'update_strategy_task_run'):

@@ -19,9 +19,9 @@ def _now_iso() -> str:
 
 
 def _get_db():
-    """延迟导入，避免循环依赖。"""
+    """延迟导入，避免循环依赖，并兼容上层 storage.get_db 注入。"""
     try:
-        from ..storage.timescaledb import get_db
+        from ..storage import get_db
         return get_db()
     except Exception:
         return None
@@ -44,12 +44,11 @@ def register_artifact(artifact: dict) -> dict:
 
     # 尝试异步写 DB
     db = _get_db()
-    if db is not None:
+    if db is not None and hasattr(db, "save_artifact"):
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(_safe_save(db, payload))
         except RuntimeError:
-            # 没有运行中的事件循环，跳过 DB 写入
             logger.debug("No running event loop; artifact %s cached in memory only", aid)
 
     return deepcopy(payload)
@@ -77,12 +76,9 @@ def get_artifact(artifact_id: str) -> dict | None:
 
     # 尝试从 DB 加载
     db = _get_db()
-    if db is not None:
+    if db is not None and hasattr(db, "get_artifact_by_id"):
         try:
-            loop = asyncio.get_running_loop()
-            future = asyncio.ensure_future(_safe_get(db, aid))
-            # 如果在异步上下文中，返回 None 让调用方自行 await
-            # 但为了保持同步接口兼容，这里不阻塞
+            asyncio.ensure_future(_safe_get(db, aid))
         except RuntimeError:
             pass
 
@@ -112,7 +108,7 @@ async def get_artifact_async(artifact_id: str) -> dict | None:
         return deepcopy(item)
 
     db = _get_db()
-    if db is not None:
+    if db is not None and hasattr(db, "get_artifact_by_id"):
         row = await _safe_get(db, aid)
         if row is not None:
             return deepcopy(row)
@@ -141,7 +137,7 @@ def list_artifacts(limit: int = 20) -> list[dict]:
 async def list_artifacts_async(limit: int = 20) -> list[dict]:
     """异步版本：优先从 DB 获取。"""
     db = _get_db()
-    if db is not None:
+    if db is not None and hasattr(db, "list_artifacts_db"):
         try:
             return await db.list_artifacts_db(limit)
         except Exception as exc:

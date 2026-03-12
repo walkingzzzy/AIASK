@@ -12,262 +12,50 @@ import { ErrorState, LoadingState } from '@/components/status-state';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
 import { useCartStore } from '@/store/cart-store';
 import { useAuthStore } from '@/store/auth-store';
-
-type StrategyMetric = {
-  period?: string;
-  total_return?: number;
-  annual_return?: number;
-  sharpe_ratio?: number;
-  max_drawdown?: number;
-  win_rate?: number;
-  calmar_ratio?: number;
-  trade_count?: number;
-};
-
-type StrategyReview = {
-  user_id: string;
-  rating: number;
-  comment?: string;
-  created_at?: string;
-};
-
-type StrategyCore = {
-  id: string;
-  name: string;
-  description?: string;
-  strategy_type?: string;
-  status?: string;
-  author_id?: string;
-  subscriber_count?: number;
-  avg_rating?: number;
-  review_count?: number;
-  factor_weights?: Record<string, number>;
-  metrics?: StrategyMetric[];
-  reviews?: StrategyReview[];
-};
-
-type SignalStatsResponse = {
-  hit_rate?: Record<string, number>;
-  forward_ic?: Record<string, number>;
-  forward_sharpe?: Record<string, number>;
-  total_signals?: number;
-};
-
-type Signal = {
-  signal_date?: string;
-  code?: string;
-  signal?: number;
-  score?: number;
-};
-
-type SignalsResponse = {
-  signals?: Signal[];
-  count?: number;
-  subscriber?: boolean;
-};
-
-type ReviewReportResponse = {
-  passed?: boolean;
-  report_type?: string;
-  reports?: Array<{
-    report_type?: string;
-    updated_at?: string;
-    summary?: {
-      review_source?: string;
-      validation_grade?: string;
-    };
-  }>;
-  summary?: {
-    status_after_review?: string;
-    validation_grade?: string;
-    review_source?: string;
-  };
-  quality_gate?: {
-    wf_ic_ir?: number;
-    pkf_ic?: number;
-    bootstrap_ci_lower?: number;
-    param_sensitivity?: number;
-    reasons?: string[];
-    reason_codes?: string[];
-  };
-  dedup_report?: {
-    duplicate?: boolean;
-    match_type?: string | null;
-    param_similarity?: number;
-    vector_similarity?: number;
-    reason?: string;
-  };
-};
-
-type StrategyEventsResponse = {
-  events?: Array<{
-    event_type?: string;
-    from_status?: string | null;
-    to_status?: string;
-    actor_id?: string;
-    reason?: string;
-    created_at?: string;
-    metadata?: Record<string, unknown>;
-  }>;
-  count?: number;
-};
-
-type IncubationOverviewResponse = {
-  status?: string;
-  sharpe_ratio?: number;
-  max_drawdown?: number;
-  total_signals?: number;
-  minimum_signal_count?: number;
-  hit_rate_5d?: number | null;
-  forward_ic_5d?: number | null;
-  forward_sharpe_5d?: number | null;
-  promotion_ready?: boolean;
-  deprecation_risk?: boolean;
-  blockers?: string[];
-  risk_flags?: string[];
-  observed_forward_days?: number[];
-  missing_forward_days?: number[];
-  forward_returns?: Array<{
-    label?: string;
-    hit_rate?: number | null;
-    forward_ic?: number | null;
-    forward_sharpe?: number | null;
-  }>;
-  blockers_by_period?: Record<string, string[]>;
-  risk_flags_by_period?: Record<string, string[]>;
-  validation_grade?: string | null;
-};
-
-type IncubationAccount = {
-  strategy_id?: string;
-  account_id?: string;
-  stage?: string;
-  status?: string;
-  source_run_id?: string;
-  metadata?: Record<string, unknown>;
-};
-
-type IncubationMetric = {
-  metric_date?: string;
-  account_id?: string;
-  stage?: string;
-  decision?: string;
-  nav?: number;
-  total_value?: number;
-  cash?: number;
-  market_value?: number;
-  daily_return?: number;
-  max_drawdown?: number;
-  sharpe_ratio?: number;
-  hit_rate_5d?: number;
-  forward_ic_5d?: number;
-  forward_sharpe_5d?: number;
-  total_signals?: number;
-  total_orders?: number;
-  total_trades?: number;
-  turnover_rate?: number;
-  exposure_rate?: number;
-  alpha_decay?: number;
-  drift_score?: number;
-};
-
-type RiskEvent = {
-  id?: number;
-  severity?: string;
-  event_type?: string;
-  action?: string;
-  status?: string;
-  title?: string;
-  reason?: string;
-  detected_at?: string;
-  payload?: Record<string, unknown>;
-};
-
-type VectorProfile = {
-  id?: number;
-  strategy_id?: string;
-  profile_type?: string;
-  vector_method?: string;
-  metric?: string;
-  vector_dim?: number;
-  signature?: string;
-  backend?: string;
-  index_version?: string;
-  metadata?: Record<string, unknown>;
-};
-
-type DomainEvent = {
-  id?: number;
-  strategy_id?: string | null;
-  aggregate_type?: string;
-  aggregate_id?: string | null;
-  event_type?: string;
-  source?: string;
-  severity?: string;
-  correlation_id?: string | null;
-  payload?: Record<string, unknown>;
-  created_at?: string;
-};
-
-type AiExperiment = {
-  experiment_id?: string;
-  strategy_id?: string;
-  source?: string;
-  generator_type?: string;
-  optimizer_type?: string;
-  status?: string;
-  hypothesis?: string;
-  created_at?: string;
-  updated_at?: string;
-};
-
-type ListResponse<T> = {
-  items?: T[];
-  count?: number;
-  latest?: T | null;
-};
-
-type StrategyDetailResponse = {
-  strategy?: StrategyCore;
-  metrics?: StrategyMetric[];
-  reviews?: StrategyReview[];
-  nav_series?: number[];
-  latest_quality_report?: ReviewReportResponse | null;
-  incubation_account?: IncubationAccount | null;
-  latest_incubation_metric?: IncubationMetric | null;
-  open_risk_events?: RiskEvent[];
-  vector_profiles?: VectorProfile[];
-  domain_events?: DomainEvent[];
-};
-
-type EventFilters = {
-  event_type: string;
-  from_status: string;
-  to_status: string;
-  actor_id: string;
-  start_time: string;
-  end_time: string;
-  limit: string;
-};
-
-function formatDateTime(value?: string | null) {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('zh-CN', { hour12: false });
-}
-
-function shortText(value: unknown, length = 12) {
-  const text = String(value ?? '');
-  if (!text) return '-';
-  return text.length > length ? `${text.slice(0, length)}…` : text;
-}
+import type {
+  StrategyCore,
+  StrategyDetailResponse,
+  StrategyMetric,
+  SignalStatsResponse,
+  SignalsResponse,
+  ReviewReportResponse,
+  StrategyEventsResponse,
+  IncubationOverviewResponse,
+  IncubationMetric,
+  IncubationPipelineSnapshot,
+  PaperAccountResponse,
+  PaperOrder,
+  PaperNav,
+  RuntimeRiskSnapshot,
+  RuntimeControl,
+  RuntimeAlert,
+  RiskEvent,
+  VectorProfile,
+  VectorIndexSnapshot,
+  DomainEvent,
+  DomainProjection,
+  ProjectionSnapshot,
+  AiExperiment,
+  TaskRun,
+  PromotionReview,
+  ListResponse,
+  EventFilters,
+} from '../types';
+import { LiveTrackingPanel } from '../components/LiveTrackingPanel';
+import { FactoryReviewPanel } from '../components/FactoryReviewPanel';
 
 export default function StrategyDetailPage() {
   const { id } = useParams<{ id: string }>();
   const detailQ = useApiQuery<StrategyDetailResponse | StrategyCore>(id ? `/strategy-market/${id}` : null);
   const subscribeApi = useApiMutation({ invalidates: [apiKeys.strategy()] });
-  const reviewApi = useApiMutation({ invalidates: [apiKeys.strategy()] });
+  const reviewApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '评价已提交' });
+  const rebuildProjectionApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '事件投影已重建' });
+  const runIncubationPipelineApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '孵化流水线已执行' });
+  const runIncubationSyncApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '模拟盘孵化同步已执行' });
+  const runRiskScanApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '风控扫描已执行' });
+  const riskRecoveryApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '已发起恢复尝试' });
+  const runRuntimeAlertDispatchApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '运行告警已重新分发' });
+  const ackRuntimeAlertApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '告警已确认' });
   const addToCart = useCartStore((st) => st.addStrategy);
   const user = useAuthStore((st) => st.user);
   const userId = user?.id ?? user?.username ?? null;
@@ -310,11 +98,32 @@ export default function StrategyDetailPage() {
   const incubationMetricsQ = useApiQuery<ListResponse<IncubationMetric>>(
     id && activeTab === 'factory' ? `/strategy-market/${id}/incubation-metrics?limit=12` : null,
   );
+  const paperAccountQ = useApiQuery<PaperAccountResponse>(
+    id && activeTab === 'factory' ? `/strategy-market/${id}/paper-account?limit=20` : null,
+  );
+  const paperOrdersQ = useApiQuery<ListResponse<PaperOrder>>(
+    id && activeTab === 'factory' ? `/strategy-market/${id}/paper-orders?limit=20` : null,
+  );
+  const paperNavQ = useApiQuery<ListResponse<PaperNav>>(
+    id && activeTab === 'factory' ? `/strategy-market/${id}/paper-nav?limit=20` : null,
+  );
+  const incubationPipelineQ = useApiQuery<ListResponse<IncubationPipelineSnapshot>>(
+    id && activeTab === 'factory' ? `/strategy-market/${id}/incubation-pipeline?limit=10` : null,
+  );
   const riskEventsQ = useApiQuery<ListResponse<RiskEvent>>(
     id && activeTab === 'factory' ? `/strategy-market/${id}/risk-events?limit=20` : null,
   );
+  const riskSnapshotsQ = useApiQuery<ListResponse<RuntimeRiskSnapshot>>(
+    id && activeTab === 'factory' ? `/strategy-market/${id}/risk-snapshots?limit=10` : null,
+  );
   const vectorProfilesQ = useApiQuery<ListResponse<VectorProfile>>(
     id && activeTab === 'factory' ? `/strategy-market/${id}/vector-profiles?limit=10` : null,
+  );
+  const similarProfilesQ = useApiQuery<ListResponse<VectorProfile>>(
+    id && activeTab === 'factory' ? `/strategy-market/${id}/vector-ann-search?limit=10` : null,
+  );
+  const vectorIndexSnapshotsQ = useApiQuery<ListResponse<VectorIndexSnapshot>>(
+    activeTab === 'factory' ? '/strategy-market/vector-indexes/snapshots?index_name=strategy_behavior&limit=10' : null,
   );
   const aiExperimentsQ = useApiQuery<ListResponse<AiExperiment>>(
     id && activeTab === 'factory' ? `/strategy-market/ai/experiments?strategy_id=${encodeURIComponent(id)}&limit=10` : null,
@@ -322,6 +131,26 @@ export default function StrategyDetailPage() {
   const domainEventsQ = useApiQuery<ListResponse<DomainEvent>>(
     id && activeTab === 'factory' ? `/strategy-market/${id}/domain-events?limit=20` : null,
   );
+  const taskRunsQ = useApiQuery<ListResponse<TaskRun>>(
+    id && activeTab === 'factory' ? `/strategy-market/task-runs?strategy_id=${encodeURIComponent(id)}&limit=10` : null,
+  );
+  const runtimeControlQ = useApiQuery<RuntimeControl>(
+    id && activeTab === 'factory' ? `/strategy-market/${id}/runtime-control` : null,
+  );
+  const runtimeAlertsQ = useApiQuery<ListResponse<RuntimeAlert>>(
+    id && activeTab === 'factory' ? `/strategy-market/${id}/runtime-alerts?limit=20` : null,
+  );
+  const promotionReviewsQ = useApiQuery<ListResponse<PromotionReview>>(
+    id && activeTab === 'factory' ? `/strategy-market/${id}/promotion-reviews?limit=10` : null,
+  );
+  const domainProjectionQ = useApiQuery<DomainProjection>(
+    id && activeTab === 'factory' ? `/strategy-market/${id}/domain-projection?limit=100` : null,
+  );
+  const projectionSnapshotQ = useApiQuery<ListResponse<ProjectionSnapshot>>(
+    id && activeTab === 'factory' ? `/strategy-market/${id}/domain-projection/snapshot?limit=10` : null,
+  );
+
+  /* ---------- derived data ---------- */
 
   const detail = useMemo(() => {
     const raw = detailQ.data;
@@ -345,9 +174,28 @@ export default function StrategyDetailPage() {
   const latestQualityReport = detail?.latest_quality_report ?? null;
   const incubationAccount = detail?.incubation_account ?? null;
   const latestIncubationMetric = detail?.latest_incubation_metric ?? null;
+  const latestPromotionReview = promotionReviewsQ.data?.latest ?? detail?.latest_promotion_review ?? null;
+  const latestProjectionSnapshot = projectionSnapshotQ.data?.latest ?? detail?.latest_projection_snapshot ?? null;
+  const latestVectorIndexSnapshot = vectorIndexSnapshotsQ.data?.latest ?? detail?.latest_vector_index_snapshot ?? null;
+  const latestIncubationPipelineSnapshot = incubationPipelineQ.data?.latest ?? detail?.latest_incubation_pipeline_snapshot ?? null;
+  const paperAccount = paperAccountQ.data?.account ?? null;
+  const paperPositions = paperAccountQ.data?.positions ?? [];
+  const paperOrderSummary = paperAccountQ.data?.order_summary ?? null;
+  const latestPaperNav = paperNavQ.data?.latest ?? paperAccountQ.data?.latest_nav ?? null;
+  const paperOrders = paperOrdersQ.data?.items ?? [];
+  const paperNavRows = paperNavQ.data?.items ?? [];
+  const latestRuntimeRiskSnapshot = riskSnapshotsQ.data?.latest ?? detail?.latest_runtime_risk_snapshot ?? null;
+  const runtimeControl = runtimeControlQ.data ?? detail?.runtime_control ?? null;
+  const runtimeAlerts = (runtimeAlertsQ.data?.items?.length ? runtimeAlertsQ.data.items : detail?.runtime_alerts) ?? [];
+  const domainProjection = domainProjectionQ.data ?? latestProjectionSnapshot?.projection ?? null;
   const openRiskEvents = (riskEventsQ.data?.items?.length ? riskEventsQ.data.items : detail?.open_risk_events) ?? [];
   const vectorProfiles = (vectorProfilesQ.data?.items?.length ? vectorProfilesQ.data.items : detail?.vector_profiles) ?? [];
+  const similarProfiles = (similarProfilesQ.data?.items?.length ? similarProfilesQ.data.items : detail?.similar_vector_profiles) ?? [];
+  const vectorIndexSnapshots = vectorIndexSnapshotsQ.data?.items ?? [];
+  const incubationPipelineSnapshots = incubationPipelineQ.data?.items ?? [];
+  const runtimeRiskSnapshots = riskSnapshotsQ.data?.items ?? [];
   const domainEvents = (domainEventsQ.data?.items?.length ? domainEventsQ.data.items : detail?.domain_events) ?? [];
+  const taskRuns = (taskRunsQ.data?.items?.length ? taskRunsQ.data.items : detail?.task_runs) ?? [];
 
   const allMetrics = useMemo(() => {
     if (!metrics.length) return null;
@@ -360,6 +208,8 @@ export default function StrategyDetailPage() {
   }, [strategy]);
 
   const navCategories = useMemo(() => navSeries.map((_, index) => `${index + 1}`), [navSeries]);
+
+  /* ---------- handlers ---------- */
 
   async function handleSubscribe() {
     if (!userId) {
@@ -379,6 +229,38 @@ export default function StrategyDetailPage() {
     setRating(5);
   }
 
+  async function handleRunIncubationPipeline() {
+    if (!id) return;
+    await runIncubationPipelineApi.triggerAsync(`/strategy-market/${id}/incubation-pipeline/run`, { method: 'POST' }, { auto_apply_review: true, source: 'web_detail' });
+  }
+
+  async function handleRunIncubationSync() {
+    if (!id) return;
+    await runIncubationSyncApi.triggerAsync(`/strategy-market/${id}/incubation-sync/run`, { method: 'POST' }, {});
+  }
+
+  async function handleRunRiskScan() {
+    if (!id) return;
+    await runRiskScanApi.triggerAsync(`/strategy-market/${id}/risk-scan/run`, { method: 'POST' }, { enforce_actions: true });
+  }
+
+  async function handleRiskRecovery() {
+    if (!id) return;
+    await riskRecoveryApi.triggerAsync(`/strategy-market/${id}/risk-recovery`, { method: 'POST' }, { source: 'web_detail' });
+  }
+
+  async function handleRunRuntimeAlertDispatch() {
+    if (!id) return;
+    await runRuntimeAlertDispatchApi.triggerAsync(`/strategy-market/${id}/runtime-alerts/dispatch`, { method: 'POST' }, { source: 'web_detail' });
+  }
+
+  async function handleAckRuntimeAlert(alertId: number) {
+    if (!alertId) return;
+    await ackRuntimeAlertApi.triggerAsync(`/strategy-market/runtime-alerts/${alertId}/ack`, { method: 'POST' }, { acknowledged_by: userId ?? 'web_detail', source: 'web_detail' });
+  }
+
+  /* ---------- early returns ---------- */
+
   if (detailQ.isPending) return <PageContainer><LoadingState text="加载策略详情..." /></PageContainer>;
   if (detailQ.error) return <PageContainer><ErrorState text={detailQ.error} /></PageContainer>;
   if (!strategy) return <PageContainer><p className="text-text-secondary">策略不存在</p></PageContainer>;
@@ -390,6 +272,8 @@ export default function StrategyDetailPage() {
       : ['archived', 'deprecated', 'rejected', 'suspended'].includes(strategy.status ?? '')
         ? 'danger'
         : 'neutral';
+
+  /* ---------- render ---------- */
 
   return (
     <PageContainer>
@@ -569,445 +453,50 @@ export default function StrategyDetailPage() {
           incubation={incubationQ.data}
           currentAccount={incubationAccount}
           latestMetric={latestIncubationMetric}
+          latestPromotionReview={latestPromotionReview}
+          latestProjectionSnapshot={latestProjectionSnapshot}
+          runtimeControl={runtimeControl}
+          domainProjection={domainProjection}
+          latestIncubationPipelineSnapshot={latestIncubationPipelineSnapshot}
+          incubationPipelineSnapshots={incubationPipelineSnapshots}
+          paperAccount={paperAccount}
+          paperPositions={paperPositions}
+          paperOrderSummary={paperOrderSummary}
+          latestPaperNav={latestPaperNav}
+          paperOrders={paperOrders}
+          paperNavRows={paperNavRows}
+          latestRuntimeRiskSnapshot={latestRuntimeRiskSnapshot}
+          runtimeAlerts={runtimeAlerts}
+          runtimeRiskSnapshots={runtimeRiskSnapshots}
+          promotionReviews={promotionReviewsQ.data?.items ?? []}
           incubationMetrics={incubationMetricsQ.data?.items ?? []}
           riskEvents={openRiskEvents}
           vectorProfiles={vectorProfiles}
+          similarProfiles={similarProfiles}
+          vectorIndexSnapshots={vectorIndexSnapshots}
+          latestVectorIndexSnapshot={latestVectorIndexSnapshot}
           domainEvents={domainEvents}
           aiExperiments={aiExperimentsQ.data?.items ?? []}
+          taskRuns={taskRuns}
           eventFilters={eventFilters}
           onEventFilterChange={(key, value) => setEventFilters((prev) => ({ ...prev, [key]: value }))}
-          loading={reviewReportQ.isPending || eventsQ.isPending || incubationQ.isPending || incubationMetricsQ.isPending || riskEventsQ.isPending || vectorProfilesQ.isPending || aiExperimentsQ.isPending || domainEventsQ.isPending}
+          onRebuildProjection={() => rebuildProjectionApi.trigger(`/strategy-market/${id}/domain-projection/rebuild`, { method: 'POST' }, { source: 'web_detail' })}
+          rebuildProjectionPending={rebuildProjectionApi.isPending}
+          onRunIncubationPipeline={handleRunIncubationPipeline}
+          runIncubationPipelinePending={runIncubationPipelineApi.isPending}
+          onRunIncubationSync={handleRunIncubationSync}
+          runIncubationSyncPending={runIncubationSyncApi.isPending}
+          onRunRiskScan={handleRunRiskScan}
+          runRiskScanPending={runRiskScanApi.isPending}
+          onRunRuntimeAlertDispatch={handleRunRuntimeAlertDispatch}
+          runRuntimeAlertDispatchPending={runRuntimeAlertDispatchApi.isPending}
+          onAckRuntimeAlert={handleAckRuntimeAlert}
+          ackRuntimeAlertPending={ackRuntimeAlertApi.isPending}
+          onRiskRecovery={handleRiskRecovery}
+          riskRecoveryPending={riskRecoveryApi.isPending}
+          loading={reviewReportQ.isPending || eventsQ.isPending || incubationQ.isPending || incubationMetricsQ.isPending || paperAccountQ.isPending || paperOrdersQ.isPending || paperNavQ.isPending || incubationPipelineQ.isPending || riskEventsQ.isPending || riskSnapshotsQ.isPending || runtimeAlertsQ.isPending || vectorProfilesQ.isPending || similarProfilesQ.isPending || vectorIndexSnapshotsQ.isPending || aiExperimentsQ.isPending || domainEventsQ.isPending || taskRunsQ.isPending || runtimeControlQ.isPending || promotionReviewsQ.isPending || domainProjectionQ.isPending || projectionSnapshotQ.isPending}
         />
       ) : null}
     </PageContainer>
-  );
-}
-
-function LiveTrackingPanel({
-  stats,
-  signals,
-  statsLoading,
-  signalsLoading,
-}: {
-  stats: SignalStatsResponse | null | undefined;
-  signals: SignalsResponse | null | undefined;
-  statsLoading: boolean;
-  signalsLoading: boolean;
-}) {
-  const st = (stats && typeof stats === 'object' ? stats : {}) as SignalStatsResponse;
-  const sig = (signals && typeof signals === 'object' ? signals : {}) as SignalsResponse;
-  const forwardDays = Object.keys(st.hit_rate ?? {}).map(Number).sort((a, b) => a - b);
-  const icCategories = forwardDays.map((day) => `${day}D`);
-  const icValues = forwardDays.map((day) => st.forward_ic?.[day] ?? 0);
-  const sharpeValues = forwardDays.map((day) => st.forward_sharpe?.[day] ?? 0);
-
-  return (
-    <div className="mt-4 space-y-4">
-      {statsLoading ? (
-        <LoadingState text="加载信号统计..." />
-      ) : (
-        <>
-          <KpiGrid cols={4}>
-            <KpiCard title="总信号数" value={st.total_signals ?? 0} />
-            {forwardDays.slice(0, 1).map((day) => <KpiCard key={`hr-${day}`} title={`${day}D 命中率`} value={fmtPct(st.hit_rate?.[day] ?? 0)} />)}
-            {forwardDays.slice(0, 1).map((day) => <KpiCard key={`ic-${day}`} title={`${day}D 前向IC`} value={fmtNum(st.forward_ic?.[day] ?? 0, 4)} />)}
-            {forwardDays.slice(0, 1).map((day) => <KpiCard key={`sp-${day}`} title={`${day}D 前向Sharpe`} value={fmtNum(st.forward_sharpe?.[day] ?? 0, 4)} />)}
-          </KpiGrid>
-
-          {forwardDays.length > 0 ? (
-            <SectionCard className="p-3">
-              <h3 className="mt-0">前向验证指标</h3>
-              <DataTable
-                columns={[
-                  { key: 'period', label: '周期' },
-                  { key: 'hit_rate', label: '命中率' },
-                  { key: 'forward_ic', label: '前向IC' },
-                  { key: 'forward_sharpe', label: '前向Sharpe' },
-                ]}
-                rows={forwardDays.map((day) => ({
-                  period: `${day} 天`,
-                  hit_rate: fmtPct(st.hit_rate?.[day] ?? 0),
-                  forward_ic: fmtNum(st.forward_ic?.[day] ?? 0, 4),
-                  forward_sharpe: fmtNum(st.forward_sharpe?.[day] ?? 0, 4),
-                }))}
-              />
-            </SectionCard>
-          ) : null}
-
-          {icCategories.length > 1 ? (
-            <SectionCard className="p-3">
-              <h3 className="mt-0">前向 IC / Sharpe 趋势</h3>
-              <LineChart
-                categories={icCategories}
-                series={[
-                  { name: '前向IC', data: icValues, color: '#1a73e8' },
-                  { name: '前向Sharpe', data: sharpeValues, color: '#f59e0b', yAxisIndex: 1 },
-                ]}
-                height={240}
-                yAxisName="IC"
-                y2AxisName="Sharpe"
-              />
-            </SectionCard>
-          ) : null}
-        </>
-      )}
-
-      <SectionCard className="p-3">
-        <h3 className="mt-0">信号历史 {sig.subscriber === false ? <span className="text-text-secondary text-xs ml-2">(非订阅者，数据延迟1-3天)</span> : null}</h3>
-        {signalsLoading ? (
-          <LoadingState text="加载信号..." />
-        ) : sig.signals?.length ? (
-          <DataTable
-            columns={[
-              { key: 'signal_date', label: '日期' },
-              { key: 'code', label: '代码' },
-              { key: 'direction', label: '方向' },
-              { key: 'score', label: '强度' },
-            ]}
-            rows={sig.signals.map((item) => ({
-              signal_date: item.signal_date ?? '-',
-              code: item.code ?? '-',
-              direction: item.signal === 1 ? '买入' : item.signal === -1 ? '卖出' : '持有',
-              score: fmtNum(item.score ?? 0, 2),
-            }))}
-          />
-        ) : (
-          <p className="text-text-secondary text-sm">暂无信号数据</p>
-        )}
-      </SectionCard>
-    </div>
-  );
-}
-
-function FactoryReviewPanel({
-  report,
-  events,
-  incubation,
-  currentAccount,
-  latestMetric,
-  incubationMetrics,
-  riskEvents,
-  vectorProfiles,
-  domainEvents,
-  aiExperiments,
-  eventFilters,
-  onEventFilterChange,
-  loading,
-}: {
-  report: ReviewReportResponse | null | undefined;
-  events: StrategyEventsResponse | null | undefined;
-  incubation: IncubationOverviewResponse | null | undefined;
-  currentAccount: IncubationAccount | null | undefined;
-  latestMetric: IncubationMetric | null | undefined;
-  incubationMetrics: IncubationMetric[];
-  riskEvents: RiskEvent[];
-  vectorProfiles: VectorProfile[];
-  domainEvents: DomainEvent[];
-  aiExperiments: AiExperiment[];
-  eventFilters: EventFilters;
-  onEventFilterChange: (key: keyof EventFilters, value: string) => void;
-  loading: boolean;
-}) {
-  const review = (report && typeof report === 'object' ? report : {}) as ReviewReportResponse;
-  const blockers = incubation?.blockers ?? [];
-  const riskFlags = incubation?.risk_flags ?? [];
-  const forwardRows = (incubation?.forward_returns ?? []).map((item) => ({
-    label: item.label ?? '-',
-    hit_rate: item.hit_rate == null ? '-' : fmtPct(item.hit_rate),
-    forward_ic: item.forward_ic == null ? '-' : fmtNum(item.forward_ic, 4),
-    forward_sharpe: item.forward_sharpe == null ? '-' : fmtNum(item.forward_sharpe, 4),
-  }));
-  const eventRows = (events?.events ?? []).map((item, index) => ({
-    id: `${item.created_at ?? index}`,
-    created_at: formatDateTime(item.created_at),
-    transition: `${item.from_status ?? '初始'} → ${item.to_status ?? '-'}`,
-    actor_id: item.actor_id ?? '-',
-    reason: item.reason ?? '-',
-    metadata: Object.entries(item.metadata ?? {}).map(([key, value]) => `${key}: ${String(value)}`).join(' / ') || '-',
-  }));
-  const metricRows = incubationMetrics.map((item) => ({
-    metric_date: item.metric_date ?? '-',
-    nav: fmtNum(item.nav ?? 0, 4),
-    daily_return: fmtPct(item.daily_return ?? 0),
-    max_drawdown: fmtPct(item.max_drawdown ?? 0),
-    sharpe_ratio: fmtNum(item.sharpe_ratio ?? 0, 2),
-    exposure_rate: fmtPct(item.exposure_rate ?? 0),
-    alpha_decay: fmtNum(item.alpha_decay ?? 0, 3),
-    drift_score: fmtNum(item.drift_score ?? 0, 3),
-    decision: item.decision ?? '-',
-  }));
-  const riskRows = riskEvents.map((item) => ({
-    detected_at: formatDateTime(item.detected_at),
-    severity: item.severity ?? '-',
-    event_type: item.event_type ?? '-',
-    action: item.action ?? '-',
-    status: item.status ?? '-',
-    title: item.title ?? '-',
-    reason: item.reason ?? '-',
-  }));
-  const profileRows = vectorProfiles.map((item) => ({
-    profile_type: item.profile_type ?? '-',
-    vector_method: item.vector_method ?? '-',
-    metric: item.metric ?? '-',
-    vector_dim: item.vector_dim ?? 0,
-    backend: item.backend ?? '-',
-    index_version: item.index_version ?? '-',
-    signature: shortText(item.signature, 16),
-  }));
-  const experimentRows = aiExperiments.map((item) => ({
-    experiment_id: item.experiment_id ?? '-',
-    source: item.source ?? '-',
-    generator_type: item.generator_type ?? '-',
-    optimizer_type: item.optimizer_type ?? '-',
-    status: item.status ?? '-',
-    hypothesis: shortText(item.hypothesis, 28),
-    created_at: formatDateTime(item.created_at),
-  }));
-  const domainEventRows = domainEvents.map((item) => ({
-    created_at: formatDateTime(item.created_at),
-    event_type: item.event_type ?? '-',
-    source: item.source ?? '-',
-    severity: item.severity ?? '-',
-    aggregate: `${item.aggregate_type ?? '-'} / ${shortText(item.aggregate_id, 12)}`,
-    payload: shortText(Object.entries(item.payload ?? {}).map(([key, value]) => `${key}:${String(value)}`).join(' / '), 48),
-  }));
-
-  if (loading) {
-    return <div className="mt-4"><LoadingState text="加载工厂审查数据..." /></div>;
-  }
-
-  return (
-    <div className="mt-4 space-y-4">
-      <KpiGrid cols={6}>
-        <KpiCard title="质量门禁" value={review.passed ? '通过' : '未通过'} />
-        <KpiCard title="验证评级" value={review.summary?.validation_grade ?? incubation?.validation_grade ?? '-'} />
-        <KpiCard title="Walk-Forward IC IR" value={fmtNum(review.quality_gate?.wf_ic_ir ?? 0, 4)} />
-        <KpiCard title="Purged K-Fold IC" value={fmtNum(review.quality_gate?.pkf_ic ?? 0, 4)} />
-        <KpiCard title="孵化信号数" value={incubation?.total_signals ?? latestMetric?.total_signals ?? 0} />
-        <KpiCard title="5日命中率" value={fmtPct(incubation?.hit_rate_5d ?? latestMetric?.hit_rate_5d ?? 0)} />
-      </KpiGrid>
-
-      <SectionCard className="p-3">
-        <h3 className="mt-0">工厂质检摘要</h3>
-        <DataTable
-          columns={[
-            { key: 'item', label: '指标' },
-            { key: 'value', label: '结果' },
-          ]}
-          rows={[
-            { item: 'Bootstrap CI 下界', value: fmtNum(review.quality_gate?.bootstrap_ci_lower ?? 0, 4) },
-            { item: '参数敏感性', value: fmtPct(review.quality_gate?.param_sensitivity ?? 0) },
-            { item: '去重匹配类型', value: review.dedup_report?.match_type ?? '唯一候选' },
-            { item: '参数相似度', value: fmtNum(review.dedup_report?.param_similarity ?? 0, 4) },
-            { item: '向量相似度', value: fmtNum(review.dedup_report?.vector_similarity ?? 0, 4) },
-            { item: '去重说明', value: review.dedup_report?.reason ?? '-' },
-            { item: '审查来源', value: review.summary?.review_source ?? '-' },
-            { item: '当前报告类型', value: review.report_type ?? '-' },
-          ]}
-        />
-        {review.quality_gate?.reasons?.length ? (
-          <div className="mt-3 text-sm text-danger">
-            <div className="font-medium mb-1">未通过原因</div>
-            <ul className="m-0 pl-5">
-              {review.quality_gate.reasons.map((reason) => <li key={reason}>{reason}</li>)}
-            </ul>
-          </div>
-        ) : null}
-        {review.reports?.length ? (
-          <div className="mt-3 text-sm text-text-secondary">
-            <div className="font-medium mb-1">报告历史</div>
-            <ul className="m-0 pl-5">
-              {review.reports.map((item, index) => (
-                <li key={`${item.report_type ?? 'report'}-${item.updated_at ?? index}`}>
-                  {item.report_type ?? '-'} / {item.summary?.review_source ?? '-'} / {item.summary?.validation_grade ?? '-'}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-      </SectionCard>
-
-      <SectionCard className="p-3">
-        <h3 className="mt-0">孵化观察窗口</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-          <KpiCard title="Sharpe" value={fmtNum(incubation?.sharpe_ratio ?? latestMetric?.sharpe_ratio ?? 0, 2)} />
-          <KpiCard title="最大回撤" value={fmtPct(incubation?.max_drawdown ?? latestMetric?.max_drawdown ?? 0)} />
-          <KpiCard title="前向IC(5D)" value={fmtNum(incubation?.forward_ic_5d ?? latestMetric?.forward_ic_5d ?? 0, 4)} />
-          <KpiCard title="前向Sharpe(5D)" value={fmtNum(incubation?.forward_sharpe_5d ?? latestMetric?.forward_sharpe_5d ?? 0, 4)} />
-        </div>
-        <div className="flex gap-2 flex-wrap text-sm">
-          <Badge variant={incubation?.promotion_ready ? 'success' : 'warning'}>
-            {incubation?.promotion_ready ? '达到上架条件' : '仍在观察中'}
-          </Badge>
-          <Badge variant={incubation?.deprecation_risk ? 'danger' : 'neutral'}>
-            {incubation?.deprecation_risk ? '存在淘汰风险' : '暂无淘汰风险'}
-          </Badge>
-          {currentAccount?.account_id ? <Badge variant="info">模拟盘账户: {currentAccount.account_id}</Badge> : null}
-          {latestMetric?.decision ? <Badge variant={latestMetric.decision === 'promote' ? 'success' : latestMetric.decision === 'halt' ? 'danger' : 'warning'}>最新决策: {latestMetric.decision}</Badge> : null}
-        </div>
-        {blockers.length ? (
-          <div className="mt-3 text-sm text-text-secondary">
-            <div className="font-medium mb-1">晋级阻塞项</div>
-            <ul className="m-0 pl-5">
-              {blockers.map((item) => <li key={item}>{item}</li>)}
-            </ul>
-          </div>
-        ) : null}
-        {riskFlags.length ? (
-          <div className="mt-3 text-sm text-danger">
-            <div className="font-medium mb-1">风险提示</div>
-            <ul className="m-0 pl-5">
-              {riskFlags.map((item) => <li key={item}>{item}</li>)}
-            </ul>
-          </div>
-        ) : null}
-        {forwardRows.length ? (
-          <div className="mt-3">
-            <DataTable
-              columns={[
-                { key: 'label', label: '观察窗口' },
-                { key: 'hit_rate', label: '命中率' },
-                { key: 'forward_ic', label: '前向IC' },
-                { key: 'forward_sharpe', label: '前向Sharpe' },
-              ]}
-              rows={forwardRows}
-            />
-          </div>
-        ) : null}
-      </SectionCard>
-
-      <SectionCard className="p-3">
-        <h3 className="mt-0">模拟盘孵化指标</h3>
-        {metricRows.length ? (
-          <DataTable
-            columns={[
-              { key: 'metric_date', label: '日期' },
-              { key: 'nav', label: 'NAV' },
-              { key: 'daily_return', label: '日收益' },
-              { key: 'max_drawdown', label: '回撤' },
-              { key: 'sharpe_ratio', label: 'Sharpe' },
-              { key: 'exposure_rate', label: '暴露率' },
-              { key: 'alpha_decay', label: 'Alpha衰减' },
-              { key: 'drift_score', label: '漂移分数' },
-              { key: 'decision', label: '决策' },
-            ]}
-            rows={metricRows}
-            pageSize={8}
-          />
-        ) : (
-          <p className="text-sm text-text-secondary">暂无孵化指标沉淀</p>
-        )}
-      </SectionCard>
-
-      <SectionCard className="p-3">
-        <h3 className="mt-0">运行时风控事件</h3>
-        {riskRows.length ? (
-          <DataTable
-            columns={[
-              { key: 'detected_at', label: '发现时间' },
-              { key: 'severity', label: '级别', render: (value) => <Badge variant={value === 'critical' ? 'danger' : value === 'high' ? 'warning' : 'info'}>{String(value ?? '-')}</Badge> },
-              { key: 'event_type', label: '事件类型' },
-              { key: 'action', label: '动作' },
-              { key: 'status', label: '状态' },
-              { key: 'title', label: '标题' },
-              { key: 'reason', label: '原因' },
-            ]}
-            rows={riskRows}
-            pageSize={8}
-          />
-        ) : (
-          <p className="text-sm text-text-secondary">暂无实时风险事件</p>
-        )}
-      </SectionCard>
-
-      <SectionCard className="p-3">
-        <h3 className="mt-0">向量画像 / 去重画像</h3>
-        {profileRows.length ? (
-          <DataTable
-            columns={[
-              { key: 'profile_type', label: '画像类型' },
-              { key: 'vector_method', label: '向量方法' },
-              { key: 'metric', label: '相似度' },
-              { key: 'vector_dim', label: '维度' },
-              { key: 'backend', label: '后端' },
-              { key: 'index_version', label: '索引版本' },
-              { key: 'signature', label: '签名' },
-            ]}
-            rows={profileRows}
-          />
-        ) : (
-          <p className="text-sm text-text-secondary">暂无向量画像</p>
-        )}
-      </SectionCard>
-
-      <SectionCard className="p-3">
-        <h3 className="mt-0">AI 生成实验</h3>
-        {experimentRows.length ? (
-          <DataTable
-            columns={[
-              { key: 'experiment_id', label: '实验ID' },
-              { key: 'source', label: '来源' },
-              { key: 'generator_type', label: '生成器' },
-              { key: 'optimizer_type', label: '优化器' },
-              { key: 'status', label: '状态', render: (value) => <Badge variant={value === 'accepted' ? 'success' : value === 'rejected' ? 'danger' : 'info'}>{String(value ?? '-')}</Badge> },
-              { key: 'hypothesis', label: '假设' },
-              { key: 'created_at', label: '创建时间' },
-            ]}
-            rows={experimentRows}
-            pageSize={8}
-          />
-        ) : (
-          <p className="text-sm text-text-secondary">暂无 AI 生成实验记录</p>
-        )}
-      </SectionCard>
-
-      <SectionCard className="p-3">
-        <h3 className="mt-0">领域事件流</h3>
-        {domainEventRows.length ? (
-          <DataTable
-            columns={[
-              { key: 'created_at', label: '时间' },
-              { key: 'event_type', label: '事件' },
-              { key: 'source', label: '来源' },
-              { key: 'severity', label: '级别', render: (value) => <Badge variant={value === 'critical' ? 'danger' : value === 'warning' ? 'warning' : 'info'}>{String(value ?? '-')}</Badge> },
-              { key: 'aggregate', label: '聚合对象' },
-              { key: 'payload', label: 'Payload 摘要' },
-            ]}
-            rows={domainEventRows}
-            pageSize={8}
-          />
-        ) : (
-          <p className="text-sm text-text-secondary">暂无领域事件</p>
-        )}
-      </SectionCard>
-
-      <SectionCard className="p-3">
-        <h3 className="mt-0">生命周期事件流</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-          <input className="border rounded px-3 py-2 text-sm" value={eventFilters.event_type} onChange={(e) => onEventFilterChange('event_type', e.target.value)} placeholder="事件类型" />
-          <input className="border rounded px-3 py-2 text-sm" value={eventFilters.from_status} onChange={(e) => onEventFilterChange('from_status', e.target.value)} placeholder="起始状态" />
-          <input className="border rounded px-3 py-2 text-sm" value={eventFilters.to_status} onChange={(e) => onEventFilterChange('to_status', e.target.value)} placeholder="目标状态" />
-          <input className="border rounded px-3 py-2 text-sm" value={eventFilters.actor_id} onChange={(e) => onEventFilterChange('actor_id', e.target.value)} placeholder="触发方" />
-          <input className="border rounded px-3 py-2 text-sm" type="date" value={eventFilters.start_time} onChange={(e) => onEventFilterChange('start_time', e.target.value)} />
-          <input className="border rounded px-3 py-2 text-sm" type="date" value={eventFilters.end_time} onChange={(e) => onEventFilterChange('end_time', e.target.value)} />
-          <input className="border rounded px-3 py-2 text-sm" value={eventFilters.limit} onChange={(e) => onEventFilterChange('limit', e.target.value)} placeholder="返回条数" />
-        </div>
-        {eventRows.length ? (
-          <DataTable
-            columns={[
-              { key: 'created_at', label: '时间' },
-              { key: 'transition', label: '状态流转' },
-              { key: 'actor_id', label: '触发方' },
-              { key: 'reason', label: '原因' },
-              { key: 'metadata', label: 'Metadata 摘要' },
-            ]}
-            rows={eventRows}
-            pageSize={8}
-          />
-        ) : (
-          <p className="text-sm text-text-secondary">暂无生命周期事件</p>
-        )}
-      </SectionCard>
-    </div>
   );
 }

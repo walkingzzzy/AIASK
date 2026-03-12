@@ -23,6 +23,26 @@ except ImportError:
     talib = None
 
 
+def _tdx_sma(data: List[float], n: int, m: int = 1) -> List[float]:
+    """通达信 SMA 兼容实现。
+
+    公式：Y = (M * X + (N - M) * Y') / N
+    其中首个值取原始序列首值。
+    """
+    if not data:
+        return []
+    if n <= 0:
+        return [float(x) for x in data]
+
+    m = max(0, min(m, n))
+    result = [float(data[0])]
+    for value in data[1:]:
+        prev = result[-1]
+        current = (m * float(value) + (n - m) * prev) / n
+        result.append(current)
+    return result
+
+
 class TechnicalAnalysis:
     """技术分析计算器"""
     
@@ -477,8 +497,12 @@ class TechnicalAnalysis:
         return roc.tolist()
 
     @staticmethod
-    def calculate_trix(closes: List[float], period: int = 12) -> Dict[str, List[float]]:
-        """计算 TRIX 指标，返回 TRIX 与 MATRIX。"""
+    def calculate_trix(
+        closes: List[float], period: int = 12, n: Optional[int] = None, m: Optional[int] = None
+    ) -> Dict[str, List[float]]:
+        """计算 TRIX 指标，兼容旧参数名 n/m，返回 TRIX 与 MATRIX。"""
+        period = int(n or period or 12)
+        matrix_period = int(m or 9)
         ema1 = np.array(TechnicalAnalysis._calculate_ema_numpy(closes, period))
         ema2 = np.array(TechnicalAnalysis._calculate_ema_numpy(ema1.tolist(), period))
         ema3 = np.array(TechnicalAnalysis._calculate_ema_numpy(ema2.tolist(), period))
@@ -486,26 +510,31 @@ class TechnicalAnalysis:
         for i in range(1, len(closes)):
             if ema3[i - 1] != 0:
                 trix[i] = (ema3[i] - ema3[i - 1]) / ema3[i - 1] * 100
-        matrix = np.array(TechnicalAnalysis._calculate_sma_numpy(trix.tolist(), 9))
+        matrix = np.array(TechnicalAnalysis._calculate_sma_numpy(trix.tolist(), matrix_period))
         return {"TRIX": trix.tolist(), "MATRIX": matrix.tolist()}
 
     @staticmethod
     def calculate_dma_indicator(
         closes: List[float], short: int = 10, long_period: int = 50, m: int = 10
     ) -> Dict[str, List[float]]:
-        """计算 DMA 指标，返回 DIF 与 AMA。"""
+        """计算 DMA 指标，返回 DIF 与 AMA，并兼容旧字段 DIFMA。"""
         short_ma = np.array(TechnicalAnalysis._calculate_sma_numpy(closes, short))
         long_ma = np.array(TechnicalAnalysis._calculate_sma_numpy(closes, long_period))
         dif = short_ma - long_ma
         ama = np.array(TechnicalAnalysis._calculate_sma_numpy(dif.tolist(), m))
-        return {"DIF": dif.tolist(), "AMA": ama.tolist()}
+        ama_list = ama.tolist()
+        return {"DIF": dif.tolist(), "AMA": ama_list, "DIFMA": ama_list}
 
     @staticmethod
     def calculate_expma(closes: List[float], n1: int = 12, n2: int = 50) -> Dict[str, List[float]]:
-        """计算 EXPMA 指标，返回两条指数均线。"""
+        """计算 EXPMA 指标，返回两条指数均线，并兼容旧字段 EXP1/EXP2。"""
+        exp1 = TechnicalAnalysis._calculate_ema_numpy(closes, n1)
+        exp2 = TechnicalAnalysis._calculate_ema_numpy(closes, n2)
         return {
-            "EXPMA1": TechnicalAnalysis._calculate_ema_numpy(closes, n1),
-            "EXPMA2": TechnicalAnalysis._calculate_ema_numpy(closes, n2),
+            "EXPMA1": exp1,
+            "EXPMA2": exp2,
+            "EXP1": exp1,
+            "EXP2": exp2,
         }
 
     @staticmethod
@@ -514,6 +543,9 @@ class TechnicalAnalysis:
     ) -> Dict[str, List[float]]:
         """计算 DMI 指标，返回 PDI/MDI/ADX/ADXR。"""
         n_bars = len(closes)
+        if n_bars < max(2, n):
+            return {"PDI": [], "MDI": [], "ADX": [], "ADXR": []}
+
         pdi = np.zeros(n_bars)
         mdi = np.zeros(n_bars)
         dx = np.zeros(n_bars)
@@ -569,8 +601,10 @@ class TechnicalAnalysis:
         }
 
     @staticmethod
-    def calculate_vr_indicator(closes: List[float], volumes: List[float], n: int = 26) -> Dict[str, List[float]]:
-        """计算 VR 指标，返回 VR 序列。"""
+    def calculate_vr_indicator(
+        closes: List[float], volumes: List[float], n: int = 26, m: int = 6
+    ) -> Dict[str, List[float]]:
+        """计算 VR 指标，返回 VR 序列，并兼容旧字段 MAVR。"""
         n_bars = len(closes)
         vr = np.zeros(n_bars)
         close_arr = np.array(closes)
@@ -590,7 +624,9 @@ class TechnicalAnalysis:
             if denominator > 0:
                 vr[i] = (av + 0.5 * cv) / denominator * 100
 
-        return {"VR": vr.tolist()}
+        vr_list = vr.tolist()
+        mavr = TechnicalAnalysis._calculate_sma_numpy(vr_list, m)
+        return {"VR": vr_list, "MAVR": mavr}
 
 
 # 全局实例

@@ -42,9 +42,9 @@ class MacroTimingStrategy(IStrategy):
         rets = np.diff(window) / window[:-1]
         # 动量分量: 近5日收益率映射到 0-100
         momentum = 50.0 + float(np.mean(rets[-5:])) * 400.0
-        # 波动率分量: 高波动 = 恐惧（低分）
+        # 波动率分量: 高波动 → 恐惧 → 低分；低波动 → 贪婪 → 高分
         vol = float(np.std(rets)) * np.sqrt(252)
-        volatility = 75.0 - vol * 800.0
+        vol_score = 75.0 - vol * 800.0
         # 成交量分量（如果有）
         volume_score = 50.0
         if vol_window is not None and len(vol_window) >= 15:
@@ -52,7 +52,7 @@ class MacroTimingStrategy(IStrategy):
             long_v = float(np.mean(vol_window[-15:-5]))
             if long_v > 0:
                 volume_score = 50.0 + (short_v / long_v - 1.0) * 25.0
-        composite = (momentum + volatility + volume_score) / 3.0
+        composite = (momentum + vol_score + volume_score) / 3.0
         return float(np.clip(composite, 0, 100))
 
     def generate_signals(self, closes: np.ndarray, volumes: Optional[np.ndarray] = None) -> np.ndarray:

@@ -16,6 +16,7 @@ import sys
 import logging
 from pathlib import Path
 from unittest.mock import patch, AsyncMock, MagicMock
+import pytest
 
 # 加载 .env
 _env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -36,6 +37,8 @@ logging.basicConfig(
     stream=sys.stderr,
 )
 logger = logging.getLogger("test_db_first")
+
+pytestmark = pytest.mark.asyncio
 
 
 # ============================================================================
@@ -402,5 +405,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    success = asyncio.run(main())
+    from akshare_mcp.storage import run_with_db_cleanup
+
+    success = run_with_db_cleanup(main())
     sys.exit(0 if success else 1)

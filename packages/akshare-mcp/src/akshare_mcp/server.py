@@ -10,29 +10,13 @@ import os
 import logging
 from pathlib import Path
 
+from .env_loader import load_mcp_env
+
 # 禁用 tqdm 进度条输出，避免 AKShare/Tushare 内部进度条写入 stderr 被 MCP 当 [error] 刷屏
 os.environ.setdefault("TQDM_DISABLE", "1")
 
-# 在首次使用 get_db() 前加载 .env，使数据库使用实际配置（DB_PASSWORD、DB_NAME 等）
-# 注意：如果环境变量已设置（来自 MCP 配置），则不覆盖，确保 MCP 配置优先级更高
-_env_path = Path(__file__).resolve().parent.parent.parent / '.env'
-if _env_path.exists():
-    try:
-        _env_content = _env_path.read_text(encoding='utf-8', errors='replace')
-    except Exception:
-        _env_content = ""
-    for line in _env_content.splitlines():
-        line = line.strip()
-        if line and not line.startswith('#') and '=' in line:
-            key, value = line.split('=', 1)
-            k, v = key.strip(), value.strip()
-            # 如果环境变量已设置（来自 MCP 配置），则不覆盖
-            # 只有在环境变量未设置时才从 .env 加载
-            if k.startswith('DB_'):
-                if k not in os.environ:
-                    os.environ[k] = v
-            else:
-                os.environ.setdefault(k, v)
+# 在首次使用 get_db() 前加载 .env；若外部环境已注入配置，则不覆盖
+load_mcp_env(override=False)
 
 # 在所有导入之前抑制警告，避免干扰 MCP 协议通信
 import warnings
@@ -83,6 +67,7 @@ from .services.factor_scheduler import get_factor_scheduler
 from .services.matching_engine import get_matching_engine
 from .services.nav_engine import get_nav_engine
 from .services.signal_tracker import get_signal_tracker
+from .storage import close_db
 
 
 def _safe_shutdown_data_sync() -> None:
@@ -99,6 +84,21 @@ def _safe_shutdown_data_sync() -> None:
 
 
 atexit.register(_safe_shutdown_data_sync)
+
+
+def _safe_shutdown_db() -> None:
+    """进程退出时关闭数据库连接池。"""
+    try:
+        asyncio.run(close_db())
+    except RuntimeError:
+        logging.getLogger(__name__).warning("[Server] skip db shutdown: event loop unavailable")
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "[Server] db shutdown failed", extra={"error": str(e)}
+        )
+
+
+atexit.register(_safe_shutdown_db)
 
 
 # ===== FastMCP app =====

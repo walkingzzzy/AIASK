@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from ...utils import fail, normalize_code, ok
-from ..decision import get_investment_analysis
+from ..investment_analysis import get_investment_analysis
 
 
 def _maybe_float(value):

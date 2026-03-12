@@ -12,13 +12,15 @@ import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { tradingInterval } from '@/lib/trading-hours';
 import { fmt } from '@/lib/api';
+import { useQuoteSubscription, type QuoteData as LiveQuoteData } from '@/lib/ws';
 import Link from 'next/link';
 import { AIDiagnosisPanel } from '@/components/ai-diagnosis-panel';
 import { PeerComparisonTable } from '@/components/peer-comparison';
 import { StockCapitalPanel } from '@/components/stock-capital-panel';
 
 type Period = 'daily' | 'weekly' | 'monthly';
-type QuoteData = { quote?: import('@aiask/shared-types').NormalizedQuote; meta?: { cache?: unknown; fetchedAt?: string } };
+type NormalizedQuote = import('@aiask/shared-types').NormalizedQuote;
+type QuoteData = { quote?: NormalizedQuote; meta?: { cache?: unknown; fetchedAt?: string } };
 type KlineData = { kline?: import('@aiask/shared-types').NormalizedKlinePoint[]; meta?: { cache?: unknown; fetchedAt?: string } };
 
 export default function StockPage() {
@@ -91,6 +93,23 @@ export default function StockPage() {
     { parse: (raw) => ensureRecord(raw, '估值概览') },
   );
   const [infoTab, setInfoTab] = useState<string>('chart');
+  const wsQuotesRef = useRef<Map<string, Partial<NormalizedQuote>>>(new Map());
+  const [wsQuoteTick, setWsQuoteTick] = useState(0);
+  const liveQuoteCode = submittedCode ?? resolvedCode ?? null;
+
+  const handleWsQuote = useCallback((data: LiveQuoteData) => {
+    const liveCode = String(data.code ?? '').trim();
+    if (!liveCode) return;
+    wsQuotesRef.current.set(liveCode, data as Partial<NormalizedQuote>);
+    setWsQuoteTick((tick) => tick + 1);
+  }, []);
+
+  useQuoteSubscription({
+    codes: liveQuoteCode ? [liveQuoteCode] : [],
+    type: 'stock',
+    enabled: Boolean(liveQuoteCode),
+    onUpdate: handleWsQuote,
+  });
 
   const INFO_TABS = useMemo(() => [
     { key: 'chart', label: 'K线图' },
@@ -140,7 +159,21 @@ export default function StockPage() {
     date: x.date.slice(0, 10), open: x.open, close: x.close, low: x.low, high: x.high, volume: x.volume,
   })), [klineQ.data]);
 
-  const q = quoteQ.data?.quote;
+  const wsQuote = useMemo(() => {
+    if (!liveQuoteCode) return null;
+    return wsQuotesRef.current.get(liveQuoteCode) ?? null;
+  }, [liveQuoteCode, wsQuoteTick]);
+
+  const q = useMemo<NormalizedQuote | undefined>(() => {
+    const base = quoteQ.data?.quote;
+    if (!base && !wsQuote) return undefined;
+    return {
+      ...(base ?? {} as NormalizedQuote),
+      ...(wsQuote ?? {}),
+      code: String(wsQuote?.code ?? base?.code ?? liveQuoteCode ?? ''),
+      name: String(wsQuote?.name ?? base?.name ?? ''),
+    } as NormalizedQuote;
+  }, [liveQuoteCode, quoteQ.data?.quote, wsQuote]);
   const sentimentScore = Number(sentimentQ.data?.score ?? sentimentQ.data?.sentiment_score ?? 0);
   const SKIP_KEYS = ['tool', 'meta', 'code', 'sourceTool', 'sourceTools', 'argsMatched', 'result', 'traceId', 'success', 'data', 'error', 'source', 'cached', 'timestamp', 'source_chain', 'attempted_sources', 'fallback_used', 'fallback_reason', 'data_timestamp'];
 

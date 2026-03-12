@@ -18,7 +18,7 @@
         "DATA_SYNC_SCHEDULER_ENABLED": "false",
         "MATCHING_ENGINE_ENABLED": "false",
         "NAV_ENGINE_ENABLED": "false",
-        "SIGNAL_TRACKER_ENABLED": "false",
+        "SIGNAL_TRACKER_ENABLED": "true",
         "STRATEGY_FACTORY_ENABLED": "false",
         "FACTOR_SCHEDULER_ENABLED": "false"
       }

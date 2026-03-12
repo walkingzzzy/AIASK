@@ -86,9 +86,10 @@ class SignalTracker:
             'trace_id': uuid4().hex[:12],
             'payload': {'signal_date': str(today)},
         }) if hasattr(db, 'save_strategy_task_run') else {'id': None, 'trace_id': None}
-        results = {"signals_generated": 0, "forward_returns_computed": 0, "incubation_orders": 0, "incubation_metrics": 0, "risk_events": 0, "risk_actions": 0, "transitions": 0, "vector_registry_updates": 0, "task_run_id": task_run.get('id'), "errors": []}
+        results = {"signals_generated": 0, "forward_returns_computed": 0, "incubation_orders": 0, "incubation_metrics": 0, "risk_events": 0, "risk_actions": 0, "transitions": 0, "vector_registry_updates": 0, "projection_snapshots": 0, "skipped_runtime_controls": 0, "task_run_id": task_run.get('id'), "errors": []}
 
         strategies = []
+        executable_strategies = []
 
         # Phase A: Generate signals for listed/incubating strategies
         try:
@@ -96,7 +97,16 @@ class SignalTracker:
                 rows = await db.list_strategies(status, limit=200)
                 strategies.extend(rows)
 
+            from .runtime_control import get_strategy_runtime_control_service
+            control_service = get_strategy_runtime_control_service()
             for s in strategies:
+                control = await db.get_strategy_runtime_control(s['id']) if hasattr(db, 'get_strategy_runtime_control') else None
+                if control_service.is_blocking_mode((control or {}).get('control_mode')):
+                    results['skipped_runtime_controls'] += 1
+                    continue
+                executable_strategies.append(s)
+
+            for s in executable_strategies:
                 try:
                     stype = s.get("strategy_type", "")
                     klass = StrategyRegistry.get(stype)
@@ -111,7 +121,11 @@ class SignalTracker:
                         if not klines or len(klines) < 20:
                             continue
                         closes = np.array([float(k.get("close", 0)) for k in klines])
-                        sig_arr = instance.generate_signals(closes)
+                        volumes = np.array([float(k.get("volume", 0) or 0) for k in klines])
+                        try:
+                            sig_arr = instance.generate_signals(closes, volumes)
+                        except TypeError:
+                            sig_arr = instance.generate_signals(closes)
                         latest_signal = int(sig_arr[-1]) if len(sig_arr) > 0 else 0
                         if latest_signal != 0:
                             signals_batch.append({"code": code, "signal": latest_signal, "score": float(sig_arr[-1])})
@@ -167,8 +181,10 @@ class SignalTracker:
         # Phase C: Sync incubation orders and metrics
         try:
             from .incubation import get_strategy_incubation_service
-            incubation_result = await get_strategy_incubation_service().process_strategies(db, strategies, signal_date=today)
+            incubation_result = await get_strategy_incubation_service().process_strategies(db, executable_strategies, signal_date=today)
             results["incubation_orders"] = int(incubation_result.get("orders_created") or 0)
+            results["incubation_orders_filled"] = int(incubation_result.get("orders_filled") or 0)
+            results["incubation_nav_snapshots"] = int(incubation_result.get("nav_snapshots") or 0)
             results["incubation_metrics"] = int(incubation_result.get("metrics_recorded") or 0)
         except Exception as e:
             results["errors"].append(f"Phase C: {e}")
@@ -182,21 +198,49 @@ class SignalTracker:
         except Exception as e:
             results["errors"].append(f"Phase D: {e}")
 
-        # Phase E: Lifecycle scan
+        # Phase E: 孵化流水线推进与自动晋级
+        try:
+            from .incubation_pipeline import get_strategy_incubation_pipeline_service
+            pipeline_result = await get_strategy_incubation_pipeline_service().run_batch(
+                db,
+                statuses=['incubating'],
+                limit=200,
+                source='signal_tracker',
+                auto_apply_review=True,
+            )
+            results["incubation_pipeline_snapshots"] = int(pipeline_result.get("count") or 0)
+            results["incubation_auto_promotions"] = int(pipeline_result.get("auto_promoted") or 0)
+        except Exception as e:
+            results["errors"].append(f"Phase E: {e}")
+
+        # Phase F: Lifecycle scan
         try:
             from ..tools.managers.strategy_manager import _lifecycle_scan
             scan_result = await _lifecycle_scan(db)
             results["transitions"] = len(scan_result.get("transitions", []))
         except Exception as e:
-            results["errors"].append(f"Phase E: {e}")
+            results["errors"].append(f"Phase F: {e}")
 
-        # Phase F: 向量索引注册表校准
+        # Phase G: 向量索引注册表校准
         try:
             from .vector_governance import get_strategy_vector_governance_service
             vector_result = await get_strategy_vector_governance_service().reconcile_registry(db, index_name='strategy_behavior', profile_type='behavior')
             results["vector_registry_updates"] = int(vector_result.get("registry_updated") or 0)
         except Exception as e:
             results["errors"].append(f"Phase F: {e}")
+
+        # Phase H: 事件投影快照重建
+        try:
+            from .domain_projection import get_strategy_domain_projection_service
+            projection_result = await get_strategy_domain_projection_service().rebuild_batch(
+                db,
+                statuses=['incubating', 'listed', 'suspended', 'deprecated'],
+                limit=200,
+                source='signal_tracker',
+            )
+            results["projection_snapshots"] = int(projection_result.get("count") or 0)
+        except Exception as e:
+            results["errors"].append(f"Phase H: {e}")
 
         elapsed = (datetime.now() - start).total_seconds()
         self.last_run = datetime.now()
@@ -215,9 +259,9 @@ class SignalTracker:
                 'payload': self.last_result,
             })
         logger.info(
-            "SignalTracker: completed in %.1fs — %d signals, %d fwd returns, %d incubation orders, %d risk events, %d risk actions, %d transitions, %d errors",
+            "SignalTracker: completed in %.1fs — %d signals, %d fwd returns, %d incubation orders, %d pipeline snapshots, %d auto promotions, %d risk events, %d risk actions, %d transitions, %d errors",
             elapsed, results["signals_generated"], results["forward_returns_computed"],
-            results["incubation_orders"], results["risk_events"], results["risk_actions"], results["transitions"], len(results["errors"]),
+            results["incubation_orders"], results["incubation_pipeline_snapshots"], results["incubation_auto_promotions"], results["risk_events"], results["risk_actions"], results["transitions"], len(results["errors"]),
         )
         return self.last_result
 

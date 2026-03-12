@@ -1,7 +1,9 @@
 import {
+  Inject,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  forwardRef,
 } from '@nestjs/common';
 import {
   OnGatewayConnection,
@@ -11,6 +13,7 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { MarketScheduler } from '../market/market.scheduler';
 
 /**
  * 通用 WebSocket 网关 — 行情推送、告警推送、交易状态推送、策略 NAV 推送。
@@ -33,6 +36,11 @@ export class WsGateway
   private readonly logger = new Logger(WsGateway.name);
   private readonly rooms = new Map<string, Set<string>>(); // room -> clientIds
   private heartbeatTimer: NodeJS.Timeout | null = null;
+
+  constructor(
+    @Inject(forwardRef(() => MarketScheduler))
+    private readonly marketScheduler: MarketScheduler,
+  ) {}
 
   @WebSocketServer()
   server!: Server;
@@ -61,9 +69,11 @@ export class WsGateway
 
   handleDisconnect(client: Socket) {
     // 清理空房间
-    for (const [room, clients] of this.rooms.entries()) {
-      clients.delete(client.id);
-      if (clients.size === 0) this.rooms.delete(room);
+    for (const [room] of this.rooms.entries()) {
+      const roomEmpty = this._untrack(room, client.id);
+      if (roomEmpty) {
+        this._removeTrackedQuoteCode(room);
+      }
     }
     this.logger.debug(`client disconnected: ${client.id}`);
   }
@@ -74,7 +84,7 @@ export class WsGateway
   handleQuoteSub(client: Socket, payload: { codes?: string[]; type?: string }) {
     // type: 'index' | 'stock' | 'batch'
     const roomType = payload.type || 'stock';
-    const codes = payload.codes || [];
+    const codes = (payload.codes || []).map((code) => String(code).trim()).filter(Boolean);
     if (codes.length === 0) {
       // 订阅全局行情广播
       const room = `quote:broadcast`;
@@ -88,18 +98,27 @@ export class WsGateway
         this._track(room, client.id);
       }
       this.logger.debug(`${client.id} subscribed to ${codes.length} ${roomType} quotes`);
+      if (roomType === 'stock') {
+        this.marketScheduler.addSubscribedCodes(codes);
+      }
     }
   }
 
   @SubscribeMessage('unsubscribe:quote')
   handleQuoteUnsub(client: Socket, payload: { codes?: string[]; type?: string }) {
     const roomType = payload.type || 'stock';
-    const codes = payload.codes || [];
+    const codes = (payload.codes || []).map((code) => String(code).trim()).filter(Boolean);
     if (codes.length === 0) {
+      this._untrack('quote:broadcast', client.id);
       void client.leave('quote:broadcast');
     } else {
       for (const code of codes) {
-        void client.leave(`quote:${roomType}:${code}`);
+        const room = `quote:${roomType}:${code}`;
+        const roomEmpty = this._untrack(room, client.id);
+        if (roomEmpty) {
+          this._removeTrackedQuoteCode(room);
+        }
+        void client.leave(room);
       }
     }
   }
@@ -227,6 +246,31 @@ export class WsGateway
   private _track(room: string, clientId: string) {
     if (!this.rooms.has(room)) this.rooms.set(room, new Set());
     this.rooms.get(room)!.add(clientId);
+  }
+
+  private _untrack(room: string, clientId: string) {
+    const clients = this.rooms.get(room);
+    if (!clients) return false;
+    clients.delete(clientId);
+    if (clients.size === 0) {
+      this.rooms.delete(room);
+      return true;
+    }
+    return false;
+  }
+
+  private _removeTrackedQuoteCode(room: string) {
+    const code = this._extractTrackedQuoteCode(room);
+    if (code) {
+      this.marketScheduler.removeSubscribedCodes([code]);
+    }
+  }
+
+  private _extractTrackedQuoteCode(room: string) {
+    const prefix = 'quote:stock:';
+    if (!room.startsWith(prefix)) return null;
+    const code = room.slice(prefix.length).trim();
+    return code || null;
   }
 
   /** 获取当前连接统计信息 */

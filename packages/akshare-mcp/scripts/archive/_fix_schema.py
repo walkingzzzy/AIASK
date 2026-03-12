@@ -11,6 +11,7 @@ if env_path.exists():
             os.environ[k.strip()] = v.strip()
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+from akshare_mcp.storage import run_with_db_cleanup
 from akshare_mcp.storage.timescaledb import get_db
 
 
@@ -166,4 +167,4 @@ async def fix():
     print("\n✅ 表结构修复完成")
 
 
-asyncio.run(fix())
+run_with_db_cleanup(fix())

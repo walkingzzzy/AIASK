@@ -3,6 +3,7 @@ MCP 功能测试 — 直接调用 FastMCP 工具进行端到端验证
 """
 import sys, asyncio, json, os, traceback
 from datetime import datetime
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 os.environ['TDX_ENABLED'] = 'false'
@@ -11,6 +12,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from akshare_mcp.server import mcp as app
 
 RESULTS = []
+
+pytestmark = pytest.mark.asyncio
 
 async def call_tool(name: str, args: dict = None):
     """调用 MCP 工具并返回结果"""

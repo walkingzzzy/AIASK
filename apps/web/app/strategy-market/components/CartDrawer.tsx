@@ -1,0 +1,95 @@
+'use client';
+
+import { useState } from 'react';
+import { useCartStore } from '@/store/cart-store';
+import { useApiMutation } from '@/hooks/use-api-mutation';
+
+export function CartDrawer({ onClose }: { onClose: () => void }) {
+  const { items, removeStrategy, setWeight, clear } = useCartStore();
+  const createApi = useApiMutation();
+  const [name, setName] = useState('');
+
+  const totalWeight = items.reduce((sum, i) => sum + i.weight, 0);
+  const weightValid = items.length > 0 && Math.abs(totalWeight - 100) < 0.01;
+
+  function autoBalance() {
+    const w = Math.floor(100 / items.length);
+    const remainder = 100 - w * items.length;
+    items.forEach((item, idx) => setWeight(item.strategyId, w + (idx === 0 ? remainder : 0)));
+  }
+
+  async function handleSubmit() {
+    if (!weightValid) return;
+    const portfolioName = name.trim() || `策略组合 ${new Date().toLocaleDateString()}`;
+    await createApi.triggerAsync('/portfolio/create', { method: 'POST' }, {
+      name: portfolioName,
+      description: `策略组合: ${items.map((i) => `${i.name}(${i.weight}%)`).join(', ')}`,
+      strategies: items.map((i) => ({ strategyId: i.strategyId, weight: i.weight / 100 })),
+    });
+    clear();
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="fixed inset-0 bg-black/30" onClick={onClose} />
+      <div className="relative w-85 bg-surface-alt border-l border-border p-4 overflow-y-auto z-10">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="m-0 text-sm font-semibold">组合购物车 ({items.length})</h3>
+          <button onClick={onClose} className="text-lg cursor-pointer">✕</button>
+        </div>
+
+        {items.length === 0 && <p className="text-text-secondary text-sm">购物车为空，请从策略列表添加策略</p>}
+
+        {items.map((item) => (
+          <div key={item.strategyId} className="flex items-center gap-2 py-2 border-b border-border">
+            <div className="flex-1 text-sm truncate">{item.name}</div>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={item.weight}
+              onChange={(e) => setWeight(item.strategyId, Number(e.target.value))}
+              className="w-14 px-1 py-0.5 border border-border rounded text-xs text-center"
+              placeholder="%"
+            />
+            <span className="text-[10px] text-text-secondary">%</span>
+            <button onClick={() => removeStrategy(item.strategyId)} className="text-danger text-xs cursor-pointer">删除</button>
+          </div>
+        ))}
+
+        {items.length > 0 && (
+          <>
+            <div className={`text-xs mt-2 ${weightValid ? 'text-success' : 'text-danger'}`}>
+              权重合计: {totalWeight.toFixed(1)}%{!weightValid && ' (需等于100%)'}
+            </div>
+            <div className="mt-3 space-y-2">
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="组合名称（可选）"
+                className="w-full px-2 py-1 border border-border rounded text-xs"
+              />
+              <div className="flex gap-2">
+                <button onClick={autoBalance} className="flex-1 px-2 py-1 text-xs border border-border rounded cursor-pointer hover:bg-surface-alt">
+                  等权分配
+                </button>
+                <button onClick={clear} className="flex-1 px-2 py-1 text-xs border border-border rounded cursor-pointer hover:bg-surface-alt">
+                  清空
+                </button>
+              </div>
+              <button
+                onClick={handleSubmit}
+                disabled={!weightValid || createApi.isPending}
+                className="w-full px-2 py-1.5 text-sm rounded bg-primary text-white cursor-pointer disabled:opacity-50"
+              >
+                {createApi.isPending ? '创建中...' : '创建策略组合'}
+              </button>
+              {createApi.error && <p className="text-danger text-xs">{createApi.error}</p>}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

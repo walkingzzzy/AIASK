@@ -281,12 +281,60 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('incubation_metrics', { strategy_id: id, ...params });
   }
 
+  async paperAccount(id: string, params: { limit?: number } = {}) {
+    return this.call('paper_account', { strategy_id: id, ...params });
+  }
+
+  async paperOrders(id: string, params: { signal_date?: string; status?: string; limit?: number } = {}) {
+    return this.call('paper_orders', { strategy_id: id, ...params });
+  }
+
+  async paperNav(id: string, params: { limit?: number } = {}) {
+    return this.call('paper_nav', { strategy_id: id, ...params });
+  }
+
+  async runIncubationSync(id: string, params: { signal_date?: string } = {}) {
+    return this.call('incubation_sync_run', { strategy_id: id, ...params });
+  }
+
+  async incubationPipeline(id: string, params: { pipeline_stage?: string; pipeline_status?: string; limit?: number } = {}) {
+    return this.call('incubation_pipeline', { strategy_id: id, ...params });
+  }
+
+  async runIncubationPipeline(id?: string, params: { statuses?: string[]; limit?: number; source?: string; auto_apply_review?: boolean } = {}) {
+    return this.call('incubation_pipeline_run', { strategy_id: id, ...params });
+  }
+
   async riskEvents(id: string, params: { account_id?: string; status?: string; severity?: string; limit?: number } = {}) {
     return this.call('risk_events', { strategy_id: id, ...params });
   }
 
+  async riskSnapshots(id: string, params: { posture_level?: string; control_mode?: string; limit?: number } = {}) {
+    return this.call('risk_snapshots', { strategy_id: id, ...params });
+  }
+
+  async runRiskScan(id?: string, params: { enforce_actions?: boolean } = {}) {
+    return this.call('risk_scan_run', { strategy_id: id, ...params });
+  }
+
+  async riskRecovery(id: string, params: { source?: string } = {}) {
+    return this.call('risk_recovery', { strategy_id: id, ...params });
+  }
+
   async resolveRiskEvent(eventId: number, resolution?: string) {
     return this.call('resolve_risk_event', { event_id: eventId, resolution });
+  }
+
+  async runtimeAlerts(id: string, params: { status?: string; category?: string; severity?: string; limit?: number } = {}) {
+    return this.call('runtime_alerts', { strategy_id: id, ...params });
+  }
+
+  async runRuntimeAlertDispatch(id?: string, params: { source?: string } = {}) {
+    return this.call('runtime_alert_dispatch_run', { strategy_id: id, ...params });
+  }
+
+  async acknowledgeRuntimeAlert(alertId: number, params: { acknowledged_by?: string; source?: string } = {}) {
+    return this.call('runtime_alert_ack', { alert_id: alertId, ...params });
   }
 
   async vectorProfiles(id: string, params: { profile_type?: string; limit?: number; similar_to?: string } = {}) {
@@ -297,6 +345,14 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('vector_indexes', params);
   }
 
+  async vectorIndexSnapshots(params: { index_name?: string; index_version?: string; status?: string; limit?: number } = {}) {
+    return this.call('vector_index_snapshots', params);
+  }
+
+  async vectorAnnSearch(id: string, params: { index_name?: string; index_version?: string; profile_type?: string; candidate_limit?: number; limit?: number } = {}) {
+    return this.call('vector_ann_search', { strategy_id: id, ...params });
+  }
+
   async vectorReconcile(params: { index_name?: string; profile_type?: string; limit_profiles?: number } = {}) {
     return this.call('vector_reconcile', params);
   }
@@ -305,8 +361,44 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('vector_rebuild', params);
   }
 
+  async vectorHealth(params: { index_name?: string; limit_versions?: number; include_hnsw_indexes?: boolean } = {}) {
+    return this.call('vector_health', params);
+  }
+
+  async vectorCleanup(params: { index_name?: string; keep_versions?: number; dry_run?: boolean; cleanup_hnsw?: boolean; limit_versions?: number; protect_versions?: string[] } = {}) {
+    return this.call('vector_cleanup', params);
+  }
+
   async domainEvents(id: string, params: { aggregate_type?: string; event_type?: string; source?: string; correlation_id?: string; limit?: number } = {}) {
     return this.call('domain_events', { strategy_id: id, ...params });
+  }
+
+  async domainProjection(id: string, params: { limit?: number } = {}) {
+    return this.call('domain_projection', { strategy_id: id, ...params });
+  }
+
+  async domainProjectionSnapshot(id: string, params: { limit?: number } = {}) {
+    return this.call('domain_projection_snapshot', { strategy_id: id, ...params });
+  }
+
+  async rebuildDomainProjection(id?: string, params: { limit?: number; statuses?: string[]; source?: string } = {}) {
+    return this.call('domain_projection_rebuild', { strategy_id: id, ...params });
+  }
+
+  async runtimeControl(id: string) {
+    return this.call('runtime_control', { strategy_id: id });
+  }
+
+  async setRuntimeControl(id: string, params: { control_mode: string; reason?: string; source?: string; trigger_event_type?: string } ) {
+    return this.call('runtime_control_set', { strategy_id: id, ...params });
+  }
+
+  async promotionReviews(id: string, params: { status?: string; limit?: number } = {}) {
+    return this.call('promotion_reviews', { strategy_id: id, ...params });
+  }
+
+  async runPromotionReview(id: string, params: { auto_apply?: boolean; source?: string } = {}) {
+    return this.call('promotion_review_run', { strategy_id: id, ...params });
   }
 
   async runtimeCycleRun() {
@@ -321,11 +413,11 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('ai_generate', params);
   }
 
-  async aiExperiments(params: { experiment_id?: string; strategy_id?: string; status?: string; source?: string; limit?: number } = {}) {
+  async aiExperiments(params: { experiment_id?: string; strategy_id?: string; parent_strategy_id?: string; generated_strategy_id?: string; task_run_id?: number; status?: string; source?: string; limit?: number } = {}) {
     return this.call('ai_experiments', params);
   }
 
-  async taskRuns(params: { task_name?: string; task_scope?: string; status?: string; limit?: number } = {}) {
+  async taskRuns(params: { strategy_id?: string; task_name?: string; task_scope?: string; status?: string; limit?: number } = {}) {
     return this.call('task_runs', params);
   }
 

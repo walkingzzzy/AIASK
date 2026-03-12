@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
@@ -138,6 +138,281 @@ class StrategyIncubationService:
             return None
         return None
 
+    async def _list_positions(self, db, account_id: str) -> list[dict]:
+        if hasattr(db, 'list_paper_positions'):
+            return await db.list_paper_positions(account_id)
+        async with db.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM paper_positions WHERE account_id = $1 ORDER BY stock_code",
+                account_id,
+            )
+        return [dict(row) for row in rows]
+
+    async def _save_position(self, db, position: dict) -> dict:
+        if hasattr(db, 'save_paper_position'):
+            return await db.save_paper_position(position)
+        async with db.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO paper_positions
+                    (account_id, stock_code, stock_name, quantity, cost_price, current_price, market_value, profit_rate, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+                ON CONFLICT (account_id, stock_code) DO UPDATE SET
+                    stock_name = EXCLUDED.stock_name,
+                    quantity = EXCLUDED.quantity,
+                    cost_price = EXCLUDED.cost_price,
+                    current_price = EXCLUDED.current_price,
+                    market_value = EXCLUDED.market_value,
+                    profit_rate = EXCLUDED.profit_rate,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                position.get('account_id'),
+                position.get('stock_code'),
+                position.get('stock_name') or position.get('stock_code') or '',
+                int(position.get('quantity') or 0),
+                float(position.get('cost_price') or 0.0),
+                position.get('current_price'),
+                position.get('market_value'),
+                position.get('profit_rate'),
+            )
+        return dict(row)
+
+    async def _save_trade(self, db, trade: dict) -> dict:
+        if hasattr(db, 'save_paper_trade'):
+            return await db.save_paper_trade(trade)
+        async with db.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO paper_trades
+                    (id, account_id, stock_code, stock_name, trade_type, price, quantity, amount, commission, trade_time, reason, strategy_id, source_order_id, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+                RETURNING *
+                """,
+                trade.get('id'),
+                trade.get('account_id'),
+                trade.get('stock_code'),
+                trade.get('stock_name') or trade.get('stock_code') or '',
+                trade.get('trade_type'),
+                float(trade.get('price') or 0.0),
+                int(trade.get('quantity') or 0),
+                float(trade.get('amount') or 0.0),
+                float(trade.get('commission') or 0.0),
+                trade.get('trade_time'),
+                trade.get('reason'),
+                trade.get('strategy_id'),
+                trade.get('source_order_id'),
+            )
+        return dict(row)
+
+    async def _update_order(self, db, order_id: int, updates: dict) -> Optional[dict]:
+        if hasattr(db, 'update_paper_order'):
+            return await db.update_paper_order(order_id, updates)
+        async with db.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE paper_orders
+                SET price = COALESCE($2, price),
+                    shares = COALESCE($3, shares),
+                    status = COALESCE($4, status),
+                    commission = COALESCE($5, commission),
+                    reason = COALESCE($6, reason),
+                    filled_at = COALESCE($7, filled_at),
+                    updated_at = NOW()
+                WHERE id = $1
+                RETURNING *
+                """,
+                int(order_id),
+                updates.get('price'),
+                updates.get('shares'),
+                updates.get('status'),
+                updates.get('commission'),
+                updates.get('reason'),
+                updates.get('filled_at'),
+            )
+        return dict(row) if row else None
+
+    async def _save_nav_snapshot(self, db, account: dict, nav_date: date, cash: float, market_value: float) -> dict:
+        account_id = account['id']
+        total_value = round(cash + market_value, 4)
+        rows = await db.get_paper_nav_rows(account_id, limit=2) if hasattr(db, 'get_paper_nav_rows') else []
+        prev = next((row for row in rows if str(row.get('nav_date')) != str(nav_date)), None)
+        prev_total = float((prev or {}).get('total_value') or account.get('initial_capital') or total_value or DEFAULT_INCUBATION_CAPITAL)
+        daily_return = ((total_value - prev_total) / prev_total) if prev_total > 0 else 0.0
+        snapshot = {
+            'account_id': account_id,
+            'nav_date': nav_date,
+            'total_value': total_value,
+            'cash': round(cash, 4),
+            'market_value': round(market_value, 4),
+            'daily_return': round(daily_return, 6),
+        }
+        if hasattr(db, 'save_paper_nav'):
+            await db.save_paper_nav(snapshot)
+        else:
+            async with db.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO paper_nav (account_id, nav_date, total_value, cash, market_value, daily_return, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                    ON CONFLICT (account_id, nav_date) DO UPDATE
+                    SET total_value=$3, cash=$4, market_value=$5, daily_return=$6
+                    """,
+                    snapshot['account_id'], snapshot['nav_date'], snapshot['total_value'], snapshot['cash'], snapshot['market_value'], snapshot['daily_return'],
+                )
+        updated_account = await self._save_strategy_account(db, {
+            **account,
+            'current_capital': round(cash, 4),
+            'total_value': total_value,
+        })
+        return {'snapshot': snapshot, 'account': updated_account}
+
+    async def settle_orders(self, db, strategy: dict, signal_date: Optional[date] = None) -> dict:
+        signal_date = signal_date or date.today()
+        ensure = await self.ensure_account(db, strategy)
+        account = ensure['account']
+        account_id = account['id']
+        orders = await db.list_strategy_paper_orders(strategy['id'], signal_date) if hasattr(db, 'list_strategy_paper_orders') else []
+        executable = [item for item in orders if str(item.get('status') or 'pending') in {'pending', 'submitted'}]
+        positions = {str(item.get('stock_code') or ''): dict(item) for item in await self._list_positions(db, account_id)}
+        cash = float(account.get('current_capital') or account.get('initial_capital') or DEFAULT_INCUBATION_CAPITAL)
+        filled = []
+        rejected = []
+        now = datetime.now(timezone.utc)
+
+        for order in executable:
+            code = str(order.get('code') or '').strip()
+            direction = str(order.get('direction') or '').strip().lower()
+            shares = int(order.get('shares') or 0)
+            if not code or shares <= 0 or direction not in {'buy', 'sell'}:
+                rejected.append(await self._update_order(db, order['id'], {'status': 'rejected', 'reason': 'invalid_order'}))
+                continue
+            exec_price = await self._latest_price(db, code) or float(order.get('price') or 0)
+            if exec_price <= 0:
+                rejected.append(await self._update_order(db, order['id'], {'status': 'rejected', 'reason': 'price_unavailable'}))
+                continue
+            commission = round(exec_price * shares * 0.0003, 4)
+            position = dict(positions.get(code) or {})
+            current_qty = int(position.get('quantity') or 0)
+            if direction == 'buy':
+                amount = round(exec_price * shares, 4)
+                total_cost = amount + commission
+                if cash + 1e-9 < total_cost:
+                    rejected.append(await self._update_order(db, order['id'], {'status': 'rejected', 'reason': 'insufficient_cash', 'price': round(exec_price, 4), 'commission': commission}))
+                    continue
+                cash = round(cash - total_cost, 4)
+                new_qty = current_qty + shares
+                avg_cost = float(position.get('cost_price') or 0.0)
+                new_cost = ((avg_cost * current_qty) + amount) / max(new_qty, 1)
+                latest_price = await self._latest_price(db, code) or exec_price
+                market_value = round(latest_price * new_qty, 4)
+                positions[code] = await self._save_position(db, {
+                    'account_id': account_id,
+                    'stock_code': code,
+                    'stock_name': position.get('stock_name') or code,
+                    'quantity': new_qty,
+                    'cost_price': round(new_cost, 6),
+                    'current_price': round(latest_price, 4),
+                    'market_value': market_value,
+                    'profit_rate': round(((latest_price - new_cost) / new_cost), 6) if new_cost > 0 else 0.0,
+                })
+            else:
+                if current_qty < shares:
+                    rejected.append(await self._update_order(db, order['id'], {'status': 'rejected', 'reason': 'insufficient_position', 'price': round(exec_price, 4)}))
+                    continue
+                amount = round(exec_price * shares, 4)
+                cash = round(cash + amount - commission, 4)
+                new_qty = current_qty - shares
+                avg_cost = float(position.get('cost_price') or 0.0)
+                latest_price = await self._latest_price(db, code) or exec_price
+                market_value = round(latest_price * new_qty, 4)
+                positions[code] = await self._save_position(db, {
+                    'account_id': account_id,
+                    'stock_code': code,
+                    'stock_name': position.get('stock_name') or code,
+                    'quantity': new_qty,
+                    'cost_price': round(avg_cost, 6),
+                    'current_price': round(latest_price, 4),
+                    'market_value': market_value,
+                    'profit_rate': round(((latest_price - avg_cost) / avg_cost), 6) if avg_cost > 0 else 0.0,
+                })
+            trade = await self._save_trade(db, {
+                'id': f"ptr_{uuid4().hex[:10]}",
+                'account_id': account_id,
+                'stock_code': code,
+                'stock_name': (positions.get(code) or {}).get('stock_name') or code,
+                'trade_type': direction,
+                'price': round(exec_price, 4),
+                'quantity': shares,
+                'amount': amount,
+                'commission': commission,
+                'trade_time': now,
+                'reason': order.get('reason') or order.get('source') or 'strategy_signal',
+                'strategy_id': strategy['id'],
+                'source_order_id': str(order.get('id')),
+            })
+            updated_order = await self._update_order(db, order['id'], {
+                'status': 'filled',
+                'price': round(exec_price, 4),
+                'commission': commission,
+                'filled_at': now,
+            })
+            filled.append({'order': updated_order, 'trade': trade})
+
+        market_value = 0.0
+        for code, position in list(positions.items()):
+            qty = int(position.get('quantity') or 0)
+            if qty <= 0:
+                continue
+            latest_price = await self._latest_price(db, code) or float(position.get('current_price') or position.get('cost_price') or 0.0)
+            avg_cost = float(position.get('cost_price') or 0.0)
+            market_value += latest_price * qty
+            positions[code] = await self._save_position(db, {
+                **position,
+                'account_id': account_id,
+                'stock_code': code,
+                'current_price': round(latest_price, 4),
+                'market_value': round(latest_price * qty, 4),
+                'profit_rate': round(((latest_price - avg_cost) / avg_cost), 6) if avg_cost > 0 else 0.0,
+            })
+
+        nav_result = await self._save_nav_snapshot(db, account, signal_date, cash, market_value)
+        if filled or rejected:
+            await self._record_domain_event(
+                db,
+                strategy['id'],
+                'incubation.orders_settled',
+                {
+                    'account_id': account_id,
+                    'signal_date': str(signal_date),
+                    'filled_count': len(filled),
+                    'rejected_count': len([item for item in rejected if item]),
+                    'nav': nav_result['snapshot'],
+                },
+                correlation_id=str(signal_date),
+                severity='warning' if rejected else 'info',
+            )
+        await self._record_domain_event(
+            db,
+            strategy['id'],
+            'incubation.nav_recorded',
+            {
+                'account_id': account_id,
+                'signal_date': str(signal_date),
+                'nav': nav_result['snapshot'],
+            },
+            correlation_id=str(signal_date),
+        )
+        return {
+            'strategy_id': strategy['id'],
+            'account_id': account_id,
+            'filled_count': len(filled),
+            'rejected_count': len([item for item in rejected if item]),
+            'nav_snapshot': nav_result['snapshot'],
+            'cash': nav_result['snapshot']['cash'],
+            'market_value': nav_result['snapshot']['market_value'],
+        }
+
     async def sync_signals_to_orders(self, db, strategy: dict, signal_date: date) -> dict:
         ensure = await self.ensure_account(db, strategy)
         account = ensure['account']
@@ -178,7 +453,15 @@ class StrategyIncubationService:
                     skipped += 1
                     continue
             else:
-                shares = 100
+                # Fix #8: 卖出时使用实际持仓数量，而非硬编码 100 股
+                position_shares = 0
+                if hasattr(db, 'get_paper_positions'):
+                    positions = await db.get_paper_positions(account_id)
+                    for pos in (positions or []):
+                        if str(pos.get('code') or '') == str(code):
+                            position_shares = int(pos.get('shares') or 0)
+                            break
+                shares = position_shares if position_shares > 0 else 100
             order = {
                 'account_id': account_id,
                 'strategy_id': strategy['id'],
@@ -239,6 +522,32 @@ class StrategyIncubationService:
             'orders': created,
         }
 
+    # Fix #12: 6 阶段孵化映射
+    @staticmethod
+    def _derive_incubation_stage(overview: dict, nav_days: int) -> str:
+        """根据孵化概览和交易天数推导当前阶段。
+
+        6 stages: warmup → observe → candidate → graduation_ready → promoted / failed
+        """
+        if overview.get('promotion_ready'):
+            return 'graduation_ready'
+        if overview.get('deprecation_risk'):
+            return 'failed'
+
+        blockers = overview.get('blockers') or []
+        risk_flags = overview.get('risk_flags') or []
+
+        # warmup: 交易天数不足或有严重阻塞项
+        if nav_days < 5 or any('min_' in str(b) for b in blockers):
+            return 'warmup'
+
+        # candidate: 无阻塞项且交易天数充足
+        if not blockers and not risk_flags and nav_days >= 15:
+            return 'candidate'
+
+        # observe: 中间状态
+        return 'observe'
+
     async def record_metrics(self, db, strategy: dict, metric_date: Optional[date] = None) -> Optional[dict]:
         metric_date = metric_date or date.today()
         binding = await self.ensure_account(db, strategy)
@@ -289,7 +598,8 @@ class StrategyIncubationService:
                 max_drawdown = max(max_drawdown, (peak - value) / peak)
 
         returns = [float(row.get('daily_return') or 0) for row in nav_rows if row.get('daily_return') is not None]
-        if len(returns) >= 2:
+        # Fix #9: 至少需要 20 个数据点才能计算有统计意义的 Sharpe
+        if len(returns) >= 20:
             mean_r = sum(returns) / len(returns)
             variance = sum((item - mean_r) ** 2 for item in returns) / max(len(returns) - 1, 1)
             std_r = variance ** 0.5
@@ -312,13 +622,14 @@ class StrategyIncubationService:
         exposure_rate = (market_value / total_value) if total_value > 0 else 0.0
         turnover_rate = float(order_summary.get('trade_amount') or 0.0) / total_value if total_value > 0 else 0.0
 
-        from ..tools.managers.strategy_manager import _build_incubation_overview
+        from .strategy_lifecycle_shared import build_incubation_overview as _build_incubation_overview
         overview = await _build_incubation_overview(db, strategy)
         decision = 'promote' if overview.get('promotion_ready') else ('observe' if not overview.get('deprecation_risk') else 'halt')
 
         metric = await db.save_strategy_incubation_metric(strategy['id'], metric_date, {
             'account_id': account_id,
-            'stage': 'candidate' if overview.get('promotion_ready') else 'warmup',
+            # Fix #12: 使用完整的 6 阶段映射替代二元分类
+            'stage': self._derive_incubation_stage(overview, len(nav_rows)),
             'total_value': round(total_value, 4),
             'cash': round(cash, 4),
             'market_value': round(market_value, 4),
@@ -371,6 +682,9 @@ class StrategyIncubationService:
         signal_date = signal_date or date.today()
         accounts_bound = 0
         orders_created = 0
+        orders_filled = 0
+        rejected_orders = 0
+        nav_snapshots = 0
         metrics_recorded = 0
         items = []
         for strategy in strategies:
@@ -378,13 +692,20 @@ class StrategyIncubationService:
                 ensure = await self.ensure_account(db, strategy)
                 accounts_bound += 1 if ensure.get('created') else 0
                 sync_result = await self.sync_signals_to_orders(db, strategy, signal_date)
+                settle_result = await self.settle_orders(db, strategy, signal_date)
                 metric = await self.record_metrics(db, strategy, signal_date)
                 orders_created += int(sync_result.get('created_count') or 0)
+                orders_filled += int(settle_result.get('filled_count') or 0)
+                rejected_orders += int(settle_result.get('rejected_count') or 0)
+                nav_snapshots += 1 if settle_result.get('nav_snapshot') else 0
                 metrics_recorded += 1 if metric else 0
                 items.append({
                     'strategy_id': strategy.get('id'),
                     'account_id': (ensure.get('account') or {}).get('id'),
                     'orders_created': sync_result.get('created_count', 0),
+                    'orders_filled': settle_result.get('filled_count', 0),
+                    'rejected_orders': settle_result.get('rejected_count', 0),
+                    'nav': (settle_result.get('nav_snapshot') or {}).get('total_value'),
                     'decision': (metric or {}).get('decision'),
                 })
             except Exception as exc:
@@ -394,6 +715,9 @@ class StrategyIncubationService:
             'count': len(strategies),
             'accounts_bound': accounts_bound,
             'orders_created': orders_created,
+            'orders_filled': orders_filled,
+            'rejected_orders': rejected_orders,
+            'nav_snapshots': nav_snapshots,
             'metrics_recorded': metrics_recorded,
             'items': items,
         }
