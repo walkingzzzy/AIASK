@@ -1,20 +1,26 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { PageContainer, SectionCard, KpiGrid, KpiCard, Badge } from '@/components/ui';
-import { PieChart } from '@/components/charts';
+import { PageContainer, SectionCard, KpiGrid, KpiCard } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
-import { BFF_BASE } from '@/lib/api';
+import { useApiMutation } from '@/hooks/use-api-mutation';
+import { ErrorState } from '@/components/status-state';
+import { apiKeys } from '@/lib/query-keys';
 
 /**
  * T-050: Cache Management Panel
  */
 export default function CachePage() {
     const [clearing, setClearing] = useState(false);
+    const [actionError, setActionError] = useState<string | null>(null);
 
     const cacheQ = useApiQuery<unknown>('/admin/cache-stats', {
         refetchInterval: 10000,
         parse: (raw) => raw,
+    });
+    const clearApi = useApiMutation<unknown>({
+        invalidates: [[...apiKeys.admin()]],
+        successToast: '缓存已清理',
     });
 
     const stats = useMemo(() => {
@@ -36,22 +42,30 @@ export default function CachePage() {
 
     const handleClear = async (prefix?: string) => {
         setClearing(true);
+        setActionError(null);
         try {
-            await fetch(`${BFF_BASE}/admin/cache/clear`, {
-                method: 'POST',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prefix }),
-            });
+            await clearApi.triggerAsync('/admin/cache/clear', { method: 'POST' }, { prefix });
             cacheQ.refetch();
+        } catch (error) {
+            setActionError(error instanceof Error ? error.message : String(error));
         } finally {
             setClearing(false);
         }
     };
 
+    if (cacheQ.error) {
+        return (
+            <PageContainer>
+                <h1 className="text-lg font-semibold mb-4">💾 缓存管理</h1>
+                <ErrorState text={cacheQ.error} hint="当前页面需要管理员权限；请求失败时不再显示 0 命中率。" onRetry={() => cacheQ.refetch()} />
+            </PageContainer>
+        );
+    }
+
     return (
         <PageContainer>
-            <h2 className="text-lg font-semibold mb-4">💾 缓存管理</h2>
+            <h1 className="text-lg font-semibold mb-4">💾 缓存管理</h1>
+            {actionError ? <ErrorState text={actionError} /> : null}
 
             <KpiGrid cols={4}>
                 <KpiCard title="命中率" value={`${(stats.hitRate * 100).toFixed(1)}%`} />

@@ -1,148 +1,251 @@
 /**
- * T-045: API Contract Test
- * Validates BFF ↔ MCP interface contracts using JSON Schema.
+ * API contract smoke definitions for key BFF endpoints.
+ *
+ * These schemas intentionally follow the real frontend-consumed envelope:
+ * { success, data, traceId? }.
  */
 import Ajv from 'ajv';
 
 const ajv = new Ajv({ allErrors: true });
 
-// ── Schema Definitions ──
+const cacheMetaSchema = {
+  type: 'object',
+  properties: {
+    fetchedAt: { type: 'string' },
+    cache: {
+      type: 'object',
+      properties: {
+        hit: { type: 'boolean' },
+        backend: { type: 'string' },
+        ttlSeconds: { type: 'number' },
+      },
+      required: ['hit'],
+    },
+  },
+};
 
-const QuoteSchema = {
-    type: 'object',
-    properties: {
+const envelope = (dataSchema: Record<string, unknown>) => ({
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    data: dataSchema,
+    traceId: { type: 'string' },
+  },
+  required: ['success', 'data'],
+});
+
+const nullableNumber = { type: ['number', 'null'] };
+
+const quoteSchema = envelope({
+  type: 'object',
+  properties: {
+    quote: {
+      type: 'object',
+      properties: {
         code: { type: 'string' },
         name: { type: 'string' },
-        price: { type: 'number' },
-        open: { type: 'number' },
-        high: { type: 'number' },
-        low: { type: 'number' },
-        close: { type: 'number' },
-        volume: { type: 'number' },
-        change: { type: 'number' },
-        changePct: { type: 'number' },
+        price: nullableNumber,
+        changePercent: nullableNumber,
+        volume: nullableNumber,
+      },
+      required: ['code', 'name'],
     },
-    required: ['code'],
-};
+    tool: { type: 'string' },
+    meta: cacheMetaSchema,
+  },
+  required: ['quote', 'tool', 'meta'],
+});
 
-const KlineSchema = {
-    type: 'array',
-    items: {
+const klineSchema = envelope({
+  type: 'object',
+  properties: {
+    kline: {
+      type: 'array',
+      items: {
         type: 'object',
         properties: {
-            date: { type: 'string' },
-            open: { type: 'number' },
-            high: { type: 'number' },
-            low: { type: 'number' },
-            close: { type: 'number' },
-            volume: { type: 'number' },
+          date: { type: 'string' },
+          open: { type: 'number' },
+          high: { type: 'number' },
+          low: { type: 'number' },
+          close: { type: 'number' },
+          volume: { type: 'number' },
         },
-        required: ['date', 'open', 'high', 'low', 'close'],
+        required: ['date', 'open', 'high', 'low', 'close', 'volume'],
+      },
     },
-};
+    tool: { type: 'string' },
+    meta: cacheMetaSchema,
+  },
+  required: ['kline', 'tool', 'meta'],
+});
 
-const BacktestResultSchema = {
-    type: 'object',
-    properties: {
-        totalReturn: { type: 'number' },
-        annualReturn: { type: 'number' },
-        maxDrawdown: { type: 'number' },
-        sharpeRatio: { type: 'number' },
-        winRate: { type: 'number' },
-        trades: { type: 'number' },
-    },
-};
-
-const PortfolioSchema = {
-    type: 'object',
-    properties: {
-        totalValue: { type: 'number' },
-        totalCost: { type: 'number' },
-        totalPnl: { type: 'number' },
-        positions: {
-            type: 'array',
-            items: {
-                type: 'object',
-                properties: {
-                    code: { type: 'string' },
-                    name: { type: 'string' },
-                    quantity: { type: 'number' },
-                    avgCost: { type: 'number' },
-                    marketValue: { type: 'number' },
-                },
-                required: ['code'],
-            },
+const alertsSchema = envelope({
+  type: 'object',
+  properties: {
+    status: { type: 'string' },
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          code: { type: 'string' },
+          indicator: { type: 'string' },
+          condition: { type: 'string' },
+          value: nullableNumber,
         },
+        required: ['id', 'code', 'indicator', 'condition'],
+      },
     },
-};
+    meta: cacheMetaSchema,
+  },
+  required: ['status', 'items', 'meta'],
+});
 
-// ── Contract Definitions ──
+const riskSummarySchema = envelope({
+  type: 'object',
+  properties: {
+    portfolioId: { type: ['number', 'null'] },
+    lookbackDays: { type: 'number' },
+    degraded: { type: 'boolean' },
+    empty: { type: 'boolean' },
+    sourceContext: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string' },
+      },
+      required: ['mode'],
+    },
+    moduleStatus: {
+      type: 'object',
+      properties: {
+        var: { type: 'object' },
+        stress: { type: 'object' },
+        exposure: { type: 'object' },
+      },
+      required: ['var', 'stress', 'exposure'],
+    },
+    meta: cacheMetaSchema,
+  },
+  required: ['portfolioId', 'lookbackDays', 'degraded', 'empty', 'sourceContext', 'moduleStatus', 'meta'],
+});
+
+const notificationsSchema = envelope({
+  type: 'object',
+  properties: {
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          type: { type: 'string' },
+          level: { type: 'string' },
+          title: { type: 'string' },
+          body: { type: 'string' },
+          read: { type: 'boolean' },
+          createdAt: { type: 'string' },
+        },
+        required: ['id', 'type', 'level', 'title', 'body', 'read', 'createdAt'],
+      },
+    },
+    total: { type: 'number' },
+    unread: { type: 'number' },
+  },
+  required: ['items', 'total', 'unread'],
+});
+
+const portfolioRiskSchema = envelope({
+  type: 'object',
+  properties: {
+    riskMetrics: {
+      type: 'object',
+      properties: {
+        var95: nullableNumber,
+        var99: nullableNumber,
+        cvar: nullableNumber,
+        beta: nullableNumber,
+        volatility: nullableNumber,
+        riskContribution: {
+          type: 'object',
+          additionalProperties: { type: 'number' },
+        },
+      },
+      required: ['riskContribution'],
+    },
+  },
+  required: ['riskMetrics'],
+});
 
 export const CONTRACTS = {
-    'GET /api/market/quote': {
-        name: 'Quote',
-        responseSchema: QuoteSchema,
-    },
-    'GET /api/market/kline': {
-        name: 'Kline',
-        responseSchema: KlineSchema,
-    },
-    'POST /api/backtest/run': {
-        name: 'Backtest Result',
-        responseSchema: BacktestResultSchema,
-    },
-    'GET /api/portfolio/list': {
-        name: 'Portfolio',
-        responseSchema: PortfolioSchema,
-    },
-};
+  'GET /market/quote': {
+    name: 'Quote Envelope',
+    responseSchema: quoteSchema,
+  },
+  'GET /market/kline': {
+    name: 'Kline Envelope',
+    responseSchema: klineSchema,
+  },
+  'GET /alerts/list': {
+    name: 'Alerts Envelope',
+    responseSchema: alertsSchema,
+  },
+  'GET /risk/summary': {
+    name: 'Risk Summary Envelope',
+    responseSchema: riskSummarySchema,
+  },
+  'GET /notifications/list': {
+    name: 'Notifications Envelope',
+    responseSchema: notificationsSchema,
+  },
+  'POST /portfolio/risk-analysis': {
+    name: 'Portfolio Risk Envelope',
+    responseSchema: portfolioRiskSchema,
+  },
+} as const;
 
-/**
- * Validate a response against its contract schema.
- * Returns { valid: true } or { valid: false, errors: [...] }
- */
 export function validateContract(
-    endpoint: keyof typeof CONTRACTS,
-    data: unknown,
+  endpoint: keyof typeof CONTRACTS,
+  data: unknown,
 ): { valid: boolean; errors?: string[] } {
-    const contract = CONTRACTS[endpoint];
-    if (!contract) return { valid: false, errors: [`Unknown endpoint: ${endpoint}`] };
+  const contract = CONTRACTS[endpoint];
+  if (!contract) {
+    return { valid: false, errors: [`Unknown endpoint: ${endpoint}`] };
+  }
 
-    const validate = ajv.compile(contract.responseSchema);
-    const valid = validate(data);
+  const validate = ajv.compile(contract.responseSchema);
+  const valid = validate(data);
 
-    if (!valid) {
-        return {
-            valid: false,
-            errors: validate.errors?.map((e) => `${e.instancePath} ${e.message}`) ?? ['Unknown validation error'],
-        };
-    }
+  if (!valid) {
+    return {
+      valid: false,
+      errors: validate.errors?.map((error) => `${error.instancePath} ${error.message}`) ?? ['Unknown validation error'],
+    };
+  }
 
-    return { valid: true };
+  return { valid: true };
 }
 
-/**
- * Run all contract validations against sample data.
- */
 export async function runContractTests(
-    fetchFn: (endpoint: string) => Promise<unknown>,
+  fetchFn: (endpoint: string) => Promise<unknown>,
 ): Promise<{ endpoint: string; name: string; valid: boolean; errors?: string[] }[]> {
-    const results = [];
+  const results: Array<{ endpoint: string; name: string; valid: boolean; errors?: string[] }> = [];
 
-    for (const [endpoint, contract] of Object.entries(CONTRACTS)) {
-        try {
-            const data = await fetchFn(endpoint);
-            const result = validateContract(endpoint as keyof typeof CONTRACTS, data);
-            results.push({ endpoint, name: contract.name, ...result });
-        } catch (e) {
-            results.push({
-                endpoint,
-                name: contract.name,
-                valid: false,
-                errors: [`Fetch error: ${e instanceof Error ? e.message : String(e)}`],
-            });
-        }
+  for (const [endpoint, contract] of Object.entries(CONTRACTS)) {
+    try {
+      const data = await fetchFn(endpoint);
+      const result = validateContract(endpoint as keyof typeof CONTRACTS, data);
+      results.push({ endpoint, name: contract.name, ...result });
+    } catch (error) {
+      results.push({
+        endpoint,
+        name: contract.name,
+        valid: false,
+        errors: [`Fetch error: ${error instanceof Error ? error.message : String(error)}`],
+      });
     }
+  }
 
-    return results;
+  return results;
 }

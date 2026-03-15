@@ -19,6 +19,9 @@ from ...utils import normalize_code
 
 def _normalize_kwargs(kwargs: dict) -> dict:
     """Merge kwargs payload when passed as kwargs='{"k": "v"}' or kwargs={...}."""
+    params = kwargs.get("params")
+    if isinstance(params, dict):
+        kwargs = {**kwargs, **params}
     raw = kwargs.get("kwargs")
     if isinstance(raw, dict):
         kwargs = {**kwargs, **raw}

@@ -7,12 +7,12 @@ export class SentimentService {
 
   async analyzeStock(code: string) {
     const payload = await this.callTool('analyze_stock_sentiment', { code });
-    return { sourceTool: 'analyze_stock_sentiment' as const, result: payload };
+    return { sourceTool: 'analyze_stock_sentiment' as const, data: this.extractToolData(payload), result: payload };
   }
 
   async fearGreedIndex() {
     const payload = await this.callTool('calculate_fear_greed_index', {});
-    return { sourceTool: 'calculate_fear_greed_index' as const, result: payload };
+    return { sourceTool: 'calculate_fear_greed_index' as const, data: this.extractToolData(payload), result: payload };
   }
 
   private async callTool(name: string, args: Record<string, unknown>) {
@@ -24,5 +24,13 @@ export class SentimentService {
         detail: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  private extractToolData(payload: unknown): unknown {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return payload;
+    }
+    const record = payload as Record<string, unknown>;
+    return Object.prototype.hasOwnProperty.call(record, 'data') ? record.data : payload;
   }
 }

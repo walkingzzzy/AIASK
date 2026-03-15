@@ -26,13 +26,25 @@ export function ErrorState({ text, hint, onRetry }: { text: string; hint?: strin
   );
 }
 
-export function EmptyState({ text }: { text: string }) {
+export function EmptyState({
+  text,
+  hint,
+  action,
+  className = '',
+}: {
+  text: string;
+  hint?: string;
+  action?: ReactNode;
+  className?: string;
+}) {
   return (
-    <div className="flex flex-col items-center justify-center py-8 text-text-secondary">
+    <div className={`flex flex-col items-center justify-center py-8 text-text-secondary ${className}`}>
       <svg className="w-10 h-10 mb-2 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-2.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
       </svg>
       <p className="text-sm">{text}</p>
+      {hint ? <p className="mt-1 max-w-xl text-center text-xs text-text-muted">{hint}</p> : null}
+      {action ? <div className="mt-3 flex flex-wrap items-center justify-center gap-2">{action}</div> : null}
     </div>
   );
 }

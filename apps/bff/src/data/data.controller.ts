@@ -1,17 +1,18 @@
 import { Controller, Get, Query, Req } from '@nestjs/common';
-import { IsArray, IsBoolean, IsNumber, IsOptional, IsString, Matches } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsArray, IsBoolean, IsInt, IsOptional, IsString, Matches, Min } from 'class-validator';
 import { DataService } from './data.service';
 
 class OptionChainDto {
   @IsString() underlying!: string;
   @IsOptional() @IsString() expiryMonth?: string;
-  @IsOptional() @IsNumber() limit?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) limit?: number;
 }
 
 class TradingDatesDto {
   @IsOptional() @IsString() startDate?: string;
   @IsOptional() @IsString() endDate?: string;
-  @IsOptional() @IsNumber() count?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) count?: number;
 }
 
 class IpoDto {

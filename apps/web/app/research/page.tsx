@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, ReactNode, useMemo, useState } from 'react';
 import { PageContainer, SectionCard, TabBar, DataTable, StockCodeInput, KpiCard, KpiGrid } from '@/components/ui';
 import { BarChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -11,6 +11,7 @@ import { exportCSV } from '@/lib/export';
 import { fmt, cacheText, type CacheMeta } from '@/lib/api';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
+import { useHydrated } from '@/hooks/use-hydrated';
 
 type ResearchItem = { title: string; date: string; source: string; summary: string };
 type ResearchData = {
@@ -44,46 +45,44 @@ function highlight(text: string, kw: string): ReactNode {
 }
 
 export default function ResearchPage() {
+  const mounted = useHydrated();
   const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
   const [range, setRange] = useState<Range>('30');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [keyword, setKeyword] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const autoListPath = resolvedCode ? `/research/list?code=${encodeURIComponent(resolvedCode)}&days=30&limit=20&keyword=` : null;
   const [listPath, setListPath] = useState<string | null>(null);
+  const effectiveListPath = listPath ?? autoListPath;
 
-  // 自动查询：URL 或 Store 携带了有效代码时自动触发研报查询
-  const autoFetched = useRef(false);
-  useEffect(() => {
-    if (!autoFetched.current && resolvedCode) {
-      autoFetched.current = true;
-      setListPath(`/research/list?code=${encodeURIComponent(resolvedCode)}&days=30&limit=20&keyword=`);
-    }
-  }, [resolvedCode]);
-
-  const listQ = useApiQuery<ResearchData>(listPath);
+  const listQ = useApiQuery<ResearchData>(effectiveListPath);
   const [newsTab, setNewsTab] = useState<NewsTab>('stock-news');
   const [newsPath, setNewsPath] = useState<string | null>(null);
   const newsQ = useApiQuery<unknown>(newsPath);
 
-  async function onSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  function submitListQuery(nextRange = range, nextStartDate = startDate, nextEndDate = endDate, nextKeyword = keyword) {
     if (!validate()) return;
-    if (range === 'custom' && (!startDate || !endDate)) {
+    if (nextRange === 'custom' && (!nextStartDate || !nextEndDate)) {
       setFormError('自定义时间范围需要开始与结束日期');
       return;
     }
     setFormError(null);
-    const params = new URLSearchParams({ code: trimmedCode, limit: '20', keyword: keyword.trim() });
-    if (range === 'custom') {
-      params.set('startDate', startDate);
-      params.set('endDate', endDate);
+    const params = new URLSearchParams({ code: trimmedCode, limit: '20', keyword: nextKeyword.trim() });
+    if (nextRange === 'custom') {
+      params.set('startDate', nextStartDate);
+      params.set('endDate', nextEndDate);
     } else {
-      params.set('days', range);
+      params.set('days', nextRange);
     }
     const newPath = `/research/list?${params.toString()}`;
-    if (newPath === listPath) listQ.refetch();
+    if (newPath === effectiveListPath) listQ.refetch();
     else setListPath(newPath);
+  }
+
+  async function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    submitListQuery();
   }
 
   function fetchNews(type: string) {
@@ -110,6 +109,7 @@ export default function ResearchPage() {
   const cache = listQ.data?.meta?.cache;
   const loading = listQ.isFetching;
   const error = formError || codeError || listQ.error;
+  const showPrimaryEmptyState = !loading && !error && reports.length === 0 && notices.length === 0;
 
   return (
     <PageContainer narrow>
@@ -120,55 +120,100 @@ export default function ResearchPage() {
           <WatchlistButton code={resolvedCode} name="" />
         </div>
       )}
-      <form onSubmit={onSubmit} className="flex gap-2.5 flex-wrap items-center">
-        <StockCodeInput value={code} onChange={setCode} error={codeError} placeholder="如 600519" />
-        <select value={range} onChange={(e) => setRange(e.target.value as Range)}>
-          <option value="7">近1周</option>
-          <option value="30">近1月</option>
-          <option value="90">近3月</option>
-          <option value="custom">自定义</option>
-        </select>
+      <form onSubmit={onSubmit} className="grid gap-3 md:grid-cols-2">
+        <StockCodeInput id="research-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} placeholder="如 600519" />
+        <label className="grid gap-1 text-xs text-text-secondary">
+          <span>时间范围</span>
+          <select value={range} onChange={(e) => setRange(e.target.value as Range)}>
+            <option value="7">近1周</option>
+            <option value="30">近1月</option>
+            <option value="90">近3月</option>
+            <option value="custom">自定义</option>
+          </select>
+        </label>
         {range === 'custom' ? (
           <>
-            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            <label className="grid gap-1 text-xs text-text-secondary">
+              <span>开始日期</span>
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            </label>
+            <label className="grid gap-1 text-xs text-text-secondary">
+              <span>结束日期</span>
+              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            </label>
           </>
         ) : null}
-        <input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="关键词" />
-        <button type="submit" disabled={loading}>{loading ? '查询中...' : '查询'}</button>
+        <label className="grid gap-1 text-xs text-text-secondary">
+          <span>关键词</span>
+          <input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="可输入行业、机构或主题词" />
+        </label>
+        <div className="flex items-end">
+          <button type="submit" disabled={loading}>{loading ? '查询中...' : '查询'}</button>
+        </div>
       </form>
       {error ? <ErrorState text={error} /> : null}
       <div className="mt-2 text-text-secondary">
-        更新：{listQ.dataUpdatedAt ? new Date(listQ.dataUpdatedAt).toLocaleString('zh-CN') : '-'} ｜ 抓取：{freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'} ｜ 缓存：{cacheText(cache)}
+        更新：{mounted && listQ.dataUpdatedAt ? new Date(listQ.dataUpdatedAt).toLocaleString('zh-CN') : '-'} ｜ 抓取：{mounted && freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'} ｜ 缓存：{cacheText(cache)}
       </div>
 
-      <section className="mt-3.5 grid grid-cols-2 gap-3">
-        <SectionCard>
-          <h3 className="mt-0">研报（{reports.length}）</h3>
-          <div className="max-h-[420px] overflow-auto">
-            {reports.map((it, idx) => (
-              <div key={`r-${idx}`} className="py-2 border-b border-dashed border-border/50">
-                <div className="font-semibold">{highlight(it.title, keyword)}</div>
-                <div className="text-text-secondary text-xs">{fmt(it.date)} ｜ {fmt(it.source)}</div>
-                <div>{highlight(it.summary || '-', keyword)}</div>
+      <section className="mt-3.5 grid grid-cols-1 xl:grid-cols-2 gap-3">
+        {showPrimaryEmptyState ? (
+          <SectionCard className="xl:col-span-2 p-5">
+            <h3 className="mt-0">当前条件下暂无结果</h3>
+            <p className="text-sm text-text-secondary mb-3">近 30 天未命中时，可以直接扩大时间范围或切换到市场新闻继续查看，不用手动重新组织查询。</p>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => {
+                  setRange('90');
+                  submitListQuery('90', startDate, endDate, keyword);
+                }}
+                className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt"
+              >
+                查看近 90 天
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewsTab('market-news');
+                  fetchNews('market-news');
+                }}
+                className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt"
+              >
+                查看市场新闻
+              </button>
+            </div>
+          </SectionCard>
+        ) : (
+          <>
+            <SectionCard>
+              <h3 className="mt-0">研报（{reports.length}）</h3>
+              <div className="max-h-[420px] overflow-auto">
+                {reports.map((it, idx) => (
+                  <div key={`r-${idx}`} className="py-2 border-b border-dashed border-border/50">
+                    <div className="font-semibold">{highlight(it.title, keyword)}</div>
+                    <div className="text-text-secondary text-xs">{fmt(it.date)} ｜ {fmt(it.source)}</div>
+                    <div>{highlight(it.summary || '-', keyword)}</div>
+                  </div>
+                ))}
+                {!reports.length ? <div>无匹配研报</div> : null}
               </div>
-            ))}
-            {!reports.length ? <div>无匹配研报</div> : null}
-          </div>
-        </SectionCard>
-        <SectionCard>
-          <h3 className="mt-0">公告（{notices.length}）</h3>
-          <div className="max-h-[420px] overflow-auto">
-            {notices.map((it, idx) => (
-              <div key={`n-${idx}`} className="py-2 border-b border-dashed border-border/50">
-                <div className="font-semibold">{highlight(it.title, keyword)}</div>
-                <div className="text-text-secondary text-xs">{fmt(it.date)} ｜ {fmt(it.source)}</div>
-                <div>{highlight(it.summary || '-', keyword)}</div>
+            </SectionCard>
+            <SectionCard>
+              <h3 className="mt-0">公告（{notices.length}）</h3>
+              <div className="max-h-[420px] overflow-auto">
+                {notices.map((it, idx) => (
+                  <div key={`n-${idx}`} className="py-2 border-b border-dashed border-border/50">
+                    <div className="font-semibold">{highlight(it.title, keyword)}</div>
+                    <div className="text-text-secondary text-xs">{fmt(it.date)} ｜ {fmt(it.source)}</div>
+                    <div>{highlight(it.summary || '-', keyword)}</div>
+                  </div>
+                ))}
+                {!notices.length ? <div>无匹配公告</div> : null}
               </div>
-            ))}
-            {!notices.length ? <div>无匹配公告</div> : null}
-          </div>
-        </SectionCard>
+            </SectionCard>
+          </>
+        )}
       </section>
 
       <section className="mt-5">

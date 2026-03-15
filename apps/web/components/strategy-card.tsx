@@ -4,23 +4,7 @@ import Link from 'next/link';
 import { Badge } from '@/components/ui';
 import { LineChart } from '@/components/charts';
 import { fmtPct, fmtNum } from '@/lib/data-utils';
-
-type Strategy = {
-  id: string;
-  name: string;
-  strategy_type?: string;
-  description?: string;
-  subscriber_count?: number;
-  avg_rating?: number;
-  review_count?: number;
-  metrics?: {
-    total_return?: number;
-    annual_return?: number;
-    sharpe_ratio?: number;
-    max_drawdown?: number;
-  };
-  nav_series?: number[];
-};
+import type { Strategy } from '@aiask/shared-types';
 
 const TYPE_LABELS: Record<string, { label: string; variant: 'info' | 'success' | 'warning' | 'danger' | 'neutral' }> = {
   momentum: { label: '动量', variant: 'info' },
@@ -45,6 +29,11 @@ export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) 
   const m = s.metrics;
   const nav = s.nav_series ?? [];
   const cats = nav.map((_, i) => `${i}`);
+  const trustedInfo = [
+    s.sample_start_date && s.sample_end_date ? `${s.sample_start_date} ~ ${s.sample_end_date}` : null,
+    s.turnover_rate != null ? `换手 ${fmtPct(s.turnover_rate)}` : null,
+    s.capacity != null ? `容量 ${fmtNum(s.capacity, 0)}` : null,
+  ].filter(Boolean);
 
   return (
     <Link
@@ -78,6 +67,14 @@ export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) 
           <div className="font-medium text-danger">{fmtPct(m?.max_drawdown ?? 0)}</div>
         </div>
       </div>
+
+      {trustedInfo.length > 0 ? (
+        <div className="flex flex-wrap gap-1 text-[10px] text-text-secondary">
+          {trustedInfo.map((item) => (
+            <span key={item} className="px-1.5 py-0.5 rounded-full border border-glass-border">{item}</span>
+          ))}
+        </div>
+      ) : null}
 
       <div className="flex items-center justify-between text-xs text-text-secondary pt-1 border-t border-glass-border">
         <div className="flex items-center gap-2">

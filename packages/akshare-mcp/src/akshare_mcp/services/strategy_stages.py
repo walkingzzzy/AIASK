@@ -29,6 +29,8 @@ class StageDefinition:
     system_prompt: str
     max_tokens: int = 500
     temperature: float = 0.2
+    # 某些阶段本地规则更稳定时，可直接优先走 fallback，避免白白消耗 LLM 超时预算。
+    prefer_fallback: bool = False
     # 输出中的必填顶层 key（用于快速验证）
     required_output_keys: list[str] = field(default_factory=list)
     # fallback 函数签名: (db, input_data, snapshot) -> dict
@@ -42,6 +44,7 @@ class StageResult:
     stage_id: str
     output: dict[str, Any]
     used_fallback: bool = False
+    llm_attempted: bool = False
     prompt_chars: int = 0
     response_chars: int = 0
     elapsed_sec: float = 0.0

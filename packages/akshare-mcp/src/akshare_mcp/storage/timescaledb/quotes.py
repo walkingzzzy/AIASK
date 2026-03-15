@@ -11,6 +11,22 @@ from datetime import datetime
 class QuotesMixin:
     """实时行情保存与数据库统计"""
 
+    async def _stock_quote_columns(self, conn) -> set[str]:
+        cached = getattr(self, "_stock_quotes_columns_cache", None)
+        if isinstance(cached, set) and cached:
+            return cached
+        rows = await conn.fetch(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'stock_quotes'
+            """
+        )
+        columns = {str(row["column_name"]) for row in rows or []}
+        if columns:
+            self._stock_quotes_columns_cache = columns
+        return columns
+
     async def save_quote(self, quote: Dict[str, Any]) -> None:
         """保存实时行情（统一字段映射）
 
@@ -37,44 +53,21 @@ class QuotesMixin:
                 'mkt_cap': quote.get('mkt_cap') or quote.get('market_cap'),
             }
 
+            available_columns = await self._stock_quote_columns(conn)
+            insert_columns = ["time"] + [name for name in normalized_quote.keys() if name in available_columns]
+            update_columns = [name for name in insert_columns if name not in {"time", "code"}]
+            placeholders = [f"${idx}" for idx in range(1, len(insert_columns) + 1)]
+            update_clause = ", ".join(f"{name} = EXCLUDED.{name}" for name in update_columns) or "code = EXCLUDED.code"
+            values = [datetime.now()] + [normalized_quote[name] for name in insert_columns[1:]]
+
             await conn.execute(
-                """
-                INSERT INTO stock_quotes (
-                    time, code, name, price, change_amt, change_pct,
-                    open, high, low, prev_close, volume, amount,
-                    pe, pb, mkt_cap
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                f"""
+                INSERT INTO stock_quotes ({", ".join(insert_columns)})
+                VALUES ({", ".join(placeholders)})
                 ON CONFLICT (time, code) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    price = EXCLUDED.price,
-                    change_amt = EXCLUDED.change_amt,
-                    change_pct = EXCLUDED.change_pct,
-                    open = EXCLUDED.open,
-                    high = EXCLUDED.high,
-                    low = EXCLUDED.low,
-                    prev_close = EXCLUDED.prev_close,
-                    volume = EXCLUDED.volume,
-                    amount = EXCLUDED.amount,
-                    pe = EXCLUDED.pe,
-                    pb = EXCLUDED.pb,
-                    mkt_cap = EXCLUDED.mkt_cap
+                    {update_clause}
                 """,
-                datetime.now(),
-                normalized_quote['code'],
-                normalized_quote['name'],
-                normalized_quote['price'],
-                normalized_quote['change_amt'],
-                normalized_quote['change_pct'],
-                normalized_quote['open'],
-                normalized_quote['high'],
-                normalized_quote['low'],
-                normalized_quote['prev_close'],
-                normalized_quote['volume'],
-                normalized_quote['amount'],
-                normalized_quote['pe'],
-                normalized_quote['pb'],
-                normalized_quote['mkt_cap']
+                *values,
             )
 
     async def get_stats(self) -> Dict[str, int]:

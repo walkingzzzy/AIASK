@@ -7,10 +7,11 @@ import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { LineChart, COLORS } from '@/components/charts';
-import { extractArray, extractObject, fmtNum } from '@/lib/data-utils';
+import { extractArray, fmtNum } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
+import { extractToolError, unwrapToolPayload } from '@/lib/tool-result';
 
 const TABS = [
   { key: 'indicators', label: '技术指标' },
@@ -20,28 +21,17 @@ const TABS = [
 
 type Tab = (typeof TABS)[number]['key'];
 const INDICATOR_OPTIONS = ['MA', 'EMA', 'RSI', 'MACD', 'KDJ', 'BOLL', 'ATR', 'CCI', 'WR'];
+const PERIOD_PRESETS = [
+  { label: '日线 120', period: 'daily', limit: '120' },
+  { label: '周线 60', period: 'weekly', limit: '60' },
+  { label: '月线 36', period: 'monthly', limit: '36' },
+] as const;
+const INDICATOR_PRESETS = [
+  { label: '常用三件套', values: ['MA', 'RSI', 'MACD'] },
+  { label: '趋势跟踪', values: ['MA', 'EMA', 'MACD', 'BOLL'] },
+  { label: '震荡观察', values: ['RSI', 'KDJ', 'CCI', 'WR'] },
+] as const;
 
-/** Unwrap MCP envelope: data -> result -> data */
-function unwrapMcp(raw: unknown): unknown {
-  const obj = extractObject(raw);
-  if (obj.result) {
-    const inner = extractObject(obj.result as Record<string, unknown>);
-    return inner;
-  }
-  return obj;
-}
-
-/** Get MCP-level error message if any */
-function mcpError(raw: unknown): string | null {
-  const obj = extractObject(raw);
-  if (obj.result) {
-    const inner = obj.result as Record<string, unknown>;
-    if (inner.success === false && inner.error) return String(inner.error);
-    const d = extractObject(inner);
-    if (d.success === false && d.error) return String(d.error);
-  }
-  return null;
-}
 /**
  * Transform indicator response into chart-friendly data.
  * API returns: { ma: number[], rsi: {value,signal,...}, macd: {macd:[],signal:[],histogram:[]} }
@@ -117,14 +107,46 @@ export default function TechnicalPage() {
     }
   }
 
+  function runRecommendedAnalysis() {
+    if (tab === 'available') {
+      if (availablePath) availableQ.refetch(); else setAvailablePath('/technical/available-patterns');
+      return;
+    }
+
+    const nextCode = trimmedCode || resolvedCode || '600519';
+    const nextPeriod = 'daily';
+    const nextLimit = 120;
+    setCode(nextCode);
+    setPeriod(nextPeriod);
+    setLimit(String(nextLimit));
+
+    if (tab === 'indicators') {
+      const indicators = ['MA', 'RSI', 'MACD'];
+      setSelectedIndicators(indicators);
+      trigger('/technical/indicators', { method: 'POST' }, {
+        code: nextCode,
+        indicators,
+        period: nextPeriod,
+        limit: nextLimit,
+      });
+      return;
+    }
+
+    trigger('/technical/patterns', { method: 'POST' }, {
+      code: nextCode,
+      period: nextPeriod,
+      limit: nextLimit,
+    });
+  }
+
   const rawData = tab === 'available' ? availableQ.data : mutData;
   const isPending = availableQ.isFetching || mutPending;
   const fetchError = availableQ.error || mutError;
-  const mcpErr = rawData ? mcpError(rawData) : null;
+  const mcpErr = rawData ? extractToolError(rawData) : null;
   const error = fetchError || mcpErr;
 
   // Unwrap MCP envelope for all tabs
-  const unwrapped = useMemo(() => rawData ? unwrapMcp(rawData) : null, [rawData]);
+  const unwrapped = useMemo(() => rawData ? unwrapToolPayload(rawData) : null, [rawData]);
 
   // Indicators: parse into series + summary
   const { series: indSeries, summary: indSummary } = useMemo(() => {
@@ -153,23 +175,47 @@ export default function TechnicalPage() {
       <TabBar tabs={TABS} active={tab} onChange={(key) => { setTab(key); reset(); }} />
       <SectionCard tabAttached>
         {tab !== 'available' ? (
-          <div className="flex gap-2 flex-wrap items-center mb-3">
-            <StockCodeInput value={code} onChange={setCode} error={codeError} />
-            <select value={period} onChange={(e) => setPeriod(e.target.value)}
-              className="px-2 py-1 border border-border rounded text-sm">
-              <option value="daily">日线</option>
-              <option value="weekly">周线</option>
-              <option value="monthly">月线</option>
-            </select>
-            <label className="text-sm">
-              数量{' '}
-              <input value={limit} onChange={(e) => setLimit(e.target.value)}
-                className="w-[60px] px-2 py-1 border border-border rounded text-sm" />
-            </label>
+          <div className="mb-3 space-y-3">
+            <div className="flex gap-3 flex-wrap items-end">
+              <StockCodeInput
+                id="technical-stock-code"
+                label="股票代码"
+                value={code}
+                onChange={setCode}
+                error={codeError}
+              />
+              <label htmlFor="technical-period" className="grid gap-1 text-xs text-text-secondary">
+                <span>观察周期</span>
+                <select id="technical-period" value={period} onChange={(e) => setPeriod(e.target.value)}
+                  className="px-2 py-1 border border-border rounded text-sm">
+                  <option value="daily">日线</option>
+                  <option value="weekly">周线</option>
+                  <option value="monthly">月线</option>
+                </select>
+              </label>
+              <label htmlFor="technical-limit" className="grid gap-1 text-xs text-text-secondary">
+                <span>K线数量</span>
+                <input id="technical-limit" value={limit} onChange={(e) => setLimit(e.target.value)}
+                  className="w-[96px] px-2 py-1 border border-border rounded text-sm" />
+              </label>
+            </div>
+            <div className="flex gap-2 flex-wrap items-center text-xs text-text-secondary">
+              <span>推荐观察：</span>
+              {PERIOD_PRESETS.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => { setPeriod(preset.period); setLimit(preset.limit); }}
+                  className={`rounded-full border px-3 py-1 ${period === preset.period && limit === preset.limit ? 'border-primary text-primary' : 'border-glass-border'}`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
           </div>
         ) : null}
         {tab === 'indicators' ? (
-          <div className="mb-3">
+          <div className="mb-3 space-y-2">
             <div className="text-[13px] text-muted mb-1">选择指标：</div>
             <div className="flex gap-1.5 flex-wrap">
               {INDICATOR_OPTIONS.map((ind) => (
@@ -180,6 +226,19 @@ export default function TechnicalPage() {
                 </label>
               ))}
             </div>
+            <div className="flex gap-2 flex-wrap items-center text-xs text-text-secondary">
+              <span>常用组合：</span>
+              {INDICATOR_PRESETS.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => setSelectedIndicators([...preset.values])}
+                  className="rounded-full border border-glass-border px-3 py-1"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
           </div>
         ) : null}
         <button type="button" disabled={isPending} onClick={submit}
@@ -188,7 +247,13 @@ export default function TechnicalPage() {
         </button>
         {isPending ? <LoadingState text="计算中..." /> : null}
         {error ? <ErrorState text={error} hint="请检查参数后重试" /> : null}
-        {!isPending && !rawData && !error ? <EmptyState text="点击按钮开始分析" /> : null}
+        {!isPending && !rawData && !error ? (
+          <EmptyState
+            text={tab === 'available' ? '先查看当前支持的形态库，再决定识别方向' : tab === 'indicators' ? '先选择股票、周期与指标组合，再开始技术分析' : '先确认股票代码和K线数量，再识别近期形态'}
+            hint={tab === 'available' ? '这一步适合先了解系统能识别哪些经典形态，再回到上一页做实盘筛查。' : tab === 'indicators' ? '推荐先用日线 120 根 + MA / RSI / MACD 的组合，作为第一次分析入口。' : '推荐先从日线 120 根开始，适合观察近期是否出现吞没、十字星或突破信号。'}
+            action={<button type="button" onClick={runRecommendedAnalysis} className="rounded-full border border-primary px-3 py-1 text-xs text-primary">使用推荐参数</button>}
+          />
+        ) : null}
 {/* Indicators tab */}
         {rawData != null && !mcpErr && tab === 'indicators' ? (
           hasIndicatorData ? (
@@ -215,7 +280,7 @@ export default function TechnicalPage() {
                 </div>
               ))}
             </div>
-          ) : <EmptyState text="暂无指标数据" />
+          ) : <EmptyState text="当前参数下暂无可展示的指标结果" hint="可以切换到日线 120 根，或减少指标数量后再次计算。" />
         ) : null}
         {/* Patterns tab */}
         {rawData != null && !mcpErr && tab === 'patterns' ? (
@@ -235,7 +300,7 @@ export default function TechnicalPage() {
                 onExport={() => exportCSV(rows as Record<string, unknown>[], 'K线形态')}
               />
             </div>
-          ) : <EmptyState text="未识别到K线形态" />
+          ) : <EmptyState text="近期未识别到典型K线形态" hint="这通常意味着价格波动较平缓，可以放大观察窗口或切换到周线再试。" />
         ) : null}
         {/* Available patterns tab */}
         {rawData != null && !mcpErr && tab === 'available' ? (
@@ -256,7 +321,7 @@ export default function TechnicalPage() {
                 onExport={() => exportCSV(rows as Record<string, unknown>[], '可用形态')}
               />
             </div>
-          ) : <EmptyState text="暂无可用形态" />
+          ) : <EmptyState text="当前没有返回可用形态列表" hint="可稍后重试；如果持续为空，优先检查后端形态能力是否已就绪。" />
         ) : null}
       </SectionCard>
     </PageContainer>

@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { clearLoggedIn } from '@/lib/auth';
-import { BFF_BASE } from '@/lib/api';
+import { getBffBaseUrl } from '@/lib/bff-base';
+
+const BFF_BASE = getBffBaseUrl();
 
 type User = {
   id: string;
@@ -15,6 +17,7 @@ type User = {
 type AuthState = {
   user: User | null;
   isAuthenticated: boolean;
+  isLoggingOut: boolean;
   setUser: (user: User | null) => void;
   logout: () => void;
 };
@@ -22,10 +25,11 @@ type AuthState = {
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isAuthenticated: false,
-  setUser: (user) => set({ user, isAuthenticated: !!user }),
+  isLoggingOut: false,
+  setUser: (user) => set({ user, isAuthenticated: !!user, isLoggingOut: false }),
   logout: () => {
-    fetch(`${BFF_BASE}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
     clearLoggedIn();
-    set({ user: null, isAuthenticated: false });
+    set({ user: null, isAuthenticated: false, isLoggingOut: true });
+    fetch(`${BFF_BASE}/auth/logout`, { method: 'POST', credentials: 'include', keepalive: true }).catch(() => {});
   },
 }));

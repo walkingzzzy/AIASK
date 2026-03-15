@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge, TabBar } from '@/components/ui';
+import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge, TabBar, SkeletonCard, Skeleton } from '@/components/ui';
 import { CandlestickChart, BarChart, GaugeChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
@@ -17,20 +17,34 @@ import Link from 'next/link';
 import { AIDiagnosisPanel } from '@/components/ai-diagnosis-panel';
 import { PeerComparisonTable } from '@/components/peer-comparison';
 import { StockCapitalPanel } from '@/components/stock-capital-panel';
+import { unwrapToolPayload } from '@/lib/tool-result';
+import type {
+  MarketKlineResponseDto,
+  MarketQuoteResponseDto,
+  NormalizedOrderBook,
+  NormalizedQuote,
+  StockDetailActionCard,
+  StockDetailAggregateDto,
+  StockFundFlowEntry,
+  StockFundamentalOverview,
+  StockNewsItem,
+  StockSentimentSnapshot,
+  StockValuationOverview,
+} from '@aiask/shared-types';
 
 type Period = 'daily' | 'weekly' | 'monthly';
-type NormalizedQuote = import('@aiask/shared-types').NormalizedQuote;
-type QuoteData = { quote?: NormalizedQuote; meta?: { cache?: unknown; fetchedAt?: string } };
-type KlineData = { kline?: import('@aiask/shared-types').NormalizedKlinePoint[]; meta?: { cache?: unknown; fetchedAt?: string } };
+type QuoteData = MarketQuoteResponseDto;
+type KlineData = MarketKlineResponseDto;
 
 export default function StockPage() {
   const { code, setCode, codeError, validate, resolvedCode } = useStockCode('600519');
   const [period, setPeriod] = useState<Period>('daily');
   const [submittedCode, setSubmittedCode] = useState<string | null>(null);
   const [submittedPeriod, setSubmittedPeriod] = useState<Period>('daily');
+  const activeCode = submittedCode ?? resolvedCode ?? null;
 
   const quoteQ = useApiQuery<QuoteData>(
-    submittedCode ? `/market/quote?code=${encodeURIComponent(submittedCode)}` : null,
+    activeCode ? `/market/quote?code=${encodeURIComponent(activeCode)}` : null,
     {
       refetchInterval: tradingInterval(30_000),
       parse: (raw) => {
@@ -43,7 +57,7 @@ export default function StockPage() {
     },
   );
   const klineQ = useApiQuery<KlineData>(
-    submittedCode ? `/market/kline?code=${encodeURIComponent(submittedCode)}&period=${submittedPeriod}&limit=250` : null,
+    activeCode ? `/market/kline?code=${encodeURIComponent(activeCode)}&period=${submittedPeriod}&limit=250` : null,
     {
       parse: (raw) => {
         const obj = ensureRecord(raw, 'K线');
@@ -69,39 +83,37 @@ export default function StockPage() {
   });
 
   const sentimentQ = useApiQuery<Record<string, unknown>>(
-    submittedCode ? `/sentiment/stock?code=${encodeURIComponent(submittedCode)}` : null,
+    activeCode ? `/sentiment/stock?code=${encodeURIComponent(activeCode)}` : null,
     { parse: (raw) => ensureRecord(raw, '个股情绪') },
   );
   const fundFlowQ = useApiQuery<unknown>(
-    submittedCode ? `/fund-flow/stock?code=${encodeURIComponent(submittedCode)}` : null,
+    activeCode ? `/fund-flow/stock?code=${encodeURIComponent(activeCode)}` : null,
     { parse: (raw) => ensureRecordOrArray(raw, '个股资金流') },
   );
   const fundamentalQ = useApiQuery<unknown>(
-    submittedCode ? `/fundamental/overview?code=${encodeURIComponent(submittedCode)}` : null,
+    activeCode ? `/fundamental/overview?code=${encodeURIComponent(activeCode)}` : null,
     { parse: (raw) => ensureRecord(raw, '个股基本面') },
   );
   const newsQ = useApiQuery<unknown>(
-    submittedCode ? `/research/stock-news?code=${encodeURIComponent(submittedCode)}` : null,
+    activeCode ? `/research/stock-news?code=${encodeURIComponent(activeCode)}` : null,
     { parse: (raw) => ensureRecordOrArray(raw, '个股资讯') },
   );
   const orderBookQ = useApiQuery<unknown>(
-    submittedCode ? `/market/order-book?code=${encodeURIComponent(submittedCode)}` : null,
+    activeCode ? `/market/order-book?code=${encodeURIComponent(activeCode)}` : null,
     { refetchInterval: tradingInterval(10_000), parse: (raw) => ensureRecord(raw, '个股盘口') },
   );
   const valuationQ = useApiQuery<unknown>(
-    submittedCode ? `/valuation/overview?code=${encodeURIComponent(submittedCode)}` : null,
+    activeCode ? `/valuation/overview?code=${encodeURIComponent(activeCode)}` : null,
     { parse: (raw) => ensureRecord(raw, '估值概览') },
   );
   const [infoTab, setInfoTab] = useState<string>('chart');
-  const wsQuotesRef = useRef<Map<string, Partial<NormalizedQuote>>>(new Map());
-  const [wsQuoteTick, setWsQuoteTick] = useState(0);
-  const liveQuoteCode = submittedCode ?? resolvedCode ?? null;
+  const [wsQuotes, setWsQuotes] = useState<Record<string, Partial<NormalizedQuote>>>({});
+  const liveQuoteCode = activeCode;
 
   const handleWsQuote = useCallback((data: LiveQuoteData) => {
     const liveCode = String(data.code ?? '').trim();
     if (!liveCode) return;
-    wsQuotesRef.current.set(liveCode, data as Partial<NormalizedQuote>);
-    setWsQuoteTick((tick) => tick + 1);
+    setWsQuotes((prev) => ({ ...prev, [liveCode]: data as Partial<NormalizedQuote> }));
   }, []);
 
   useQuoteSubscription({
@@ -133,21 +145,23 @@ export default function StockPage() {
   useEffect(() => {
     if (!autoFetched.current && resolvedCode) {
       autoFetched.current = true;
-      setSubmittedCode(resolvedCode);
       doFetch(resolvedCode);
     }
   }, [resolvedCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!validate()) return;
-    const c = code.trim();
-    if (c === submittedCode && period === submittedPeriod) {
+    const form = new FormData(e.currentTarget);
+    const c = String(form.get('stockCode') ?? code).trim();
+    const nextPeriod = String(form.get('period') ?? period) as Period;
+    setCode(c);
+    if (!validate(c)) return;
+    if (c === activeCode && nextPeriod === submittedPeriod) {
       quoteQ.refetch(); klineQ.refetch();
       sentimentQ.refetch(); fundFlowQ.refetch(); fundamentalQ.refetch(); newsQ.refetch();
     } else {
       setSubmittedCode(c);
-      setSubmittedPeriod(period);
+      setSubmittedPeriod(nextPeriod);
     }
     doFetch(c);
   }
@@ -158,11 +172,7 @@ export default function StockPage() {
   const candleData = useMemo(() => (klineQ.data?.kline ?? []).map((x) => ({
     date: x.date.slice(0, 10), open: x.open, close: x.close, low: x.low, high: x.high, volume: x.volume,
   })), [klineQ.data]);
-
-  const wsQuote = useMemo(() => {
-    if (!liveQuoteCode) return null;
-    return wsQuotesRef.current.get(liveQuoteCode) ?? null;
-  }, [liveQuoteCode, wsQuoteTick]);
+  const wsQuote = liveQuoteCode ? wsQuotes[liveQuoteCode] ?? null : null;
 
   const q = useMemo<NormalizedQuote | undefined>(() => {
     const base = quoteQ.data?.quote;
@@ -174,44 +184,40 @@ export default function StockPage() {
       name: String(wsQuote?.name ?? base?.name ?? ''),
     } as NormalizedQuote;
   }, [liveQuoteCode, quoteQ.data?.quote, wsQuote]);
-  const sentimentScore = Number(sentimentQ.data?.score ?? sentimentQ.data?.sentiment_score ?? 0);
+  const contextCode = useMemo(() => String(q?.code ?? activeCode ?? '').trim(), [activeCode, q?.code]);
+  const sentimentPayload = useMemo(() => unwrapToolPayload(sentimentQ.data), [sentimentQ.data]);
+  const sentimentScore = Number(sentimentPayload.score ?? sentimentPayload.sentiment_score ?? 0);
   const SKIP_KEYS = ['tool', 'meta', 'code', 'sourceTool', 'sourceTools', 'argsMatched', 'result', 'traceId', 'success', 'data', 'error', 'source', 'cached', 'timestamp', 'source_chain', 'attempted_sources', 'fallback_used', 'fallback_reason', 'data_timestamp'];
 
-  /** Unwrap nested MCP envelope: { result: { data: payload } } → payload */
-  function unwrapPayload(raw: Record<string, unknown> | null | undefined): Record<string, unknown> {
-    if (!raw) return {};
-    const r = (raw.result ?? raw) as Record<string, unknown>;
-    let payload: Record<string, unknown> = r;
-    if (r && typeof r === 'object' && 'data' in r && r.data && typeof r.data === 'object' && !Array.isArray(r.data)) {
-      payload = r.data as Record<string, unknown>;
-    }
-    // If payload has a single non-metadata key whose value is a plain object, unwrap it
-    const keys = Object.keys(payload).filter((k) => !SKIP_KEYS.includes(k));
-    if (keys.length === 1 && payload[keys[0]] && typeof payload[keys[0]] === 'object' && !Array.isArray(payload[keys[0]])) {
-      return payload[keys[0]] as Record<string, unknown>;
-    }
-    return payload;
-  }
-
-  const fundFlowItems = useMemo(() => extractArray(fundFlowQ.data, 'flows'), [fundFlowQ.data]);
-  const fundFlowChart = useMemo(() => fundFlowItems.slice(-20).map((x: Record<string, unknown>) => ({
+  const fundFlowItems = useMemo(() => extractArray(fundFlowQ.data, 'flows') as StockFundFlowEntry[], [fundFlowQ.data]);
+  const fundFlowChart = useMemo(() => fundFlowItems.slice(-20).map((x) => ({
     label: String(x.date ?? '').slice(5),
-    value: Number(x.netInflow ?? 0),
+    value: Number(x.netInflow ?? x.net_inflow ?? 0),
   })), [fundFlowItems]);
 
-  const fundamentalObj = useMemo(() => extractObject(fundamentalQ.data) as Record<string, unknown> | null, [fundamentalQ.data]);
-  const newsItems = useMemo(() => extractArray(newsQ.data, 'items', 'news', 'data'), [newsQ.data]);
+  const fundamentalObj = useMemo(() => extractObject(fundamentalQ.data) as StockFundamentalOverview | null, [fundamentalQ.data]);
+  const newsItems = useMemo(() => extractArray(newsQ.data, 'items', 'news', 'data') as StockNewsItem[], [newsQ.data]);
+  const valuationMetrics = useMemo(() => {
+    const root = unwrapToolPayload(valuationQ.data);
+    const metricsSource = (root.metrics ?? root.metric ?? root) as Record<string, unknown>;
+    return extractObject(metricsSource) as StockValuationOverview;
+  }, [valuationQ.data]);
 
-  const orderBook = useMemo(() => {
+  const orderBook = useMemo<NormalizedOrderBook>(() => {
     const raw = extractObject(orderBookQ.data);
     const ob = raw.orderBook ? extractObject(raw.orderBook) : raw;
     const bids = Array.isArray(ob.bids) ? ob.bids as Array<{ price: number; volume: number }> : [];
     const asks = Array.isArray(ob.asks) ? (ob.asks as Array<{ price: number; volume: number }>).slice().reverse() : [];
-    return { bids, asks };
+    return {
+      symbol: String(ob.symbol ?? contextCode ?? ''),
+      bids,
+      asks,
+      timestamp: typeof ob.timestamp === 'string' ? ob.timestamp : null,
+    };
   }, [orderBookQ.data]);
 
   const quickLinks = useMemo(() => {
-    const c = code.trim();
+    const c = contextCode;
     if (!c) return [];
     return [
       { label: '资金流向', href: `/fund-flow?code=${c}` },
@@ -221,38 +227,123 @@ export default function StockPage() {
       { label: '估值分析', href: `/valuation?code=${c}` },
       { label: '情绪分析', href: `/sentiment?code=${c}` },
     ];
-  }, [code]);
+  }, [contextCode]);
+
+  const actionCard = useMemo<StockDetailActionCard | null>(() => {
+    if (!contextCode || !q) return null;
+    const changePercent = Number(q.changePercent ?? q.change_pct ?? 0);
+    const valuationPe = Number(valuationMetrics.pe ?? valuationMetrics.pe_ttm ?? q.pe ?? NaN);
+    const turnoverCandidate = Number(klineQ.data?.kline?.at(-1)?.turnover ?? NaN);
+    const turnoverRate = Number.isFinite(turnoverCandidate) && turnoverCandidate > 0 && turnoverCandidate <= 100
+      ? turnoverCandidate
+      : null;
+    const reasons: string[] = [];
+
+    let title = '行动卡: 维持观察';
+    let tone: StockDetailActionCard['tone'] = 'info';
+    let summary = '价格与基本面尚未形成单边信号，优先跟踪量价、情绪与估值的下一次共振。';
+
+    if (sentimentScore >= 65 && changePercent >= 2) {
+      title = '行动卡: 跟踪强势延续';
+      tone = 'danger';
+      summary = '价格与情绪同步走强，适合先看量能延续，再决定是否分批跟踪。';
+    } else if (sentimentScore <= 35 || changePercent <= -3) {
+      title = '行动卡: 先看风险释放';
+      tone = 'warning';
+      summary = '短线承压或情绪偏弱，先确认支撑与资金承接，再考虑下一步动作。';
+    }
+
+    reasons.push(`短线情绪分数 ${fmtNum(sentimentScore, 0)}`);
+    reasons.push(`当日涨跌幅 ${fmtPct(changePercent)}`);
+    if (Number.isFinite(valuationPe)) reasons.push(`PE 约 ${fmtNum(valuationPe, 2)}`);
+    if (turnoverRate != null) reasons.push(`最近换手约 ${fmtNum(turnoverRate, 2)}%`);
+
+    return {
+      title,
+      tone,
+      summary,
+      reasons,
+      links: quickLinks.slice(0, 3),
+    };
+  }, [contextCode, klineQ.data?.kline, q, quickLinks, sentimentScore, valuationMetrics.pe, valuationMetrics.pe_ttm]);
+
+  const stockDetail = useMemo<StockDetailAggregateDto>(() => {
+    const sentiment: StockSentimentSnapshot | null = contextCode
+      ? {
+          score: sentimentScore,
+          sentiment_score: sentimentScore,
+          signal: typeof sentimentPayload.signal === 'string' ? sentimentPayload.signal : undefined,
+          label: typeof sentimentPayload.label === 'string' ? sentimentPayload.label : undefined,
+          summary: typeof sentimentPayload.summary === 'string' ? sentimentPayload.summary : undefined,
+        }
+      : null;
+    return {
+      code: contextCode,
+      quote: q ?? null,
+      kline: klineQ.data?.kline ?? [],
+      orderBook,
+      sentiment,
+      fundFlow: fundFlowItems,
+      fundamental: fundamentalObj,
+      valuation: valuationMetrics,
+      news: newsItems,
+      actions: actionCard ? [actionCard] : [],
+    };
+  }, [actionCard, contextCode, fundamentalObj, fundFlowItems, klineQ.data?.kline, newsItems, orderBook, q, sentimentPayload.label, sentimentPayload.signal, sentimentPayload.summary, sentimentScore, valuationMetrics]);
 
   // Update page title with stock name
   useEffect(() => {
-    if (q) document.title = `${q.name}(${submittedCode}) | AIASK`;
+    if (q) document.title = `${q.name}(${activeCode ?? ''}) | AIASK`;
     return () => { document.title = 'AIASK 智能股票分析'; };
-  }, [q, submittedCode]);
+  }, [activeCode, q]);
 
   const chgColor = Number(q?.changePercent) >= 0 ? 'text-danger' : 'text-success';
   const amplitude = q?.high && q?.low && q?.prevClose
     ? ((Number(q.high) - Number(q.low)) / Number(q.prevClose) * 100).toFixed(2) + '%' : '-';
+  const showQuotePlaceholder = !q;
 
   return (
     <PageContainer>
       <div className="flex items-center gap-3">
-        <h1 className="mb-0">{q ? `${q.name} ${submittedCode}` : '股票详情'}</h1>
-        {q && <WatchlistButton code={code.trim()} name={String(q.name ?? '')} size="md" />}
+        <h1 className="mb-0">{q ? `${q.name} ${activeCode ?? ''}` : '股票详情'}</h1>
+        {q && <WatchlistButton code={contextCode || code.trim()} name={String(q.name ?? '')} size="md" />}
         {quoteQ.isFetching && <span className="text-xs text-text-muted animate-pulse">刷新中...</span>}
         {quoteQ.dataUpdatedAt ? <span className="text-xs text-text-muted">自动刷新: {new Date(quoteQ.dataUpdatedAt).toLocaleTimeString('zh-CN')}</span> : null}
       </div>
       <form onSubmit={onSubmit} className="flex gap-2.5 flex-wrap items-center">
-        <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} placeholder="如 600519" aria-label="股票代码" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
+        <input name="stockCode" value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} placeholder="如 600519" aria-label="股票代码" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
         {codeError ? <span className="text-error text-xs" role="alert">{codeError}</span> : null}
-        <select value={period} onChange={(e) => setPeriod(e.target.value as Period)} aria-label="K线周期" className="border border-border rounded px-2 py-1 text-sm">
+        <select name="period" value={period} onChange={(e) => setPeriod(e.target.value as Period)} aria-label="K线周期" className="border border-border rounded px-2 py-1 text-sm">
           <option value="daily">日线</option><option value="weekly">周线</option><option value="monthly">月线</option>
         </select>
         <button type="submit" disabled={loading} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{loading ? '加载中...' : '查询'}</button>
       </form>
-      {loading && !q ? <LoadingState text="加载中..." /> : null}
       {error ? <ErrorState text={error} /> : null}
 
-      {q && (
+      {showQuotePlaceholder ? (
+        <SectionCard className="mt-4 p-4 min-h-[340px]">
+          <div className="space-y-4" aria-hidden="true">
+            <div className="flex items-center gap-3">
+              <Skeleton className="w-[180px]" height={36} />
+              <Skeleton className="w-[92px]" height={32} />
+            </div>
+            <KpiGrid cols={4}>
+              {Array.from({ length: 8 }).map((_, index) => <SkeletonCard key={index} />)}
+            </KpiGrid>
+            <div className="flex gap-2 flex-wrap">
+              {Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="w-[96px]" height={28} />)}
+            </div>
+            <Skeleton className="w-full" height={108} />
+          </div>
+          <div className="mt-4">
+            {loading ? (
+              <LoadingState text="正在加载个股报价与关键指标..." />
+            ) : (
+              <p className="m-0 text-sm text-text-secondary">输入股票代码后，这里会先展示报价头部、关键指标和下一步动作，避免页面在数据返回时整体下跳。</p>
+            )}
+          </div>
+        </SectionCard>
+      ) : (
         <>
           <KpiGrid cols={4}>
             <KpiCard title="现价" value={fmtNum(Number(q.price))} className={chgColor} />
@@ -272,12 +363,38 @@ export default function StockPage() {
                 {lnk.label} →
               </Link>
             ))}
-            {submittedCode && <>
-              <Link href={`/paper-trading?code=${submittedCode}`} className="text-xs px-2.5 py-1 rounded-full border border-primary/50 text-primary hover:bg-primary hover:text-white transition-colors no-underline">💹 模拟下单</Link>
-              <Link href={`/backtest?code=${submittedCode}`} className="text-xs px-2.5 py-1 rounded-full border border-primary/50 text-primary hover:bg-primary hover:text-white transition-colors no-underline">📊 回测</Link>
-              <Link href={`/assistant?code=${submittedCode}`} className="text-xs px-2.5 py-1 rounded-full border border-primary/50 text-primary hover:bg-primary hover:text-white transition-colors no-underline">🤖 AI诊断</Link>
+            {contextCode && <>
+              <Link href={`/paper-trading?code=${contextCode}`} className="text-xs px-2.5 py-1 rounded-full border border-primary/50 text-primary hover:bg-primary hover:text-white transition-colors no-underline">💹 模拟下单</Link>
+              <Link href={`/backtest?code=${contextCode}`} className="text-xs px-2.5 py-1 rounded-full border border-primary/50 text-primary hover:bg-primary hover:text-white transition-colors no-underline">📊 回测</Link>
+              <Link href={`/assistant?code=${contextCode}`} className="text-xs px-2.5 py-1 rounded-full border border-primary/50 text-primary hover:bg-primary hover:text-white transition-colors no-underline">🤖 AI诊断</Link>
             </>}
           </div>
+
+          {stockDetail.actions?.[0] ? (
+            <SectionCard className="mt-4 p-3">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <h3 className="mt-0 mb-1">{stockDetail.actions[0].title}</h3>
+                  <p className="m-0 text-sm text-text-secondary">{stockDetail.actions[0].summary}</p>
+                </div>
+                <Badge variant={stockDetail.actions[0].tone}>行动建议</Badge>
+              </div>
+              <div className="flex flex-wrap gap-2 mt-3">
+                {stockDetail.actions[0].reasons.map((reason) => (
+                  <span key={reason} className="text-xs px-2 py-1 rounded-full border border-border text-text-secondary">
+                    {reason}
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2 flex-wrap mt-3">
+                {stockDetail.actions[0].links.map((link) => (
+                  <Link key={link.href} href={link.href} className="text-xs px-2.5 py-1 rounded-full border border-primary/40 text-primary no-underline hover:bg-primary hover:text-white transition-colors">
+                    {link.label}
+                  </Link>
+                ))}
+              </div>
+            </SectionCard>
+          ) : null}
         </>
       )}
 
@@ -322,7 +439,7 @@ export default function StockPage() {
             <div>
               <h3 className="mt-0">技术指标</h3>
               {techApi.data ? (() => {
-                const payload = unwrapPayload(techApi.data as Record<string, unknown>);
+                const payload = unwrapToolPayload(techApi.data);
                 const rsi = payload.rsi as Record<string, unknown> | undefined;
                 const macd = payload.macd as Record<string, unknown> | undefined;
                 const kdj = payload.kdj as Record<string, unknown> | undefined;
@@ -378,7 +495,7 @@ export default function StockPage() {
             <div>
               <h3 className="mt-0">K线形态</h3>
               {patternsApi.data ? (() => {
-                const raw = unwrapPayload(patternsApi.data as Record<string, unknown>);
+                const raw = unwrapToolPayload(patternsApi.data);
                 const arr = (Array.isArray(raw.patterns) ? raw.patterns : []) as Record<string, unknown>[];
                 return arr.length > 0 ? (
                   <div className="flex flex-wrap gap-2">
@@ -409,8 +526,7 @@ export default function StockPage() {
           ) : <p className="text-text-secondary text-sm">{fundFlowQ.isFetching ? '加载中...' : fundFlowQ.data ? '暂无资金流向数据' : '查询股票后显示资金流向'}</p>}
           {fundFlowItems.length > 0 && (
             <div className="mt-3 grid grid-cols-3 gap-2">
-              <KpiCard title="最近净流入" value={fmtAmount(Number((fundFlowItems[fundFlowItems.length - 1] as Record<string, unknown>).netInflow ?? 0))}
-                change={Number((fundFlowItems[fundFlowItems.length - 1] as Record<string, unknown>).netInflow ?? 0)} />
+              <KpiCard title="最近净流入" value={fmtAmount(Number((fundFlowItems[fundFlowItems.length - 1] as Record<string, unknown>).netInflow ?? 0))} />
               <KpiCard title="主力流入" value={fmtAmount(Number((fundFlowItems[fundFlowItems.length - 1] as Record<string, unknown>).mainInflow ?? 0))} />
               <KpiCard title="散户流入" value={fmtAmount(Number((fundFlowItems[fundFlowItems.length - 1] as Record<string, unknown>).retailInflow ?? 0))} />
             </div>
@@ -468,8 +584,8 @@ export default function StockPage() {
       {infoTab === 'shares' && (
         <SectionCard tabAttached className="p-3">
           <h3 className="mt-0">🏦 股本结构</h3>
-          {submittedCode ? (
-            <StockCapitalPanel code={submittedCode} />
+          {activeCode ? (
+            <StockCapitalPanel code={activeCode} />
           ) : <p className="text-text-secondary text-sm">查询股票后显示股本数据</p>}
         </SectionCard>
       )}
@@ -478,15 +594,14 @@ export default function StockPage() {
         <SectionCard tabAttached className="p-3">
           <h3 className="mt-0">估值分析</h3>
           {valuationQ.data ? (() => {
-            const val = extractObject(valuationQ.data) as Record<string, unknown>;
-            const pe = Number(val.pe ?? val.PE ?? val.pe_ttm ?? 0);
-            const pb = Number(val.pb ?? val.PB ?? 0);
-            const ps = Number(val.ps ?? val.PS ?? 0);
-            const pcf = Number(val.pcf ?? val.PCF ?? 0);
-            const mktCap = Number(val.marketCap ?? val.market_cap ?? val.total_mv ?? 0);
-            const cirMktCap = Number(val.cirMarketCap ?? val.circ_mv ?? 0);
-            const peHist = val.pe_percentile ?? val.pePercentile;
-            const pbHist = val.pb_percentile ?? val.pbPercentile;
+            const pe = Number(valuationMetrics.pe ?? valuationMetrics.pe_ttm ?? 0);
+            const pb = Number(valuationMetrics.pb ?? 0);
+            const ps = Number(valuationMetrics.ps ?? 0);
+            const pcf = Number(valuationMetrics.pcf ?? 0);
+            const mktCap = Number(valuationMetrics.market_cap ?? 0);
+            const cirMktCap = Number(valuationMetrics.float_market_cap ?? 0);
+            const peHist = valuationMetrics.pe_percentile;
+            const pbHist = valuationMetrics.pb_percentile;
             return (
               <div className="space-y-4">
                 <KpiGrid cols={4}>
@@ -520,8 +635,8 @@ export default function StockPage() {
       {infoTab === 'ai' && (
         <SectionCard tabAttached className="p-3">
           <h3 className="mt-0">🤖 AI 智能诊断</h3>
-          {submittedCode ? (
-            <AIDiagnosisPanel code={submittedCode} />
+          {activeCode ? (
+            <AIDiagnosisPanel key={activeCode} code={activeCode} />
           ) : <p className="text-text-secondary text-sm">请先查询股票代码</p>}
         </SectionCard>
       )}
@@ -529,8 +644,8 @@ export default function StockPage() {
       {infoTab === 'peers' && (
         <SectionCard tabAttached className="p-3">
           <h3 className="mt-0">🏭 同行业对比</h3>
-          {submittedCode ? (
-            <PeerComparisonTable code={submittedCode} />
+          {activeCode ? (
+            <PeerComparisonTable code={activeCode} />
           ) : <p className="text-text-secondary text-sm">查询股票后显示同行对比</p>}
         </SectionCard>
       )}

@@ -1,5 +1,6 @@
 """Strategy manager CRUD action handlers."""
 
+import asyncio
 import random
 import time
 from uuid import uuid4
@@ -18,6 +19,40 @@ from .strategy_mgr_helpers import (
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+async def _resolved(value):
+    return value
+
+
+async def _load_similar_vector_profiles(db, strategy_id: str) -> list:
+    if not hasattr(db, "list_strategy_vector_profiles"):
+        return []
+    try:
+        from ...services.vector_platform import get_strategy_vector_platform
+        return await get_strategy_vector_platform().find_similar_profiles(db, strategy_id, limit=5)
+    except Exception as exc:
+        logger.warning("strategy_manager.detail similar profiles failed for %s: %s", strategy_id, exc)
+        return []
+
+
+async def _enrich_rank_strategy(db, strategy: dict, semaphore: asyncio.Semaphore) -> dict:
+    async with semaphore:
+        metrics_list, nav = await asyncio.gather(
+            db.get_strategy_metrics(strategy["id"]),
+            compute_nav_series(db, strategy["id"]),
+        )
+
+    all_period = next((m for m in metrics_list if m.get("period") == "all"), {})
+    return {
+        **strategy,
+        "sharpe_ratio": all_period.get("sharpe_ratio"),
+        "total_return": all_period.get("total_return"),
+        "max_drawdown": all_period.get("max_drawdown"),
+        "win_rate": all_period.get("win_rate"),
+        "calmar_ratio": all_period.get("calmar_ratio"),
+        "nav_series": nav,
+    }
 
 
 async def handle_help(db, params: dict) -> dict:
@@ -92,11 +127,29 @@ async def handle_detail(db, params: dict) -> dict:
     strategy = await db.get_strategy(sid)
     if not strategy:
         return fail(f"Strategy not found: {sid}")
-    metrics = await db.get_strategy_metrics(sid)
-    reviews = await db.get_reviews(sid, limit=10)
 
     user_id = str(params.get("user_id", "default"))
-    is_sub = await db.is_subscribed(sid, user_id)
+    metrics, reviews, is_sub, latest_quality_report, incubation_account, incubation_metric, risk_events, latest_runtime_risk_snapshot, runtime_control, runtime_alerts, latest_promotion_review, latest_projection_snapshot, latest_vector_index_snapshot, latest_incubation_pipeline_snapshot, vector_profiles, similar_vector_profiles, domain_events, task_runs, nav_series = await asyncio.gather(
+        db.get_strategy_metrics(sid),
+        db.get_reviews(sid, limit=10),
+        db.is_subscribed(sid, user_id),
+        get_latest_quality_report(db, sid),
+        db.get_strategy_incubation_account(sid) if hasattr(db, "get_strategy_incubation_account") else _resolved(None),
+        db.get_latest_strategy_incubation_metric(sid) if hasattr(db, "get_latest_strategy_incubation_metric") else _resolved(None),
+        db.list_strategy_runtime_risk_events(strategy_id=sid, status="open", limit=5) if hasattr(db, "list_strategy_runtime_risk_events") else _resolved([]),
+        db.get_latest_strategy_runtime_risk_snapshot(sid) if hasattr(db, "get_latest_strategy_runtime_risk_snapshot") else _resolved(None),
+        db.get_strategy_runtime_control(sid) if hasattr(db, "get_strategy_runtime_control") else _resolved(None),
+        db.list_strategy_runtime_alerts(strategy_id=sid, status="open_or_ack", limit=5) if hasattr(db, "list_strategy_runtime_alerts") else _resolved([]),
+        db.get_latest_strategy_promotion_review(sid) if hasattr(db, "get_latest_strategy_promotion_review") else _resolved(None),
+        db.get_latest_strategy_projection_snapshot(sid) if hasattr(db, "get_latest_strategy_projection_snapshot") else _resolved(None),
+        db.get_latest_strategy_vector_index_snapshot('strategy_behavior') if hasattr(db, "get_latest_strategy_vector_index_snapshot") else _resolved(None),
+        db.get_latest_strategy_incubation_pipeline_snapshot(sid) if hasattr(db, "get_latest_strategy_incubation_pipeline_snapshot") else _resolved(None),
+        db.list_strategy_vector_profiles(strategy_id=sid, limit=3) if hasattr(db, "list_strategy_vector_profiles") else _resolved([]),
+        _load_similar_vector_profiles(db, sid),
+        db.list_strategy_domain_events(strategy_id=sid, limit=5) if hasattr(db, "list_strategy_domain_events") else _resolved([]),
+        db.list_strategy_task_runs(strategy_id=sid, limit=5) if hasattr(db, "list_strategy_task_runs") else _resolved([]),
+        compute_nav_series(db, sid),
+    )
     if not is_sub and metrics:
         noise = 1 + random.uniform(-0.001, 0.001)
         for m in metrics:
@@ -105,30 +158,9 @@ async def handle_detail(db, params: dict) -> dict:
                     m[key] = round(float(m[key]) * noise, 6)
             m["approximate"] = True
 
-    latest_quality_report = await get_latest_quality_report(db, sid)
-    incubation_account = await db.get_strategy_incubation_account(sid) if hasattr(db, "get_strategy_incubation_account") else None
-    incubation_metric = await db.get_latest_strategy_incubation_metric(sid) if hasattr(db, "get_latest_strategy_incubation_metric") else None
-    risk_events = await db.list_strategy_runtime_risk_events(strategy_id=sid, status="open", limit=5) if hasattr(db, "list_strategy_runtime_risk_events") else []
-    latest_runtime_risk_snapshot = await db.get_latest_strategy_runtime_risk_snapshot(sid) if hasattr(db, "get_latest_strategy_runtime_risk_snapshot") else None
-    runtime_control = await db.get_strategy_runtime_control(sid) if hasattr(db, "get_strategy_runtime_control") else None
-    runtime_alerts = await db.list_strategy_runtime_alerts(strategy_id=sid, status="open_or_ack", limit=5) if hasattr(db, "list_strategy_runtime_alerts") else []
-    latest_promotion_review = await db.get_latest_strategy_promotion_review(sid) if hasattr(db, "get_latest_strategy_promotion_review") else None
-    latest_projection_snapshot = await db.get_latest_strategy_projection_snapshot(sid) if hasattr(db, "get_latest_strategy_projection_snapshot") else None
-    latest_vector_index_snapshot = await db.get_latest_strategy_vector_index_snapshot('strategy_behavior') if hasattr(db, "get_latest_strategy_vector_index_snapshot") else None
-    latest_incubation_pipeline_snapshot = await db.get_latest_strategy_incubation_pipeline_snapshot(sid) if hasattr(db, "get_latest_strategy_incubation_pipeline_snapshot") else None
-    vector_profiles = await db.list_strategy_vector_profiles(strategy_id=sid, limit=3) if hasattr(db, "list_strategy_vector_profiles") else []
-    similar_vector_profiles = []
-    if hasattr(db, "list_strategy_vector_profiles"):
-        try:
-            from ...services.vector_platform import get_strategy_vector_platform
-            similar_vector_profiles = await get_strategy_vector_platform().find_similar_profiles(db, sid, limit=5)
-        except Exception as exc:
-            logger.warning("strategy_manager.detail similar profiles failed for %s: %s", sid, exc)
-    domain_events = await db.list_strategy_domain_events(strategy_id=sid, limit=5) if hasattr(db, "list_strategy_domain_events") else []
-    task_runs = await db.list_strategy_task_runs(strategy_id=sid, limit=5) if hasattr(db, "list_strategy_task_runs") else []
     return ok({
         "strategy": strategy, "metrics": metrics, "reviews": reviews,
-        "nav_series": await compute_nav_series(db, sid),
+        "nav_series": nav_series,
         "latest_quality_report": latest_quality_report,
         "incubation_account": incubation_account,
         "latest_incubation_metric": incubation_metric,
@@ -241,20 +273,11 @@ async def handle_rank(db, params: dict) -> dict:
     if not strategies:
         return ok({"strategies": [], "count": 0, "offset": offset, "limit": limit})
 
-    enriched = []
-    for s in strategies:
-        metrics_list = await db.get_strategy_metrics(s["id"])
-        all_period = next((m for m in metrics_list if m.get("period") == "all"), {})
-        nav = await compute_nav_series(db, s["id"])
-        enriched.append({
-            **s,
-            "sharpe_ratio": all_period.get("sharpe_ratio"),
-            "total_return": all_period.get("total_return"),
-            "max_drawdown": all_period.get("max_drawdown"),
-            "win_rate": all_period.get("win_rate"),
-            "calmar_ratio": all_period.get("calmar_ratio"),
-            "nav_series": nav,
-        })
+    semaphore = asyncio.Semaphore(8)
+    enriched = await asyncio.gather(*[
+        _enrich_rank_strategy(db, strategy, semaphore)
+        for strategy in strategies
+    ])
 
     ranked = rrf_rank(enriched, rank_keys)
     page = ranked[offset:offset + limit]

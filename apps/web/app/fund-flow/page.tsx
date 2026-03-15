@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
+import Link from 'next/link';
 import { PageContainer, TabBar, SectionCard, StockCodeInput } from '@/components/ui';
 import { KpiCard, KpiGrid, DataTable } from '@/components/ui';
 import { BarChart, LineChart, PieChart, COLORS } from '@/components/charts';
@@ -28,17 +29,8 @@ const TABS: { key: Tab; label: string }[] = [
 export default function FundFlowPage() {
   const [tab, setTab] = useState<Tab>('stock');
   const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
-
+  const autoStockPath = resolvedCode ? `/fund-flow/stock?code=${encodeURIComponent(resolvedCode)}` : null;
   const [stockPath, setStockPath] = useState<string | null>(null);
-
-  // 自动查询：URL 或 Store 携带了有效代码时自动触发个股资金流
-  const autoFetched = useRef(false);
-  useEffect(() => {
-    if (!autoFetched.current && resolvedCode) {
-      autoFetched.current = true;
-      setStockPath(`/fund-flow/stock?code=${encodeURIComponent(resolvedCode)}`);
-    }
-  }, [resolvedCode]);
   const [sectorPath, setSectorPath] = useState<string | null>(null);
   const [conceptPath, setConceptPath] = useState<string | null>(null);
   const [northPath, setNorthPath] = useState<string | null>(null);
@@ -49,7 +41,9 @@ export default function FundFlowPage() {
   const [northHoldingPath, setNorthHoldingPath] = useState<string | null>(null);
   const [northTopPath, setNorthTopPath] = useState<string | null>(null);
 
-  const stockQ = useApiQuery<unknown>(stockPath);
+  const effectiveStockPath = stockPath ?? autoStockPath;
+
+  const stockQ = useApiQuery<unknown>(effectiveStockPath);
   const sectorQ = useApiQuery<unknown>(sectorPath);
   const conceptQ = useApiQuery<unknown>(conceptPath);
   const northQ = useApiQuery<unknown>(northPath);
@@ -83,6 +77,29 @@ export default function FundFlowPage() {
   };
   const loading = tabLoading[tab];
   const error = tabError[tab];
+  const primaryActionCls = 'rounded-full border border-primary px-3 py-1 text-xs text-primary';
+  const secondaryActionCls = 'rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline';
+
+  function loadStockFlow(nextCode = trimmedCode || resolvedCode || '600519') {
+    setCode(nextCode);
+    const p = `/fund-flow/stock?code=${encodeURIComponent(nextCode)}`;
+    if (p === effectiveStockPath) stockQ.refetch(); else setStockPath(p);
+  }
+
+  function loadMarginData(nextCode?: string) {
+    const effectiveCode = nextCode ?? trimmedCode;
+    if (nextCode !== undefined) setCode(nextCode);
+    const params = effectiveCode ? `?code=${encodeURIComponent(effectiveCode)}` : '';
+    const p = `/fund-flow/margin${params}`;
+    if (p === marginPath) marginQ.refetch(); else setMarginPath(p);
+  }
+
+  function loadNorthDetail(nextCode = trimmedCode || resolvedCode || '600519') {
+    setCode(nextCode);
+    const hp = `/fund-flow/north-holding?code=${encodeURIComponent(nextCode)}`;
+    if (hp === northHoldingPath) northHoldingQ.refetch(); else setNorthHoldingPath(hp);
+    if (northTopPath) northTopQ.refetch(); else setNorthTopPath('/fund-flow/north-top');
+  }
 
   return (
     <PageContainer>
@@ -99,14 +116,14 @@ export default function FundFlowPage() {
 
       {tab === 'stock' && (
         <SectionCard tabAttached>
-          <div className="flex gap-2 items-center">
-            <StockCodeInput value={code} onChange={setCode} error={codeError} />
+          <div className="flex gap-3 flex-wrap items-end">
+            <StockCodeInput id="fund-flow-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} />
             <button type="button" disabled={loading} onClick={() => {
               if (!validate()) return;
-              const p = `/fund-flow/stock?code=${encodeURIComponent(trimmedCode)}`;
-              if (p === stockPath) stockQ.refetch(); else setStockPath(p);
+              loadStockFlow(trimmedCode);
             }}>查询</button>
           </div>
+          <p className="mt-2 text-sm text-text-secondary">适合确认一只股票最近几天是否持续获得主力净流入，尤其适合在看板和自选之间来回核对。</p>
           {stockQ.data ? (() => {
             const items = extractArray(stockQ.data, 'flows');
             return items.length ? (
@@ -135,8 +152,19 @@ export default function FundFlowPage() {
                 onExport={() => exportCSV(items, '个股资金流')}
               />
               </>
-            ) : <EmptyState text="暂无数据" />;
-          })() : <EmptyState text="输入代码查询个股资金流" />}
+            ) : <EmptyState text="这只股票最近没有可展示的资金流记录" hint="可换成成交更活跃的标的，或等待交易时段后刷新再看主力净流入趋势。" />;
+          })() : (
+            <EmptyState
+              text="输入股票代码后查看近期开盘资金流向"
+              hint="推荐先从 600519 或自选股里的活跃标的开始，快速确认主力与散户资金是否同向。"
+              action={
+                <>
+                  <button type="button" onClick={() => loadStockFlow('600519')} className={primaryActionCls}>示例：600519</button>
+                  <Link href="/watchlist" className={secondaryActionCls}>查看自选股</Link>
+                </>
+              }
+            />
+          )}
         </SectionCard>
       )}
       {tab === 'sector' && (
@@ -185,8 +213,8 @@ export default function FundFlowPage() {
                 onExport={() => exportCSV(rows, '板块资金流')}
               />
               </>
-            ) : <EmptyState text="暂无数据" />;
-          })() : <EmptyState text="点击按钮加载板块资金流" />}
+            ) : <EmptyState text="当前没有板块资金流榜单" hint="非交易时段或数据源短暂波动时常见，建议稍后再次加载。" />;
+          })() : <EmptyState text="点击按钮查看板块资金流强弱" hint="适合盘中快速判断哪类板块正在获得资金关注，再决定深入看个股。" />}
         </SectionCard>
       )}
 
@@ -214,8 +242,8 @@ export default function FundFlowPage() {
                 maxHeight={400}
                 onExport={() => exportCSV(rows, '概念资金流')}
               />
-            ) : <EmptyState text="暂无数据" />;
-          })() : <EmptyState text="点击按钮加载概念资金流" />}
+            ) : <EmptyState text="当前没有概念资金流榜单" hint="如果你在追踪题材轮动，这里建议在交易时段再刷新一次确认强弱排序。" />;
+          })() : <EmptyState text="点击按钮查看概念题材的资金轮动" hint="这一步适合先确定热点概念，再回到市场页或个股页做细查。" />}
         </SectionCard>
       )}
 
@@ -239,8 +267,8 @@ export default function FundFlowPage() {
                 height={360}
                 yAxisName="净流入(亿)"
               />
-            ) : <EmptyState text="暂无数据" />;
-          })() : <EmptyState text="点击按钮加载北向资金" />}
+            ) : <EmptyState text="当前没有北向净流入序列" hint="非交易日或接口临时缺数时可能为空，建议稍后重新加载。" />;
+          })() : <EmptyState text="点击按钮加载北向资金走势" hint="适合先判断外资整体偏流入还是流出，再决定是否继续追踪北向明细。" />}
         </SectionCard>
       )}
       {tab === 'dragon' && (
@@ -268,21 +296,20 @@ export default function FundFlowPage() {
                 maxHeight={400}
                 onExport={() => exportCSV(rows, '龙虎榜')}
               />
-            ) : <EmptyState text="暂无数据" />;
-          })() : <EmptyState text="点击按钮加载龙虎榜数据" />}
+            ) : <EmptyState text="当前没有龙虎榜记录" hint="不是每天都有足够的上榜样本；交易日收盘后再次查看通常更完整。" />;
+          })() : <EmptyState text="点击按钮加载龙虎榜数据" hint="适合用来识别短线活跃标的与异常成交，再联动到个股详情页核对。" />}
         </SectionCard>
       )}
 
       {tab === 'margin' && (
         <SectionCard tabAttached>
-          <div className="flex gap-2 items-center">
-            <StockCodeInput value={code} onChange={setCode} placeholder="股票代码（可选）" />
+          <div className="flex gap-3 flex-wrap items-end">
+            <StockCodeInput id="fund-flow-margin-code" label="股票代码（可选）" value={code} onChange={setCode} placeholder="留空看全市场" />
             <button type="button" disabled={loading} onClick={() => {
-              const params = trimmedCode ? `?code=${encodeURIComponent(trimmedCode)}` : '';
-              const p = `/fund-flow/margin${params}`;
-              if (p === marginPath) marginQ.refetch(); else setMarginPath(p);
+              loadMarginData();
             }}>查询融资融券</button>
           </div>
+          <p className="mt-2 text-sm text-text-secondary">留空代码时更适合看市场级融资融券概况；填入股票代码时则用于确认个股是否存在明显杠杆资金介入。</p>
           {marginQ.data ? (() => {
             const rows = extractArray(marginQ.data);
             return (
@@ -309,10 +336,21 @@ export default function FundFlowPage() {
                     { key: 'shortBalance', label: '融券余额', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
                     { key: 'totalBalance', label: '总余额', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
                   ]} maxHeight={400} onExport={() => exportCSV(rows, '融资融券')} />
-                ) : <EmptyState text="暂无数据" />}
+                ) : <EmptyState text="当前没有融资融券记录" hint="可以留空代码查看市场汇总，或换成融资交易更活跃的股票后重试。" />}
               </>
             );
-          })() : <EmptyState text="查询融资融券数据" />}
+          })() : (
+            <EmptyState
+              text="可按个股查询融资融券，也可以先看全市场概况"
+              hint="第一次使用建议先留空查询市场整体，再输入股票代码确认是否存在明显杠杆交易。"
+              action={
+                <>
+                  <button type="button" onClick={() => loadMarginData('600519')} className={primaryActionCls}>示例：600519</button>
+                  <button type="button" onClick={() => loadMarginData('')} className={secondaryActionCls}>查看全市场</button>
+                </>
+              }
+            />
+          )}
           <div className="mt-3">
             <button type="button" disabled={loading} onClick={() => {
               if (marginRankPath) marginRankQ.refetch(); else setMarginRankPath('/fund-flow/margin-ranking');
@@ -329,7 +367,7 @@ export default function FundFlowPage() {
                   { key: 'marginBuy', label: '融资买入', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
                   { key: 'totalBalance', label: '总余额', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
                 ]} maxHeight={400} onExport={() => exportCSV(rows, '融资融券排名')} />
-              ) : <EmptyState text="暂无数据" />;
+              ) : <EmptyState text="当前没有融资融券排名数据" hint="如果你要找融资最活跃的标的，可以稍后重新加载该榜单。" />;
             })() : null}
           </div>
         </SectionCard>
@@ -360,22 +398,21 @@ export default function FundFlowPage() {
                 maxHeight={400}
                 onExport={() => exportCSV(rows, '大宗交易')}
               />
-            ) : <EmptyState text="暂无数据" />;
-          })() : <EmptyState text="点击按钮加载大宗交易数据" />}
+            ) : <EmptyState text="当前没有大宗交易记录" hint="大宗交易在部分日期样本较少，建议交易日收盘后再次确认。" />;
+          })() : <EmptyState text="点击按钮加载大宗交易数据" hint="适合查看机构席位和折溢价交易，再结合个股走势评估影响。" />}
         </SectionCard>
       )}
 
       {tab === 'north-detail' && (
         <SectionCard tabAttached>
-          <div className="flex gap-2 items-center">
-            <StockCodeInput value={code} onChange={setCode} error={codeError} />
+          <div className="flex gap-3 flex-wrap items-end">
+            <StockCodeInput id="fund-flow-north-detail-code" label="股票代码" value={code} onChange={setCode} error={codeError} />
             <button type="button" disabled={loading} onClick={() => {
               if (!validate()) return;
-              const hp = `/fund-flow/north-holding?code=${encodeURIComponent(trimmedCode)}`;
-              if (hp === northHoldingPath) northHoldingQ.refetch(); else setNorthHoldingPath(hp);
-              if (northTopPath) northTopQ.refetch(); else setNorthTopPath('/fund-flow/north-top');
+              loadNorthDetail(trimmedCode);
             }}>查询北向明细</button>
           </div>
+          <p className="mt-2 text-sm text-text-secondary">查询后会同时返回单只股票的北向持股概览和全市场热门持仓榜，方便横向对比是否真正受外资偏好。</p>
           {(northHoldingQ.data || northTopQ.data) ? (
             <>
               {northHoldingQ.data && (() => {
@@ -400,10 +437,21 @@ export default function FundFlowPage() {
                     { key: 'ratio', label: '占比', align: 'right' as const, render: (v: unknown) => fmtPct(v as number) },
                     { key: 'marketCap', label: '市值', align: 'right' as const, render: (v: unknown) => fmtAmount(v as number) },
                   ]} maxHeight={400} onExport={() => exportCSV(rows, '北向持仓TOP')} />
-                ) : <EmptyState text="暂无北向TOP数据" />;
+                ) : <EmptyState text="当前没有北向热门持仓榜" hint="建议在交易日收盘后再看，榜单通常会更完整。" />;
               })()}
             </>
-          ) : <EmptyState text="输入代码查询北向持仓明细" />}
+          ) : (
+            <EmptyState
+              text="输入股票代码查询北向持仓明细"
+              hint="这一步适合确认单只股票的外资持股比例，并与全市场热门持仓榜做对照。"
+              action={
+                <>
+                  <button type="button" onClick={() => loadNorthDetail('600519')} className={primaryActionCls}>示例：600519</button>
+                  <Link href="/risk" className={secondaryActionCls}>联动风险页</Link>
+                </>
+              }
+            />
+          )}
         </SectionCard>
       )}
     </PageContainer>

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from statistics import median
 from typing import Any, Dict, List, Optional
 
 from .constants import (
     BACKTEST_AI_PROTOTYPE_THRESHOLDS,
     BACKTEST_CONCURRENCY,
+    BACKTEST_CODE_CONCURRENCY,
     BACKTEST_DEFAULT_THRESHOLDS,
     BACKTEST_TYPE_THRESHOLDS,
     REPRESENTATIVE_STOCKS,
@@ -44,8 +46,8 @@ class BacktestFilter:
 
     async def preload_klines(self, db, codes: list[str] | None = None) -> None:
         """批量预取 K 线至缓存，后续 _test_one 复用。"""
-        codes = codes or list(REPRESENTATIVE_STOCKS)
-        sem = asyncio.Semaphore(6)
+        codes = list(dict.fromkeys(codes or list(REPRESENTATIVE_STOCKS)))
+        sem = asyncio.Semaphore(BACKTEST_CODE_CONCURRENCY)
 
         async def _fetch(code: str) -> None:
             async with sem:
@@ -112,19 +114,43 @@ class BacktestFilter:
             thresholds = {**thresholds, **BACKTEST_AI_PROTOTYPE_THRESHOLDS}
         return thresholds
 
+    @classmethod
+    def _collect_preload_codes(cls, candidates: List[dict]) -> List[str]:
+        ordered_codes: List[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            evaluated_codes, _, _, _ = cls._resolve_backtest_codes(candidate)
+            for code in evaluated_codes:
+                if code in seen:
+                    continue
+                seen.add(code)
+                ordered_codes.append(code)
+        return ordered_codes
+
     def _build_last_report(self, candidates: List[dict], passed: List[dict], failed: List[dict]) -> dict:
         failed_reason_counts: Dict[str, int] = {}
         thresholds_by_type: Dict[str, dict] = {}
+        candidate_run_ms_total = 0.0
+        code_run_ms_total = 0.0
+        code_run_count = 0
+        cache_hit_total = 0
+        evaluated_code_total = 0
         for item in candidates:
             strategy_type = str(item.get("strategy_type") or "unknown")
             result = item.get("backtest_result") or {}
             thresholds_by_type[strategy_type] = result.get("thresholds") or self._get_thresholds(strategy_type, item)
+            candidate_run_ms_total += float(result.get("backtest_run_ms") or 0.0)
+            code_run_ms_total += float(result.get("code_run_ms_total") or 0.0)
+            code_run_count += int(result.get("code_run_count") or 0)
+            cache_hit_total += int(result.get("kline_cache_hit_count") or 0)
+            evaluated_code_total += int(result.get("evaluated_code_count") or 0)
         for item in failed:
             reason_code = str((item.get("backtest_result") or {}).get("reason_code") or "unknown")
             failed_reason_counts[reason_code] = failed_reason_counts.get(reason_code, 0) + 1
+        candidate_count = len(candidates)
         return {
             "summary": {
-                "input_count": len(candidates),
+                "input_count": candidate_count,
                 "passed_count": len(passed),
                 "failed_count": len(failed),
                 "strategy_type_counts": self._count_by_strategy_type(candidates),
@@ -132,6 +158,9 @@ class BacktestFilter:
                 "failed_strategy_type_counts": self._count_by_strategy_type(failed),
                 "failed_reason_counts": failed_reason_counts,
                 "thresholds_by_type": thresholds_by_type,
+                "avg_candidate_ms": round(candidate_run_ms_total / candidate_count, 2) if candidate_count else 0.0,
+                "avg_code_ms": round(code_run_ms_total / code_run_count, 2) if code_run_count else 0.0,
+                "cache_hit_ratio": round(cache_hit_total / evaluated_code_total, 4) if evaluated_code_total else 0.0,
             },
             "passed": [self._build_report_entry(item) for item in passed],
             "failed": [self._build_report_entry(item) for item in failed],
@@ -143,10 +172,16 @@ class BacktestFilter:
         passed: List[dict] = []
         failed: List[dict] = []
         sem = asyncio.Semaphore(BACKTEST_CONCURRENCY)
+        preload_codes = self._collect_preload_codes(candidates)
+        if preload_codes:
+            await self.preload_klines(db, preload_codes)
 
         async def _test_guarded(candidate: dict) -> tuple:
+            queued_at = time.perf_counter()
             async with sem:
+                started_at = time.perf_counter()
                 result = await self._test_one(candidate, db, BacktestEngine)
+                result["queue_wait_ms"] = round((started_at - queued_at) * 1000, 2)
                 return candidate, result
 
         results = await asyncio.gather(
@@ -198,19 +233,29 @@ class BacktestFilter:
         target_set = set(target_codes)
         layer_results: Dict[str, List[dict]] = {"target": [], "representative": []}
         layer_successful_codes: Dict[str, List[str]] = {"target": [], "representative": []}
+        candidate_started_at = time.perf_counter()
 
-        for code in evaluated_codes:
+        async def _run_one_code(code: str) -> dict:
             layer = "target" if code in target_set else "representative"
+            started_at = time.perf_counter()
+            cache_hit = False
             try:
-                klines = self._kline_cache.get(code) or await db.get_klines(code, limit=500)
+                klines = self._kline_cache.get(code)
+                if klines is not None:
+                    cache_hit = True
+                else:
+                    klines = await db.get_klines(code, limit=500)
+                    self._kline_cache[code] = klines or []
                 if not klines or len(klines) < 100:
-                    skipped_codes.append({
+                    return {
                         "code": code,
+                        "layer": layer,
+                        "status": "skipped",
                         "reason": "insufficient_klines",
                         "available": len(klines or []),
-                        "layer": layer,
-                    })
-                    continue
+                        "cache_hit": cache_hit,
+                        "run_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    }
                 result = await factory_pkg.asyncio.to_thread(
                     engine.run_backtest,
                     code,
@@ -219,14 +264,62 @@ class BacktestFilter:
                     {**candidate["params"], "initial_capital": 100000, "commission": 0.00025},
                 )
                 if result.get("success"):
-                    results.append(result["data"])
-                    layer_results[layer].append(result["data"])
-                    successful_codes.append(code)
-                    layer_successful_codes[layer].append(code)
-                else:
-                    failed_codes.append({"code": code, "reason": "backtest_failed", "layer": layer})
+                    return {
+                        "code": code,
+                        "layer": layer,
+                        "status": "success",
+                        "data": result["data"],
+                        "cache_hit": cache_hit,
+                        "run_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    }
+                return {
+                    "code": code,
+                    "layer": layer,
+                    "status": "failed",
+                    "reason": "backtest_failed",
+                    "cache_hit": cache_hit,
+                    "run_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                }
             except Exception:
-                failed_codes.append({"code": code, "reason": "exception", "layer": layer})
+                return {
+                    "code": code,
+                    "layer": layer,
+                    "status": "failed",
+                    "reason": "exception",
+                    "cache_hit": cache_hit,
+                    "run_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                }
+
+        code_sem = asyncio.Semaphore(BACKTEST_CODE_CONCURRENCY)
+
+        async def _run_guarded(code: str) -> dict:
+            async with code_sem:
+                return await _run_one_code(code)
+
+        code_results = await asyncio.gather(*[_run_guarded(code) for code in evaluated_codes])
+        code_run_ms_total = 0.0
+        kline_cache_hit_count = 0
+        for item in code_results:
+            code_run_ms_total += float(item.get("run_ms") or 0.0)
+            if item.get("cache_hit"):
+                kline_cache_hit_count += 1
+            layer = str(item.get("layer") or "representative")
+            code = str(item.get("code") or "")
+            if item.get("status") == "success":
+                result_data = dict(item.get("data") or {})
+                results.append(result_data)
+                layer_results[layer].append(result_data)
+                successful_codes.append(code)
+                layer_successful_codes[layer].append(code)
+            elif item.get("status") == "skipped":
+                skipped_codes.append({
+                    "code": code,
+                    "reason": item.get("reason"),
+                    "available": item.get("available", 0),
+                    "layer": layer,
+                })
+            else:
+                failed_codes.append({"code": code, "reason": item.get("reason"), "layer": layer})
 
         primary_results = layer_results["target"] if len(layer_results["target"]) >= thresholds["min_samples"] else results
         primary_layer = "target" if len(layer_results["target"]) >= thresholds["min_samples"] else "combined"
@@ -238,12 +331,19 @@ class BacktestFilter:
             "sample_count": len(primary_results),
             "required_sample_count": thresholds["min_samples"],
             "evaluated_code_count": len(evaluated_codes),
+            "successful_code_count": len(successful_codes),
             "evaluated_codes": evaluated_codes,
             "successful_codes": successful_codes,
             "target_codes": target_codes,
             "representative_codes": representative_codes,
             "code_source": code_source,
             "primary_layer": primary_layer,
+            "queue_wait_ms": 0.0,
+            "backtest_run_ms": round((time.perf_counter() - candidate_started_at) * 1000, 2),
+            "code_run_ms_total": round(code_run_ms_total, 2),
+            "code_run_count": len(code_results),
+            "avg_code_ms": round(code_run_ms_total / len(code_results), 2) if code_results else 0.0,
+            "kline_cache_hit_count": kline_cache_hit_count,
             "skipped_codes": skipped_codes,
             "failed_codes": failed_codes,
             "thresholds": thresholds,

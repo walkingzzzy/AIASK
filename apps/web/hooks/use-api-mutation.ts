@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { authedFetch } from '@/lib/api';
+import { authedFetch, extractApiErrorMessage, unwrapApiEnvelope } from '@/lib/api';
 import { useToast } from '@/components/ui/toast';
 import type { Envelope } from '@aiask/shared-types';
 
@@ -42,18 +42,24 @@ export function useApiMutation<TData = unknown>(options: UseApiMutationOptions<T
         init.headers = fetchOpts.headers;
       }
       const resp = await authedFetch(path, init);
+      const bodyPayload = await resp.json().catch(() => null);
       if (!resp.ok) {
         let msg = `HTTP ${resp.status} @ ${path}`;
-        try {
-          const b = await resp.json() as { error?: { message?: string }; traceId?: string };
-          if (b?.error?.message) msg = `${b.error.message} @ ${path}`;
-          if (b?.traceId) msg = `${msg} (traceId: ${b.traceId})`;
-        } catch {}
+        const detail = extractApiErrorMessage(bodyPayload, msg);
+        if (detail !== msg) msg = `${detail} @ ${path}`;
+        const traceId = bodyPayload && typeof bodyPayload === 'object' && typeof (bodyPayload as { traceId?: unknown }).traceId === 'string'
+          ? (bodyPayload as { traceId: string }).traceId
+          : undefined;
+        if (traceId) msg = `${msg} (traceId: ${traceId})`;
         throw new Error(msg);
       }
-      const envelope = (await resp.json()) as Envelope<TData>;
-      const trace = envelope.traceId ? ` (traceId: ${envelope.traceId})` : '';
-      const rawData = (envelope.data ?? null) as unknown;
+      const envelope = bodyPayload as Envelope<TData>;
+      const unwrapped = unwrapApiEnvelope<TData>(envelope);
+      const trace = unwrapped.traceId ? ` (traceId: ${unwrapped.traceId})` : '';
+      if (unwrapped.errorMessage) {
+        throw new Error(`${unwrapped.errorMessage} @ ${path}${trace}`);
+      }
+      const rawData = unwrapped.data;
       if (options.parse) {
         try {
           return options.parse(rawData);

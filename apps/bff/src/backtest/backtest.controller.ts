@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
-import { IsNumberString, IsOptional, IsString, Matches } from 'class-validator';
+import { IsArray, IsNumberString, IsOptional, IsString, Matches } from 'class-validator';
 import { BacktestService } from './backtest.service';
 
 class RunBacktestDto {
@@ -32,6 +32,22 @@ class ListBacktestDto {
 class ArtifactQueryDto {
   @IsString()
   artifactId!: string;
+}
+
+class BatchBacktestDto {
+  @IsArray()
+  @Matches(/^\d{6}$/, { each: true, message: 'codes 必须为 6 位数字数组' })
+  codes!: string[];
+
+  @IsString()
+  strategy!: string;
+
+  @IsOptional() @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'startDate 格式必须为 YYYY-MM-DD' }) startDate?: string;
+  @IsOptional() @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'endDate 格式必须为 YYYY-MM-DD' }) endDate?: string;
+  @IsOptional() @IsNumberString() initialCapital?: string;
+  @IsOptional() @IsNumberString() commission?: string;
+  @IsOptional() @IsNumberString() shortPeriod?: string;
+  @IsOptional() @IsNumberString() longPeriod?: string;
 }
 
 @Controller('backtest')
@@ -103,16 +119,20 @@ export class BacktestController {
   /** P3-3: Batch backtest */
   @Post('batch')
   async batch(
-    @Body() body: { codes: string[]; strategy: string; initialCapital?: string },
+    @Body() body: BatchBacktestDto,
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.backtestService.batch({
       codes: body.codes,
       strategy: body.strategy,
+      startDate: body.startDate,
+      endDate: body.endDate,
       initialCapital: body.initialCapital ? Number(body.initialCapital) : undefined,
+      commission: body.commission ? Number(body.commission) : undefined,
+      shortPeriod: body.shortPeriod ? Number(body.shortPeriod) : undefined,
+      longPeriod: body.longPeriod ? Number(body.longPeriod) : undefined,
     });
     const traceId = req.traceId || req.headers?.['x-trace-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 }
-

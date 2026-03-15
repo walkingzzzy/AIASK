@@ -12,10 +12,12 @@ class PlaceOrderDto {
   @IsOptional() @IsString() order_type?: string;
   @IsOptional() @Type(() => Number) @IsNumber() stop_price?: number;
   @IsOptional() @IsString() account_id?: string;
+  @IsOptional() @IsString() idempotency_key?: string;
 }
 
 class CancelOrderDto {
   @IsString() order_id!: string;
+  @IsOptional() @IsString() idempotency_key?: string;
 }
 
 class UpdatePricesDto {
@@ -43,6 +45,10 @@ class RouteExecutionDto {
   @Type(() => Number) @IsInt() @Min(1) quantity!: number;
   @IsOptional() @Type(() => Number) @IsNumber() price?: number;
   @IsOptional() @IsString() urgency?: string;
+  @IsOptional() @IsString() order_type?: string;
+  @IsOptional() @Type(() => Number) @IsNumber() stop_price?: number;
+  @IsOptional() @IsString() account_id?: string;
+  @IsOptional() @IsString() idempotency_key?: string;
 }
 
 class OrderEventsQueryDto {
@@ -64,6 +70,15 @@ function traceId(req: Req_): string {
 
 function userId(req: Req_): string {
   return req.user?.id || 'default';
+}
+
+function requestIdempotencyKey(
+  req: Req_,
+  body?: { idempotency_key?: string },
+): string | undefined {
+  const headerValue = req.headers?.['idempotency-key'];
+  const key = String(body?.idempotency_key ?? headerValue ?? '').trim();
+  return key.length > 0 ? key : undefined;
 }
 
 @Controller('paper-trading')
@@ -109,13 +124,17 @@ export class PaperTradingController {
   @Post('order')
   @Throttle({ default: { ttl: 1000, limit: 10 } })
   async placeOrder(@Body() body: PlaceOrderDto, @Req() req: Req_) {
-    const data = await this.svc.placeOrder(userId(req), body);
+    const data = await this.svc.placeOrder(userId(req), body, requestIdempotencyKey(req, body));
     return { success: true, data, traceId: traceId(req) };
   }
 
   @Post('cancel')
   async cancelOrder(@Body() body: CancelOrderDto, @Req() req: Req_) {
-    const data = await this.svc.cancelOrder(userId(req), body.order_id);
+    const data = await this.svc.cancelOrder(
+      userId(req),
+      body.order_id,
+      requestIdempotencyKey(req, body),
+    );
     return { success: true, data, traceId: traceId(req) };
   }
 
@@ -167,7 +186,11 @@ export class PaperTradingController {
 
   @Post('route-execution')
   async routeExecution(@Body() body: RouteExecutionDto, @Req() req: Req_) {
-    const data = await this.svc.routeExecution(userId(req), body);
+    const data = await this.svc.routeExecution(
+      userId(req),
+      body,
+      requestIdempotencyKey(req, body),
+    );
     return { success: true, data, traceId: traceId(req) };
   }
 

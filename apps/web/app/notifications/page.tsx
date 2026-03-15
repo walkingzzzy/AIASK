@@ -3,7 +3,8 @@
 import { useState, useMemo } from 'react';
 import { PageContainer, SectionCard, Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
-import { BFF_BASE } from '@/lib/api';
+import { useApiMutation } from '@/hooks/use-api-mutation';
+import { apiKeys } from '@/lib/query-keys';
 
 type NotificationType = 'alert' | 'signal' | 'trade' | 'system' | 'news';
 
@@ -31,6 +32,18 @@ export default function NotificationsPage() {
     const listQ = useApiQuery<unknown>(`/notifications/list?limit=100`, {
         refetchInterval: 30000,
     });
+    const markAllReadApi = useApiMutation<{ markedCount?: number }>({
+        invalidates: [[...apiKeys.notifications()]],
+        successToast: '通知已全部标记为已读',
+    });
+    const markReadApi = useApiMutation<{ markedCount?: number }>({
+        invalidates: [[...apiKeys.notifications()]],
+        successToast: false,
+    });
+    const deleteApi = useApiMutation<{ deletedCount?: number }>({
+        invalidates: [[...apiKeys.notifications()]],
+        successToast: '通知已删除',
+    });
 
     const rawItems: NotificationItem[] = useMemo(() => {
         const data = listQ.data as any;
@@ -42,35 +55,25 @@ export default function NotificationsPage() {
     }, [rawItems, activeType]);
 
     const unreadCount = rawItems.filter((i) => !i.read).length;
+    const actionError = markAllReadApi.error || markReadApi.error || deleteApi.error;
 
     const handleMarkAllRead = async () => {
         try {
-            await fetch(`${BFF_BASE}/notifications/mark-all-read`, {
-                method: 'POST', credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-            });
+            await markAllReadApi.triggerAsync('/notifications/mark-all-read', { method: 'POST' });
             listQ.refetch();
         } catch { /* ignore */ }
     };
 
     const handleMarkRead = async (ids: string[]) => {
         try {
-            await fetch(`${BFF_BASE}/notifications/mark-read`, {
-                method: 'POST', credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ids }),
-            });
+            await markReadApi.triggerAsync('/notifications/mark-read', { method: 'POST' }, { ids });
             listQ.refetch();
         } catch { /* ignore */ }
     };
 
     const handleDelete = async (ids: string[]) => {
         try {
-            await fetch(`${BFF_BASE}/notifications/delete`, {
-                method: 'DELETE', credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ids }),
-            });
+            await deleteApi.triggerAsync('/notifications/delete', { method: 'DELETE' }, { ids });
             listQ.refetch();
         } catch { /* ignore */ }
     };
@@ -78,18 +81,23 @@ export default function NotificationsPage() {
     return (
         <PageContainer>
             <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold">🔔 通知中心</h2>
+                <div>
+                    <h1 className="text-lg font-semibold m-0">🔔 通知中心</h1>
+                    <p className="mt-1 mb-0 text-xs text-text-secondary">统一查看告警、策略、交易和系统消息。</p>
+                </div>
                 <div className="flex items-center gap-2">
                     {unreadCount > 0 && (
                         <button
                             onClick={handleMarkAllRead}
+                            disabled={markAllReadApi.isPending}
                             className="text-xs px-3 py-1 rounded border border-primary/50 text-primary cursor-pointer hover:bg-primary/10"
                         >
-                            全部已读 ({unreadCount})
+                            {markAllReadApi.isPending ? '处理中...' : `全部已读 (${unreadCount})`}
                         </button>
                     )}
                 </div>
             </div>
+            {actionError ? <p className="text-sm text-danger mb-3">{actionError}</p> : null}
 
             {/* Type Filter Tabs */}
             <div className="flex gap-2 mb-4 flex-wrap">
@@ -114,7 +122,8 @@ export default function NotificationsPage() {
             {items.length === 0 ? (
                 <SectionCard>
                     <div className="text-center py-12 text-text-secondary text-sm">
-                        暂无{activeType === 'all' ? '' : TYPE_LABELS[activeType]}通知
+                        <p className="m-0">暂无{activeType === 'all' ? '' : TYPE_LABELS[activeType]}通知</p>
+                        <p className="mt-2 mb-0 text-xs">可以先去告警中心、策略超市或模拟交易页面创建上游触发源。</p>
                     </div>
                 </SectionCard>
             ) : (
@@ -147,6 +156,7 @@ export default function NotificationsPage() {
                                     {!item.read && (
                                         <button
                                             onClick={() => handleMarkRead([item.id])}
+                                            disabled={markReadApi.isPending}
                                             className="text-xs text-primary cursor-pointer hover:underline"
                                         >
                                             已读
@@ -154,6 +164,7 @@ export default function NotificationsPage() {
                                     )}
                                     <button
                                         onClick={() => handleDelete([item.id])}
+                                        disabled={deleteApi.isPending}
                                         className="text-xs text-danger/70 cursor-pointer hover:text-danger"
                                     >
                                         删除

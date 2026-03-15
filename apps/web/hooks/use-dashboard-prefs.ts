@@ -1,9 +1,7 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { useApiQuery } from './use-api-query';
+import { useState } from 'react';
 import { useApiMutation } from './use-api-mutation';
-import { ensureRecord } from '../lib/query-parse';
 
 const DASHBOARD_MODULES = [
   { key: 'market', label: '行情' },
@@ -58,11 +56,6 @@ function loadLocal(): Partial<ModuleVisibility> | undefined {
   } catch { return undefined; }
 }
 
-function hasLocal(): boolean {
-  if (typeof window === 'undefined') return false;
-  try { return localStorage.getItem(PREFS_KEY) != null; } catch { return false; }
-}
-
 function saveLocal(visibility: ModuleVisibility) {
   if (typeof window === 'undefined') return;
   try { localStorage.setItem(PREFS_KEY, JSON.stringify({ visibility, updatedAt: Date.now() })); } catch {}
@@ -72,58 +65,24 @@ export { DASHBOARD_MODULES };
 export type { DashboardModuleKey, ModuleVisibility };
 
 export function useDashboardPrefs(mounted: boolean, profileQ: { data: Record<string, unknown> | null | undefined }) {
-  const [visibility, setVisibility] = useState<ModuleVisibility>(DEFAULTS);
-  const [initialized, setInitialized] = useState(false);
-  const [dirty, setDirty] = useState(false);
-
+  const [draftVisibility, setDraftVisibility] = useState<ModuleVisibility | null>(null);
   const saveApi = useApiMutation<Record<string, unknown>>({ successToast: false, errorToast: false });
-  const saveRef = useRef(saveApi);
-  saveRef.current = saveApi;
-
-  // 1) Load from localStorage on mount
-  useEffect(() => {
-    if (!mounted) return;
-    const local = loadLocal();
-    if (local) {
-      const merged = merge(local);
-      setVisibility((prev) => (same(prev, merged) ? prev : merged));
-    }
-  }, [mounted]);
-
-  // 2) Merge remote profile prefs (if no local prefs)
-  useEffect(() => {
-    if (!mounted) return;
-    const profilePrefs = profileQ.data?.preferences;
-    const profileObj = profilePrefs && typeof profilePrefs === 'object' ? profilePrefs as Record<string, unknown> : {};
-    const profileDash = parseVis((profileObj.homeDashboard as Record<string, unknown> | undefined)?.visibility);
-    if (hasLocal() || !profileDash) { setInitialized(true); return; }
-    const merged = merge(profileDash);
-    setVisibility((prev) => (same(prev, merged) ? prev : merged));
-    saveLocal(merged);
-    setInitialized(true);
-  }, [mounted, profileQ.data]);
-
-  // 3) Sync dirty prefs to remote
-  useEffect(() => {
-    if (!mounted || !initialized || !dirty || saveRef.current.isPending) return;
-    if (!profileQ.data) return;
-    const profilePrefs = profileQ.data.preferences;
-    const base = profilePrefs && typeof profilePrefs === 'object' ? profilePrefs as Record<string, unknown> : {};
-    saveRef.current.trigger('/auth/profile', { method: 'POST' }, {
-      preferences: { ...base, homeDashboard: { visibility, updatedAt: Date.now() } },
-    });
-    setDirty(false);
-  }, [mounted, initialized, dirty, visibility, profileQ.data]);
+  const profilePrefs = profileQ.data?.preferences;
+  const profileObj = profilePrefs && typeof profilePrefs === 'object' ? profilePrefs as Record<string, unknown> : {};
+  const profileDash = parseVis((profileObj.homeDashboard as Record<string, unknown> | undefined)?.visibility);
+  const storedVisibility = mounted ? loadLocal() : undefined;
+  const visibility = draftVisibility ?? (mounted ? merge(storedVisibility ?? profileDash) : DEFAULTS);
+  const initialized = mounted;
+  const dirty = saveApi.isPending;
 
   const toggle = (key: DashboardModuleKey) => {
-    setVisibility((prev) => {
-      const next = { ...prev, [key]: !prev[key] };
-      saveLocal(next);
-      setDirty(true);
-      return next;
+    const next = { ...visibility, [key]: !visibility[key] };
+    saveLocal(next);
+    setDraftVisibility((prev) => (prev && same(prev, next) ? prev : next));
+    void saveApi.trigger('/auth/profile', { method: 'POST' }, {
+      preferences: { ...profileObj, homeDashboard: { visibility: next, updatedAt: Date.now() } },
     });
   };
 
   return { DASHBOARD_MODULES, visibility, toggle, initialized, dirty };
 }
-

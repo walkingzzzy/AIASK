@@ -40,8 +40,12 @@ export default function SearchPage() {
   }
 
   const rows = useMemo(() => {
-    const arr = extractArray(data) as Record<string, unknown>[];
-    return arr.map((r, i) => ({ rank: i + 1, ...r }));
+    const arr = extractArray(data, 'items', 'results', 'similar_stocks') as Record<string, unknown>[];
+    return arr.map((r, i) => ({
+      rank: i + 1,
+      ...r,
+      score: r.score ?? r.similarity,
+    }));
   }, [data]);
 
   const similarColumns = useMemo(() => [
@@ -111,6 +115,7 @@ export default function SearchPage() {
         {error ? <ErrorState text={error} hint="请检查输入后重试" /> : null}
         {!isPending && !data && !error ? <EmptyState text="输入条件后点击按钮搜索" /> : null}
         {rows.length ? <DataTable rows={rows} columns={columns} maxHeight={500} onExport={() => exportCSV(rows, `search-${tab}`)} /> : null}
+        {!isPending && !!data && !error && rows.length === 0 ? <EmptyState text="本次搜索没有匹配结果" /> : null}
       </SectionCard>
     </PageContainer>
   );

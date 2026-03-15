@@ -6,7 +6,6 @@
 
 import json
 from ...utils import ok, fail, normalize_code
-from ...data_source import data_source
 import logging
 
 logger = logging.getLogger(__name__)
@@ -14,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 def _normalize_kwargs(kwargs: dict) -> dict:
     """统一解析 kwargs 参数（兼容 JSON 字符串和 dict）"""
+    params = kwargs.get("params")
+    if isinstance(params, dict):
+        kwargs = {**kwargs, **params}
     raw = kwargs.get("kwargs")
     if isinstance(raw, dict):
         kwargs = {**kwargs, **raw}
@@ -27,6 +29,27 @@ def _normalize_kwargs(kwargs: dict) -> dict:
     return kwargs
 
 
+def _safe_user_id(value: object) -> str:
+    text = str(value or "").strip()
+    return text or "default"
+
+
+def _make_alert_id(user_id: str, code: str, indicator: str, condition: str) -> str:
+    normalized_user = _safe_user_id(user_id)
+    if normalized_user == "default":
+        return f"alert_{code}_{indicator}_{condition}"
+    safe_user = normalized_user.replace(":", "_").replace("/", "_").replace(" ", "_")
+    return f"alert_{safe_user}_{code}_{indicator}_{condition}"
+
+
+def _belongs_to_user(alert: dict, user_id: str) -> bool:
+    return _safe_user_id(alert.get("user_id")) == _safe_user_id(user_id)
+
+
+def _list_user_alerts(alerts_store: dict, user_id: str) -> list[dict]:
+    return [alert for alert in alerts_store.values() if _belongs_to_user(alert, user_id)]
+
+
 def register_alerts_manager(mcp):
     """注册告警管理器工具"""
 
@@ -36,7 +59,7 @@ def register_alerts_manager(mcp):
 
         Args:
             action (str, required): 操作类型，可选 help/list/create/check/update/delete
-            kwargs: JSON 字符串或关键字参数，不同 action 所需参数:
+            kwargs: 支持 structured ``params``、JSON 字符串 ``kwargs`` 或关键字参数，不同 action 所需参数:
                 - help: 无需额外参数
                 - list: status(str, optional, "active"/"inactive"/"all")
                 - create: code(str), indicator(str, "price"/"rsi"/"macd"等), condition(str, ">"/"<"/">="/"<="/"=="), value(float)
@@ -63,8 +86,9 @@ def register_alerts_manager(mcp):
             # 解析 MCP 传入的 kwargs JSON 字符串
             kwargs = _normalize_kwargs(dict(kwargs))
 
-            # 统一使用 alerts.py 的内存存储
-            from ..alerts import _alerts_store
+            # 统一使用 alerts.py 的进程内存存储与评估逻辑
+            from ..alerts import _alerts_store, _evaluate_combo, _evaluate_indicator
+            user_id = _safe_user_id(kwargs.get("user_id"))
 
             if action == 'help':
                 return ok({
@@ -80,7 +104,7 @@ def register_alerts_manager(mcp):
 
             elif action == 'list':
                 status = kwargs.get('status', 'active')
-                alerts = list(_alerts_store.values())
+                alerts = _list_user_alerts(_alerts_store, user_id)
 
                 if status == 'active':
                     alerts = [a for a in alerts if a.get('active', True)]
@@ -110,9 +134,10 @@ def register_alerts_manager(mcp):
                 if condition not in valid_conditions:
                     return fail(f'不支持的条件: {condition}. 支持: {", ".join(valid_conditions)}')
 
-                alert_id = f'alert_{code}_{indicator}_{condition}'
+                alert_id = _make_alert_id(user_id, code, indicator, condition)
                 alert = {
                     'alert_id': alert_id,
+                    'user_id': user_id,
                     'code': code,
                     'indicator': indicator,
                     'condition': condition,
@@ -134,53 +159,39 @@ def register_alerts_manager(mcp):
                 })
 
             elif action == 'check':
-                alerts = [a for a in _alerts_store.values() if a.get('active', True)]
+                alerts = [a for a in _list_user_alerts(_alerts_store, user_id) if a.get('active', True)]
                 triggered = []
+                quote_cache = {}
 
                 for alert in alerts:
-                    if alert.get('type') != 'indicator':
-                        continue
-                    code = alert.get('code')
-                    indicator = alert.get('indicator')
-                    condition = alert.get('condition')
-                    target_value = alert.get('value')
-                    if not all([code, indicator, condition, target_value is not None]):
-                        continue
-
-                    current_value = None
                     try:
-                        if indicator == 'price':
-                            quote = data_source.get_realtime_quote(code)
-                            if quote:
-                                current_value = quote.get('price')
-                        elif indicator == 'change_pct':
-                            quote = data_source.get_realtime_quote(code)
-                            if quote:
-                                current_value = quote.get('changePercent')
+                        if alert.get('type') == 'combo':
+                            evaluated = await _evaluate_combo(alert, quote_cache)
+                        else:
+                            evaluated = await _evaluate_indicator(alert, quote_cache)
                     except Exception as exc:
-                        logger.debug(f"[AlertsManager] 获取 {code} 实时数据失败: {exc}")
+                        logger.debug(f"[AlertsManager] 检查告警失败: {exc}")
+                        continue
 
-                    if current_value is not None:
-                        alert['current_value'] = current_value
-                        _ops = {
-                            '>': lambda a, b: a > b,
-                            '<': lambda a, b: a < b,
-                            '>=': lambda a, b: a >= b,
-                            '<=': lambda a, b: a <= b,
-                            '==': lambda a, b: abs(a - b) < 1e-6,
-                        }
-                        op = _ops.get(condition)
-                        if op and op(current_value, target_value):
-                            alert['triggered'] = True
-                            triggered.append({
-                                'alert_id': alert['alert_id'],
-                                'code': code,
-                                'indicator': indicator,
-                                'condition': condition,
-                                'target_value': target_value,
-                                'current_value': current_value,
-                                'message': f'{code} {indicator} {condition} {target_value} (当前: {current_value})'
-                            })
+                    alert_id = str(alert.get('alert_id') or '')
+                    if alert_id:
+                        _alerts_store[alert_id] = {**alert, **evaluated, 'user_id': user_id}
+
+                    if evaluated.get('triggered') is True:
+                        code = str(evaluated.get('code') or '')
+                        indicator = str(evaluated.get('indicator') or '')
+                        condition = str(evaluated.get('condition') or '')
+                        target_value = evaluated.get('value')
+                        current_value = evaluated.get('current_value')
+                        triggered.append({
+                            'alert_id': evaluated.get('alert_id'),
+                            'code': code,
+                            'indicator': indicator,
+                            'condition': condition,
+                            'target_value': target_value,
+                            'current_value': current_value,
+                            'message': f'{code} {indicator} {condition} {target_value} (当前: {current_value})'
+                        })
 
                 return ok({
                     'triggered': triggered,
@@ -192,7 +203,7 @@ def register_alerts_manager(mcp):
                 if not alert_id:
                     return fail('需要提供 alert_id')
                 alert = _alerts_store.get(alert_id)
-                if not alert:
+                if not alert or not _belongs_to_user(alert, user_id):
                     return fail(f'告警不存在: {alert_id}')
                 if 'code' in kwargs and kwargs.get('code'):
                     alert['code'] = normalize_code(kwargs.get('code'))
@@ -218,9 +229,10 @@ def register_alerts_manager(mcp):
                 alert_id = kwargs.get('alert_id')
                 if not alert_id:
                     return fail('需要提供 alert_id')
-                removed = _alerts_store.pop(alert_id, None)
-                if removed is None:
+                removed = _alerts_store.get(alert_id)
+                if removed is None or not _belongs_to_user(removed, user_id):
                     return fail(f'告警不存在: {alert_id}')
+                _alerts_store.pop(alert_id, None)
                 return ok({'alert_id': alert_id, 'deleted': True})
 
             else:

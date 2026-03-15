@@ -2,7 +2,7 @@
 
 import logging
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -10,26 +10,72 @@ logger = logging.getLogger(__name__)
 class FactorStorageMixin:
     """因子值与 IC 历史持久化"""
 
-    async def save_factor_values(self, stock_code: str, factor_date: date, values: Dict[str, float]) -> int:
-        if not values:
-            return 0
-        async with self.acquire() as conn:
-            count = 0
-            for factor_name, factor_value in values.items():
-                if factor_value is None:
+    @staticmethod
+    def _normalize_factor_value_rows(entries: Iterable[Any]) -> List[tuple[str, date, str, float]]:
+        rows: List[tuple[str, date, str, float]] = []
+        for entry in list(entries or []):
+            if isinstance(entry, dict) and isinstance(entry.get("values"), dict):
+                stock_code = str(entry.get("stock_code") or "").strip()
+                factor_date = entry.get("factor_date")
+                values = dict(entry.get("values") or {})
+                if not stock_code or factor_date is None:
                     continue
+                for factor_name, factor_value in values.items():
+                    if factor_value is None:
+                        continue
+                    rows.append((stock_code, factor_date, str(factor_name), float(factor_value)))
+                continue
+            if isinstance(entry, (list, tuple)) and len(entry) == 4:
+                stock_code = str(entry[0] or "").strip()
+                factor_date = entry[1]
+                factor_name = str(entry[2] or "").strip()
+                factor_value = entry[3]
+                if not stock_code or factor_date is None or not factor_name or factor_value is None:
+                    continue
+                rows.append((stock_code, factor_date, factor_name, float(factor_value)))
+        return rows
+
+    async def save_factor_values_batch(self, entries: Iterable[Any], batch_size: int = 1000) -> int:
+        rows = self._normalize_factor_value_rows(entries)
+        if not rows:
+            return 0
+
+        saved = 0
+        normalized_batch_size = max(1, int(batch_size or 1000))
+        async with self.acquire() as conn:
+            for start in range(0, len(rows), normalized_batch_size):
+                chunk = rows[start:start + normalized_batch_size]
+                stock_codes = [item[0] for item in chunk]
+                factor_dates = [item[1] for item in chunk]
+                factor_names = [item[2] for item in chunk]
+                factor_values = [item[3] for item in chunk]
                 await conn.execute(
                     """
                     INSERT INTO factor_values (stock_code, factor_date, factor_name, factor_value)
-                    VALUES ($1, $2, $3, $4)
+                    SELECT *
+                    FROM UNNEST(
+                        $1::text[],
+                        $2::date[],
+                        $3::text[],
+                        $4::double precision[]
+                    )
                     ON CONFLICT (stock_code, factor_date, factor_name) DO UPDATE SET
                         factor_value = EXCLUDED.factor_value,
                         computed_at = NOW()
                     """,
-                    stock_code, factor_date, factor_name, float(factor_value),
+                    stock_codes,
+                    factor_dates,
+                    factor_names,
+                    factor_values,
                 )
-                count += 1
-        return count
+                saved += len(chunk)
+        return saved
+
+    async def save_factor_values(self, stock_code: str, factor_date: date, values: Dict[str, float]) -> int:
+        return await self.save_factor_values_batch(
+            [{"stock_code": stock_code, "factor_date": factor_date, "values": values}],
+            batch_size=max(len(values or {}), 1),
+        )
 
     async def get_factor_values(self, stock_codes: List[str], factor_name: str, start_date: date = None, end_date: date = None) -> List[dict]:
         async with self.acquire() as conn:

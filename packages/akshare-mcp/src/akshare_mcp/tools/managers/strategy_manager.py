@@ -7,6 +7,7 @@ This module is the public entry-point.  Heavy handler logic lives in
 
 import json
 import logging
+from typing import Any
 
 from ...storage import get_db
 from ...utils import fail, ok
@@ -80,6 +81,73 @@ from .strategy_mgr_helpers import (
 
 logger = logging.getLogger(__name__)
 
+STRATEGY_MANAGER_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
+    "detail": ("strategy_id", "id"),
+    "review_report": ("strategy_id", "id"),
+    "review_report_recheck": ("strategy_id", "id"),
+    "submit": ("strategy_id", "id"),
+    "events": ("strategy_id", "id"),
+    "incubation_overview": ("strategy_id", "id"),
+    "get_signals": ("strategy_id", "id"),
+    "get_forward_returns": ("strategy_id", "id"),
+    "get_signal_stats": ("strategy_id", "id"),
+    "vector_ann_search": ("strategy_id", "similar_to", "id"),
+}
+
+
+def _strategy_manager_error(code: str, message: str, *, detail: dict | None = None) -> dict:
+    payload = fail(message)
+    payload["message"] = message
+    payload["error_code"] = code
+    if detail is not None:
+        payload["detail"] = detail
+    return payload
+
+
+def _validate_strategy_manager_params(action: str, params: dict) -> dict | None:
+    required_any = STRATEGY_MANAGER_REQUIRED_PARAMS.get(action)
+    if not required_any:
+        return None
+    for key in required_any:
+        value = params.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return None
+    message = f"{'/'.join(required_any)} is required"
+    return _strategy_manager_error(
+        "STRATEGY_MANAGER_INVALID_PARAMS",
+        message,
+        detail={"action": action, "required_any_of": list(required_any)},
+    )
+
+
+def _infer_strategy_manager_error_code(message: str) -> str:
+    text = str(message or "").strip().lower()
+    if "not found" in text or "不存在" in text:
+        return "STRATEGY_MANAGER_NOT_FOUND"
+    if "required" in text or "must" in text or "invalid" in text or "不能为空" in text or "必须" in text:
+        return "STRATEGY_MANAGER_INVALID_PARAMS"
+    if "gate" in text or "门禁" in text:
+        return "STRATEGY_MANAGER_GATE_FAILED"
+    if "unsupported" in text or "unknown action" in text:
+        return "STRATEGY_MANAGER_UNSUPPORTED"
+    return "STRATEGY_MANAGER_BACKEND_ERROR"
+
+
+def _normalize_strategy_manager_failure(action: str, result: dict) -> dict:
+    if not isinstance(result, dict) or result.get("success") is not False:
+        return result
+    if result.get("error_code"):
+        return result
+    message = str(result.get("error") or result.get("message") or f"{action} failed")
+    normalized = dict(result)
+    normalized["message"] = message
+    normalized["error_code"] = _infer_strategy_manager_error_code(message)
+    normalized.setdefault("detail", {"action": action})
+    return normalized
+
 
 # ── Action dispatch table ────────────────────────────────────────────────────
 # Maps action name -> async handler(db, params) -> dict
@@ -148,6 +216,22 @@ ACTION_HANDLERS: dict[str, ...] = {
 }
 
 
+def _normalize_strategy_manager_params(kwargs: Any = "{}", params: Any = None) -> dict:
+    """Accept both legacy JSON-string kwargs and structured dict params."""
+    candidate = params if params is not None else kwargs
+    if candidate is None:
+        return {}
+    if isinstance(candidate, dict):
+        return candidate
+    if isinstance(candidate, str):
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 # ── Vector / AI inline handlers (kept here to avoid circular deps) ───────────
 
 async def _handle_vector_profiles(db, params: dict) -> dict:
@@ -185,7 +269,7 @@ async def _handle_vector_ann_search(db, params: dict) -> dict:
         return fail("strategy_id is required")
     limit = min(max(int(params.get("limit", 10)), 1), 50)
     from ...services.vector_platform import get_strategy_vector_platform
-    rows = await get_strategy_vector_platform().ann_search_profiles(
+    result = await get_strategy_vector_platform().search_similar(
         db,
         sid,
         profile_type=str(params.get("profile_type") or 'behavior'),
@@ -194,7 +278,7 @@ async def _handle_vector_ann_search(db, params: dict) -> dict:
         index_name=(str(params.get("index_name") or "").strip() or None),
         index_version=(str(params.get("index_version") or "").strip() or None),
     )
-    return ok({"items": rows, "count": len(rows)})
+    return ok(result)
 
 
 async def _handle_vector_reconcile(db, params: dict) -> dict:
@@ -226,13 +310,15 @@ async def _handle_vector_rebuild(db, params: dict) -> dict:
 
 
 async def _handle_vector_health(db, params: dict) -> dict:
-    if not hasattr(db, "get_strategy_vector_health"):
-        return fail("vector health unsupported")
-    result = await db.get_strategy_vector_health(
+    from ...services.vector_platform import get_strategy_vector_platform
+    result = await get_strategy_vector_platform().health_check(
+        db,
         index_name=str(params.get("index_name") or 'strategy_behavior'),
         limit_versions=min(max(int(params.get("limit_versions", 20)), 1), 200),
         include_hnsw_indexes=parse_bool(params.get("include_hnsw_indexes"), False),
     )
+    if result.get("fallback_reason") == "health_unsupported":
+        return fail("vector health unsupported")
     return ok(result)
 
 
@@ -318,23 +404,28 @@ ACTION_HANDLERS.update({
 
 def register_strategy_manager(mcp):
     @mcp.tool()
-    async def strategy_manager(action: str, kwargs: str = "{}") -> dict:
+    async def strategy_manager(action: str, kwargs: Any = "{}", params: Any = None) -> dict:
         """策略超市管理器 — 创建/发布/排名/评价/订阅/生命周期管理。
 
+        Supports legacy ``kwargs`` JSON strings and structured ``params`` / dict kwargs.
         Actions: create, publish, archive, list, detail, update_metrics, review, subscribe, unsubscribe, my_subscriptions, rank, submit, lifecycle_scan, get_signals, get_forward_returns, get_signal_stats, factory_status, factory_run_once, factory_runs, factory_run_detail, review_report, review_report_recheck, events, incubation_overview, vector_health, vector_cleanup, help
         """
-        try:
-            params = json.loads(kwargs) if isinstance(kwargs, str) else (kwargs or {})
-        except Exception:
-            params = {}
+        params = _normalize_strategy_manager_params(kwargs=kwargs, params=params)
 
         db = get_db()
 
         handler = ACTION_HANDLERS.get(action)
-        if handler is not None:
-            return await handler(db, params)
-
-        return fail(f"Unknown action: {action}. Use action='help' for available actions.")
+        if handler is None:
+            return _strategy_manager_error(
+                "STRATEGY_MANAGER_INVALID_ACTION",
+                f"Unknown action: {action}. Use action='help' for available actions.",
+                detail={"action": action},
+            )
+        validation_error = _validate_strategy_manager_params(action, params)
+        if validation_error is not None:
+            return validation_error
+        result = await handler(db, params)
+        return _normalize_strategy_manager_failure(action, result)
 
 
 # ── Backward-compatible re-exports ───────────────────────────────────────────

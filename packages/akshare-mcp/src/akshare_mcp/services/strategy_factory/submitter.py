@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as _time
+from collections import Counter
 from typing import List, Optional
 from uuid import uuid4
 
 from .constants import SUBMIT_CONCURRENCY
+from .quality_reporting import build_quality_report
+from .quality_gates import build_completed_gate_3_report
 from .utils import _auto_name, _extract_event_context, _update_strategy_status, get_strategy_factory_package
 
 logger = logging.getLogger(__name__)
@@ -28,9 +31,7 @@ class StrategySubmitter:
         risk_report: Optional[dict],
         final_status: str,
     ) -> dict:
-        from ...tools.managers.strategy_manager import _build_quality_report
-
-        return _build_quality_report(
+        return build_quality_report(
             strategy_id=strategy_id,
             strategy_type=candidate.get("strategy_type"),
             quality_gate=quality_gate,
@@ -55,6 +56,10 @@ class StrategySubmitter:
         refreshed = 0
         submitted = 0
         passed = 0
+        gate_3_passed = 0
+        gate_3_failed = 0
+        gate_3_provisional_passed = 0
+        gate_3_failure_codes: Counter[str] = Counter()
         submitted_items: List[dict] = []
         sem = asyncio.Semaphore(SUBMIT_CONCURRENCY)
 
@@ -81,23 +86,49 @@ class StrategySubmitter:
                 submitted += 1
             if result.get("passed"):
                 passed += 1
+            gate_3 = dict(result.get("gate_3") or {})
+            if gate_3.get("passed"):
+                gate_3_passed += 1
+                if gate_3.get("provisional_pass"):
+                    gate_3_provisional_passed += 1
+            else:
+                gate_3_failed += 1
+                for code in gate_3.get("reason_codes") or []:
+                    normalized = str(code or "").strip()
+                    if normalized:
+                        gate_3_failure_codes[normalized] += 1
             submitted_items.append(result["summary"])
+
+        gate_report = build_completed_gate_3_report(
+            {
+                "submitted": submitted,
+                "gate_3_passed": gate_3_passed,
+                "gate_3_failed": gate_3_failed,
+                "gate_3_provisional_passed": gate_3_provisional_passed,
+                "gate_3_failure_reason_topn": [
+                    {"reason_code": reason_code, "count": count}
+                    for reason_code, count in gate_3_failure_codes.most_common(5)
+                ],
+            }
+        )
 
         return {
             "created": created,
             "refreshed": refreshed,
             "submitted": submitted,
             "passed_quality_gate": passed,
+            "gate_3_passed": gate_3_passed,
+            "gate_3_failed": gate_3_failed,
+            "gate_3_provisional_passed": gate_3_provisional_passed,
+            "gate_3_failure_reason_topn": gate_report["gate_3"]["failure_reason_topn"],
+            "quality_gate": gate_report,
+            "gate_report": gate_report,
             "strategies": submitted_items,
         }
 
     async def _submit_one(self, candidate: dict, snapshot: dict, db) -> dict:
         """处理单个候选策略的完整提交流程。"""
-        from ...tools.managers.strategy_manager import (
-            _maybe_grant_provisional_incubation,
-            _normalize_quality_gate_result,
-            _run_quality_gate,
-        )
+        from .submission_gate import run_submission_quality_gate
 
         existing_strategy = await self._resolve_existing_strategy(candidate, db)
         refresh_existing = existing_strategy is not None
@@ -122,10 +153,9 @@ class StrategySubmitter:
                     "dedup_result": candidate.get("dedup_result") or {},
                 },
             )
-        gate = await _run_quality_gate(db, {**data, "status": existing_status if refresh_existing else "submitted"})
-        gate = _maybe_grant_provisional_incubation(
-            data,
-            gate,
+        gate = await run_submission_quality_gate(
+            db,
+            {**data, "status": existing_status if refresh_existing else "submitted"},
             validation_report=validation_report,
             risk_report=risk_report,
             backtest_metrics={
@@ -187,7 +217,12 @@ class StrategySubmitter:
             "name": name,
             "status": final_status,
             "passed": bool(gate.get("passed")),
+            "passed_strict": bool(gate.get("passed_strict", gate.get("passed"))),
+            "provisional_pass": bool(gate.get("provisional_pass")),
             "reasons": gate.get("reasons") or [],
+            "reason_codes": gate.get("reason_codes") or [],
+            "warning_codes": gate.get("warning_codes") or [],
+            "gate_3": dict(gate or {}),
             "dedup_result": candidate.get("dedup_result") or {},
             **post_gate,
         }
@@ -196,6 +231,7 @@ class StrategySubmitter:
             "refreshed_existing": refresh_existing,
             "submitted": True,
             "passed": bool(gate.get("passed")),
+            "gate_3": dict(gate or {}),
             "summary": summary,
         }
 
@@ -355,6 +391,7 @@ class StrategySubmitter:
         incubation_binding = None
         incubation_pipeline = None
         vector_profile = None
+        vector_audit: dict = {}
 
         if gate.get("passed"):
             await _update_strategy_status(
@@ -391,6 +428,7 @@ class StrategySubmitter:
                 from ..vector_platform import get_strategy_vector_platform
 
                 vector_profile = await get_strategy_vector_platform().build_strategy_profile(db, enriched_data)
+                vector_audit = dict((vector_profile or {}).get("metadata") or {}).get("audit") or {}
             except Exception as exc:
                 logger.warning("StrategyFactory: build vector profile failed for %s: %s", strategy_id, exc)
             await self._record_experiment(
@@ -434,6 +472,12 @@ class StrategySubmitter:
             "incubation_readiness_score": ((incubation_pipeline or {}).get("snapshot") or {}).get("readiness_score"),
             "incubation_task_run_id": (incubation_pipeline or {}).get("task_run_id"),
             "vector_profile_id": (vector_profile or {}).get("id"),
+            "vector_backend": (vector_profile or {}).get("backend"),
+            "vector_backend_requested": (vector_audit or {}).get("backend_requested"),
+            "vector_backend_used": (vector_audit or {}).get("backend_used"),
+            "vector_fallback_used": (vector_audit or {}).get("fallback_used"),
+            "vector_fallback_reason": (vector_audit or {}).get("fallback_reason"),
+            "vector_latency_ms": (vector_audit or {}).get("latency_ms"),
         }
 
     @staticmethod

@@ -69,7 +69,7 @@ export class FactorService {
   async icHistory(params: { factor_name: string; period?: string; limit?: number }) {
     const payload = await this.mcp.callTool('quant_manager', {
       action: 'factor_ic_history',
-      kwargs: JSON.stringify({ factor_name: params.factor_name, period: params.period ?? '20', limit: params.limit ?? 60 }),
+      params: { factor_name: params.factor_name, period: params.period ?? '20', limit: params.limit ?? 60 },
     });
     return { data: payload };
   }
@@ -108,7 +108,13 @@ export class FactorService {
   async batchCompute(params: { codes: string[]; factors?: string[]; persist?: boolean; compute_ic?: boolean; period?: number }) {
     const payload = await this.mcp.callTool('quant_manager', {
       action: 'batch_compute_factors',
-      kwargs: JSON.stringify({ codes: params.codes, factors: params.factors ?? ['momentum', 'value', 'quality'], persist: params.persist ?? true, compute_ic: params.compute_ic ?? true, period: params.period ?? 20 }),
+      params: {
+        codes: params.codes,
+        factors: params.factors ?? ['momentum', 'value', 'quality'],
+        persist: params.persist ?? true,
+        compute_ic: params.compute_ic ?? true,
+        period: params.period ?? 20,
+      },
     });
     return { data: payload };
   }

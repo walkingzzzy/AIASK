@@ -31,6 +31,7 @@ from .quant_engine import (
     _new_run_cache,
     _perf_add,
     _prefetch_market_data,
+    _minimum_factor_history,
 )
 
 
@@ -56,7 +57,8 @@ async def run_factor_ic_analysis(
 
     run_cache = _new_run_cache()
     perf = _new_perf_tracker(_to_bool(include_perf_breakdown, _QUANT_PERF_BREAKDOWN_ENABLED))
-    lookback_period = max(2, int(period))
+    forward_period = max(1, int(period))
+    factor_lookback = max(DEFAULT_FACTOR_LOOKBACK, _minimum_factor_history(factor_name))
     db = get_db()
     requires_financials = SUPPORTED_FACTORS[factor_name]["requires_financials"]
 
@@ -65,7 +67,7 @@ async def run_factor_ic_analysis(
         db=db,
         codes=codes,
         need_financials=requires_financials,
-        kline_limit=lookback_period + 30,
+        kline_limit=factor_lookback + forward_period + 30,
     )
     _perf_add(perf, "fetch", time.perf_counter() - fetch_start)
     prefetched = prefetch_resp.get("data", {})
@@ -91,7 +93,7 @@ async def run_factor_ic_analysis(
         code_key = str(code or "").strip()
         code_data = prefetched.get(code_key, {})
         klines = code_data.get("klines") or []
-        if not klines or len(klines) < lookback_period + 5:
+        if not klines or len(klines) < factor_lookback + forward_period + 2:
             stats_counter["skipped_no_kline"] += 1
             continue
 
@@ -99,12 +101,12 @@ async def run_factor_ic_analysis(
             run_cache=run_cache,
             code=code_key,
             klines=klines,
-            chronological=False,
+            chronological=True,
             include_volume=False,
             include_returns=True,
         )
         closes = panel.get("closes") or []
-        if len(closes) < lookback_period + 2:
+        if len(closes) < factor_lookback + forward_period + 1:
             stats_counter["skipped_no_kline"] += 1
             continue
 
@@ -115,19 +117,20 @@ async def run_factor_ic_analysis(
 
         stock_info = code_data.get("stock_info")
 
+        factor_window = closes[-(factor_lookback + forward_period):-forward_period] if forward_period > 0 else closes[-factor_lookback:]
         factor_value = _calculate_factor_value(
             factor_name,
-            closes[:lookback_period],
+            factor_window,
             financial=financial,
             stock_info=stock_info,
-            period=min(lookback_period, len(closes[:lookback_period])),
+            period=factor_lookback,
         )
         if factor_value is None or np.isnan(factor_value):
             stats_counter["skipped_no_factor_value"] += 1
             continue
 
-        current_idx = min(lookback_period - 1, len(closes) - 2)
-        future_idx = min(current_idx + lookback_period, len(closes) - 1)
+        current_idx = len(closes) - 1 - forward_period
+        future_idx = current_idx + forward_period
         if future_idx <= current_idx:
             stats_counter["skipped_invalid_return"] += 1
             continue
@@ -156,10 +159,10 @@ async def run_factor_ic_analysis(
     _perf_add(perf, "factor", time.perf_counter() - factor_stage_start)
 
     sample_size = len(factor_values)
-    if sample_size < 10:
+    if sample_size < 3:
         return fail(
             f"Not enough valid data for IC calculation: sample_size={sample_size}, "
-            f"required>=10, stats={stats_counter}"
+            f"required>=3, stats={stats_counter}"
         )
 
     ic_stage_start = time.perf_counter()
@@ -245,7 +248,8 @@ async def run_factor_ic_analysis(
         "normal_p_value": float(dual_ic.get("normal_p_value", 1.0)),
         "rank_p_value": rank_p_value,
         "sample_size": sample_size,
-        "period": lookback_period,
+        "period": forward_period,
+        "factor_lookback": factor_lookback,
         "win_rate": float(win_rate),
         # P0-B: Bootstrap 置信区间
         "bootstrap_ci": {
@@ -267,8 +271,9 @@ async def run_factor_ic_analysis(
             "ic_ir_method": "bootstrap_se" if boot_se > 1e-10 else "cross_sectional_proxy",
         },
         "data_window": {
-            "lookback_bars": lookback_period + 30,
-            "forward_period": lookback_period,
+            "lookback_bars": factor_lookback + forward_period + 30,
+            "factor_lookback": factor_lookback,
+            "forward_period": forward_period,
         },
         "stats": stats_counter,
         "prefetch": prefetch_meta,
@@ -288,6 +293,8 @@ async def run_factor_ic_analysis(
             "bootstrap_confidence": bootstrap_confidence,
         },
     }
+    if sample_size < 10:
+        payload["sample_warning"] = "sample_size_below_10_low_confidence"
     _perf_add(perf, "serialize", time.perf_counter() - serialize_start)
     perf_breakdown = _build_perf_breakdown(
         perf,
@@ -327,7 +334,7 @@ async def run_factor_group_backtest(
 
     groups = max(2, int(groups))
     holding_days = max(1, int(holding_days))
-    factor_lookback = max(2, int(factor_lookback))
+    factor_lookback = max(int(factor_lookback), _minimum_factor_history(factor_name))
     commission = max(0.0, float(commission or 0.0))
     slippage = max(0.0, float(slippage or 0.0))
     tradability_filter = _to_bool(tradability_filter, False)
@@ -429,9 +436,9 @@ async def run_factor_group_backtest(
         stats_counter["processed_codes"] += 1
     _perf_add(perf, "factor", time.perf_counter() - factor_stage_start)
 
-    if len(per_code_data) < groups * 2:
+    if len(per_code_data) < groups:
         return fail(
-            f"Not enough stocks for grouping: valid_codes={len(per_code_data)}, required>={groups * 2}, stats={stats_counter}"
+            f"Not enough stocks for grouping: valid_codes={len(per_code_data)}, required>={groups}, stats={stats_counter}"
         )
 
     min_series_len = min(int(v["closes_arr"].shape[0]) for v in per_code_data.values())
@@ -513,7 +520,7 @@ async def run_factor_group_backtest(
                 }
             )
 
-        if len(period_stock_data) < groups * 2:
+        if len(period_stock_data) < groups:
             continue
 
         period_stock_data.sort(key=lambda x: x["factor_value"])
@@ -746,7 +753,7 @@ async def _build_factor_return_panels(
         stats_info["processed_codes"] += 1
     _perf_add(local_perf, "factor", time.perf_counter() - factor_stage_start)
 
-    if len(per_code_factors) < 5:
+    if len(per_code_factors) < 3:
         return fail(f"Not enough valid codes for panel build, stats={stats_info}")
 
     common_len = min(len(v) for v in per_code_factors.values())
@@ -807,7 +814,7 @@ async def run_factor_oos_validation(
         codes=codes,
         factor_name=factor_name,
         db=db,
-        factor_lookback=max(2, int(factor_lookback)),
+        factor_lookback=max(int(factor_lookback), _minimum_factor_history(factor_name)),
         forward_period=max(1, int(forward_period)),
         panel_periods=max(60, int(panel_periods)),
         run_cache=run_cache,
@@ -907,7 +914,12 @@ async def run_factor_robustness_check(
     param_variations = param_variations or [10, 20, 40, 60]
     db = get_db()
     requires_financials = SUPPORTED_FACTORS[factor_name]["requires_financials"]
-    max_lookback = max([20] + [int(w) for w in windows] + [int(p) for p in param_variations])
+    factor_min_history = _minimum_factor_history(factor_name)
+    max_lookback = max(
+        [20, factor_min_history]
+        + [max(int(w), factor_min_history) for w in windows]
+        + [max(int(p), factor_min_history) for p in param_variations]
+    )
     fetch_start = time.perf_counter()
     prefetch_resp = await _prefetch_market_data(
         db=db,
@@ -923,7 +935,7 @@ async def run_factor_robustness_check(
     def _cross_section_ic(sub_codes: List[str], lookback: int) -> Dict[str, Any]:
         fv: List[float] = []
         fr: List[float] = []
-        lb = max(2, int(lookback))
+        lb = max(int(lookback), factor_min_history)
         for code in sub_codes:
             code_key = str(code or "").strip()
             code_data = prefetched.get(code_key, {})
@@ -963,7 +975,7 @@ async def run_factor_robustness_check(
             fr.append(float((float(closes_arr[fi]) - p0) / p0))
 
         n = len(fv)
-        if n < 10:
+        if n < 3:
             return {"ic": 0.0, "rank_ic": 0.0, "sample_size": n, "significant": False}
         ic = float(np.corrcoef(fv, fr)[0, 1])
         rank_ic = float(stats.spearmanr(fv, fr).statistic)

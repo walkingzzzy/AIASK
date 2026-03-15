@@ -25,7 +25,10 @@ export class TotpService {
     }
 
     /** Verify a TOTP token (allows ±1 time step drift) */
-    verify(token: string, secret: string): boolean {
+    verify(token: string | undefined, secret: string | undefined): boolean {
+        if (typeof token !== 'string' || typeof secret !== 'string') return false;
+        if (!/^\d{6}$/.test(token)) return false;
+
         const now = Math.floor(Date.now() / 1000);
         for (let drift = -1; drift <= 1; drift++) {
             const timeStep = Math.floor((now + drift * this.PERIOD) / this.PERIOD);
@@ -63,7 +66,8 @@ export class TotpService {
         );
     }
 
-    private timingSafeEqual(a: string, b: string): boolean {
+    private timingSafeEqual(a: string | undefined, b: string | undefined): boolean {
+        if (typeof a !== 'string' || typeof b !== 'string') return false;
         if (a.length !== b.length) return false;
         return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
     }

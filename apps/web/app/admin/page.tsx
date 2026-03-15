@@ -16,7 +16,7 @@ export default function AdminPage() {
 
     return (
         <PageContainer>
-            <h2 className="text-lg font-semibold mb-4">🏠 管理后台概览</h2>
+            <h1 className="text-lg font-semibold mb-4">🏠 管理后台概览</h1>
 
             <KpiGrid cols={4}>
                 <KpiCard title="系统状态" value={String(data.status ?? 'unknown')} />

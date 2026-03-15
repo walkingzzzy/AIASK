@@ -21,6 +21,100 @@ except ImportError:
 class MarketDataMixin:
     """市场数据 Mixin（交易日历、IPO、可转债、股本）"""
 
+    @staticmethod
+    def _build_quality_flags(*, success: bool, fallback_used: bool, fallback_reason: str | None) -> list[str]:
+        flags: list[str] = []
+        if fallback_used:
+            flags.append("fallback")
+        if not success:
+            flags.append("degraded")
+        if fallback_reason == "all_backends_failed":
+            flags.append("failed")
+        elif str(fallback_reason or "").startswith("invalid_"):
+            flags.append("invalid_request")
+        return flags
+
+    def _fallback_meta_result(
+        self,
+        *,
+        success: bool,
+        data,
+        source: str,
+        message: str,
+        backend_requested: str,
+        backend_used: str,
+        fallback_used: bool,
+        fallback_reason: str | None,
+        started_at: datetime.datetime,
+    ) -> dict:
+        now = datetime.datetime.now()
+        latency_ms = round(max((now - started_at).total_seconds() * 1000, 0.0), 3)
+        asof_time = now.astimezone().isoformat()
+        return {
+            "success": success,
+            "data": data,
+            "source": source,
+            "message": message,
+            "asof_time": asof_time,
+            "freshness_sec": 0.0,
+            "quality_flags": self._build_quality_flags(
+                success=success,
+                fallback_used=bool(fallback_used),
+                fallback_reason=fallback_reason,
+            ),
+            "backend_requested": backend_requested,
+            "backend_used": backend_used,
+            "fallback_used": bool(fallback_used),
+            "fallback_reason": fallback_reason,
+            "latency_ms": latency_ms,
+        }
+
+    def _result_with_requested_backend(
+        self,
+        *,
+        success: bool,
+        data,
+        source: str,
+        message: str,
+        backend_requested: str,
+        backend_used: str,
+        started_at: datetime.datetime,
+    ) -> dict:
+        return self._fallback_meta_result(
+            success=success,
+            data=data,
+            source=source,
+            message=message,
+            backend_requested=backend_requested,
+            backend_used=backend_used,
+            fallback_used=backend_used != backend_requested,
+            fallback_reason=None if success or backend_used == backend_requested else "all_backends_failed",
+            started_at=started_at,
+        )
+
+    def _failed_fallback_result(
+        self,
+        *,
+        data,
+        message: str,
+        backend_requested: str,
+        backend_used: str = "none",
+        fallback_reason: str = "all_backends_failed",
+        started_at: datetime.datetime,
+    ) -> dict:
+        return self._fallback_meta_result(
+            success=False,
+            data=data,
+            source="none",
+            message=message,
+            backend_requested=backend_requested,
+            backend_used=backend_used,
+            fallback_used=backend_requested != backend_used,
+            fallback_reason=fallback_reason,
+            started_at=started_at,
+        )
+
+
     def get_trading_dates(
         self,
         market: str = "SH",
@@ -40,6 +134,9 @@ class MarketDataMixin:
         Returns:
             dict: {"success": bool, "data": list, "source": str, "message": str}
         """
+        started_at = datetime.datetime.now()
+        backend_requested = "tdx"
+
         def _valid_yyyymmdd(value: str) -> bool:
             if not value:
                 return True
@@ -53,13 +150,37 @@ class MarketDataMixin:
 
         # 参数校验
         if not _valid_yyyymmdd(start_time):
-            return {"success": False, "data": [], "source": "none", "message": "start_time 格式错误，应为 YYYYMMDD"}
+            return self._failed_fallback_result(
+                data=[],
+                message="start_time 格式错误，应为 YYYYMMDD",
+                backend_requested=backend_requested,
+                fallback_reason="invalid_start_time",
+                started_at=started_at,
+            )
         if not _valid_yyyymmdd(end_time):
-            return {"success": False, "data": [], "source": "none", "message": "end_time 格式错误，应为 YYYYMMDD"}
+            return self._failed_fallback_result(
+                data=[],
+                message="end_time 格式错误，应为 YYYYMMDD",
+                backend_requested=backend_requested,
+                fallback_reason="invalid_end_time",
+                started_at=started_at,
+            )
         if start_time and end_time and start_time > end_time:
-            return {"success": False, "data": [], "source": "none", "message": "start_time 不能晚于 end_time"}
+            return self._failed_fallback_result(
+                data=[],
+                message="start_time 不能晚于 end_time",
+                backend_requested=backend_requested,
+                fallback_reason="invalid_time_range",
+                started_at=started_at,
+            )
         if count == 0 or count < -1:
-            return {"success": False, "data": [], "source": "none", "message": "count 仅支持 -1 或正整数"}
+            return self._failed_fallback_result(
+                data=[],
+                message="count 仅支持 -1 或正整数",
+                backend_requested=backend_requested,
+                fallback_reason="invalid_count",
+                started_at=started_at,
+            )
 
         # 1. 优先使用 TDX
         if self.is_tdx_available():
@@ -77,12 +198,15 @@ class MarketDataMixin:
                         dates = sorted(dates)
                         if count > 0:
                             dates = dates[-count:]
-                        return {
-                            "success": True,
-                            "data": dates,
-                            "source": "tdx",
-                            "message": f"获取到 {len(dates)} 个交易日"
-                        }
+                        return self._result_with_requested_backend(
+                            success=True,
+                            data=dates,
+                            source="tdx",
+                            message=f"获取到 {len(dates)} 个交易日",
+                            backend_requested=backend_requested,
+                            backend_used="tdx",
+                            started_at=started_at,
+                        )
             except Exception as e:
                 safe_stderr_print(f"[DataSource] TDX get_trading_dates failed: {e}")
 
@@ -103,12 +227,15 @@ class MarketDataMixin:
                     dates = sorted(dates)
                     if count > 0:
                         dates = dates[-count:]
-                    return {
-                        "success": True,
-                        "data": dates,
-                        "source": "tushare_pro",
-                        "message": f"获取到 {len(dates)} 个交易日"
-                    }
+                    return self._result_with_requested_backend(
+                        success=True,
+                        data=dates,
+                        source="tushare_pro",
+                        message=f"获取到 {len(dates)} 个交易日",
+                        backend_requested=backend_requested,
+                        backend_used="tushare_pro",
+                        started_at=started_at,
+                    )
             except Exception as e:
                 safe_stderr_print(f"[DataSource] Tushare Pro trade_cal failed: {e}")
 
@@ -125,16 +252,25 @@ class MarketDataMixin:
                     dates = sorted(dates)
                     if count > 0:
                         dates = dates[-count:]
-                    return {
-                        "success": True,
-                        "data": dates,
-                        "source": "akshare",
-                        "message": f"获取到 {len(dates)} 个交易日"
-                    }
+                    return self._result_with_requested_backend(
+                        success=True,
+                        data=dates,
+                        source="akshare",
+                        message=f"获取到 {len(dates)} 个交易日",
+                        backend_requested=backend_requested,
+                        backend_used="akshare",
+                        started_at=started_at,
+                    )
             except Exception as e:
                 safe_stderr_print(f"[DataSource] AKShare trade_date failed: {e}")
 
-        return {"success": False, "data": [], "source": "none", "message": "所有数据源均失败"}
+        return self._failed_fallback_result(
+            data=[],
+            message="所有数据源均失败",
+            backend_requested=backend_requested,
+            fallback_reason="all_backends_failed",
+            started_at=started_at,
+        )
 
     def get_ipo_info(
         self,
@@ -151,6 +287,9 @@ class MarketDataMixin:
         Returns:
             dict: {"success": bool, "data": list, "source": str, "message": str}
         """
+        started_at = datetime.datetime.now()
+        backend_requested = "tdx"
+
         # 1. 优先使用 TDX
         if self.is_tdx_available():
             try:
@@ -158,12 +297,15 @@ class MarketDataMixin:
                 if tq:
                     result = tq.get_ipo_info(ipo_type=ipo_type, ipo_date=ipo_date)
                     if isinstance(result, list):
-                        return {
-                            "success": True,
-                            "data": result,
-                            "source": "tdx",
-                            "message": f"获取到 {len(result)} 条申购信息"
-                        }
+                        return self._result_with_requested_backend(
+                            success=True,
+                            data=result,
+                            source="tdx",
+                            message=f"获取到 {len(result)} 条申购信息",
+                            backend_requested=backend_requested,
+                            backend_used="tdx",
+                            started_at=started_at,
+                        )
             except Exception as e:
                 safe_stderr_print(f"[DataSource] TDX get_ipo_info failed: {e}")
 
@@ -180,66 +322,79 @@ class MarketDataMixin:
                         df = df[df['ipo_date'] >= past_90]
 
                     data = df.to_dict('records')
-                    return {
-                        "success": True,
-                        "data": data,
-                        "source": "tushare_pro",
-                        "message": f"获取到 {len(data)} 条新股申购信息"
-                    }
+                    return self._result_with_requested_backend(
+                        success=True,
+                        data=data,
+                        source="tushare_pro",
+                        message=f"获取到 {len(data)} 条新股申购信息",
+                        backend_requested=backend_requested,
+                        backend_used="tushare_pro",
+                        started_at=started_at,
+                    )
             except Exception as e:
                 safe_stderr_print(f"[DataSource] Tushare Pro new_share failed: {e}")
 
         # 3. 降级到 AKShare
-        try:
-            results = []
+        if ak is not None:
+            try:
+                results = []
 
-            if ipo_type in (0, 2):
-                try:
-                    df = ak.stock_xgsglb_em()
-                    if df is not None and not df.empty:
-                        for _, row in df.iterrows():
-                            results.append({
-                                "code": str(row.get("股票代码", "")),
-                                "name": str(row.get("股票简称", "")),
-                                "SGDate": str(row.get("申购日期", "")).replace("-", ""),
-                                "SGPrice": str(row.get("发行价格", "")),
-                                "type": "stock"
-                            })
-                except Exception:
-                    pass
+                if ipo_type in (0, 2):
+                    try:
+                        df = ak.stock_xgsglb_em()
+                        if df is not None and not df.empty:
+                            for _, row in df.iterrows():
+                                results.append({
+                                    "code": str(row.get("股票代码", "")),
+                                    "name": str(row.get("股票简称", "")),
+                                    "SGDate": str(row.get("申购日期", "")).replace("-", ""),
+                                    "SGPrice": str(row.get("发行价格", "")),
+                                    "type": "stock"
+                                })
+                    except Exception:
+                        pass
 
-            if ipo_type in (1, 2):
-                try:
-                    df = ak.bond_cb_jsl()
-                    if df is not None and not df.empty:
-                        today = datetime.datetime.now().strftime('%Y-%m-%d')
-                        for _, row in df.iterrows():
-                            sg_date = str(row.get("申购日期", ""))
-                            if ipo_date == 0 and sg_date != today:
-                                continue
-                            if ipo_date == 1 and sg_date < today:
-                                continue
-                            results.append({
-                                "code": str(row.get("转债代码", "")),
-                                "name": str(row.get("转债名称", "")),
-                                "SGDate": sg_date.replace("-", ""),
-                                "SGPrice": "100.00",
-                                "type": "bond"
-                            })
-                except Exception:
-                    pass
+                if ipo_type in (1, 2):
+                    try:
+                        df = ak.bond_cb_jsl()
+                        if df is not None and not df.empty:
+                            today = datetime.datetime.now().strftime('%Y-%m-%d')
+                            for _, row in df.iterrows():
+                                sg_date = str(row.get("申购日期", ""))
+                                if ipo_date == 0 and sg_date != today:
+                                    continue
+                                if ipo_date == 1 and sg_date < today:
+                                    continue
+                                results.append({
+                                    "code": str(row.get("转债代码", "")),
+                                    "name": str(row.get("转债名称", "")),
+                                    "SGDate": sg_date.replace("-", ""),
+                                    "SGPrice": "100.00",
+                                    "type": "bond"
+                                })
+                    except Exception:
+                        pass
 
-            if results:
-                return {
-                    "success": True,
-                    "data": results,
-                    "source": "akshare",
-                    "message": f"获取到 {len(results)} 条申购信息"
-                }
-        except Exception as e:
-            safe_stderr_print(f"[DataSource] AKShare IPO info failed: {e}")
+                if results:
+                    return self._result_with_requested_backend(
+                        success=True,
+                        data=results,
+                        source="akshare",
+                        message=f"获取到 {len(results)} 条申购信息",
+                        backend_requested=backend_requested,
+                        backend_used="akshare",
+                        started_at=started_at,
+                    )
+            except Exception as e:
+                safe_stderr_print(f"[DataSource] AKShare IPO info failed: {e}")
 
-        return {"success": False, "data": [], "source": "none", "message": "所有数据源均失败"}
+        return self._failed_fallback_result(
+            data=[],
+            message="所有数据源均失败",
+            backend_requested=backend_requested,
+            fallback_reason="all_backends_failed",
+            started_at=started_at,
+        )
 
     def get_cb_info(self, stock_code: str) -> dict:
         """
@@ -251,8 +406,17 @@ class MarketDataMixin:
         Returns:
             dict: {"success": bool, "data": dict, "source": str, "message": str}
         """
+        started_at = datetime.datetime.now()
+        backend_requested = "tdx"
+
         if not stock_code:
-            return {"success": False, "data": {}, "source": "none", "message": "股票代码不能为空"}
+            return self._failed_fallback_result(
+                data={},
+                message="股票代码不能为空",
+                backend_requested=backend_requested,
+                fallback_reason="invalid_stock_code",
+                started_at=started_at,
+            )
 
         # 1. 优先使用 TDX
         if self.is_tdx_available():
@@ -262,12 +426,15 @@ class MarketDataMixin:
                     tdx_code = self._convert_to_tdx_code(stock_code)
                     result = tq.get_cb_info(stock_code=tdx_code)
                     if isinstance(result, dict) and result.get("KZZCode"):
-                        return {
-                            "success": True,
-                            "data": result,
-                            "source": "tdx",
-                            "message": "获取可转债信息成功"
-                        }
+                        return self._result_with_requested_backend(
+                            success=True,
+                            data=result,
+                            source="tdx",
+                            message="获取可转债信息成功",
+                            backend_requested=backend_requested,
+                            backend_used="tdx",
+                            started_at=started_at,
+                        )
             except Exception as e:
                 safe_stderr_print(f"[DataSource] TDX get_cb_info failed: {e}")
 
@@ -288,40 +455,53 @@ class MarketDataMixin:
                         "EndDate": str(row.get("maturity_date", "")),
                         "RestScope": str(row.get("issue_size", ""))
                     }
-                    return {
-                        "success": True,
-                        "data": data,
-                        "source": "tushare_pro",
-                        "message": "获取可转债信息成功"
-                    }
+                    return self._result_with_requested_backend(
+                        success=True,
+                        data=data,
+                        source="tushare_pro",
+                        message="获取可转债信息成功",
+                        backend_requested=backend_requested,
+                        backend_used="tushare_pro",
+                        started_at=started_at,
+                    )
             except Exception as e:
                 safe_stderr_print(f"[DataSource] Tushare Pro cb_basic failed: {e}")
 
         # 3. 降级到 AKShare
-        try:
-            df = ak.bond_cb_jsl()
-            if df is not None and not df.empty:
-                code = stock_code.split('.')[0] if '.' in stock_code else stock_code
-                row = df[df['转债代码'] == code]
-                if not row.empty:
-                    row = row.iloc[0]
-                    data = {
-                        "KZZCode": code,
-                        "HSCode": str(row.get("正股代码", "")),
-                        "name": str(row.get("转债名称", "")),
-                        "ZGPrice": str(row.get("转股价", "")),
-                        "RestScope": str(row.get("剩余规模", ""))
-                    }
-                    return {
-                        "success": True,
-                        "data": data,
-                        "source": "akshare",
-                        "message": "获取可转债信息成功"
-                    }
-        except Exception as e:
-            safe_stderr_print(f"[DataSource] AKShare cb_info failed: {e}")
+        if ak is not None:
+            try:
+                df = ak.bond_cb_jsl()
+                if df is not None and not df.empty:
+                    code = stock_code.split('.')[0] if '.' in stock_code else stock_code
+                    row = df[df['转债代码'] == code]
+                    if not row.empty:
+                        row = row.iloc[0]
+                        data = {
+                            "KZZCode": code,
+                            "HSCode": str(row.get("正股代码", "")),
+                            "name": str(row.get("转债名称", "")),
+                            "ZGPrice": str(row.get("转股价", "")),
+                            "RestScope": str(row.get("剩余规模", ""))
+                        }
+                        return self._result_with_requested_backend(
+                            success=True,
+                            data=data,
+                            source="akshare",
+                            message="获取可转债信息成功",
+                            backend_requested=backend_requested,
+                            backend_used="akshare",
+                            started_at=started_at,
+                        )
+            except Exception as e:
+                safe_stderr_print(f"[DataSource] AKShare cb_info failed: {e}")
 
-        return {"success": False, "data": {}, "source": "none", "message": "所有数据源均失败"}
+        return self._failed_fallback_result(
+            data={},
+            message="所有数据源均失败",
+            backend_requested=backend_requested,
+            fallback_reason="all_backends_failed",
+            started_at=started_at,
+        )
 
     def get_gb_info(
         self,
@@ -340,8 +520,17 @@ class MarketDataMixin:
         Returns:
             dict: {"success": bool, "data": list, "source": str, "message": str}
         """
+        started_at = datetime.datetime.now()
+        backend_requested = "tdx"
+
         if not stock_code:
-            return {"success": False, "data": [], "source": "none", "message": "股票代码不能为空"}
+            return self._failed_fallback_result(
+                data=[],
+                message="股票代码不能为空",
+                backend_requested=backend_requested,
+                fallback_reason="invalid_stock_code",
+                started_at=started_at,
+            )
 
         date_list = date_list or []
 
@@ -357,12 +546,15 @@ class MarketDataMixin:
                         count=count
                     )
                     if isinstance(result, list):
-                        return {
-                            "success": True,
-                            "data": result,
-                            "source": "tdx",
-                            "message": f"获取到 {len(result)} 条股本数据"
-                        }
+                        return self._result_with_requested_backend(
+                            success=True,
+                            data=result,
+                            source="tdx",
+                            message=f"获取到 {len(result)} 条股本数据",
+                            backend_requested=backend_requested,
+                            backend_used="tdx",
+                            started_at=started_at,
+                        )
             except Exception as e:
                 safe_stderr_print(f"[DataSource] TDX get_gb_info failed: {e}")
 
@@ -384,34 +576,47 @@ class MarketDataMixin:
                             "ltgb": float(row['float_share']) * 10000 if row['float_share'] else 0,
                             "zgb": float(row['total_share']) * 10000 if row['total_share'] else 0
                         })
-                    return {
-                        "success": True,
-                        "data": results,
-                        "source": "tushare_pro",
-                        "message": f"获取到 {len(results)} 条股本数据"
-                    }
+                    return self._result_with_requested_backend(
+                        success=True,
+                        data=results,
+                        source="tushare_pro",
+                        message=f"获取到 {len(results)} 条股本数据",
+                        backend_requested=backend_requested,
+                        backend_used="tushare_pro",
+                        started_at=started_at,
+                    )
             except Exception as e:
                 safe_stderr_print(f"[DataSource] Tushare Pro daily_basic failed: {e}")
 
         # 3. 降级到 AKShare
-        try:
-            code = normalize_code(stock_code)
-            df = ak.stock_individual_info_em(symbol=code)
-            if df is not None and not df.empty:
-                info_dict = dict(zip(df['item'], df['value']))
-                today = datetime.datetime.now().strftime('%Y%m%d')
-                data = [{
-                    "Date": int(today),
-                    "ltgb": safe_float(info_dict.get("流通股", 0)),
-                    "zgb": safe_float(info_dict.get("总股本", 0))
-                }]
-                return {
-                    "success": True,
-                    "data": data,
-                    "source": "akshare",
-                    "message": "获取到 1 条股本数据"
-                }
-        except Exception as e:
-            safe_stderr_print(f"[DataSource] AKShare stock_info failed: {e}")
+        if ak is not None:
+            try:
+                code = normalize_code(stock_code)
+                df = ak.stock_individual_info_em(symbol=code)
+                if df is not None and not df.empty:
+                    info_dict = dict(zip(df['item'], df['value']))
+                    today = datetime.datetime.now().strftime('%Y%m%d')
+                    data = [{
+                        "Date": int(today),
+                        "ltgb": safe_float(info_dict.get("流通股", 0)),
+                        "zgb": safe_float(info_dict.get("总股本", 0))
+                    }]
+                    return self._result_with_requested_backend(
+                        success=True,
+                        data=data,
+                        source="akshare",
+                        message="获取到 1 条股本数据",
+                        backend_requested=backend_requested,
+                        backend_used="akshare",
+                        started_at=started_at,
+                    )
+            except Exception as e:
+                safe_stderr_print(f"[DataSource] AKShare stock_info failed: {e}")
 
-        return {"success": False, "data": [], "source": "none", "message": "所有数据源均失败"}
+        return self._failed_fallback_result(
+            data=[],
+            message="所有数据源均失败",
+            backend_requested=backend_requested,
+            fallback_reason="all_backends_failed",
+            started_at=started_at,
+        )

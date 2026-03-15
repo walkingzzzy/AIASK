@@ -6,7 +6,7 @@ import { LineChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useStockCode } from '@/hooks/use-stock-code';
-import { ErrorState } from '@/components/status-state';
+import { EmptyState, ErrorState } from '@/components/status-state';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { cacheText, type CacheMeta } from '@/lib/api';
@@ -131,6 +131,7 @@ export default function FundamentalPage() {
   const first = points[0];
   const peDelta = latest?.pe != null && first?.pe != null ? (latest.pe - first.pe).toFixed(2) : '-';
   const pbDelta = latest?.pb != null && first?.pb != null ? (latest.pb - first.pb).toFixed(2) : '-';
+  const activeExtraLabel = extraTabs.find((tab) => tab.key === extraTab)?.label ?? '扩展';
 
   const missing = useMemo(() => {
     const checks = [
@@ -144,13 +145,27 @@ export default function FundamentalPage() {
   return (
     <PageContainer narrow>
       <h1>基本面分析</h1>
-      <form onSubmit={onSubmit} className="flex gap-2.5 flex-wrap items-center">
-        <StockCodeInput value={code} onChange={setCode} error={codeError} placeholder="如 600519" />
-        <select value={days} onChange={(e) => setDays(Number(e.target.value))} className="px-2 py-1 border border-border rounded text-sm">
-          <option value={30}>近1月</option><option value={90}>近3月</option><option value={180}>近6月</option><option value={365}>近1年</option>
-        </select>
+      <form onSubmit={onSubmit} className="mt-3 flex gap-3 flex-wrap items-end">
+        <StockCodeInput
+          id="fundamental-stock-code"
+          label="股票代码"
+          value={code}
+          onChange={setCode}
+          error={codeError}
+          placeholder="如 600519"
+        />
+        <label htmlFor="fundamental-days" className="grid gap-1 text-xs text-text-secondary">
+          <span>观察区间</span>
+          <select id="fundamental-days" value={days} onChange={(e) => setDays(Number(e.target.value))} className="px-2 py-1 border border-border rounded text-sm">
+            <option value={30}>近1月</option>
+            <option value={90}>近3月</option>
+            <option value={180}>近6月</option>
+            <option value={365}>近1年</option>
+          </select>
+        </label>
         <button type="submit" disabled={loading}>{loading ? '查询中...' : '查询'}</button>
       </form>
+      <p className="mt-2 text-sm text-text-secondary">先确认股票代码，再用 90 天或 180 天窗口观察估值区间与核心财务指标是否同步改善。</p>
       {error ? <ErrorState text={error} /> : null}
       <div className="mt-2 text-text-secondary text-sm">
         更新：{updatedAt || '-'} ｜ 抓取：{freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'}
@@ -199,18 +214,31 @@ export default function FundamentalPage() {
             ]}
             height={280}
           />
-        ) : <p className="text-text-muted text-sm">暂无历史估值数据</p>}
+        ) : (
+          <EmptyState
+            text={`近 ${days} 天没有可绘制的历史估值数据`}
+            hint="可以切换到 180 天或 365 天窗口，或改查成交更活跃的股票后重新比较。"
+          />
+        )}
       </SectionCard>
       {missing.length ? <p className="mt-3 text-text-muted text-sm">提示：{missing.join('、')}暂无数据，已显示为"-"</p> : null}
       <section className="mt-5">
         <h2>详细资料</h2>
+        <p className="mt-1 text-sm text-text-secondary">切换标签会自动抓取对应资料。适合先看“基本信息/财务快照”，再进入 F10 与财务历史做深挖。</p>
         <TabBar<ExtraTab> tabs={extraTabs} active={extraTab} onChange={setExtraTab} />
         <SectionCard tabAttached>
           <button type="button" disabled={extraQ.isFetching || historyMut.isPending} onClick={() => fetchExtra(extraTab)}>{extraQ.isFetching || historyMut.isPending ? '加载中...' : '刷新'}</button>
           {extraQ.error || historyMut.error ? <p className="text-error">{extraQ.error || historyMut.error}</p> : null}
           {(() => {
             const raw = extraTab === 'history' ? historyMut.data : extraQ.data;
-            if (raw == null) return null;
+            if (raw == null) {
+              return (
+                <EmptyState
+                  text={`还没有加载${activeExtraLabel}`}
+                  hint="切换标签后会自动查询；如果结果为空，可以点击上方“刷新”再次尝试。"
+                />
+              );
+            }
             const rows = extractArray(raw).filter((r) => r && typeof r === 'object');
             if (rows.length) return <DataTable rows={rows} maxHeight={400} onExport={() => exportCSV(rows, `fundamental-${extraTab}`)} />;
             // Structured key-value display for single-object responses
@@ -221,7 +249,12 @@ export default function FundamentalPage() {
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 text-sm mt-2">
                 {entries.map(([k, v]) => <div key={k}><span className="text-text-muted">{FIELD_LABELS[k] ?? k}：</span>{typeof v === 'number' ? (Math.abs(v) >= 1e6 ? fmtAmount(v) : fmtNum(v, 2)) : String(v)}</div>)}
               </div>
-            ) : <pre className="mt-2 text-xs bg-surface-alt p-2 rounded overflow-auto max-h-[300px]">{JSON.stringify(raw, null, 2)}</pre>;
+            ) : (
+              <EmptyState
+                text={`${activeExtraLabel}暂无可展示字段`}
+                hint="这通常表示上游数据源只返回了原始结构或当前标的资料较少，可以切换到其他标签继续核对。"
+              />
+            );
           })()}
         </SectionCard>
       </section>

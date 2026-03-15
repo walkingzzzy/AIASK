@@ -42,6 +42,12 @@ from .spawner import StrategySpawner
 from .submitter import StrategySubmitter
 from .naming import _auto_name
 from .panels import _build_strategy_panels, _run_risk_report, _run_validation_report
+from .quality_gates import (
+    build_legacy_gate_report,
+    finalize_gate_report,
+    run_gated_filter,
+    run_gated_submission_pipeline,
+)
 from .runtime import _call_optional_async
 from .targets import (
     _extract_target_codes_from_payload,
@@ -54,6 +60,12 @@ from .utils import (
 )
 
 _factory_scheduler: Optional[StrategyFactoryScheduler] = None
+
+
+async def run_submission_quality_gate(*args, **kwargs):
+    from .submission_gate import run_submission_quality_gate as _run_submission_quality_gate
+
+    return await _run_submission_quality_gate(*args, **kwargs)
 
 
 def get_strategy_factory_scheduler() -> StrategyFactoryScheduler:
@@ -96,6 +108,11 @@ __all__ = [
     "_build_strategy_panels",
     "_run_validation_report",
     "_run_risk_report",
+    "run_gated_filter",
+    "run_gated_submission_pipeline",
+    "build_legacy_gate_report",
+    "finalize_gate_report",
+    "run_submission_quality_gate",
     "DataCollector",
     "MarketOpportunityScanner",
     "StrategySpawner",

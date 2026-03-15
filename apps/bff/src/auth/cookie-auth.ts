@@ -3,6 +3,7 @@
  * Provides HttpOnly cookie setters for secure JWT storage.
  */
 import { Response } from 'express';
+import { randomFillSync } from 'node:crypto';
 
 const COOKIE_OPTIONS = {
     httpOnly: true,
@@ -36,6 +37,6 @@ export function clearAuthCookies(res: Response) {
 /** Generate CSRF token */
 export function generateCsrfToken(): string {
     const array = new Uint8Array(32);
-    require('crypto').randomFillSync(array);
+    randomFillSync(array);
     return Buffer.from(array).toString('hex');
 }

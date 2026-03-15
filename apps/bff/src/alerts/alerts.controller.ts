@@ -33,17 +33,21 @@ class DeleteAlertDto {
 export class AlertsController {
   constructor(private readonly alertsService: AlertsService) {}
 
+  private userId(req: { user?: { id?: string; sub?: string } }) {
+    return String(req.user?.sub ?? req.user?.id ?? 'default');
+  }
+
   @Post('create')
   async create(
     @Body() body: CreateAlertDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined>; user?: { id?: string; sub?: string } },
   ) {
     const data = await this.alertsService.create({
       code: body.code,
       indicator: body.indicator,
       condition: body.condition,
       value: Number(body.value),
-    });
+    }, this.userId(req));
     const traceId =
       req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
 
@@ -53,9 +57,9 @@ export class AlertsController {
   @Get('list')
   async list(
     @Query() query: ListAlertsDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined>; user?: { id?: string; sub?: string } },
   ) {
-    const data = await this.alertsService.list(query.status ?? 'active');
+    const data = await this.alertsService.list(query.status ?? 'active', this.userId(req));
     const traceId =
       req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
 
@@ -65,13 +69,12 @@ export class AlertsController {
   @Delete('delete')
   async remove(
     @Query() query: DeleteAlertDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined>; user?: { id?: string; sub?: string } },
   ) {
-    const data = await this.alertsService.remove(query.alertId);
+    const data = await this.alertsService.remove(query.alertId, this.userId(req));
     const traceId =
       req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
 
     return { success: true, data, traceId: String(traceId) };
   }
 }
-

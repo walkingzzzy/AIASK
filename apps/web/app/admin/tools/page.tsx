@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { PageContainer, SectionCard, KpiGrid, KpiCard, Badge } from '@/components/ui';
 import { BarChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { ErrorState } from '@/components/status-state';
 
 /**
  * T-049: MCP Tools Dashboard
@@ -42,9 +43,18 @@ export default function ToolsDashboardPage() {
         healthy: 'success', degraded: 'warning', down: 'danger',
     };
 
+    if (statsQ.error) {
+        return (
+            <PageContainer>
+                <h1 className="text-lg font-semibold mb-4">🔧 MCP 工具仪表盘</h1>
+                <ErrorState text={statsQ.error} hint="当前页面需要管理员权限；请求失败时不再伪装成空数据。" onRetry={() => statsQ.refetch()} />
+            </PageContainer>
+        );
+    }
+
     return (
         <PageContainer>
-            <h2 className="text-lg font-semibold mb-4">🔧 MCP 工具仪表盘</h2>
+            <h1 className="text-lg font-semibold mb-4">🔧 MCP 工具仪表盘</h1>
 
             <KpiGrid cols={4}>
                 <KpiCard title="总调用次数" value={data.totalCalls.toLocaleString()} />

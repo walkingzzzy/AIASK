@@ -1,4 +1,6 @@
-const BFF = process.env.NEXT_PUBLIC_BFF_BASE_URL ?? 'http://localhost:3001/api';
+import { getBffBaseUrl } from './bff-base';
+
+const BFF = getBffBaseUrl();
 
 /** 设置非敏感登录指示器（供 middleware 判断） */
 export function setLoggedIn() {
@@ -12,7 +14,7 @@ export function clearLoggedIn() {
 
 /** 跳转到登录页 */
 export function redirectToLogin(returnPath?: string) {
-  const p = returnPath ?? window.location.pathname;
+  const p = returnPath ?? `${window.location.pathname}${window.location.search}`;
   window.location.href = `/login?redirect=${encodeURIComponent(p)}`;
 }
 

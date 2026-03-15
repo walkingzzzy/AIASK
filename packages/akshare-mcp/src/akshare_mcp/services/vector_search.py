@@ -1,6 +1,7 @@
 """
 向量搜索服务 - K线形态相似度搜索
-使用pgvector进行高效向量检索
+当前默认使用 Python / 进程内 index 后端；
+策略工厂等持久化路径可在 TimescaleDB 启用 pgvector 后走数据库向量检索。
 """
 
 import numpy as np
@@ -28,6 +29,13 @@ class VectorSearchEngine:
             }
         self.allow_fallback = bool(allow_fallback)
         self.last_backend_used = self.backend
+        self.last_meta: Dict[str, Any] = {
+            'backend_requested': self.backend,
+            'backend_used': self.backend,
+            'fallback_used': False,
+            'fallback_reason': None,
+            'latency_ms': 0.0,
+        }
 
     def set_backend(self, backend: str, allow_fallback: Optional[bool] = None) -> None:
         """设置默认检索后端。"""
@@ -196,62 +204,86 @@ class VectorSearchEngine:
     ) -> List[Dict[str, Any]]:
         """
         查找相似的K线形态
-        
+
         Args:
             query_klines: 查询K线
             candidate_klines_dict: 候选K线字典 {code: klines}
             top_k: 返回前K个最相似的
             method: 向量化方法
             metric: 相似度度量
-        
+
         Returns:
             相似形态列表
         """
-        # 查询向量
-        query_vector = self.kline_to_vector(query_klines, method)
-        
-        if len(query_vector) == 0:
-            return []
-        
-        backend_to_use = (backend or self.backend).strip().lower()
-        if backend_to_use not in {'python', 'index'}:
-            backend_to_use = 'python'
+        import time
 
+        started_at = time.perf_counter()
+        backend_requested = (backend or self.backend).strip().lower()
+        if backend_requested not in {'python', 'index'}:
+            backend_requested = 'python'
         fallback_enabled = self.allow_fallback if allow_fallback is None else bool(allow_fallback)
 
-        # 计算所有候选的相似度（Python主路径）
+        def _build_meta(*, backend_used: str, fallback_used: bool, fallback_reason: Optional[str]) -> Dict[str, Any]:
+            return {
+                'backend_requested': backend_requested,
+                'backend_used': backend_used,
+                'fallback_used': fallback_used,
+                'fallback_reason': fallback_reason,
+                'latency_ms': round((time.perf_counter() - started_at) * 1000, 3),
+            }
+
+        def _decorate(items: List[Dict[str, Any]], *, backend_used: str, fallback_used: bool, fallback_reason: Optional[str], source: Optional[str] = None) -> List[Dict[str, Any]]:
+            meta = _build_meta(
+                backend_used=backend_used,
+                fallback_used=fallback_used,
+                fallback_reason=fallback_reason,
+            )
+            self.last_backend_used = backend_used
+            self.last_meta = meta
+            decorated = []
+            for item in items:
+                enriched = dict(item)
+                if source is not None:
+                    enriched['source'] = source
+                enriched.update(meta)
+                decorated.append(enriched)
+            return decorated
+
+        query_vector = self.kline_to_vector(query_klines, method)
+        if len(query_vector) == 0:
+            return _decorate([], backend_used=backend_requested, fallback_used=False, fallback_reason='empty_query_vector')
+
         similarities = []
-        
         for code, klines in candidate_klines_dict.items():
             if len(klines) < len(query_klines):
                 continue
-            
-            # 取最后N根K线（与查询长度相同）
+
             candidate_klines = klines[-len(query_klines):]
             candidate_vector = self.kline_to_vector(candidate_klines, method)
-            
             if len(candidate_vector) != len(query_vector):
                 continue
-            
-            # 计算相似度
+
             similarity = self.calculate_similarity(query_vector, candidate_vector, metric)
-            
             similarities.append({
                 'code': code,
                 'similarity': similarity,
                 'klines': candidate_klines,
                 'source': 'python',
             })
-        
-        def _python_results() -> List[Dict[str, Any]]:
-            similarities.sort(key=lambda x: x['similarity'], reverse=True)
-            self.last_backend_used = 'python'
-            return similarities[:top_k]
 
-        if backend_to_use == 'python':
+        def _python_results(*, backend_used: str = 'python', fallback_used: bool = False, fallback_reason: Optional[str] = None, source: str = 'python') -> List[Dict[str, Any]]:
+            similarities.sort(key=lambda x: x['similarity'], reverse=True)
+            return _decorate(
+                similarities[:top_k],
+                backend_used=backend_used,
+                fallback_used=fallback_used,
+                fallback_reason=fallback_reason,
+                source=source,
+            )
+
+        if backend_requested == 'python':
             return _python_results()
 
-        # index 主路径（当前实现为进程内向量索引；可扩展到 pgvector/ANN）
         try:
             self.build_index(
                 klines_dict=candidate_klines_dict,
@@ -260,7 +292,6 @@ class VectorSearchEngine:
             )
             index_results = self.search_index(query_vector=query_vector, top_k=top_k, metric=metric)
             if index_results:
-                self.last_backend_used = 'index'
                 enriched = []
                 for item in index_results:
                     code = item.get('code')
@@ -275,26 +306,26 @@ class VectorSearchEngine:
                         'klines': candidate_klines,
                         'source': 'index',
                     })
-                return enriched
+                return _decorate(enriched, backend_used='index', fallback_used=False, fallback_reason=None, source='index')
 
             if fallback_enabled:
-                result = _python_results()
-                self.last_backend_used = 'python_fallback'
-                for item in result:
-                    item['source'] = 'python_fallback'
-                return result
-            self.last_backend_used = 'index'
-            return []
-        except Exception:
+                return _python_results(
+                    backend_used='python_fallback',
+                    fallback_used=True,
+                    fallback_reason='index_empty_result',
+                    source='python_fallback',
+                )
+            return _decorate([], backend_used='index', fallback_used=False, fallback_reason='index_empty_result')
+        except Exception as exc:
             if fallback_enabled:
-                result = _python_results()
-                self.last_backend_used = 'python_fallback'
-                for item in result:
-                    item['source'] = 'python_fallback'
-                return result
-            self.last_backend_used = 'index_error'
-            return []
-    
+                return _python_results(
+                    backend_used='python_fallback',
+                    fallback_used=True,
+                    fallback_reason=f'index_exception:{type(exc).__name__}',
+                    source='python_fallback',
+                )
+            return _decorate([], backend_used='index_error', fallback_used=False, fallback_reason=f'index_exception:{type(exc).__name__}')
+
     # ========== 形态识别 ==========
     
     @staticmethod

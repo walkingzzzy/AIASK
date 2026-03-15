@@ -199,6 +199,13 @@ def _as_bool(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _resolve_startup_profile() -> str:
+    raw = str(os.getenv("AKSHARE_MCP_STARTUP_PROFILE", "full")).strip().lower()
+    if raw in {"tool-only", "tool_only", "worker", "lite"}:
+        return "tool-only"
+    return "full"
+
+
 def _enforce_http_security_baseline() -> None:
     """
     Enforce minimal security checks when running MCP over HTTP-like transports.
@@ -242,51 +249,57 @@ def _enforce_http_security_baseline() -> None:
 def main() -> None:
     """Start MCP server."""
     _enforce_http_security_baseline()
+    startup_profile = _resolve_startup_profile()
+    logger = logging.getLogger(__name__)
+    logger.info("[Server] startup profile=%s", startup_profile)
 
-    # Start factor scheduler if enabled (default: enabled)
-    if _as_bool(os.getenv("FACTOR_SCHEDULER_ENABLED", "true")):
-        scheduler = get_factor_scheduler()
-        scheduler.start()
-        logging.getLogger(__name__).info("[Server] FactorScheduler started")
+    if startup_profile == "tool-only":
+        logger.info("[Server] tool-only profile active, background schedulers and startup validators are disabled")
+    else:
+        # Start factor scheduler if enabled (default: enabled)
+        if _as_bool(os.getenv("FACTOR_SCHEDULER_ENABLED", "true")):
+            scheduler = get_factor_scheduler()
+            scheduler.start()
+            logger.info("[Server] FactorScheduler started")
 
-    # Start matching engine for paper trading
-    if _as_bool(os.getenv("MATCHING_ENGINE_ENABLED", "true")):
-        engine = get_matching_engine()
-        engine.start()
-        logging.getLogger(__name__).info("[Server] MatchingEngine started")
+        # Start matching engine for paper trading
+        if _as_bool(os.getenv("MATCHING_ENGINE_ENABLED", "true")):
+            engine = get_matching_engine()
+            engine.start()
+            logger.info("[Server] MatchingEngine started")
 
-    # Start NAV engine for daily account valuation
-    if _as_bool(os.getenv("NAV_ENGINE_ENABLED", "true")):
-        nav = get_nav_engine()
-        nav.start()
-        logging.getLogger(__name__).info("[Server] NavEngine started")
+        # Start NAV engine for daily account valuation
+        if _as_bool(os.getenv("NAV_ENGINE_ENABLED", "true")):
+            nav = get_nav_engine()
+            nav.start()
+            logger.info("[Server] NavEngine started")
 
-    # Start signal tracker for forward signal generation & verification
-    if _as_bool(os.getenv("SIGNAL_TRACKER_ENABLED", "true")):
-        tracker = get_signal_tracker()
-        tracker.start()
-        logging.getLogger(__name__).info("[Server] SignalTracker started")
+        # Start signal tracker for forward signal generation & verification
+        if _as_bool(os.getenv("SIGNAL_TRACKER_ENABLED", "true")):
+            tracker = get_signal_tracker()
+            tracker.start()
+            logger.info("[Server] SignalTracker started")
 
-    # Start strategy factory for daily auto-generation & elimination
-    if _as_bool(os.getenv("STRATEGY_FACTORY_ENABLED", "true")):
-        from .services.strategy_factory import get_strategy_factory_scheduler
-        factory = get_strategy_factory_scheduler()
-        factory.start()
-        logging.getLogger(__name__).info("[Server] StrategyFactory started")
+        # Start strategy factory for daily auto-generation & elimination
+        if _as_bool(os.getenv("STRATEGY_FACTORY_ENABLED", "true")):
+            from .services.strategy_factory import get_strategy_factory_scheduler
+            factory = get_strategy_factory_scheduler()
+            factory.start()
+            logger.info("[Server] StrategyFactory started")
 
-    # Run startup validation (DB connectivity, schema, data freshness, coverage)
-    if _as_bool(os.getenv("STARTUP_VALIDATION_ENABLED", "true")):
-        from .services.startup_validator import get_startup_validator
-        _validator = get_startup_validator()
-        asyncio.ensure_future(_validator.run_async())
-        logging.getLogger(__name__).info("[Server] StartupValidator scheduled")
+        # Run startup validation (DB connectivity, schema, data freshness, coverage)
+        if _as_bool(os.getenv("STARTUP_VALIDATION_ENABLED", "true")):
+            from .services.startup_validator import get_startup_validator
+            _validator = get_startup_validator()
+            asyncio.ensure_future(_validator.run_async())
+            logger.info("[Server] StartupValidator scheduled")
 
-    # Start data sync scheduler for automatic DB sync on startup & daily after market close
-    if _as_bool(os.getenv("DATA_SYNC_SCHEDULER_ENABLED", "true")):
-        from .services.data_sync_scheduler import get_data_sync_scheduler
-        sync_scheduler = get_data_sync_scheduler()
-        sync_scheduler.start()
-        logging.getLogger(__name__).info("[Server] DataSyncScheduler started")
+        # Start data sync scheduler for automatic DB sync on startup & daily after market close
+        if _as_bool(os.getenv("DATA_SYNC_SCHEDULER_ENABLED", "true")):
+            from .services.data_sync_scheduler import get_data_sync_scheduler
+            sync_scheduler = get_data_sync_scheduler()
+            sync_scheduler.start()
+            logger.info("[Server] DataSyncScheduler started")
 
     mcp.run()
 

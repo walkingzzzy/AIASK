@@ -143,6 +143,42 @@ def _rowwise_pearson_corr(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     return corr
 
 
+def _has_variation(arr: np.ndarray, *, tol: float = 1e-12) -> bool:
+    """判断数组是否存在有效波动，避免常量输入触发相关性告警。"""
+    if arr.size < 2:
+        return False
+    arr = arr.astype(np.float64, copy=False)
+    spread = float(np.max(arr) - np.min(arr))
+    return bool(np.isfinite(spread) and spread > tol)
+
+
+def _safe_pearson_corr(x: np.ndarray, y: np.ndarray) -> float:
+    """对常量输入安全的 Pearson 相关系数。"""
+    if x.size < 3 or y.size < 3:
+        return 0.0
+    if not _has_variation(x) or not _has_variation(y):
+        return 0.0
+    corr = _rowwise_pearson_corr(
+        x.astype(np.float64, copy=False).reshape(1, -1),
+        y.astype(np.float64, copy=False).reshape(1, -1),
+    )[0]
+    return float(corr) if np.isfinite(corr) else 0.0
+
+
+def _safe_spearman_corr(x: np.ndarray, y: np.ndarray) -> float:
+    """对常量输入安全的 Spearman 相关系数。"""
+    if x.size < 3 or y.size < 3:
+        return 0.0
+    if not _has_variation(x) or not _has_variation(y):
+        return 0.0
+    rank_x = stats.rankdata(x.astype(np.float64, copy=False), method="average")
+    rank_y = stats.rankdata(y.astype(np.float64, copy=False), method="average")
+    if not _has_variation(rank_x) or not _has_variation(rank_y):
+        return 0.0
+    corr = _rowwise_pearson_corr(rank_x.reshape(1, -1), rank_y.reshape(1, -1))[0]
+    return float(corr) if np.isfinite(corr) else 0.0
+
+
 def _bootstrap_chunk_size(n_sample: int, n_bootstrap: int) -> int:
     # Keep each chunk to a bounded memory footprint.
     target_elements = 3_000_000
@@ -212,11 +248,9 @@ def _calc_ic_pair(
         return 0.0, 0.0
     fv = factor_values[mask]
     rv = returns[mask]
-    p_ic = np.corrcoef(fv, rv)[0, 1]
-    r_ic, _ = stats.spearmanr(fv, rv)
-    p_ic = p_ic if np.isfinite(p_ic) else 0.0
-    r_ic = r_ic if np.isfinite(r_ic) else 0.0
-    return float(p_ic), float(r_ic)
+    p_ic = _safe_pearson_corr(fv, rv)
+    r_ic = _safe_spearman_corr(fv, rv)
+    return p_ic, r_ic
 
 
 def _group_return(
@@ -304,10 +338,9 @@ def bootstrap_ic_ci(
 
     # 原始 IC
     if method == "spearman":
-        ic_orig, _ = stats.spearmanr(fv, rv)
+        ic_orig = _safe_spearman_corr(fv, rv)
     else:
-        ic_orig = np.corrcoef(fv, rv)[0, 1]
-    ic_orig = float(ic_orig) if np.isfinite(ic_orig) else 0.0
+        ic_orig = _safe_pearson_corr(fv, rv)
 
     return {
         "ic": ic_orig,

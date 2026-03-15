@@ -3,7 +3,7 @@ fund_flow_market.py
 Dragon-tiger board, margin trading, and block trades functions.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import akshare as ak
@@ -273,20 +273,36 @@ def get_block_trades(date: str = "", stock_code: str = "", limit: int = 500) -> 
         limiter.acquire()
 
         target = date or datetime.now().strftime("%Y-%m-%d")
-        params: dict[str, Any] = {
-            "sortColumns": "TRADE_DATE,SECURITY_CODE",
-            "sortTypes": "-1,1",
-            "pageSize": min(max(int(limit), 1), 1000),
-            "pageNumber": 1,
-            "reportName": "RPT_BLOCKTRADE_DETAILSNEW",
-            "columns": "TRADE_DATE,SECURITY_CODE,SECURITY_NAME_ABBR,DEAL_PRICE,DEAL_AMOUNT,DEAL_AMT,PREMIUM_RATIO,BUYER_NAME,SELLER_NAME",
-            "filter": f"(TRADE_DATE='{target}')",
-        }
-        if stock_code:
-            code = normalize_code(stock_code)
-            params["filter"] = f"(TRADE_DATE='{target}')(SECURITY_CODE=\"{code}\")"
+        code = normalize_code(stock_code) if stock_code else ""
 
-        items = _fetch_eastmoney_datacenter(params)
+        def _fetch_for_trade_date(trade_date: str) -> list[dict]:
+            params: dict[str, Any] = {
+                "sortColumns": "SECURITY_CODE",
+                "sortTypes": "1",
+                "pageSize": min(max(int(limit), 1), 1000),
+                "pageNumber": 1,
+                "reportName": "RPT_DATA_BLOCKTRADE",
+                "columns": (
+                    "TRADE_DATE,SECURITY_CODE,SECUCODE,SECURITY_NAME_ABBR,CHANGE_RATE,"
+                    "CLOSE_PRICE,DEAL_PRICE,PREMIUM_RATIO,DEAL_VOLUME,DEAL_AMT,TURNOVER_RATE,"
+                    "BUYER_NAME,SELLER_NAME,CHANGE_RATE_1DAYS,CHANGE_RATE_5DAYS,"
+                    "CHANGE_RATE_10DAYS,CHANGE_RATE_20DAYS,BUYER_CODE,SELLER_CODE"
+                ),
+                "source": "WEB",
+                "client": "WEB",
+                "filter": f"(SECURITY_TYPE_WEB=1)(TRADE_DATE>='{trade_date}')(TRADE_DATE<='{trade_date}')",
+            }
+            if code:
+                params["filter"] += f'(SECURITY_CODE="{code}")'
+            return _fetch_eastmoney_datacenter(params)
+
+        items = _fetch_for_trade_date(target)
+        if code and not date and not items:
+            for offset in range(1, 31):
+                fallback_date = (datetime.now() - timedelta(days=offset)).strftime("%Y-%m-%d")
+                items = _fetch_for_trade_date(fallback_date)
+                if items:
+                    break
         results = []
         for item in items:
             results.append(
@@ -295,7 +311,7 @@ def get_block_trades(date: str = "", stock_code: str = "", limit: int = 500) -> 
                     "code": normalize_code(item.get("SECURITY_CODE")),
                     "name": str(item.get("SECURITY_NAME_ABBR") or ""),
                     "price": parse_numeric(item.get("DEAL_PRICE")) or 0,
-                    "volume": parse_numeric(item.get("DEAL_AMOUNT")) or 0,
+                    "volume": parse_numeric(item.get("DEAL_VOLUME")) or 0,
                     "amount": parse_numeric(item.get("DEAL_AMT")) or 0,
                     "premium": parse_numeric(item.get("PREMIUM_RATIO")) or 0,
                     "buyer": str(item.get("BUYER_NAME") or ""),

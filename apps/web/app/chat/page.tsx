@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 import { useChatStore } from '@/store/chat-store';
 import { getLlmConfig, streamChat } from '@/lib/chat-api';
 import ChatMessage from '@/components/chat-message';
@@ -17,6 +17,7 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     void useChatStore.getState().initSync();
@@ -69,13 +70,35 @@ export default function ChatPage() {
     setStreaming(false);
   }
 
+  function handleSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    void send();
+  }
+
+  function closeConfigModal() {
+    setShowConfig(false);
+    window.requestAnimationFrame(() => settingsButtonRef.current?.focus());
+  }
+
   return (
-    <main className="flex flex-col h-full font-sans">
+    <main className="flex flex-col h-full font-sans" aria-labelledby="chat-page-title">
       <div className="px-5 py-3 border-b border-glass-border flex items-center justify-between">
-        <h2 className="m-0 text-lg">AI 对话</h2>
+        <div>
+          <h1 id="chat-page-title" className="m-0 text-lg">AI 对话</h1>
+          {!hasConfig ? <p className="m-0 mt-1 text-xs text-text-secondary">当前还没有配置 LLM，先完成设置后才能开始发消息。</p> : null}
+        </div>
         <div className="flex gap-2">
           <button type="button" onClick={clearMessages} className="cursor-pointer px-3 py-1">清空</button>
-          <button type="button" onClick={() => setShowConfig(true)} className="cursor-pointer px-3 py-1">{'\u2699'} 设置</button>
+          <button
+            ref={settingsButtonRef}
+            type="button"
+            onClick={() => setShowConfig(true)}
+            className="cursor-pointer px-3 py-1"
+            aria-haspopup="dialog"
+            aria-expanded={showConfig}
+          >
+            {'\u2699'} 设置
+          </button>
         </div>
       </div>
       <div className="flex-1 overflow-auto px-5 py-4">
@@ -88,22 +111,25 @@ export default function ChatPage() {
         {messages.map((m) => <ChatMessage key={m.id} msg={m} />)}
         <div ref={bottomRef} />
       </div>
-      <div className="px-5 py-3 border-t border-glass-border flex gap-2">
+      <form onSubmit={handleSubmit} className="px-5 py-3 border-t border-glass-border flex gap-2">
+        <label htmlFor="chat-composer-input" className="sr-only">聊天输入框</label>
         <input
+          id="chat-composer-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
           placeholder={hasConfig ? '输入你的问题...' : '请先点击右上角设置配置 LLM'}
           disabled={!hasConfig}
+          aria-label="聊天输入框"
           className="flex-1 px-3 py-2 rounded-md border border-glass-border text-sm"
         />
         {streaming ? (
           <button type="button" onClick={stop} className="px-4 py-2 cursor-pointer bg-danger text-white border-none rounded-md">停止</button>
         ) : (
-          <button type="button" onClick={send} disabled={!hasConfig || !input.trim()} className="px-4 py-2 cursor-pointer bg-primary text-white border-none rounded-md">发送</button>
+          <button type="submit" disabled={!hasConfig || !input.trim()} className="px-4 py-2 cursor-pointer bg-primary text-white border-none rounded-md">发送</button>
         )}
-      </div>
-      {showConfig ? <ChatConfigModal onClose={() => setShowConfig(false)} /> : null}
+      </form>
+      {showConfig ? <ChatConfigModal onClose={closeConfigModal} /> : null}
     </main>
   );
 }

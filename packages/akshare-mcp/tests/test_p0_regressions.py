@@ -22,6 +22,7 @@ import akshare_mcp.tools.managers.paper_trading_manager as ptm
 import akshare_mcp.tools.managers.portfolio_manager as pm
 import akshare_mcp.tools.managers.research_manager as research_manager_mod
 import akshare_mcp.tools.managers.sector_manager as sector_manager_mod
+import akshare_mcp.tools.managers.watchlist_manager as watchlist_manager_mod
 import akshare_mcp.tools.options as options_mod
 import akshare_mcp.tools.tdx_trading_data as tdx_trade_mod
 import akshare_mcp.tools.valuation as valuation_mod
@@ -158,6 +159,100 @@ class _PaperFakeDB(_FakeDB):
         return []
 
 
+class _WatchlistConn:
+    def __init__(self):
+        now = datetime.now()
+        self.groups = {
+            ("default", "default"): {
+                "id": "default",
+                "name": "我的自选",
+                "user_id": "default",
+                "color": "#6366f1",
+                "sort_order": 0,
+                "created_at": now,
+            },
+        }
+        self.items = {}
+
+    async def fetch(self, query, *args):
+        if "FROM watchlist_groups" in query:
+            user_id, default_group_id = args
+            rows = [
+                row for (gid, uid), row in self.groups.items()
+                if uid == user_id or (uid == "default" and gid == default_group_id)
+            ]
+            return sorted(rows, key=lambda row: (int(row.get("sort_order") or 0), str(row.get("name") or "")))
+
+        if "FROM watchlist" in query:
+            user_id = args[0]
+            rows = [row for (uid, _code), row in self.items.items() if uid == user_id]
+            return sorted(rows, key=lambda row: (str(row.get("group_id") or ""), int(row.get("sort_order") or 0), str(row.get("code") or "")))
+
+        return []
+
+    async def fetchrow(self, query, *args):
+        if "SELECT id FROM watchlist_groups" in query:
+            user_id, name = args
+            for (_gid, uid), row in self.groups.items():
+                if uid == user_id and row.get("name") == name:
+                    return {"id": row["id"]}
+        return None
+
+    async def execute(self, query, *args):
+        if "INSERT INTO watchlist_groups" in query:
+            group_id, name, user_id, color, default_color = args
+            current = self.groups.get((group_id, user_id), {})
+            self.groups[(group_id, user_id)] = {
+                "id": group_id,
+                "name": name or current.get("name") or group_id,
+                "user_id": user_id,
+                "color": color or current.get("color") or default_color,
+                "sort_order": current.get("sort_order", 1),
+                "created_at": current.get("created_at", datetime.now()),
+            }
+            return
+
+        if "INSERT INTO watchlist (user_id, code, group_id, sort_order, note, added_at)" in query:
+            user_id, code, group_id, sort_order, note = args
+            current = self.items.get((user_id, code), {})
+            self.items[(user_id, code)] = {
+                "id": current.get("id", len(self.items) + 1),
+                "user_id": user_id,
+                "code": code,
+                "name": current.get("name", code),
+                "group_id": group_id,
+                "sort_order": sort_order,
+                "note": note,
+                "added_at": current.get("added_at", datetime.now()),
+            }
+            return
+
+        if "DELETE FROM watchlist WHERE user_id = $1 AND code = $2" in query:
+            user_id, code = args
+            self.items.pop((user_id, code), None)
+            return
+
+        if "UPDATE watchlist\n                            SET sort_order = $1" in query:
+            sort_order, user_id, code, group_id = args
+            row = self.items.get((user_id, code))
+            if row and row.get("group_id") == group_id:
+                row["sort_order"] = sort_order
+            return
+
+        if "UPDATE watchlist SET group_id = $1, sort_order = 0" in query:
+            target_group_id, user_id, source_group_id = args
+            for (uid, _code), row in list(self.items.items()):
+                if uid == user_id and row.get("group_id") == source_group_id:
+                    row["group_id"] = target_group_id
+                    row["sort_order"] = 0
+            return
+
+        if "DELETE FROM watchlist_groups WHERE user_id = $1 AND id = $2" in query:
+            user_id, group_id = args
+            self.groups.pop((group_id, user_id), None)
+            return
+
+
 @pytest.mark.asyncio
 async def test_p0_1_portfolio_update_fill_required_fields(monkeypatch):
     mcp = _DummyMCP()
@@ -172,12 +267,85 @@ async def test_p0_1_portfolio_update_fill_required_fields(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_p0_1a_portfolio_manager_accepts_structured_params(monkeypatch):
+    mcp = _DummyMCP()
+    pm.register_portfolio_manager(mcp)
+
+    class _PortfolioCreateConn(_PortfolioConn):
+        async def fetchval(self, query, *args):
+            if 'INSERT INTO portfolios' in query:
+                self.created = args
+                return 101
+            return None
+
+    conn = _PortfolioCreateConn(exists=True)
+    monkeypatch.setattr(pm, 'get_db', lambda: _FakeDB(conn))
+
+    created = await mcp.portfolio_manager(
+        action='create',
+        params={'name': '结构化组合', 'user_id': 'u1', 'initial_capital': 250000},
+    )
+    assert created['success'] is True
+    assert created['data']['portfolio_id'] == 101
+
+
+@pytest.mark.asyncio
 async def test_p0_1_portfolio_update_not_found(monkeypatch):
     mcp = _DummyMCP()
     pm.register_portfolio_manager(mcp)
     monkeypatch.setattr(pm, 'get_db', lambda: _FakeDB(_PortfolioConn(exists=False)))
     r = await mcp.portfolio_manager(action='update', portfolio_id=999, updates={'name': 'x'})
     assert r['success'] is False
+
+
+@pytest.mark.asyncio
+async def test_p0_1b_watchlist_manager_group_crud_and_reorder(monkeypatch):
+    mcp = _DummyMCP()
+    watchlist_manager_mod.register_watchlist_manager(mcp)
+    conn = _WatchlistConn()
+    monkeypatch.setattr(watchlist_manager_mod, 'get_db', lambda: _FakeDB(conn))
+
+    created = await mcp.watchlist_manager(
+        action='create_group',
+        params={'user_id': 'u1', 'group_id': 'group_growth', 'name': '成长组', 'color': '#00ff00'},
+    )
+    assert created['success'] is True
+    assert created['data']['group_id'] == 'group_growth'
+
+    added = await mcp.watchlist_manager(
+        action='add_stocks',
+        params={'user_id': 'u1', 'group_id': 'group_growth', 'group_name': '成长组', 'codes': ['600519', '000001']},
+    )
+    assert added['success'] is True
+    assert added['data']['count'] == 2
+
+    listed = await mcp.watchlist_manager(action='list', params={'user_id': 'u1'})
+    assert listed['success'] is True
+    groups = listed['data']['groups']
+    growth = next(group for group in groups if group['id'] == 'group_growth')
+    assert [item['code'] for item in growth['items']] == ['600519', '000001']
+    assert growth['color'] == '#00ff00'
+
+    reordered = await mcp.watchlist_manager(
+        action='reorder',
+        params={'user_id': 'u1', 'group_id': 'group_growth', 'codes': ['000001', '600519']},
+    )
+    assert reordered['success'] is True
+    listed_after_reorder = await mcp.watchlist_manager(action='list', params={'user_id': 'u1'})
+    growth_after = next(group for group in listed_after_reorder['data']['groups'] if group['id'] == 'group_growth')
+    assert [item['code'] for item in growth_after['items']] == ['000001', '600519']
+
+    removed = await mcp.watchlist_manager(action='remove_stock', params={'user_id': 'u1', 'code': '600519'})
+    assert removed['success'] is True
+
+    deleted = await mcp.watchlist_manager(action='delete_group', params={'user_id': 'u1', 'group_id': 'group_growth'})
+    assert deleted['success'] is True
+
+    final_list = await mcp.watchlist_manager(action='list', params={'user_id': 'u1'})
+    final_groups = final_list['data']['groups']
+    assert all(group['id'] != 'group_growth' for group in final_groups)
+    default_group = next(group for group in final_groups if group['id'] == 'default')
+    assert [item['code'] for item in default_group['items']] == ['000001']
 
 
 def test_p0_2_batch_quotes_compat_structure(monkeypatch):
@@ -215,6 +383,29 @@ async def test_p0_3_paper_trading_bookkeeping_consistency(monkeypatch):
 
     bad = await mcp.paper_trading_manager(action='place_order', account_id='acc1', code='600519', direction='sell', quantity=1000, price=12)
     assert bad['success'] is False
+
+
+@pytest.mark.asyncio
+async def test_p0_3_paper_trading_accepts_structured_params(monkeypatch):
+    mcp = _DummyMCP()
+    ptm.register_paper_trading_manager(mcp)
+    conn = _PaperConn()
+    monkeypatch.setattr(ptm, 'get_db', lambda: _PaperFakeDB(conn))
+
+    async def _fake_quote(_code):
+        return {'name': '贵州茅台', 'preClose': 11.0, 'price': 11.0}
+
+    monkeypatch.setattr(ptm, '_get_quote_snapshot', _fake_quote)
+
+    buy = await mcp.paper_trading_manager(
+        action='place_order',
+        params={'account_id': 'acc1', 'code': '600519', 'direction': 'buy', 'quantity': 100, 'price': 10},
+    )
+    assert buy['success'] is True
+
+    positions = await mcp.paper_trading_manager(action='positions', params={'account_id': 'acc1'})
+    assert positions['success'] is True
+    assert positions['data']['positions'][0]['quantity'] == 100
 
 
 @pytest.mark.asyncio
@@ -911,6 +1102,23 @@ async def test_p0_16_alerts_manager_update_should_preserve_status_when_status_mi
     assert updated['data']['status'] == 'active'
     assert updated['data']['alert']['value'] == pytest.approx(1900.0)
     assert alerts_tool_mod._alerts_store[alert_id]['active'] is True
+
+
+@pytest.mark.asyncio
+async def test_p0_16a_alerts_manager_accepts_structured_params(monkeypatch):
+    alerts_tool_mod._alerts_store.clear()
+    mcp = _DummyMCP()
+    alerts_manager_mod.register_alerts_manager(mcp)
+
+    created = await mcp.alerts_manager(
+        action='create',
+        params={'code': '600519', 'indicator': 'price', 'condition': '>', 'value': 1800},
+    )
+    assert created['success'] is True
+
+    listed = await mcp.alerts_manager(action='list', params={'status': 'active'})
+    assert listed['success'] is True
+    assert listed['data']['count'] >= 1
 
 
 @pytest.mark.asyncio

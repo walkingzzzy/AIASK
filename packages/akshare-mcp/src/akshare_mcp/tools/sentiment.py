@@ -483,7 +483,7 @@ def register(mcp):
         action: str = '',
         emotion_polarity: float = 0.0,
         emotion_intensity: float = 0.0,
-        cognitive_biases: str = '',
+        cognitive_biases='',
         risk_aversion: float = 2.5,
         kyc_level: str = '',
         reasoning_chain: str = '',
@@ -504,7 +504,11 @@ def register(mcp):
         """
         try:
             db = get_db()
-            biases_list = [b.strip() for b in cognitive_biases.split(',') if b.strip()] if cognitive_biases else []
+            if isinstance(cognitive_biases, (list, tuple, set)):
+                biases_list = [str(b).strip() for b in cognitive_biases if str(b).strip()]
+            else:
+                raw_biases = str(cognitive_biases or '')
+                biases_list = [b.strip() for b in raw_biases.split(',') if b.strip()]
 
             async with db.acquire() as conn:
                 await conn.execute(

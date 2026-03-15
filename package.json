@@ -12,6 +12,8 @@
     "dev:web": "npm run dev -w apps/web",
     "build": "npm run build -w apps/bff && npm run build -w apps/web",
     "verify:ws-quote-chain": "npm run build -w apps/bff && npm run build -w apps/web && node scripts/ws-quote-chain-check.mjs",
+    "verify:security-boundaries": "npm run build -w apps/bff && node scripts/security-boundary-check.mjs",
+    "verify:mcp-arg-boundaries": "npm run build -w apps/bff && node scripts/mcp-arg-boundary-check.mjs",
     "start:bff": "npm run start -w apps/bff",
     "start:web": "npm run start -w apps/web",
     "lint": "eslint apps/web/app apps/web/components apps/web/lib apps/web/store apps/web/hooks apps/bff/src",

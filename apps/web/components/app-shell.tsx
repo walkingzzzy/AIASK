@@ -2,11 +2,11 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { ReactNode, useEffect, useMemo, useState } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import { useAuthStore } from '@/store/auth-store';
 import { useStockContext } from '@/store/stock-context';
-import { BFF_BASE } from '@/lib/api';
-import { useMobile } from '@/hooks/use-mobile';
+import { authedFetch } from '@/lib/api';
+import { useHydrated } from '@/hooks/use-hydrated';
 import { useTheme } from '@/hooks/use-theme';
 import { useWsStatus, type WsConnectionStatus } from '@/lib/ws';
 import { NotificationBell } from '@/components/notification-bell';
@@ -201,27 +201,32 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { user, setUser, logout } = useAuthStore();
   const storeCode = useStockContext((s) => s.code);
-  const isMobile = useMobile();
-  const [mounted, setMounted] = useState(false);
+  const hydrated = useHydrated();
+  const isAuthPage = pathname === '/login' || pathname === '/register';
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openGroup, setOpenGroup] = useState<string | null>(null);
 
   useEffect(() => {
-    if (user) return;
-    fetch(`${BFF_BASE}/auth/me`, { credentials: 'include', cache: 'no-store' })
+    if (isAuthPage || user) return;
+    const hasLoginHint = typeof document !== 'undefined'
+      && document.cookie.split(';').some((item) => item.trim() === 'logged_in=1');
+    if (!hasLoginHint) return;
+    authedFetch('/auth/me', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (d?.authenticated && d.user) setUser(d.user);
       })
       .catch(() => { });
-  }, [user, setUser]);
+  }, [isAuthPage, user, setUser]);
 
-  useEffect(() => { setMounted(true); }, []);
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [pathname]);
 
   // 仅在客户端挂载后使用 store 中的股票代码，避免 SSR/CSR hydration 不匹配
-  const currentStockCode = mounted ? storeCode : '';
+  const currentStockCode = hydrated ? storeCode : '';
 
-  if (pathname === '/login' || pathname === '/register') return <>{children}</>;
+  if (isAuthPage) return <>{children}</>;
 
   const handleToggle = (label: string) => {
     setOpenGroup((prev) => (prev === label ? null : label));
@@ -237,9 +242,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             AIASK
           </span>
         </Link>
-        {isMobile ? (
-          <button onClick={() => setDrawerOpen(false)} className="text-lg cursor-pointer" aria-label="关闭导航菜单">✕</button>
-        ) : null}
+        <button onClick={() => setDrawerOpen(false)} className="text-lg cursor-pointer md:hidden" aria-label="关闭导航菜单">✕</button>
       </div>
       <div className="flex flex-col gap-0.5">
         {NAV_GROUPS.map((group) => (
@@ -274,28 +277,21 @@ export default function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen">
       <Onboarding />
-      {isMobile ? (
-        <>
-          {drawerOpen ? (
-            <div className="fixed inset-0 z-50 flex">
-              <div className="fixed inset-0 bg-black/40" onClick={() => setDrawerOpen(false)} />
-              <nav className="relative w-[220px] glass-strong py-4 overflow-y-auto z-10 border-r border-glass-border flex flex-col" aria-label="主导航菜单">
-                {navContent}
-              </nav>
-            </div>
-          ) : null}
-        </>
-      ) : (
-        <nav className="w-[200px] glass-strong py-4 shrink-0 overflow-y-auto border-r border-glass-border flex flex-col" aria-label="主导航菜单">
-          {navContent}
-        </nav>
-      )}
+      {drawerOpen ? (
+        <div className="fixed inset-0 z-50 flex md:hidden">
+          <div className="fixed inset-0 bg-black/40" onClick={() => setDrawerOpen(false)} />
+          <nav className="relative w-[220px] glass-strong py-4 overflow-y-auto z-10 border-r border-glass-border flex flex-col" aria-label="主导航菜单">
+            {navContent}
+          </nav>
+        </div>
+      ) : null}
+      <nav className="hidden w-[200px] glass-strong py-4 shrink-0 overflow-y-auto border-r border-glass-border md:flex md:flex-col" aria-label="主导航菜单">
+        {navContent}
+      </nav>
       <div className="flex-1 flex flex-col min-w-0">
         <header className="h-12 glass flex items-center justify-between px-4 gap-3 shrink-0 sticky top-0 z-10" role="banner">
           <div className="flex items-center gap-2">
-            {isMobile ? (
-              <button onClick={() => setDrawerOpen(true)} className="text-lg cursor-pointer" aria-label="打开导航菜单" aria-expanded={drawerOpen}>☰</button>
-            ) : null}
+            <button onClick={() => setDrawerOpen(true)} className="text-lg cursor-pointer md:hidden" aria-label="打开导航菜单" aria-expanded={drawerOpen}>☰</button>
           </div>
           <div className="flex items-center gap-3">
             <WsIndicator />

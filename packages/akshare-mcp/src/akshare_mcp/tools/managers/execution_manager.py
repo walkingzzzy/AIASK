@@ -118,6 +118,9 @@ def _now_iso() -> str:
 
 def _normalize_kwargs(kwargs: dict) -> dict:
     """Normalize kwargs, merge kwargs payload and keep backward-compatible aliases."""
+    params = kwargs.get("params")
+    if isinstance(params, dict):
+        kwargs = {**kwargs, **params}
     raw = kwargs.get("kwargs")
     if isinstance(raw, dict):
         kwargs = {**kwargs, **raw}
@@ -689,6 +692,7 @@ def register_execution_manager(mcp):
     async def execution_manager(action: str, **kwargs):
         """
         Execution manager with unified action + kwargs protocol.
+        Supports structured ``params`` in addition to legacy ``kwargs`` payloads.
 
         Actions:
         - help

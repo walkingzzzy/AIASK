@@ -1,5 +1,6 @@
 import { Body, Controller, Post, Req } from '@nestjs/common';
-import { IsOptional, IsString, Matches } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsNumber, IsOptional, IsString, Matches, Min } from 'class-validator';
 import { AssistantService } from './assistant.service';
 
 class StockCodeBodyDto {
@@ -14,6 +15,18 @@ class IndustryChainDto {
 }
 class DailyReportDto {
   @IsOptional() @IsString() date?: string;
+}
+class SellDecisionBodyDto extends StockCodeBodyDto {
+  @Type(() => Number)
+  @IsNumber({}, { message: 'buyPrice 必须为数字' })
+  @Min(0.01, { message: 'buyPrice 必须大于 0' })
+  buyPrice!: number;
+
+  @Type(() => Number)
+  @IsOptional()
+  @IsNumber({}, { message: 'holdingDays 必须为数字' })
+  @Min(0, { message: 'holdingDays 不能为负数' })
+  holdingDays?: number;
 }
 
 @Controller('assistant')
@@ -44,10 +57,10 @@ export class AssistantController {
 
   @Post('should-sell')
   async shouldSell(
-    @Body() body: StockCodeBodyDto,
+    @Body() body: SellDecisionBodyDto,
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
-    const data = await this.assistantService.shouldSell(body.code);
+    const data = await this.assistantService.shouldSell(body.code, body.buyPrice, body.holdingDays);
     const traceId =
       req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };

@@ -2,7 +2,7 @@
 
 import uuid
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from ...storage import get_db
 from ...utils import ok, fail, normalize_code
 from ...data_source import data_source
@@ -86,11 +86,14 @@ def _build_strategy_artifact(
             "tools/managers/backtest_manager.py:run",
             "tools/managers/execution_manager.py:_build_cost_model",
         ],
-        "created_at": datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
+    params = kwargs.get("params")
+    if isinstance(params, dict):
+        kwargs = {**kwargs, **params}
     raw = kwargs.get("kwargs")
     if isinstance(raw, dict):
         kwargs = {**kwargs, **raw}
@@ -115,7 +118,7 @@ def register_backtest_manager(mcp):
 
         Args:
             action (str, required): 操作类型，可选 help/run/save/list/get/compare
-            kwargs: JSON 字符串或关键字参数，不同 action 所需参数:
+            kwargs: 支持 structured ``params``、JSON 字符串 ``kwargs`` 或关键字参数，不同 action 所需参数:
                 - help: 无需额外参数
                 - run: code(str), strategy(str, "ma_cross"等), start_date(str, optional), end_date(str, optional), artifact_id(str, optional)
                 - save: backtest_id(str), name(str, optional)

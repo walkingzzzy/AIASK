@@ -1,4 +1,12 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
+import type {
+  BacktestBatchFailure,
+  BacktestBatchResponse,
+  BacktestBatchResultItem,
+  BacktestMetricSnapshot,
+  BacktestMetricsResponse,
+  BacktestRunResponse,
+} from '@aiask/shared-types';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 
 export type RunBacktestInput = {
@@ -19,16 +27,26 @@ export type RunBacktestInput = {
   artifactId?: string;
 };
 
-export type NormalizedBacktestMetrics = {
-  totalReturn: number | null; sharpe: number | null; maxDrawdown: number | null;
-  winRate: number | null; totalTrades: number | null; profitFactor: number | null;
+export type BatchBacktestInput = {
+  codes: string[];
+  strategy: string;
+  startDate?: string;
+  endDate?: string;
+  initialCapital?: number;
+  commission?: number;
+  shortPeriod?: number;
+  longPeriod?: number;
 };
 
 @Injectable()
 export class BacktestService {
   constructor(private readonly mcpGatewayService: McpGatewayService) {}
 
-  async run(input: RunBacktestInput) {
+  async run(input: RunBacktestInput): Promise<BacktestRunResponse> {
+    const requestedArtifactId =
+      typeof input.artifactId === 'string' && input.artifactId.trim().length > 0
+        ? input.artifactId.trim()
+        : undefined;
     const normalized: Record<string, unknown> = {
       code: input.code.trim(),
       strategy: input.strategy.trim() || 'ma_cross',
@@ -42,7 +60,7 @@ export class BacktestService {
       rsi_period: input.rsiPeriod ?? 14,
       oversold: input.oversold ?? 30,
       overbought: input.overbought ?? 70,
-      artifact_id: input.artifactId || undefined,
+      artifact_id: requestedArtifactId,
     };
     if (input.commission != null) normalized.commission = input.commission;
     if (input.slippage != null) normalized.slippage = input.slippage;
@@ -51,11 +69,18 @@ export class BacktestService {
     const payload: any = await this.callTool('backtest_manager', args);
     const artifactId =
       this.pickString(payload, ['data.artifact_id', 'data.artifactId', 'artifact_id', 'artifactId']) ||
-      normalized.artifact_id ||
+      requestedArtifactId ||
       `art_${normalized.code}_${Date.now()}`;
 
-    // Extract result data (engine output lives under data.result or data)
-    const engineResult = payload?.data?.result ?? payload?.result ?? payload?.data ?? {};
+    const engineResult = this.pickObject(payload, [
+      'data.result.result',
+      'data.result.data.result',
+      'data.result',
+      'result.result',
+      'result.data.result',
+      'result',
+      'data',
+    ]) ?? {};
 
     return {
       artifactId,
@@ -63,7 +88,7 @@ export class BacktestService {
       sourceTool: 'backtest_manager' as const,
       argsMatched: args,
       result: payload,
-      metrics: this.normalizeMetrics(payload),
+      metrics: this.normalizeMetrics(engineResult),
       equity_curve: Array.isArray(engineResult.equity_curve) ? engineResult.equity_curve : [],
       dates: Array.isArray(engineResult.dates) ? engineResult.dates : [],
       trades: Array.isArray(engineResult.trades) ? engineResult.trades : [],
@@ -76,10 +101,15 @@ export class BacktestService {
   async list(limit = 10) {
     const args = { action: 'list', kwargs: JSON.stringify({ limit: Math.min(Math.max(limit, 1), 100) }) };
     const payload = await this.callTool('backtest_manager', args);
-    return { sourceTool: 'backtest_manager' as const, argsMatched: args, result: payload };
+    return {
+      sourceTool: 'backtest_manager' as const,
+      argsMatched: args,
+      result: payload,
+      items: this.pickArray(payload, ['data.results', 'results', 'data.items', 'items']),
+    };
   }
 
-  async metricsByArtifact(artifactId: string) {
+  async metricsByArtifact(artifactId: string): Promise<BacktestMetricsResponse> {
     const args = { action: 'backtest_metrics', kwargs: JSON.stringify({ artifact_id: artifactId.trim() }) };
     const payload = await this.callTool('performance_manager', args);
     return {
@@ -94,24 +124,71 @@ export class BacktestService {
   /** P3-5: Send backtest result to TDX */
   async sendToTdx(input: { code: string; strategy: string }) {
     const args = {
-      code: input.code, strategy: input.strategy,
-      send_to_tdx: true, send_mode: 'signal',
+      code: input.code.trim(),
+      strategy: input.strategy.trim(),
+      send_to_tdx: true,
+      send_mode: 'result',
     };
-    return this.callTool('run_backtest_and_send_to_tdx', args);
+    const payload = await this.callTool('run_backtest_and_send_to_tdx', args);
+    const tdxStatus = this.pickObject(payload, [
+      'data.tdx_send_status',
+      'data.tdx_send_result',
+      'tdx_send_status',
+      'tdx_send_result',
+    ]);
+    if (tdxStatus?.success === false) {
+      throw new BadGatewayException({
+        success: false,
+        message: String(tdxStatus.message ?? 'TDX 发送失败'),
+        detail: tdxStatus.diagnostics ?? tdxStatus,
+      });
+    }
+    return payload;
   }
 
   /** P3-3: Batch backtest multiple codes */
-  async batch(input: { codes: string[]; strategy: string; initialCapital?: number }) {
-    const args = {
-      codes: input.codes, strategy: input.strategy,
+  async batch(input: BatchBacktestInput): Promise<BacktestBatchResponse> {
+    const args: Record<string, unknown> = {
+      codes: input.codes,
+      strategy: input.strategy,
       initial_capital: input.initialCapital ?? 100000,
     };
-    return this.callTool('run_batch_backtest', args);
+    if (input.startDate) args.start_date = input.startDate;
+    if (input.endDate) args.end_date = input.endDate;
+    if (input.commission != null) args.commission = input.commission;
+    if (input.shortPeriod != null) args.short_period = input.shortPeriod;
+    if (input.longPeriod != null) args.long_period = input.longPeriod;
+    const payload = await this.callTool('run_batch_backtest', args);
+    const results = this.normalizeBatchResults(
+      this.pickArray(payload, ['data.results', 'results']),
+      input.codes,
+    );
+    const failed = results
+      .filter((row) => row.success === false && row.code)
+      .map((row) => ({
+        code: String(row.code),
+        reasonCode: String(row.reasonCode ?? 'missing_result'),
+        reason: String(row.reason ?? '未返回回测结果'),
+        failedMetric: row.failedMetric ?? null,
+      })) satisfies BacktestBatchFailure[];
+    return {
+      sourceTool: 'run_batch_backtest' as const,
+      argsMatched: args,
+      result: payload,
+      results,
+      failed,
+      summary: this.pickObject(payload, ['data.summary', 'summary']) ?? undefined,
+    };
   }
 
   private async callTool(name: string, args: Record<string, unknown>) {
     try {
-      return await this.mcpGatewayService.callTool(name, args);
+      const result = await this.mcpGatewayService.callTool(name, args);
+      const toolError = this.extractToolError(result);
+      if (toolError) {
+        throw new Error(toolError);
+      }
+      return result;
     } catch (error) {
       throw new BadGatewayException({
         success: false,
@@ -121,21 +198,86 @@ export class BacktestService {
     }
   }
 
-  private normalizeMetrics(payload: any): NormalizedBacktestMetrics {
-    const d = payload?.data?.metrics ?? payload?.data ?? payload?.metrics ?? payload ?? {};
+  private normalizeMetrics(payload: any): BacktestMetricSnapshot {
+    const d =
+      this.pickObject(payload, ['data.metrics', 'metrics', 'result', 'data', 'payload']) ??
+      payload ??
+      {};
     return {
-      totalReturn: this.toNum(d.total_return ?? d.totalReturn ?? d.cumulative_return),
+      totalReturn: this.toPercent(d.total_return ?? d.totalReturn ?? d.cumulative_return),
       sharpe: this.toNum(d.sharpe_ratio ?? d.sharpe ?? d.sharpeRatio),
-      maxDrawdown: this.toNum(d.max_drawdown ?? d.maxDrawdown),
-      winRate: this.toNum(d.win_rate ?? d.winRate),
-      totalTrades: this.toNum(d.total_trades ?? d.totalTrades ?? d.trade_count),
+      maxDrawdown: this.toPercent(d.max_drawdown ?? d.maxDrawdown),
+      winRate: this.toPercent(d.win_rate ?? d.winRate),
+      totalTrades: this.toNum(d.total_trades ?? d.totalTrades ?? d.trade_count ?? d.trades_count),
       profitFactor: this.toNum(d.profit_factor ?? d.profitFactor),
     };
   }
 
   private toNum(v: unknown): number | null {
+    if (typeof v === 'string') {
+      const normalized = v.replace(/[%\s,]/g, '');
+      const n = Number(normalized);
+      return Number.isFinite(n) ? n : null;
+    }
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
+  }
+
+  private toPercent(v: unknown): number | null {
+    const n = this.toNum(v);
+    if (n == null) return null;
+    return Math.abs(n) <= 1 ? n * 100 : n;
+  }
+
+  private normalizeBatchResults(rows: unknown[], requestedCodes: string[]): BacktestBatchResultItem[] {
+    const mapped = rows.map((row) => {
+      const record = (row && typeof row === 'object') ? { ...(row as Record<string, unknown>) } : {};
+      if ('total_return' in record) record.total_return = this.toPercent(record.total_return);
+      if ('max_drawdown' in record) record.max_drawdown = this.toPercent(record.max_drawdown);
+      if ('win_rate' in record) record.win_rate = this.toPercent(record.win_rate);
+      return {
+        ...record,
+        code: typeof record.code === 'string' ? record.code : undefined,
+        success: record.success === false ? false : true,
+        reasonCode: typeof record.reason_code === 'string' ? record.reason_code : null,
+        reason: typeof record.reason === 'string' ? record.reason : null,
+        failedMetric:
+          record.failed_metric && typeof record.failed_metric === 'object' && !Array.isArray(record.failed_metric)
+            ? (record.failed_metric as BacktestBatchResultItem['failedMetric'])
+            : null,
+      } satisfies BacktestBatchResultItem;
+    });
+
+    const rowMap = new Map(
+      mapped
+        .filter((item) => typeof item.code === 'string' && item.code.trim().length > 0)
+        .map((item) => [String(item.code), item]),
+    );
+
+    return requestedCodes.map((code) => rowMap.get(code) ?? {
+      code,
+      success: false,
+      reasonCode: 'missing_result',
+      reason: '未返回回测结果，通常因为 K 线数据不足或上游回测执行失败',
+      failedMetric: null,
+    });
+  }
+
+  private extractToolError(payload: unknown): string | null {
+    if (typeof payload === 'string') {
+      return /error executing tool|validation error/i.test(payload) ? payload : null;
+    }
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+    const record = payload as Record<string, unknown>;
+    if (record.success === false) {
+      return String(record.error ?? record.message ?? 'backtest tool error');
+    }
+    if (typeof record.data === 'string' && /error executing tool|validation error/i.test(record.data)) {
+      return record.data;
+    }
+    return null;
   }
 
   private pickString(payload: any, paths: string[]): string | null {
@@ -147,8 +289,25 @@ export class BacktestService {
     return null;
   }
 
+  private pickArray(payload: any, paths: string[]): unknown[] {
+    for (const p of paths) {
+      const v = this.readPath(payload, p);
+      if (Array.isArray(v)) return v;
+    }
+    return [];
+  }
+
+  private pickObject(payload: any, paths: string[]): Record<string, unknown> | null {
+    for (const p of paths) {
+      const v = this.readPath(payload, p);
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        return v as Record<string, unknown>;
+      }
+    }
+    return null;
+  }
+
   private readPath(obj: any, path: string): unknown {
     return path.split('.').reduce((acc: any, key: string) => (acc == null ? undefined : acc[key]), obj);
   }
 }
-

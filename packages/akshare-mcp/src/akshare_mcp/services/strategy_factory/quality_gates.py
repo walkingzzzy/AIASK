@@ -3,7 +3,7 @@
 Gate-0: 结构校验 — JSON 合法、strategy_type 合法、DSL 可编译
 Gate-1: 快速筛选 — 少量代表性股票快速回测
 Gate-2: 完整回测 — 仅对 Gate-1 Top-K 执行（复用 BacktestFilter）
-Gate-3: 提交门禁 — 质量报告 + 风险报告 + 去重（由 submitter 调用）
+Gate-3: 提交门禁 — 质量报告 + 风险报告 + 去重（委托 submission_gate / submitter 调用）
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +25,54 @@ from .constants import (
 from .utils import get_strategy_factory_package
 
 logger = logging.getLogger(__name__)
+
+
+def _normalized_gate_3_counts(submission_result: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
+    payload = dict(submission_result or {})
+    submitted = int(payload.get("submitted", 0))
+    passed_count = int(payload.get("gate_3_passed", payload.get("passed_quality_gate", 0)))
+    failed_count = int(payload.get("gate_3_failed", max(submitted - passed_count, 0)))
+    provisional_passed_count = int(payload.get("gate_3_provisional_passed", 0))
+    return {
+        "submitted": submitted,
+        "passed_count": passed_count,
+        "failed_count": failed_count,
+        "provisional_passed_count": provisional_passed_count,
+    }
+
+
+def build_pending_gate_3_report(pending_count: int) -> Dict[str, Any]:
+    return {
+        "status": "pending_submission_gate",
+        "input_count": int(pending_count),
+        "passed_count": 0,
+        "failed_count": 0,
+        "pending_count": int(pending_count),
+        "delegate": "submission_gate.run_submission_quality_gate",
+        "reason": "gate_3_executes_during_submission",
+    }
+
+
+def build_completed_gate_3_report(submission_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = dict(submission_result or {})
+    counts = _normalized_gate_3_counts(payload)
+    return {
+        "gate_3": {
+            "status": "completed_submission_gate",
+            "input_count": counts["submitted"],
+            "passed_count": counts["passed_count"],
+            "failed_count": counts["failed_count"],
+            "pending_count": 0,
+            "provisional_passed_count": counts["provisional_passed_count"],
+            "failure_reason_topn": list(payload.get("gate_3_failure_reason_topn") or []),
+        },
+        "final_decision": {
+            "stage": "gate_3",
+            "passed_count": counts["passed_count"],
+            "failed_count": counts["failed_count"],
+            "provisional_passed_count": counts["provisional_passed_count"],
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -218,19 +267,178 @@ async def run_gated_filter(
 
     logger.info("Gate-2: %d/%d passed full backtest", len(gate_2_passed), len(gate_2_candidates))
 
+    summary = {
+        "input_count": len(candidates),
+        "gate_0_passed": len(gate_0_passed),
+        "gate_0_failed": len(gate_0_failed),
+        "gate_1_passed": len(gate_1_scored),
+        "gate_1_failed": len(gate_1_failed),
+        "gate_2_input": len(gate_2_candidates),
+        "gate_2_passed": len(gate_2_passed),
+        "gate_3_pending": len(gate_2_passed),
+    }
+    gate_0_failed_details = [
+        {"strategy_type": c.get("strategy_type"), "reasons": (c.get("gate_0_result") or {}).get("reasons")}
+        for c in gate_0_failed
+    ]
+    gate_1_failed_details = [
+        {
+            "strategy_type": c.get("strategy_type"),
+            "reasons": (c.get("gate_1_result") or {}).get("reasons"),
+            "metrics": (c.get("gate_1_result") or {}).get("metrics") or {},
+        }
+        for c in gate_1_failed
+    ]
+    gate_2_report = backtest_filter.get_last_report() if hasattr(backtest_filter, "get_last_report") else {}
+    gate_report = {
+        "gate_0": {
+            "passed_count": len(gate_0_passed),
+            "failed_count": len(gate_0_failed),
+            "failed": gate_0_failed_details,
+        },
+        "gate_1": {
+            "passed_count": len(gate_1_scored),
+            "failed_count": len(gate_1_failed),
+            "failed": gate_1_failed_details,
+            "passed_candidates": [
+                {
+                    "strategy_type": candidate.get("strategy_type"),
+                    "avg_sharpe": round(score, 4),
+                }
+                for candidate, score in gate_1_scored
+            ],
+        },
+        "gate_2": {
+            "input_count": len(gate_2_candidates),
+            "passed_count": len(gate_2_passed),
+            "passed_candidates": gate_2_passed,
+            "report": gate_2_report,
+        },
+        "gate_3": build_pending_gate_3_report(len(gate_2_passed)),
+        "final_decision": {
+            "stage": "gate_2",
+            "passed_count": len(gate_2_passed),
+            "pending_submission_gate_count": len(gate_2_passed),
+        },
+    }
+
     return {
         "passed": gate_2_passed,
-        "summary": {
-            "input_count": len(candidates),
-            "gate_0_passed": len(gate_0_passed),
-            "gate_0_failed": len(gate_0_failed),
-            "gate_1_passed": len(gate_1_scored),
-            "gate_1_failed": len(gate_1_failed),
-            "gate_2_input": len(gate_2_candidates),
-            "gate_2_passed": len(gate_2_passed),
-        },
-        "gate_0_failed": [
-            {"strategy_type": c.get("strategy_type"), "reasons": (c.get("gate_0_result") or {}).get("reasons")}
-            for c in gate_0_failed
-        ],
+        "summary": summary,
+        "gate_0_failed": gate_0_failed_details,
+        "quality_gate": gate_report,
+        "gate_report": gate_report,
     }
+
+
+async def run_gated_submission_pipeline(
+    candidates: List[dict],
+    snapshot: dict,
+    db,
+    *,
+    backtest_filter=None,
+    deduplicator=None,
+    submitter=None,
+    gated_runner=None,
+    kline_cache: Optional[Dict[str, list]] = None,
+) -> Dict[str, Any]:
+    """执行 Gate-0/1/2 → 去重 → Gate-3 的统一工厂门禁编排。"""
+    from .backtest_filter import BacktestFilter
+    from .deduplicator import Deduplicator
+    from .submitter import StrategySubmitter
+
+    backtest_filter = backtest_filter or BacktestFilter()
+    deduplicator = deduplicator or Deduplicator()
+    submitter = submitter or StrategySubmitter()
+
+    gate_runner = gated_runner or run_gated_filter
+
+    gate_run = await gate_runner(
+        candidates,
+        db,
+        backtest_filter,
+        kline_cache=kline_cache,
+    )
+    gate_report = dict(gate_run.get("gate_report") or gate_run.get("quality_gate") or {})
+    passed = list(gate_run.get("passed") or [])
+    unique = await deduplicator.deduplicate(passed, db)
+    submit_result = await submitter.submit(unique, snapshot, db)
+    final_gate_report = finalize_gate_report(gate_report, submit_result)
+    return {
+        "passed": passed,
+        "unique": unique,
+        "submitted": list(submit_result.get("strategies") or []),
+        "gate_run": gate_run,
+        "submit_result": submit_result,
+        "gate_report": final_gate_report,
+        "quality_gate": final_gate_report,
+        "dedup_report": (
+            deduplicator.get_last_report()
+            if hasattr(deduplicator, "get_last_report")
+            else {}
+        ),
+        "backtest_report": (
+            (gate_report.get("gate_2") or {}).get("report")
+            or (
+                backtest_filter.get_last_report()
+                if hasattr(backtest_filter, "get_last_report")
+                else {}
+            )
+        ),
+    }
+
+
+def build_legacy_gate_report(
+    candidates: List[dict],
+    passed: List[dict],
+    backtest_report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """为尚未切到统一 GateRunner 的调用方构造兼容 gate_report。"""
+    backtest_report = dict(backtest_report or {})
+    backtest_summary = dict(backtest_report.get("summary") or {})
+    gate_2_passed = int(backtest_summary.get("passed_count", len(passed)))
+    gate_2_input = int(backtest_summary.get("input_count", len(candidates)))
+    gate_2_failed = int(backtest_summary.get("failed_count", max(gate_2_input - gate_2_passed, 0)))
+    return {
+        "gate_0": {
+            "status": "legacy_backtest_only",
+            "passed_count": None,
+            "failed_count": None,
+            "reason": "gate_0_not_recorded_in_legacy_path",
+        },
+        "gate_1": {
+            "status": "legacy_backtest_only",
+            "passed_count": None,
+            "failed_count": None,
+            "reason": "gate_1_not_recorded_in_legacy_path",
+        },
+        "gate_2": {
+            "status": "legacy_backtest_only",
+            "input_count": gate_2_input,
+            "passed_count": gate_2_passed,
+            "failed_count": gate_2_failed,
+            "report": backtest_report,
+        },
+        "gate_3": build_pending_gate_3_report(gate_2_passed),
+        "final_decision": {
+            "stage": "gate_2",
+            "passed_count": gate_2_passed,
+            "pending_submission_gate_count": gate_2_passed,
+        },
+    }
+
+
+def finalize_gate_report(
+    base_gate_report: Optional[Dict[str, Any]],
+    submission_result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """将 Gate-3 提交结果合并进 Gate-0/1/2 报告，形成最终门禁闭环。"""
+    merged = deepcopy(base_gate_report or {})
+    submission_result = dict(submission_result or {})
+    submit_gate_report = dict(submission_result.get("gate_report") or {})
+    completed_gate_report = build_completed_gate_3_report(submission_result)
+    merged["gate_3"] = dict(submit_gate_report.get("gate_3") or completed_gate_report["gate_3"])
+    merged["final_decision"] = dict(
+        submit_gate_report.get("final_decision") or completed_gate_report["final_decision"]
+    )
+    return merged

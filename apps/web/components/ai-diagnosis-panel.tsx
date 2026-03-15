@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import { Badge } from '@/components/ui';
-import { BFF_BASE } from '@/lib/api';
+import { useApiMutation } from '@/hooks/use-api-mutation';
 
 type DiagnosisResult = {
     recommendation: 'buy' | 'hold' | 'sell' | string;
-    confidence: number;
+    confidence: number | null;
     summary: string;
     factors: { name: string; signal: 'bullish' | 'bearish' | 'neutral'; detail: string }[];
     riskLevel: 'low' | 'medium' | 'high';
@@ -24,50 +24,87 @@ const REC_STYLES: Record<string, { bg: string; text: string; label: string }> = 
     sell: { bg: 'bg-green-500/15 border-green-500/30', text: 'text-green-400', label: '🔴 建议卖出' },
 };
 
+function normalizeDiagnosisPayload(payload: unknown): DiagnosisResult {
+    const data = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+    const card = data.card && typeof data.card === 'object' ? data.card as Record<string, unknown> : null;
+    const raw = data.raw && typeof data.raw === 'object' ? data.raw as Record<string, unknown> : null;
+    const rawData = raw?.data && typeof raw.data === 'object' ? raw.data as Record<string, unknown> : raw;
+    const summaryInfo = rawData?.summary && typeof rawData.summary === 'object' ? rawData.summary as Record<string, unknown> : null;
+    const rawRecommendation = String(
+        card?.action ??
+        rawData?.recommendation ??
+        rawData?.action ??
+        rawData?.signal ??
+        'hold',
+    ).toLowerCase();
+    const normalizedRecommendation =
+        rawRecommendation.includes('buy') ? 'buy'
+            : rawRecommendation.includes('sell') ? 'sell'
+                : 'hold';
+    const rawConfidence = Number(
+        card?.confidence ??
+        rawData?.confidence ??
+        rawData?.score ??
+        NaN,
+    );
+    const confidence = Number.isFinite(rawConfidence)
+        ? rawConfidence <= 1
+            ? rawConfidence * 100
+            : rawConfidence
+        : null;
+    const rawFactors = Array.isArray(rawData?.evidence) ? rawData.evidence : Array.isArray(rawData?.factors) ? rawData.factors : [];
+    const factors = rawFactors
+        .slice(0, 6)
+        .map((factor: any): DiagnosisResult['factors'][number] => {
+            const signal = String(factor.signal ?? '').toLowerCase();
+            return {
+                name: String(factor.name ?? factor.factor ?? factor.category ?? factor.signal ?? '因子'),
+                signal: signal.includes('bull') || signal.includes('buy')
+                    ? 'bullish'
+                    : signal.includes('bear') || signal.includes('sell')
+                        ? 'bearish'
+                        : 'neutral',
+                detail: String(factor.detail ?? factor.interpretation ?? factor.reason ?? factor.description ?? factor.value ?? ''),
+            };
+        })
+        .filter((factor) => factor.detail);
+    const rawRisks = Array.isArray(rawData?.risks) ? rawData.risks : [];
+    const riskCount = Number(summaryInfo?.risk_count ?? rawRisks.length ?? 0);
+    const riskLevel = riskCount >= 5 ? 'high' : riskCount >= 2 ? 'medium' : 'low';
+
+    return {
+        recommendation: normalizedRecommendation,
+        confidence,
+        summary: String(
+            rawData?.recommendation_text ??
+            card?.summary ??
+            rawData?.analysis ??
+            rawData?.reason ??
+            '暂无详细分析',
+        ),
+        factors,
+        riskLevel,
+    };
+}
+
 export function AIDiagnosisPanel({ code }: { code: string }) {
-    const [loading, setLoading] = useState(false);
     const [result, setResult] = useState<DiagnosisResult | null>(null);
-    const [error, setError] = useState<string | null>(null);
+    const diagnosisApi = useApiMutation<DiagnosisResult>({
+        parse: normalizeDiagnosisPayload,
+        successToast: false,
+        errorToast: false,
+    });
 
-    const runDiagnosis = useCallback(async () => {
-        setLoading(true);
-        setError(null);
+    async function runDiagnosis() {
         try {
-            const res = await fetch(`${BFF_BASE}/assistant/diagnosis`, {
-                method: 'POST',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code }),
-            });
-            if (!res.ok) throw new Error(`请求失败: ${res.status}`);
-            const json = await res.json();
-            const data = json?.data ?? json;
-
-            // Normalize AI response
-            setResult({
-                recommendation: String(data.recommendation ?? data.signal ?? data.action ?? 'hold').toLowerCase(),
-                confidence: Number(data.confidence ?? data.score ?? 50),
-                summary: String(data.summary ?? data.analysis ?? data.reason ?? '暂无详细分析'),
-                factors: Array.isArray(data.factors) ? data.factors.map((f: any) => ({
-                    name: String(f.name ?? f.factor ?? ''),
-                    signal: String(f.signal ?? f.direction ?? 'neutral') as 'bullish' | 'bearish' | 'neutral',
-                    detail: String(f.detail ?? f.reason ?? f.description ?? ''),
-                })) : [
-                    { name: '技术面', signal: (data.technical_signal ?? 'neutral') as any, detail: String(data.technical_detail ?? '') },
-                    { name: '基本面', signal: (data.fundamental_signal ?? 'neutral') as any, detail: String(data.fundamental_detail ?? '') },
-                    { name: '资金面', signal: (data.fund_signal ?? 'neutral') as any, detail: String(data.fund_detail ?? '') },
-                    { name: '情绪面', signal: (data.sentiment_signal ?? 'neutral') as any, detail: String(data.sentiment_detail ?? '') },
-                ].filter(f => f.detail),
-                riskLevel: String(data.riskLevel ?? data.risk_level ?? data.risk ?? 'medium') as DiagnosisResult['riskLevel'],
-            });
-        } catch (err) {
-            setError(err instanceof Error ? err.message : String(err));
-        } finally {
-            setLoading(false);
+            const data = await diagnosisApi.triggerAsync('/assistant/diagnosis', { method: 'POST' }, { code });
+            setResult(data);
+        } catch {
+            setResult(null);
         }
-    }, [code]);
+    }
 
-    if (!result && !loading && !error) {
+    if (!result && !diagnosisApi.isPending && !diagnosisApi.error) {
         return (
             <div className="text-center py-8">
                 <p className="text-text-secondary text-sm mb-3">AI 将综合分析技术面、基本面、资金面和情绪面，给出投资建议</p>
@@ -81,7 +118,7 @@ export function AIDiagnosisPanel({ code }: { code: string }) {
         );
     }
 
-    if (loading) {
+    if (diagnosisApi.isPending) {
         return (
             <div className="text-center py-8">
                 <div className="inline-block w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin mb-3" />
@@ -90,11 +127,11 @@ export function AIDiagnosisPanel({ code }: { code: string }) {
         );
     }
 
-    if (error) {
+    if (diagnosisApi.error) {
         return (
             <div className="text-center py-6">
-                <p className="text-danger text-sm mb-2">诊断失败: {error}</p>
-                <button onClick={runDiagnosis} className="text-xs text-primary cursor-pointer hover:underline">重试</button>
+                <p className="text-danger text-sm mb-2">诊断失败: {diagnosisApi.error}</p>
+                <button onClick={() => { diagnosisApi.reset(); void runDiagnosis(); }} className="text-xs text-primary cursor-pointer hover:underline">重试</button>
             </div>
         );
     }
@@ -110,7 +147,7 @@ export function AIDiagnosisPanel({ code }: { code: string }) {
                 <div className="flex items-center justify-between">
                     <div>
                         <p className={`text-xl font-bold ${recStyle.text}`}>{recStyle.label}</p>
-                        <p className="text-sm text-text-secondary mt-1">置信度: {result.confidence}%</p>
+                        <p className="text-sm text-text-secondary mt-1">置信度: {result.confidence == null ? '--' : `${result.confidence.toFixed(0)}%`}</p>
                     </div>
                     <div className="text-right">
                         <Badge variant={result.riskLevel === 'high' ? 'danger' : result.riskLevel === 'medium' ? 'warning' : 'success'}>

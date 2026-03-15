@@ -35,6 +35,10 @@ async def test_execution_manager_contract():
     assert cfg0["success"] is True
     assert cfg0["data"]["soft_gate_config"]["default_profile"] == "balanced"
 
+    cfg_structured = await execution_manager(action="get_config", params={})
+    assert cfg_structured["success"] is True
+    assert cfg_structured["data"]["soft_gate_config"]["default_profile"] == "balanced"
+
     created = await execution_manager(
         action="twap",
         kwargs='{"code":"600519","total_quantity":1000,"duration_minutes":60,"slices":6,"reference_price":1800}',
@@ -334,6 +338,15 @@ async def test_compliance_manager_contract():
     assert isinstance(data["violations"], list)
     assert len(data["violations"]) > 0
 
+    structured = await compliance_manager(
+        action="check_order",
+        params={"code": "600519", "direction": "buy", "quantity": 100, "price": 10},
+    )
+    assert structured["success"] is True
+    assert str(structured["data"]["code"]).endswith("600519")
+    assert structured["data"]["quantity"] == 100
+    assert structured["data"]["blocked"] is False
+
 
 @pytest.mark.asyncio
 async def test_options_manager_contract():
@@ -349,6 +362,93 @@ async def test_options_manager_contract():
     assert "options" in data
     assert isinstance(data["options"], list)
     assert "selectedExpiry" in data
+
+    structured = await options_manager(action="list", params={"underlying": "510050", "limit": 10})
+    assert structured["success"] is True
+    assert "selectedExpiry" in structured["data"]
+
+
+@pytest.mark.asyncio
+async def test_options_manager_volatility_smirk_contract(monkeypatch):
+    options_tool_module = importlib.import_module("akshare_mcp.tools.options")
+    pricing_module = importlib.import_module("akshare_mcp.services.options_pricing")
+    options_manager_module = importlib.import_module("akshare_mcp.tools.managers.options_manager")
+
+    def _fake_chain(underlying: str, expiry_month: str = "", limit: int = 200):
+        spot = 100.0
+        expiry = expiry_month or "209912"
+        time_to_maturity = options_manager_module._time_to_maturity_from_expiry_month(expiry)
+        vols = {90.0: 0.18, 100.0: 0.20, 110.0: 0.24}
+        options = []
+        for strike, vol in vols.items():
+            call_price = pricing_module.options_pricing.black_scholes(
+                spot=spot,
+                strike=strike,
+                time_to_maturity=time_to_maturity,
+                risk_free_rate=0.03,
+                volatility=vol,
+                option_type="call",
+            )
+            put_price = pricing_module.options_pricing.black_scholes(
+                spot=spot,
+                strike=strike,
+                time_to_maturity=time_to_maturity,
+                risk_free_rate=0.03,
+                volatility=vol,
+                option_type="put",
+            )
+            options.append({"type": "call", "expiryMonth": expiry, "strike": strike, "last": call_price})
+            options.append({"type": "put", "expiryMonth": expiry, "strike": strike, "last": put_price})
+
+        return {
+            "success": True,
+            "data": {
+                "underlying": {"code": underlying, "price": spot},
+                "selectedExpiry": [expiry],
+                "options": options,
+                "degraded": False,
+            },
+        }
+
+    monkeypatch.setattr(options_tool_module, "get_option_chain", _fake_chain)
+
+    options_manager = _get_manager_callable(
+        manager_name="options_manager",
+        register_module="akshare_mcp.tools.managers.options_manager",
+        register_func="register_options_manager",
+    )
+
+    result = await options_manager(action="volatility_smirk", params={"underlying": "510050", "expiry_month": "209912"})
+    assert result["success"] is True
+    data = result["data"]
+    assert data["point_count"] == 3
+    assert len(data["curve"]) == 3
+    assert data["atm_iv"] == pytest.approx(0.20, rel=0.1)
+
+
+@pytest.mark.asyncio
+async def test_quant_manager_factor_ic_history_accepts_structured_params(monkeypatch):
+    quant_module = importlib.import_module("akshare_mcp.tools.managers.quant_manager")
+
+    class _FakeQuantDb:
+        async def get_factor_ic_history(self, factor_name, period, limit):
+            assert factor_name == "momentum"
+            assert period == "20"
+            assert limit == 5
+            return [{"ic_date": "2025-01-01", "ic_value": 0.12, "rank_ic": 0.1, "stock_count": 50}]
+
+    monkeypatch.setattr(quant_module, "get_db", lambda: _FakeQuantDb())
+    quant_manager = _get_manager_callable(
+        manager_name="quant_manager",
+        register_module="akshare_mcp.tools.managers.quant_manager",
+        register_func="register_quant_manager",
+    )
+
+    result = await quant_manager(action="factor_ic_history", params={"factor_name": "momentum", "period": "20", "limit": 5})
+    assert result["success"] is True
+    assert result["data"]["factor_name"] == "momentum"
+    assert result["data"]["count"] == 1
+    assert result["data"]["history"][0]["ic_value"] == 0.12
 
 
 @pytest.mark.asyncio
@@ -372,8 +472,18 @@ async def test_risk_manager_explainability_contract():
     assert "effective_positions" in explain
     assert "top3_weight_pct" in explain
 
+    structured = await risk_manager(
+        action="risk_exposure",
+        params={"codes": ["600519", "000858"], "weights": [0.5, 0.5], "portfolio_value": 500000},
+    )
+    assert structured["success"] is True
+    assert structured["data"]["input_mode"] == "codes_weights"
+
 
 @pytest.mark.asyncio
+@pytest.mark.filterwarnings(
+    "ignore:Unverified HTTPS request is being made to host 'push2his\\.eastmoney\\.com'.*:urllib3.exceptions.InsecureRequestWarning"
+)
 async def test_insight_generate_report_contract(tmp_path):
     insight_manager = _get_manager_callable(
         manager_name="insight_manager",
@@ -587,6 +697,13 @@ async def test_smoke_backtest_to_execution_to_performance_by_artifact(monkeypatc
     assert run_result["success"] is True
     artifact_id = run_result["data"]["artifact_id"]
     assert artifact_id == "art_smoke_001"
+
+    run_structured = await backtest_manager(
+        action="run",
+        params={"code": "600519", "strategy": "ma_cross", "artifact_id": "art_smoke_002", "limit": 120},
+    )
+    assert run_structured["success"] is True
+    assert run_structured["data"]["artifact_id"] == "art_smoke_002"
 
     exec_result = await execution_manager(
         action="twap",

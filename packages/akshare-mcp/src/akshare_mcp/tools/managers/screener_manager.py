@@ -70,6 +70,9 @@ PRESET_STRATEGIES = {
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
+    params = kwargs.get("params")
+    if isinstance(params, dict):
+        kwargs = {**kwargs, **params}
     extra = kwargs.get("kwargs")
     if extra is not None:
         if isinstance(extra, str):

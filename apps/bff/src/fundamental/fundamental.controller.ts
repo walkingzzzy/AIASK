@@ -58,6 +58,38 @@ export class FundamentalController {
     };
   }
 
+  @Get('capital')
+  async getCapital(
+    @Query() query: FundamentalQueryDto,
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+  ) {
+    const data = await this.fundamentalService.getCapital(query.code);
+    const traceId =
+      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+
+    return {
+      success: true,
+      data,
+      traceId: String(traceId),
+    };
+  }
+
+  @Get('peers')
+  async getPeers(
+    @Query() query: FundamentalQueryDto,
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+  ) {
+    const data = await this.fundamentalService.getPeers(query.code);
+    const traceId =
+      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+
+    return {
+      success: true,
+      data,
+      traceId: String(traceId),
+    };
+  }
+
   @Get('stock-info')
   async getStockInfo(@Query() query: FundamentalQueryDto, @Req() req: any) {
     const data = await this.fundamentalService.getStockInfo(query.code);
@@ -86,4 +118,3 @@ export class FundamentalController {
     return { success: true, data, traceId: String(traceId) };
   }
 }
-

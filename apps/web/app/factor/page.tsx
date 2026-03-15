@@ -9,6 +9,8 @@ import { LoadingState, ErrorState, EmptyState } from '@/components/status-state'
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 
+const DEFAULT_FACTOR_CODES = '600519,000858,300750,601318,000001,600036,601166,000333,600276,601899,002594,000651';
+
 export default function FactorPage() {
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -16,23 +18,23 @@ export default function FactorPage() {
   const libQ = useApiQuery<unknown>(libPath);
 
   const [calcName, setCalcName] = useState('momentum');
-  const [calcCodes, setCalcCodes] = useState('600519,000858');
+  const [calcCodes, setCalcCodes] = useState(DEFAULT_FACTOR_CODES);
   const calcMut = useApiMutation<unknown>();
 
   const [icName, setIcName] = useState('momentum');
-  const [icCodes, setIcCodes] = useState('600519,000858');
+  const [icCodes, setIcCodes] = useState(DEFAULT_FACTOR_CODES);
   const icMut = useApiMutation<unknown>();
 
   const [btName, setBtName] = useState('momentum');
-  const [btCodes, setBtCodes] = useState('600519,000858');
+  const [btCodes, setBtCodes] = useState(DEFAULT_FACTOR_CODES);
   const btMut = useApiMutation<unknown>();
 
   const [oosName, setOosName] = useState('momentum');
-  const [oosCodes, setOosCodes] = useState('600519,000858');
+  const [oosCodes, setOosCodes] = useState(DEFAULT_FACTOR_CODES);
   const oosMut = useApiMutation<unknown>();
 
   const [robName, setRobName] = useState('momentum');
-  const [robCodes, setRobCodes] = useState('600519,000858');
+  const [robCodes, setRobCodes] = useState(DEFAULT_FACTOR_CODES);
   const robMut = useApiMutation<unknown>();
 
   // Per-section loading & error — 避免跨模块互相阻塞

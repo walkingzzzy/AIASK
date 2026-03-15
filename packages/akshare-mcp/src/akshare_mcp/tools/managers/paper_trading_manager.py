@@ -20,6 +20,9 @@ DEFAULT_RISK_RULES = {
 
 def _normalize_kwargs(kwargs: dict) -> dict:
     """统一解析 kwargs 参数（兼容 JSON 字符串和 dict）"""
+    params = kwargs.get("params")
+    if isinstance(params, dict):
+        kwargs = {**kwargs, **params}
     raw = kwargs.get("kwargs")
     if isinstance(raw, dict):
         kwargs = {**kwargs, **raw}
@@ -792,5 +795,4 @@ def register_paper_trading_manager(mcp):
             logger.error("[PaperTrading] %s error: %s", action, e, exc_info=True)
             message = str(e).strip() or f'{action} 执行失败'
             return fail(message)
-
 

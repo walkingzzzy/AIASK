@@ -178,6 +178,46 @@ def _build_perf_breakdown(
 
 # ── Financial data helpers ──
 
+_FACTOR_MIN_HISTORY: Dict[str, int] = {
+    "momentum": 2,
+    "trend": 3,
+    "reversal": 2,
+    "volatility": 4,
+    "mom_1d": 2,
+    "mom_5d": 6,
+    "mom_10d": 11,
+    "mom_60d": 61,
+    "rsi_6": 7,
+    "rsi_14": 15,
+    "macd_signal": 26,
+    "macd_histogram": 26,
+    "willr_14": 14,
+    "cci_20": 20,
+    "mfi_14": 15,
+    "stoch_k": 14,
+    "stoch_d": 16,
+    "roc_10": 11,
+    "roc_20": 21,
+    "vol_5d": 6,
+    "vol_10d": 11,
+    "vol_60d": 61,
+    "atr_14": 15,
+    "atr_20": 21,
+    "bollinger_width": 20,
+    "downside_vol": 21,
+    "volume_ratio": 20,
+    "obv_slope": 20,
+    "vwap_deviation": 20,
+    "turnover_5d": 20,
+    "turnover_20d": 20,
+}
+
+
+def _minimum_factor_history(factor: str) -> int:
+    factor_name = _normalize_factor_name(factor)
+    return int(_FACTOR_MIN_HISTORY.get(factor_name, 2))
+
+
 def _latest_financial_row(financials: Any) -> Optional[Dict[str, Any]]:
     if isinstance(financials, list):
         for item in financials:

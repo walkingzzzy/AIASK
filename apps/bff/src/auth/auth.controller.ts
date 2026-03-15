@@ -1,4 +1,5 @@
 import { BadRequestException, Body, Controller, Get, Headers, Post, Req, Res, UnauthorizedException } from '@nestjs/common';
+import { IsString, Length, Matches } from 'class-validator';
 import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { PreferencesService } from './preferences.service';
@@ -15,6 +16,9 @@ class RevokeSessionDto {
 }
 
 class Verify2faDto {
+  @IsString()
+  @Length(6, 6, { message: '验证码必须为 6 位数字' })
+  @Matches(/^\d{6}$/, { message: '验证码必须为 6 位数字' })
   code!: string;
 }
 
@@ -43,7 +47,7 @@ export class AuthController {
   async login(@Body() body: LoginDto, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.login(body.username, body.password);
     this.setCookies(res, result.accessToken, result.refreshToken, result.expiresIn);
-    return { user: result.user, expiresIn: result.expiresIn, accessToken: result.accessToken, refreshToken: result.refreshToken };
+    return { success: true, data: { user: result.user, expiresIn: result.expiresIn, tokenDelivery: 'cookie' } };
   }
 
   @Public()
@@ -51,7 +55,7 @@ export class AuthController {
   async register(@Body() body: RegisterDto, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.register(body.username, body.password);
     this.setCookies(res, result.accessToken, result.refreshToken, result.expiresIn);
-    return { user: result.user, expiresIn: result.expiresIn, accessToken: result.accessToken, refreshToken: result.refreshToken };
+    return { success: true, data: { user: result.user, expiresIn: result.expiresIn, tokenDelivery: 'cookie' } };
   }
 
   @Public()
@@ -61,7 +65,7 @@ export class AuthController {
     if (!token) throw new UnauthorizedException('缺少 refresh token');
     const result = await this.authService.refresh(token);
     this.setCookies(res, result.accessToken, result.refreshToken, result.expiresIn);
-    return { user: result.user, expiresIn: result.expiresIn, accessToken: result.accessToken, refreshToken: result.refreshToken };
+    return { success: true, data: { user: result.user, expiresIn: result.expiresIn, tokenDelivery: 'cookie' } };
   }
 
   @Post('logout')
@@ -193,4 +197,3 @@ export class AuthController {
     return userId;
   }
 }
-

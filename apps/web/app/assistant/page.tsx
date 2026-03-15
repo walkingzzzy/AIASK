@@ -13,6 +13,11 @@ export default function AssistantPage() {
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode();
   const { trigger, data: rawData, isPending, error, reset } = useApiMutation<unknown>();
   const [actionLabel, setActionLabel] = useState('');
+  const [sellBuyPrice, setSellBuyPrice] = useState('');
+  const [sellHoldingDays, setSellHoldingDays] = useState('');
+  const [industryKeyword, setIndustryKeyword] = useState('');
+  const [dailyReportDate, setDailyReportDate] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
 
   // Extract card data from response
   const result = rawData != null
@@ -20,14 +25,53 @@ export default function AssistantPage() {
     : null;
 
   function callAssistant(endpoint: string, label: string) {
-    if (!validate()) return;
+    setFormError(null);
     reset();
     setActionLabel(label);
-    trigger(endpoint, { method: 'POST' }, { code: trimmedCode });
+    const body: Record<string, unknown> = {};
+
+    const requiresStockCode = endpoint === '/assistant/should-buy'
+      || endpoint === '/assistant/should-sell'
+      || endpoint === '/assistant/diagnosis';
+
+    if (requiresStockCode) {
+      if (!validate()) return;
+      body.code = trimmedCode;
+    }
+
+    if (endpoint === '/assistant/should-sell') {
+      const buyPrice = Number(sellBuyPrice);
+      if (!sellBuyPrice.trim() || !Number.isFinite(buyPrice) || buyPrice <= 0) {
+        setFormError('卖出风险提示需要填写有效的买入价');
+        return;
+      }
+      body.buyPrice = buyPrice;
+
+      if (sellHoldingDays.trim()) {
+        const holdingDays = Number(sellHoldingDays);
+        if (!Number.isFinite(holdingDays) || holdingDays < 0) {
+          setFormError('持有天数需要填写为非负数');
+          return;
+        }
+        body.holdingDays = holdingDays;
+      }
+    }
+
+    if (endpoint === '/assistant/industry-chain') {
+      if (industryKeyword.trim()) {
+        body.keyword = industryKeyword.trim();
+      }
+    }
+
+    if (endpoint === '/assistant/daily-report' && dailyReportDate.trim()) {
+      body.date = dailyReportDate.trim();
+    }
+
+    trigger(endpoint, { method: 'POST' }, body);
   }
 
   return (
-    <PageContainer>
+    <PageContainer className="pb-20 md:pb-6">
       <div className="mb-6">
         <h1 className="text-3xl font-bold tracking-tight text-primary flex items-center gap-2">
           🧠 AI 深度诊断报告生成器 (Diagnostic AI)
@@ -39,7 +83,14 @@ export default function AssistantPage() {
         <h2 className="text-sm font-semibold mb-3 text-text-muted uppercase tracking-wider">选择分析标的与报告类型</h2>
         <div className="flex flex-col md:flex-row gap-4 items-center">
           <div className="w-full md:w-64">
-            <StockCodeInput value={code} onChange={setCode} error={codeError} placeholder="输入股票代码 (如 600519)" />
+            <StockCodeInput
+              id="assistant-stock-code"
+              label="股票代码"
+              value={code}
+              onChange={setCode}
+              error={codeError}
+              placeholder="输入股票代码 (如 600519)"
+            />
           </div>
           <div className="flex gap-2 flex-wrap">
             <button type="button" disabled={isPending} onClick={() => callAssistant('/assistant/should-buy', '买入逻辑分析')}
@@ -64,6 +115,60 @@ export default function AssistantPage() {
             </button>
           </div>
         </div>
+        <div className="mt-4 flex flex-col gap-2 md:max-w-[420px]">
+          <div className="text-xs font-medium text-text-muted uppercase tracking-wider">卖出分析参数</div>
+          <div className="flex gap-2 flex-wrap">
+            <label className="grid gap-1 text-xs text-text-secondary">
+              <span>买入价</span>
+              <input
+                id="assistant-buy-price"
+                value={sellBuyPrice}
+                onChange={(e) => { setSellBuyPrice(e.target.value); setFormError(null); }}
+                placeholder="卖出分析必填"
+                className="w-full md:w-[200px] border border-glass-border bg-surface px-3 py-2 rounded-md text-sm"
+                inputMode="decimal"
+              />
+            </label>
+            <label className="grid gap-1 text-xs text-text-secondary">
+              <span>持有天数</span>
+              <input
+                id="assistant-holding-days"
+                value={sellHoldingDays}
+                onChange={(e) => { setSellHoldingDays(e.target.value); setFormError(null); }}
+                placeholder="可选"
+                className="w-full md:w-[180px] border border-glass-border bg-surface px-3 py-2 rounded-md text-sm"
+                inputMode="numeric"
+              />
+            </label>
+          </div>
+          <p className="text-xs text-text-muted">“卖出风险提示”会连同买入价和持有天数一起提交，避免出现成功返回但内容为空的假通过。</p>
+        </div>
+        <div className="mt-4 grid gap-2 md:max-w-[520px]">
+          <div className="text-xs font-medium text-text-muted uppercase tracking-wider">非个股分析参数</div>
+          <div className="flex gap-2 flex-wrap">
+            <label className="grid gap-1 text-xs text-text-secondary">
+              <span>产业链关键词</span>
+              <input
+                id="assistant-industry-keyword"
+                value={industryKeyword}
+                onChange={(e) => { setIndustryKeyword(e.target.value); setFormError(null); }}
+                placeholder="产业链穿透可选"
+                className="w-full md:w-[240px] border border-glass-border bg-surface px-3 py-2 rounded-md text-sm"
+              />
+            </label>
+            <label className="grid gap-1 text-xs text-text-secondary">
+              <span>复盘日期</span>
+              <input
+                id="assistant-daily-report-date"
+                type="date"
+                value={dailyReportDate}
+                onChange={(e) => { setDailyReportDate(e.target.value); setFormError(null); }}
+                className="w-full md:w-[200px] border border-glass-border bg-surface px-3 py-2 rounded-md text-sm"
+              />
+            </label>
+          </div>
+          <p className="text-xs text-text-muted">“产业链穿透”和“盘后复盘简报”不再强制要求股票代码，可按关键词或日期独立生成。</p>
+        </div>
       </div>
 
       {isPending ? (
@@ -72,9 +177,9 @@ export default function AssistantPage() {
         </div>
       ) : null}
 
-      {error ? <ErrorState text={error} hint="生成中断，请检查标的代码或切换节点重试" /> : null}
+      {formError || error ? <ErrorState text={formError || error!} hint="请检查标的代码和分析参数后重试" /> : null}
 
-      {!isPending && !result && !error ? (
+      {!isPending && !result && !error && !formError ? (
         <div className="p-16 border-2 border-dashed border-muted rounded-xl bg-surface-alt/10 flex flex-col items-center text-center">
           <EmptyState text="等待指令：请输入股票代码并选择需要生成的结构化诊断报告类型" />
         </div>
@@ -93,7 +198,7 @@ export default function AssistantPage() {
           </details>
         </>
       ) : null}
-      <div className="fixed bottom-0 left-0 right-0 glass px-4 py-2.5 text-center text-xs text-text-muted border-t border-glass-border">
+      <div className="mt-6 rounded-xl border border-glass-border bg-surface/80 px-4 py-3 text-center text-xs text-text-muted">
         本分析结果仅供参考，不构成投资建议。投资有风险，入市需谨慎。
       </div>
     </PageContainer>

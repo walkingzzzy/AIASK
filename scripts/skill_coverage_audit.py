@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -129,6 +130,48 @@ def collect_skill_coverages(skills_dir: Path, all_tools: set[str]) -> list[Skill
     return coverage_items
 
 
+def discover_skill_executors(skills_tool_file: Path) -> dict:
+    if not skills_tool_file.is_file():
+        return {
+            "skill_tool_file": str(skills_tool_file.as_posix()),
+            "executable_skill_ids": [],
+            "executor_count": 0,
+        }
+
+    text = _load_text(skills_tool_file)
+    try:
+        tree = ast.parse(text, filename=str(skills_tool_file))
+    except SyntaxError:
+        return {
+            "skill_tool_file": str(skills_tool_file.as_posix()),
+            "executable_skill_ids": [],
+            "executor_count": 0,
+            "parse_error": "syntax_error",
+        }
+
+    executable_skill_ids: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "_SKILL_EXECUTORS" and isinstance(node.value, ast.Dict):
+                    for key_node in node.value.keys:
+                        if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+                            executable_skill_ids.add(key_node.value)
+                    break
+        elif isinstance(node, ast.AnnAssign):
+            target = node.target
+            if isinstance(target, ast.Name) and target.id == "_SKILL_EXECUTORS" and isinstance(node.value, ast.Dict):
+                for key_node in node.value.keys:
+                    if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+                        executable_skill_ids.add(key_node.value)
+
+    return {
+        "skill_tool_file": str(skills_tool_file.as_posix()),
+        "executable_skill_ids": sorted(executable_skill_ids),
+        "executor_count": len(executable_skill_ids),
+    }
+
+
 def detect_module_name_collisions(package_root: Path) -> list[dict]:
     """Detect file-package collisions like market.py + market/__init__.py in the same package dir."""
     if not package_root.is_dir():
@@ -169,6 +212,7 @@ def compute_report(
     tool_source_files: list[Path],
     skill_coverages: list[SkillCoverage],
     module_name_collisions: list[dict],
+    skill_executor_audit: dict,
 ) -> dict:
     all_tools_set = set(all_tools)
     union_covered = sorted(
@@ -199,6 +243,14 @@ def compute_report(
     covered_count = len(union_covered)
     tdx_total = len(tdx_tools)
     manager_total = len(manager_tools)
+    registry_skill_ids = sorted(item.skill for item in skill_coverages)
+    executable_skill_ids = sorted(
+        set(skill_executor_audit.get("executable_skill_ids") or []) & set(registry_skill_ids)
+    )
+    unregistered_executor_ids = sorted(
+        set(skill_executor_audit.get("executable_skill_ids") or []) - set(registry_skill_ids)
+    )
+    registered_only_skill_ids = sorted(set(registry_skill_ids) - set(executable_skill_ids))
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -210,6 +262,19 @@ def compute_report(
             "covered_count": covered_count,
             "coverage_pct": round((covered_count * 100.0 / tool_count), 2) if tool_count else 0.0,
             "missing_count": len(missing_tools),
+        },
+        "executors": {
+            "registered_skill_count": len(registry_skill_ids),
+            "executable_skill_count": len(executable_skill_ids),
+            "executor_coverage_pct": round((len(executable_skill_ids) * 100.0 / len(registry_skill_ids)), 2)
+            if registry_skill_ids
+            else 0.0,
+            "registered_only_count": len(registered_only_skill_ids),
+            "registered_only_skill_ids": registered_only_skill_ids,
+            "executable_skill_ids": executable_skill_ids,
+            "unregistered_executor_ids": unregistered_executor_ids,
+            "executor_count": int(skill_executor_audit.get("executor_count") or len(executable_skill_ids)),
+            "skill_tool_file": skill_executor_audit.get("skill_tool_file"),
         },
         "tdx": {
             "total_count": tdx_total,
@@ -355,8 +420,9 @@ def main() -> int:
     all_tools, tool_source_files = discover_runtime_tools(server_file, tools_dir)
     skill_coverages = collect_skill_coverages(skills_dir, set(all_tools))
     module_name_collisions = detect_module_name_collisions(package_root)
+    skill_executor_audit = discover_skill_executors((tools_dir / "skills.py").resolve())
     report = compute_report(
-        repo_root, all_tools, tool_source_files, skill_coverages, module_name_collisions
+        repo_root, all_tools, tool_source_files, skill_coverages, module_name_collisions, skill_executor_audit
     )
 
     threshold_result = {"enabled": False, "baseline": str(baseline_file.as_posix())}
@@ -382,12 +448,16 @@ def main() -> int:
 
     print(
         "[OK] tools={tool_count} skills={skills_count} covered={covered} "
-        "coverage={coverage}% missing={missing} tdx={tdx_cov}/{tdx_total} "
+        "coverage={coverage}% executable_skills={exec_cov}/{skill_count} "
+        "executor_coverage={exec_pct}% missing={missing} tdx={tdx_cov}/{tdx_total} "
         "manager={mgr_cov}/{mgr_total} collisions={collisions}".format(
             tool_count=report["tool_count"],
             skills_count=report["skills_count"],
             covered=report["coverage"]["covered_count"],
             coverage=report["coverage"]["coverage_pct"],
+            exec_cov=report["executors"]["executable_skill_count"],
+            skill_count=report["executors"]["registered_skill_count"],
+            exec_pct=report["executors"]["executor_coverage_pct"],
             missing=report["coverage"]["missing_count"],
             tdx_cov=report["tdx"]["covered_count"],
             tdx_total=report["tdx"]["total_count"],

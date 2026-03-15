@@ -3,47 +3,52 @@
  *  After useApiMutation extracts envelope.data, we get the inner object.
  */
 
-/** Try to find an array in the response, checking common nested patterns */
-export function extractArray(data: unknown, ...keys: string[]): Record<string, unknown>[] {
-  if (!data) return [];
-  if (Array.isArray(data)) return data as Record<string, unknown>[];
-  const obj = data as Record<string, unknown>;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
 
-  // Try specified keys first
-  for (const k of keys) {
-    const v = obj[k];
-    if (Array.isArray(v)) return v as Record<string, unknown>[];
+function findArray(value: unknown, keys: string[], seen = new Set<unknown>(), depth = 0): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value as Record<string, unknown>[];
+  if (!isRecord(value) || seen.has(value) || depth > 6) return [];
+
+  seen.add(value);
+
+  for (const key of keys) {
+    const nested = value[key];
+    const hit = findArray(nested, [], seen, depth + 1);
+    if (hit.length > 0) return hit;
   }
 
-  // Try obj.data.<key>
-  if (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.data)) {
-    const inner = obj.data as Record<string, unknown>;
-    for (const k of keys) {
-      const v = inner[k];
-      if (Array.isArray(v)) return v as Record<string, unknown>[];
-    }
-    // Fallback: first array found in inner
-    for (const v of Object.values(inner)) {
-      if (Array.isArray(v)) return v as Record<string, unknown>[];
-    }
-  }
-
-  // Fallback: first array found at top level
-  for (const v of Object.values(obj)) {
-    if (Array.isArray(v)) return v as Record<string, unknown>[];
+  for (const nested of Object.values(value)) {
+    const hit = findArray(nested, keys, seen, depth + 1);
+    if (hit.length > 0) return hit;
   }
 
   return [];
 }
 
+/** Try to find an array in the response, checking common nested patterns */
+export function extractArray(data: unknown, ...keys: string[]): Record<string, unknown>[] {
+  if (!data) return [];
+  return findArray(data, keys);
+}
+
+function unwrapObject(data: unknown, depth = 0): Record<string, unknown> {
+  if (!isRecord(data) || depth > 6) return {};
+
+  for (const key of ['card', 'data', 'result']) {
+    const candidate = data[key];
+    if (isRecord(candidate)) {
+      return unwrapObject(candidate, depth + 1);
+    }
+  }
+
+  return data;
+}
+
 /** Extract a nested object, trying obj.data first */
 export function extractObject(data: unknown): Record<string, unknown> {
-  if (!data || typeof data !== 'object') return {};
-  const obj = data as Record<string, unknown>;
-  if (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.data)) {
-    return obj.data as Record<string, unknown>;
-  }
-  return obj;
+  return unwrapObject(data);
 }
 
 /** Extract a numeric value from nested data */

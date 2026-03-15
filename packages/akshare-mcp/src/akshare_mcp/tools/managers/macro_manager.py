@@ -25,6 +25,113 @@ def _normalize_kwargs(kwargs: dict) -> dict:
     return kwargs
 
 
+async def _build_market_overview(db) -> dict:
+    from ..market.quote import get_index_quote
+
+    index_specs = {
+        "sh000001": ("000001", "上证指数"),
+        "sz399001": ("399001", "深证成指"),
+        "sz399006": ("399006", "创业板指"),
+    }
+
+    major_indices = {}
+    index_changes = []
+    for key, (code, fallback_name) in index_specs.items():
+        quote = get_index_quote(code)
+        data = quote.get("data", {}) if quote.get("success") else {}
+        try:
+            value = float(data.get("price")) if data.get("price") is not None else None
+        except (TypeError, ValueError):
+            value = None
+        try:
+            change_pct = float(data.get("changePercent")) if data.get("changePercent") is not None else None
+        except (TypeError, ValueError):
+            change_pct = None
+
+        major_indices[key] = {
+            "name": str(data.get("name") or fallback_name),
+            "value": value,
+            "change": change_pct,
+            "source": data.get("source") or ("cache" if quote.get("cached") else "spot"),
+        }
+        if change_pct is not None:
+            index_changes.append(change_pct)
+
+    breadth = {
+        "advance_count": None,
+        "decline_count": None,
+        "flat_count": None,
+        "quoted_count": None,
+    }
+    market_cap = None
+    turnover = None
+    try:
+        async with db.acquire() as conn:
+            latest_quotes = await conn.fetchrow(
+                """
+                WITH latest_day AS (
+                    SELECT MAX(time::date) AS trade_date
+                    FROM stock_quotes
+                ),
+                latest_quotes AS (
+                    SELECT DISTINCT ON (code)
+                        code, change_pct, amount, mkt_cap
+                    FROM stock_quotes
+                    WHERE time::date = (SELECT trade_date FROM latest_day)
+                    ORDER BY code, time DESC
+                )
+                SELECT
+                    COUNT(*) FILTER (WHERE change_pct > 0) AS advance_count,
+                    COUNT(*) FILTER (WHERE change_pct < 0) AS decline_count,
+                    COUNT(*) FILTER (WHERE change_pct = 0) AS flat_count,
+                    COUNT(*) AS quoted_count,
+                    SUM(amount) AS turnover_total,
+                    SUM(mkt_cap) AS market_cap_total
+                FROM latest_quotes
+                """
+            )
+            if latest_quotes:
+                latest_quotes = dict(latest_quotes)
+                breadth = {
+                    "advance_count": int(latest_quotes.get("advance_count") or 0),
+                    "decline_count": int(latest_quotes.get("decline_count") or 0),
+                    "flat_count": int(latest_quotes.get("flat_count") or 0),
+                    "quoted_count": int(latest_quotes.get("quoted_count") or 0),
+                }
+                turnover_total = latest_quotes.get("turnover_total")
+                market_cap_total = latest_quotes.get("market_cap_total")
+                turnover = round(float(turnover_total) / 1e12, 4) if turnover_total else None
+                market_cap = round(float(market_cap_total) / 1e12, 4) if market_cap_total else None
+
+            if market_cap is None:
+                stock_row = await conn.fetchrow("SELECT SUM(market_cap) AS total_market_cap FROM stocks")
+                if stock_row:
+                    stock_row = dict(stock_row)
+                    if stock_row.get("total_market_cap"):
+                        market_cap = round(float(stock_row.get("total_market_cap")) / 1e12, 4)
+    except Exception as exc:
+        logger.warning("[MacroManager] market overview DB aggregate failed: %s", exc)
+
+    avg_change = sum(index_changes) / len(index_changes) if index_changes else 0.0
+    adv = breadth.get("advance_count") or 0
+    dec = breadth.get("decline_count") or 0
+    if avg_change >= 0.8 or adv > dec * 1.2:
+        sentiment = "bullish"
+    elif avg_change <= -0.8 or dec > adv * 1.2:
+        sentiment = "bearish"
+    else:
+        sentiment = "neutral"
+
+    return {
+        "market_sentiment": sentiment,
+        "major_indices": major_indices,
+        "market_cap": market_cap,
+        "turnover": turnover,
+        "breadth": breadth,
+        "source": "real_time_quote+timescaledb",
+    }
+
+
 def register_macro_manager(mcp):
     """注册宏观管理器工具"""
     
@@ -201,16 +308,7 @@ def register_macro_manager(mcp):
                 return ok(payload)
             
             elif action == 'market_overview':
-                return ok({
-                    'market_sentiment': 'neutral',
-                    'major_indices': {
-                        'sh000001': {'name': '上证指数', 'value': 3200, 'change': 0.5},
-                        'sz399001': {'name': '深证成指', 'value': 11000, 'change': 0.3},
-                        'sz399006': {'name': '创业板指', 'value': 2300, 'change': -0.2},
-                    },
-                    'market_cap': 85.5,
-                    'turnover': 0.8
-                })
+                return ok(await _build_market_overview(db))
             
             else:
                 return fail(f'Unknown action: {action}. Supported: help, get_indicators, market_overview')

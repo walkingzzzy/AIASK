@@ -6,10 +6,11 @@ import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { BarChart, COLORS } from '@/components/charts';
-import { extractArray, extractObject, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
+import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
+import { extractToolError, unwrapToolPayload } from '@/lib/tool-result';
 
 const TABS = [
   { key: 'dcf', label: 'DCF估值' },
@@ -17,35 +18,24 @@ const TABS = [
   { key: 'relative', label: '相对估值' },
   { key: 'scenario', label: '情景DCF' },
 ] as const;
+const DCF_PRESETS = [
+  { label: '稳健', discountRate: '0.10', growthRate: '0.05', years: '5' },
+  { label: '成长', discountRate: '0.09', growthRate: '0.07', years: '7' },
+  { label: '保守', discountRate: '0.12', growthRate: '0.03', years: '5' },
+] as const;
+const DDM_PRESETS = [
+  { label: '成熟分红', dividend: '25', growthRate: '0.03', requiredReturn: '0.08' },
+  { label: '稳健', dividend: '18', growthRate: '0.02', requiredReturn: '0.09' },
+] as const;
+const SCENARIO_PRESETS = [
+  { label: '消费龙头', baseRevenue: '1300', years: '5', industry: '消费' },
+  { label: '制造升级', baseRevenue: '800', years: '6', industry: '制造' },
+] as const;
 
 type Tab = (typeof TABS)[number]['key'];
 
 function v(obj: Record<string, unknown>, ...keys: string[]): unknown {
   for (const k of keys) if (obj[k] != null) return obj[k];
-  return null;
-}
-
-/** Unwrap MCP envelope: data -> result -> data */
-function unwrapMcp(raw: unknown): Record<string, unknown> {
-  const obj = extractObject(raw);
-  if (typeof obj.result === 'string') return obj as Record<string, unknown>; // error string
-  if (obj.result) {
-    const inner = extractObject(obj.result as Record<string, unknown>);
-    return inner as Record<string, unknown>;
-  }
-  return obj as Record<string, unknown>;
-}
-
-/** Get MCP-level error */
-function mcpError(raw: unknown): string | null {
-  const obj = extractObject(raw);
-  if (typeof obj.result === 'string' && /error/i.test(obj.result)) return obj.result;
-  if (obj.result && typeof obj.result === 'object') {
-    const inner = obj.result as Record<string, unknown>;
-    if (inner.success === false && inner.error) return String(inner.error);
-    const d = extractObject(inner);
-    if (d.success === false && d.error) return String(d.error);
-  }
   return null;
 }
 
@@ -61,8 +51,28 @@ export default function ValuationPage() {
   const [requiredReturn, setRequiredReturn] = useState('0.08');
   const [baseRevenue, setBaseRevenue] = useState('');
   const [industry, setIndustry] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
+
+  function applyDcfPreset(preset: typeof DCF_PRESETS[number]) {
+    setDiscountRate(preset.discountRate);
+    setGrowthRate(preset.growthRate);
+    setYears(preset.years);
+  }
+
+  function applyDdmPreset(preset: typeof DDM_PRESETS[number]) {
+    setDividend(preset.dividend);
+    setDdmGrowth(preset.growthRate);
+    setRequiredReturn(preset.requiredReturn);
+  }
+
+  function applyScenarioPreset(preset: typeof SCENARIO_PRESETS[number]) {
+    setBaseRevenue(preset.baseRevenue);
+    setYears(preset.years);
+    setIndustry(preset.industry);
+  }
 
   function submit() {
+    setFormError(null);
     if (!validate()) return;
     let body: Record<string, unknown> = { code: trimmedCode };
     let endpoint = '';
@@ -77,7 +87,10 @@ export default function ValuationPage() {
       endpoint = '/valuation/relative';
     } else {
       endpoint = '/valuation/scenario-dcf';
-      if (!baseRevenue) { alert('请输入基础营收'); return; }
+      if (!baseRevenue) {
+        setFormError('情景 DCF 需要先填写基础营收，例如 1300');
+        return;
+      }
       body.baseRevenue = Number(baseRevenue);
       if (industry) body.industry = industry;
       body.years = Number(years);
@@ -85,8 +98,52 @@ export default function ValuationPage() {
     trigger(endpoint, { method: 'POST' }, body);
   }
 
-  const result = useMemo(() => (data ? unwrapMcp(data) : null), [data]);
-  const mcpErr = data ? mcpError(data) : null;
+  function runRecommendedValuation() {
+    const nextCode = trimmedCode || resolvedCode || '600519';
+    setCode(nextCode);
+    setFormError(null);
+
+    if (tab === 'dcf') {
+      const preset = DCF_PRESETS[0];
+      applyDcfPreset(preset);
+      trigger('/valuation/dcf', { method: 'POST' }, {
+        code: nextCode,
+        discountRate: Number(preset.discountRate),
+        growthRate: Number(preset.growthRate),
+        years: Number(preset.years),
+      });
+      return;
+    }
+
+    if (tab === 'ddm') {
+      const preset = DDM_PRESETS[0];
+      applyDdmPreset(preset);
+      trigger('/valuation/ddm', { method: 'POST' }, {
+        code: nextCode,
+        dividend: Number(preset.dividend),
+        growthRate: Number(preset.growthRate),
+        requiredReturn: Number(preset.requiredReturn),
+      });
+      return;
+    }
+
+    if (tab === 'relative') {
+      trigger('/valuation/relative', { method: 'POST' }, { code: nextCode });
+      return;
+    }
+
+    const preset = SCENARIO_PRESETS[0];
+    applyScenarioPreset(preset);
+    trigger('/valuation/scenario-dcf', { method: 'POST' }, {
+      code: nextCode,
+      baseRevenue: Number(preset.baseRevenue),
+      years: Number(preset.years),
+      industry: preset.industry,
+    });
+  }
+
+  const result = useMemo(() => (data ? unwrapToolPayload(data) : null), [data]);
+  const mcpErr = data ? extractToolError(data) : null;
   const friendlyErr = mcpErr
     ? /No valid valuation metrics/i.test(mcpErr) ? `该股票(${trimmedCode})暂无有效估值指标数据` : mcpErr
     : null;
@@ -106,42 +163,80 @@ export default function ValuationPage() {
         </div>
       )}
       <div className="flex gap-2 items-center mb-3">
-        <StockCodeInput value={code} onChange={setCode} error={codeError} />
+        <StockCodeInput id="valuation-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} />
       </div>
-      <TabBar tabs={TABS} active={tab} onChange={(key) => { setTab(key); reset(); }} />
+      <p className="mb-3 text-sm text-text-secondary">先确定标的，再根据公司特点选择模型：成熟分红公司更适合 DDM，成长型公司更适合 DCF 或情景 DCF。</p>
+      <TabBar tabs={TABS} active={tab} onChange={(key) => { setTab(key); reset(); setFormError(null); }} />
       <SectionCard tabAttached>
         {tab === 'dcf' ? (
-          <div className="flex gap-2 flex-wrap items-center">
-            <label className="text-sm">折现率 <input value={discountRate} onChange={(e) => setDiscountRate(e.target.value)} className={`w-[80px] ${inputCls}`} /></label>
-            <label className="text-sm">增长率 <input value={growthRate} onChange={(e) => setGrowthRate(e.target.value)} className={`w-[80px] ${inputCls}`} /></label>
-            <label className="text-sm">年数 <input value={years} onChange={(e) => setYears(e.target.value)} className={`w-[60px] ${inputCls}`} /></label>
-            <button type="button" disabled={isPending} onClick={submit} className={btnCls}>计算DCF</button>
+          <div className="space-y-3">
+            <div className="flex gap-2 flex-wrap items-center">
+              <label className="text-sm">折现率 <input value={discountRate} onChange={(e) => setDiscountRate(e.target.value)} className={`w-[80px] ${inputCls}`} /></label>
+              <label className="text-sm">增长率 <input value={growthRate} onChange={(e) => setGrowthRate(e.target.value)} className={`w-[80px] ${inputCls}`} /></label>
+              <label className="text-sm">年数 <input value={years} onChange={(e) => setYears(e.target.value)} className={`w-[60px] ${inputCls}`} /></label>
+              <button type="button" disabled={isPending} onClick={submit} className={btnCls}>计算DCF</button>
+            </div>
+            <div className="flex gap-2 flex-wrap items-center text-xs text-text-secondary">
+              <span>推荐参数：</span>
+              {DCF_PRESETS.map((preset) => (
+                <button key={preset.label} type="button" onClick={() => applyDcfPreset(preset)} className="rounded-full border border-glass-border px-3 py-1">
+                  {preset.label}
+                </button>
+              ))}
+            </div>
           </div>
         ) : null}
         {tab === 'ddm' ? (
-          <div className="flex gap-2 flex-wrap items-center">
-            <label className="text-sm">股息 <input value={dividend} onChange={(e) => setDividend(e.target.value)} className={`w-[80px] ${inputCls}`} placeholder="可选" /></label>
-            <label className="text-sm">增长率 <input value={ddmGrowth} onChange={(e) => setDdmGrowth(e.target.value)} className={`w-[80px] ${inputCls}`} /></label>
-            <label className="text-sm">要求回报率 <input value={requiredReturn} onChange={(e) => setRequiredReturn(e.target.value)} className={`w-[80px] ${inputCls}`} /></label>
-            <button type="button" disabled={isPending} onClick={submit} className={btnCls}>计算DDM</button>
+          <div className="space-y-3">
+            <div className="flex gap-2 flex-wrap items-center">
+              <label className="text-sm">股息 <input value={dividend} onChange={(e) => setDividend(e.target.value)} className={`w-[80px] ${inputCls}`} placeholder="可选" /></label>
+              <label className="text-sm">增长率 <input value={ddmGrowth} onChange={(e) => setDdmGrowth(e.target.value)} className={`w-[80px] ${inputCls}`} /></label>
+              <label className="text-sm">要求回报率 <input value={requiredReturn} onChange={(e) => setRequiredReturn(e.target.value)} className={`w-[80px] ${inputCls}`} /></label>
+              <button type="button" disabled={isPending} onClick={submit} className={btnCls}>计算DDM</button>
+            </div>
+            <div className="flex gap-2 flex-wrap items-center text-xs text-text-secondary">
+              <span>适合稳定分红公司：</span>
+              {DDM_PRESETS.map((preset) => (
+                <button key={preset.label} type="button" onClick={() => applyDdmPreset(preset)} className="rounded-full border border-glass-border px-3 py-1">
+                  {preset.label}
+                </button>
+              ))}
+            </div>
           </div>
         ) : null}
         {tab === 'relative' ? (
           <div>
+            <p className="mb-3 text-sm text-text-secondary">相对估值适合先看同业横向比较，确认目标股票当前处在行业估值的高位还是低位。</p>
             <button type="button" disabled={isPending} onClick={submit} className={btnCls}>查询相对估值</button>
           </div>
         ) : null}
         {tab === 'scenario' ? (
-          <div className="flex gap-2 flex-wrap items-center">
-            <label className="text-sm">基础营收 <input value={baseRevenue} onChange={(e) => setBaseRevenue(e.target.value)} className={`w-[100px] ${inputCls}`} placeholder="必填，如 1300亿" /></label>
-            <label className="text-sm">行业 <input value={industry} onChange={(e) => setIndustry(e.target.value)} className={`w-[100px] ${inputCls}`} placeholder="可选" /></label>
-            <label className="text-sm">年数 <input value={years} onChange={(e) => setYears(e.target.value)} className={`w-[60px] ${inputCls}`} /></label>
-            <button type="button" disabled={isPending} onClick={submit} className={btnCls}>情景分析</button>
+          <div className="space-y-3">
+            <div className="flex gap-2 flex-wrap items-center">
+              <label className="text-sm">基础营收 <input value={baseRevenue} onChange={(e) => setBaseRevenue(e.target.value)} className={`w-[100px] ${inputCls}`} placeholder="必填，如 1300亿" /></label>
+              <label className="text-sm">行业 <input value={industry} onChange={(e) => setIndustry(e.target.value)} className={`w-[100px] ${inputCls}`} placeholder="可选" /></label>
+              <label className="text-sm">年数 <input value={years} onChange={(e) => setYears(e.target.value)} className={`w-[60px] ${inputCls}`} /></label>
+              <button type="button" disabled={isPending} onClick={submit} className={btnCls}>情景分析</button>
+            </div>
+            <div className="flex gap-2 flex-wrap items-center text-xs text-text-secondary">
+              <span>快速填充：</span>
+              {SCENARIO_PRESETS.map((preset) => (
+                <button key={preset.label} type="button" onClick={() => applyScenarioPreset(preset)} className="rounded-full border border-glass-border px-3 py-1">
+                  {preset.label}
+                </button>
+              ))}
+            </div>
           </div>
         ) : null}
         {isPending ? <LoadingState text="计算中..." /> : null}
-        {error || friendlyErr ? <ErrorState text={error || friendlyErr!} hint="请检查参数后重试" /> : null}
-        {!isPending && !data && !error ? <EmptyState text="设置参数后点击按钮开始估值" /> : null}
+        {formError || error || friendlyErr ? <ErrorState text={formError || error || friendlyErr!} hint="请检查参数后重试" /> : null}
+        {!isPending && !data && !error && !formError ? (
+          <EmptyState
+            text={tab === 'dcf' ? '先设置现金流假设，再估算企业内在价值' : tab === 'ddm' ? '先填写分红假设，再估算每股价值' : tab === 'relative' ? '先查询同业估值对比，快速判断目标股票高估还是低估' : '先填写基础营收，再比较不同增长情景下的价值区间'}
+            hint={tab === 'dcf' ? '推荐从折现率 10%、增长率 5%、5 年的稳健参数开始。' : tab === 'ddm' ? 'DDM 更适合稳定分红公司，推荐先从成熟分红模板开始。' : tab === 'relative' ? '相对估值是最快的入门方式，适合第一次进入页面时先做横向判断。' : '情景 DCF 适合不确定性较高的成长公司，先给一个基础营收就能看乐观/基准/悲观差异。'}
+            action={<button type="button" onClick={runRecommendedValuation} className="rounded-full border border-primary px-3 py-1 text-xs text-primary">使用推荐参数</button>}
+          />
+        ) : null}
         {data != null && !friendlyErr && tab === 'dcf' && result ? (() => {
           const r = result as Record<string, unknown>;
           const intrinsic = Number(v(r, 'intrinsic_value', 'intrinsicValue', 'value') ?? 0);

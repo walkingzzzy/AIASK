@@ -18,8 +18,9 @@ from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...core.validators import validate_quote
 from ...data_source import data_source
-from ...storage import get_db
+from ...storage import get_db, run_with_db_cleanup
 from ...utils import safe_stderr_print
+from ..data_quality import build_quality_meta, infer_missing_fields, normalize_reason_list
 try:
     import akshare as ak
 except ImportError:
@@ -134,7 +135,7 @@ def _save_quote_nonblocking(payload: dict) -> None:
         return
 
     try:
-        asyncio.run(_save_quote_best_effort(payload))
+        run_with_db_cleanup(_save_quote_best_effort(payload))
     except Exception as e:
         safe_stderr_print(f"[quote] save_quote run failed: {e}")
 
@@ -162,9 +163,71 @@ def _save_quotes_nonblocking(items: list[dict]) -> None:
         return
 
     try:
-        asyncio.run(_runner())
+        run_with_db_cleanup(_runner())
     except Exception as e:
         safe_stderr_print(f"[quote] batch save run failed: {e}")
+
+
+def _quote_missing_fields(payload: dict) -> list[str]:
+    return infer_missing_fields(
+        payload,
+        ("code", "name", "price", "open", "high", "low", "preClose", "volume", "amount"),
+    )
+
+
+def _ok_quote_response(
+    payload: dict,
+    *,
+    attempted_sources: list[str],
+    source_chain: list[str],
+    fallback_reason: Optional[str] = None,
+) -> dict:
+    response = ok(payload, cached=False)
+    normalized_reasons = normalize_reason_list(fallback_reason)
+    if isinstance(response.get("data"), dict):
+        data = response["data"]
+        data["attempted_sources"] = attempted_sources
+        data["source_chain"] = source_chain
+        data["fallback_used"] = len(source_chain) > 1 or (source_chain and source_chain[0] != "data_source")
+        data["fallback_reason"] = fallback_reason
+        data["data_timestamp"] = time.strftime("%Y-%m-%d")
+        _save_quote_nonblocking(data)
+    response.update(
+        build_quality_meta(
+            source=str(payload.get("source") or "unknown"),
+            source_chain=source_chain,
+            fallback_reason=normalized_reasons,
+            asof_value=payload.get("time") or payload.get("trade_time") or payload.get("data_timestamp"),
+            missing_fields=_quote_missing_fields(payload),
+            degraded=bool(_quote_missing_fields(payload)),
+            success=True,
+        )
+    )
+    return response
+
+
+def _fail_quote_response(
+    message: str,
+    *,
+    attempted_sources: list[str],
+    source_chain: list[str],
+    fallback_reason: Optional[str] = None,
+) -> dict:
+    response = fail(message)
+    response["attempted_sources"] = attempted_sources
+    response.update(
+        build_quality_meta(
+            source="none",
+            source_chain=source_chain or attempted_sources,
+            fallback_reason=normalize_reason_list(fallback_reason or message),
+            asof_value=None,
+            missing_fields=[],
+            degraded=True,
+            success=False,
+        )
+    )
+    response["source"] = "none"
+    return response
 
 
 
@@ -538,32 +601,6 @@ def get_realtime_quote(stock_code: str) -> dict:
     limiter = get_limiter("quote", max_calls=10, period=1.0)
     limiter.acquire()
 
-    def _ok_with_trace(payload: dict, attempted_sources: list[str], source_chain: list[str], fallback_reason: Optional[str] = None) -> dict:
-        """P2-1: 返回结构化降级信息，便于前端/调用方解释来源链路。"""
-        # 补充缺失的 preClose（从日K线获取）
-        if isinstance(payload, dict) and not payload.get("preClose"):
-            try:
-                snap = _get_daily_snapshot(code)
-                pc = snap.get("prev_close")
-                if pc:
-                    payload["preClose"] = pc
-                    price = payload.get("price")
-                    if price is not None and payload.get("change") is None:
-                        payload["change"] = price - pc
-                        payload["changePercent"] = (price - pc) / pc * 100
-            except Exception:
-                pass
-        result = ok(payload, cached=False)
-        if isinstance(result.get("data"), dict):
-            data = result["data"]
-            data["attempted_sources"] = attempted_sources
-            data["source_chain"] = source_chain
-            data["fallback_used"] = len(source_chain) > 1 or (source_chain and source_chain[0] != "data_source")
-            data["fallback_reason"] = fallback_reason
-            data["data_timestamp"] = time.strftime("%Y-%m-%d")
-            _save_quote_nonblocking(data)
-        return result
-
     def _as_plain_quote(v):
         # validate_quote 可能返回 pydantic 模型；统一转为 dict 以注入结构化 trace 字段
         if hasattr(v, "model_dump"):
@@ -584,7 +621,19 @@ def get_realtime_quote(stock_code: str) -> dict:
             res = data_source.get_realtime_quote(code)
             if res:
                 validated = _as_plain_quote(validate_quote(res))
-                return _ok_with_trace(validated, attempted_sources, source_chain=["data_source"])
+                if isinstance(validated, dict) and not validated.get("preClose"):
+                    try:
+                        snap = _get_daily_snapshot(code)
+                        pc = snap.get("prev_close")
+                        if pc:
+                            validated["preClose"] = pc
+                            price = validated.get("price")
+                            if price is not None and validated.get("change") is None:
+                                validated["change"] = price - pc
+                                validated["changePercent"] = (price - pc) / pc * 100
+                    except Exception:
+                        pass
+                return _ok_quote_response(validated, attempted_sources=attempted_sources, source_chain=["data_source"])
         except Exception as e:
             fallback_reason_parts.append(f"data_source失败: {e}")
             safe_stderr_print(f"DataSource quote failed for {code}: {e}")
@@ -599,9 +648,21 @@ def get_realtime_quote(stock_code: str) -> dict:
             res = None
         if res:
             validated = _as_plain_quote(validate_quote(res))
-            return _ok_with_trace(
+            if isinstance(validated, dict) and not validated.get("preClose"):
+                try:
+                    snap = _get_daily_snapshot(code)
+                    pc = snap.get("prev_close")
+                    if pc:
+                        validated["preClose"] = pc
+                        price = validated.get("price")
+                        if price is not None and validated.get("change") is None:
+                            validated["change"] = price - pc
+                            validated["changePercent"] = (price - pc) / pc * 100
+                except Exception:
+                    pass
+            return _ok_quote_response(
                 validated,
-                attempted_sources,
+                attempted_sources=attempted_sources,
                 source_chain=["data_source", "akshare"],
                 fallback_reason="; ".join(fallback_reason_parts) if fallback_reason_parts else "DataSource不可用，已降级至AkShare",
             )
@@ -612,9 +673,21 @@ def get_realtime_quote(stock_code: str) -> dict:
         res = _get_quote_sina(code)
         if res:
             validated = _as_plain_quote(validate_quote(res))
-            return _ok_with_trace(
+            if isinstance(validated, dict) and not validated.get("preClose"):
+                try:
+                    snap = _get_daily_snapshot(code)
+                    pc = snap.get("prev_close")
+                    if pc:
+                        validated["preClose"] = pc
+                        price = validated.get("price")
+                        if price is not None and validated.get("change") is None:
+                            validated["change"] = price - pc
+                            validated["changePercent"] = (price - pc) / pc * 100
+                except Exception:
+                    pass
+            return _ok_quote_response(
                 validated,
-                attempted_sources,
+                attempted_sources=attempted_sources,
                 source_chain=["data_source", "akshare", "sina"],
                 fallback_reason="; ".join(fallback_reason_parts) if fallback_reason_parts else "上游源不可用，已降级至Sina",
             )
@@ -625,18 +698,40 @@ def get_realtime_quote(stock_code: str) -> dict:
         res = _get_quote_tencent(code)
         if res:
             validated = _as_plain_quote(validate_quote(res))
-            return _ok_with_trace(
+            if isinstance(validated, dict) and not validated.get("preClose"):
+                try:
+                    snap = _get_daily_snapshot(code)
+                    pc = snap.get("prev_close")
+                    if pc:
+                        validated["preClose"] = pc
+                        price = validated.get("price")
+                        if price is not None and validated.get("change") is None:
+                            validated["change"] = price - pc
+                            validated["changePercent"] = (price - pc) / pc * 100
+                except Exception:
+                    pass
+            return _ok_quote_response(
                 validated,
-                attempted_sources,
+                attempted_sources=attempted_sources,
                 source_chain=["data_source", "akshare", "sina", "tencent"],
                 fallback_reason="; ".join(fallback_reason_parts) if fallback_reason_parts else "上游源不可用，已降级至Tencent",
             )
 
         attempted = " -> ".join(attempted_sources)
         reason = "; ".join(fallback_reason_parts) if fallback_reason_parts else "所有上游源均返回空数据"
-        return fail(f"所有数据源均无法获取 {code} 的实时行情（attempted={attempted}, reason={reason}）")
+        return _fail_quote_response(
+            f"所有数据源均无法获取 {code} 的实时行情（attempted={attempted}, reason={reason}）",
+            attempted_sources=attempted_sources,
+            source_chain=["data_source", "akshare", "sina", "tencent"],
+            fallback_reason=reason,
+        )
     except Exception as e:
-        return fail(e)
+        return _fail_quote_response(
+            str(e),
+            attempted_sources=[],
+            source_chain=["get_realtime_quote"],
+            fallback_reason=str(e),
+        )
 
 
 def get_batch_quotes(stock_codes: list[str]) -> dict:

@@ -20,6 +20,13 @@ def _normalize_manager_kwargs(code: Optional[str], kwargs: dict) -> tuple[Option
 
 def register_vector_search_manager(mcp):
     """注册向量搜索管理器工具"""
+
+    async def _run_registered_tool(tool_name: str, args: dict) -> dict:
+        tool = getattr(getattr(mcp, "_tool_manager", None), "_tools", {}).get(tool_name)
+        if tool is None:
+            return fail(f"Tool {tool_name} not found")
+        result = await tool.run(args or {})
+        return result if isinstance(result, dict) else {"success": False, "error": f"Unexpected result type from {tool_name}"}
     
     @mcp.tool()
     async def vector_search_manager(action: str, code: Optional[str] = None, **kwargs):
@@ -67,17 +74,23 @@ def register_vector_search_manager(mcp):
                 
                 # 调用真实的 K线形态搜索
                 try:
-                    from ..search import search_by_kline
-                    result = search_by_kline(code=code, days=days, top_n=top_n)
+                    result = await _run_registered_tool("search_by_kline", {"code": code, "days": int(days), "top_n": int(top_n)})
                     if result.get('success') and result.get('data'):
                         data = result['data']
-                        similar = data.get('similar_stocks', [])
+                        similar = data.get('results', [])
+                        backend_requested = data.get('backend_requested') or data.get('search_backend') or 'python'
+                        backend_used = data.get('backend_used') or data.get('actual_backend') or backend_requested
                         return ok({
                             'code': code,
                             'similar_stocks': similar,
-                            'pattern_type': data.get('pattern_type', 'unknown'),
-                            'confidence': data.get('confidence', 0),
-                            'source': 'kline_correlation'
+                            'pattern_type': 'kline_similarity',
+                            'confidence': similar[0].get('similarity', 0) if similar else 0,
+                            'source': data.get('actual_backend') or data.get('search_backend') or 'kline_correlation',
+                            'backend_requested': backend_requested,
+                            'backend_used': backend_used,
+                            'fallback_used': bool(data.get('fallback_used', backend_used != backend_requested)),
+                            'fallback_reason': data.get('fallback_reason'),
+                            'latency_ms': data.get('latency_ms', 0),
                         })
                 except Exception:
                     pass
@@ -100,15 +113,15 @@ def register_vector_search_manager(mcp):
                 
                 # 调用真实的相似股票搜索
                 try:
-                    from ..search import search_similar_stocks
-                    result = search_similar_stocks(code=code, top_n=top_n, similarity_type=similarity_type)
+                    result = await _run_registered_tool("search_similar_stocks", {"code": code, "top_n": int(top_n), "similarity_type": str(similarity_type)})
                     if result.get('success') and result.get('data'):
                         data = result['data']
                         similar = data.get('similar_stocks', [])
                         return ok({
                             'code': code,
                             'similar_stocks': similar,
-                            'source': data.get('source', 'similarity_search')
+                            'source': data.get('candidate_scope', 'similarity_search'),
+                            'similarity_type': data.get('similarity_type', similarity_type)
                         })
                 except Exception:
                     pass

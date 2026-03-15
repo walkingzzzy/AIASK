@@ -3,22 +3,33 @@
 import { useState, useMemo } from 'react';
 import { PageContainer, SectionCard, Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
-import { BFF_BASE } from '@/lib/api';
+import { useApiMutation } from '@/hooks/use-api-mutation';
+import { ErrorState } from '@/components/status-state';
+import { apiKeys } from '@/lib/query-keys';
 
 /**
  * T-051: Dead Letter Queue Panel
  */
 export default function DeadLettersPage() {
     const [retrying, setRetrying] = useState<string | null>(null);
+    const [actionError, setActionError] = useState<string | null>(null);
 
     const dlQ = useApiQuery<unknown>('/admin/dead-letters', {
         refetchInterval: 15000,
         parse: (raw) => raw,
     });
+    const retryApi = useApiMutation<unknown>({
+        invalidates: [[...apiKeys.admin()]],
+        successToast: '死信已重试',
+    });
+    const clearApi = useApiMutation<unknown>({
+        invalidates: [[...apiKeys.admin()]],
+        successToast: '死信队列已清空',
+    });
 
     const letters = useMemo(() => {
         const raw = dlQ.data as any;
-        const items = raw?.items ?? raw?.data ?? [];
+        const items = Array.isArray(raw) ? raw : raw?.items ?? raw?.data ?? [];
         return Array.isArray(items) ? items.map((l: Record<string, unknown>) => ({
             id: String(l.id ?? ''),
             tool: String(l.tool ?? l.toolName ?? ''),
@@ -31,29 +42,49 @@ export default function DeadLettersPage() {
 
     const handleRetry = async (id: string) => {
         setRetrying(id);
+        setActionError(null);
         try {
-            await fetch(`${BFF_BASE}/admin/dead-letters/${id}/retry`, { method: 'POST', credentials: 'include' });
+            await retryApi.triggerAsync(`/admin/dead-letters/${id}/retry`, { method: 'POST' });
             dlQ.refetch();
+        } catch (error) {
+            setActionError(error instanceof Error ? error.message : String(error));
         } finally {
             setRetrying(null);
         }
     };
 
     const handleClearAll = async () => {
-        await fetch(`${BFF_BASE}/admin/dead-letters/clear`, { method: 'POST', credentials: 'include' });
-        dlQ.refetch();
+        setActionError(null);
+        try {
+            await clearApi.triggerAsync('/admin/dead-letters/clear', { method: 'POST' });
+            dlQ.refetch();
+        } catch (error) {
+            setActionError(error instanceof Error ? error.message : String(error));
+        }
     };
+
+    if (dlQ.error) {
+        return (
+            <PageContainer>
+                <div className="flex items-center justify-between mb-4">
+                    <h1 className="text-lg font-semibold">📭 死信队列</h1>
+                </div>
+                <ErrorState text={dlQ.error} hint="当前页面需要管理员权限；请求失败时不再显示“无死信消息”。" onRetry={() => dlQ.refetch()} />
+            </PageContainer>
+        );
+    }
 
     return (
         <PageContainer>
             <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold">📭 死信队列</h2>
+                <h1 className="text-lg font-semibold">📭 死信队列</h1>
                 {letters.length > 0 && (
                     <button onClick={handleClearAll} className="text-xs px-3 py-1.5 bg-danger/20 text-danger rounded-lg cursor-pointer border border-danger/30">
                         清除全部
                     </button>
                 )}
             </div>
+            {actionError ? <ErrorState text={actionError} /> : null}
 
             {letters.length === 0 ? (
                 <SectionCard>

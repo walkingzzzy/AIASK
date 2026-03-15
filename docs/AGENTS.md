@@ -5,18 +5,25 @@
 > 目标：让代理在本项目内稳定执行“投研 -> 组合 -> 执行 -> 风控 -> 复盘 -> TDX联动”闭环，并保持可审计、可回退、可复核。
 
 ## 1. 项目事实基线（本地审计结果）
-- MCP 工具总数：`153`
+- MCP 工具总数：`171`
 - Skills 总数：`20`
-- Skills 覆盖率：`100%`（`153/153`）
+- Skills 工具引用覆盖率：见 `skill_tool_coverage_runtime.json.coverage`
+- Skills 执行器覆盖率：见 `skill_tool_coverage_runtime.json.executors`
 - TDX 工具覆盖：`36/36`
-- Manager 工具覆盖：`31/31`
-- 审计时间（文件）：`skill_tool_coverage_runtime.json` 中 `2026-02-12T08:24:34+00:00`
+- Manager 工具覆盖：`32/32`
+- 审计时间（文件）：`skill_tool_coverage_runtime.json` 中 `generated_at`
+
+说明：
+1. `coverage` 代表 Skill 文档对 MCP 工具的引用覆盖率，不等价于“所有 Skill 都有内建执行器”。
+2. `executors` 代表 `packages/akshare-mcp/src/akshare_mcp/tools/skills.py` 中 `_SKILL_EXECUTORS` 的可执行覆盖率。
+3. 涉及 Skills 能力判断时，必须同时查看 `coverage` 与 `executors`，不要把 `100%` 工具引用覆盖率误解为 `100%` 可执行覆盖率。
 
 强制预检命令：
 1. `python scripts/skill_coverage_audit.py --check-thresholds`
 2. `python scripts/skill_coverage_audit.py --output-json skill_tool_coverage_runtime.json --output-gap skill_tool_gap_list.txt`
 
 若阈值检查失败，先修复 skills/tool 映射、未知引用和缺口，再执行业务任务。
+若 `executors.executor_coverage_pct` 明显低于 `coverage.coverage_pct`，说明当前更多是“文档编排覆盖”而非“内建执行器覆盖”，需要谨慎表述系统可执行边界。
 
 ## 2. 总体执行原则（必须遵守）
 1. 工具优先：能通过 MCP 工具获取结果时，不做主观臆测。

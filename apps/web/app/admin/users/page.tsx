@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import { PageContainer, SectionCard, KpiGrid, KpiCard, Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { ErrorState } from '@/components/status-state';
 
 /**
  * T-052: User Management Panel
@@ -43,9 +44,18 @@ export default function UsersPage() {
         admin: 'danger', trader: 'warning', analyst: 'info', viewer: 'success',
     };
 
+    if (usersQ.error) {
+        return (
+            <PageContainer>
+                <h1 className="text-lg font-semibold mb-4">👥 用户管理</h1>
+                <ErrorState text={usersQ.error} hint="当前页面需要管理员权限；请求失败时不再渲染成 0 用户。" onRetry={() => usersQ.refetch()} />
+            </PageContainer>
+        );
+    }
+
     return (
         <PageContainer>
-            <h2 className="text-lg font-semibold mb-4">👥 用户管理</h2>
+            <h1 className="text-lg font-semibold mb-4">👥 用户管理</h1>
 
             <KpiGrid cols={4}>
                 <KpiCard title="总用户" value={stats.total.toString()} />

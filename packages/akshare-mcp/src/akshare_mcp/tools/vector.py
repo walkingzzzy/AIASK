@@ -270,6 +270,7 @@ def register(mcp):
                 backend=search_backend,
                 allow_fallback=allow_fallback,
             )
+            search_meta = dict(getattr(vector_search_engine, 'last_meta', {}) or {})
 
             results = []
             for item in search_results:
@@ -293,6 +294,11 @@ def register(mcp):
                 'search_backend': search_backend,
                 'actual_backend': vector_search_engine.last_backend_used,
                 'allow_fallback': bool(allow_fallback),
+                'backend_requested': search_meta.get('backend_requested', search_backend),
+                'backend_used': search_meta.get('backend_used', vector_search_engine.last_backend_used),
+                'fallback_used': bool(search_meta.get('fallback_used', False)),
+                'fallback_reason': search_meta.get('fallback_reason'),
+                'latency_ms': search_meta.get('latency_ms', 0.0),
             })
 
         except Exception as e:

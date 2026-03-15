@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { StrategyMarketService } from './strategy.service';
 import {
@@ -12,6 +12,7 @@ import {
   SignalsQueryDto,
   EventsQueryDto,
   DailySnapshotsQueryDto,
+  TaskRunsQueryDto,
   Req_,
   tid,
 } from './dto';
@@ -19,6 +20,14 @@ import {
 @Controller('strategy-market')
 export class StrategyMarketController {
   constructor(private readonly svc: StrategyMarketService) {}
+
+  private currentUserId(req: Req_): string {
+    const userId = req.user?.id?.trim();
+    if (!userId) {
+      throw new UnauthorizedException('登录状态无效');
+    }
+    return userId;
+  }
 
   @Get('list')
   async list(@Query() q: ListDto, @Req() req: Req_) {
@@ -48,8 +57,8 @@ export class StrategyMarketController {
   }
 
   @Get('my-subscriptions')
-  async mySubs(@Query('user_id') userId: string, @Req() req: Req_) {
-    const data = await this.svc.mySubscriptions(userId || 'default');
+  async mySubs(@Req() req: Req_) {
+    const data = await this.svc.mySubscriptions(this.currentUserId(req));
     return { success: true, data, traceId: tid(req) };
   }
 
@@ -68,6 +77,18 @@ export class StrategyMarketController {
   @Get('daily-snapshot')
   async dailySnapshot(@Query('snapshot_date') snapshotDate: string, @Req() req: Req_) {
     const data = await this.svc.dailySnapshot(snapshotDate);
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Get('task-runs')
+  async taskRuns(@Query() q: TaskRunsQueryDto, @Req() req: Req_) {
+    const data = await this.svc.taskRuns({
+      strategy_id: q.strategy_id,
+      task_name: q.task_name,
+      task_scope: q.task_scope,
+      status: q.status,
+      limit: q.limit,
+    });
     return { success: true, data, traceId: tid(req) };
   }
 
@@ -93,7 +114,10 @@ export class StrategyMarketController {
 
   @Post('create')
   async create(@Body() body: CreateDto, @Req() req: Req_) {
-    const data = await this.svc.create(body);
+    const data = await this.svc.create({
+      ...body,
+      author_id: this.currentUserId(req),
+    });
     return { success: true, data, traceId: tid(req) };
   }
 
@@ -116,20 +140,20 @@ export class StrategyMarketController {
   }
 
   @Post(':id/subscribe')
-  async subscribe(@Param('id') id: string, @Body() body: SubscribeDto, @Req() req: Req_) {
-    const data = await this.svc.subscribe(id, body.user_id);
+  async subscribe(@Param('id') id: string, @Body() _body: SubscribeDto, @Req() req: Req_) {
+    const data = await this.svc.subscribe(id, this.currentUserId(req));
     return { success: true, data, traceId: tid(req) };
   }
 
   @Delete(':id/subscribe')
-  async unsubscribe(@Param('id') id: string, @Query('user_id') userId: string, @Req() req: Req_) {
-    const data = await this.svc.unsubscribe(id, userId || 'default');
+  async unsubscribe(@Param('id') id: string, @Req() req: Req_) {
+    const data = await this.svc.unsubscribe(id, this.currentUserId(req));
     return { success: true, data, traceId: tid(req) };
   }
 
   @Post(':id/review')
   async review(@Param('id') id: string, @Body() body: ReviewDto, @Req() req: Req_) {
-    const data = await this.svc.review(id, body.user_id, body.rating, body.comment);
+    const data = await this.svc.review(id, this.currentUserId(req), body.rating, body.comment);
     return { success: true, data, traceId: tid(req) };
   }
 
@@ -142,7 +166,7 @@ export class StrategyMarketController {
   @Get(':id/signals')
   @Throttle({ default: { ttl: 60000, limit: 30 } })
   async signals(@Param('id') id: string, @Query() q: SignalsQueryDto, @Req() req: Req_) {
-    const data = await this.svc.getSignals(id, q.user_id || 'default', { limit: q.limit });
+    const data = await this.svc.getSignals(id, this.currentUserId(req), { limit: q.limit });
     return { success: true, data, traceId: tid(req) };
   }
 

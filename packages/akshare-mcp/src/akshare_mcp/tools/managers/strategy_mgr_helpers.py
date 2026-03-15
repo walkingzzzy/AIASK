@@ -5,11 +5,12 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from ...services.strategy_factory import (
+from ...services.strategy_factory.constants import (
     BACKTEST_AI_PROTOTYPE_THRESHOLDS,
     DEPRECATION_THRESHOLDS,
     PROMOTION_THRESHOLDS,
     PROVISIONAL_PASS_THRESHOLDS,
+    QUALITY_GATE_THRESHOLDS,
     RISK_REPORT_THRESHOLDS,
 )
 
@@ -204,8 +205,6 @@ def safe_metric_value(payload: Optional[dict], *keys: str) -> float:
 
 def _count_statistical_checks_passed(gate: dict) -> tuple[int, list[str], list[str]]:
     """统计质量门 5 项统计检查中通过了几项，返回 (通过数, 通过项列表, 失败项列表)。"""
-    from ...services.strategy_factory import QUALITY_GATE_THRESHOLDS
-
     check_map = {
         "walk_forward_ic_ir": ("wf_ic_ir", QUALITY_GATE_THRESHOLDS["walk_forward_ic_ir_min"], ">="),
         "purged_kfold_ic": ("pkf_ic", QUALITY_GATE_THRESHOLDS["purged_kfold_ic_min"], ">="),

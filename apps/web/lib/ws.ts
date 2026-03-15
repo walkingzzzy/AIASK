@@ -2,18 +2,25 @@
 
 import { useEffect, useRef, useCallback, useState, useMemo, createContext, useContext } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { getBffOrigin } from './bff-base';
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1']);
 
 const WS_URL = (() => {
-  const direct = process.env.NEXT_PUBLIC_WS_URL;
-  if (direct) return direct;
-  const bffBase = process.env.NEXT_PUBLIC_BFF_BASE_URL;
-  if (bffBase) {
-    try {
-      const u = new URL(bffBase);
-      return `${u.protocol}//${u.host}`;
-    } catch { /* ignore */ }
+  const direct = process.env.NEXT_PUBLIC_WS_URL?.trim();
+  if (!direct) return getBffOrigin();
+  if (typeof window === 'undefined') return direct;
+
+  try {
+    const parsed = new URL(direct);
+    if (LOOPBACK_HOSTS.has(parsed.hostname) && LOOPBACK_HOSTS.has(window.location.hostname)) {
+      parsed.hostname = window.location.hostname;
+      return parsed.origin;
+    }
+    return parsed.origin;
+  } catch {
+    return getBffOrigin();
   }
-  return 'http://localhost:3001';
 })();
 
 
@@ -35,6 +42,7 @@ function getSocket(): Socket {
   if (!_socket) {
     _socket = io(`${WS_URL}/ws`, {
       transports: ['websocket', 'polling'],
+      withCredentials: true,
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
@@ -88,7 +96,9 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   const [connected, setConnected] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const optionsRef = useRef(options);
-  optionsRef.current = options;
+  useEffect(() => {
+    optionsRef.current = options;
+  }, [options]);
 
   useEffect(() => {
     const socket = acquireSocket();
@@ -176,7 +186,9 @@ export function useQuoteSubscription(options: UseQuoteSubscriptionOptions = {}) 
   const { codes = [], type = 'stock', enabled = true, onUpdate, onBatch } = options;
   const cbRef = useRef({ onUpdate, onBatch });
   const activeSubRef = useRef<{ codes: string[]; type: 'stock' | 'index' } | null>(null);
-  cbRef.current = { onUpdate, onBatch };
+  useEffect(() => {
+    cbRef.current = { onUpdate, onBatch };
+  }, [onBatch, onUpdate]);
 
   const normalizedCodes = useMemo(
     () => Array.from(new Set(codes.map((code) => String(code).trim()).filter(Boolean))),
@@ -249,14 +261,16 @@ interface UseAlertSubscriptionOptions {
 }
 
 export function useAlertSubscription(options: UseAlertSubscriptionOptions = {}) {
-  const { userId, onAlert, onWarn } = options;
+  const { onAlert, onWarn } = options;
   const cbRef = useRef({ onAlert, onWarn });
-  cbRef.current = { onAlert, onWarn };
+  useEffect(() => {
+    cbRef.current = { onAlert, onWarn };
+  }, [onAlert, onWarn]);
 
   return useWebSocket({
     subscribe: {
       event: 'subscribe:alert',
-      payload: { userId },
+      payload: {},
     },
     events: {
       'alert:triggered': (data) => cbRef.current.onAlert?.(data as AlertData),
@@ -277,19 +291,22 @@ interface TradeUpdateData {
 }
 
 interface UseTradeSubscriptionOptions {
-  accountId: string;
+  accountId?: string;
   onUpdate?: (data: TradeUpdateData) => void;
 }
 
 export function useTradeSubscription(options: UseTradeSubscriptionOptions) {
   const { accountId, onUpdate } = options;
   const cbRef = useRef({ onUpdate });
-  cbRef.current = { onUpdate };
+  useEffect(() => {
+    cbRef.current = { onUpdate };
+  }, [onUpdate]);
+  const normalizedAccountId = accountId && accountId !== 'default' ? accountId : undefined;
 
   return useWebSocket({
     subscribe: {
       event: 'subscribe:trade',
-      payload: { accountId },
+      payload: normalizedAccountId ? { accountId: normalizedAccountId } : {},
     },
     events: {
       'trade:update': (data) => cbRef.current.onUpdate?.(data as TradeUpdateData),
@@ -307,7 +324,9 @@ interface SystemMessage {
 
 export function useSystemMessages(onMessage?: (msg: SystemMessage) => void) {
   const cbRef = useRef(onMessage);
-  cbRef.current = onMessage;
+  useEffect(() => {
+    cbRef.current = onMessage;
+  }, [onMessage]);
 
   return useWebSocket({
     events: {
@@ -315,4 +334,3 @@ export function useSystemMessages(onMessage?: (msg: SystemMessage) => void) {
     },
   });
 }
-

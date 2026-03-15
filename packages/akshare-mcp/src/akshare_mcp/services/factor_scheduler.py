@@ -62,6 +62,8 @@ DEFAULT_FACTORS = ["momentum", "value", "quality", "volatility", "reversal"]
 class FactorScheduler:
     """Asyncio-based daily factor computation scheduler."""
 
+    STALE_AFTER_SEC = 24 * 60 * 60
+
     def __init__(
         self,
         run_time: time = time(18, 0),  # 18:00 CST
@@ -77,6 +79,57 @@ class FactorScheduler:
         self._running = False
         self.last_run: Optional[datetime] = None
         self.last_result: Optional[dict] = None
+
+    @staticmethod
+    def _isoformat(value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.astimezone()
+        return value.isoformat()
+
+    @classmethod
+    def _freshness_sec(cls, value: Optional[datetime], *, now: Optional[datetime] = None) -> float:
+        if value is None:
+            return 0.0
+        observed = value.astimezone() if value.tzinfo is not None else value.astimezone()
+        current = now or datetime.now().astimezone()
+        return round(max((current - observed).total_seconds(), 0.0), 3)
+
+    @classmethod
+    def _quality_flags(cls, *, errors: int, computed: int, freshness_sec: float) -> list[str]:
+        flags: list[str] = []
+        if errors > 0 and computed > 0:
+            flags.append("partial")
+        elif errors > 0:
+            flags.extend(["degraded", "failed"])
+        if freshness_sec > cls.STALE_AFTER_SEC:
+            flags.append("stale")
+        seen: set[str] = set()
+        result: list[str] = []
+        for flag in flags:
+            if flag in seen:
+                continue
+            seen.add(flag)
+            result.append(flag)
+        return result
+
+    @classmethod
+    def _build_quality_meta(
+        cls,
+        *,
+        asof_dt: Optional[datetime],
+        computed: int,
+        errors: int,
+        now: Optional[datetime] = None,
+    ) -> dict:
+        freshness_sec = cls._freshness_sec(asof_dt, now=now)
+        return {
+            "asof_time": cls._isoformat(asof_dt),
+            "source": "factor_scheduler",
+            "freshness_sec": freshness_sec,
+            "quality_flags": cls._quality_flags(errors=errors, computed=computed, freshness_sec=freshness_sec),
+        }
 
     def start(self):
         """Start the scheduler in the background (non-blocking)."""
@@ -152,12 +205,19 @@ class FactorScheduler:
                 total_errors += len(batch)
 
         elapsed = (datetime.now() - start).total_seconds()
-        self.last_run = datetime.now()
+        self.last_run = datetime.now().astimezone()
+        quality_meta = self._build_quality_meta(
+            asof_dt=self.last_run,
+            computed=total_computed,
+            errors=total_errors,
+            now=self.last_run,
+        )
         self.last_result = {
             "computed": total_computed,
             "errors": total_errors,
             "elapsed_seconds": round(elapsed, 1),
             "universe_size": len(self.universe),
+            **quality_meta,
         }
         logger.info(
             "FactorScheduler: completed in %.1fs — %d computed, %d errors",
@@ -167,13 +227,19 @@ class FactorScheduler:
 
     def status(self) -> dict:
         """Return current scheduler status."""
+        quality_meta = self._build_quality_meta(
+            asof_dt=self.last_run,
+            computed=int((self.last_result or {}).get("computed") or 0),
+            errors=int((self.last_result or {}).get("errors") or 0),
+        )
         return {
             "running": self._running,
             "run_time": str(self.run_time),
             "universe_size": len(self.universe),
             "factors": self.factors,
-            "last_run": str(self.last_run) if self.last_run else None,
+            "last_run": self._isoformat(self.last_run),
             "last_result": self.last_result,
+            **quality_meta,
         }
 
 

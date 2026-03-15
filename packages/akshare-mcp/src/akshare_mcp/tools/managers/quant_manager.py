@@ -56,6 +56,9 @@ def register_quant_manager(mcp):
             tool_version = "v1.2"
             db = get_db()
 
+            if isinstance(kwargs.get("params"), dict):
+                kwargs = {**kwargs, **kwargs.get("params")}
+
             if kwargs.get("kwargs") and isinstance(kwargs.get("kwargs"), str):
                 try:
                     extra = json.loads(kwargs.get("kwargs") or "{}")
@@ -720,6 +723,7 @@ def register_quant_manager(mcp):
                 db = get_db()
                 results = {}
                 errors = []
+                persist_buffer = []
                 today = datetime.now().date()
 
                 for stock_code in codes[:200]:  # cap at 200
@@ -771,9 +775,28 @@ def register_quant_manager(mcp):
                         results[stock_code] = fv
 
                         if persist and fv:
-                            await db.save_factor_values(stock_code, today, fv)
+                            persist_buffer.append({
+                                "stock_code": stock_code,
+                                "factor_date": today,
+                                "values": fv,
+                            })
                     except Exception as e:
                         errors.append({"code": stock_code, "error": str(e)})
+
+                if persist and persist_buffer:
+                    try:
+                        if hasattr(db, "save_factor_values_batch"):
+                            await db.save_factor_values_batch(persist_buffer)
+                        else:
+                            for item in persist_buffer:
+                                await db.save_factor_values(item["stock_code"], item["factor_date"], item["values"])
+                    except Exception as exc:
+                        logger.warning("batch_compute_factors persist batch failed, retrying row-wise: %s", exc)
+                        for item in persist_buffer:
+                            try:
+                                await db.save_factor_values(item["stock_code"], item["factor_date"], item["values"])
+                            except Exception as row_exc:
+                                errors.append({"code": item["stock_code"], "error": f"persist failed: {row_exc}"})
 
                 # Compute cross-sectional IC if requested
                 # IC = corr(factor_value[t-period], return[t-period -> t])

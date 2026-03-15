@@ -1,13 +1,11 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { BFF_BASE } from '@/lib/api';
 import { setLoggedIn } from '@/lib/auth';
 
 export default function RegisterPage() {
-  const router = useRouter();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -42,8 +40,7 @@ export default function RegisterPage() {
       }
 
       setLoggedIn();
-      router.replace('/market');
-      router.refresh();
+      window.location.assign('/market');
     } catch (e) {
       setError(e instanceof Error ? e.message : '注册失败');
     } finally {

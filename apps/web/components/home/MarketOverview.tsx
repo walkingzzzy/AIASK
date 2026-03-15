@@ -5,12 +5,14 @@ import { ErrorState, EmptyState } from '@/components/status-state';
 import { fmtNum } from '@/lib/data-utils';
 import { isTradingHours } from '@/lib/trading-hours';
 import Link from 'next/link';
+import type { DashboardQuoteSnapshot } from '@aiask/shared-types';
 
 /* ------------------------------------------------------------------ */
 /* Props                                                               */
 /* ------------------------------------------------------------------ */
 
 export interface MarketOverviewProps {
+  mounted: boolean;
   dateStr: string;
   lastUpdated: Date | null;
   fgValue: number;
@@ -21,7 +23,7 @@ export interface MarketOverviewProps {
   /* Multi-index quotes */
   dashboardVisibility: Record<string, boolean>;
   idxQ: { error: string | null; isPending: boolean; data: unknown; refetch: () => void };
-  validIndices: Record<string, unknown>[];
+  validIndices: DashboardQuoteSnapshot[];
   INDEX_CODES: readonly string[];
 
   /* Sector heatmap */
@@ -34,17 +36,19 @@ export interface MarketOverviewProps {
 /* ------------------------------------------------------------------ */
 
 function MarketPulse({
-  dateStr, lastUpdated, fgValue, luStats, latestNorth, fmtAmount,
-}: Pick<MarketOverviewProps, 'dateStr' | 'lastUpdated' | 'fgValue' | 'luStats' | 'latestNorth' | 'fmtAmount'>) {
+  mounted, dateStr, lastUpdated, fgValue, luStats, latestNorth, fmtAmount,
+}: Pick<MarketOverviewProps, 'mounted' | 'dateStr' | 'lastUpdated' | 'fgValue' | 'luStats' | 'latestNorth' | 'fmtAmount'>) {
+  const marketOpen = mounted ? isTradingHours() : false;
+  const lastUpdatedLabel = mounted && lastUpdated ? lastUpdated.toLocaleTimeString('zh-CN') : null;
   return (
     <div className="glass rounded-xl p-4 mb-4 flex items-center justify-between flex-wrap gap-3">
       <div className="flex items-center gap-2">
-        <div className={`w-2 h-2 rounded-full ${isTradingHours() ? 'bg-success animate-pulse' : 'bg-text-muted'}`} />
-        <span className="text-sm font-medium">{isTradingHours() ? '交易中' : '已休市'}</span>
-        <span className="text-xs text-text-muted">{dateStr}</span>
+        <div className={`w-2 h-2 rounded-full ${marketOpen ? 'bg-success animate-pulse' : 'bg-text-muted'}`} />
+        <span className="text-sm font-medium">{marketOpen ? '交易中' : '已休市'}</span>
+        <span className="text-xs text-text-muted">{mounted ? dateStr : ''}</span>
       </div>
       <div className="flex items-center gap-4 text-xs text-text-secondary">
-        {lastUpdated && <span>更新: {lastUpdated.toLocaleTimeString('zh-CN')}</span>}
+        {lastUpdatedLabel ? <span>更新: {lastUpdatedLabel}</span> : null}
         <span>恐贪: <span className={fgValue > 60 ? 'text-danger font-medium' : fgValue < 40 ? 'text-success font-medium' : 'font-medium'}>{fgValue.toFixed(0)}</span></span>
         <span>涨停: <span className="font-medium">{String(luStats.totalLimitUp ?? luStats.total ?? luStats.count ?? '-')}</span></span>
         <span>北向: <span className={Number(latestNorth?.total ?? latestNorth?.netInflow ?? 0) >= 0 ? 'text-danger font-medium' : 'text-success font-medium'}>{fmtAmount(latestNorth?.total ?? latestNorth?.netInflow)}</span></span>
@@ -66,13 +70,13 @@ function MultiIndexQuotes({ dashboardVisibility, idxQ, validIndices, INDEX_CODES
       {validIndices.length > 0 ? (
         <KpiGrid cols={4}>
           {validIndices.map((q, i) => {
-            const chg = Number(q.changePercent ?? q.change_pct ?? q.changePct ?? 0);
+            const chg = Number(q.changePercent ?? q.change_pct ?? 0);
             const chgAmt = Number(q.change ?? 0);
             return (
-              <Link key={i} href={`/market?indexCode=${String(q.code ?? INDEX_CODES[i])}`} className="no-underline text-inherit">
+              <Link key={i} href={`/market?tab=index&indexCode=${encodeURIComponent(String(q.code ?? INDEX_CODES[i]))}`} className="no-underline text-inherit">
                 <KpiCard
-                  title={String(q.name ?? q.index_name ?? q.code ?? `指数${i + 1}`)}
-                  value={fmtNum(q.price ?? q.close ?? q.current, 2)}
+                  title={String(q.name ?? q.code ?? `指数${i + 1}`)}
+                  value={fmtNum(q.price, 2)}
                   suffix={chgAmt ? ' ' + (chgAmt > 0 ? '+' : '') + fmtNum(chgAmt, 2) : undefined}
                   change={chg}
                   changeType="percent"
@@ -84,7 +88,7 @@ function MultiIndexQuotes({ dashboardVisibility, idxQ, validIndices, INDEX_CODES
       ) : idxQ.isPending ? (
         <KpiGrid cols={4}><SkeletonCard /><SkeletonCard /><SkeletonCard /><SkeletonCard /></KpiGrid>
       ) : !idxQ.error ? (
-        <EmptyState text="主要指数暂无可用行情" />
+        <EmptyState text="主要指数暂时没有可用行情" hint="如果是开盘前或收盘后出现空态属正常现象；也可以前往市场页查看更完整的行情面板。" action={<Link href="/market" className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline">打开市场看板</Link>} />
       ) : null}
     </SectionCard>
   );
@@ -118,7 +122,7 @@ function SectorHeatmap({ dashboardVisibility, sectorQ, sectors }: Pick<MarketOve
         <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
           {Array.from({ length: 20 }).map((_, i) => <Skeleton key={i} height={52} />)}
         </div>
-      ) : !sectorQ.error ? <EmptyState text="暂无板块热力数据" /> : null}
+      ) : !sectorQ.error ? <EmptyState text="当前没有板块热力数据" hint="非交易时段或数据源波动时可能为空，稍后刷新通常会恢复。" action={<Link href="/market?tab=blocks" className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline">查看板块页</Link>} /> : null}
     </SectionCard>
   );
 }
@@ -131,6 +135,7 @@ export function MarketOverview(props: MarketOverviewProps) {
   return (
     <>
       <MarketPulse
+        mounted={props.mounted}
         dateStr={props.dateStr}
         lastUpdated={props.lastUpdated}
         fgValue={props.fgValue}

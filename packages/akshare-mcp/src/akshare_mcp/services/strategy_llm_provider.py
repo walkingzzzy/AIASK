@@ -40,6 +40,7 @@ class StrategyLLMConfig:
     initial_compact_level: int = 0
     recent_timeout_minimal_streak: int = 1
     recent_timeout_cooldown_sec: float = 600.0
+    max_concurrency: int = 3
     strict: bool = False
 
     @classmethod
@@ -67,6 +68,7 @@ class StrategyLLMConfig:
             initial_compact_level=initial_compact_level,
             recent_timeout_minimal_streak=recent_timeout_minimal_streak,
             recent_timeout_cooldown_sec=recent_timeout_cooldown_sec,
+            max_concurrency=max(1, min(8, int(os.getenv("STRATEGY_LLM_MAX_CONCURRENCY", "3") or 3))),
             strict=str(os.getenv("STRATEGY_LLM_STRICT_MODE", "")).strip().lower() in {"1", "true", "yes", "on"},
         )
 
@@ -78,6 +80,7 @@ class StrategyLLMProvider:
         self._recent_timeout_cooldown_until = 0.0
         self._last_failure_type: Optional[str] = None
         self._client = httpx.AsyncClient(follow_redirects=True, http2=False)
+        self._request_semaphore = asyncio.Semaphore(max(1, int(self.config.max_concurrency or 1)))
 
     async def close(self) -> None:
         """关闭共享 HTTP 连接池。"""
@@ -926,12 +929,13 @@ class StrategyLLMProvider:
             }
             request_started_at = time.perf_counter()
             try:
-                response = await client.post(
-                    self._endpoint(),
-                    headers=headers,
-                    json=payload,
-                    timeout=self._request_timeout(request_timeout_sec),
-                )
+                async with self._request_semaphore:
+                    response = await client.post(
+                        self._endpoint(),
+                        headers=headers,
+                        json=payload,
+                        timeout=self._request_timeout(request_timeout_sec),
+                    )
                 response.raise_for_status()
                 body = response.json()
                 content = self._extract_content(body)
@@ -1109,12 +1113,13 @@ class StrategyLLMProvider:
         for attempt in range(1, attempts + 1):
             request_started_at = time.perf_counter()
             try:
-                response = await client.post(
-                    self._endpoint(),
-                    headers=headers,
-                    json=payload,
-                    timeout=self._request_timeout(stage_timeout),
-                )
+                async with self._request_semaphore:
+                    response = await client.post(
+                        self._endpoint(),
+                        headers=headers,
+                        json=payload,
+                        timeout=self._request_timeout(stage_timeout),
+                    )
                 response.raise_for_status()
                 body = response.json()
                 content = self._extract_content(body)

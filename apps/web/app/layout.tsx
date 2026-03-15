@@ -21,8 +21,8 @@ export const metadata: Metadata = {
   keywords: ['股票分析', 'AI投资', '量化交易', '技术分析', '模拟交易', 'AIASK'],
   authors: [{ name: 'AIASK Team' }],
   icons: {
-    icon: '/favicon.ico',
-    apple: '/apple-touch-icon.png',
+    icon: '/favicon.svg',
+    shortcut: '/favicon.svg',
   },
   openGraph: {
     type: 'website',
@@ -53,7 +53,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="zh-CN">
       <head>
-        <link rel="preconnect" href={process.env.NEXT_PUBLIC_BFF_BASE_URL ? new URL(process.env.NEXT_PUBLIC_BFF_BASE_URL).origin : 'http://localhost:3001'} />
+        {process.env.NEXT_PUBLIC_BFF_BASE_URL ? (
+          <link rel="preconnect" href={new URL(process.env.NEXT_PUBLIC_BFF_BASE_URL).origin} />
+        ) : null}
       </head>
       <body>
         <QueryProvider>

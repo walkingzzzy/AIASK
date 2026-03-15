@@ -6,6 +6,10 @@ class AddStocksDto {
     @IsString()
     group!: string;
 
+    @IsOptional()
+    @IsString()
+    groupName?: string;
+
     @IsArray()
     @IsString({ each: true })
     codes!: string[];
@@ -21,6 +25,10 @@ class RemoveStockDto {
 }
 
 class CreateGroupDto {
+    @IsOptional()
+    @IsString()
+    id?: string;
+
     @IsString()
     name!: string;
 
@@ -30,8 +38,13 @@ class CreateGroupDto {
 }
 
 class DeleteGroupDto {
+    @IsOptional()
     @IsString()
-    name!: string;
+    id?: string;
+
+    @IsOptional()
+    @IsString()
+    name?: string;
 }
 
 class ReorderDto {
@@ -62,7 +75,7 @@ export class WatchlistController {
         @Req() req: { traceId?: string; headers?: Record<string, string | undefined>; user?: { id?: string } },
     ) {
         const userId = req.user?.id ?? 'default';
-        const data = await this.watchlistService.createGroup(userId, body.name, body.color);
+        const data = await this.watchlistService.createGroup(userId, body.id, body.name, body.color);
         return { success: true, data, traceId: this.getTraceId(req) };
     }
 
@@ -72,7 +85,7 @@ export class WatchlistController {
         @Req() req: { traceId?: string; headers?: Record<string, string | undefined>; user?: { id?: string } },
     ) {
         const userId = req.user?.id ?? 'default';
-        const data = await this.watchlistService.deleteGroup(userId, query.name);
+        const data = await this.watchlistService.deleteGroup(userId, query.id, query.name);
         return { success: true, data, traceId: this.getTraceId(req) };
     }
 
@@ -82,7 +95,7 @@ export class WatchlistController {
         @Req() req: { traceId?: string; headers?: Record<string, string | undefined>; user?: { id?: string } },
     ) {
         const userId = req.user?.id ?? 'default';
-        const data = await this.watchlistService.addStocks(userId, body.group, body.codes);
+        const data = await this.watchlistService.addStocks(userId, body.group, body.codes, body.groupName);
         return { success: true, data, traceId: this.getTraceId(req) };
     }
 

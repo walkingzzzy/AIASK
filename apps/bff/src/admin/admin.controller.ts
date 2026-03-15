@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, ConflictException, Controller, Get, Param, Post, UseGuards, UseInterceptors } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { AuthGuard } from '../rbac/auth.guard';
 import { Roles } from '../rbac/roles.decorator';
@@ -44,6 +44,9 @@ export class AdminController {
   @Post('dead-letters/:id/retry')
   async retryDeadLetter(@Param('id') id: string) {
     const data = await this.adminService.retryDeadLetter(id);
+    if (!data.success) {
+      throw new ConflictException(data.message);
+    }
     return { success: true, data };
   }
 

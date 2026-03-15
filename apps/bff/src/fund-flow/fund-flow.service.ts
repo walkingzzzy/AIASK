@@ -61,13 +61,6 @@ export class FundFlowService {
     }
 
     const payload = await this.mcp.callTool('get_sector_fund_flow', {});
-    // DEBUG: log raw MCP response to understand field names
-    const rawRoot = (payload as any)?.data ?? payload ?? [];
-    const rawList = Array.isArray(rawRoot) ? rawRoot : rawRoot?.items ?? rawRoot?.data ?? [];
-    if (Array.isArray(rawList) && rawList.length > 0) {
-      console.log('[SECTOR_FLOW] Raw MCP item keys:', Object.keys(rawList[0]));
-      console.log('[SECTOR_FLOW] Raw MCP item[0]:', JSON.stringify(rawList[0]));
-    }
     const result = { data: { flows: this.normalizeFlows(payload) }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
     return result;

@@ -1,73 +1,35 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
+import type {
+  MarketKlinePeriod,
+  MarketKlineResponseDto,
+  MarketOrderBookResponseDto,
+  MarketQuoteResponseDto,
+  NormalizedKlinePoint,
+  NormalizedOrderBook,
+  NormalizedQuote,
+  ToolArgs,
+} from '@aiask/shared-types';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
-
-export type NormalizedQuote = {
-  code: string; name: string; price: number | null; change: number | null;
-  changePercent: number | null; volume: number | null; amount: number | null;
-  high: number | null; low: number | null; open: number | null; prevClose: number | null;
-  timestamp: string | null;
-};
-
-export type NormalizedKlinePoint = {
-  date: string; open: number; close: number; low: number; high: number; volume: number;
-};
-
-export type NormalizedOrderBook = {
-  bids: Array<{ price: number; volume: number }>;
-  asks: Array<{ price: number; volume: number }>;
-  timestamp: number | null;
-};
-
-export type QuoteResponseDto = {
-  quote: NormalizedQuote;
-  tool: 'get_realtime_quote';
-  argsTried: Array<Record<string, unknown>>;
-  argsMatched: Record<string, unknown>;
-  meta: {
-    fetchedAt: string;
-    cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
-  };
-};
-
-export type KlineResponseDto = {
-  kline: NormalizedKlinePoint[];
-  tool: 'get_kline_data';
-  argsTried: Array<Record<string, unknown>>;
-  argsMatched: Record<string, unknown>;
-  meta: {
-    fetchedAt: string;
-    cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
-  };
-};
-
-export type OrderBookResponseDto = {
-  orderBook: NormalizedOrderBook;
-  tool: 'get_order_book';
-  argsTried: Array<Record<string, unknown>>;
-  argsMatched: Record<string, unknown>;
-  meta: {
-    fetchedAt: string;
-    cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
-  };
-};
 
 @Injectable()
 export class MarketService {
   private static readonly QUOTE_TTL_SECONDS = 30;
   private static readonly KLINE_TTL_SECONDS = 30;
   private static readonly ORDER_BOOK_TTL_SECONDS = 30;
+  private static readonly DEFAULT_KLINE_LIMIT = 60;
+  private static readonly MAX_KLINE_LIMIT = 1000;
 
   constructor(
     private readonly mcpGatewayService: McpGatewayService,
     private readonly cacheService: CommonCacheService,
   ) {}
 
-  async getQuote(code: string): Promise<QuoteResponseDto> {
+  async getQuote(code: string): Promise<MarketQuoteResponseDto> {
     const stockCode = code.trim();
     const cacheKey = `market:quote:${stockCode}`;
     const ttlSeconds = this.cacheService.resolveTtl('market.quote', MarketService.QUOTE_TTL_SECONDS);
-    const cached = await this.cacheService.getWithMeta<QuoteResponseDto>(cacheKey);
+    const cached = await this.cacheService.getWithMeta<MarketQuoteResponseDto>(cacheKey);
     if (cached.value) {
       return {
         ...cached.value,
@@ -78,15 +40,15 @@ export class MarketService {
       };
     }
 
-    const attempts: Array<Record<string, unknown>> = [
+    const attempts: ToolArgs[] = [
       { stock_code: stockCode },
       { code: stockCode },
       { symbol: stockCode },
     ];
 
     const { payload, argsMatched } = await this.callWithArgs('get_realtime_quote', attempts);
-    const result: QuoteResponseDto = {
-      quote: this.normalizeQuote(payload),
+    const result: MarketQuoteResponseDto = {
+      quote: this.normalizeQuote(payload, stockCode),
       tool: 'get_realtime_quote',
       argsTried: attempts,
       argsMatched,
@@ -99,12 +61,17 @@ export class MarketService {
     return result;
   }
 
-  async getKline(code: string, period: string): Promise<KlineResponseDto> {
+  async getKline(
+    code: string,
+    period: MarketKlinePeriod | string,
+    limit?: number,
+  ): Promise<MarketKlineResponseDto> {
     const normalized = code.trim();
-    const klinePeriod = period.trim() || 'daily';
-    const cacheKey = `market:kline:${normalized}:${klinePeriod}`;
+    const klinePeriod = this.normalizeKlinePeriod(period);
+    const klineLimit = this.normalizeKlineLimit(limit);
+    const cacheKey = `market:kline:${normalized}:${klinePeriod}:${klineLimit}`;
     const ttlSeconds = this.cacheService.resolveTtl('market.kline', MarketService.KLINE_TTL_SECONDS);
-    const cached = await this.cacheService.getWithMeta<KlineResponseDto>(cacheKey);
+    const cached = await this.cacheService.getWithMeta<MarketKlineResponseDto>(cacheKey);
     if (cached.value) {
       return {
         ...cached.value,
@@ -115,13 +82,13 @@ export class MarketService {
       };
     }
 
-    const attempts: Array<Record<string, unknown>> = [
-      { code: normalized, period: klinePeriod, limit: 60, start_date: '', end_date: '', adjust: '' },
-      { stock_code: normalized, period: klinePeriod, limit: 60 },
+    const attempts: ToolArgs[] = [
+      { code: normalized, period: klinePeriod, limit: klineLimit, start_date: '', end_date: '', adjust: '' },
+      { stock_code: normalized, period: klinePeriod, limit: klineLimit },
     ];
 
     const { payload, argsMatched } = await this.callWithArgs('get_kline_data', attempts, 'get_kline');
-    const result: KlineResponseDto = {
+    const result: MarketKlineResponseDto = {
       kline: this.normalizeKline(payload),
       tool: 'get_kline_data',
       argsTried: attempts,
@@ -135,11 +102,11 @@ export class MarketService {
     return result;
   }
 
-  async getOrderBook(code: string): Promise<OrderBookResponseDto> {
+  async getOrderBook(code: string): Promise<MarketOrderBookResponseDto> {
     const normalized = code.trim();
     const cacheKey = `market:order-book:${normalized}`;
     const ttlSeconds = this.cacheService.resolveTtl('market.order_book', MarketService.ORDER_BOOK_TTL_SECONDS);
-    const cached = await this.cacheService.getWithMeta<OrderBookResponseDto>(cacheKey);
+    const cached = await this.cacheService.getWithMeta<MarketOrderBookResponseDto>(cacheKey);
     if (cached.value) {
       return {
         ...cached.value,
@@ -150,15 +117,15 @@ export class MarketService {
       };
     }
 
-    const attempts: Array<Record<string, unknown>> = [
+    const attempts: ToolArgs[] = [
       { stock_code: normalized },
       { code: normalized },
       { symbol: normalized },
     ];
 
     const { payload, argsMatched } = await this.callWithArgs('get_order_book', attempts);
-    const result: OrderBookResponseDto = {
-      orderBook: this.normalizeOrderBook(payload),
+    const result: MarketOrderBookResponseDto = {
+      orderBook: this.normalizeOrderBook(payload, normalized),
       tool: 'get_order_book',
       argsTried: attempts,
       argsMatched,
@@ -169,6 +136,21 @@ export class MarketService {
     };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
     return result;
+  }
+
+  private normalizeKlinePeriod(period: string): MarketKlinePeriod {
+    const value = period.trim();
+    if (value === 'weekly' || value === 'monthly') {
+      return value;
+    }
+    return 'daily';
+  }
+
+  private normalizeKlineLimit(limit?: number) {
+    if (!Number.isFinite(limit)) {
+      return MarketService.DEFAULT_KLINE_LIMIT;
+    }
+    return Math.max(1, Math.min(MarketService.MAX_KLINE_LIMIT, Math.floor(limit ?? MarketService.DEFAULT_KLINE_LIMIT)));
   }
 
   async getStockList() {
@@ -193,7 +175,8 @@ export class MarketService {
     return result;
   }
 
-  private static readonly INDEX_CODES = new Set(['000001', '399001', '399006', '000688', '000300', '000016', '000905']);
+  // 000001 在个股场景通常指平安银行；指数场景请走显式的 getIndexQuote / index 订阅路径。
+  private static readonly INDEX_CODES = new Set(['399001', '399006', '000688', '000300', '000016', '000905']);
 
   async getBatchQuotes(codes: string[]) {
     const indexCodes = codes.filter(c => MarketService.INDEX_CODES.has(c));
@@ -213,6 +196,15 @@ export class MarketService {
       ...indexResults.filter(Boolean),
       ...stockResult.map((q: any) => this.normalizeQuote(q)),
     ];
+    return { quotes: list, count: list.length };
+  }
+
+  async getIndexBatchQuotes(codes: string[]) {
+    const normalizedCodes = codes.map((code) => code.trim()).filter(Boolean);
+    const quotes = await Promise.all(
+      normalizedCodes.map((code) => this.getIndexQuote(code).then((result) => result.quote).catch(() => null)),
+    );
+    const list = quotes.filter((quote): quote is NormalizedQuote => Boolean(quote));
     return { quotes: list, count: list.length };
   }
 
@@ -255,7 +247,7 @@ export class MarketService {
     const attempts: Array<Record<string, unknown>> = [{ index_code: code }, { code }];
     const { payload } = await this.callWithArgs('get_index_quote', attempts);
     const result = {
-      quote: this.normalizeQuote(payload),
+      quote: this.normalizeQuote(payload, code),
       meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
     };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
@@ -387,19 +379,29 @@ export class MarketService {
     return Number.isFinite(n) ? n : null;
   }
 
-  private normalizeQuote(payload: any): NormalizedQuote {
+  private normalizeQuote(payload: any, fallbackCode?: string): NormalizedQuote {
     const d = payload?.data ?? payload ?? {};
+    const code = String(d.code ?? d.stock_code ?? d.index_code ?? d.symbol ?? fallbackCode ?? '');
+    const price = this.toNum(d.price ?? d.current ?? d.close ?? d.Close);
+    const changePercent = this.toNum(d.changePercent ?? d.change_percent ?? d.pct_change ?? d.pct_chg);
+    const amount = this.toNum(d.amount ?? d.turnover ?? d.Amount);
     return {
-      code: String(d.code ?? d.stock_code ?? d.symbol ?? ''),
-      name: String(d.name ?? d.stock_name ?? ''),
-      price: this.toNum(d.price ?? d.current ?? d.close ?? d.Close),
+      symbol: code,
+      code,
+      name: String(d.name ?? d.stock_name ?? d.index_name ?? ''),
+      last: price,
+      price,
       change: this.toNum(d.change ?? d.price_change),
-      changePercent: this.toNum(d.changePercent ?? d.change_percent ?? d.pct_change ?? d.pct_chg),
+      pct_change: changePercent,
+      changePercent,
+      change_pct: changePercent,
       volume: this.toNum(d.volume ?? d.vol ?? d.Volume),
-      amount: this.toNum(d.amount ?? d.turnover ?? d.Amount),
+      turnover: amount,
+      amount,
       high: this.toNum(d.high ?? d.High),
       low: this.toNum(d.low ?? d.Low),
       open: this.toNum(d.open ?? d.Open),
+      close: this.toNum(d.close ?? d.Close ?? d.current ?? d.price),
       prevClose: this.toNum(d.prevClose ?? d.preClose ?? d.prev_close ?? d.pre_close),
       timestamp: d.timestamp ? String(d.timestamp) : d.date ? String(d.date) : null,
     };
@@ -409,16 +411,18 @@ export class MarketService {
     const root = payload?.data ?? payload ?? [];
     const list = Array.isArray(root) ? root : Array.isArray(root?.data) ? root.data : Array.isArray(root?.records) ? root.records : [];
     return list.map((x: any) => ({
+      timestamp: x.timestamp ? String(x.timestamp) : x.date ? String(x.date) : null,
       date: String(x.date ?? x.Date ?? x.trade_date ?? ''),
       open: Number(x.open ?? x.Open ?? 0),
       close: Number(x.close ?? x.Close ?? 0),
       low: Number(x.low ?? x.Low ?? 0),
       high: Number(x.high ?? x.High ?? 0),
       volume: Number(x.volume ?? x.vol ?? x.Volume ?? 0),
+      turnover: this.toNum(x.turnover ?? x.amount ?? x.Amount),
     }));
   }
 
-  private normalizeOrderBook(payload: any): NormalizedOrderBook {
+  private normalizeOrderBook(payload: any, fallbackCode?: string): NormalizedOrderBook {
     const d = payload?.data ?? payload ?? {};
     const mkEntries = (a: any): Array<{ price: number; volume: number }> =>
       (Array.isArray(a) ? a.slice(0, 5) : []).map((x: any) => ({
@@ -426,9 +430,10 @@ export class MarketService {
         volume: Number(x.volume ?? x[1] ?? 0),
       }));
     return {
+      symbol: String(d.code ?? d.stock_code ?? d.symbol ?? fallbackCode ?? ''),
       bids: mkEntries(d.bids ?? d.bid),
       asks: mkEntries(d.asks ?? d.ask),
-      timestamp: d.timestamp != null ? Number(d.timestamp) : null,
+      timestamp: d.timestamp != null ? String(d.timestamp) : d.date != null ? String(d.date) : null,
     };
   }
 
@@ -475,4 +480,3 @@ export class MarketService {
     }
   }
 }
-

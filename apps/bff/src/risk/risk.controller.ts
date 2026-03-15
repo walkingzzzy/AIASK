@@ -20,12 +20,17 @@ class RiskQueryDto {
 export class RiskController {
   constructor(private readonly riskService: RiskService) {}
 
+  private userId(req: { user?: { id?: string; sub?: string } }) {
+    return String(req.user?.sub ?? req.user?.id ?? 'default');
+  }
+
   @Get('summary')
   async summary(
     @Query() query: RiskQueryDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined>; user?: { id?: string; sub?: string } },
   ) {
     const data = await this.riskService.getSummary({
+      userId: this.userId(req),
       portfolioId: query.portfolioId ? Number(query.portfolioId) : undefined,
       lookbackDays: query.lookbackDays ? Number(query.lookbackDays) : undefined,
       injectFail: query.injectFail,
@@ -39,9 +44,10 @@ export class RiskController {
   @Get('var')
   async varOnly(
     @Query() query: RiskQueryDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined>; user?: { id?: string; sub?: string } },
   ) {
     const data = await this.riskService.getVarOnly({
+      userId: this.userId(req),
       portfolioId: query.portfolioId ? Number(query.portfolioId) : undefined,
       lookbackDays: query.lookbackDays ? Number(query.lookbackDays) : undefined,
       injectFail: query.injectFail,
@@ -52,4 +58,3 @@ export class RiskController {
     return { success: true, data, traceId: String(traceId) };
   }
 }
-

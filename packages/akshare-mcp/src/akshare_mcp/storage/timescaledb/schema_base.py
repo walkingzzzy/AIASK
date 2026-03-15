@@ -36,14 +36,16 @@ class SchemaBase:
         self.pool: Optional[asyncpg.Pool] = None
         self._initialized = False
         self._init_lock: Optional[asyncio.Lock] = None
+        self._init_lock_loop: Optional[asyncio.AbstractEventLoop] = None
         self._bound_loop: Optional[asyncio.AbstractEventLoop] = None
         self._pgvector_enabled = False
 
     def _get_init_lock(self) -> asyncio.Lock:
         """懒加载初始化锁，确保在当前事件循环中创建"""
         loop = asyncio.get_running_loop()
-        if self._init_lock is None or self._bound_loop is not loop:
+        if self._init_lock is None or self._init_lock_loop is not loop:
             self._init_lock = asyncio.Lock()
+            self._init_lock_loop = loop
         return self._init_lock
 
     def _reset_pool_state(self) -> None:
@@ -52,6 +54,7 @@ class SchemaBase:
         self._initialized = False
         self._bound_loop = None
         self._init_lock = None
+        self._init_lock_loop = None
 
     def _terminate_stale_pool(self, current_loop: asyncio.AbstractEventLoop) -> None:
         """事件循环切换时，尽力终止旧连接池，避免直接丢引用。"""
@@ -67,6 +70,57 @@ class SchemaBase:
                 logger.info("Terminated stale connection pool after event loop change")
             except Exception as exc:
                 logger.warning("Failed to terminate stale connection pool: %s", exc)
+
+    @staticmethod
+    def _read_int_env(name: str, default: int, minimum: int) -> int:
+        try:
+            value = int(os.getenv(name, str(default)))
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, value)
+
+    @staticmethod
+    def _read_float_env(name: str, default: float, minimum: float = 0.0) -> float:
+        try:
+            value = float(os.getenv(name, str(default)))
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, value)
+
+    @staticmethod
+    def _resolve_startup_profile() -> str:
+        raw = str(os.getenv('AKSHARE_MCP_STARTUP_PROFILE', 'full')).strip().lower()
+        if raw in {'tool-only', 'tool_only', 'worker', 'lite'}:
+            return 'tool-only'
+        return 'full'
+
+    def _build_db_config(self) -> dict:
+        profile = self._resolve_startup_profile()
+        default_min_size = 1
+        default_max_size = 4 if profile == 'full' else 2
+        min_size = self._read_int_env('AKSHARE_MCP_DB_POOL_MIN', default_min_size, 1)
+        max_size = self._read_int_env('AKSHARE_MCP_DB_POOL_MAX', default_max_size, min_size)
+        command_timeout = self._read_int_env('DB_CONNECT_TIMEOUT_MS', 10000, 1000) / 1000
+        max_inactive_lifetime = self._read_float_env(
+            'AKSHARE_MCP_DB_MAX_INACTIVE_LIFETIME_SEC',
+            60.0,
+            0.0,
+        )
+
+        return {
+            'user': os.getenv('DB_USER', 'postgres'),
+            'password': os.getenv('DB_PASSWORD', 'password'),
+            'database': os.getenv('DB_NAME', 'postgres'),
+            'host': os.getenv('DB_HOST', 'localhost'),
+            'port': self._read_int_env('DB_PORT', 5432, 1),
+            'min_size': min_size,
+            'max_size': max_size,
+            'command_timeout': command_timeout,
+            'max_inactive_connection_lifetime': max_inactive_lifetime,
+            'server_settings': {
+                'application_name': f'akshare-mcp:{profile}',
+            },
+        }
 
     async def initialize(self) -> None:
         """初始化数据库连接池"""
@@ -88,22 +142,22 @@ class SchemaBase:
         if not os.getenv('DB_PASSWORD') or os.getenv('DB_PASSWORD') == 'password':
             load_mcp_env(override=True, only_prefixes=('DB_',))
 
-        db_config = {
-            'user': os.getenv('DB_USER', 'postgres'),
-            'password': os.getenv('DB_PASSWORD', 'password'),
-            'database': os.getenv('DB_NAME', 'postgres'),
-            'host': os.getenv('DB_HOST', 'localhost'),
-            'port': int(os.getenv('DB_PORT', '5432')),
-            'min_size': 10,
-            'max_size': 20,
-            'command_timeout': int(os.getenv('DB_CONNECT_TIMEOUT_MS', '10000')) / 1000,
-        }
+        db_config = self._build_db_config()
+        profile = self._resolve_startup_profile()
 
         try:
             self.pool = await asyncpg.create_pool(**db_config)
             self._initialized = True
             self._bound_loop = asyncio.get_running_loop()
-            logger.info("Connected to %s:%s/%s", db_config['host'], db_config['port'], db_config['database'])
+            logger.info(
+                "Connected to %s:%s/%s (profile=%s, pool=%s-%s)",
+                db_config['host'],
+                db_config['port'],
+                db_config['database'],
+                profile,
+                db_config['min_size'],
+                db_config['max_size'],
+            )
             await self._init_tables()
         except Exception as e:
             logger.error("Connection failed: %s", e)

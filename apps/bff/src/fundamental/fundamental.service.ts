@@ -33,6 +33,54 @@ export type FundamentalHistoryDto = {
   };
 };
 
+export type FundamentalCapitalDto = {
+  code: string;
+  totalShares: number | null;
+  total_shares: number | null;
+  floatShares: number | null;
+  float_shares: number | null;
+  restrictedShares: number | null;
+  restricted_shares: number | null;
+  capitalData: Array<{
+    date: string;
+    totalShares: number | null;
+    total_shares: number | null;
+    floatShares: number | null;
+    float_shares: number | null;
+    restrictedShares: number | null;
+    restricted_shares: number | null;
+  }>;
+  holders: Array<never>;
+  sourceTool: 'get_stock_capital';
+  argsMatched: Record<string, unknown>;
+  meta: {
+    fetchedAt: string;
+    cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
+  };
+};
+
+export type FundamentalPeersDto = {
+  code: string;
+  name: string;
+  industry: string;
+  peerCount: number;
+  peer_count: number;
+  peers: Array<Record<string, unknown>>;
+  targetMetrics: Record<string, unknown>;
+  target_metrics: Record<string, unknown>;
+  comparison: Record<string, unknown>;
+  industryStats: Record<string, unknown>;
+  industry_stats: Record<string, unknown>;
+  fallbackSource?: string;
+  fallbackReason?: string;
+  sourceTool: 'relative_valuation';
+  argsMatched: Record<string, unknown>;
+  meta: {
+    fetchedAt: string;
+    cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
+  };
+};
+
 export type NormalizedValuation = {
   pe: number | null; pb: number | null; ps: number | null; marketCap: number | null;
 };
@@ -65,6 +113,8 @@ export class FundamentalService {
   private readonly logger = new Logger(FundamentalService.name);
   private static readonly OVERVIEW_TTL_SECONDS = 300;
   private static readonly HISTORY_TTL_SECONDS = 300;
+  private static readonly CAPITAL_TTL_SECONDS = 300;
+  private static readonly PEERS_TTL_SECONDS = 300;
 
   constructor(
     private readonly mcpGatewayService: McpGatewayService,
@@ -205,6 +255,175 @@ export class FundamentalService {
     if (points.length > 0) {
       await this.cacheService.set(cacheKey, result, ttlSeconds);
     }
+    return result;
+  }
+
+  async getCapital(code: string): Promise<FundamentalCapitalDto> {
+    const normalized = code.trim();
+    const cacheKey = `fundamental:capital:${normalized}`;
+    const ttlSeconds = this.cacheService.resolveTtl('fundamental.capital', FundamentalService.CAPITAL_TTL_SECONDS);
+    const cached = await this.cacheService.getWithMeta<FundamentalCapitalDto>(cacheKey);
+    if (cached.value) {
+      return {
+        ...cached.value,
+        meta: {
+          ...cached.value.meta,
+          cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds },
+        },
+      };
+    }
+
+    const attempts: Array<Record<string, unknown>> = [
+      { code: normalized },
+      { stock_code: normalized },
+      { symbol: normalized },
+    ];
+    const { payload, argsMatched } = await this.callWithArgs('get_stock_capital', attempts);
+    const capitalData = this.normalizeCapitalData(payload);
+    const latest = capitalData.at(-1) ?? null;
+    const totalShares = latest?.totalShares ?? null;
+    const floatShares = latest?.floatShares ?? null;
+    const restrictedShares =
+      totalShares != null && floatShares != null ? Math.max(0, totalShares - floatShares) : null;
+
+    const result: FundamentalCapitalDto = {
+      code: normalized,
+      totalShares,
+      total_shares: totalShares,
+      floatShares,
+      float_shares: floatShares,
+      restrictedShares,
+      restricted_shares: restrictedShares,
+      capitalData,
+      holders: [],
+      sourceTool: 'get_stock_capital',
+      argsMatched,
+      meta: {
+        fetchedAt: new Date().toISOString(),
+        cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+      },
+    };
+
+    if (capitalData.length > 0 || totalShares != null || floatShares != null) {
+      await this.cacheService.set(cacheKey, result, ttlSeconds);
+    }
+
+    return result;
+  }
+
+  async getPeers(code: string): Promise<FundamentalPeersDto> {
+    const normalized = code.trim();
+    const cacheKey = `fundamental:peers:${normalized}`;
+    const ttlSeconds = this.cacheService.resolveTtl('fundamental.peers', FundamentalService.PEERS_TTL_SECONDS);
+    const cached = await this.cacheService.getWithMeta<FundamentalPeersDto>(cacheKey);
+    if (cached.value && !this.isStalePeersCache(cached.value)) {
+      return {
+        ...cached.value,
+        meta: {
+          ...cached.value.meta,
+          cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds },
+        },
+      };
+    }
+
+    const attempts: Array<Record<string, unknown>> = [
+      { code: normalized, metrics: ['pe', 'pb', 'ps'] },
+      { code: normalized },
+    ];
+    const { payload, argsMatched } = await this.callWithArgs('relative_valuation', attempts);
+    const root = this.unwrapRoot(payload);
+    let rawPeers = Array.isArray(root.peers)
+      ? root.peers
+      : Array.isArray(root.items)
+        ? root.items
+        : Array.isArray(root.results)
+          ? root.results
+          : [];
+    let targetMetrics = this.normalizePeerMetrics(root.target_metrics ?? root.targetMetrics);
+    let normalizedPeers = rawPeers
+      .map((peer: unknown) => this.normalizePeerEntry(peer))
+      .filter((peer: Record<string, unknown>) => String(peer.code ?? '').trim());
+    let comparison = this.readRecord(root.comparison);
+    let industryStats = this.readRecord(root.industry_stats ?? root.industryStats);
+    let name = String(root.name ?? '');
+    let industry = String(root.industry ?? '');
+    let fallbackSource: string | undefined;
+    let fallbackReason: string | undefined;
+
+    if ((root.success === false || normalizedPeers.length === 0) && this.dbService.enabled) {
+      try {
+        const dbFallback = await this.buildPeerFallbackFromDb(normalized);
+        if (dbFallback) {
+          normalizedPeers = dbFallback.peers;
+          targetMetrics = dbFallback.targetMetrics;
+          comparison = dbFallback.comparison;
+          industryStats = dbFallback.industryStats;
+          name = dbFallback.name;
+          industry = dbFallback.industry;
+          fallbackSource = dbFallback.fallbackSource;
+          fallbackReason = typeof root.error === 'string' ? root.error : 'relative_valuation unavailable';
+          rawPeers = normalizedPeers;
+        }
+      } catch (error) {
+        this.logger.warn(`DB peer fallback failed for ${normalized}: ${error}`);
+      }
+    }
+
+    if (!normalizedPeers.some((peer: Record<string, unknown>) => String(peer.code ?? '') === normalized)) {
+      normalizedPeers.unshift({
+        code: normalized,
+        name,
+        marketCap: targetMetrics.marketCap ?? null,
+        market_cap: targetMetrics.marketCap ?? null,
+        pe: targetMetrics.pe ?? null,
+        pb: targetMetrics.pb ?? null,
+        ps: targetMetrics.ps ?? null,
+        roe: targetMetrics.roe ?? null,
+        revenueGrowth: targetMetrics.revenueGrowth ?? null,
+        revenue_growth: targetMetrics.revenueGrowth ?? null,
+        profitGrowth: targetMetrics.profitGrowth ?? null,
+        profit_growth: targetMetrics.profitGrowth ?? null,
+        price: targetMetrics.price ?? null,
+        changePct: targetMetrics.changePct ?? null,
+        change_pct: targetMetrics.changePct ?? null,
+        isTarget: true,
+      });
+    } else {
+      for (const peer of normalizedPeers) {
+        if (String(peer.code ?? '') === normalized) {
+          peer.isTarget = true;
+        }
+      }
+    }
+
+    const peerCount = Number(root.peer_count ?? root.peerCount ?? (rawPeers.length || normalizedPeers.length));
+
+    const result: FundamentalPeersDto = {
+      code: normalized,
+      name,
+      industry,
+      peerCount,
+      peer_count: peerCount,
+      peers: normalizedPeers.slice(0, 10),
+      targetMetrics,
+      target_metrics: targetMetrics,
+      comparison,
+      industryStats,
+      industry_stats: industryStats,
+      fallbackSource,
+      fallbackReason,
+      sourceTool: 'relative_valuation',
+      argsMatched,
+      meta: {
+        fetchedAt: new Date().toISOString(),
+        cache: { hit: false, backend: 'none', key: cacheKey, ttlSeconds },
+      },
+    };
+
+    if (result.peers.length > 0) {
+      await this.cacheService.set(cacheKey, result, ttlSeconds);
+    }
+
     return result;
   }
 
@@ -437,6 +656,349 @@ export class FundamentalService {
     }));
   }
 
+  private normalizeCapitalData(payload: any) {
+    const root = this.unwrapRoot(payload);
+    const list = Array.isArray(root.capital_data)
+      ? root.capital_data
+      : Array.isArray(root.capitalData)
+        ? root.capitalData
+        : Array.isArray(root.data)
+          ? root.data
+          : Array.isArray(root)
+            ? root
+            : [];
+
+    return list.map((it: any) => {
+      const totalShares = this.toNum(it.zgb ?? it.total_shares ?? it.totalShares);
+      const floatShares = this.toNum(it.ltgb ?? it.float_shares ?? it.floatShares);
+      const restrictedShares =
+        totalShares != null && floatShares != null ? Math.max(0, totalShares - floatShares) : null;
+
+      return {
+        date: String(it.Date ?? it.date ?? it.report_date ?? ''),
+        totalShares,
+        total_shares: totalShares,
+        floatShares,
+        float_shares: floatShares,
+        restrictedShares,
+        restricted_shares: restrictedShares,
+      };
+    });
+  }
+
+  private normalizePeerEntry(value: unknown): Record<string, unknown> {
+    const row = this.readRecord(value);
+    const marketCap = this.toNum(row.market_cap ?? row.marketCap ?? row.total_mv);
+    const pe = this.toNum(row.pe ?? row.pe_ratio ?? row.PE);
+    const pb = this.toNum(row.pb ?? row.pb_ratio ?? row.PB);
+    const ps = this.toNum(row.ps ?? row.ps_ratio ?? row.PS);
+    const roe = this.toNum(row.roe ?? row.ROE);
+    const revenueGrowth = this.toNum(row.revenue_growth ?? row.revenueGrowth ?? row.revenue_yoy ?? row.rev_yoy);
+    const profitGrowth = this.toNum(row.profit_growth ?? row.profitGrowth ?? row.net_yoy);
+    const price = this.toNum(row.price ?? row.close);
+    const changePct = this.toNum(row.change_pct ?? row.changePercent ?? row.pct_chg);
+
+    return {
+      code: String(row.code ?? row.stock_code ?? ''),
+      name: String(row.name ?? row.stock_name ?? ''),
+      marketCap,
+      market_cap: marketCap,
+      pe,
+      pb,
+      ps,
+      roe,
+      revenueGrowth,
+      revenue_growth: revenueGrowth,
+      profitGrowth,
+      profit_growth: profitGrowth,
+      price,
+      changePct,
+      change_pct: changePct,
+    };
+  }
+
+  private normalizePeerMetrics(value: unknown) {
+    const row = this.readRecord(value);
+    return {
+      marketCap: this.toNum(row.market_cap ?? row.marketCap ?? row.total_mv),
+      pe: this.toNum(row.pe ?? row.pe_ratio ?? row.PE),
+      pb: this.toNum(row.pb ?? row.pb_ratio ?? row.PB),
+      ps: this.toNum(row.ps ?? row.ps_ratio ?? row.PS),
+      roe: this.toNum(row.roe ?? row.ROE),
+      revenueGrowth: this.toNum(row.revenue_growth ?? row.revenueGrowth ?? row.revenue_yoy ?? row.rev_yoy),
+      profitGrowth: this.toNum(row.profit_growth ?? row.profitGrowth ?? row.net_yoy),
+      price: this.toNum(row.price ?? row.close),
+      changePct: this.toNum(row.change_pct ?? row.changePercent ?? row.pct_chg),
+    };
+  }
+
+  private isStalePeersCache(value: FundamentalPeersDto) {
+    const peers = Array.isArray(value.peers) ? value.peers : [];
+    if (peers.length === 0) return true;
+    if (peers.length > 1) return false;
+
+    const first = this.readRecord(peers[0]);
+    const hasMetrics = ['marketCap', 'market_cap', 'pe', 'pb', 'roe', 'revenueGrowth', 'profitGrowth']
+      .some((key) => first[key] != null && first[key] !== '');
+
+    return Boolean(first.isTarget) && !hasMetrics;
+  }
+
+  private async buildPeerFallbackFromDb(code: string) {
+    const targetResult = await this.dbService.query<{
+      code: string;
+      name: string | null;
+      industry: string | null;
+      market_cap: number | null;
+      pe: number | null;
+      pb: number | null;
+      roe: number | null;
+      revenue_growth: number | null;
+      profit_growth: number | null;
+      price: number | null;
+      change_pct: number | null;
+    }>(
+      `SELECT
+         s.code,
+         s.stock_name AS name,
+         s.industry,
+         s.market_cap,
+         s.pe_ratio AS pe,
+         s.pb_ratio AS pb,
+         f.roe,
+         f.revenue_growth,
+         f.profit_growth,
+         q.price,
+         q.change_pct
+       FROM stocks s
+       LEFT JOIN LATERAL (
+         SELECT roe, revenue_growth, profit_growth
+         FROM financials
+         WHERE code = s.code
+         ORDER BY report_date DESC
+         LIMIT 1
+       ) f ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT price, change_pct
+         FROM stock_quotes
+         WHERE code = s.code
+         ORDER BY time DESC
+         LIMIT 1
+       ) q ON TRUE
+       WHERE s.code = $1
+       LIMIT 1`,
+      [code],
+    );
+    const target = targetResult.rows[0];
+    if (!target) return null;
+
+    const peerResult = target.market_cap != null
+      ? await this.dbService.query<{
+          code: string;
+          name: string | null;
+          market_cap: number | null;
+          pe: number | null;
+          pb: number | null;
+          roe: number | null;
+          revenue_growth: number | null;
+          profit_growth: number | null;
+          price: number | null;
+          change_pct: number | null;
+        }>(
+          `SELECT
+             s.code,
+             s.stock_name AS name,
+             s.market_cap,
+             s.pe_ratio AS pe,
+             s.pb_ratio AS pb,
+             f.roe,
+             f.revenue_growth,
+             f.profit_growth,
+             q.price,
+             q.change_pct
+           FROM stocks s
+           LEFT JOIN LATERAL (
+             SELECT roe, revenue_growth, profit_growth
+             FROM financials
+             WHERE code = s.code
+             ORDER BY report_date DESC
+             LIMIT 1
+           ) f ON TRUE
+           LEFT JOIN LATERAL (
+             SELECT price, change_pct
+             FROM stock_quotes
+             WHERE code = s.code
+             ORDER BY time DESC
+             LIMIT 1
+           ) q ON TRUE
+           WHERE s.code <> $1
+           ORDER BY ABS(COALESCE(s.market_cap, 0) - $2) ASC, s.code ASC
+           LIMIT 9`,
+          [code, target.market_cap],
+        )
+      : await this.dbService.query<{
+          code: string;
+          name: string | null;
+          market_cap: number | null;
+          pe: number | null;
+          pb: number | null;
+          roe: number | null;
+          revenue_growth: number | null;
+          profit_growth: number | null;
+          price: number | null;
+          change_pct: number | null;
+        }>(
+          `SELECT
+             s.code,
+             s.stock_name AS name,
+             s.market_cap,
+             s.pe_ratio AS pe,
+             s.pb_ratio AS pb,
+             f.roe,
+             f.revenue_growth,
+             f.profit_growth,
+             q.price,
+             q.change_pct
+           FROM stocks s
+           LEFT JOIN LATERAL (
+             SELECT roe, revenue_growth, profit_growth
+             FROM financials
+             WHERE code = s.code
+             ORDER BY report_date DESC
+             LIMIT 1
+           ) f ON TRUE
+           LEFT JOIN LATERAL (
+             SELECT price, change_pct
+             FROM stock_quotes
+             WHERE code = s.code
+             ORDER BY time DESC
+             LIMIT 1
+           ) q ON TRUE
+           WHERE s.code <> $1
+           ORDER BY s.market_cap DESC NULLS LAST, s.code ASC
+           LIMIT 9`,
+          [code],
+        );
+
+    const peers = [
+      this.normalizePeerEntry({
+        code: target.code,
+        name: target.name,
+        market_cap: target.market_cap,
+        pe: target.pe,
+        pb: target.pb,
+        roe: target.roe,
+        revenue_growth: target.revenue_growth,
+        profit_growth: target.profit_growth,
+        price: target.price,
+        change_pct: target.change_pct,
+        isTarget: true,
+      }),
+      ...peerResult.rows.map((row) => this.normalizePeerEntry(row)),
+    ];
+
+    const targetMetrics = this.normalizePeerMetrics({
+      market_cap: target.market_cap,
+      pe: target.pe,
+      pb: target.pb,
+      roe: target.roe,
+      revenue_growth: target.revenue_growth,
+      profit_growth: target.profit_growth,
+      price: target.price,
+      change_pct: target.change_pct,
+    });
+    const industryStats = this.buildPeerIndustryStats(peers.slice(1));
+    const comparison = this.buildPeerComparison(targetMetrics, industryStats);
+
+    return {
+      name: String(target.name ?? ''),
+      industry: String(target.industry ?? ''),
+      targetMetrics,
+      peers,
+      comparison,
+      industryStats,
+      fallbackSource: target.market_cap != null ? 'db.market_cap_similarity' : 'db.market_cap_desc',
+    };
+  }
+
+  private buildPeerIndustryStats(peers: Array<Record<string, unknown>>) {
+    const stats: Record<string, unknown> = {};
+    const metrics = ['pe', 'pb', 'roe', 'revenueGrowth', 'profitGrowth'] as const;
+
+    for (const metric of metrics) {
+      const values = peers
+        .map((peer) => this.toNum(peer[metric]))
+        .filter((value): value is number => value != null);
+      if (values.length === 0) continue;
+
+      const sorted = [...values].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      const median = sorted.length % 2 === 0
+        ? (sorted[mid - 1] + sorted[mid]) / 2
+        : sorted[mid];
+
+      stats[metric] = {
+        mean: Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 100) / 100,
+        median: Math.round(median * 100) / 100,
+        min: Math.min(...values),
+        max: Math.max(...values),
+        count: values.length,
+      };
+    }
+
+    return stats;
+  }
+
+  private buildPeerComparison(
+    targetMetrics: ReturnType<FundamentalService['normalizePeerMetrics']>,
+    industryStats: Record<string, unknown>,
+  ) {
+    const comparison: Record<string, unknown> = {};
+    const metricMap: Record<string, number | null> = {
+      pe: targetMetrics.pe,
+      pb: targetMetrics.pb,
+      roe: targetMetrics.roe,
+      revenueGrowth: targetMetrics.revenueGrowth,
+      profitGrowth: targetMetrics.profitGrowth,
+    };
+
+    for (const [metric, targetValue] of Object.entries(metricMap)) {
+      const stat = this.readRecord(industryStats[metric]);
+      const mean = this.toNum(stat.mean);
+      const median = this.toNum(stat.median);
+      if (targetValue == null || mean == null || median == null) continue;
+
+      comparison[metric] = {
+        target: targetValue,
+        industry_mean: mean,
+        industry_median: median,
+        premium_to_mean: mean === 0 ? null : Math.round(((targetValue - mean) / mean) * 10_000) / 100,
+        premium_to_median: median === 0 ? null : Math.round(((targetValue - median) / median) * 10_000) / 100,
+      };
+    }
+
+    return comparison;
+  }
+
+  private unwrapRoot(payload: any): any {
+    if (payload == null) return {};
+    if (payload && typeof payload === 'object') {
+      if (payload.data != null) {
+        return this.unwrapRoot(payload.data);
+      }
+      if (payload.result != null && typeof payload.result === 'object') {
+        return this.unwrapRoot(payload.result);
+      }
+    }
+    return payload;
+  }
+
+  private readRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  }
+
   private toNum(v: unknown): number | null {
     if (v === null || v === undefined || v === '') return null;
     const n = Number(v);
@@ -464,4 +1026,3 @@ export class FundamentalService {
     });
   }
 }
-

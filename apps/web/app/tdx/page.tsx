@@ -24,6 +24,7 @@ export default function TdxPage() {
 
   const [pushMsg, setPushMsg] = useState('');
   const [pushCode, setPushCode] = useState('');
+  const [warnPrice, setWarnPrice] = useState('');
   const pushMut = useApiMutation<unknown>();
   const warnMut = useApiMutation<unknown>();
 
@@ -52,6 +53,24 @@ export default function TdxPage() {
   const wlResult = wlMut.data ? extractObject(wlMut.data) as Record<string, unknown> | null : null;
 
   function clearAndRun(fn: () => void) { setFormError(null); fn(); }
+
+  function normalizeActionResult(result: Record<string, unknown> | null, fallbackLabel: string) {
+    if (!result) return null;
+    const success = result.success !== false && String(result.status ?? '').toLowerCase() !== 'error';
+    const message = typeof result.message === 'string' ? result.message.trim() : '';
+    return {
+      ok: success,
+      label: success ? fallbackLabel : '执行失败',
+      message,
+      diagnostics: result.diagnostics && typeof result.diagnostics === 'object'
+        ? result.diagnostics as Record<string, unknown>
+        : null,
+    };
+  }
+
+  const pushStatus = normalizeActionResult(pushResult, '已发送');
+  const warnStatus = normalizeActionResult(warnResult, '预警已发送');
+  const watchlistStatus = normalizeActionResult(wlResult, '创建成功');
 
   return (
     <PageContainer>
@@ -105,32 +124,35 @@ export default function TdxPage() {
 
       <SectionCard>
         <h3 className="mt-0">推送消息</h3>
-        <textarea value={pushMsg} onChange={(e) => setPushMsg(e.target.value)} placeholder="消息内容" rows={2} className="w-full resize-y" />
+        <textarea value={pushMsg} onChange={(e) => setPushMsg(e.target.value)} placeholder="消息内容 / 预警原因" rows={2} className="w-full resize-y" />
         <div className="flex gap-2 flex-wrap items-center mt-1.5">
-          <input value={pushCode} onChange={(e) => setPushCode(e.target.value)} maxLength={6} placeholder="股票代码（可选）" className="w-[140px]" />
+          <input value={pushCode} onChange={(e) => setPushCode(e.target.value)} maxLength={6} placeholder="股票代码（预警必填）" className="w-[160px]" />
+          <input value={warnPrice} onChange={(e) => setWarnPrice(e.target.value)} inputMode="decimal" placeholder="预警价格（预警必填）" className="w-[180px]" />
           <button type="button" disabled={loading} onClick={() => {
             if (!pushMsg.trim()) { setFormError('请输入推送消息'); return; }
             const body: Record<string, unknown> = { message: pushMsg.trim() };
-            if (pushCode.trim()) body.code = pushCode.trim();
+            if (pushCode.trim()) body.stock_code = pushCode.trim();
             clearAndRun(() => pushMut.trigger('/tdx/push-message', { method: 'POST' }, body));
           }}>发送</button>
           <button type="button" disabled={loading} onClick={() => {
             if (!pushMsg.trim()) { setFormError('请输入预警消息'); return; }
-            const body: Record<string, unknown> = { message: pushMsg.trim() };
-            if (pushCode.trim()) body.code = pushCode.trim();
+            if (!/^\d{6}$/.test(pushCode.trim())) { setFormError('发送预警需要填写 6 位股票代码'); return; }
+            const price = Number(warnPrice);
+            if (!Number.isFinite(price) || price <= 0) { setFormError('发送预警需要填写有效价格'); return; }
+            const body: Record<string, unknown> = { message: pushMsg.trim(), stock_code: pushCode.trim(), price };
             clearAndRun(() => warnMut.trigger('/tdx/push-warn', { method: 'POST' }, body));
           }}>发送预警</button>
         </div>
-        {pushResult && (
+        {pushStatus && (
           <div className="mt-2 flex items-center gap-2">
-            <Badge variant={String(pushResult.status) === 'error' ? 'danger' : 'success'}>{String(pushResult.status ?? '已发送')}</Badge>
-            {pushResult.message ? <span className="text-sm text-text-secondary">{String(pushResult.message)}</span> : null}
+            <Badge variant={pushStatus.ok ? 'success' : 'danger'}>{pushStatus.label}</Badge>
+            {pushStatus.message ? <span className="text-sm text-text-secondary">{pushStatus.message}</span> : null}
           </div>
         )}
-        {warnResult && (
+        {warnStatus && (
           <div className="mt-2 flex items-center gap-2">
-            <Badge variant={String(warnResult.status) === 'error' ? 'danger' : 'warning'}>{String(warnResult.status ?? '预警已发送')}</Badge>
-            {warnResult.message ? <span className="text-sm text-text-secondary">{String(warnResult.message)}</span> : null}
+            <Badge variant={warnStatus.ok ? 'warning' : 'danger'}>{warnStatus.label}</Badge>
+            {warnStatus.message ? <span className="text-sm text-text-secondary">{warnStatus.message}</span> : null}
           </div>
         )}
       </SectionCard>
@@ -147,10 +169,10 @@ export default function TdxPage() {
             }));
           }}>创建</button>
         </div>
-        {wlResult && (
+        {watchlistStatus && (
           <div className="mt-2 flex items-center gap-2">
-            <Badge variant={String(wlResult.status) === 'error' ? 'danger' : 'success'}>{String(wlResult.status ?? '创建成功')}</Badge>
-            {wlResult.name ? <span className="text-sm text-text-secondary">自选股: {String(wlResult.name)}</span> : null}
+            <Badge variant={watchlistStatus.ok ? 'success' : 'danger'}>{watchlistStatus.label}</Badge>
+            {watchlistStatus.message ? <span className="text-sm text-text-secondary">{watchlistStatus.message}</span> : null}
           </div>
         )}
       </SectionCard>

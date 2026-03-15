@@ -1,9 +1,13 @@
-import { BadGatewayException, Injectable } from '@nestjs/common';
+import { BadGatewayException, HttpException, Injectable, UnprocessableEntityException } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
+import { PaperTradingIdempotencyService } from './paper-trading-idempotency.service';
 
 @Injectable()
 export class PaperTradingService {
-  constructor(private readonly mcp: McpGatewayService) { }
+  constructor(
+    private readonly mcp: McpGatewayService,
+    private readonly idempotency: PaperTradingIdempotencyService,
+  ) { }
 
   private async call(action: string, params: Record<string, unknown> = {}) {
     try {
@@ -11,15 +15,9 @@ export class PaperTradingService {
         action,
         kwargs: JSON.stringify(params),
       });
-      if (result && typeof result === 'object') {
-        const obj = result as Record<string, unknown>;
-        if (obj.success === false) {
-          throw new Error(String(obj.error || obj.message || `${action} 操作失败`));
-        }
-        if ('data' in obj) return obj.data;
-      }
-      return result;
+      return this.unwrapManagerResult(action, result);
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       if (error instanceof BadGatewayException) throw error;
       throw new BadGatewayException({
         success: false,
@@ -59,12 +57,23 @@ export class PaperTradingService {
     code: string; direction: string; quantity: number;
     price?: number; order_type?: string; stop_price?: number;
     account_id?: string;
-  }) {
-    return this.call('place_order', { user_id: userId, ...params, shares: params.quantity });
+  }, idempotencyKey?: string) {
+    const request = { user_id: userId, ...params, shares: params.quantity };
+    return this.idempotency.execute({
+      userId,
+      scope: 'order',
+      idempotencyKey,
+      operation: () => this.call('place_order', request),
+    });
   }
 
-  async cancelOrder(userId: string, orderId: string) {
-    return this.call('cancel_order', { user_id: userId, order_id: orderId });
+  async cancelOrder(userId: string, orderId: string, idempotencyKey?: string) {
+    return this.idempotency.execute({
+      userId,
+      scope: 'cancel',
+      idempotencyKey,
+      operation: () => this.call('cancel_order', { user_id: userId, order_id: orderId }),
+    });
   }
 
   async updatePrices(userId: string, accountId?: string) {
@@ -160,12 +169,27 @@ export class PaperTradingService {
     price?: number; account_id?: string;
   }) {
     try {
-      const result = await this.mcp.callTool('compliance_manager', {
+      const payload = this.unwrapToolEnvelope('compliance_manager.check_order', await this.mcp.callTool('compliance_manager', {
         action: 'check_order',
         kwargs: JSON.stringify({ user_id: userId, ...params }),
-      });
-      return { data: result };
+      }));
+      const blocked = payload.blocked === true || payload.passed === false;
+      const violations = this.toStringArray(payload.violations);
+      const warnings = this.toStringArray(payload.warnings);
+      return {
+        success: !blocked,
+        data: {
+          status: blocked ? 'blocked' : 'passed',
+          reason: blocked ? (violations[0] ?? '触发风控限制') : null,
+          passed: !blocked,
+          blocked,
+          checks: payload.checks ?? {},
+          violations,
+          warnings,
+        },
+      };
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       throw new BadGatewayException({
         success: false,
         message: '调用 MCP compliance_manager (check_order) 失败',
@@ -177,37 +201,121 @@ export class PaperTradingService {
   // MCP Execution Manager Integration
   async routeExecution(userId: string, params: {
     code: string; direction: string; quantity: number;
-    price?: number; urgency?: string;
-  }) {
-    try {
-      const result = await this.mcp.callTool('execution_manager', {
-        action: 'route_order',
-        kwargs: JSON.stringify({ user_id: userId, ...params }),
-      });
-      return { data: result };
-    } catch (error) {
-      throw new BadGatewayException({
-        success: false,
-        message: '调用 MCP execution_manager (route_order) 失败',
-        detail: String(error instanceof Error ? error.message : error),
-      });
-    }
+    price?: number; urgency?: string; order_type?: string; stop_price?: number; account_id?: string;
+  }, idempotencyKey?: string) {
+    return this.idempotency.execute({
+      userId,
+      scope: 'route-execution',
+      idempotencyKey,
+      operation: async () => {
+        try {
+          const execution = this.unwrapToolEnvelope('execution_manager.vwap', await this.mcp.callTool('execution_manager', {
+            action: params.urgency === 'high' ? 'vwap' : 'twap',
+            kwargs: JSON.stringify({
+              user_id: userId,
+              code: params.code,
+              direction: params.direction,
+              total_quantity: params.quantity,
+              duration_minutes: params.urgency === 'high' ? 5 : 15,
+              slices: params.urgency === 'high' ? 1 : 3,
+              reference_price: params.price ?? params.stop_price,
+            }),
+          }));
+          const order = await this.call('place_order', {
+            user_id: userId,
+            code: params.code,
+            direction: params.direction,
+            quantity: params.quantity,
+            shares: params.quantity,
+            price: params.price,
+            order_type: params.order_type,
+            stop_price: params.stop_price,
+            account_id: params.account_id,
+          });
+          return { execution, order };
+        } catch (error) {
+          if (error instanceof HttpException) throw error;
+          throw new BadGatewayException({
+            success: false,
+            message: '调用 MCP execution_manager (route_order) 失败',
+            detail: String(error instanceof Error ? error.message : error),
+          });
+        }
+      },
+    });
   }
 
   async executionStatus(userId: string, executionId: string) {
     try {
-      const result = await this.mcp.callTool('execution_manager', {
-        action: 'execution_status',
-        kwargs: JSON.stringify({ user_id: userId, execution_id: executionId }),
-      });
-      return { data: result };
+      return this.unwrapToolEnvelope('execution_manager.summary', await this.mcp.callTool('execution_manager', {
+        action: 'summary',
+        kwargs: JSON.stringify({ user_id: userId, task_id: executionId }),
+      }));
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       throw new BadGatewayException({
         success: false,
         message: '调用 MCP execution_manager (execution_status) 失败',
         detail: String(error instanceof Error ? error.message : error),
       });
     }
+  }
+
+  private unwrapManagerResult(action: string, result: unknown) {
+    if (typeof result === 'string' && /error executing tool|validation error/i.test(result)) {
+      throw new Error(result);
+    }
+    if (result && typeof result === 'object') {
+      const obj = result as Record<string, unknown>;
+      if (obj.success === false) {
+        const message = String(obj.error || obj.message || `${action} 操作失败`);
+        throw new UnprocessableEntityException({
+          success: false,
+          code: 'PAPER_TRADING_REJECTED',
+          error: message,
+          message,
+          detail: {
+            action,
+            upstream: obj,
+          },
+        });
+      }
+      if ('data' in obj) {
+        const data = obj.data;
+        if (typeof data === 'string' && /error executing tool|validation error/i.test(data)) {
+          throw new Error(data);
+        }
+        return data;
+      }
+    }
+    return result;
+  }
+
+  private unwrapToolEnvelope(action: string, result: unknown): Record<string, unknown> {
+    if (typeof result === 'string' && /error executing tool|validation error/i.test(result)) {
+      throw new Error(result);
+    }
+    if (!result || typeof result !== 'object') {
+      return {};
+    }
+    const obj = result as Record<string, unknown>;
+    if (obj.success === false) {
+      throw new Error(String(obj.error || obj.message || `${action} 操作失败`));
+    }
+    const data = obj.data;
+    if (typeof data === 'string' && /error executing tool|validation error/i.test(data)) {
+      throw new Error(data);
+    }
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      return data as Record<string, unknown>;
+    }
+    return {};
+  }
+
+  private toStringArray(value: unknown) {
+    return Array.isArray(value)
+      ? value.map((item) => String(item)).filter((item) => item.trim().length > 0)
+      : [];
   }
 
   private estimateAverageHoldDays(orders: Record<string, unknown>[]) {

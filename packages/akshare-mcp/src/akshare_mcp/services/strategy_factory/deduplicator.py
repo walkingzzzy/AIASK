@@ -22,15 +22,80 @@ class Deduplicator:
     THRESHOLD = 0.85
     VECTOR_TRIGGER_THRESHOLD = 0.65
     VECTOR_THRESHOLD = 0.93
+    MAX_VECTOR_CANDIDATES = 8
 
     def __init__(self):
         self.last_report: dict = {
-            "summary": {"input_count": 0, "kept_count": 0, "dropped_count": 0, "vector_checks": 0},
+            "summary": {
+                "input_count": 0,
+                "kept_count": 0,
+                "dropped_count": 0,
+                "vector_checks": 0,
+                "existing_scan_count": 0,
+                "coarse_candidate_count": 0,
+                "coarse_filtered_count": 0,
+                "coarse_hit_ratio": 0.0,
+                "coarse_tag_hit_count": 0,
+                "coarse_target_hit_count": 0,
+                "vector_candidate_count": 0,
+                "vector_candidate_trimmed_count": 0,
+            },
             "kept": [],
             "dropped": [],
         }
         self._behavior_cache: Dict[str, Optional[List[dict]]] = {}
         self._vector_engine = VectorSearchEngine(backend="index", allow_fallback=True)
+
+    @staticmethod
+    def _normalize_strategy_type(value: object) -> str:
+        return str(value or "").strip().lower()
+
+    @classmethod
+    def _bucket_existing_by_type(cls, rows: List[dict]) -> Dict[str, List[dict]]:
+        buckets: Dict[str, List[dict]] = {}
+        for item in list(rows or []):
+            strategy_type = cls._normalize_strategy_type((item or {}).get("strategy_type"))
+            if not strategy_type:
+                continue
+            buckets.setdefault(strategy_type, []).append(item)
+        return buckets
+
+    @staticmethod
+    def _tag_overlap(left_payload: Optional[dict], right_payload: Optional[dict]) -> float:
+        left = {
+            str(item).strip().lower()
+            for item in list((left_payload or {}).get("tags") or [])
+            if str(item).strip()
+        }
+        right = {
+            str(item).strip().lower()
+            for item in list((right_payload or {}).get("tags") or [])
+            if str(item).strip()
+        }
+        if not left or not right:
+            return 0.0
+        union = left | right
+        if not union:
+            return 0.0
+        return round(len(left & right) / len(union), 4)
+
+    def _select_vector_candidates(self, suspicious: List[dict]) -> List[Tuple[dict, float]]:
+        ranked = sorted(
+            list(suspicious or []),
+            key=lambda item: (
+                float(item.get("effective_similarity") or 0.0),
+                float(item.get("target_overlap") or 0.0) if item.get("target_overlap") is not None else -1.0,
+                float(item.get("tag_overlap") or 0.0),
+            ),
+            reverse=True,
+        )
+        selected: List[Tuple[dict, float]] = []
+        for item in ranked[: self.MAX_VECTOR_CANDIDATES]:
+            existing_item = dict(item.get("existing_item") or {})
+            if not existing_item:
+                continue
+            selected.append((existing_item, float(item.get("effective_similarity") or 0.0)))
+        return selected
 
     @staticmethod
     def _candidate_refresh_rank(candidate: Optional[dict]) -> tuple[float, float, float]:
@@ -91,6 +156,59 @@ class Deduplicator:
 
         return collapsed, dropped
 
+    @staticmethod
+    def _merge_metrics(left: Optional[dict], right: Optional[dict]) -> dict:
+        merged: dict[str, int] = {}
+        for key in {
+            "scanned_count",
+            "coarse_candidate_count",
+            "coarse_tag_hit_count",
+            "coarse_target_hit_count",
+            "vector_candidate_count",
+            "vector_candidate_trimmed_count",
+        }:
+            merged[key] = int((left or {}).get(key) or 0) + int((right or {}).get(key) or 0)
+        return merged
+
+    @staticmethod
+    def _select_detail(base_detail: Optional[dict], intra_detail: Optional[dict]) -> dict:
+        left = dict(base_detail or {})
+        right = dict(intra_detail or {})
+        if (
+            left.get("refresh_existing")
+            and right.get("duplicate")
+            and not str(right.get("matched_strategy_id") or "").strip()
+        ):
+            return left
+        if right.get("duplicate"):
+            return right
+        if left.get("duplicate"):
+            return left
+        if left.get("refresh_existing"):
+            return left
+        if right.get("refresh_existing"):
+            return right
+        left_similarity = float(left.get("effective_similarity") or 0.0)
+        right_similarity = float(right.get("effective_similarity") or 0.0)
+        return right if right_similarity > left_similarity else left
+
+    async def _analyze_against_existing(
+        self,
+        candidates: List[dict],
+        existing_by_type: Dict[str, List[dict]],
+        db,
+    ) -> List[tuple[dict, dict, dict]]:
+        sem = asyncio.Semaphore(max(1, int(DEDUP_CONCURRENCY or 1)))
+
+        async def _run(candidate: dict) -> tuple[dict, dict, dict]:
+            strategy_type = self._normalize_strategy_type(candidate.get("strategy_type"))
+            persisted_bucket = list(existing_by_type.get(strategy_type, []))
+            async with sem:
+                detail, metrics = await self._find_duplicate(candidate, persisted_bucket, db)
+            return candidate, detail, metrics
+
+        return await asyncio.gather(*[_run(candidate) for candidate in list(candidates or [])])
+
     async def deduplicate(self, candidates: List[dict], db) -> List[dict]:
         existing: List[dict] = []
         for status in ("listed", "incubating"):
@@ -100,16 +218,39 @@ class Deduplicator:
             except Exception as exc:
                 logger.warning("deduplicator: failed to load %s strategies: %s", status, exc)
 
+        existing_by_type = self._bucket_existing_by_type(existing)
         await self._prewarm_candidate_behaviors(candidates, db)
+        analyzed_candidates = await self._analyze_against_existing(candidates, existing_by_type, db)
 
         unique: List[dict] = []
         dropped: List[dict] = []
-        seen = list(existing)
         vector_checks = 0
         refreshed_existing = 0
-        for candidate in candidates:
-            detail = await self._find_duplicate(candidate, seen, db)
+        existing_scan_count = 0
+        coarse_candidate_count = 0
+        coarse_tag_hit_count = 0
+        coarse_target_hit_count = 0
+        vector_candidate_count = 0
+        vector_candidate_trimmed_count = 0
+        intra_batch_checks = 0
+
+        for candidate, persisted_detail, persisted_metrics in analyzed_candidates:
+            strategy_type = self._normalize_strategy_type(candidate.get("strategy_type"))
+            metrics = dict(persisted_metrics or {})
+            detail = dict(persisted_detail or {})
+            intra_bucket = [item for item in unique if self._normalize_strategy_type(item.get("strategy_type")) == strategy_type]
+            if intra_bucket and not detail.get("duplicate"):
+                intra_batch_checks += 1
+                intra_detail, intra_metrics = await self._find_duplicate(candidate, intra_bucket, db)
+                metrics = self._merge_metrics(metrics, intra_metrics)
+                detail = self._select_detail(detail, intra_detail)
             candidate["dedup_result"] = detail
+            existing_scan_count += int(metrics.get("scanned_count") or 0)
+            coarse_candidate_count += int(metrics.get("coarse_candidate_count") or 0)
+            coarse_tag_hit_count += int(metrics.get("coarse_tag_hit_count") or 0)
+            coarse_target_hit_count += int(metrics.get("coarse_target_hit_count") or 0)
+            vector_candidate_count += int(metrics.get("vector_candidate_count") or 0)
+            vector_candidate_trimmed_count += int(metrics.get("vector_candidate_trimmed_count") or 0)
             if detail.get("vector_checked"):
                 vector_checks += 1
             if detail.get("duplicate"):
@@ -118,19 +259,32 @@ class Deduplicator:
             if detail.get("refresh_existing"):
                 refreshed_existing += 1
             unique.append(candidate)
-            seen.append(candidate)
+
         collapsed_unique, collapsed_dropped = self._collapse_refresh_existing_candidates(unique)
         dropped.extend(collapsed_dropped)
         unique = collapsed_unique
         refreshed_existing = len([item for item in unique if dict(item.get("dedup_result") or {}).get("refresh_existing")])
+        coarse_filtered_count = max(existing_scan_count - coarse_candidate_count, 0)
+        coarse_hit_ratio = round(coarse_candidate_count / existing_scan_count, 4) if existing_scan_count else 0.0
         self.last_report = {
             "summary": {
                 "input_count": len(candidates),
                 "existing_count": len(existing),
+                "existing_scan_count": existing_scan_count,
+                "coarse_candidate_count": coarse_candidate_count,
+                "coarse_filtered_count": coarse_filtered_count,
+                "coarse_hit_ratio": coarse_hit_ratio,
+                "coarse_tag_hit_count": coarse_tag_hit_count,
+                "coarse_target_hit_count": coarse_target_hit_count,
                 "kept_count": len(unique),
                 "dropped_count": len(dropped),
                 "refreshed_existing_count": refreshed_existing,
                 "vector_checks": vector_checks,
+                "vector_candidate_count": vector_candidate_count,
+                "vector_candidate_trimmed_count": vector_candidate_trimmed_count,
+                "candidate_analysis_concurrency": max(1, int(DEDUP_CONCURRENCY or 1)),
+                "persisted_existing_phase_count": len(analyzed_candidates),
+                "intra_batch_check_count": intra_batch_checks,
                 "param_threshold": self.THRESHOLD,
                 "vector_threshold": self.VECTOR_THRESHOLD,
             },
@@ -177,21 +331,29 @@ class Deduplicator:
         has_explicit_universe = bool(_extract_target_codes_from_payload(candidate, limit=20))
         return bool(has_event_context and has_explicit_universe)
 
-    async def _find_duplicate(self, candidate: dict, existing: list, db) -> dict:
+    async def _find_duplicate(self, candidate: dict, existing: list, db) -> tuple[dict, dict]:
         best_match: Optional[dict] = None
-        suspicious: List[Tuple[dict, float]] = []
+        suspicious: List[dict] = []
+        candidate_params = self._normalize_params(candidate.get("params"))
+        metrics = {
+            "scanned_count": 0,
+            "coarse_candidate_count": 0,
+            "coarse_tag_hit_count": 0,
+            "coarse_target_hit_count": 0,
+            "vector_candidate_count": 0,
+            "vector_candidate_trimmed_count": 0,
+        }
         for existing_item in existing:
-            if existing_item.get("strategy_type") != candidate.get("strategy_type"):
-                continue
-            existing_params = existing_item.get("params") or {}
-            if isinstance(existing_params, str):
-                try:
-                    existing_params = json.loads(existing_params)
-                except Exception:
-                    existing_params = {}
-            param_similarity = self._param_sim(candidate.get("params", {}), existing_params)
+            metrics["scanned_count"] += 1
+            existing_params = self._normalize_params(existing_item.get("params"))
+            param_similarity = self._param_sim(candidate_params, existing_params)
             target_overlap = self._target_overlap(candidate, existing_item)
-            effective_similarity = self._effective_similarity(candidate, existing_item, param_similarity)
+            tag_overlap = self._tag_overlap(candidate, existing_item)
+            if tag_overlap > 0:
+                metrics["coarse_tag_hit_count"] += 1
+            if target_overlap is not None and target_overlap > 0:
+                metrics["coarse_target_hit_count"] += 1
+            effective_similarity = self._effective_similarity(param_similarity, target_overlap)
             match = {
                 "matched_strategy_id": existing_item.get("id"),
                 "matched_name": existing_item.get("name") or existing_item.get("strategy_type"),
@@ -215,7 +377,7 @@ class Deduplicator:
                         "vector_threshold": self.VECTOR_THRESHOLD,
                         "vector_checked": False,
                         **match,
-                    }
+                    }, metrics
                 return {
                     "duplicate": True,
                     "duplicate_level": "parameter",
@@ -225,11 +387,21 @@ class Deduplicator:
                     "vector_threshold": self.VECTOR_THRESHOLD,
                     "vector_checked": False,
                     **match,
-                }
+                }, metrics
             if effective_similarity >= self.VECTOR_TRIGGER_THRESHOLD:
-                suspicious.append((existing_item, effective_similarity))
+                suspicious.append({
+                    "existing_item": existing_item,
+                    "param_similarity": round(param_similarity, 4),
+                    "target_overlap": target_overlap,
+                    "tag_overlap": round(tag_overlap, 4),
+                    "effective_similarity": round(effective_similarity, 4),
+                })
 
-        vector_detail = await self._vector_check(candidate, suspicious, db) if suspicious else None
+        metrics["coarse_candidate_count"] = len(suspicious)
+        vector_candidates = self._select_vector_candidates(suspicious)
+        metrics["vector_candidate_count"] = len(vector_candidates)
+        metrics["vector_candidate_trimmed_count"] = max(0, len(suspicious) - len(vector_candidates))
+        vector_detail = await self._vector_check(candidate, vector_candidates, db) if vector_candidates else None
         resolved_vector_threshold = self.VECTOR_THRESHOLD
         vector_keep_reason: Optional[str] = None
         if vector_detail:
@@ -268,7 +440,7 @@ class Deduplicator:
                     "matched_strategy_id": vector_detail.get("matched_strategy_id"),
                     "matched_name": vector_detail.get("matched_name"),
                     "matched_status": vector_detail.get("matched_status"),
-                }
+                }, metrics
             if require_param_confirmation and vector_similarity >= self.VECTOR_THRESHOLD:
                 vector_keep_reason = (
                     f"行为向量相似但命中策略缺少目标池信息，参数相似度 {param_similarity:.4f} < {self.THRESHOLD:.2f}，暂不判重"
@@ -291,7 +463,7 @@ class Deduplicator:
             "matched_strategy_id": (vector_detail or best_match or {}).get("matched_strategy_id"),
             "matched_name": (vector_detail or best_match or {}).get("matched_name"),
             "matched_status": (vector_detail or best_match or {}).get("matched_status"),
-        }
+        }, metrics
 
     async def _prewarm_candidate_behaviors(self, candidates: List[dict], db) -> None:
         payloads = [
@@ -422,8 +594,7 @@ class Deduplicator:
         return round(len(left & right) / len(union), 4)
 
     @classmethod
-    def _effective_similarity(cls, candidate: Optional[dict], existing: Optional[dict], param_similarity: float) -> float:
-        target_overlap = cls._target_overlap(candidate, existing)
+    def _effective_similarity(cls, param_similarity: float, target_overlap: Optional[float]) -> float:
         if target_overlap is None:
             return float(param_similarity)
         return round((float(param_similarity) + float(target_overlap)) / 2.0, 4)

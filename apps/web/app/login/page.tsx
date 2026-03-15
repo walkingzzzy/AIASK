@@ -1,13 +1,11 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { BFF_BASE } from '@/lib/api';
 import { setLoggedIn } from '@/lib/auth';
 
 export default function LoginPage() {
-  const router = useRouter();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -17,6 +15,7 @@ export default function LoginPage() {
     event.preventDefault();
     setLoading(true);
     setError(null);
+    const redirectTo = new URLSearchParams(window.location.search).get('redirect') || '/market';
 
     try {
       const response = await fetch(`${BFF_BASE}/auth/login`, {
@@ -32,9 +31,7 @@ export default function LoginPage() {
       }
 
       setLoggedIn();
-      const params = new URLSearchParams(window.location.search);
-      router.replace(params.get('redirect') || '/market');
-      router.refresh();
+      window.location.assign(redirectTo);
     } catch (e) {
       setError(e instanceof Error ? e.message : '登录失败');
     } finally {

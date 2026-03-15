@@ -36,6 +36,12 @@ async def init_market_tables(conn) -> None:
             updated_at TIMESTAMPTZ DEFAULT NOW(),
             PRIMARY KEY (time, code)
         );
+
+        CREATE INDEX IF NOT EXISTS idx_kline_1d_code_time_desc
+        ON kline_1d (code, time DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_kline_1d_code_updated_desc
+        ON kline_1d (code, updated_at DESC);
     """)
 
     # 2. 财务数据表
@@ -58,6 +64,12 @@ async def init_market_tables(conn) -> None:
             updated_at TIMESTAMPTZ DEFAULT NOW(),
             PRIMARY KEY (stock_code, report_date)
         );
+
+        CREATE INDEX IF NOT EXISTS idx_financials_report_date_desc
+        ON financials (report_date DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_financials_updated_desc
+        ON financials (updated_at DESC);
     """)
 
     # 3. 股票信息表
@@ -118,6 +130,14 @@ async def init_market_tables(conn) -> None:
     await conn.execute("""
         ALTER TABLE stock_quotes
         ADD COLUMN IF NOT EXISTS mkt_cap DOUBLE PRECISION;
+    """)
+    await conn.execute("""
+        ALTER TABLE stock_quotes
+        ADD COLUMN IF NOT EXISTS pe DOUBLE PRECISION;
+    """)
+    await conn.execute("""
+        ALTER TABLE stock_quotes
+        ADD COLUMN IF NOT EXISTS pb DOUBLE PRECISION;
     """)
 
     # 4.2 兼容旧库：若历史表未建唯一索引，补齐后确保 UPSERT 可用
@@ -234,6 +254,7 @@ async def init_market_tables(conn) -> None:
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             description TEXT,
+            metadata JSONB DEFAULT '{}'::jsonb,
             user_id TEXT DEFAULT 'default',
             initial_capital DOUBLE PRECISION NOT NULL,
             current_value DOUBLE PRECISION NOT NULL,
@@ -257,6 +278,11 @@ async def init_market_tables(conn) -> None:
     await conn.execute("""
         ALTER TABLE portfolios
         ADD COLUMN IF NOT EXISTS description TEXT;
+    """)
+
+    await conn.execute("""
+        ALTER TABLE portfolios
+        ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
     """)
 
     # 6. 模拟交易表
@@ -457,6 +483,7 @@ async def init_market_tables(conn) -> None:
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             user_id TEXT DEFAULT 'default',
+            color TEXT DEFAULT '#6366f1',
             sort_order INTEGER DEFAULT 0,
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
@@ -470,12 +497,19 @@ async def init_market_tables(conn) -> None:
             code TEXT NOT NULL,
             name TEXT,
             group_id TEXT DEFAULT 'default',
+            sort_order INTEGER DEFAULT 0,
             tags JSONB DEFAULT '[]'::jsonb,
             notes TEXT,
             note TEXT,
             added_at TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE(user_id, code)
         );
+
+        ALTER TABLE watchlist_groups
+        ADD COLUMN IF NOT EXISTS color TEXT DEFAULT '#6366f1';
+
+        ALTER TABLE watchlist
+        ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0;
     """)
 
     # 10. 向量检索表（基础，非 pgvector）
@@ -812,6 +846,7 @@ async def init_market_tables(conn) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_factor_values_date ON factor_values(factor_date);
         CREATE INDEX IF NOT EXISTS idx_factor_values_factor ON factor_values(factor_name);
+        CREATE INDEX IF NOT EXISTS idx_factor_values_name_date_code ON factor_values(factor_name, factor_date DESC, stock_code);
 
         CREATE TABLE IF NOT EXISTS factor_ic_history (
             id SERIAL PRIMARY KEY,

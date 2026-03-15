@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useApiQuery } from '@/hooks/use-api-query';
-import { BFF_BASE } from '@/lib/api';
+import { useApiMutation } from '@/hooks/use-api-mutation';
+import { apiKeys } from '@/lib/query-keys';
 import { useAlertSubscription } from '@/lib/ws';
 
 type NotificationItem = {
@@ -33,47 +34,50 @@ const LEVEL_COLORS: Record<string, string> = {
 export function NotificationBell() {
     const [open, setOpen] = useState(false);
     const [items, setItems] = useState<NotificationItem[]>([]);
-    const [unread, setUnread] = useState(0);
+    const [pendingUnreadEvents, setPendingUnreadEvents] = useState<number[]>([]);
+    const [markAllReadAt, setMarkAllReadAt] = useState<number | null>(null);
 
     // Fetch unread count
     const unreadQ = useApiQuery<{ count?: number }>('/notifications/unread-count', {
         refetchInterval: 30000,
     });
+    const recentQ = useApiQuery<unknown>(open ? '/notifications/list?limit=10' : null, {
+        enabled: open,
+        refetchInterval: open ? 30000 : false,
+    });
+    const markAllReadApi = useApiMutation<{ markedCount?: number }>({
+        invalidates: [[...apiKeys.notifications()]],
+        successToast: false,
+    });
 
-    useEffect(() => {
-        const count = Number((unreadQ.data as any)?.count ?? (unreadQ.data as any)?.data?.count ?? 0);
-        setUnread(count);
-    }, [unreadQ.data]);
+    const serverUnread = Number((unreadQ.data as any)?.count ?? (unreadQ.data as any)?.data?.count ?? 0);
+    const snapshotAt = unreadQ.dataUpdatedAt ?? 0;
+    const unreadSinceSnapshot = pendingUnreadEvents.filter((ts) => ts > snapshotAt && (!markAllReadAt || ts > markAllReadAt)).length;
+    const unread = markAllReadAt && markAllReadAt > snapshotAt
+        ? unreadSinceSnapshot
+        : serverUnread + unreadSinceSnapshot;
 
     // Increment unread on WS alert
     useAlertSubscription({
-        onAlert: () => setUnread((n) => n + 1),
-        onWarn: () => setUnread((n) => n + 1),
+        onAlert: () => setPendingUnreadEvents((prev) => [...prev, Date.now()]),
+        onWarn: () => setPendingUnreadEvents((prev) => [...prev, Date.now()]),
     });
 
-    const fetchRecent = useCallback(async () => {
-        try {
-            const res = await fetch(`${BFF_BASE}/notifications/list?limit=10`, { credentials: 'include' });
-            if (!res.ok) return;
-            const json = await res.json();
-            const data = json?.data?.items ?? json?.items ?? [];
+    useEffect(() => {
+        const data = (recentQ.data as any)?.items ?? (recentQ.data as any)?.data?.items ?? [];
+        if (Array.isArray(data)) {
             setItems(data);
-        } catch { /* ignore */ }
-    }, []);
+        }
+    }, [recentQ.data]);
 
     const handleOpen = () => {
         setOpen(!open);
-        if (!open) fetchRecent();
     };
 
     const handleMarkAllRead = async () => {
         try {
-            await fetch(`${BFF_BASE}/notifications/mark-all-read`, {
-                method: 'POST',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-            });
-            setUnread(0);
+            await markAllReadApi.triggerAsync('/notifications/mark-all-read', { method: 'POST' });
+            setMarkAllReadAt(Date.now());
             setItems((prev) => prev.map((i) => ({ ...i, read: true })));
         } catch { /* ignore */ }
     };
@@ -103,9 +107,10 @@ export function NotificationBell() {
                                 {unread > 0 && (
                                     <button
                                         onClick={handleMarkAllRead}
+                                        disabled={markAllReadApi.isPending}
                                         className="text-xs text-primary cursor-pointer hover:underline"
                                     >
-                                        全部已读
+                                        {markAllReadApi.isPending ? '处理中...' : '全部已读'}
                                     </button>
                                 )}
                                 <Link

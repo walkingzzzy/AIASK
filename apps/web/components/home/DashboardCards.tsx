@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { SectionCard, KpiGrid, SkeletonCard } from '@/components/ui';
 import { ErrorState, EmptyState } from '@/components/status-state';
 import Link from 'next/link';
+import type { DashboardMarketAnomaly } from '@aiask/shared-types';
 
 /* ------------------------------------------------------------------ */
 /* Props                                                               */
@@ -18,6 +19,9 @@ export interface DashboardCard {
   empty: boolean;
   href: string;
   footer: ReactNode;
+  emptyText?: string;
+  emptyHint?: string;
+  emptyAction?: ReactNode;
 }
 
 export interface DashboardCardsProps {
@@ -25,7 +29,7 @@ export interface DashboardCardsProps {
   dashboardVisibility: Record<string, boolean>;
   dashboardCards: DashboardCard[];
   /* Market anomaly feed */
-  marketAnomalies: Array<{ title: string; value: string; href: string; tone: 'danger' | 'success' | 'info' | 'warning' }>;
+  marketAnomalies: DashboardMarketAnomaly[];
   anomalyDegraded: boolean;
 }
 
@@ -48,7 +52,7 @@ function CardGrid({ mounted, dashboardVisibility, dashboardCards }: Pick<Dashboa
           </div>
           {card.error ? <ErrorState text={card.error} />
             : card.pending ? <KpiGrid cols={3}><SkeletonCard /><SkeletonCard /><SkeletonCard /></KpiGrid>
-              : card.empty ? <EmptyState text="暂无可展示数据" />
+              : card.empty ? <EmptyState text={card.emptyText ?? '暂无可展示数据'} hint={card.emptyHint} action={card.emptyAction} />
                 : card.content}
           {card.footer}
         </SectionCard>

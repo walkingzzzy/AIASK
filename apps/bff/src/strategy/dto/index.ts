@@ -44,11 +44,9 @@ export class CreateDto {
 }
 
 export class SubscribeDto {
-  @IsString() user_id!: string;
 }
 
 export class ReviewDto {
-  @IsString() user_id!: string;
   @Type(() => Number) @IsInt() @Min(1) @Max(5) rating!: number;
   @IsOptional() @IsString() comment?: string;
 }
@@ -59,7 +57,6 @@ export class UpdateMetricsDto {
 }
 
 export class SignalsQueryDto {
-  @IsOptional() @IsString() user_id?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(500) limit?: number;
 }
 
@@ -282,7 +279,11 @@ export class TaskRunsQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(500) limit?: number;
 }
 
-export type Req_ = { traceId?: string; headers?: Record<string, string | undefined> };
+export type Req_ = {
+  traceId?: string;
+  headers?: Record<string, string | undefined>;
+  user?: { id?: string };
+};
 
 export function tid(req: Req_) {
   return String(req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN');

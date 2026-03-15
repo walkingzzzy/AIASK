@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from datetime import datetime, time, timedelta
 from typing import Any, Dict, List, Optional
@@ -21,6 +22,7 @@ from .constants import (
 )
 from .runtime import _call_optional_async, get_strategy_factory_package
 from .utils import _extract_event_context
+from ..strategy_autonomy_lifecycle import AUTONOMY_PHASE_ORDER, summarize_autonomy_lifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,125 @@ class StrategyFactoryScheduler:
             source = str((task or {}).get("task_source") or "unknown").strip() or "unknown"
             counts[source] = counts.get(source, 0) + 1
         return counts
+
+    @staticmethod
+    def _extract_cycle_candidates(cycle: dict) -> list[dict]:
+        generation = dict((cycle or {}).get("generation") or {})
+        candidates = generation.get("candidates")
+        if isinstance(candidates, list):
+            return list(candidates)
+        return list((cycle or {}).get("candidates") or [])
+
+    @staticmethod
+    def _extract_cycle_experiments(cycle: dict) -> list[dict]:
+        experiments = (cycle or {}).get("experiments")
+        if isinstance(experiments, dict):
+            return list(experiments.get("items") or [])
+        if isinstance(experiments, list):
+            return list(experiments)
+        return list((cycle or {}).get("experiment_records") or [])
+
+    @staticmethod
+    def _extract_cycle_llm_generation(cycle: dict) -> dict:
+        llm_generation = (cycle or {}).get("llm_generation")
+        if isinstance(llm_generation, dict):
+            return dict(llm_generation)
+        generation = dict((cycle or {}).get("generation") or {})
+        return dict(generation.get("llm_generation") or {})
+
+    @staticmethod
+    def _extract_cycle_generated_count(cycle: dict) -> int:
+        value = (cycle or {}).get("generated_count")
+        if value is None:
+            value = dict((cycle or {}).get("generation") or {}).get("count")
+        if value is None:
+            value = len(StrategyFactoryScheduler._extract_cycle_candidates(cycle))
+        return int(value or 0)
+
+    @staticmethod
+    def _extract_cycle_reviewed_count(cycle: dict) -> int:
+        value = (cycle or {}).get("reviewed_count")
+        if value is None:
+            value = dict((cycle or {}).get("review") or {}).get("reviewed_count")
+        return int(value or 0)
+
+    @staticmethod
+    def _extract_cycle_lifecycle(cycle: dict) -> dict:
+        lifecycle = (cycle or {}).get("lifecycle")
+        return dict(lifecycle) if isinstance(lifecycle, dict) else {}
+
+    @staticmethod
+    def _aggregate_task_lifecycle_metrics(task_results: List[dict]) -> dict:
+        lifecycle_state_counts: dict[str, int] = {}
+        phase_status_counts: dict[str, int] = {}
+        failed_phase_counts: dict[str, int] = {}
+        observable_phases: list[str] = []
+        for item in list(task_results or []):
+            lifecycle_summary = dict(item.get("lifecycle_summary") or {})
+            state = str(lifecycle_summary.get("state") or "unknown")
+            lifecycle_state_counts[state] = lifecycle_state_counts.get(state, 0) + 1
+            for status, count in dict(lifecycle_summary.get("phase_status_counts") or {}).items():
+                phase_status_counts[str(status)] = phase_status_counts.get(str(status), 0) + int(count or 0)
+            failed_phase = str(lifecycle_summary.get("failed_phase") or "").strip()
+            if failed_phase:
+                failed_phase_counts[failed_phase] = failed_phase_counts.get(failed_phase, 0) + 1
+            phase_order = list(lifecycle_summary.get("phase_order") or [])
+            if phase_order:
+                observable_phases = phase_order
+        return {
+            "lifecycle_state_counts": lifecycle_state_counts,
+            "phase_status_counts": phase_status_counts,
+            "failed_phase_counts": failed_phase_counts,
+            "observable_phases": observable_phases or list(AUTONOMY_PHASE_ORDER),
+        }
+
+    @staticmethod
+    def _with_stage_meta(stage_name: str, trace_id: str, payload: Optional[dict], *, default_ok: bool = True) -> dict:
+        data = dict(payload or {})
+        ok = bool(data.pop("ok", default_ok))
+        status = str(data.pop("status", "completed" if ok else "failed"))
+        return {
+            "stage": stage_name,
+            "trace_id": trace_id,
+            "status": status,
+            "ok": ok,
+            **data,
+        }
+
+    @staticmethod
+    def _aggregate_vector_submission_metrics(submission_result: Optional[dict]) -> dict:
+        items = list((submission_result or {}).get("strategies") or [])
+        backend_counts: dict[str, int] = {}
+        requested_backend_counts: dict[str, int] = {}
+        fallback_count = 0
+        latencies: list[float] = []
+        profile_count = 0
+        for item in items:
+            profile_id = item.get("vector_profile_id")
+            if profile_id:
+                profile_count += 1
+            backend = str(item.get("vector_backend_used") or item.get("vector_backend") or "").strip()
+            if backend:
+                backend_counts[backend] = backend_counts.get(backend, 0) + 1
+            requested_backend = str(item.get("vector_backend_requested") or "").strip()
+            if requested_backend:
+                requested_backend_counts[requested_backend] = requested_backend_counts.get(requested_backend, 0) + 1
+            if item.get("vector_fallback_used"):
+                fallback_count += 1
+            latency = item.get("vector_latency_ms")
+            if latency is not None:
+                try:
+                    latencies.append(float(latency))
+                except Exception:
+                    pass
+        return {
+            "vector_profile_count": profile_count,
+            "vector_backend_counts": backend_counts,
+            "vector_backend_requested_counts": requested_backend_counts,
+            "vector_fallback_count": fallback_count,
+            "vector_latency_ms_avg": round(sum(latencies) / len(latencies), 3) if latencies else None,
+            "vector_latency_ms_max": round(max(latencies), 3) if latencies else None,
+        }
 
     @staticmethod
     def _build_event_task_evidence_items(task: dict) -> List[dict]:
@@ -317,7 +438,9 @@ class StrategyFactoryScheduler:
                 }
                 try:
                     cycle = await self._generate_for_research_task(autonomy_service, db, snapshot, enriched_task)
-                    llm_generation = dict(cycle.get("llm_generation") or {})
+                    llm_generation = self._extract_cycle_llm_generation(cycle)
+                    lifecycle = self._extract_cycle_lifecycle(cycle)
+                    lifecycle_summary = summarize_autonomy_lifecycle(lifecycle)
                     external_provider = dict(llm_generation.get("external_provider") or {})
                     status = str(external_provider.get("status") or "unknown")
                     task_result = {
@@ -328,14 +451,16 @@ class StrategyFactoryScheduler:
                         "theme_code": enriched_task.get("theme_code"),
                         "evidence_count": len(evidence_rows),
                         "status": "completed",
-                        "generated_count": cycle.get("generated_count", len(cycle.get("candidates") or [])),
-                        "reviewed_count": cycle.get("reviewed_count", 0),
+                        "generated_count": self._extract_cycle_generated_count(cycle),
+                        "reviewed_count": self._extract_cycle_reviewed_count(cycle),
                         "external_llm_status": status,
                         "llm_generation": llm_generation,
+                        "lifecycle": lifecycle,
+                        "lifecycle_summary": lifecycle_summary,
                     }
                     async with _agg_lock:
-                        generated_candidates.extend(list(cycle.get("candidates") or []))
-                        all_experiments.extend(list(cycle.get("experiments") or []))
+                        generated_candidates.extend(self._extract_cycle_candidates(cycle))
+                        all_experiments.extend(self._extract_cycle_experiments(cycle))
                         external_status_counts[status] = external_status_counts.get(status, 0) + 1
                         total_attempt_count += len(external_provider.get("requests") or [])
                         total_selected_count += int(external_provider.get("selected_count") or 0)
@@ -354,9 +479,23 @@ class StrategyFactoryScheduler:
                             result=task_result,
                         )
                 except Exception as exc:
+                    failure_lifecycle = dict(getattr(exc, "autonomy_lifecycle", {}) or {})
+                    if not failure_lifecycle:
+                        failure_lifecycle = {
+                            "state": "failed",
+                            "current_phase": "generating",
+                            "failed_phase": "generating",
+                            "terminal_phase": "failed",
+                            "phase_order": list(AUTONOMY_PHASE_ORDER),
+                            "phase_status_counts": {"failed": 1},
+                            "completed_phase_count": 0,
+                            "event_count": 0,
+                            "events": [],
+                        }
+                    lifecycle_summary = summarize_autonomy_lifecycle(failure_lifecycle)
                     task_result = {
                         "task": enriched_task,
-                        "task_run_id": task_run.get("id"),
+                        "task_run_id": getattr(exc, "autonomy_task_run_id", None) or task_run.get("id"),
                         "task_source": enriched_task.get("task_source"),
                         "event_id": enriched_task.get("event_id"),
                         "theme_code": enriched_task.get("theme_code"),
@@ -364,6 +503,8 @@ class StrategyFactoryScheduler:
                         "status": "failed",
                         "generated_count": 0,
                         "error": str(exc),
+                        "lifecycle": failure_lifecycle,
+                        "lifecycle_summary": lifecycle_summary,
                     }
                     async with _agg_lock:
                         task_results.append(task_result)
@@ -406,6 +547,7 @@ class StrategyFactoryScheduler:
             overall_status = "succeeded"
         else:
             overall_status = "partial" if completed_task_count else "failed"
+        lifecycle_metrics = self._aggregate_task_lifecycle_metrics(task_results)
         stage = {
             "ok": True,
             "task_count": len(tasks),
@@ -428,6 +570,7 @@ class StrategyFactoryScheduler:
             "external_llm_last_error": last_error,
             "external_llm_elapsed_seconds": round(elapsed_seconds, 4),
             "research_task_concurrency": RESEARCH_TASK_CONCURRENCY,
+            **lifecycle_metrics,
         }
         return {"stage": stage, "candidates": generated_candidates, "experiments": all_experiments}
 
@@ -439,8 +582,10 @@ class StrategyFactoryScheduler:
         factory_pkg = get_strategy_factory_package()
         db = get_db()
         start = datetime.now()
+        trace_id = f"strategy_factory:{uuid4().hex[:12]}"
         results: Dict[str, Any] = {
             "run_id": f"factory_run_{int(start.timestamp())}_{uuid4().hex[:8]}",
+            "trace_id": trace_id,
             "started_at": start.isoformat(),
             "status": "running",
             "summary": {},
@@ -464,11 +609,10 @@ class StrategyFactoryScheduler:
                 "missing_sources": (snapshot.get("completeness") or {}).get("missing_sources") or [],
                 "failure_reason_count": len(snapshot.get("failure_reasons") or []),
             }
-            results["stages"]["collect"] = {
-                "ok": True,
+            results["stages"]["collect"] = self._with_stage_meta("collect", trace_id, {
                 **results["snapshot_summary"],
                 "completeness": snapshot.get("completeness") or {},
-            }
+            })
 
             factor_research = {}
             try:
@@ -477,15 +621,14 @@ class StrategyFactoryScheduler:
                     factor_research = await factor_builder_cls.build(db, snapshot)
                 snapshot["factor_research"] = dict(factor_research or {})
                 factor_summary = dict((snapshot.get("factor_research") or {}).get("summary") or {})
-                results["stages"]["factor_research"] = {
-                    "ok": True,
+                results["stages"]["factor_research"] = self._with_stage_meta("factor_research", trace_id, {
                     "active_factor_count": int(factor_summary.get("active_factor_count") or 0),
                     "ranked_factor_count": int(factor_summary.get("ranked_factor_count") or 0),
                     "top_factor_names": list(factor_summary.get("top_factor_names") or []),
                     "preferred_strategy_types": list(factor_summary.get("preferred_strategy_types") or []),
                     "degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
                     "source_chain": list((snapshot.get("factor_research") or {}).get("source_chain") or []),
-                }
+                })
             except Exception as exc:
                 logger.warning("StrategyFactory: factor research stage failed: %s", exc)
                 snapshot["factor_research"] = {
@@ -504,15 +647,14 @@ class StrategyFactoryScheduler:
                         "degraded": True,
                     },
                 }
-                results["stages"]["factor_research"] = {
-                    "ok": False,
+                results["stages"]["factor_research"] = self._with_stage_meta("factor_research", trace_id, {
                     "active_factor_count": 0,
                     "ranked_factor_count": 0,
                     "top_factor_names": [],
                     "preferred_strategy_types": [],
                     "degraded": True,
                     "error": str(exc),
-                }
+                }, default_ok=False)
 
             spawner = factory_pkg.StrategySpawner()
             candidates = spawner.spawn(snapshot)
@@ -521,64 +663,117 @@ class StrategyFactoryScheduler:
                 if hasattr(spawner, "get_last_report")
                 else {"summary": {"candidate_count": len(candidates)}}
             )
-            results["stages"]["spawn"] = {"ok": True, "count": len(candidates), **spawn_report}
+            results["stages"]["spawn"] = self._with_stage_meta("spawn", trace_id, {"count": len(candidates), **spawn_report})
 
             autonomy_batch = {"stage": {"generated_count": 0}, "candidates": [], "experiments": []}
             try:
                 autonomy_batch = await self._run_autonomy_batches(db, snapshot)
                 ai_candidates = autonomy_batch.get("candidates") or []
                 candidates = [*candidates, *ai_candidates]
-                results["stages"]["autonomy"] = autonomy_batch.get("stage") or {
+                results["stages"]["autonomy"] = self._with_stage_meta("autonomy", trace_id, autonomy_batch.get("stage") or {
                     "ok": True,
                     "generated_count": len(ai_candidates),
-                }
+                })
             except Exception as exc:
                 logger.warning("StrategyFactory: autonomy cycle failed: %s", exc)
-                results["stages"]["autonomy"] = {"ok": False, "error": str(exc), "generated_count": 0}
+                results["stages"]["autonomy"] = self._with_stage_meta(
+                    "autonomy",
+                    trace_id,
+                    {"error": str(exc), "generated_count": 0},
+                    default_ok=False,
+                )
 
             backtest_filter = factory_pkg.BacktestFilter()
-            passed = await backtest_filter.filter(candidates, db)
-            backtest_report = (
-                backtest_filter.get_last_report()
-                if hasattr(backtest_filter, "get_last_report")
-                else {
-                    "summary": {
-                        "input_count": len(candidates),
-                        "passed_count": len(passed),
-                        "failed_count": max(len(candidates) - len(passed), 0),
-                        "failed_reason_counts": {},
-                        "thresholds_by_type": {},
-                    },
-                    "passed": [],
-                    "failed": [],
-                }
+            supports_unified_gate_runner = bool(
+                candidates
+                and hasattr(factory_pkg, "run_gated_filter")
+                and inspect.iscoroutinefunction(getattr(db, "get_klines", None))
             )
+            deduplicator = factory_pkg.Deduplicator()
+            submitter = factory_pkg.StrategySubmitter()
+            supports_unified_submission_runner = bool(
+                supports_unified_gate_runner
+                and hasattr(factory_pkg, "run_gated_submission_pipeline")
+            )
+
+            if supports_unified_submission_runner:
+                pipeline_run = await factory_pkg.run_gated_submission_pipeline(
+                    candidates,
+                    snapshot,
+                    db,
+                    backtest_filter=backtest_filter,
+                    deduplicator=deduplicator,
+                    submitter=submitter,
+                    gated_runner=factory_pkg.run_gated_filter,
+                    kline_cache=getattr(backtest_filter, "_kline_cache", None),
+                )
+                passed = list(pipeline_run.get("passed") or [])
+                unique = list(pipeline_run.get("unique") or [])
+                quality_gate_report = dict(pipeline_run.get("gate_report") or pipeline_run.get("quality_gate") or {})
+                backtest_report = dict(pipeline_run.get("backtest_report") or {})
+                submit_result = dict(pipeline_run.get("submit_result") or {})
+            else:
+                if supports_unified_gate_runner:
+                    gate_run = await factory_pkg.run_gated_filter(
+                        candidates,
+                        db,
+                        backtest_filter,
+                        kline_cache=getattr(backtest_filter, "_kline_cache", None),
+                    )
+                    passed = list(gate_run.get("passed") or [])
+                    quality_gate_report = dict(gate_run.get("gate_report") or gate_run.get("quality_gate") or {})
+                else:
+                    passed = await backtest_filter.filter(candidates, db)
+                    quality_gate_report = {}
+
+                backtest_report = (
+                    (quality_gate_report.get("gate_2") or {}).get("report")
+                    or (
+                        backtest_filter.get_last_report()
+                        if hasattr(backtest_filter, "get_last_report")
+                        else {
+                            "summary": {
+                                "input_count": len(candidates),
+                                "passed_count": len(passed),
+                                "failed_count": max(len(candidates) - len(passed), 0),
+                                "failed_reason_counts": {},
+                                "thresholds_by_type": {},
+                            },
+                            "passed": [],
+                            "failed": [],
+                        }
+                    )
+                )
+                if not quality_gate_report:
+                    quality_gate_report = factory_pkg.build_legacy_gate_report(candidates, passed, backtest_report)
+
+                unique = await deduplicator.deduplicate(passed, db)
+                submit_result = await submitter.submit(unique, snapshot, db)
+                quality_gate_report = factory_pkg.finalize_gate_report(quality_gate_report, submit_result)
+
             backtest_summary = backtest_report.get("summary") or {}
-            results["stages"]["backtest"] = {
-                "ok": True,
+            results["stages"]["quality_gate"] = self._with_stage_meta("quality_gate", trace_id, quality_gate_report)
+            results["stages"]["backtest"] = self._with_stage_meta("backtest", trace_id, {
                 "input_count": backtest_summary.get("input_count", len(candidates)),
                 "passed_count": backtest_summary.get("passed_count", len(passed)),
                 "failed_count": backtest_summary.get("failed_count", max(len(candidates) - len(passed), 0)),
                 **backtest_report,
-            }
-
-            deduplicator = factory_pkg.Deduplicator()
-            unique = await deduplicator.deduplicate(passed, db)
-            results["stages"]["deduplicate"] = {"ok": True, **deduplicator.get_last_report()}
-
-            submitter = factory_pkg.StrategySubmitter()
-            submit_result = await submitter.submit(unique, snapshot, db)
-            results["stages"]["submit"] = {"ok": True, **submit_result}
+            })
+            results["stages"]["deduplicate"] = self._with_stage_meta("deduplicate", trace_id, deduplicator.get_last_report())
+            results["stages"]["submit"] = self._with_stage_meta("submit", trace_id, submit_result)
+            results["quality_gate"] = quality_gate_report
+            results["gate_report"] = quality_gate_report
 
             eliminator = factory_pkg.EliminationChecker()
             eliminated = await eliminator.check(db, snapshot.get("fg_level", "neutral"))
-            results["stages"]["elimination"] = {"ok": True, "count": len(eliminated), "items": eliminated}
+            results["stages"]["elimination"] = self._with_stage_meta("elimination", trace_id, {"count": len(eliminated), "items": eliminated})
 
             elapsed = (datetime.now() - start).total_seconds()
             results["status"] = "success"
             results["completed_at"] = datetime.now().isoformat()
             results["elapsed_seconds"] = round(elapsed, 1)
             autonomy_summary = results.get("stages", {}).get("autonomy") or {}
+            vector_summary = self._aggregate_vector_submission_metrics(submit_result)
             task_scan_summary = dict((autonomy_summary.get("task_scan") or {}).get("summary") or {})
             task_source_counts = dict(
                 autonomy_summary.get("task_source_counts")
@@ -600,7 +795,11 @@ class StrategyFactoryScheduler:
                 for item in list(autonomy_summary.get("task_results") or [])
             ]
             factor_research_summary = dict((snapshot.get("factor_research") or {}).get("summary") or {})
+            gate_0_summary = dict(quality_gate_report.get("gate_0") or {})
+            gate_1_summary = dict(quality_gate_report.get("gate_1") or {})
+            gate_2_summary = dict(quality_gate_report.get("gate_2") or {})
             results["summary"] = {
+                "trace_id": trace_id,
                 "fear_greed": snapshot.get("fear_greed_index"),
                 "listed_count": snapshot.get("listed_count", 0),
                 "snapshot_degraded": bool(snapshot.get("degraded")),
@@ -624,16 +823,36 @@ class StrategyFactoryScheduler:
                 "factor_research_degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
                 "autonomy_task_briefs": autonomy_task_briefs,
                 "event_evidence_count": autonomy_summary.get("event_evidence_count", 0),
+                "autonomy_lifecycle_state_counts": autonomy_summary.get("lifecycle_state_counts") or {},
+                "autonomy_phase_status_counts": autonomy_summary.get("phase_status_counts") or {},
+                "autonomy_failed_phase_counts": autonomy_summary.get("failed_phase_counts") or {},
                 "quota_fill_candidates": (spawn_report.get("summary") or {}).get("quota_fill_count", 0),
                 "signal_trigger_candidates": (
                     (spawn_report.get("summary") or {}).get("signal_trigger_count", len(candidates))
                 ),
-                "candidates_passed_backtest": len(passed),
+                "gate_0_passed": gate_0_summary.get("passed_count"),
+                "gate_0_failed": gate_0_summary.get("failed_count"),
+                "gate_1_passed": gate_1_summary.get("passed_count"),
+                "gate_1_failed": gate_1_summary.get("failed_count"),
+                "gate_2_input": gate_2_summary.get("input_count", backtest_summary.get("input_count", len(candidates))),
+                "gate_2_passed": gate_2_summary.get("passed_count", len(passed)),
+                "candidates_passed_backtest": gate_2_summary.get("passed_count", len(passed)),
                 "candidates_failed_backtest": backtest_summary.get("failed_count", max(len(candidates) - len(passed), 0)),
                 "backtest_failed_reason_counts": backtest_summary.get("failed_reason_counts") or {},
                 "candidates_after_dedup": len(unique),
                 "submitted": submit_result.get("submitted", 0),
                 "passed_quality_gate": submit_result.get("passed_quality_gate", 0),
+                "gate_3_passed": submit_result.get("gate_3_passed", submit_result.get("passed_quality_gate", 0)),
+                "gate_3_failed": submit_result.get(
+                    "gate_3_failed",
+                    max(
+                        int(submit_result.get("submitted", 0)) - int(submit_result.get("passed_quality_gate", 0)),
+                        0,
+                    ),
+                ),
+                "gate_3_provisional_passed": submit_result.get("gate_3_provisional_passed", 0),
+                "gate_3_failure_reason_topn": list(submit_result.get("gate_3_failure_reason_topn") or []),
+                **vector_summary,
                 "eliminated": len(eliminated),
                 "external_llm_status": autonomy_summary.get("external_llm_status"),
                 "external_llm_attempt_count": autonomy_summary.get("external_llm_attempt_count", 0),
@@ -660,7 +879,14 @@ class StrategyFactoryScheduler:
             results["completed_at"] = datetime.now().isoformat()
             results["elapsed_seconds"] = round(elapsed, 1)
             results["error"] = str(exc)
-            results["summary"] = {"elapsed_seconds": round(elapsed, 1), "error": str(exc)}
+            results["summary"] = {"trace_id": trace_id, "elapsed_seconds": round(elapsed, 1), "error": str(exc)}
+
+        results["pipeline"] = {
+            "trace_id": trace_id,
+            "status": results.get("status"),
+            "stage_order": list(results.get("stages", {}).keys()),
+            "total_stage_count": len(results.get("stages", {})),
+        }
 
         self.last_run = datetime.now()
         self.last_result = results

@@ -62,6 +62,7 @@ class PipelineResult:
             "stages": {
                 sid: {
                     "used_fallback": sr.used_fallback,
+                    "llm_attempted": sr.llm_attempted,
                     "elapsed_sec": round(sr.elapsed_sec, 4),
                     "prompt_chars": sr.prompt_chars,
                     "response_chars": sr.response_chars,
@@ -124,6 +125,8 @@ class MultiStageStrategyPipeline:
 
             if not skip_llm:
                 if stage_result.used_fallback:
+                    if stage_def.prefer_fallback:
+                        consecutive_llm_failures = 0
                     consecutive_llm_failures += 1
                     # 超时检测：耗时接近超时阈值 → 立即跳过
                     _stage_limit = PIPELINE_STAGE_TIMEOUTS.get(stage_id, PIPELINE_STAGE_TIMEOUT_SEC)
@@ -177,18 +180,33 @@ class MultiStageStrategyPipeline:
             )
 
         started = time.perf_counter()
+        llm_attempted = False
+
+        if stage_def.prefer_fallback:
+            logger.info("Stage %s using local fallback (prefer_fallback)", stage_id)
+            return await self._call_fallback_stage(stage_def, db, input_data, snapshot, started, llm_attempted=False)
 
         # 1) 尝试 LLM 调用（跳过条件：skip_llm 标记或 provider 不可用）
         if not skip_llm and self.provider.is_enabled():
+            llm_attempted = True
+            prepared_input = self._prepare_stage_input(stage_id, input_data)
             try:
-                output = await self._call_llm_stage(stage_def, input_data)
+                output = await self.provider.call_stage(
+                    stage_id=stage_def.stage_id,
+                    input_data=prepared_input,
+                    system_prompt=stage_def.system_prompt,
+                    max_tokens=stage_def.max_tokens,
+                    temperature=stage_def.temperature,
+                    timeout_sec=PIPELINE_STAGE_TIMEOUTS.get(stage_def.stage_id, PIPELINE_STAGE_TIMEOUT_SEC),
+                )
                 if validate_stage_output(stage_id, output):
                     elapsed = time.perf_counter() - started
                     return StageResult(
                         stage_id=stage_id,
                         output=output,
                         used_fallback=False,
-                        prompt_chars=len(stage_def.system_prompt) + len(json.dumps(input_data, ensure_ascii=False, default=str)),
+                        llm_attempted=True,
+                        prompt_chars=len(stage_def.system_prompt) + len(json.dumps(prepared_input, ensure_ascii=False, default=str)),
                         response_chars=len(json.dumps(output, ensure_ascii=False, default=str)),
                         elapsed_sec=elapsed,
                     )
@@ -206,7 +224,14 @@ class MultiStageStrategyPipeline:
             logger.info("Stage %s skipping LLM (prior stage timed out)", stage_id)
 
         # 2) Fallback 到本地规则引擎
-        return await self._call_fallback_stage(stage_def, db, input_data, snapshot, started)
+        return await self._call_fallback_stage(
+            stage_def,
+            db,
+            input_data,
+            snapshot,
+            started,
+            llm_attempted=llm_attempted,
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -219,9 +244,10 @@ class MultiStageStrategyPipeline:
     ) -> dict[str, Any]:
         """调用 LLM provider 执行单阶段。"""
         stage_timeout = PIPELINE_STAGE_TIMEOUTS.get(stage_def.stage_id, PIPELINE_STAGE_TIMEOUT_SEC)
+        prepared_input = self._prepare_stage_input(stage_def.stage_id, input_data)
         return await self.provider.call_stage(
             stage_id=stage_def.stage_id,
-            input_data=input_data,
+            input_data=prepared_input,
             system_prompt=stage_def.system_prompt,
             max_tokens=stage_def.max_tokens,
             temperature=stage_def.temperature,
@@ -235,6 +261,8 @@ class MultiStageStrategyPipeline:
         input_data: dict[str, Any],
         snapshot: dict[str, Any],
         started: float,
+        *,
+        llm_attempted: bool,
     ) -> StageResult:
         """执行 fallback 函数。"""
         if stage_def.fallback_fn is None:
@@ -242,6 +270,7 @@ class MultiStageStrategyPipeline:
                 stage_id=stage_def.stage_id,
                 output={},
                 used_fallback=True,
+                llm_attempted=llm_attempted,
                 elapsed_sec=time.perf_counter() - started,
                 error=f"no fallback for stage {stage_def.stage_id}",
             )
@@ -253,6 +282,7 @@ class MultiStageStrategyPipeline:
                 stage_id=stage_def.stage_id,
                 output=output if valid else {},
                 used_fallback=True,
+                llm_attempted=llm_attempted,
                 elapsed_sec=elapsed,
                 error=None if valid else f"fallback output failed validation for {stage_def.stage_id}",
             )
@@ -262,6 +292,7 @@ class MultiStageStrategyPipeline:
                 stage_id=stage_def.stage_id,
                 output={},
                 used_fallback=True,
+                llm_attempted=llm_attempted,
                 elapsed_sec=time.perf_counter() - started,
                 error=f"fallback failed: {exc}",
             )
@@ -322,6 +353,80 @@ class MultiStageStrategyPipeline:
             }
 
         return initial
+
+    @staticmethod
+    def _prepare_stage_input(stage_id: str, input_data: dict[str, Any]) -> dict[str, Any]:
+        """按阶段压缩输入，降低 LLM 延迟和超时概率。"""
+        if stage_id != "strategy_generation":
+            return input_data
+
+        prepared: dict[str, Any] = {}
+
+        market_snapshot = dict(input_data.get("market_snapshot") or {})
+        if market_snapshot:
+            prepared["market_snapshot"] = {
+                key: market_snapshot.get(key)
+                for key in ("date", "fear_greed", "sentiment", "north_fund")
+                if key in market_snapshot
+            }
+
+        research_task = dict(input_data.get("research_task") or {})
+        if research_task:
+            prepared["research_task"] = {
+                key: research_task.get(key)
+                for key in (
+                    "task_key",
+                    "task_source",
+                    "theme_code",
+                    "direction",
+                    "target_symbols",
+                    "strategy_preferences",
+                    "opportunity_type",
+                    "horizon",
+                )
+                if key in research_task
+            }
+
+        themes = list(input_data.get("themes") or [])
+        if themes:
+            prepared["themes"] = [
+                {
+                    "theme_code": item.get("theme_code"),
+                    "theme_name": item.get("theme_name"),
+                    "direction": item.get("direction"),
+                    "confidence": item.get("confidence"),
+                }
+                for item in themes[:3]
+            ]
+
+        exposures = list(input_data.get("exposures") or [])
+        if exposures:
+            prepared["exposures"] = [
+                {
+                    "theme_code": item.get("theme_code"),
+                    "target_symbols": list(item.get("target_symbols") or [])[:6],
+                    "sector": item.get("sector"),
+                    "exposure_type": item.get("exposure_type"),
+                    "weight": item.get("weight"),
+                }
+                for item in exposures[:4]
+            ]
+
+        confirmations = list(input_data.get("confirmations") or [])
+        if confirmations:
+            prepared["confirmations"] = [
+                {
+                    "theme_code": item.get("theme_code"),
+                    "symbol": item.get("symbol"),
+                    "confirmed": item.get("confirmed"),
+                    "signal_strength": item.get("signal_strength"),
+                    "entry_timing": item.get("entry_timing"),
+                    "risk_level": item.get("risk_level"),
+                }
+                for item in confirmations[:8]
+            ]
+
+        return prepared or input_data
 
 
 # ---------------------------------------------------------------------------

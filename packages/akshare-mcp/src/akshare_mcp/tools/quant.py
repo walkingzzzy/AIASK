@@ -146,7 +146,8 @@ def register(mcp):
             if not klines:
                 return fail("No kline data")
 
-            closes = [k["close"] for k in klines if isinstance(k, dict) and k.get("close") is not None]
+            ordered_klines = normalize_klines(klines)
+            closes = [k["close"] for k in ordered_klines if isinstance(k, dict) and k.get("close") is not None]
             if len(closes) < 2:
                 return fail("Not enough close data")
 

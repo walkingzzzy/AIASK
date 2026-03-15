@@ -75,6 +75,34 @@ async def test_close_falls_back_to_terminate_when_pool_close_fails():
     assert schema._initialized is False
 
 
+def test_schema_base_uses_compact_pool_defaults_for_tool_only_profile(monkeypatch):
+    from akshare_mcp.storage.timescaledb.schema_base import SchemaBase
+
+    monkeypatch.setenv('AKSHARE_MCP_STARTUP_PROFILE', 'tool-only')
+    monkeypatch.delenv('AKSHARE_MCP_DB_POOL_MIN', raising=False)
+    monkeypatch.delenv('AKSHARE_MCP_DB_POOL_MAX', raising=False)
+
+    config = SchemaBase()._build_db_config()
+
+    assert config['min_size'] == 1
+    assert config['max_size'] == 2
+    assert config['server_settings']['application_name'] == 'akshare-mcp:tool-only'
+
+
+def test_schema_base_pool_limits_honor_env_overrides(monkeypatch):
+    from akshare_mcp.storage.timescaledb.schema_base import SchemaBase
+
+    monkeypatch.setenv('AKSHARE_MCP_STARTUP_PROFILE', 'full')
+    monkeypatch.setenv('AKSHARE_MCP_DB_POOL_MIN', '3')
+    monkeypatch.setenv('AKSHARE_MCP_DB_POOL_MAX', '2')
+
+    config = SchemaBase()._build_db_config()
+
+    assert config['min_size'] == 3
+    assert config['max_size'] == 3
+    assert config['server_settings']['application_name'] == 'akshare-mcp:full'
+
+
 @pytest.mark.asyncio
 async def test_await_with_db_cleanup_closes_db(monkeypatch):
     import akshare_mcp.storage.timescaledb as db_mod

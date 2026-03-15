@@ -1,10 +1,11 @@
 import { create } from 'zustand';
+import { getBffBaseUrl } from '@/lib/bff-base';
 
 export type WatchItem = { code: string; name: string; addedAt: number };
 export type WatchGroup = { id: string; name: string; color: string; items: WatchItem[] };
 
 const LS_KEY = 'aiask_watchlist';
-const BFF_BASE = process.env.NEXT_PUBLIC_BFF_BASE_URL || 'http://localhost:3001/api';
+const BFF_BASE = getBffBaseUrl();
 
 
 /* ── LocalStorage helpers ── */
@@ -81,15 +82,15 @@ type WatchlistState = {
   /** Check if any group contains code */
   has: (code: string) => boolean;
   /** Add stock to a group (default: first group) */
-  add: (code: string, name?: string, groupId?: string) => void;
-  /** Remove stock from all groups */
-  remove: (code: string) => void;
+  add: (code: string, name?: string, groupId?: string) => Promise<void>;
+  /** Remove stock from a specific group, or from all groups when groupId is omitted */
+  remove: (code: string, groupId?: string) => Promise<void>;
   /** Toggle stock in default group */
-  toggle: (code: string, name?: string) => void;
+  toggle: (code: string, name?: string) => Promise<void>;
   /** Create a new group */
-  createGroup: (name: string, color?: string) => void;
+  createGroup: (name: string, color?: string) => Promise<void>;
   /** Delete a group */
-  deleteGroup: (groupId: string) => void;
+  deleteGroup: (groupId: string) => Promise<void>;
   /** Clear all items from default group */
   clear: () => void;
   /** Sync with server (pull) */
@@ -98,6 +99,15 @@ type WatchlistState = {
   pushToServer: () => Promise<void>;
 };
 
+function normalizeAddedAt(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
 export const useWatchlistStore = create<WatchlistState>((set, get) => ({
   groups: loadLocal(),
   synced: false,
@@ -105,11 +115,12 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
 
   has: (code) => get().groups.some((g) => g.items.some((i) => i.code === code)),
 
-  add: (code, name, groupId) => {
+  add: async (code, name, groupId) => {
     const c = code.trim();
     if (!c) return;
-    const targetId = groupId || get().groups[0]?.id || 'default';
-    const next = get().groups.map((g) => {
+    const prev = get().groups;
+    const targetId = groupId || prev[0]?.id || 'default';
+    const next = prev.map((g) => {
       if (g.id !== targetId) return g;
       if (g.items.some((i) => i.code === c)) return g;
       return {
@@ -117,36 +128,61 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
         items: [{ code: c, name: name?.trim() || '', addedAt: Date.now() }, ...g.items],
       };
     });
+    if (JSON.stringify(next) === JSON.stringify(prev)) return;
     saveLocal(next);
     set({ groups: next });
-    // Optimistic server sync (fire-and-forget)
-    fetchServer('/stocks/add', {
+
+    const synced = await fetchServer('/stocks/add', {
       method: 'POST',
-      body: JSON.stringify({ group: targetId, codes: [c] }),
+      body: JSON.stringify({ group: targetId, groupName: prev.find((g) => g.id === targetId)?.name, codes: [c] }),
     });
+    if (synced == null) {
+      saveLocal(prev);
+      set({ groups: prev });
+    }
   },
 
-  remove: (code) => {
+  remove: async (code, groupId) => {
     const c = code.trim();
-    // 先取好 groupId，再 set，避免 set 后 get 语义混乱
-    const groupId = get().groups[0]?.id || 'default';
-    const next = get().groups.map((g) => ({
-      ...g,
-      items: g.items.filter((i) => i.code !== c),
-    }));
+    if (!c) return;
+
+    const prev = get().groups;
+    const targetGroupIds = prev
+      .filter((g) => (groupId ? g.id === groupId : g.items.some((i) => i.code === c)))
+      .filter((g) => g.items.some((i) => i.code === c))
+      .map((g) => g.id);
+    if (targetGroupIds.length === 0) return;
+
+    const next = prev.map((g) => {
+      if (!targetGroupIds.includes(g.id)) return g;
+      return {
+        ...g,
+        items: g.items.filter((i) => i.code !== c),
+      };
+    });
     saveLocal(next);
     set({ groups: next });
-    // Sync remove to server
-    fetchServer(`/stocks/remove?group=${encodeURIComponent(groupId)}&code=${c}`, {
-      method: 'DELETE',
-    });
+
+    const results = await Promise.all(
+      targetGroupIds.map((id) =>
+        fetchServer(`/stocks/remove?group=${encodeURIComponent(id)}&code=${encodeURIComponent(c)}`, {
+          method: 'DELETE',
+        })),
+    );
+
+    if (results.some((result) => result == null)) {
+      saveLocal(prev);
+      set({ groups: prev });
+    }
   },
 
-  toggle: (code, name) => {
-    get().has(code) ? get().remove(code) : get().add(code, name);
+  toggle: async (code, name) => {
+    if (get().has(code)) await get().remove(code);
+    else await get().add(code, name);
   },
 
-  createGroup: (name, color) => {
+  createGroup: async (name, color) => {
+    const prev = get().groups;
     const id = `group_${Date.now()}`;
     const newGroup: WatchGroup = {
       id,
@@ -154,25 +190,34 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
       color: color || '#6366f1',
       items: [],
     };
-    const next = [...get().groups, newGroup];
+    const next = [...prev, newGroup];
     saveLocal(next);
     set({ groups: next });
-    fetchServer('/groups/create', {
+    const created = await fetchServer('/groups/create', {
       method: 'POST',
-      body: JSON.stringify({ name: name.trim(), color }),
+      body: JSON.stringify({ id, name: name.trim(), color }),
     });
+    if (created == null) {
+      saveLocal(prev);
+      set({ groups: prev });
+    }
   },
 
-  deleteGroup: (groupId) => {
-    const group = get().groups.find((g) => g.id === groupId);
-    const next = get().groups.filter((g) => g.id !== groupId);
+  deleteGroup: async (groupId) => {
+    const prev = get().groups;
+    const group = prev.find((g) => g.id === groupId);
+    const next = prev.filter((g) => g.id !== groupId);
     if (next.length === 0) next.push(defaultGroup());
     saveLocal(next);
     set({ groups: next });
     if (group) {
-      fetchServer(`/groups/delete?name=${encodeURIComponent(group.name)}`, {
+      const deleted = await fetchServer(`/groups/delete?id=${encodeURIComponent(group.id)}&name=${encodeURIComponent(group.name)}`, {
         method: 'DELETE',
       });
+      if (deleted == null) {
+        saveLocal(prev);
+        set({ groups: prev });
+      }
     }
   },
 
@@ -195,7 +240,7 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
             ? g.items.map((i: any) => ({
               code: String(i.code ?? ''),
               name: String(i.name ?? ''),
-              addedAt: Number(i.addedAt ?? Date.now()),
+              addedAt: normalizeAddedAt(i.addedAt),
             }))
             : [],
         }));
@@ -219,6 +264,7 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
           method: 'POST',
           body: JSON.stringify({
             group: group.id,
+            groupName: group.name,
             codes: group.items.map((i) => i.code),
           }),
         });

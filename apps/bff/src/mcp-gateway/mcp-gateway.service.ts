@@ -16,6 +16,8 @@ type McpHealth = {
   activeConnections?: number;
 };
 
+type McpStartupProfile = 'full' | 'tool-only';
+
 interface PooledConnection {
   id: number;
   client: Client;
@@ -24,13 +26,18 @@ interface PooledConnection {
   connectPromise: Promise<void> | null;
 }
 
+type DedicatedWaiter = { resolve: (conn: PooledConnection) => void };
+
 @Injectable()
 export class McpGatewayService implements OnModuleDestroy {
   private readonly logger = new Logger(McpGatewayService.name);
+  private static readonly DEDICATED_TOOL_CONNECTIONS = new Set(['alerts_manager']);
 
   private pool: PooledConnection[] = [];
   private readonly poolSize: number;
   private waitQueue: Array<{ resolve: (conn: PooledConnection) => void }> = [];
+  private dedicatedConnections = new Map<string, PooledConnection>();
+  private dedicatedWaitQueues = new Map<string, DedicatedWaiter[]>();
   private initialized = false;
 
   constructor(private readonly configService: ConfigService) {
@@ -84,18 +91,20 @@ export class McpGatewayService implements OnModuleDestroy {
   }
 
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
-    const conn = await this.acquire();
+    const dedicated = McpGatewayService.DEDICATED_TOOL_CONNECTIONS.has(name);
+    const conn = dedicated ? await this.acquireDedicated(name) : await this.acquire();
     try {
       const result = await conn.client.callTool({ name, arguments: args });
       return this.normalizeToolResult(result);
     } catch (error) {
       if (this.isTransportError(error)) {
         this.logger.warn(`Transport error on pool[${conn.id}], recycling connection`);
-        await this.recycleConnection(conn);
+        await this.recycleConnection(conn, dedicated ? name : undefined);
       }
       throw error;
     } finally {
-      this.release(conn);
+      if (dedicated) this.releaseDedicated(name, conn);
+      else this.release(conn);
     }
   }
 
@@ -125,11 +134,61 @@ export class McpGatewayService implements OnModuleDestroy {
   }
 
   private release(conn: PooledConnection): void {
+    if (!this.pool.includes(conn)) {
+      const waiter = this.waitQueue.shift();
+      if (waiter) {
+        void this.acquire()
+          .then((nextConn) => waiter.resolve(nextConn))
+          .catch((error) => {
+            this.logger.error(`Failed to reacquire MCP connection for waiter: ${String(error)}`);
+            this.waitQueue.unshift(waiter);
+          });
+      }
+      return;
+    }
+
     conn.busy = false;
     const waiter = this.waitQueue.shift();
     if (waiter) {
       conn.busy = true;
       waiter.resolve(conn);
+    }
+  }
+
+  private async acquireDedicated(toolName: string): Promise<PooledConnection> {
+    const existing = this.dedicatedConnections.get(toolName);
+    if (existing) {
+      if (!existing.busy) {
+        existing.busy = true;
+        return existing;
+      }
+      return new Promise<PooledConnection>((resolve) => {
+        const queue = this.dedicatedWaitQueues.get(toolName) ?? [];
+        queue.push({ resolve });
+        this.dedicatedWaitQueues.set(toolName, queue);
+      });
+    }
+
+    const conn = await this.createConnection(this.poolSize + this.dedicatedConnections.size);
+    conn.busy = true;
+    this.dedicatedConnections.set(toolName, conn);
+    this.logger.log(`MCP dedicated connection[${conn.id}] assigned to ${toolName}`);
+    return conn;
+  }
+
+  private releaseDedicated(toolName: string, conn: PooledConnection): void {
+    const current = this.dedicatedConnections.get(toolName);
+    if (current !== conn) return;
+
+    conn.busy = false;
+    const queue = this.dedicatedWaitQueues.get(toolName);
+    const waiter = queue?.shift();
+    if (waiter) {
+      conn.busy = true;
+      waiter.resolve(conn);
+    }
+    if (queue && queue.length === 0) {
+      this.dedicatedWaitQueues.delete(toolName);
     }
   }
 
@@ -148,6 +207,7 @@ export class McpGatewayService implements OnModuleDestroy {
     const args = this.parseArgs(
       this.configService.get<string>('MCP_STDIO_ARGS', '["-m","akshare_mcp.server"]'),
     );
+    const startupProfile = this.resolveStartupProfile(id);
     const env: Record<string, string> = {
       ...Object.entries(process.env).reduce<Record<string, string>>((acc, [k, v]) => {
         if (typeof v === 'string') acc[k] = v;
@@ -157,6 +217,8 @@ export class McpGatewayService implements OnModuleDestroy {
         this.configService.get<string>('MCP_STDIO_PYTHONPATH') || resolve(cwd, 'src'),
       PYTHONIOENCODING:
         this.configService.get<string>('MCP_STDIO_PYTHONIOENCODING', 'utf-8'),
+      AKSHARE_MCP_STARTUP_PROFILE: startupProfile,
+      AKSHARE_MCP_CONNECTION_SLOT: String(id),
     };
 
     const transport = new StdioClientTransport({
@@ -179,28 +241,27 @@ export class McpGatewayService implements OnModuleDestroy {
       throw error;
     }
 
-    this.logger.log(`MCP pool connection[${id}] established`);
+    this.logger.log(`MCP pool connection[${id}] established (profile=${startupProfile})`);
     return { id, client, transport, busy: false, connectPromise: null };
   }
 
-  private async recycleConnection(conn: PooledConnection): Promise<void> {
+  private async recycleConnection(conn: PooledConnection, dedicatedTool?: string): Promise<void> {
     try { await conn.transport.close(); } catch { /* ignore */ }
-
-    const idx = this.pool.indexOf(conn);
-    if (idx !== -1) {
-      this.pool.splice(idx, 1);
-    }
 
     try {
       const fresh = await this.createConnection(conn.id);
-      fresh.busy = conn.busy;
-      this.pool.push(fresh);
-
-      Object.assign(conn, {
-        client: fresh.client,
-        transport: fresh.transport,
-      });
+      conn.client = fresh.client;
+      conn.transport = fresh.transport;
+      conn.connectPromise = fresh.connectPromise;
     } catch (err) {
+      if (dedicatedTool) {
+        this.dedicatedConnections.delete(dedicatedTool);
+      } else {
+        const idx = this.pool.indexOf(conn);
+        if (idx !== -1) {
+          this.pool.splice(idx, 1);
+        }
+      }
       this.logger.error(`Failed to recycle pool[${conn.id}]: ${err}`);
     }
   }
@@ -211,7 +272,14 @@ export class McpGatewayService implements OnModuleDestroy {
         await conn.transport.close();
       } catch { /* ignore */ }
     }
+    for (const conn of this.dedicatedConnections.values()) {
+      try {
+        await conn.transport.close();
+      } catch { /* ignore */ }
+    }
     this.pool = [];
+    this.dedicatedConnections.clear();
+    this.dedicatedWaitQueues.clear();
     this.initialized = false;
   }
 
@@ -262,13 +330,103 @@ export class McpGatewayService implements OnModuleDestroy {
       .filter((part) => part.length > 0);
   }
 
+  private resolveStartupProfile(id: number): McpStartupProfile {
+    const raw = this.configService.get<string>('MCP_STDIO_STARTUP_PROFILE', 'balanced').trim().toLowerCase();
+    if (raw === 'full') return 'full';
+    if (raw === 'tool-only' || raw === 'tool_only' || raw === 'worker') return 'tool-only';
+    return id === 0 ? 'full' : 'tool-only';
+  }
+
+  private withFallbackMetaDefaults(payload: unknown): unknown {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return payload;
+    }
+
+    const node = payload as Record<string, unknown>;
+    const hasFallbackShape =
+      'backend_requested' in node ||
+      'backend_used' in node ||
+      'fallback_used' in node ||
+      'fallback_reason' in node ||
+      'latency_ms' in node ||
+      'source' in node;
+
+    if (!hasFallbackShape) {
+      const nestedData = node.data;
+      if (nestedData && typeof nestedData === 'object' && !Array.isArray(nestedData)) {
+        const normalizedData = this.withFallbackMetaDefaults(nestedData) as Record<string, unknown>;
+        const nestedHasFallbackShape =
+          normalizedData &&
+          typeof normalizedData === 'object' &&
+          !Array.isArray(normalizedData) &&
+          ('backend_requested' in normalizedData ||
+            'backend_used' in normalizedData ||
+            'fallback_used' in normalizedData ||
+            'fallback_reason' in normalizedData ||
+            'latency_ms' in normalizedData);
+
+        if (nestedHasFallbackShape) {
+          return {
+            ...node,
+            data: normalizedData,
+            backend_requested: normalizedData.backend_requested ?? null,
+            backend_used: normalizedData.backend_used ?? null,
+            fallback_used:
+              typeof normalizedData.fallback_used === 'boolean'
+                ? normalizedData.fallback_used
+                : false,
+            fallback_reason: normalizedData.fallback_reason ?? null,
+            latency_ms:
+              typeof normalizedData.latency_ms === 'number'
+                ? normalizedData.latency_ms
+                : 0,
+          };
+        }
+      }
+
+      return payload;
+    }
+
+    const backendRequested =
+      typeof node.backend_requested === 'string' && node.backend_requested.length > 0
+        ? node.backend_requested
+        : typeof node.backend_used === 'string' && node.backend_used.length > 0
+          ? node.backend_used
+          : typeof node.source === 'string' && node.source.length > 0
+            ? node.source
+            : 'unknown';
+
+    const backendUsed =
+      typeof node.backend_used === 'string' && node.backend_used.length > 0
+        ? node.backend_used
+        : typeof node.source === 'string' && node.source.length > 0
+          ? node.source
+          : 'unknown';
+
+    const fallbackUsed =
+      typeof node.fallback_used === 'boolean'
+        ? node.fallback_used
+        : backendRequested !== backendUsed;
+
+    const latencyMs = typeof node.latency_ms === 'number' ? node.latency_ms : 0;
+
+    return {
+      ...node,
+      backend_requested: backendRequested,
+      backend_used: backendUsed,
+      fallback_used: fallbackUsed,
+      fallback_reason: node.fallback_reason ?? null,
+      latency_ms: latencyMs,
+    };
+  }
+
   private normalizeToolResult(result: unknown): unknown {
     if (!result || typeof result !== 'object') return result;
 
     const node = result as Record<string, unknown>;
 
     if ('structuredContent' in node && node.structuredContent !== undefined) {
-      return node.structuredContent;
+      return this.withFallbackMetaDefaults(node.structuredContent);
     }
 
     if (Array.isArray(node.content)) {
@@ -282,13 +440,13 @@ export class McpGatewayService implements OnModuleDestroy {
 
       if (textBlock?.text && typeof textBlock.text === 'string') {
         try {
-          return JSON.parse(textBlock.text);
+          return this.withFallbackMetaDefaults(JSON.parse(textBlock.text));
         } catch {
           return textBlock.text;
         }
       }
     }
 
-    return result;
+    return this.withFallbackMetaDefaults(result);
   }
 }

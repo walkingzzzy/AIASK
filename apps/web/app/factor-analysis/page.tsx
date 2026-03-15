@@ -25,6 +25,8 @@ type DecayResponse = {
   };
 };
 
+const DEFAULT_FACTOR_UNIVERSE = ['600519', '000858', '300750', '601318', '000001', '600036', '601166', '000333', '600276', '601899', '002594', '000651'];
+
 export default function FactorAnalysisPage() {
   const [libraryLoaded, setLibraryLoaded] = useState(false);
   const libraryQ = useApiQuery<LibraryResponse>(libraryLoaded ? '/factor/library' : null);
@@ -48,7 +50,8 @@ export default function FactorAnalysisPage() {
 
   function runAnalysis() {
     if (!validate()) return;
-    const body = { factor_name: factor, stock_codes: [trimmedCode] };
+    const stockCodes = Array.from(new Set([trimmedCode, ...DEFAULT_FACTOR_UNIVERSE])).filter(Boolean);
+    const body = { factor_name: factor, stock_codes: stockCodes };
     icApi.trigger('/factor/ic', { method: 'POST' }, body);
     btApi.trigger('/factor/backtest', { method: 'POST' }, body);
     setIcHistoryPath(`/factor/ic-history?factor_name=${encodeURIComponent(factor)}&period=20&limit=60`);

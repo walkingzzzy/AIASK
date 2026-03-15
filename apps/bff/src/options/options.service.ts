@@ -16,15 +16,16 @@ export class OptionsService {
     const ttlSeconds = this.cacheService.resolveTtl('options.chain', OptionsService.OPTIONS_TTL_SECONDS);
     
     const cached = await this.cacheService.getWithMeta(cacheKey);
-    if (cached.value) {
+    if (cached.value && !this.hasToolError(cached.value)) {
       return { 
         ...cached.value as Record<string, unknown>, 
         meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } } 
       };
     }
+    if (cached.value) await this.cacheService.del(cacheKey);
 
     try {
-      const payload = await this.mcp.callTool('get_option_chain', { symbol });
+      const payload = await this.mcp.callTool('get_option_chain', { underlying: symbol });
       const result = { 
         data: payload, 
         meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } 
@@ -45,18 +46,22 @@ export class OptionsService {
     const ttlSeconds = this.cacheService.resolveTtl('options.greeks', OptionsService.OPTIONS_TTL_SECONDS);
     
     const cached = await this.cacheService.getWithMeta(cacheKey);
-    if (cached.value) {
+    if (cached.value && !this.hasToolError(cached.value)) {
       return { 
         ...cached.value as Record<string, unknown>, 
         meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } } 
       };
     }
+    if (cached.value) await this.cacheService.del(cacheKey);
 
     try {
       const payload = await this.mcp.callTool('options_manager', {
         action: 'calculate_greeks',
-        kwargs: JSON.stringify({ underlying_symbol: symbol }),
+        kwargs: JSON.stringify({ underlying: symbol }),
       });
+      if (this.hasToolError(payload)) {
+        throw new Error(this.extractToolError(payload) ?? 'calculate_greeks 返回异常');
+      }
       const result = { 
         data: payload, 
         meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } 
@@ -76,8 +81,11 @@ export class OptionsService {
     try {
       const payload = await this.mcp.callTool('options_manager', {
         action: 'volatility_smirk',
-        kwargs: JSON.stringify({ underlying_symbol: symbol })
+        kwargs: JSON.stringify({ underlying: symbol }),
       });
+      if (this.hasToolError(payload)) {
+        throw new Error(this.extractToolError(payload) ?? 'volatility_smirk 返回异常');
+      }
       return { data: payload };
     } catch (error) {
       throw new BadGatewayException({
@@ -86,5 +94,26 @@ export class OptionsService {
         detail: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  private hasToolError(payload: unknown): boolean {
+    return this.extractToolError(payload) != null;
+  }
+
+  private extractToolError(payload: unknown): string | null {
+    if (typeof payload === 'string') {
+      return /error executing tool|validation error/i.test(payload) ? payload : null;
+    }
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+    const record = payload as Record<string, unknown>;
+    if (record.data && typeof record.data === 'string' && /error executing tool|validation error/i.test(record.data)) {
+      return record.data;
+    }
+    if (record.success === false) {
+      return String(record.error ?? record.message ?? 'options tool error');
+    }
+    return null;
   }
 }

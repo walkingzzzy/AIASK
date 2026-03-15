@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuthStore } from '@/store/auth-store';
+import { useHydrated } from '@/hooks/use-hydrated';
 
 const KEY = 'onboarding-done';
 const STEPS = [
@@ -15,18 +16,13 @@ const STEPS = [
 
 export function Onboarding() {
   const user = useAuthStore((s) => s.user);
-  const [mounted, setMounted] = useState(false);
-  const [open, setOpen] = useState(false);
+  const hydrated = useHydrated();
+  const [dismissed, setDismissed] = useState(false);
   const [step, setStep] = useState(0);
+  const completed = hydrated ? window.localStorage.getItem(KEY) === '1' : true;
+  const open = hydrated && Boolean(user) && !dismissed && !completed;
 
-  useEffect(() => setMounted(true), []);
-  useEffect(() => {
-    if (!mounted || !user) return;
-    if (window.localStorage.getItem(KEY) === '1') return;
-    setOpen(true);
-  }, [mounted, user]);
-
-  if (!mounted || !open) return null;
+  if (!open) return null;
 
   const current = STEPS[step];
   const target = document.querySelector(current.target) as HTMLElement | null;
@@ -34,7 +30,7 @@ export function Onboarding() {
 
   const close = () => {
     window.localStorage.setItem(KEY, '1');
-    setOpen(false);
+    setDismissed(true);
   };
   const next = () => {
     if (step >= STEPS.length - 1) {
@@ -66,4 +62,3 @@ export function Onboarding() {
     document.body,
   );
 }
-

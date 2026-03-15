@@ -10,19 +10,19 @@ export class TechnicalService {
       code: params.code, indicators: params.indicators,
       period: params.period ?? 'daily', limit: params.limit ?? 100,
     });
-    return { sourceTool: 'calculate_technical_indicators' as const, result: payload };
+    return { sourceTool: 'calculate_technical_indicators' as const, data: this.extractToolData(payload), result: payload };
   }
 
   async checkPatterns(params: { code: string; period?: string; limit?: number }) {
     const payload = await this.callTool('check_candlestick_patterns', {
       code: params.code, period: params.period ?? 'daily', limit: params.limit ?? 100,
     });
-    return { sourceTool: 'check_candlestick_patterns' as const, result: payload };
+    return { sourceTool: 'check_candlestick_patterns' as const, data: this.extractToolData(payload), result: payload };
   }
 
   async getAvailablePatterns() {
     const payload = await this.callTool('get_available_patterns', {});
-    return { sourceTool: 'get_available_patterns' as const, result: payload };
+    return { sourceTool: 'get_available_patterns' as const, data: this.extractToolData(payload), result: payload };
   }
 
   private async callTool(name: string, args: Record<string, unknown>) {
@@ -34,5 +34,13 @@ export class TechnicalService {
         detail: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  private extractToolData(payload: unknown): unknown {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return payload;
+    }
+    const record = payload as Record<string, unknown>;
+    return Object.prototype.hasOwnProperty.call(record, 'data') ? record.data : payload;
   }
 }

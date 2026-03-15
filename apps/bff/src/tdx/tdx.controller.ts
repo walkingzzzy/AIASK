@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
-import { IsArray, IsOptional, IsString, Matches } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsArray, IsNumber, IsOptional, IsString, Matches } from 'class-validator';
 import { TdxService } from './tdx.service';
 
 class PushMessageDto {
@@ -15,9 +16,17 @@ class PushWarnDto {
   @IsString()
   message!: string;
 
-  @IsOptional()
   @IsString()
-  stock_code?: string;
+  stock_code!: string;
+
+  @Type(() => Number)
+  @IsNumber()
+  price!: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  bs_flag?: number;
 }
 
 class CreateWatchlistDto {

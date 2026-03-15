@@ -1,12 +1,14 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { PageContainer, SectionCard, TabBar } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { StrategyCard } from '@/components/strategy-card';
 import { useCartStore } from '@/store/cart-store';
+import { extractArray } from '@/lib/data-utils';
 import { ensureRecordOrArray } from '@/lib/query-parse';
 import { apiKeys } from '@/lib/query-keys';
 import type {
@@ -33,8 +35,12 @@ const CATEGORIES = [
 ] as const;
 
 export default function StrategyMarketPage() {
+  const searchParams = useSearchParams();
   const [category, setCategory] = useState<string>('all');
   const [search, setSearch] = useState('');
+  const [showFactoryDetails, setShowFactoryDetails] = useState(false);
+  const task = searchParams.get('task');
+  const from = searchParams.get('from');
   const rankQ = useApiQuery<RankingResponse>(
     '/strategy-market/ranking?limit=50' + (category === 'all' ? '' : '&strategy_type=' + category),
     {
@@ -61,9 +67,7 @@ export default function StrategyMarketPage() {
   /* ---------- derived data ---------- */
 
   const strategies = useMemo(() => {
-    const d = rankQ.data;
-    const raw = Array.isArray(d) ? d : (d as Record<string, unknown>)?.strategies ?? d ?? [];
-    const list = Array.isArray(raw) ? raw as Strategy[] : [];
+    const list = extractArray(rankQ.data, 'strategies', 'items', 'data') as Strategy[];
     if (!search.trim()) return list;
     const q = search.trim().toLowerCase();
     return list.filter((s) =>
@@ -114,6 +118,15 @@ export default function StrategyMarketPage() {
   const trendRuns = useMemo(() => [...comparableRuns].reverse(), [comparableRuns]);
 
   const [showCart, setShowCart] = useState(false);
+  const factoryOverview = useMemo(
+    () => [
+      { label: '调度状态', value: factoryStatusQ.data?.running ? '运行中' : '待命' },
+      { label: '候选生成', value: String(factorySummary.candidates_spawned ?? 0) },
+      { label: '质检通过', value: String(factorySummary.passed_quality_gate ?? 0) },
+      { label: '最新快照', value: latestSnapshot?.snapshot_date ?? '暂无' },
+    ],
+    [factoryStatusQ.data?.running, factorySummary.candidates_spawned, factorySummary.passed_quality_gate, latestSnapshot?.snapshot_date],
+  );
 
   const expandedRun = useMemo(() => {
     if (!expandedRunId) return null;
@@ -126,15 +139,22 @@ export default function StrategyMarketPage() {
 
   return (
     <PageContainer>
-      <div className="flex items-center justify-between">
-        <h1>策略超市</h1>
-        <div className="flex items-center gap-2">
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索策略名称..."
-            className="px-2 py-1 border border-border rounded text-sm w-45"
-          />
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h1 className="m-0">策略超市</h1>
+          <p className="mt-1 mb-0 text-sm text-text-secondary">先挑策略、再做组合。工厂运行遥测默认收起，避免把真实用户任务淹没在运维信息里。</p>
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          <label className="grid gap-1 text-xs text-text-secondary">
+            <span>搜索策略</span>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜索策略名称..."
+              aria-label="搜索策略名称、描述或类型"
+              className="px-2 py-1 border border-border rounded text-sm w-full sm:w-45"
+            />
+          </label>
           <button
             onClick={() => setShowCart(!showCart)}
             className="relative px-3 py-1 text-sm rounded border border-border cursor-pointer hover:bg-surface-alt"
@@ -148,36 +168,44 @@ export default function StrategyMarketPage() {
           </button>
         </div>
       </div>
+      {(from || task) ? <div className="text-xs text-text-secondary mt-2">上下文跳转{from ? ` · 来源: ${from}` : ''}{task ? ` · 任务: ${task}` : ''}</div> : null}
 
-      <FactoryDashboard
-        factoryStatus={factoryStatusQ.data}
-        latestSnapshot={latestSnapshot}
-        capabilityBadges={capabilityBadges}
-        capabilitiesError={capabilitiesQ.error}
-        dailySnapshotError={dailySnapshotQ.error}
-        factorySummary={factorySummary}
-        snapshotCompletionRatio={snapshotCompletionRatio}
-        snapshotDegraded={snapshotDegraded}
-        snapshotFailureCount={snapshotFailureCount}
-        onRunFactory={() => runFactoryApi.trigger('/strategy-market/factory/run-once', { method: 'POST' })}
-        runFactoryPending={runFactoryApi.isPending}
-        runFactoryError={runFactoryApi.error}
-        factoryRunsLoading={factoryRunsQ.isPending}
-        factoryRuns={factoryRuns}
-        filteredRuns={filteredRuns}
-        failedRuns={failedRuns}
-        comparableRuns={comparableRuns}
-        trendRuns={trendRuns}
-        runStatusFilter={runStatusFilter}
-        onRunStatusFilterChange={setRunStatusFilter}
-        trendMetricKey={trendMetricKey}
-        onTrendMetricKeyChange={setTrendMetricKey}
-        expandedRunId={expandedRunId}
-        onExpandedRunIdChange={setExpandedRunId}
-        expandedRun={expandedRun}
-        expandedRunLoading={factoryRunDetailQ.isPending}
-        expandedRunError={factoryRunDetailQ.error}
-      />
+      <SectionCard className="mt-4 p-4 min-h-[164px]">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h2 className="m-0 text-base font-semibold">工厂摘要</h2>
+            <p className="m-0 mt-1 text-sm text-text-secondary">
+              当前仅保留关键状态与快捷动作，详细运行历史放到下方展开查看。
+            </p>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <button
+              onClick={() => runFactoryApi.trigger('/strategy-market/factory/run-once', { method: 'POST' })}
+              disabled={runFactoryApi.isPending}
+              className="px-3 py-1.5 text-sm rounded bg-primary text-white cursor-pointer disabled:opacity-50"
+            >
+              {runFactoryApi.isPending ? '运行中...' : '立即运行一轮工厂'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowFactoryDetails((prev) => !prev)}
+              className="px-3 py-1.5 text-sm rounded border border-border cursor-pointer hover:bg-surface-alt"
+              aria-expanded={showFactoryDetails}
+            >
+              {showFactoryDetails ? '收起工厂运行态' : '展开工厂运行态'}
+            </button>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+          {factoryOverview.map((item) => (
+            <div key={item.label} className="rounded border border-border bg-surface-alt px-3 py-2">
+              <div className="text-xs text-text-secondary">{item.label}</div>
+              <div className="mt-1 text-base font-semibold">{item.value}</div>
+            </div>
+          ))}
+        </div>
+        {runFactoryApi.error ? <p className="mt-3 mb-0 text-sm text-danger">{runFactoryApi.error}</p> : null}
+      </SectionCard>
 
       <TabBar tabs={CATEGORIES} active={category} onChange={(c) => { setCategory(c); setSearch(''); }} />
 
@@ -198,9 +226,58 @@ export default function StrategyMarketPage() {
 
       {!rankQ.isPending && strategies.length === 0 && !rankQ.error && (
         <SectionCard className="mt-4 p-6 text-center text-text-secondary">
-          暂无已发布的策略
+          <p className="m-0">暂无已发布的策略，可先运行一次工厂或展开运行态查看最近结果。</p>
+          <div className="mt-3 flex justify-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => runFactoryApi.trigger('/strategy-market/factory/run-once', { method: 'POST' })}
+              disabled={runFactoryApi.isPending}
+              className="px-3 py-1.5 text-sm rounded bg-primary text-white cursor-pointer disabled:opacity-50"
+            >
+              {runFactoryApi.isPending ? '运行中...' : '运行一次工厂'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowFactoryDetails(true)}
+              className="px-3 py-1.5 text-sm rounded border border-border cursor-pointer hover:bg-surface-alt"
+            >
+              查看工厂运行态
+            </button>
+          </div>
         </SectionCard>
       )}
+
+      {showFactoryDetails ? (
+        <FactoryDashboard
+          factoryStatus={factoryStatusQ.data}
+          latestSnapshot={latestSnapshot}
+          capabilityBadges={capabilityBadges}
+          capabilitiesError={capabilitiesQ.error}
+          dailySnapshotError={dailySnapshotQ.error}
+          factorySummary={factorySummary}
+          snapshotCompletionRatio={snapshotCompletionRatio}
+          snapshotDegraded={snapshotDegraded}
+          snapshotFailureCount={snapshotFailureCount}
+          onRunFactory={() => runFactoryApi.trigger('/strategy-market/factory/run-once', { method: 'POST' })}
+          runFactoryPending={runFactoryApi.isPending}
+          runFactoryError={runFactoryApi.error}
+          factoryRunsLoading={factoryRunsQ.isPending}
+          factoryRuns={factoryRuns}
+          filteredRuns={filteredRuns}
+          failedRuns={failedRuns}
+          comparableRuns={comparableRuns}
+          trendRuns={trendRuns}
+          runStatusFilter={runStatusFilter}
+          onRunStatusFilterChange={setRunStatusFilter}
+          trendMetricKey={trendMetricKey}
+          onTrendMetricKeyChange={setTrendMetricKey}
+          expandedRunId={expandedRunId}
+          onExpandedRunIdChange={setExpandedRunId}
+          expandedRun={expandedRun}
+          expandedRunLoading={factoryRunDetailQ.isPending}
+          expandedRunError={factoryRunDetailQ.error}
+        />
+      ) : null}
 
       {showCart && <CartDrawer onClose={() => setShowCart(false)} />}
     </PageContainer>

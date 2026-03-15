@@ -4,23 +4,40 @@ function hasSessionToken(request: NextRequest) {
   return request.cookies.get('logged_in')?.value === '1';
 }
 
-const protectedPrefixes = ['/market', '/fundamental', '/research', '/alerts', '/strategy', '/risk', '/user', '/settings', '/assistant', '/tdx', '/fund-flow', '/factor', '/valuation', '/technical', '/sentiment', '/search', '/data', '/chat', '/paper-trading', '/watchlist', '/notifications'];
+const protectedPrefixes = ['/admin', '/market', '/stock', '/fundamental', '/research', '/alerts', '/strategy', '/risk', '/user', '/settings', '/assistant', '/tdx', '/fund-flow', '/factor', '/valuation', '/technical', '/sentiment', '/search', '/data', '/chat', '/paper-trading', '/portfolio', '/watchlist', '/notifications'];
+
+function resolveRedirectTarget(request: NextRequest) {
+  const raw = request.nextUrl.searchParams.get('redirect');
+  if (!raw || !raw.startsWith('/')) return null;
+  try {
+    return new URL(raw, request.nextUrl.origin);
+  } catch {
+    return null;
+  }
+}
 
 export function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+  const { pathname, search } = request.nextUrl;
   const hasSession = hasSessionToken(request);
 
   if (protectedPrefixes.some((prefix) => pathname.startsWith(prefix)) && !hasSession) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = '/login';
-    loginUrl.searchParams.set('redirect', pathname);
+    loginUrl.search = '';
+    loginUrl.searchParams.set('redirect', `${pathname}${search}`);
     return NextResponse.redirect(loginUrl);
   }
 
   if (pathname.startsWith('/login') && hasSession) {
+    const redirectTarget = resolveRedirectTarget(request);
     const marketUrl = request.nextUrl.clone();
-    marketUrl.pathname = '/market';
-    marketUrl.search = '';
+    if (redirectTarget) {
+      marketUrl.pathname = redirectTarget.pathname;
+      marketUrl.search = redirectTarget.search;
+    } else {
+      marketUrl.pathname = '/market';
+      marketUrl.search = '';
+    }
     return NextResponse.redirect(marketUrl);
   }
 
@@ -35,6 +52,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/market/:path*', '/fundamental/:path*', '/research/:path*', '/alerts/:path*', '/strategy/:path*', '/risk/:path*', '/user/:path*', '/settings/:path*', '/assistant/:path*', '/tdx/:path*', '/fund-flow/:path*', '/factor/:path*', '/valuation/:path*', '/technical/:path*', '/sentiment/:path*', '/search/:path*', '/data/:path*', '/chat/:path*', '/paper-trading/:path*', '/watchlist/:path*', '/notifications/:path*', '/login', '/register'],
+  matcher: ['/admin/:path*', '/market/:path*', '/stock/:path*', '/fundamental/:path*', '/research/:path*', '/alerts/:path*', '/strategy/:path*', '/risk/:path*', '/user/:path*', '/settings/:path*', '/assistant/:path*', '/tdx/:path*', '/fund-flow/:path*', '/factor/:path*', '/valuation/:path*', '/technical/:path*', '/sentiment/:path*', '/search/:path*', '/data/:path*', '/chat/:path*', '/paper-trading/:path*', '/portfolio/:path*', '/watchlist/:path*', '/notifications/:path*', '/login', '/register'],
 };
-

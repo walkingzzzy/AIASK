@@ -1,19 +1,21 @@
 'use client';
 
-import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { PageContainer, SectionCard, KpiCard, KpiGrid } from '@/components/ui';
+import { useState, useMemo, useCallback, useEffect } from 'react';
+import { PageContainer, SectionCard, KpiCard, KpiGrid, ConfirmDialog } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { useHydrated } from '@/hooks/use-hydrated';
 import { useWatchlistStore } from '@/store/watchlist-store';
 import { StockLink } from '@/components/stock-link';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import Link from 'next/link';
 import { useQuoteSubscription, type QuoteData } from '@/lib/ws';
 import { EmptyState } from '@/components/status-state';
+import { exportCSV } from '@/lib/export';
 
 export default function WatchlistPage() {
+    const hydrated = useHydrated();
     const groups = useWatchlistStore((s) => s.groups);
     const syncFromServer = useWatchlistStore((s) => s.syncFromServer);
-    const synced = useWatchlistStore((s) => s.synced);
     const createGroup = useWatchlistStore((s) => s.createGroup);
     const deleteGroup = useWatchlistStore((s) => s.deleteGroup);
     const remove = useWatchlistStore((s) => s.remove);
@@ -23,6 +25,11 @@ export default function WatchlistPage() {
     const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
     const [newGroupName, setNewGroupName] = useState('');
     const [showNewGroup, setShowNewGroup] = useState(false);
+    const [pendingDialog, setPendingDialog] = useState<
+      | { type: 'remove'; code: string; groupId?: string; groupName: string }
+      | { type: 'delete-group'; groupId: string; groupName: string }
+      | null
+    >(null);
 
     // ── 搜索/添加自选股 ──
     const [searchKeyword, setSearchKeyword] = useState('');
@@ -39,7 +46,7 @@ export default function WatchlistPage() {
     };
 
     const handleAddStock = (code: string, name: string) => {
-        add(code, name, activeGroup?.id);
+        void add(code, name, activeGroup?.id);
         // 清空搜索结果，方便继续操作
         setSearchKeyword('');
         setSearchPath(null);
@@ -48,8 +55,9 @@ export default function WatchlistPage() {
     // Sync on mount
     useEffect(() => { syncFromServer(); }, [syncFromServer]);
 
-    const activeGroup = groups.find((g) => g.id === activeGroupId) || groups[0];
-    const allCodes = useMemo(() => groups.flatMap((g) => g.items.map((i) => i.code)), [groups]);
+    const visibleGroups = hydrated ? groups : [];
+    const activeGroup = visibleGroups.find((g) => g.id === activeGroupId) || visibleGroups[0];
+    const allCodes = hydrated ? visibleGroups.flatMap((g) => g.items.map((i) => i.code)) : [];
 
     // Batch quote for all watchlist stocks
     const batchQ = useApiQuery<unknown>(
@@ -65,31 +73,61 @@ export default function WatchlistPage() {
     }, [batchQ.data]);
 
     // WS real-time quotes for watchlist stocks
-    const wsQuotesRef = useRef<Map<string, Record<string, unknown>>>(new Map());
-    const [wsQuoteTick, setWsQuoteTick] = useState(0);
+    const [wsQuotes, setWsQuotes] = useState<Record<string, Record<string, unknown>>>({});
     const handleWsQuote = useCallback((data: QuoteData) => {
-        wsQuotesRef.current.set(data.code, data as Record<string, unknown>);
-        setWsQuoteTick((t) => t + 1);
+        if (!data.code) return;
+        setWsQuotes((prev) => ({ ...prev, [data.code]: data as Record<string, unknown> }));
     }, []);
     useQuoteSubscription({ codes: allCodes, type: 'stock', onUpdate: handleWsQuote });
 
     // Merge REST + WS quotes
     const getQuote = (code: string) => {
-        return wsQuotesRef.current.get(code) || quoteMap.get(code) || {};
+        return wsQuotes[code] || quoteMap.get(code) || {};
     };
 
     const handleCreateGroup = () => {
         if (!newGroupName.trim()) return;
-        createGroup(newGroupName.trim());
+        void createGroup(newGroupName.trim());
         setNewGroupName('');
         setShowNewGroup(false);
+    };
+
+    const handleRemoveStock = (code: string, groupName: string) => {
+        setPendingDialog({ type: 'remove', code, groupId: activeGroup?.id, groupName });
+    };
+
+    const handleDeleteGroup = (groupId: string, groupName: string) => {
+        setPendingDialog({ type: 'delete-group', groupId, groupName });
+    };
+
+    const handleConfirmPendingAction = () => {
+        if (!pendingDialog) return;
+        if (pendingDialog.type === 'remove') {
+            void remove(pendingDialog.code, pendingDialog.groupId);
+        } else {
+            void deleteGroup(pendingDialog.groupId);
+        }
+        setPendingDialog(null);
     };
 
     return (
         <PageContainer>
             <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold">📋 我的自选</h2>
+                <h1 className="text-lg font-semibold">📋 我的自选</h1>
                 <div className="flex items-center gap-2">
+                    {activeGroup?.items.length ? (
+                        <button
+                            onClick={() => exportCSV(activeGroup.items.map((item) => ({
+                                代码: item.code,
+                                名称: item.name,
+                                分组: activeGroup.name,
+                                添加时间: new Date(item.addedAt).toLocaleString('zh-CN'),
+                            })), `watchlist-${activeGroup.id}`)}
+                            className="text-xs px-2 py-1 rounded border border-border cursor-pointer hover:bg-white/10"
+                        >
+                            导出 CSV
+                        </button>
+                    ) : null}
                     <button
                         onClick={() => setViewMode(viewMode === 'grid' ? 'list' : 'grid')}
                         className="text-xs px-2 py-1 rounded border border-border cursor-pointer hover:bg-white/10"
@@ -109,7 +147,9 @@ export default function WatchlistPage() {
             <SectionCard className="mb-4">
                 <p className="text-xs text-text-secondary mb-2 font-medium">🔍 搜索并添加自选股</p>
                 <div className="flex gap-2 items-center flex-wrap">
+                    <label htmlFor="watchlist-search" className="sr-only">搜索股票代码或名称</label>
                     <input
+                        id="watchlist-search"
                         type="text"
                         value={searchKeyword}
                         onChange={(e) => setSearchKeyword(e.target.value)}
@@ -180,7 +220,7 @@ export default function WatchlistPage() {
 
             {/* Group Tabs */}
             <div className="flex gap-2 mb-4 flex-wrap">
-                {groups.map((group) => (
+                {visibleGroups.map((group) => (
                     <button
                         key={group.id}
                         onClick={() => setActiveGroupId(group.id)}
@@ -229,7 +269,7 @@ export default function WatchlistPage() {
             {/* Stats */}
             <KpiGrid cols={4} className="mb-4">
                 <KpiCard title="自选总数" value={String(allCodes.length)} />
-                <KpiCard title="分组数" value={String(groups.length)} />
+                <KpiCard title="分组数" value={String(visibleGroups.length)} />
                 <KpiCard
                     title="涨"
                     value={String(
@@ -251,7 +291,11 @@ export default function WatchlistPage() {
             </KpiGrid>
 
             {/* Active Group Contents */}
-            {activeGroup && activeGroup.items.length > 0 ? (
+            {!hydrated ? (
+                <SectionCard>
+                    <p className="text-sm text-text-secondary">正在加载自选数据...</p>
+                </SectionCard>
+            ) : activeGroup && activeGroup.items.length > 0 ? (
                 viewMode === 'grid' ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                         {activeGroup.items.map((item) => {
@@ -278,7 +322,7 @@ export default function WatchlistPage() {
                                             📋
                                         </Link>
                                         <button
-                                            onClick={() => remove(item.code)}
+                                            onClick={() => handleRemoveStock(item.code, activeGroup?.name ?? '当前分组')}
                                             className="text-xs px-1.5 py-0.5 rounded text-danger/70 hover:text-danger cursor-pointer hover:bg-danger/10"
                                             title="从自选股移除"
                                         >
@@ -356,7 +400,7 @@ export default function WatchlistPage() {
                                             </td>
                                             <td className="py-2 px-2 text-center">
                                                 <button
-                                                    onClick={() => remove(item.code)}
+                                                    onClick={() => handleRemoveStock(item.code, activeGroup?.name ?? '当前分组')}
                                                     className="text-xs text-danger/80 hover:text-danger cursor-pointer px-2 py-0.5 rounded hover:bg-danger/10"
                                                 >
                                                     移除
@@ -374,17 +418,17 @@ export default function WatchlistPage() {
             )}
 
             {/* Group Management */}
-            {groups.length > 1 && (
+            {visibleGroups.length > 1 && (
                 <SectionCard className="mt-4">
                     <h3 className="font-medium mb-2 text-sm">分组管理</h3>
                     <div className="flex flex-wrap gap-2">
-                        {groups.map((g) => (
+                        {visibleGroups.map((g) => (
                             <div key={g.id} className="flex items-center gap-1 px-2 py-1 rounded bg-surface border border-glass-border text-xs">
                                 <span className="inline-block w-2 h-2 rounded-full" style={{ background: g.color }} />
                                 <span>{g.name} ({g.items.length})</span>
-                                {groups.length > 1 && (
+                                {visibleGroups.length > 1 && (
                                     <button
-                                        onClick={() => deleteGroup(g.id)}
+                                        onClick={() => handleDeleteGroup(g.id, g.name)}
                                         className="ml-1 text-danger/60 hover:text-danger cursor-pointer"
                                         title="删除分组"
                                     >
@@ -396,6 +440,20 @@ export default function WatchlistPage() {
                     </div>
                 </SectionCard>
             )}
+
+            <ConfirmDialog
+                open={pendingDialog != null}
+                title={pendingDialog?.type === 'remove' ? '确认移除自选股' : '确认删除分组'}
+                message={pendingDialog?.type === 'remove'
+                    ? `确认从“${pendingDialog.groupName}”中移除 ${pendingDialog.code} 吗？`
+                    : pendingDialog
+                        ? `确认删除分组“${pendingDialog.groupName}”吗？分组内股票会回到默认分组。`
+                        : ''}
+                confirmText={pendingDialog?.type === 'remove' ? '确认移除' : '确认删除'}
+                danger
+                onConfirm={handleConfirmPendingAction}
+                onCancel={() => setPendingDialog(null)}
+            />
         </PageContainer>
     );
 }

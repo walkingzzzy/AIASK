@@ -10,11 +10,11 @@ import { McpGatewayModule } from '../mcp-gateway/mcp-gateway.module';
 @Module({
   imports: [McpGatewayModule],
   controllers: [
-    StrategyMarketController,
     StrategyFactoryController,
     StrategyIncubationController,
     StrategyRiskController,
     StrategyVectorController,
+    StrategyMarketController,
   ],
   providers: [StrategyMarketService],
 })

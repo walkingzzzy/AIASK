@@ -1,11 +1,13 @@
 'use client';
 
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge } from '@/components/ui';
 import { BarChart, PieChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
 import { ensureRecord } from '@/lib/query-parse';
+import { useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 
 type ModuleKey = 'var' | 'stress' | 'exposure';
 type RiskSummary = {
@@ -15,6 +17,8 @@ type RiskSummary = {
   degraded?: boolean; degradeReasons?: string[];
   meta?: { fetchedAt?: string; cache?: { hit?: boolean; backend?: string; ttlSeconds?: number } };
 };
+
+const LOOKBACK_PRESETS = [90, 252, 504] as const;
 
 function brief(v: unknown): string {
   if (v == null) return '无数据';
@@ -27,10 +31,24 @@ function brief(v: unknown): string {
 }
 
 export default function RiskPage() {
-  const [portfolioId, setPortfolioId] = useState('');
-  const [lookbackDays, setLookbackDays] = useState('252');
+  const searchParams = useSearchParams();
+  const [portfolioId, setPortfolioId] = useState(searchParams.get('portfolioId') ?? '');
+  const [lookbackDays, setLookbackDays] = useState(searchParams.get('lookbackDays') ?? '252');
   const [formError, setFormError] = useState<string | null>(null);
   const [submittedQs, setSubmittedQs] = useState<string | null>(null);
+  const task = searchParams.get('task');
+  const from = searchParams.get('from');
+
+  useEffect(() => {
+    const qs = new URLSearchParams();
+    const nextPortfolioId = searchParams.get('portfolioId') ?? '';
+    const nextLookback = searchParams.get('lookbackDays') ?? '252';
+    setPortfolioId(nextPortfolioId);
+    setLookbackDays(nextLookback);
+    if (nextPortfolioId) qs.set('portfolioId', nextPortfolioId);
+    qs.set('lookbackDays', nextLookback);
+    setSubmittedQs(qs.toString());
+  }, [searchParams]);
 
   const summaryQ = useApiQuery<RiskSummary>(
     submittedQs ? `/risk/summary?${submittedQs}` : null,
@@ -52,6 +70,13 @@ export default function RiskPage() {
   const loading = summaryQ.isFetching || varQ.isFetching;
   const error = formError || summaryQ.error || varQ.error;
   const summary = summaryQ.data;
+  const varResult = useMemo(() => {
+    if (!varQ.data || typeof varQ.data !== 'object') return null;
+    const raw = varQ.data as Record<string, unknown>;
+    return raw.result && typeof raw.result === 'object'
+      ? raw.result as Record<string, unknown>
+      : raw;
+  }, [varQ.data]);
 
   function onLoad(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -90,12 +115,17 @@ export default function RiskPage() {
   }, [summary]);
 
   const varBarItems = useMemo(() => {
-    if (!varQ.data || typeof varQ.data !== 'object') return [];
-    return Object.entries(varQ.data as Record<string, unknown>)
-      .filter(([, v]) => typeof v === 'number')
-      .slice(0, 10)
-      .map(([k, v]) => ({ label: k, value: Number(v) }));
-  }, [varQ.data]);
+    if (!varResult) return [];
+    const candidates = [
+      { label: 'VaR 金额', value: Number(((varResult.var as Record<string, unknown> | undefined)?.amount ?? (varResult as Record<string, unknown>).var_amount) ?? NaN) },
+      { label: 'CVaR 金额', value: Number(((varResult.cvar as Record<string, unknown> | undefined)?.amount ?? (varResult as Record<string, unknown>).cvar_amount) ?? NaN) },
+      { label: 'VaR 百分比', value: Number(((varResult.var as Record<string, unknown> | undefined)?.percentage ?? (varResult as Record<string, unknown>).var_percent ?? (varResult as Record<string, unknown>).var95) ?? NaN) },
+      { label: 'CVaR 百分比', value: Number(((varResult.cvar as Record<string, unknown> | undefined)?.percentage ?? (varResult as Record<string, unknown>).cvar_percent) ?? NaN) },
+      { label: '波动率', value: Number((varResult as Record<string, unknown>).volatility ?? NaN) },
+      { label: '最大回撤', value: Number((varResult as Record<string, unknown>).max_drawdown ?? NaN) },
+    ];
+    return candidates.filter((item) => Number.isFinite(item.value));
+  }, [varResult]);
 
   const stressItems = useMemo(() => {
     const raw = summary?.stressResult;
@@ -133,18 +163,46 @@ export default function RiskPage() {
 
   const allEmpty = !!summary && moduleCards.every((c) => c.data == null);
   const partialDegraded = !!summary?.degraded && moduleCards.some((c) => c.data != null) && moduleCards.some((c) => c.data == null);
+  const showInitialEmptyState = !summary && !loading && !error;
 
   return (
     <PageContainer>
       <h1>风险分析</h1>
+      {(from || task) ? (
+        <MetaLine>
+          上下文跳转
+          {from ? ` · 来源: ${from}` : ''}
+          {from === 'home' ? ' · 来自首页快捷入口' : ''}
+          {task ? ` · 任务：${task}` : ''}
+        </MetaLine>
+      ) : null}
       {loading ? <LoadingState text="加载风险分析中..." /> : null}
       {error ? <ErrorState text={error} /> : null}
 
       <SectionCard className="p-4">
         <h3 className="mt-0">参数</h3>
-        <form onSubmit={onLoad} className="flex gap-2 flex-wrap">
-          <input value={portfolioId} onChange={(e) => setPortfolioId(e.target.value)} placeholder="portfolioId（可选）" className="w-[180px] px-2 py-1 rounded text-sm" />
-          <input value={lookbackDays} onChange={(e) => setLookbackDays(e.target.value)} placeholder="lookbackDays" className="w-[160px] px-2 py-1 rounded text-sm" />
+        <p className="text-sm text-text-secondary mt-1 mb-3">优先选择一个组合，再决定用 90 / 252 / 504 天哪个观察窗口来判断风险暴露与回撤特征。</p>
+        <form onSubmit={onLoad} className="flex gap-3 flex-wrap items-end">
+          <label htmlFor="risk-portfolio-id" className="grid gap-1">
+            <span className="text-xs text-text-secondary">组合 ID</span>
+            <input id="risk-portfolio-id" value={portfolioId} onChange={(e) => setPortfolioId(e.target.value)} placeholder="可选，不填则尝试自动选择" className="w-[220px] px-2 py-1 rounded text-sm" />
+          </label>
+          <label htmlFor="risk-lookback-days" className="grid gap-1">
+            <span className="text-xs text-text-secondary">回看天数</span>
+            <input id="risk-lookback-days" value={lookbackDays} onChange={(e) => setLookbackDays(e.target.value)} placeholder="252" className="w-[160px] px-2 py-1 rounded text-sm" />
+          </label>
+          <div className="flex gap-2 flex-wrap">
+            {LOOKBACK_PRESETS.map((days) => (
+              <button
+                key={days}
+                type="button"
+                onClick={() => setLookbackDays(String(days))}
+                className={`px-3 py-1 rounded-full text-xs border cursor-pointer ${lookbackDays === String(days) ? 'border-primary text-primary' : 'border-glass-border text-text-secondary'}`}
+              >
+                {days} 天
+              </button>
+            ))}
+          </div>
           <button type="submit">查询风险</button>
         </form>
       </SectionCard>
@@ -156,8 +214,22 @@ export default function RiskPage() {
         <KpiCard title="缓存" value={topCards.cache} />
       </KpiGrid>
 
-      {!summary ? <EmptyState text="暂无结果，请先执行查询" /> : null}
-      {allEmpty ? <MetaLine>当前三大子模块均无数据。</MetaLine> : null}
+      {showInitialEmptyState ? (
+        <SectionCard className="mt-3 p-5">
+          <h3 className="mt-0">还没有可分析的风险上下文</h3>
+          <p className="text-sm text-text-secondary mb-3">如果还没有组合或模拟持仓，这里不会直接给出有意义的 VaR、压力测试和暴露结果。建议先准备可分析的资产上下文。</p>
+          <div className="flex gap-2 flex-wrap">
+            <Link href="/portfolio" className="px-3 py-1.5 rounded border border-border text-sm no-underline text-inherit hover:bg-surface-alt">去创建组合</Link>
+            <Link href="/paper-trading" className="px-3 py-1.5 rounded border border-border text-sm no-underline text-inherit hover:bg-surface-alt">去模拟交易</Link>
+          </div>
+        </SectionCard>
+      ) : null}
+      {allEmpty ? (
+        <SectionCard className="mt-3 p-4">
+          <h3 className="mt-0 text-base">暂无可用风险结果</h3>
+          <p className="m-0 text-sm text-text-secondary">当前组合或账户还没有足够数据来生成 VaR、压力测试和暴露分析。先补充持仓，再重新运行风险分析会更有意义。</p>
+        </SectionCard>
+      ) : null}
       {partialDegraded ? <MetaLine>检测到部分降级。</MetaLine> : null}
       {summary?.degraded && summary.degradeReasons?.length ? <MetaLine>降级原因：{summary.degradeReasons.join(' | ')}</MetaLine> : null}
 
@@ -201,8 +273,8 @@ export default function RiskPage() {
         </div>
       )}
 
-      {summary ? <details className="mt-3"><summary className="cursor-pointer text-text-secondary text-sm">summary JSON</summary><pre className="mt-1 text-xs glass p-3 rounded-xl overflow-auto max-h-[300px]">{JSON.stringify(summary, null, 2)}</pre></details> : null}
-      {varQ.data != null ? <details><summary className="cursor-pointer text-text-secondary text-sm">varOnly JSON</summary><pre className="mt-1 text-xs glass p-3 rounded-xl overflow-auto max-h-[300px]">{JSON.stringify(varQ.data, null, 2)}</pre></details> : null}
+      {summary ? <details className="mt-3"><summary className="cursor-pointer text-text-secondary text-sm">查看调试原始数据（summary）</summary><pre className="mt-1 text-xs glass p-3 rounded-xl overflow-auto max-h-[300px]">{JSON.stringify(summary, null, 2)}</pre></details> : null}
+      {varQ.data != null ? <details><summary className="cursor-pointer text-text-secondary text-sm">查看调试原始数据（varOnly）</summary><pre className="mt-1 text-xs glass p-3 rounded-xl overflow-auto max-h-[300px]">{JSON.stringify(varQ.data, null, 2)}</pre></details> : null}
     </PageContainer>
   );
 }

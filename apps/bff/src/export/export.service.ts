@@ -27,8 +27,8 @@ export class ExportService {
       this.watchlistService.listGroups(userId),
       this.notificationService.list(userId, { limit: 100 }),
       this.researchService.getMarketNews(10),
-      this.callTool('portfolio_manager', { action: 'list', kwargs: JSON.stringify({ user_id: userId }) }),
-      this.callTool('alerts_manager', { action: 'list', kwargs: JSON.stringify({ user_id: userId, status: 'active' }) }),
+      this.callTool('portfolio_manager', { action: 'list', params: { user_id: userId } }),
+      this.callTool('alerts_manager', { action: 'list', params: { user_id: userId, status: 'active' } }),
     ]);
 
     return {
@@ -80,4 +80,3 @@ export class ExportService {
     }
   }
 }
-

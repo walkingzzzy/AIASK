@@ -1,32 +1,39 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, StockCodeInput, DataTable, Badge } from '@/components/ui';
 import { LineChart, Chart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState, LoadingState } from '@/components/status-state';
-import { fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
+import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { StockLink } from '@/components/stock-link';
+import type {
+  BacktestBatchResponse,
+  BacktestBatchResultItem,
+  BacktestFailureReason,
+  BacktestHistoryItem,
+  BacktestListResponse,
+  BacktestMetricsResponse,
+  BacktestRunResponse,
+  MarketKlineResponseDto,
+} from '@aiask/shared-types';
 
 type BacktestResult = {
-  total_return?: number; sharpe_ratio?: number; max_drawdown?: number;
-  win_rate?: number; trades_count?: number; final_capital?: number;
-  initial_capital?: number; equity_curve?: number[]; dates?: string[];
-  trades?: Record<string, unknown>[]; profit_factor?: number;
-};
-
-type RunResponse = {
-  artifactId?: string;
-  metrics?: { totalReturn: number | null; sharpe: number | null; maxDrawdown: number | null; winRate: number | null; totalTrades: number | null; profitFactor: number | null };
+  total_return?: number;
+  sharpe_ratio?: number;
+  max_drawdown?: number;
+  win_rate?: number;
+  trades_count?: number;
+  final_capital?: number;
+  initial_capital?: number;
   equity_curve?: number[];
   dates?: string[];
-  trades?: Record<string, unknown>[];
-  profit_factor?: number | null;
-  initial_capital?: number | null;
-  final_capital?: number | null;
+  trades?: BacktestRunResponse['trades'];
+  profit_factor?: number;
 };
 
 type HistoryEntry = {
@@ -41,24 +48,51 @@ const STRATEGIES = [
   { value: 'buy_and_hold', label: '买入持有' },
 ] as const;
 
+const COST_PRESETS = [
+  { key: 'short', label: '短线模板', initialCapital: 50000, commission: 0.0005, slippage: 0.001 },
+  { key: 'swing', label: '中线模板', initialCapital: 100000, commission: 0.0003, slippage: 0.0005 },
+  { key: 'conservative', label: '保守成本', initialCapital: 200000, commission: 0.0008, slippage: 0.0015 },
+] as const;
+
 function defaultDate(offsetDays: number) {
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
   return d.toISOString().slice(0, 10);
 }
 
+function describeBacktestFailure(message: string | null): BacktestFailureReason | null {
+  const text = String(message ?? '').trim();
+  if (!text) return null;
+  if (/K线数据不足|No kline data|至少50天/.test(text)) {
+    return { reasonCode: 'insufficient_kline_data', reason: '历史 K 线不足，无法满足回测窗口要求' };
+  }
+  if (/不支持的策略|unsupported/i.test(text)) {
+    return { reasonCode: 'unsupported_strategy', reason: '当前策略参数不受支持，请切换策略或校正参数' };
+  }
+  if (/HTTP 502|调用 MCP/.test(text)) {
+    return { reasonCode: 'upstream_unavailable', reason: '上游回测服务暂时不可用，请稍后重试' };
+  }
+  return { reasonCode: 'backtest_run_failed', reason: text };
+}
+
 export default function BacktestPage() {
+  const searchParams = useSearchParams();
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
+  const from = searchParams.get('from');
   const [strategy, setStrategy] = useState('ma_cross');
   const [formError, setFormError] = useState<string | null>(null);
+  const [runFailure, setRunFailure] = useState<BacktestFailureReason | null>(null);
+  const [tdxMessage, setTdxMessage] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const backtestApi = useApiMutation<RunResponse>();
-  const [runResult, setRunResult] = useState<RunResponse | null>(null);
-  const benchmarkQ = useApiQuery<{ kline?: Array<Record<string, number>> }>(
+  const backtestApi = useApiMutation<BacktestRunResponse>();
+  const [runResult, setRunResult] = useState<BacktestRunResponse | null>(null);
+  const [artifactMetricsPath, setArtifactMetricsPath] = useState<string | null>(null);
+  const benchmarkQ = useApiQuery<MarketKlineResponseDto>(
     runResult?.equity_curve?.length ? '/market/kline?code=000300&period=daily&limit=500' : null,
   );
+  const artifactMetricsQ = useApiQuery<BacktestMetricsResponse>(artifactMetricsPath);
   // P3-4: Persistent history from DB
-  const historyQ = useApiQuery<{ result?: Record<string, unknown>[] }>('/backtest/list?limit=20');
+  const historyQ = useApiQuery<BacktestListResponse>('/backtest/list?limit=20');
 
   // Date range
   const [startDate, setStartDate] = useState(() => defaultDate(-365));
@@ -79,39 +113,114 @@ export default function BacktestPage() {
   const [commission, setCommission] = useState(0.0003);
   const [slippage, setSlippage] = useState(0);
 
+  function pushHistory(entry: HistoryEntry) {
+    setHistory((prev) => {
+      const dup = prev.find((h) => h.code === entry.code && h.strategy === entry.strategy && Math.abs(h.ts - entry.ts) < 5000);
+      if (dup) return prev;
+      return [entry, ...prev].slice(0, 20);
+    });
+  }
+
+  function buildRunRequestBody() {
+    const body: Record<string, unknown> = {
+      code: trimmedCode,
+      strategy,
+      startDate,
+      endDate,
+      initialCapital: String(initialCapital),
+      commission: String(commission),
+      slippage: String(slippage),
+    };
+    if (strategy === 'ma_cross') {
+      body.shortPeriod = String(shortPeriod);
+      body.longPeriod = String(longPeriod);
+    }
+    if (strategy === 'momentum') {
+      body.lookback = String(lookback);
+      body.threshold = String(threshold);
+    }
+    if (strategy === 'rsi') {
+      body.rsiPeriod = String(rsiPeriod);
+      body.oversold = String(oversold);
+      body.overbought = String(overbought);
+    }
+    return body;
+  }
+
   async function runBacktest(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setFormError(null);
+    setRunFailure(null);
+    setTdxMessage(null);
     if (!validate()) return;
-    const body: Record<string, unknown> = {
-      code: trimmedCode, strategy, startDate, endDate,
-      initialCapital: String(initialCapital),
-    };
-    if (strategy === 'ma_cross') { body.shortPeriod = String(shortPeriod); body.longPeriod = String(longPeriod); }
     try {
-      const data = await backtestApi.triggerAsync('/backtest/run', { method: 'POST' }, body);
+      const data = await backtestApi.triggerAsync('/backtest/run', { method: 'POST' }, buildRunRequestBody());
       setRunResult(data ?? null);
-    } catch { /* captured */ }
+      if (data?.metrics?.totalReturn != null) {
+        pushHistory({
+          code: trimmedCode,
+          strategy,
+          totalReturn: Number(data.metrics.totalReturn ?? 0),
+          sharpe: Number(data.metrics.sharpe ?? 0),
+          maxDrawdown: Number(data.metrics.maxDrawdown ?? 0),
+          winRate: Number(data.metrics.winRate ?? 0),
+          ts: Date.now(),
+        });
+      }
+      setArtifactMetricsPath(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '回测运行失败';
+      setFormError(message);
+      setRunFailure(describeBacktestFailure(message));
+    }
   }
 
   // P3-5: TDX push
   const tdxApi = useApiMutation();
   async function sendToTdx() {
-    try { await tdxApi.triggerAsync('/backtest/send-to-tdx', { method: 'POST' }, { code: trimmedCode, strategy }); } catch { /* */ }
+    setTdxMessage(null);
+    tdxApi.reset();
+    try {
+      const data = await tdxApi.triggerAsync('/backtest/send-to-tdx', { method: 'POST' }, { code: trimmedCode, strategy });
+      const nested = data && typeof data === 'object'
+        ? ((data as Record<string, unknown>).data ?? data) as Record<string, unknown>
+        : null;
+      const tdxStatus = nested && typeof nested === 'object'
+        ? (((nested.tdx_send_status ?? nested.tdx_send_result) as Record<string, unknown> | undefined) ?? null)
+        : null;
+      if (tdxStatus?.success === false) {
+        setTdxMessage(String(tdxStatus.message ?? '发送到 TDX 失败'));
+        return;
+      }
+      setTdxMessage('回测结果已发送到 TDX。');
+    } catch (err) {
+      setTdxMessage(err instanceof Error ? err.message : '发送到 TDX 失败');
+    }
   }
 
   // P3-3: Batch backtest
-  const batchApi = useApiMutation<{ data?: Record<string, unknown>[] }>();
+  const batchApi = useApiMutation<BacktestBatchResponse>();
   const [batchCodes, setBatchCodes] = useState('');
-  const [batchResults, setBatchResults] = useState<Record<string, unknown>[]>([]);
+  const [batchResults, setBatchResults] = useState<BacktestBatchResultItem[]>([]);
   async function runBatch() {
     const codes = batchCodes.split(/[,，\s]+/).map((c) => c.trim()).filter((c) => /^\d{6}$/.test(c));
     if (!codes.length) return;
     try {
-      const data = await batchApi.triggerAsync('/backtest/batch', { method: 'POST' }, { codes, strategy, initialCapital: String(initialCapital) });
-      const results = Array.isArray(data?.data) ? data.data : (data as Record<string, unknown>)?.results as Record<string, unknown>[] ?? [];
-      setBatchResults(Array.isArray(results) ? results : []);
-    } catch { /* */ }
+      const body: Record<string, unknown> = {
+        codes,
+        strategy,
+        startDate,
+        endDate,
+        initialCapital: String(initialCapital),
+        commission: String(commission),
+      };
+      if (strategy === 'ma_cross') {
+        body.shortPeriod = String(shortPeriod);
+        body.longPeriod = String(longPeriod);
+      }
+      const data = await batchApi.triggerAsync('/backtest/batch', { method: 'POST' }, body);
+      setBatchResults(Array.isArray(data?.results) ? data.results : []);
+    } catch { /* captured by hook */ }
   }
 
   // Build BacktestResult from run response
@@ -135,30 +244,25 @@ export default function BacktestPage() {
   const loading = backtestApi.isPending;
   const error = formError || backtestApi.error;
 
-  // Save to history when new result arrives
-  useEffect(() => {
-    if (!m || !m.total_return) return;
-    const entry: HistoryEntry = {
-      code: trimmedCode, strategy, totalReturn: Number(m.total_return ?? 0),
-      sharpe: Number(m.sharpe_ratio ?? 0), maxDrawdown: Number(m.max_drawdown ?? 0),
-      winRate: Number(m.win_rate ?? 0), ts: Date.now(),
-    };
-    setHistory((prev) => {
-      const dup = prev.find((h) => h.code === entry.code && h.strategy === entry.strategy && Math.abs(h.ts - entry.ts) < 5000);
-      if (dup) return prev;
-      return [entry, ...prev].slice(0, 20);
-    });
-  }, [m, trimmedCode, strategy]);
-
   // Equity curve data
-  const equityCurve = useMemo(() => m?.equity_curve ?? [], [m]);
-  const dates = useMemo(() => m?.dates ?? [], [m]);
+  const rawEquityCurve = useMemo(() => m?.equity_curve ?? [], [m]);
+  const rawDates = useMemo(() => m?.dates ?? [], [m]);
+  const firstActiveIndex = useMemo(() => {
+    const idx = rawEquityCurve.findIndex((value) => Number(value) > 0);
+    return idx >= 0 ? idx : 0;
+  }, [rawEquityCurve]);
+  const equityCurve = useMemo(() => rawEquityCurve.slice(firstActiveIndex), [firstActiveIndex, rawEquityCurve]);
+  const dates = useMemo(
+    () => (rawDates.length === rawEquityCurve.length ? rawDates.slice(firstActiveIndex) : rawDates),
+    [firstActiveIndex, rawDates, rawEquityCurve.length],
+  );
   const equityCategories = useMemo(() => dates.length === equityCurve.length ? dates : equityCurve.map((_, i) => `${i}`), [equityCurve, dates]);
 
   // Normalize to NAV (starting at 1.0)
   const navSeries = useMemo(() => {
     if (!equityCurve.length) return [];
-    const base = equityCurve[0] || 1;
+    const firstPositive = equityCurve.find((value) => value > 0);
+    const base = firstPositive && firstPositive > 0 ? firstPositive : (equityCurve[0] || 1);
     return equityCurve.map((v) => +((v / base)).toFixed(4));
   }, [equityCurve]);
 
@@ -166,7 +270,7 @@ export default function BacktestPage() {
   const benchmarkNav = useMemo(() => {
     const raw = benchmarkQ.data?.kline;
     if (!raw?.length || !equityCurve.length) return [];
-    const closes = raw.map((k) => k.close ?? k.收盘 ?? 0).filter(Boolean);
+    const closes = raw.map((k) => Number(k.close ?? 0)).filter((value) => value > 0);
     if (!closes.length) return [];
     const base = closes[0] || 1;
     return closes.slice(0, equityCurve.length).map((v) => +(v / base).toFixed(4));
@@ -192,6 +296,10 @@ export default function BacktestPage() {
   }, [equityCurve]);
 
   const trades = useMemo(() => (m?.trades ?? []) as Record<string, unknown>[], [m]);
+  const historyRows = useMemo(
+    () => extractArray(historyQ.data, 'items', 'results', 'history', 'data') as BacktestHistoryItem[],
+    [historyQ.data],
+  );
 
   // P2-1: Buy/sell markers for NAV chart
   const tradeMarkers = useMemo(() => {
@@ -201,7 +309,6 @@ export default function BacktestPage() {
     const sell: [string, number][] = [];
     for (const t of trades) {
       const ed = String(t.date ?? '').slice(0, 10);
-      const xd = String(t.exit_price != null ? (t as Record<string, unknown>).date : '').slice(0, 10);
       const ei = dateIdx.get(ed);
       if (ei != null && navSeries[ei] != null) buy.push([equityCategories[ei], navSeries[ei]]);
       // exit date: estimate from holding_days
@@ -278,74 +385,190 @@ export default function BacktestPage() {
   const inputCls = 'px-2 py-1 border border-border rounded text-sm bg-surface';
   const labelCls = 'text-xs text-text-secondary';
 
+  function applyCostPreset(preset: typeof COST_PRESETS[number]) {
+    setInitialCapital(preset.initialCapital);
+    setCommission(preset.commission);
+    setSlippage(preset.slippage);
+    setShowAdvanced(true);
+  }
+
   return (
     <PageContainer>
       <h1>回测分析</h1>
+      {from ? <div className="text-xs text-text-secondary mb-2">上下文跳转 · 来源: {from}</div> : null}
+      <p className="text-sm text-text-secondary mt-1 mb-3">按“基础参数 → 策略参数 → 成本假设”的顺序完成配置，减少首屏参数墙带来的理解成本。</p>
       <form onSubmit={runBacktest} className="space-y-3">
-        {/* Row 1: core inputs */}
-        <div className="flex gap-2 flex-wrap items-end">
-          <div><label className={labelCls}>股票代码</label><StockCodeInput value={code} onChange={setCode} error={codeError} /></div>
-          <div>
-            <label className={labelCls}>策略</label>
-            <select value={strategy} onChange={(e) => setStrategy(e.target.value)} className={`${inputCls} w-[140px]`}>
-              {STRATEGIES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-            </select>
-          </div>
-          <div><label className={labelCls}>开始日期</label><input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className={`${inputCls} w-[140px]`} /></div>
-          <div><label className={labelCls}>结束日期</label><input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className={`${inputCls} w-[140px]`} /></div>
-          <button type="submit" disabled={loading} className="px-4 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm h-[30px]">{loading ? '运行中...' : '运行回测'}</button>
-          {m && <button type="button" onClick={sendToTdx} disabled={tdxApi.isPending} className="px-3 py-1 border border-border rounded cursor-pointer disabled:opacity-50 text-sm h-[30px]">{tdxApi.isPending ? '发送中...' : '发送到 TDX'}</button>}
-        </div>
-
-        {/* Row 2: strategy-specific params */}
-        {strategy === 'ma_cross' && (
-          <div className="flex gap-3 items-end flex-wrap">
-            <div><label className={labelCls}>短周期</label><input type="number" value={shortPeriod} onChange={(e) => setShortPeriod(+e.target.value)} min={2} max={100} className={`${inputCls} w-[80px]`} /></div>
-            <div><label className={labelCls}>长周期</label><input type="number" value={longPeriod} onChange={(e) => setLongPeriod(+e.target.value)} min={5} max={250} className={`${inputCls} w-[80px]`} /></div>
-          </div>
-        )}
-        {strategy === 'momentum' && (
-          <div className="flex gap-3 items-end flex-wrap">
-            <div><label className={labelCls}>回看周期</label><input type="number" value={lookback} onChange={(e) => setLookback(+e.target.value)} min={5} max={120} className={`${inputCls} w-[80px]`} /></div>
-            <div><label className={labelCls}>阈值</label><input type="number" value={threshold} onChange={(e) => setThreshold(+e.target.value)} step={0.005} min={0} max={0.5} className={`${inputCls} w-[80px]`} /></div>
-          </div>
-        )}
-        {strategy === 'rsi' && (
-          <div className="flex gap-3 items-end flex-wrap">
-            <div><label className={labelCls}>RSI周期</label><input type="number" value={rsiPeriod} onChange={(e) => setRsiPeriod(+e.target.value)} min={2} max={50} className={`${inputCls} w-[80px]`} /></div>
-            <div><label className={labelCls}>超卖线</label><input type="number" value={oversold} onChange={(e) => setOversold(+e.target.value)} min={5} max={50} className={`${inputCls} w-[80px]`} /></div>
-            <div><label className={labelCls}>超买线</label><input type="number" value={overbought} onChange={(e) => setOverbought(+e.target.value)} min={50} max={95} className={`${inputCls} w-[80px]`} /></div>
-          </div>
-        )}
-
-        {/* Row 3: advanced config (collapsible) */}
-        <div>
-          <button type="button" onClick={() => setShowAdvanced(!showAdvanced)} className="text-xs text-primary cursor-pointer">
-            {showAdvanced ? '▼ 收起高级选项' : '▶ 高级选项'}
-          </button>
-          {showAdvanced && (
-            <div className="flex gap-3 items-end flex-wrap mt-2">
-              <div><label className={labelCls}>初始资金</label><input type="number" value={initialCapital} onChange={(e) => setInitialCapital(+e.target.value)} min={10000} step={10000} className={`${inputCls} w-[120px]`} /></div>
-              <div><label className={labelCls}>手续费率</label><input type="number" value={commission} onChange={(e) => setCommission(+e.target.value)} step={0.0001} min={0} max={0.01} className={`${inputCls} w-[100px]`} /></div>
-              <div><label className={labelCls}>滑点</label><input type="number" value={slippage} onChange={(e) => setSlippage(+e.target.value)} step={0.0001} min={0} max={0.01} className={`${inputCls} w-[100px]`} /></div>
+        <SectionCard className="p-4">
+          <fieldset className="space-y-3">
+            <legend className="px-1 text-sm font-semibold">基础参数</legend>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5 xl:items-end">
+              <StockCodeInput id="backtest-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} />
+              <label htmlFor="backtest-strategy" className="grid gap-1">
+                <span className={labelCls}>策略</span>
+                <select id="backtest-strategy" value={strategy} onChange={(e) => setStrategy(e.target.value)} className={`${inputCls} w-full`}>
+                  {STRATEGIES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                </select>
+              </label>
+              <label htmlFor="backtest-start-date" className="grid gap-1">
+                <span className={labelCls}>开始日期</span>
+                <input id="backtest-start-date" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className={`${inputCls} w-full`} />
+              </label>
+              <label htmlFor="backtest-end-date" className="grid gap-1">
+                <span className={labelCls}>结束日期</span>
+                <input id="backtest-end-date" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className={`${inputCls} w-full`} />
+              </label>
+              <div className="flex gap-2 flex-wrap xl:justify-end">
+                <button type="submit" disabled={loading} className="px-4 py-2 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{loading ? '运行中...' : '运行回测'}</button>
+                {m ? <button type="button" onClick={sendToTdx} disabled={tdxApi.isPending} className="px-3 py-2 border border-border rounded cursor-pointer disabled:opacity-50 text-sm">{tdxApi.isPending ? '发送中...' : '发送到 TDX'}</button> : null}
+              </div>
             </div>
-          )}
-        </div>
+          </fieldset>
+        </SectionCard>
+
+        <SectionCard className="p-4">
+          <fieldset className="space-y-3">
+            <legend className="px-1 text-sm font-semibold">策略参数</legend>
+            {strategy === 'ma_cross' ? (
+              <div className="grid gap-3 sm:grid-cols-2 lg:max-w-[360px]">
+                <label htmlFor="backtest-short-period" className="grid gap-1">
+                  <span className={labelCls}>短周期</span>
+                  <input id="backtest-short-period" type="number" value={shortPeriod} onChange={(e) => setShortPeriod(+e.target.value)} min={2} max={100} className={`${inputCls} w-full`} />
+                </label>
+                <label htmlFor="backtest-long-period" className="grid gap-1">
+                  <span className={labelCls}>长周期</span>
+                  <input id="backtest-long-period" type="number" value={longPeriod} onChange={(e) => setLongPeriod(+e.target.value)} min={5} max={250} className={`${inputCls} w-full`} />
+                </label>
+              </div>
+            ) : null}
+            {strategy === 'momentum' ? (
+              <div className="grid gap-3 sm:grid-cols-2 lg:max-w-[360px]">
+                <label htmlFor="backtest-lookback" className="grid gap-1">
+                  <span className={labelCls}>回看周期</span>
+                  <input id="backtest-lookback" type="number" value={lookback} onChange={(e) => setLookback(+e.target.value)} min={5} max={120} className={`${inputCls} w-full`} />
+                </label>
+                <label htmlFor="backtest-threshold" className="grid gap-1">
+                  <span className={labelCls}>阈值</span>
+                  <input id="backtest-threshold" type="number" value={threshold} onChange={(e) => setThreshold(+e.target.value)} step={0.005} min={0} max={0.5} className={`${inputCls} w-full`} />
+                </label>
+              </div>
+            ) : null}
+            {strategy === 'rsi' ? (
+              <div className="grid gap-3 sm:grid-cols-3 lg:max-w-[560px]">
+                <label htmlFor="backtest-rsi-period" className="grid gap-1">
+                  <span className={labelCls}>RSI 周期</span>
+                  <input id="backtest-rsi-period" type="number" value={rsiPeriod} onChange={(e) => setRsiPeriod(+e.target.value)} min={2} max={50} className={`${inputCls} w-full`} />
+                </label>
+                <label htmlFor="backtest-oversold" className="grid gap-1">
+                  <span className={labelCls}>超卖线</span>
+                  <input id="backtest-oversold" type="number" value={oversold} onChange={(e) => setOversold(+e.target.value)} min={5} max={50} className={`${inputCls} w-full`} />
+                </label>
+                <label htmlFor="backtest-overbought" className="grid gap-1">
+                  <span className={labelCls}>超买线</span>
+                  <input id="backtest-overbought" type="number" value={overbought} onChange={(e) => setOverbought(+e.target.value)} min={50} max={95} className={`${inputCls} w-full`} />
+                </label>
+              </div>
+            ) : null}
+            {strategy === 'buy_and_hold' ? <p className="m-0 text-sm text-text-secondary">买入持有不需要额外策略参数，适合做基准对照。</p> : null}
+          </fieldset>
+        </SectionCard>
+
+        <SectionCard className="p-4">
+          <fieldset className="space-y-3">
+            <legend className="px-1 text-sm font-semibold">成本假设</legend>
+            <div className="flex gap-2 flex-wrap">
+              {COST_PRESETS.map((preset) => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  onClick={() => applyCostPreset(preset)}
+                  className="px-3 py-1 text-xs rounded-full border border-border cursor-pointer hover:bg-surface-alt"
+                >
+                  {preset.label}
+                </button>
+              ))}
+              <button type="button" onClick={() => setShowAdvanced(!showAdvanced)} className="text-xs text-primary cursor-pointer">
+                {showAdvanced ? '▼ 收起高级选项' : '▶ 高级选项'}
+              </button>
+            </div>
+            {showAdvanced ? (
+              <div className="grid gap-3 sm:grid-cols-3 lg:max-w-[520px]">
+                <label htmlFor="backtest-initial-capital" className="grid gap-1">
+                  <span className={labelCls}>初始资金</span>
+                  <input id="backtest-initial-capital" type="number" value={initialCapital} onChange={(e) => setInitialCapital(+e.target.value)} min={10000} step={10000} className={`${inputCls} w-full`} />
+                </label>
+                <label htmlFor="backtest-commission" className="grid gap-1">
+                  <span className={labelCls}>手续费率</span>
+                  <input id="backtest-commission" type="number" value={commission} onChange={(e) => setCommission(+e.target.value)} step={0.0001} min={0} max={0.01} className={`${inputCls} w-full`} />
+                </label>
+                <label htmlFor="backtest-slippage" className="grid gap-1">
+                  <span className={labelCls}>滑点</span>
+                  <input id="backtest-slippage" type="number" value={slippage} onChange={(e) => setSlippage(+e.target.value)} step={0.0001} min={0} max={0.01} className={`${inputCls} w-full`} />
+                </label>
+              </div>
+            ) : (
+              <p className="m-0 text-sm text-text-secondary">可以先点上方预设模板快速填入成本参数；只有在需要贴近真实成交时，再展开高级选项微调手续费和滑点。</p>
+            )}
+          </fieldset>
+        </SectionCard>
+        {tdxMessage ? <p className={`text-sm ${tdxApi.error ? 'text-danger' : 'text-success'}`}>{tdxMessage}</p> : null}
       </form>
       {loading ? <LoadingState text="回测运行中..." /> : null}
       {error ? <ErrorState text={error} /> : null}
+      {runFailure ? (
+        <SectionCard className="mt-4 p-3">
+          <h3 className="mt-0">失败原因</h3>
+          <KpiGrid cols={2}>
+            <KpiCard title="原因代码" value={runFailure.reasonCode} />
+            <KpiCard title="建议动作" value={runFailure.reason} />
+          </KpiGrid>
+        </SectionCard>
+      ) : null}
 
       {m && (
         <>
+          {runResult?.artifactId ? (
+            <SectionCard className="mt-4 p-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <h3 className="mt-0 mb-1">回测制品</h3>
+                  <div className="text-xs text-text-secondary">artifactId: <code>{runResult.artifactId}</code></div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const path = `/backtest/metrics?artifactId=${encodeURIComponent(runResult.artifactId ?? '')}`;
+                    if (artifactMetricsPath === path) void artifactMetricsQ.refetch();
+                    else setArtifactMetricsPath(path);
+                  }}
+                  disabled={artifactMetricsQ.isFetching}
+                  className="px-3 py-1 border border-border rounded cursor-pointer disabled:opacity-50 text-sm"
+                >
+                  {artifactMetricsQ.isFetching ? '加载中...' : '查看追踪指标'}
+                </button>
+              </div>
+              {artifactMetricsQ.data?.metrics ? (
+                <KpiGrid cols={3} className="mt-3">
+                  <KpiCard title="追踪收益" value={fmtPct(artifactMetricsQ.data.metrics.totalReturn ?? null)} change={artifactMetricsQ.data.metrics.totalReturn ?? undefined} />
+                  <KpiCard title="追踪夏普" value={fmtNum(artifactMetricsQ.data.metrics.sharpe ?? null, 2)} />
+                  <KpiCard title="追踪回撤" value={fmtPct(artifactMetricsQ.data.metrics.maxDrawdown ?? null)} />
+                  <KpiCard title="追踪胜率" value={fmtPct(artifactMetricsQ.data.metrics.winRate ?? null)} />
+                  <KpiCard title="追踪交易数" value={artifactMetricsQ.data.metrics.totalTrades ?? '-'} />
+                  <KpiCard title="追踪盈亏比" value={fmtNum(artifactMetricsQ.data.metrics.profitFactor ?? null, 2)} />
+                </KpiGrid>
+              ) : null}
+              {artifactMetricsQ.error ? <p className="text-danger text-sm mt-2">{artifactMetricsQ.error}</p> : null}
+            </SectionCard>
+          ) : null}
+
           <KpiGrid cols={4}>
-            <KpiCard title="总收益" value={fmtPct(Number(m.total_return))} change={Number(m.total_return)} />
-            <KpiCard title="夏普比率" value={fmtNum(Number(m.sharpe_ratio), 2)} />
-            <KpiCard title="最大回撤" value={fmtPct(Number(m.max_drawdown))} />
-            <KpiCard title="胜率" value={fmtPct(Number(m.win_rate))} />
+            <KpiCard title="总收益" value={fmtPct(m.total_return)} change={m.total_return ?? undefined} />
+            <KpiCard title="夏普比率" value={fmtNum(m.sharpe_ratio, 2)} />
+            <KpiCard title="最大回撤" value={fmtPct(m.max_drawdown)} />
+            <KpiCard title="胜率" value={fmtPct(m.win_rate)} />
             <KpiCard title="交易次数" value={m.trades_count ?? '-'} />
-            <KpiCard title="初始资金" value={fmtAmount(Number(m.initial_capital))} />
-            <KpiCard title="最终资金" value={fmtAmount(Number(m.final_capital))} />
-            <KpiCard title="盈亏比" value={fmtNum(Number(m.profit_factor), 2)} />
+            <KpiCard title="初始资金" value={fmtAmount(m.initial_capital)} />
+            <KpiCard title="最终资金" value={fmtAmount(m.final_capital)} />
+            <KpiCard title="盈亏比" value={fmtNum(m.profit_factor, 2)} />
           </KpiGrid>
 
           {equityCurve.length > 0 && (
@@ -474,7 +697,7 @@ export default function BacktestPage() {
 
       {/* Strategy Comparison History (merged: session + DB) */}
       {(() => {
-        const dbRows = (historyQ.data?.result ?? []).map((r) => ({
+        const dbRows = historyRows.map((r) => ({
           code: String(r.code ?? ''), strategy: String(r.strategy ?? ''),
           totalReturn: Number(r.total_return ?? 0), sharpe: Number(r.sharpe_ratio ?? 0),
           maxDrawdown: Number(r.max_drawdown ?? 0), winRate: 0,
@@ -511,14 +734,25 @@ export default function BacktestPage() {
           </div>
           <button type="button" onClick={runBatch} disabled={batchApi.isPending} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{batchApi.isPending ? '运行中...' : '批量回测'}</button>
         </div>
+        {batchApi.error ? <p className="text-danger text-sm mt-2">{batchApi.error}</p> : null}
         {batchResults.length > 0 && (
           <DataTable rows={batchResults} columns={[
             { key: 'code', label: '代码', render: (v: unknown) => <StockLink code={String(v)} /> },
-            { key: 'total_return', label: '总收益', align: 'right' as const, render: (v: unknown) => <span className={Number(v) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(Number(v))}</span> },
-            { key: 'sharpe_ratio', label: '夏普', align: 'right' as const, render: (v: unknown) => fmtNum(Number(v), 2) },
-            { key: 'max_drawdown', label: '最大回撤', align: 'right' as const, render: (v: unknown) => fmtPct(Number(v)) },
-            { key: 'win_rate', label: '胜率', align: 'right' as const, render: (v: unknown) => fmtPct(Number(v)) },
+            {
+              key: 'success',
+              label: '状态',
+              render: (v: unknown) => {
+                const success = v !== false;
+                return <Badge variant={success ? 'success' : 'danger'}>{success ? '成功' : '失败'}</Badge>;
+              },
+            },
+            { key: 'total_return', label: '总收益', align: 'right' as const, render: (v: unknown) => v == null ? '-' : <span className={Number(v) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(Number(v))}</span> },
+            { key: 'sharpe_ratio', label: '夏普', align: 'right' as const, render: (v: unknown) => v == null ? '-' : fmtNum(Number(v), 2) },
+            { key: 'max_drawdown', label: '最大回撤', align: 'right' as const, render: (v: unknown) => v == null ? '-' : fmtPct(Number(v)) },
+            { key: 'win_rate', label: '胜率', align: 'right' as const, render: (v: unknown) => v == null ? '-' : fmtPct(Number(v)) },
             { key: 'trades_count', label: '交易次数', align: 'right' as const },
+            { key: 'reasonCode', label: '失败代码' },
+            { key: 'reason', label: '失败原因' },
           ]} onExport={() => exportCSV(batchResults, 'batch-backtest')} />
         )}
       </SectionCard>

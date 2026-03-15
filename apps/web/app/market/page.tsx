@@ -13,6 +13,7 @@ import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { exportCSV } from '@/lib/export';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
+import { useToast } from '@/components/ui/toast';
 import type { CacheMeta, NormalizedQuote, NormalizedKlinePoint, NormalizedOrderBook } from '@aiask/shared-types';
 
 type Period = 'daily' | 'weekly' | 'monthly';
@@ -20,6 +21,17 @@ type QuoteData = { quote?: NormalizedQuote; tool?: string; meta?: CacheMeta };
 type KlineData = { kline?: NormalizedKlinePoint[]; tool?: string; meta?: CacheMeta };
 type ObData = { orderBook?: NormalizedOrderBook; tool?: string; meta?: CacheMeta };
 type MarketTab = 'main' | 'limitup' | 'blocks' | 'trade' | 'index' | 'minute' | 'search';
+type SavedMarketView = {
+  activeTab: MarketTab;
+  code: string;
+  submittedCode: string | null;
+  period: Period;
+  submittedPeriod: Period;
+  indexCode: string;
+  searchKeyword: string;
+  minutePeriod: string;
+  blockCode: string;
+};
 
 const TABS = [
   { key: 'main', label: '基础行情' },
@@ -31,28 +43,64 @@ const TABS = [
   { key: 'search', label: '搜索' },
 ] as const;
 
+const MARKET_VIEW_STORAGE_KEY = 'aiask.market.saved-view.v1';
+
+const MARKET_VIEW_PRESETS: Array<{ key: string; label: string; apply: () => Partial<SavedMarketView> }> = [
+  { key: 'default', label: '基础看盘', apply: () => ({ activeTab: 'main', period: 'daily', submittedPeriod: 'daily' }) },
+  { key: 'limitup', label: '涨停复盘', apply: () => ({ activeTab: 'limitup' }) },
+  { key: 'blocks', label: '板块轮动', apply: () => ({ activeTab: 'blocks', blockCode: '' }) },
+  { key: 'index', label: '指数盯盘', apply: () => ({ activeTab: 'index', indexCode: '000300' }) },
+];
+
+function isMarketTab(value: string | null): value is MarketTab {
+  return value != null && TABS.some((tab) => tab.key === value);
+}
+
 export default function MarketPage() {
   const searchParams = useSearchParams();
-  const initialTab = (searchParams.get('tab') as MarketTab) || 'main';
-  const initialBlock = searchParams.get('block') || '';
+  const requestedTab = searchParams.get('tab');
+  const requestedIndexCode = (searchParams.get('indexCode') || '').trim();
+  const requestedBlock = (searchParams.get('block') || '').trim();
+  const task = searchParams.get('task');
+  const from = searchParams.get('from');
+  const initialTab: MarketTab = requestedIndexCode ? 'index' : (isMarketTab(requestedTab) ? requestedTab : 'main');
+  const initialBlock = requestedBlock;
 
+  return (
+    <MarketPageInner
+      key={`${initialTab}:${requestedIndexCode}:${requestedBlock}`}
+      initialTab={initialTab}
+      initialIndexCode={requestedIndexCode || '000001'}
+      initialBlock={initialBlock}
+      task={task}
+      from={from}
+    />
+  );
+}
+
+function MarketPageInner({
+  initialTab,
+  initialIndexCode,
+  initialBlock,
+  task,
+  from,
+}: {
+  initialTab: MarketTab;
+  initialIndexCode: string;
+  initialBlock: string;
+  task: string | null;
+  from: string | null;
+}) {
+  const { toast } = useToast();
   const { code, setCode, codeError, validate, resolvedCode } = useStockCode();
   const [period, setPeriod] = useState<Period>('daily');
   const [activeTab, setActiveTab] = useState<MarketTab>(initialTab);
   const [submittedCode, setSubmittedCode] = useState<string | null>(null);
   const [submittedPeriod, setSubmittedPeriod] = useState<Period>('daily');
-
-  // 自动查询：URL 或 Store 携带了有效代码时自动触发
-  const autoFetched = useRef(false);
-  useEffect(() => {
-    if (!autoFetched.current && resolvedCode) {
-      autoFetched.current = true;
-      setSubmittedCode(resolvedCode);
-    }
-  }, [resolvedCode]);
+  const activeCode = submittedCode ?? resolvedCode ?? null;
 
   const quoteQ = useApiQuery<QuoteData>(
-    submittedCode ? `/market/quote?code=${encodeURIComponent(submittedCode)}` : null,
+    activeCode ? `/market/quote?code=${encodeURIComponent(activeCode)}` : null,
     {
       parse: (raw) => {
         const obj = ensureRecord(raw, '行情报价');
@@ -64,7 +112,7 @@ export default function MarketPage() {
     },
   );
   const klineQ = useApiQuery<KlineData>(
-    submittedCode ? `/market/kline?code=${encodeURIComponent(submittedCode)}&period=${submittedPeriod}` : null,
+    activeCode ? `/market/kline?code=${encodeURIComponent(activeCode)}&period=${submittedPeriod}` : null,
     {
       parse: (raw) => {
         const obj = ensureRecord(raw, '行情K线');
@@ -76,7 +124,7 @@ export default function MarketPage() {
     },
   );
   const obQ = useApiQuery<ObData>(
-    submittedCode ? `/market/order-book?code=${encodeURIComponent(submittedCode)}` : null,
+    activeCode ? `/market/order-book?code=${encodeURIComponent(activeCode)}` : null,
     {
       parse: (raw) => {
         const obj = ensureRecord(raw, '行情盘口');
@@ -98,87 +146,137 @@ export default function MarketPage() {
   const [searchPath, setSearchPath] = useState<string | null>(null);
   const [stockListPath, setStockListPath] = useState<string | null>(null);
   const [blockStocksPath, setBlockStocksPath] = useState<string | null>(null);
+  const [indexCode, setIndexCode] = useState(initialIndexCode);
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [minutePeriod, setMinutePeriod] = useState('5m');
+  const [blockCode, setBlockCode] = useState(initialBlock);
+  const [batchCodes, setBatchCodes] = useState('');
+  const savedViewReadyRef = useRef(false);
+  const effectiveLimitUpPath = activeTab === 'limitup' ? (limitUpPath ?? '/market/limit-up') : null;
+  const effectiveLimitUpStatsPath = activeTab === 'limitup' ? (limitUpStatsPath ?? '/market/limit-up-stats') : null;
+  const effectiveBlocksPath = activeTab === 'blocks' ? (blocksPath ?? '/market/blocks?blockType=industry') : null;
+  const effectiveTradePath = activeTab === 'trade' ? tradePath : null;
+  const effectiveIndexPath = activeTab === 'index'
+    ? (indexPath ?? `/market/index-quote?indexCode=${encodeURIComponent(indexCode.trim() || '000001')}`)
+    : null;
+  const effectiveMinutePath = activeTab === 'minute' && activeCode
+    ? (minutePath ?? `/market/minute-kline?code=${encodeURIComponent(activeCode)}&period=${minutePeriod}`)
+    : null;
+  const effectiveSearchPath = activeTab === 'search' ? searchPath : null;
+  const effectiveStockListPath = activeTab === 'search' ? stockListPath : null;
+  const effectiveBlockStocksPath = activeTab === 'blocks' && blockCode.trim()
+    ? (blockStocksPath ?? `/market/block-stocks?blockCode=${encodeURIComponent(blockCode.trim())}`)
+    : null;
 
-  const limitUpQ = useApiQuery<unknown>(limitUpPath, {
+  useEffect(() => {
+    if (typeof window === 'undefined' || savedViewReadyRef.current) return;
+    savedViewReadyRef.current = true;
+    const hasExplicitContext = Boolean(task || from || initialBlock || initialTab !== 'main' || initialIndexCode !== '000001');
+    if (hasExplicitContext) return;
+    try {
+      const raw = window.localStorage.getItem(MARKET_VIEW_STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as Partial<SavedMarketView>;
+      if (saved.activeTab && isMarketTab(saved.activeTab)) setActiveTab(saved.activeTab);
+      if (typeof saved.code === 'string') setCode(saved.code);
+      if (typeof saved.submittedCode === 'string' || saved.submittedCode === null) setSubmittedCode(saved.submittedCode ?? null);
+      if (saved.period === 'daily' || saved.period === 'weekly' || saved.period === 'monthly') setPeriod(saved.period);
+      if (saved.submittedPeriod === 'daily' || saved.submittedPeriod === 'weekly' || saved.submittedPeriod === 'monthly') setSubmittedPeriod(saved.submittedPeriod);
+      if (typeof saved.indexCode === 'string') setIndexCode(saved.indexCode || '000001');
+      if (typeof saved.searchKeyword === 'string') setSearchKeyword(saved.searchKeyword);
+      if (typeof saved.minutePeriod === 'string') setMinutePeriod(saved.minutePeriod);
+      if (typeof saved.blockCode === 'string') setBlockCode(saved.blockCode);
+    } catch {
+      // ignore malformed persisted view state
+    }
+  }, [from, initialBlock, initialIndexCode, initialTab, setCode, task]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !savedViewReadyRef.current) return;
+    const payload: SavedMarketView = {
+      activeTab,
+      code,
+      submittedCode,
+      period,
+      submittedPeriod,
+      indexCode,
+      searchKeyword,
+      minutePeriod,
+      blockCode,
+    };
+    window.localStorage.setItem(MARKET_VIEW_STORAGE_KEY, JSON.stringify(payload));
+  }, [activeTab, blockCode, code, indexCode, minutePeriod, period, searchKeyword, submittedCode, submittedPeriod]);
+
+  function saveCurrentView() {
+    if (typeof window === 'undefined') return;
+    const payload: SavedMarketView = {
+      activeTab,
+      code,
+      submittedCode,
+      period,
+      submittedPeriod,
+      indexCode,
+      searchKeyword,
+      minutePeriod,
+      blockCode,
+    };
+    window.localStorage.setItem(MARKET_VIEW_STORAGE_KEY, JSON.stringify(payload));
+    toast('当前行情视图已保存', 'success');
+  }
+
+  function applyPreset(preset: Partial<SavedMarketView>) {
+    if (preset.activeTab && isMarketTab(preset.activeTab)) setActiveTab(preset.activeTab);
+    if (preset.code != null) setCode(preset.code);
+    if (preset.submittedCode !== undefined) setSubmittedCode(preset.submittedCode);
+    if (preset.period) setPeriod(preset.period);
+    if (preset.submittedPeriod) setSubmittedPeriod(preset.submittedPeriod);
+    if (preset.indexCode != null) setIndexCode(preset.indexCode);
+    if (preset.searchKeyword != null) setSearchKeyword(preset.searchKeyword);
+    if (preset.minutePeriod != null) setMinutePeriod(preset.minutePeriod);
+    if (preset.blockCode != null) setBlockCode(preset.blockCode);
+  }
+
+  const limitUpQ = useApiQuery<unknown>(effectiveLimitUpPath, {
     parse: (raw) => ensureRecordOrArray(raw, '涨停列表'),
   });
-  const limitUpStatsQ = useApiQuery<unknown>(limitUpStatsPath, {
+  const limitUpStatsQ = useApiQuery<unknown>(effectiveLimitUpStatsPath, {
     parse: (raw) => ensureRecord(raw, '涨停统计详情'),
   });
-  const blocksQ = useApiQuery<unknown>(blocksPath, {
+  const blocksQ = useApiQuery<unknown>(effectiveBlocksPath, {
     parse: (raw) => ensureRecordOrArray(raw, '板块列表'),
   });
-  const tradeQ = useApiQuery<unknown>(tradePath, {
+  const tradeQ = useApiQuery<unknown>(effectiveTradePath, {
     parse: (raw) => ensureRecordOrArray(raw, '逐笔成交'),
   });
-  const indexQuoteQ = useApiQuery<unknown>(indexPath, {
+  const indexQuoteQ = useApiQuery<unknown>(effectiveIndexPath, {
     parse: (raw) => ensureRecord(raw, '指数行情'),
   });
-  const minuteKlineQ = useApiQuery<unknown>(minutePath, {
+  const minuteKlineQ = useApiQuery<unknown>(effectiveMinutePath, {
     parse: (raw) => ensureRecordOrArray(raw, '分时K线'),
   });
-  const searchQ = useApiQuery<unknown>(searchPath, {
+  const searchQ = useApiQuery<unknown>(effectiveSearchPath, {
     parse: (raw) => ensureRecordOrArray(raw, '股票搜索结果'),
   });
-  const stockListQ = useApiQuery<unknown>(stockListPath, {
+  const stockListQ = useApiQuery<unknown>(effectiveStockListPath, {
     parse: (raw) => ensureRecordOrArray(raw, '股票列表'),
   });
-  const blockStocksQ = useApiQuery<unknown>(blockStocksPath, {
+  const blockStocksQ = useApiQuery<unknown>(effectiveBlockStocksPath, {
     parse: (raw) => ensureRecordOrArray(raw, '板块成分股'),
   });
   const batchQuotes = useApiMutation<unknown>({
     parse: (raw) => ensureRecordOrArray(raw, '批量行情'),
   });
 
-  const [indexCode, setIndexCode] = useState('000001');
-  const [searchKeyword, setSearchKeyword] = useState('');
-  const [minutePeriod, setMinutePeriod] = useState('5m');
-  const [blockCode, setBlockCode] = useState(initialBlock);
-  const [batchCodes, setBatchCodes] = useState('');
-
   const tabPending = limitUpQ.isFetching || blocksQ.isFetching || tradeQ.isFetching || indexQuoteQ.isFetching || minuteKlineQ.isFetching || searchQ.isFetching || stockListQ.isFetching || blockStocksQ.isFetching || batchQuotes.isPending || limitUpStatsQ.isFetching;
   const tabError = limitUpQ.error || blocksQ.error || tradeQ.error || indexQuoteQ.error || minuteKlineQ.error || searchQ.error || blockStocksQ.error || batchQuotes.error || limitUpStatsQ.error;
 
   const loading = quoteQ.isFetching || klineQ.isFetching || obQ.isFetching;
 
-  // Auto-load limit-up data when switching to that tab
-  useEffect(() => {
-    if (activeTab === 'limitup' && !limitUpPath) {
-      setLimitUpPath('/market/limit-up');
-      setLimitUpStatsPath('/market/limit-up-stats');
-    }
-  }, [activeTab, limitUpPath]);
-
-  // Auto-load blocks + constituent stocks when arriving from homepage with block param
-  useEffect(() => {
-    if (activeTab === 'blocks' && !blocksPath) {
-      setBlocksPath('/market/blocks?blockType=industry');
-      if (initialBlock) {
-        setBlockStocksPath(`/market/block-stocks?blockCode=${encodeURIComponent(initialBlock)}`);
-      }
-    }
-  }, [activeTab, blocksPath, initialBlock]);
-
-  // Auto-load index quote when switching to index tab
-  useEffect(() => {
-    if (activeTab === 'index' && !indexPath) {
-      setIndexPath(`/market/index-quote?indexCode=${encodeURIComponent(indexCode.trim())}`);
-    }
-  }, [activeTab, indexPath, indexCode]);
-
-  // Auto-load minute kline when switching to minute tab with a valid code
-  useEffect(() => {
-    const c = resolvedCode || submittedCode;
-    if (activeTab === 'minute' && !minutePath && c) {
-      setMinutePath(`/market/minute-kline?code=${encodeURIComponent(c)}&period=${minutePeriod}`);
-    }
-  }, [activeTab, minutePath, resolvedCode, submittedCode, minutePeriod]);
-
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!validate()) return;
     const c = code.trim();
-    if (c === submittedCode && period === submittedPeriod) {
+    if (c === activeCode && period === submittedPeriod) {
       quoteQ.refetch(); klineQ.refetch(); obQ.refetch();
     } else {
       setSubmittedCode(c);
@@ -239,6 +337,7 @@ export default function MarketPage() {
   return (
     <PageContainer>
       <h1>行情看板</h1>
+      {(from || task) ? <div className="text-xs text-text-secondary mb-2">上下文跳转{from ? ` · 来源: ${from}` : ''}{task ? ` · 任务: ${task}` : ''}</div> : null}
       <form onSubmit={onSubmit} className="flex gap-2.5 flex-wrap items-center">
         <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} placeholder="如 600519" aria-label="股票代码" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
         {codeError ? <span className="text-error text-xs" role="alert">{codeError}</span> : null}
@@ -258,6 +357,29 @@ export default function MarketPage() {
 
       {/* ── Tab bar moved immediately after cache info for quick access ── */}
       <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
+      <div className="mt-3 flex items-center gap-2 flex-wrap">
+        <span className="text-xs text-text-secondary">常用视图</span>
+        {MARKET_VIEW_PRESETS.map((preset) => (
+          <button
+            key={preset.key}
+            type="button"
+            onClick={() => {
+              applyPreset(preset.apply());
+              toast(`已切换到${preset.label}`, 'info');
+            }}
+            className="px-2.5 py-1 rounded border border-border text-xs text-text-secondary hover:text-primary hover:border-primary cursor-pointer"
+          >
+            {preset.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={saveCurrentView}
+          className="px-2.5 py-1 rounded border border-primary text-xs text-primary hover:bg-primary/5 cursor-pointer"
+        >
+          保存当前视图
+        </button>
+      </div>
       {tabError ? <p className="text-error text-sm mt-1">{tabError}</p> : null}
 
       {/* ── 基础行情 cards always shown below the tab bar ── */}
@@ -289,7 +411,6 @@ export default function MarketPage() {
         {quote?.quote ? (() => {
           const q = quote.quote;
           const chg = Number(q.change ?? 0);
-          const chgPct = Number(q.changePercent ?? 0);
           const clr = chg >= 0 ? 'text-danger' : 'text-success';
           return (
             <div className="grid grid-cols-3 gap-2 text-sm">
@@ -310,8 +431,8 @@ export default function MarketPage() {
       {activeTab === 'limitup' ? (
         <SectionCard tabAttached>
           <button type="button" disabled={tabPending} onClick={() => {
-            if (limitUpPath) limitUpQ.refetch(); else setLimitUpPath('/market/limit-up');
-            if (limitUpStatsPath) limitUpStatsQ.refetch(); else setLimitUpStatsPath('/market/limit-up-stats');
+            if (effectiveLimitUpPath) limitUpQ.refetch(); else setLimitUpPath('/market/limit-up');
+            if (effectiveLimitUpStatsPath) limitUpStatsQ.refetch(); else setLimitUpStatsPath('/market/limit-up-stats');
           }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '刷新'}</button>
           {limitUpStatsObj ? (
             <KpiGrid cols={3}>
@@ -334,7 +455,7 @@ export default function MarketPage() {
       {activeTab === 'blocks' ? (
         <SectionCard tabAttached>
           <button type="button" disabled={tabPending} onClick={() => {
-            if (blocksPath) blocksQ.refetch(); else setBlocksPath('/market/blocks?blockType=industry');
+            if (effectiveBlocksPath) blocksQ.refetch(); else setBlocksPath('/market/blocks?blockType=industry');
           }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '加载行业板块'}</button>
           {blocksRows.length ? <DataTable rows={blocksRows} columns={[
             { key: 'code', label: '板块代码' },
@@ -347,7 +468,7 @@ export default function MarketPage() {
             if (c) {
               setBlockCode(c);
               const p = `/market/block-stocks?blockCode=${encodeURIComponent(c)}`;
-              if (p === blockStocksPath) blockStocksQ.refetch(); else setBlockStocksPath(p);
+              if (p === effectiveBlockStocksPath) blockStocksQ.refetch(); else setBlockStocksPath(p);
             }
           }} />
             : (!tabPending && !blocksQ.error ? <p className="text-text-muted text-sm mt-3 text-center">点击"加载行业板块"查看板块行情，可点击行搜索成分股</p> : null)}
@@ -355,7 +476,7 @@ export default function MarketPage() {
             <input value={blockCode} onChange={(e) => setBlockCode(e.target.value)} placeholder="板块代码" aria-label="板块代码" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
             <button type="button" disabled={tabPending} onClick={() => {
               const p = `/market/block-stocks?blockCode=${encodeURIComponent(blockCode.trim())}`;
-              if (p === blockStocksPath) blockStocksQ.refetch(); else setBlockStocksPath(p);
+              if (p === effectiveBlockStocksPath) blockStocksQ.refetch(); else setBlockStocksPath(p);
             }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">查看成分股</button>
           </div>
           {blockStocksRows.length ? <DataTable rows={blockStocksRows} columns={[
@@ -387,7 +508,7 @@ export default function MarketPage() {
             <input value={indexCode} onChange={(e) => setIndexCode(e.target.value)} placeholder="指数代码 如 000001" aria-label="指数代码" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
             <button type="button" disabled={tabPending} onClick={() => {
               const p = `/market/index-quote?indexCode=${encodeURIComponent(indexCode.trim())}`;
-              if (p === indexPath) indexQuoteQ.refetch(); else setIndexPath(p);
+              if (p === effectiveIndexPath) indexQuoteQ.refetch(); else setIndexPath(p);
             }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '查询指数行情'}</button>
           </div>
           {indexObj ? (
@@ -415,7 +536,7 @@ export default function MarketPage() {
             <button type="button" disabled={tabPending} onClick={() => {
               if (!validate()) return;
               const p = `/market/minute-kline?code=${encodeURIComponent(code.trim())}&period=${minutePeriod}`;
-              if (p === minutePath) minuteKlineQ.refetch(); else setMinutePath(p);
+              if (p === effectiveMinutePath) minuteKlineQ.refetch(); else setMinutePath(p);
             }} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{tabPending ? '加载中...' : '查询分时'}</button>
           </div>
           {minuteCandleData.length ? <CandlestickChart data={minuteCandleData} height={360} />
@@ -468,4 +589,3 @@ export default function MarketPage() {
     </PageContainer>
   );
 }
-

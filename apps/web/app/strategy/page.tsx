@@ -6,7 +6,7 @@ import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState, LoadingState } from '@/components/status-state';
-import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
+import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 
 type HoldingOp = { portfolioId: string; code: string; shares: string; costPrice: string };
@@ -16,6 +16,9 @@ type OptData = { optimization?: { expectedReturn?: unknown; expectedRisk?: unkno
 type RiskData = { riskMetrics?: { var95?: unknown; var99?: unknown; cvar?: unknown; beta?: unknown; volatility?: unknown }; [k: string]: unknown };
 type StressScenario = { name?: string; impact?: unknown; description?: string };
 type StressData = { stressResult?: { scenarios?: StressScenario[] }; [k: string]: unknown };
+type PortfolioDetailRecord = Record<string, unknown> & {
+  strategyAllocations?: Array<Record<string, unknown>>;
+};
 
 export default function StrategyPage() {
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
@@ -73,7 +76,13 @@ export default function StrategyPage() {
     setFormError(null);
     if (!portfolioName.trim()) return setFormError('组合名称不能为空');
     try {
-      await actionApi.triggerAsync('/portfolio/create', { method: 'POST' }, { name: portfolioName.trim(), initialCapital: '100000' });
+      const data = await actionApi.triggerAsync('/portfolio/create', { method: 'POST' }, { name: portfolioName.trim(), initialCapital: '100000' });
+      const createdId = data && typeof data === 'object' && 'portfolioId' in data ? String((data as { portfolioId?: unknown }).portfolioId ?? '') : '';
+      if (createdId) {
+        setHoldingOp((prev) => ({ ...prev, portfolioId: createdId }));
+        const detailPath = `/portfolio/get?portfolioId=${encodeURIComponent(createdId)}`;
+        if (detailPath === portfolioDetailPath) portfolioDetailQ.refetch(); else setPortfolioDetailPath(detailPath);
+      }
       const p = '/portfolio/list';
       if (p === portfolioListPath) portfolioListQ.refetch(); else setPortfolioListPath(p);
     } catch { /* captured */ }
@@ -126,8 +135,37 @@ export default function StrategyPage() {
   const riskData = riskAnalysisApi.data;
   const stressData = stressTestApi.data;
 
-  const detailObj = useMemo(() => portfolioDetailQ.data ? extractObject(portfolioDetailQ.data) as Record<string, unknown> | null : null, [portfolioDetailQ.data]);
+  const detailObj = useMemo(() => {
+    if (!portfolioDetailQ.data || typeof portfolioDetailQ.data !== 'object') return null;
+    return portfolioDetailQ.data as PortfolioDetailRecord;
+  }, [portfolioDetailQ.data]);
   const detailHoldings = useMemo(() => extractArray(portfolioDetailQ.data, 'holdings', 'positions', 'data') as Record<string, unknown>[], [portfolioDetailQ.data]);
+  const detailStrategies = useMemo(() => extractArray(portfolioDetailQ.data, 'strategyAllocations') as Record<string, unknown>[], [portfolioDetailQ.data]);
+  const backtestRows = useMemo(() => {
+    const rows = extractArray(backtestListQ.data, 'results', 'items', 'data');
+    return rows.map((item) => ({
+      backtestId: String(item.id ?? item.backtest_id ?? '-'),
+      code: String(item.code ?? '-'),
+      strategy: String(item.strategy ?? '-'),
+      startDate: String(item.start_date ?? '-'),
+      endDate: String(item.end_date ?? '-'),
+      totalReturn: item.total_return,
+      maxDrawdown: item.max_drawdown,
+      sharpe: item.sharpe_ratio,
+      createdAt: String(item.created_at ?? '-'),
+    }));
+  }, [backtestListQ.data]);
+  const portfolioRows = useMemo(() => (
+    extractArray(portfolioListQ.data, 'portfolios', 'items', 'data').map((item) => ({
+      id: item.id ?? '-',
+      name: item.name ?? '-',
+      description: item.description ?? '-',
+      strategyAllocationCount: item.strategyAllocationCount ?? 0,
+      strategyAllocationSummary: item.strategyAllocationSummary ?? '-',
+      currentValue: item.currentValue,
+      createdAt: item.createdAt ?? '-',
+    }))
+  ), [portfolioListQ.data]);
 
   const optWeights = useMemo(() => {
     const w = optData?.optimization?.weights;
@@ -168,6 +206,24 @@ export default function StrategyPage() {
           <span>artifactId: {artifactId || '-'}</span>
           <button type="button" onClick={() => loadMetrics()} className="ml-2">刷新指标</button>
         </div>
+        {backtestRows.length > 0 && (
+          <DataTable
+            rows={backtestRows}
+            columns={[
+              { key: 'backtestId', label: '回测ID' },
+              { key: 'code', label: '代码' },
+              { key: 'strategy', label: '策略' },
+              { key: 'startDate', label: '开始日期' },
+              { key: 'endDate', label: '结束日期' },
+              { key: 'totalReturn', label: '总收益', align: 'right', render: (value) => fmtPct(Number(value ?? 0)) },
+              { key: 'maxDrawdown', label: '最大回撤', align: 'right', render: (value) => fmtPct(Number(value ?? 0)) },
+              { key: 'sharpe', label: 'Sharpe', align: 'right', render: (value) => fmtNum(Number(value ?? 0), 2) },
+              { key: 'createdAt', label: '创建时间' },
+            ]}
+            pageSize={6}
+            searchable
+          />
+        )}
       </SectionCard>
 
       <SectionCard>
@@ -186,6 +242,29 @@ export default function StrategyPage() {
           <button type="button" onClick={removeHolding}>减仓</button>
           <button type="button" onClick={loadPortfolioDetail}>查看详情</button>
         </div>
+        {portfolioRows.length > 0 && (
+          <DataTable
+            rows={portfolioRows}
+            columns={[
+              { key: 'id', label: '组合ID' },
+              { key: 'name', label: '组合名称' },
+              { key: 'description', label: '描述' },
+              { key: 'strategyAllocationCount', label: '策略数', align: 'right' },
+              { key: 'strategyAllocationSummary', label: '策略配置' },
+              { key: 'currentValue', label: '当前资产', align: 'right', render: (value) => fmtNum(Number(value ?? 0), 2) },
+              { key: 'createdAt', label: '创建时间' },
+            ]}
+            pageSize={6}
+            searchable
+            onRowClick={(row) => {
+              const selectedId = String(row.id ?? '').trim();
+              if (!selectedId || selectedId === '-') return;
+              setHoldingOp((prev) => ({ ...prev, portfolioId: selectedId }));
+              const detailPath = `/portfolio/get?portfolioId=${encodeURIComponent(selectedId)}`;
+              if (detailPath === portfolioDetailPath) portfolioDetailQ.refetch(); else setPortfolioDetailPath(detailPath);
+            }}
+          />
+        )}
         {detailObj && (
           <div className="mt-3">
             <KpiGrid cols={4}>
@@ -194,6 +273,16 @@ export default function StrategyPage() {
               <KpiCard title="总收益" value={detailObj.totalReturn != null ? fmtPct(Number(detailObj.totalReturn)) : null} change={detailObj.totalReturn != null ? Number(detailObj.totalReturn) : null} />
               <KpiCard title="持仓数" value={detailHoldings.length || null} />
             </KpiGrid>
+            {detailStrategies.length > 0 && (
+              <DataTable
+                rows={detailStrategies}
+                columns={[
+                  { key: 'strategyId', label: '策略ID', render: (_value, row) => String(row.strategyId ?? row.strategy_id ?? '-') },
+                  { key: 'weight', label: '权重', align: 'right', render: (value) => fmtPct(Number(value ?? 0) * 100) },
+                ]}
+                className="mt-3"
+              />
+            )}
             {detailHoldings.length > 0 && (
               <DataTable rows={detailHoldings} pageSize={10} onExport={() => exportCSV(detailHoldings, 'portfolio-holdings')} />
             )}

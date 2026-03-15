@@ -3,11 +3,10 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
-import { authedFetch, fmt, BFF_BASE } from '@/lib/api';
+import { authedFetch, extractApiErrorMessage, fmt } from '@/lib/api';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
-import { clearLoggedIn } from '@/lib/auth';
 import { useAuthStore } from '@/store/auth-store';
 
 type UserInfo = { username?: string; role?: string; riskLevel?: string };
@@ -26,12 +25,13 @@ export default function UserPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const authedUser = useAuthStore((s) => s.user);
-  const userId = authedUser?.id ?? authedUser?.username ?? null;
+  const isLoggingOut = useAuthStore((s) => s.isLoggingOut);
+  const logout = useAuthStore((s) => s.logout);
 
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
   const subsQ = useApiQuery<unknown>(
-    userId ? `/strategy-market/my-subscriptions?user_id=${encodeURIComponent(userId)}` : null,
-    { enabled: Boolean(userId) },
+    authedUser ? '/strategy-market/my-subscriptions' : null,
+    { enabled: Boolean(authedUser) },
   );
   const tradingQ = useApiQuery<unknown>('/paper-trading/summary');
   const portfolioQ = useApiQuery<unknown>('/portfolio/list');
@@ -51,11 +51,15 @@ export default function UserPage() {
     setSaving(true);
     setSaveError(null);
     try {
-      await authedFetch('/auth/profile', {
+      const resp = await authedFetch('/auth/profile', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ riskLevel }),
       });
+      const payload = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        throw new Error(extractApiErrorMessage(payload, '保存失败'));
+      }
       profileQ.refetch();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : '保存失败');
@@ -65,8 +69,8 @@ export default function UserPage() {
   }
 
   function onLogout() {
-    clearLoggedIn();
-    fetch(`${BFF_BASE}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
+    if (isLoggingOut) return;
+    logout();
     window.location.href = '/login';
   }
 
@@ -90,8 +94,9 @@ export default function UserPage() {
           <div className="flex items-center justify-between">
             <h3 className="mt-0">个人信息</h3>
             <button type="button" onClick={onLogout}
+              disabled={isLoggingOut}
               className="text-xs bg-danger/10 text-danger px-3 py-1 rounded cursor-pointer hover:bg-danger/20">
-              退出登录
+              {isLoggingOut ? '退出中...' : '退出登录'}
             </button>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-2">
@@ -159,8 +164,27 @@ export default function UserPage() {
           <DataTable
             columns={[
               { key: 'name', label: '组合名称' },
-              { key: 'total_assets', label: '总资产', render: (v: unknown) => fmtNum(Number(v)) },
-              { key: 'total_return', label: '收益率', render: (v: unknown) => fmtPct(Number(v)) },
+              {
+                key: 'currentValue',
+                label: '总资产',
+                render: (_: unknown, row: Record<string, unknown>) => {
+                  const currentValue = Number(row.currentValue ?? row.current_value ?? row.totalAssets ?? row.total_assets ?? 0);
+                  return fmtNum(currentValue);
+                },
+              },
+              {
+                key: 'totalReturn',
+                label: '收益率',
+                render: (_: unknown, row: Record<string, unknown>) => {
+                  const currentValue = Number(row.currentValue ?? row.current_value ?? row.totalAssets ?? row.total_assets ?? 0);
+                  const initialCapital = Number(row.initialCapital ?? row.initial_capital ?? 0);
+                  const fallbackReturn = initialCapital > 0
+                    ? ((currentValue - initialCapital) / initialCapital) * 100
+                    : 0;
+                  const totalReturn = Number(row.totalReturn ?? row.total_return ?? fallbackReturn);
+                  return fmtPct(totalReturn);
+                },
+              },
             ]}
             rows={portfolios as Record<string, unknown>[]}
           />

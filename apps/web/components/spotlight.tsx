@@ -48,27 +48,30 @@ export function Spotlight() {
     const inputRef = useRef<HTMLInputElement>(null);
     const router = useRouter();
 
+    const openSpotlight = useCallback(() => {
+        setQuery('');
+        setResults(PAGES.slice(0, 8));
+        setSelectedIdx(0);
+        setOpen(true);
+    }, []);
+
+    const closeSpotlight = useCallback(() => {
+        setOpen(false);
+    }, []);
+
     // Global ⌘K / Ctrl+K shortcut
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
             if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
                 e.preventDefault();
-                setOpen((o) => !o);
+                if (open) closeSpotlight();
+                else openSpotlight();
             }
-            if (e.key === 'Escape') setOpen(false);
+            if (e.key === 'Escape') closeSpotlight();
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, []);
-
-    useEffect(() => {
-        if (open) {
-            setTimeout(() => inputRef.current?.focus(), 50);
-            setQuery('');
-            setResults([]);
-            setSelectedIdx(0);
-        }
-    }, [open]);
+    }, [closeSpotlight, open, openSpotlight]);
 
     // Search logic
     const search = useCallback(async (q: string) => {
@@ -130,7 +133,7 @@ export function Spotlight() {
     }, [query, search]);
 
     const handleSelect = (result: SpotlightResult) => {
-        setOpen(false);
+        closeSpotlight();
         router.push(result.href);
     };
 
@@ -151,13 +154,14 @@ export function Spotlight() {
 
     return (
         <>
-            <div className="fixed inset-0 bg-black/50 z-50 backdrop-blur-sm" onClick={() => setOpen(false)} />
+            <div className="fixed inset-0 bg-black/50 z-50 backdrop-blur-sm" onClick={closeSpotlight} />
             <div className="fixed top-[15%] left-1/2 -translate-x-1/2 w-[90%] max-w-lg z-50 animate-fade-up" role="dialog" aria-modal="true" aria-label="全局搜索">
                 <div className="glass-strong rounded-xl border border-glass-border shadow-2xl overflow-hidden">
                     <div className="flex items-center gap-3 px-4 py-3 border-b border-glass-border">
                         <span className="text-lg">🔍</span>
                         <input
                             ref={inputRef}
+                            autoFocus
                             type="text"
                             value={query}
                             onChange={(e) => setQuery(e.target.value)}

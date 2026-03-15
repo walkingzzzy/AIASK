@@ -34,7 +34,7 @@ export class WatchlistService {
 
         const payload = await this.callTool('watchlist_manager', {
             action: 'list',
-            kwargs: JSON.stringify({ user_id: userId }),
+            params: { user_id: userId },
         });
 
         const groups = this.extractGroups(payload);
@@ -42,22 +42,30 @@ export class WatchlistService {
         return groups;
     }
 
-    async createGroup(userId: string, name: string, color = '#6366f1') {
-        const payload = await this.callTool('create_watchlist', {
-            name,
-            user_id: userId,
-            color,
+    async createGroup(userId: string, groupId: string | undefined, name: string, color = '#6366f1') {
+        const payload = await this.callTool('watchlist_manager', {
+            action: 'create_group',
+            params: {
+                user_id: userId,
+                group_id: groupId,
+                name,
+                color,
+            },
         });
 
         await this.invalidateCache(userId);
         return { success: true, result: payload };
     }
 
-    async addStocks(userId: string, group: string, codes: string[]) {
-        const payload = await this.callTool('add_stocks_to_watchlist', {
-            watchlist_name: group,
-            user_id: userId,
-            codes: codes.join(','),
+    async addStocks(userId: string, group: string, codes: string[], groupName?: string) {
+        const payload = await this.callTool('watchlist_manager', {
+            action: 'add_stocks',
+            params: {
+                user_id: userId,
+                group_id: group,
+                group_name: groupName,
+                codes,
+            },
         });
 
         await this.invalidateCache(userId);
@@ -65,20 +73,23 @@ export class WatchlistService {
     }
 
     async removeStock(userId: string, group: string, code: string) {
-        // Use watchlist_manager with remove action
         const payload = await this.callTool('watchlist_manager', {
             action: 'remove_stock',
-            kwargs: JSON.stringify({ user_id: userId, watchlist_name: group, code }),
+            params: { user_id: userId, group_id: group, code },
         });
 
         await this.invalidateCache(userId);
         return { success: true, result: payload };
     }
 
-    async deleteGroup(userId: string, name: string) {
-        const payload = await this.callTool('delete_watchlist', {
-            name,
-            user_id: userId,
+    async deleteGroup(userId: string, groupId?: string, name?: string) {
+        const payload = await this.callTool('watchlist_manager', {
+            action: 'delete_group',
+            params: {
+                user_id: userId,
+                group_id: groupId,
+                name,
+            },
         });
 
         await this.invalidateCache(userId);
@@ -88,7 +99,7 @@ export class WatchlistService {
     async reorderStocks(userId: string, group: string, codes: string[]) {
         const payload = await this.callTool('watchlist_manager', {
             action: 'reorder',
-            kwargs: JSON.stringify({ user_id: userId, watchlist_name: group, codes }),
+            params: { user_id: userId, group_id: group, codes },
         });
 
         await this.invalidateCache(userId);
@@ -113,6 +124,10 @@ export class WatchlistService {
 
     private extractGroups(payload: any): WatchlistGroup[] {
         const data = this.readPath(payload, 'data') ?? payload;
+        const groupsPayload = this.readPath(data, 'groups');
+        if (Array.isArray(groupsPayload)) {
+            return groupsPayload.map((g: any) => this.normalizeGroup(g));
+        }
         if (Array.isArray(data)) {
             return data.map((g: any) => this.normalizeGroup(g));
         }
@@ -146,7 +161,7 @@ export class WatchlistService {
         return {
             code: String(raw.code ?? raw.stock_code ?? ''),
             name: String(raw.name ?? raw.stock_name ?? ''),
-            group: String(raw.group ?? raw.watchlist_name ?? 'default'),
+            group: String(raw.group ?? raw.group_id ?? raw.watchlist_name ?? 'default'),
             addedAt: String(raw.addedAt ?? raw.added_at ?? new Date().toISOString()),
             sortOrder: Number(raw.sortOrder ?? raw.sort_order ?? 0),
         };

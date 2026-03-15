@@ -1,11 +1,16 @@
 """期权管理器 - Black-Scholes定价和Greeks计算"""
 
+import calendar
+from datetime import datetime
 from typing import Optional
 import json
 from ...utils import ok, fail
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
+    params = kwargs.get("params")
+    if isinstance(params, dict):
+        kwargs = {**kwargs, **params}
     extra = kwargs.get("kwargs")
     if extra is not None:
         if isinstance(extra, str):
@@ -41,7 +46,27 @@ def _normalize_kwargs(kwargs: dict) -> dict:
         kwargs["strike"] = kwargs.get("K") or kwargs.get("k") or kwargs.get("strike_price") or kwargs.get("exercise_price")
     if kwargs.get("option_type") is None:
         kwargs["option_type"] = kwargs.get("type") or kwargs.get("cp") or kwargs.get("call_put")
+    if kwargs.get("underlying") is None:
+        kwargs["underlying"] = kwargs.get("underlying_symbol") or kwargs.get("symbol")
+    if kwargs.get("code") is None:
+        kwargs["code"] = kwargs.get("underlying") or kwargs.get("underlying_symbol") or kwargs.get("symbol")
     return kwargs
+
+
+def _time_to_maturity_from_expiry_month(expiry_month: str) -> float:
+    token = str(expiry_month or "").strip().replace("-", "")
+    if len(token) != 6 or not token.isdigit():
+        return 0.0
+
+    year = int(token[:4])
+    month = int(token[4:])
+    if month < 1 or month > 12:
+        return 0.0
+
+    last_day = calendar.monthrange(year, month)[1]
+    expiry = datetime(year, month, last_day, 15, 0, 0)
+    now = datetime.now()
+    return max((expiry - now).total_seconds() / (365.0 * 24 * 3600), 0.0)
 
 
 def register_options_manager(mcp):
@@ -52,8 +77,8 @@ def register_options_manager(mcp):
         """期权管理器（统一 action + kwargs 协议）
 
         Args:
-            action (str, required): 操作类型，可选 help/list/calculate_greeks/calculate_price/implied_volatility
-            kwargs: JSON 字符串或关键字参数，不同 action 所需参数:
+            action (str, required): 操作类型，可选 help/list/calculate_greeks/calculate_price/implied_volatility/volatility_smirk
+            kwargs: 支持 structured ``params``、JSON 字符串 ``kwargs`` 或关键字参数，不同 action 所需参数:
                 - help: 无需额外参数
                 - list: underlying(str, 如 "510050"), expiry_month(str, optional)
                 - calculate_greeks: S(float, 标的价格), K(float, 行权价), T(float, 到期时间/年), r(float, 无风险利率), sigma(float, 波动率), option_type(str, "call"/"put")
@@ -80,6 +105,7 @@ def register_options_manager(mcp):
                         'calculate_greeks': '计算希腊字母（需要 code/underlying）',
                         'calculate_price': 'Black-Scholes 定价（需要参数）',
                         'implied_volatility': '隐含波动率计算',
+                        'volatility_smirk': '按行权价聚合隐含波动率曲线',
                         'help': '显示帮助信息',
                     }
                 })
@@ -364,8 +390,98 @@ def register_options_manager(mcp):
                     'implied_volatility': f"{iv*100:.2f}%",
                     'iv_value': iv,
                 })
+
+            elif action == 'volatility_smirk':
+                underlying = kwargs.get('underlying') or kwargs.get('code') or '510050'
+                expiry_month = str(kwargs.get('expiry_month') or kwargs.get('month') or '').strip()
+                limit = kwargs.get('limit', 200)
+                try:
+                    limit = int(limit)
+                except Exception:
+                    limit = 200
+                limit = max(20, min(limit, 1000))
+
+                from ..options import get_option_chain
+                from ...services.options_pricing import options_pricing
+
+                chain = get_option_chain(underlying=str(underlying), expiry_month=expiry_month, limit=limit)
+                data = (chain or {}).get('data') or {}
+                if not (chain or {}).get('success'):
+                    return ok({
+                        'underlying': {'code': str(underlying)},
+                        'selected_expiry': [],
+                        'curve': [],
+                        'degraded': True,
+                        'message': chain.get('error') if isinstance(chain, dict) else '获取期权链失败',
+                    })
+
+                underlying_info = data.get('underlying') or {'code': str(underlying)}
+                spot = float(underlying_info.get('price') or 0.0)
+                selected_expiry = data.get('selectedExpiry') or []
+                target_expiry = str(selected_expiry[0] if selected_expiry else expiry_month or '').strip()
+                time_to_maturity = _time_to_maturity_from_expiry_month(target_expiry)
+                risk_free_rate = float(kwargs.get('risk_free_rate', 0.03) or 0.03)
+                dividend_yield = float(kwargs.get('dividend_yield', 0.0) or 0.0)
+
+                rows = {}
+                for item in data.get('options') or []:
+                    if target_expiry and str(item.get('expiryMonth') or '').strip() != target_expiry:
+                        continue
+
+                    try:
+                        strike = float(item.get('strike'))
+                        option_price = float(item.get('last'))
+                    except Exception:
+                        continue
+
+                    option_type = str(item.get('type') or '').strip().lower()
+                    if option_type not in {'call', 'put'} or strike <= 0 or option_price <= 0 or spot <= 0 or time_to_maturity <= 0:
+                        continue
+
+                    iv = options_pricing.implied_volatility(
+                        option_price=option_price,
+                        spot=spot,
+                        strike=strike,
+                        time_to_maturity=time_to_maturity,
+                        risk_free_rate=risk_free_rate,
+                        option_type=option_type,
+                        dividend_yield=dividend_yield,
+                    )
+                    if iv is None:
+                        continue
+
+                    bucket = rows.setdefault(strike, {'strike': strike})
+                    bucket[f'{option_type}_iv'] = float(iv)
+
+                curve = []
+                for strike in sorted(rows.keys()):
+                    bucket = rows[strike]
+                    call_iv = bucket.get('call_iv')
+                    put_iv = bucket.get('put_iv')
+                    iv_values = [value for value in (call_iv, put_iv) if isinstance(value, float)]
+                    avg_iv = float(sum(iv_values) / len(iv_values)) if iv_values else None
+                    curve.append({
+                        'strike': float(strike),
+                        'moneyness': float(strike / spot) if spot > 0 else None,
+                        'call_iv': call_iv,
+                        'put_iv': put_iv,
+                        'avg_iv': avg_iv,
+                        'skew': (put_iv - call_iv) if isinstance(call_iv, float) and isinstance(put_iv, float) else None,
+                    })
+
+                atm_point = min(curve, key=lambda item: abs((item.get('moneyness') or 1.0) - 1.0)) if curve else None
+                return ok({
+                    'underlying': underlying_info,
+                    'selected_expiry': selected_expiry,
+                    'curve': curve,
+                    'spot': spot,
+                    'time_to_maturity': time_to_maturity,
+                    'degraded': bool(data.get('degraded', False)),
+                    'atm_iv': atm_point.get('avg_iv') if atm_point else None,
+                    'point_count': len(curve),
+                })
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, list, calculate_greeks, calculate_price, implied_volatility')
+                return fail(f'Unknown action: {action}. Supported: help, list, calculate_greeks, calculate_price, implied_volatility, volatility_smirk')
         except Exception as e:
             return fail(str(e))

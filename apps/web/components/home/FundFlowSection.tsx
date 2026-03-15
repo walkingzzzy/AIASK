@@ -4,6 +4,7 @@ import { SectionCard, KpiCard, KpiGrid, Skeleton, SkeletonCard } from '@/compone
 import { GaugeChart, BarChart, COLORS } from '@/components/charts';
 import { ErrorState, EmptyState } from '@/components/status-state';
 import { fmtPct } from '@/lib/data-utils';
+import Link from 'next/link';
 
 /* ------------------------------------------------------------------ */
 /* Props                                                               */
@@ -58,7 +59,7 @@ export function FundFlowSection(props: FundFlowSectionProps) {
                   { start: 75, end: 100, color: COLORS.up },
                 ]}
               />
-            ) : fearGreedQ.isPending ? <Skeleton height={200} /> : !fearGreedQ.error ? <EmptyState text="暂无恐贪数据" /> : null}
+            ) : fearGreedQ.isPending ? <Skeleton height={200} /> : !fearGreedQ.error ? <EmptyState text="当前没有恐贪指数" hint="情绪源在非交易时段偶尔会为空，稍后刷新即可。" action={<Link href="/sentiment" className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline">打开情绪页</Link>} /> : null}
           </SectionCard>
         )}
 
@@ -68,7 +69,7 @@ export function FundFlowSection(props: FundFlowSectionProps) {
             {sectorFlowQ.error ? <ErrorState text={sectorFlowQ.error} onRetry={() => sectorFlowQ.refetch()} /> : null}
             {sectorFlows.length > 0 ? (
               <BarChart items={sectorFlows} height={200} yAxisName="净流入(亿)" colorByValue horizontal />
-            ) : sectorFlowQ.isPending ? <Skeleton height={200} /> : !sectorFlowQ.error ? <EmptyState text="暂无板块资金流向" /> : null}
+            ) : sectorFlowQ.isPending ? <Skeleton height={200} /> : !sectorFlowQ.error ? <EmptyState text="当前没有板块资金流向榜单" hint="适合在交易时段查看热点轮动；若现在为空，可稍后刷新或直接进入资金流页。" action={<Link href="/fund-flow" className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline">打开资金流页</Link>} /> : null}
           </SectionCard>
         )}
       </div>
@@ -92,7 +93,7 @@ export function FundFlowSection(props: FundFlowSectionProps) {
               </>
             ) : limitUpQ.isPending ? (
               <KpiGrid cols={3}><SkeletonCard /><SkeletonCard /><SkeletonCard /></KpiGrid>
-            ) : !limitUpQ.error ? <EmptyState text="暂无涨停统计数据" /> : null}
+            ) : !limitUpQ.error ? <EmptyState text="当前没有涨停统计数据" hint="开盘前、收盘后或节假日出现空态都比较常见。" action={<Link href="/market?tab=limitup" className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline">查看涨停页</Link>} /> : null}
           </SectionCard>
         )}
 
@@ -112,7 +113,7 @@ export function FundFlowSection(props: FundFlowSectionProps) {
               </KpiGrid>
             ) : northQ.isPending ? (
               <KpiGrid cols={2}><SkeletonCard /><SkeletonCard /></KpiGrid>
-            ) : !northQ.error ? <EmptyState text="暂无北向资金数据（非交易时段）" /> : null}
+            ) : !northQ.error ? <EmptyState text="当前没有北向资金数据" hint="北向资金在非交易时段常常为空，交易时段或收盘后通常会恢复。" action={<Link href="/fund-flow?tab=north" className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline">查看北向页</Link>} /> : null}
           </SectionCard>
         )}
       </div>
@@ -129,7 +130,7 @@ export function FundFlowSection(props: FundFlowSectionProps) {
               }))}
               height={240} yAxisName="净流入(亿)" colorByValue
             />
-          ) : northQ.isPending ? <Skeleton height={240} /> : <EmptyState text="暂无北向资金走势（非交易时段）" />}
+          ) : northQ.isPending ? <Skeleton height={240} /> : <EmptyState text="当前没有北向资金走势" hint="如果你在做盘后复盘，可以稍后再回来确认近 20 日净流入节奏。" action={<Link href="/fund-flow?tab=north" className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline">打开资金流页</Link>} />}
         </SectionCard>
       )}
     </>

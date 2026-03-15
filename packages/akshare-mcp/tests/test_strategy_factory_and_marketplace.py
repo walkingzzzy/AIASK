@@ -532,6 +532,27 @@ class TestDeduplicator:
         assert len(unique) == 2
 
     @pytest.mark.asyncio
+    async def test_existing_scan_is_bucketed_by_strategy_type(self):
+        dedup = Deduplicator()
+        candidates = [
+            {"strategy_type": "momentum", "params": {"lookback": 20, "threshold": 0.02}},
+        ]
+        db = MagicMock()
+        db.list_strategies = AsyncMock(side_effect=[
+            [
+                {"id": "m1", "strategy_type": "momentum", "params": {"lookback": 22, "threshold": 0.03}},
+                {"id": "r1", "strategy_type": "rsi", "params": {"rsi_period": 14, "oversold": 30}},
+            ],
+            [],
+        ])
+
+        await dedup.deduplicate(candidates, db)
+
+        summary = dedup.get_last_report()["summary"]
+        assert summary["existing_count"] == 2
+        assert summary["existing_scan_count"] == 1
+
+    @pytest.mark.asyncio
     async def test_removes_similar_to_existing(self):
         dedup = Deduplicator()
         candidates = [
@@ -864,8 +885,7 @@ class TestStrategySubmitter:
             AsyncMock(return_value={"var_percent": 2.1, "cvar_percent": 3.2, "stress_loss_percent": -20.0}),
         )
         monkeypatch.setattr(
-            sm_mod,
-            "_run_quality_gate",
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
             AsyncMock(return_value={"passed": True}),
         )
 
@@ -908,8 +928,7 @@ class TestStrategySubmitter:
             AsyncMock(return_value=None),
         )
         monkeypatch.setattr(
-            sm_mod,
-            "_run_quality_gate",
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
             AsyncMock(return_value={"passed": True}),
         )
 
@@ -955,8 +974,7 @@ class TestStrategySubmitter:
             AsyncMock(return_value=None),
         )
         monkeypatch.setattr(
-            sm_mod,
-            "_run_quality_gate",
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
             AsyncMock(return_value={"passed": False, "reason": "Insufficient kline data for quality gate"}),
         )
 
@@ -1030,15 +1048,20 @@ class TestStrategySubmitter:
             AsyncMock(return_value={"var_percent": 1.8, "cvar_percent": 2.6, "stress_loss_percent": -18.0}),
         )
         monkeypatch.setattr(
-            sm_mod,
-            "_run_quality_gate",
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
             AsyncMock(return_value={
-                "passed": False,
-                "wf_ic_ir": 0.0,
-                "pkf_ic": 0.03,
-                "bootstrap_ci_lower": 0.01,
-                "param_sensitivity": 0.20,
-                "reasons": ["Walk-Forward IC IR 0.000 < 0.3"],
+                "passed": True,
+                "passed_strict": False,
+                "provisional_pass": True,
+                "reasons": [],
+                "warnings": [
+                    "validation_grade_d",
+                    "provisional_skip:walk_forward_ic_ir",
+                ],
+                "warning_codes": [
+                    "validation_grade_d",
+                    "provisional_skip:walk_forward_ic_ir",
+                ],
             }),
         )
 
@@ -1056,9 +1079,177 @@ class TestStrategySubmitter:
 
         saved_report = db.save_strategy_quality_report.await_args.args[2]
         assert result["passed_quality_gate"] == 1
+        assert result["gate_3_passed"] == 1
+        assert result["gate_3_failed"] == 0
+        assert result["gate_3_provisional_passed"] == 1
+        assert result["gate_report"]["gate_3"]["status"] == "completed_submission_gate"
+        assert result["gate_report"]["gate_3"]["provisional_passed_count"] == 1
+        assert result["strategies"][0]["provisional_pass"] is True
+        assert result["strategies"][0]["gate_3"]["provisional_pass"] is True
         assert saved_report["passed"] is True
         assert saved_report["quality_gate"]["provisional_pass"] is True
         assert "validation_grade_d" in saved_report["quality_gate"]["warning_codes"]
+
+
+    @pytest.mark.asyncio
+    async def test_submitter_aggregates_gate_3_failure_reasons(self, monkeypatch):
+        submitter = StrategySubmitter()
+        db = MagicMock()
+        db.save_strategy = AsyncMock()
+        db.save_strategy_metrics = AsyncMock()
+        db.update_strategy_status = AsyncMock()
+        db.save_strategy_lineage = AsyncMock()
+        db.save_strategy_quality_report = AsyncMock()
+
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory._run_validation_report",
+            AsyncMock(return_value={"rating": {"grade": "C", "total_score": 42.0}}),
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory._run_risk_report",
+            AsyncMock(return_value={"var_percent": 1.4, "cvar_percent": 2.0, "stress_loss_percent": -11.0}),
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
+            AsyncMock(return_value={
+                "passed": False,
+                "reasons": ["Insufficient kline data for quality gate"],
+                "reason_codes": ["insufficient_kline_data"],
+            }),
+        )
+
+        result = await submitter.submit([
+            {
+                "strategy_type": "momentum",
+                "params": {"lookback": 20, "threshold": 0.02},
+                "backtest_metrics": {"sharpe_ratio": 0.31, "total_return": 0.09, "max_drawdown": 0.13, "win_rate": 0.48, "trades_count": 3},
+                "spawn_reason": "Gate-3 失败统计测试",
+            }
+        ], {"fg_level": "neutral"}, db)
+
+        assert result["passed_quality_gate"] == 0
+        assert result["gate_3_passed"] == 0
+        assert result["gate_3_failed"] == 1
+        assert result["gate_3_provisional_passed"] == 0
+        assert result["gate_3_failure_reason_topn"] == [{"reason_code": "insufficient_kline_data", "count": 1}]
+        assert result["gate_report"]["final_decision"]["stage"] == "gate_3"
+        assert result["strategies"][0]["gate_3"]["reason_codes"] == ["insufficient_kline_data"]
+        assert result["strategies"][0]["status"] == "rejected"
+        assert result["strategies"][0]["passed"] is False
+        assert result["strategies"][0]["provisional_pass"] is False
+        assert result["strategies"][0]["reason_codes"] == ["insufficient_kline_data"]
+        assert result["strategies"][0]["warning_codes"] == []
+        db.update_strategy_status.assert_awaited()
+        status_call = db.update_strategy_status.await_args_list[-1]
+        assert status_call.args[1] == "rejected"
+        assert status_call.kwargs["reason"] == "quality_gate_failed"
+        assert status_call.kwargs["metadata"]["quality_gate"]["reason_codes"] == ["insufficient_kline_data"]
+
+    @pytest.mark.asyncio
+    async def test_shared_submission_gate_grants_provisional_incubation_for_factory_ai_strategy(self, monkeypatch):
+        from types import SimpleNamespace
+        from akshare_mcp.services.strategy_factory import submission_gate as submission_gate_mod
+
+        class _DummyStrategy:
+            def set_parameters(self, _params):
+                return None
+
+            def generate_signals(self, closes):
+                return np.linspace(0.0, 1.0, len(closes))
+
+        class _WalkForwardValidator:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def validate(self, *_args, **_kwargs):
+                return SimpleNamespace(oos_ic_ir=0.0)
+
+        class _PurgedKFoldCV:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def validate(self, *_args, **_kwargs):
+                return SimpleNamespace(oos_ic_mean=0.03)
+
+        db = MagicMock()
+        db.get_klines = AsyncMock(return_value=_make_klines(n=160, base=10.0, trend=0.01, noise=0.001))
+
+        monkeypatch.setattr(
+            "akshare_mcp.services.backtest.strategy_registry.StrategyRegistry.get",
+            lambda *_args, **_kwargs: _DummyStrategy,
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.validation.WalkForwardValidator",
+            _WalkForwardValidator,
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.validation.PurgedKFoldCV",
+            _PurgedKFoldCV,
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.validation.bootstrap_ic_ci",
+            lambda *_args, **_kwargs: {"ci_lower": 0.01},
+        )
+
+        gate = await submission_gate_mod.run_submission_quality_gate(
+            db,
+            {
+                "id": "factory_gate_1",
+                "strategy_type": "dsl_rule",
+                "params": {"lookback": 20},
+                "tags": ["factory", "external_llm", "ai_generated"],
+            },
+            validation_report={"rating": {"grade": "D", "total_score": 18.0}},
+            risk_report={"var_percent": 1.8, "cvar_percent": 2.6, "stress_loss_percent": -18.0},
+            backtest_metrics={"sharpe_ratio": 0.22, "max_drawdown": 0.12, "trade_count": 2},
+        )
+
+        assert gate["passed"] is True
+        assert gate["passed_strict"] is False
+        assert gate["provisional_pass"] is True
+        assert "validation_grade_d" in gate["warning_codes"]
+        assert "walk_forward_ic_ir" in gate["statistical_checks_failed_names"]
+
+    @pytest.mark.asyncio
+    async def test_submitter_passes_review_context_to_shared_submission_gate(self, monkeypatch):
+        submitter = StrategySubmitter()
+        db = MagicMock()
+        db.save_strategy = AsyncMock()
+        db.save_strategy_metrics = AsyncMock()
+        db.update_strategy_status = AsyncMock()
+        db.save_strategy_lineage = AsyncMock()
+        db.save_strategy_quality_report = AsyncMock()
+
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory._run_validation_report",
+            AsyncMock(return_value={"rating": {"grade": "B", "total_score": 82.0}}),
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory._run_risk_report",
+            AsyncMock(return_value={"var_percent": 1.2, "cvar_percent": 1.8, "stress_loss_percent": -12.0}),
+        )
+        gate_mock = AsyncMock(return_value={"passed": True, "reasons": []})
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
+            gate_mock,
+        )
+
+        result = await submitter.submit([
+            {
+                "strategy_type": "momentum",
+                "params": {"lookback": 20, "threshold": 0.02},
+                "backtest_metrics": {"sharpe_ratio": 0.61, "total_return": 0.19, "max_drawdown": 0.08, "trade_count": 3},
+                "spawn_reason": "factory_context_test",
+            }
+        ], {"fg_level": "neutral"}, db)
+
+        assert result["submitted"] == 1
+        assert gate_mock.await_count == 1
+        gate_kwargs = gate_mock.await_args.kwargs
+        assert gate_kwargs["validation_report"]["rating"]["grade"] == "B"
+        assert gate_kwargs["risk_report"]["var_percent"] == 1.2
+        assert gate_kwargs["backtest_metrics"]["trade_count"] == 3
+        assert gate_kwargs["backtest_metrics"]["trades_count"] is None
 
     @pytest.mark.asyncio
     async def test_submitter_reuses_existing_strategy_for_refresh_existing_candidate(self, monkeypatch):
@@ -1090,8 +1281,7 @@ class TestStrategySubmitter:
             AsyncMock(return_value=None),
         )
         monkeypatch.setattr(
-            sm_mod,
-            "_run_quality_gate",
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
             AsyncMock(return_value={"passed": True}),
         )
 
@@ -1139,7 +1329,10 @@ class TestStrategySubmitter:
             "akshare_mcp.services.strategy_factory._run_risk_report",
             AsyncMock(return_value={"var_percent": 1.5, "cvar_percent": 2.1, "stress_loss_percent": -12.0}),
         )
-        monkeypatch.setattr(sm_mod, "_run_quality_gate", AsyncMock(return_value={"passed": True}))
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
+            AsyncMock(return_value={"passed": True}),
+        )
 
         class _DummyIncubationService:
             async def ensure_account(self, *_args, **_kwargs):
@@ -2661,6 +2854,31 @@ class TestStrategyManager:
         assert db._strategies[sid]["status"] == "draft"
 
     @pytest.mark.asyncio
+    async def test_create_strategy_accepts_structured_params(self, setup):
+        mcp, db = setup
+        r = await mcp.strategy_manager(action="create", params={
+            "name": "结构化参数策略",
+            "strategy_type": "momentum",
+            "params": {"lookback": 10},
+            "author_id": "user2",
+        })
+        assert r["success"] is True
+        sid = r["data"]["strategy_id"]
+        assert db._strategies[sid]["author_id"] == "user2"
+
+    @pytest.mark.asyncio
+    async def test_create_strategy_accepts_dict_kwargs(self, setup):
+        mcp, db = setup
+        r = await mcp.strategy_manager(action="create", kwargs={
+            "name": "字典 kwargs 策略",
+            "strategy_type": "momentum",
+            "author_id": "user3",
+        })
+        assert r["success"] is True
+        sid = r["data"]["strategy_id"]
+        assert db._strategies[sid]["author_id"] == "user3"
+
+    @pytest.mark.asyncio
     async def test_create_requires_name(self, setup):
         mcp, db = setup
         r = await mcp.strategy_manager(action="create", kwargs="{}")
@@ -3054,14 +3272,20 @@ class TestStrategyManager:
         })
 
         monkeypatch.setattr(
-            'akshare_mcp.tools.managers.strategy_mgr_lifecycle.run_quality_gate',
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
             AsyncMock(return_value={
-                'passed': False,
-                'wf_ic_ir': 0.0,
-                'pkf_ic': 0.03,
-                'bootstrap_ci_lower': 0.01,
-                'param_sensitivity': 0.20,
-                'reasons': ['Walk-Forward IC IR 0.000 < 0.3'],
+                "passed": True,
+                "passed_strict": False,
+                "provisional_pass": True,
+                "reasons": [],
+                "warnings": [
+                    "validation_grade_d",
+                    "provisional_skip:walk_forward_ic_ir",
+                ],
+                "warning_codes": [
+                    "validation_grade_d",
+                    "provisional_skip:walk_forward_ic_ir",
+                ],
             }),
         )
 
@@ -3070,6 +3294,31 @@ class TestStrategyManager:
         assert resp['success'] is True
         assert resp['data']['status'] == 'incubating'
         assert resp['data']['details']['provisional_pass'] is True
+
+    @pytest.mark.asyncio
+    async def test_run_quality_gate_forwards_context_to_shared_submission_gate(self, monkeypatch):
+        from akshare_mcp.tools.managers import strategy_mgr_lifecycle as lifecycle_mod
+
+        gate_mock = AsyncMock(return_value={"passed": True, "reasons": []})
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
+            gate_mock,
+        )
+
+        result = await lifecycle_mod.run_quality_gate(
+            MagicMock(),
+            {"id": "sid_ctx_gate", "strategy_type": "momentum", "params": {}},
+            validation_report={"rating": {"grade": "A"}},
+            risk_report={"var_percent": 0.9},
+            backtest_metrics={"sharpe_ratio": 0.42},
+        )
+
+        assert result["passed"] is True
+        assert gate_mock.await_count == 1
+        gate_kwargs = gate_mock.await_args.kwargs
+        assert gate_kwargs["validation_report"]["rating"]["grade"] == "A"
+        assert gate_kwargs["risk_report"]["var_percent"] == 0.9
+        assert gate_kwargs["backtest_metrics"]["sharpe_ratio"] == 0.42
 
     @pytest.mark.asyncio
     async def test_submit_binds_incubation_account(self, setup, monkeypatch):
@@ -3168,10 +3417,39 @@ class TestStrategyManager:
         class _DummyAutonomy:
             async def run_cycle(self, *_args, **_kwargs):
                 return {
+                    "task_run": {"id": 1, "status": "completed"},
+                    "generation": {
+                        "count": 2,
+                        "stats": {"rule_count": 1},
+                        "llm_generation": {},
+                        "candidates": [{"strategy_type": "momentum"}],
+                    },
+                    "review": {
+                        "reviewed_count": 2,
+                        "rejected_count": 0,
+                        "committee_reviews": [],
+                        "champion": None,
+                    },
+                    "experiments": {
+                        "count": 1,
+                        "items": [{"experiment_id": "exp_dummy_1"}],
+                        "status_counts": {"generated": 1},
+                    },
+                    "submission": {
+                        "auto_submit": False,
+                        "attempted": False,
+                        "submitted_count": 0,
+                        "passed_count": 0,
+                        "failed_count": 0,
+                        "provisional_passed_count": 0,
+                        "failure_reason_topn": [],
+                        "items": [],
+                        "result": None,
+                    },
                     "task_run_id": 1,
                     "generated_count": 2,
                     "candidates": [{"strategy_type": "momentum"}],
-                    "experiments": [{"experiment_id": "exp_dummy_1"}],
+                    "experiment_records": [{"experiment_id": "exp_dummy_1"}],
                     "submitted": None,
                 }
 
@@ -3183,7 +3461,9 @@ class TestStrategyManager:
         resp = await mcp.strategy_manager(action="ai_generate", kwargs=json.dumps({"limit": 2}))
         assert resp["success"] is True
         assert resp["data"]["generated_count"] == 2
-        assert resp["data"]["experiments"][0]["experiment_id"] == "exp_dummy_1"
+        assert resp["data"]["generation"]["count"] == 2
+        assert resp["data"]["experiments"]["items"][0]["experiment_id"] == "exp_dummy_1"
+        assert resp["data"]["submission"]["result"] is None
 
     @pytest.mark.asyncio
     async def test_incubation_sync_run_creates_paper_orders_and_nav(self, setup):
@@ -3386,12 +3666,110 @@ class TestAutonomyEnhancements:
         result = await service.run_cycle(db, snapshot={'date': '2026-03-07', 'fear_greed_index': 68}, limit=3, source='test')
 
         assert result['generated_count'] == 1
+        assert result['generation']['count'] == result['generated_count']
+        assert result['review']['reviewed_count'] == result['reviewed_count']
+        assert result['review']['rejected_count'] == result['rejected_count']
+        assert result['task_run']['id'] == result['task_run_id']
+        assert result['experiments']['count'] == 1
+        assert result['experiments']['items'] == result['experiment_records']
+        assert result['artifacts']['experiments'] == result['experiment_records']
+        assert result['submission']['result'] is None
         assert result['reviewed_count'] == 1
         assert result['rejected_count'] == 1
         assert any(item['decision'] in {'accept', 'reject', 'revise'} for item in result['committee_reviews'])
         experiments = await db.list_strategy_generation_experiments(limit=10)
         assert experiments[0]['evaluation']['committee_review']['decision'] in {'accept', 'revise'}
         assert result['champion']['experiment_id'] == experiments[0]['experiment_id']
+
+
+    @pytest.mark.asyncio
+    async def test_run_cycle_exposes_factor_research_across_result_and_event_payload(self):
+        from akshare_mcp.services.strategy_autonomy import StrategyAutonomyService, StrategySpec
+
+        service = StrategyAutonomyService()
+        db = _StrategyDB()
+
+        service.rule_generator.generate = lambda *_args, **_kwargs: [
+            StrategySpec(strategy_type='value_factor', params={'lookback': 30}, name='factor-aware', tags=['rule'])
+        ]
+        service.llm_generator.generate = AsyncMock(return_value=[])
+        service.optimizer.evolve = AsyncMock(return_value=[])
+
+        factor_research = {
+            'active_factors': ['value', 'quality'],
+            'summary': {'top_factor_names': ['value', 'quality']},
+            'preferred_strategy_types': ['value_factor', 'quality_factor'],
+            'degraded': False,
+        }
+        research_task = {
+            'task_id': 'task_factor_ctx',
+            'theme': 'factor_rotation_value',
+            'strategy_preferences': ['value_factor'],
+        }
+
+        result = await service.run_cycle(
+            db,
+            snapshot={'date': '2026-03-08', 'fear_greed_index': 63, 'factor_research': factor_research},
+            limit=3,
+            source='test',
+            research_task=research_task,
+        )
+
+        assert result['factor_research'] == factor_research
+        assert result['generation_stats']['factor_research'] == factor_research
+        assert result['research_task']['metadata']['factor_research'] == factor_research
+
+        task_runs = await db.list_strategy_task_runs(limit=10)
+        assert task_runs[0]['result']['factor_research'] == factor_research
+        assert task_runs[0]['result']['research_task']['metadata']['factor_research'] == factor_research
+
+        domain_events = await db.list_strategy_domain_events(event_type='strategy_ai_cycle.completed', limit=10)
+        assert domain_events[0]['payload']['factor_research'] == factor_research
+        assert domain_events[0]['payload']['research_task']['metadata']['factor_research'] == factor_research
+
+    @pytest.mark.asyncio
+    async def test_run_cycle_exposes_lifecycle_across_result_task_run_and_event(self):
+        from akshare_mcp.services.strategy_autonomy import StrategyAutonomyService, StrategySpec
+
+        service = StrategyAutonomyService()
+        db = _StrategyDB()
+
+        service.rule_generator.generate = lambda *_args, **_kwargs: [
+            StrategySpec(strategy_type='momentum', params={'lookback': 15}, name='lifecycle-ok', tags=['rule'])
+        ]
+        service.llm_generator.generate = AsyncMock(return_value=[])
+        service.optimizer.evolve = AsyncMock(return_value=[])
+
+        result = await service.run_cycle(
+            db,
+            snapshot={'date': '2026-03-08', 'fear_greed_index': 58},
+            limit=1,
+            source='test',
+        )
+
+        lifecycle = result['lifecycle']
+        phases = {item['name']: item for item in lifecycle['phases']}
+
+        assert lifecycle['state'] == 'completed'
+        assert lifecycle['current_phase'] == 'completed'
+        assert lifecycle['terminal_phase'] == 'completed'
+        assert lifecycle['phase_order'] == ['prepared', 'generating', 'reviewing', 'recording', 'submitting', 'completed']
+        assert phases['prepared']['status'] == 'completed'
+        assert phases['generating']['status'] == 'completed'
+        assert phases['reviewing']['status'] == 'completed'
+        assert phases['recording']['status'] == 'completed'
+        assert phases['submitting']['status'] == 'skipped'
+        assert phases['submitting']['reason'] == 'auto_submit_disabled'
+        assert phases['completed']['status'] == 'completed'
+        assert result['task_run']['lifecycle']['state'] == 'completed'
+
+        task_runs = await db.list_strategy_task_runs(task_name='strategy_ai_cycle', limit=10)
+        assert task_runs[0]['result']['lifecycle']['state'] == 'completed'
+        assert task_runs[0]['result']['lifecycle']['phase_status_counts']['completed'] >= 4
+
+        domain_events = await db.list_strategy_domain_events(event_type='strategy_ai_cycle.completed', limit=10)
+        assert domain_events[0]['payload']['lifecycle']['state'] == 'completed'
+        assert domain_events[0]['payload']['lifecycle']['phase_status_counts']['skipped'] == 1
 
 
     @pytest.mark.asyncio
@@ -3441,7 +3819,13 @@ class TestAutonomyEnhancements:
         task_run = (await db.list_strategy_task_runs(strategy_id='sid_parent_cycle', task_name='strategy_ai_cycle', limit=5))[0]
 
         assert result['generated_count'] == 1
+        assert result['generation']['count'] == 1
+        assert result['submission']['auto_submit'] is True
+        assert result['submission']['submitted_count'] == 1
+        assert result['submission']['passed_count'] == 1
+        assert result['submission']['result'] == result['submitted']
         assert result['champion']['generated_strategy_id'] == 'sid_generated_child'
+        assert result['experiments']['status_counts']['accepted'] == 1
         assert len(experiments) == 1
         assert experiments[0]['strategy_id'] == 'sid_parent_cycle'
         assert experiments[0]['parent_strategy_id'] == 'sid_parent_cycle'
@@ -3451,6 +3835,95 @@ class TestAutonomyEnhancements:
         assert experiments[0]['evaluation']['committee_review']['is_champion'] is True
         assert child_lookup[0]['generated_strategy_id'] == 'sid_generated_child'
         assert task_run['result']['champion']['experiment_id'] == experiments[0]['experiment_id']
+
+    @pytest.mark.asyncio
+    async def test_run_cycle_submission_failure_keeps_experiments_and_task_run_sections(self, monkeypatch):
+        from akshare_mcp.services.strategy_autonomy import StrategyAutonomyService, StrategySpec
+
+        service = StrategyAutonomyService()
+        db = _StrategyDB()
+
+        service.rule_generator.generate = lambda *_args, **_kwargs: [
+            StrategySpec(strategy_type='momentum', params={'lookback': 16, 'threshold': 0.015}, name='reject-at-submit', tags=['rule'])
+        ]
+        service.llm_generator.generate = AsyncMock(return_value=[])
+        service.optimizer.evolve = AsyncMock(return_value=[])
+
+        async def _fake_submit(self, candidates, snapshot, db_):
+            return {
+                'submitted': len(candidates),
+                'gate_3_passed': 0,
+                'gate_3_failed': len(candidates),
+                'gate_3_failure_reason_topn': [{'reason_code': 'risk_guard', 'count': len(candidates)}],
+                'items': [{
+                    'experiment_id': candidates[0]['experiment_id'],
+                    'passed': False,
+                    'duplicate': False,
+                    'reason_code': 'risk_guard',
+                }],
+            }
+
+        monkeypatch.setattr('akshare_mcp.services.strategy_factory.StrategySubmitter.submit', _fake_submit)
+
+        result = await service.run_cycle(
+            db,
+            snapshot={'date': '2026-03-09', 'fear_greed_index': 49},
+            limit=1,
+            source='test',
+            auto_submit=True,
+        )
+
+        experiments = await db.list_strategy_generation_experiments(limit=10)
+        task_run = (await db.list_strategy_task_runs(task_name='strategy_ai_cycle', limit=5))[0]
+
+        assert result['submission']['auto_submit'] is True
+        assert result['submission']['attempted'] is True
+        assert result['submission']['submitted_count'] == 1
+        assert result['submission']['failed_count'] == 1
+        assert result['submission']['failure_reason_topn'][0]['reason_code'] == 'risk_guard'
+        assert result['submission']['result'] == result['submitted']
+        assert result['experiments']['count'] == 1
+        assert result['experiments']['items'] == result['experiment_records']
+        assert result['experiments']['status_counts']['rejected'] == 1
+        assert experiments[0]['status'] == 'rejected'
+        assert task_run['result']['submission']['failed_count'] == 1
+        assert task_run['result']['experiments']['status_counts']['rejected'] == 1
+
+    @pytest.mark.asyncio
+    async def test_run_cycle_failure_persists_failed_lifecycle_and_domain_event(self):
+        from akshare_mcp.services.strategy_autonomy import StrategyAutonomyService, StrategySpec
+
+        service = StrategyAutonomyService()
+        db = _StrategyDB()
+
+        service.rule_generator.generate = lambda *_args, **_kwargs: [
+            StrategySpec(strategy_type='momentum', params={'lookback': 18}, name='broken-recording', tags=['rule'])
+        ]
+        service.llm_generator.generate = AsyncMock(return_value=[])
+        service.optimizer.evolve = AsyncMock(return_value=[])
+        service.experiment_recorder.record_candidates = AsyncMock(side_effect=RuntimeError('recorder down'))
+
+        with pytest.raises(RuntimeError, match='recorder down'):
+            await service.run_cycle(
+                db,
+                snapshot={'date': '2026-03-09', 'fear_greed_index': 47},
+                limit=1,
+                source='test',
+            )
+
+        task_run = (await db.list_strategy_task_runs(task_name='strategy_ai_cycle', limit=5))[0]
+        lifecycle = task_run['result']['lifecycle']
+
+        assert task_run['status'] == 'failed'
+        assert lifecycle['state'] == 'failed'
+        assert lifecycle['failed_phase'] == 'recording'
+        assert lifecycle['terminal_phase'] == 'failed'
+        assert lifecycle['phase_status_counts']['failed'] == 1
+
+        failed_events = await db.list_strategy_domain_events(event_type='strategy_ai_cycle.failed', limit=10)
+        assert failed_events[0]['payload']['error'] == 'recorder down'
+        assert failed_events[0]['payload']['lifecycle']['state'] == 'failed'
+        assert failed_events[0]['payload']['lifecycle']['failed_phase'] == 'recording'
 
 
     @pytest.mark.asyncio
@@ -4685,6 +5158,16 @@ class TestVectorAnnSearchActions:
         assert snapshots['data']['latest']['index_version'] == 'ann_v1'
         assert search['success'] is True
         assert search['data']['count'] >= 1
+        assert search['data']['backend_requested'] == 'pgvector'
+        assert search['data']['backend_used'] == 'index'
+        assert search['data']['fallback_used'] is True
+        assert search['data']['fallback_reason'] == 'preferred_backend_unavailable'
+        assert search['data']['production_backend_standard'] == 'pgvector_with_observable_fallback'
+        assert search['data']['fallback_allowed'] is True
+        assert search['data']['index_name'] == 'strategy_behavior'
+        assert search['data']['index_version'] == 'ann_v1'
+        assert search['data']['active_index']['index_version'] == 'ann_v1'
+        assert search['data']['active_index']['backend'] == 'index'
         assert search['data']['items'][0]['strategy_id'] == 'sid_ann_2'
         assert search['data']['items'][0]['retrieval_mode'] == 'persisted_ann'
         assert search['data']['items'][0]['candidate_count'] >= 1
@@ -4715,6 +5198,16 @@ class TestVectorAnnSearchActions:
 
         assert search['success'] is True
         assert search['data']['count'] >= 1
+        assert search['data']['backend_requested'] == 'pgvector'
+        assert search['data']['backend_used'] == 'pgvector'
+        assert search['data']['fallback_used'] is False
+        assert search['data']['fallback_reason'] is None
+        assert search['data']['production_backend_standard'] == 'pgvector_with_observable_fallback'
+        assert search['data']['fallback_allowed'] is True
+        assert search['data']['index_name'] == 'strategy_behavior'
+        assert search['data']['index_version'] == 'pg_v1'
+        assert search['data']['active_index']['index_version'] == 'pg_v1'
+        assert search['data']['active_index']['backend'] == 'pgvector'
         assert search['data']['items'][0]['strategy_id'] == 'sid_pg_2'
         assert search['data']['items'][0]['retrieval_mode'] == 'pgvector_ann'
         assert search['data']['items'][0]['backend'] == 'pgvector'
@@ -4767,6 +5260,16 @@ class TestVectorAnnSearchActions:
 
         assert health['success'] is True
         assert health['data']['backend'] == 'pgvector'
+        assert health['data']['backend_requested'] == 'pgvector'
+        assert health['data']['backend_used'] == 'pgvector'
+        assert health['data']['fallback_used'] is False
+        assert health['data']['fallback_reason'] is None
+        assert health['data']['production_backend_standard'] == 'pgvector_with_observable_fallback'
+        assert health['data']['fallback_allowed'] is True
+        assert health['data']['active_index']['index_name'] == 'strategy_behavior'
+        assert health['data']['active_index']['index_version'] == 'vh_v1'
+        assert health['data']['active_index']['backend'] == 'pgvector'
+        assert health['data']['active_index']['source'] == 'snapshot'
         assert health['data']['counts']['profiles'] == 2
         assert health['data']['counts']['profile_store'] == 2
         assert health['data']['counts']['index_items'] == 2
@@ -5915,6 +6418,131 @@ class TestStrategyFactoryScheduler:
         assert saved_run['stages']['autonomy']['external_llm_status_counts']['fallback_only'] == 1
 
     @pytest.mark.asyncio
+    async def test_run_once_aggregates_autonomy_lifecycle_state_and_phase_metrics(self, monkeypatch):
+        db = MagicMock()
+        db.save_strategy_task_run = AsyncMock(side_effect=[{"id": 401}, {"id": 402}])
+        db.update_strategy_task_run = AsyncMock()
+        db.save_strategy_factory_run = AsyncMock()
+
+        class _DummyCollector:
+            async def collect(self, _db):
+                return {
+                    "date": "2026-03-10",
+                    "fear_greed_index": 60,
+                    "fg_level": "neutral",
+                    "listed_count": 3,
+                    "incubating_count": 0,
+                    "degraded": False,
+                    "completeness": {"completion_ratio": 1.0, "missing_sources": []},
+                    "failure_reasons": [],
+                }
+
+        class _DummySpawner:
+            def spawn(self, _snapshot):
+                return []
+
+            def get_last_report(self):
+                return {"summary": {"candidate_count": 0, "quota_fill_count": 0, "signal_trigger_count": 0}}
+
+        class _DummyFilter:
+            async def filter(self, candidates, _db):
+                return candidates
+
+            def get_last_report(self):
+                return {"summary": {"input_count": 1, "passed_count": 1, "failed_count": 0, "failed_reason_counts": {}, "thresholds_by_type": {}}, "passed": [], "failed": []}
+
+        class _DummyDedup:
+            async def deduplicate(self, candidates, _db):
+                return candidates
+
+            def get_last_report(self):
+                return {"summary": {"input_count": 1, "kept_count": 1, "dropped_count": 0}, "kept": [], "dropped": []}
+
+        class _DummySubmitter:
+            async def submit(self, candidates, _snapshot, _db):
+                return {"submitted": len(candidates), "passed_quality_gate": len(candidates), "strategies": candidates}
+
+        class _DummyEliminator:
+            async def check(self, _db, _fg_level):
+                return []
+
+        class _DummyAutonomy:
+            async def generate_factory_candidates(self, _db, _snapshot, limit=3, research_task=None, source='strategy_factory'):
+                task_id = (research_task or {}).get('task_id')
+                if task_id == 'task_fail':
+                    raise RuntimeError('synthetic autonomy failure')
+                return {
+                    'generated_count': 1,
+                    'reviewed_count': 1,
+                    'experiments': [{'task_id': task_id, 'source': source}],
+                    'candidates': [{
+                        'name': f"candidate_{task_id}",
+                        'strategy_type': 'dsl_rule',
+                        'params': {'dsl': {'metadata': {'target_symbols': ['688981']}}},
+                        'generator_type': 'external_llm',
+                        'target_symbols': ['688981'],
+                        'stock_pool': {'selection_mode': 'explicit', 'symbols': ['688981']},
+                        'tags': ['external_llm', 'ai_generated'],
+                    }],
+                    'lifecycle': {
+                        'state': 'completed',
+                        'current_phase': 'completed',
+                        'failed_phase': None,
+                        'terminal_phase': 'completed',
+                        'phase_order': ['prepared', 'generating', 'reviewing', 'recording', 'submitting', 'completed'],
+                        'phase_status_counts': {'completed': 5, 'skipped': 1},
+                        'completed_phase_count': 5,
+                        'event_count': 6,
+                        'events': [],
+                    },
+                    'llm_generation': {
+                        'external_provider': {
+                            'status': 'succeeded',
+                            'requests': [{'request_limit': limit, 'status': 'succeeded'}],
+                            'selected_count': 1,
+                            'elapsed_seconds': 0.2,
+                        },
+                    },
+                }
+
+        async def _scan(_self, _db, _snapshot):
+            return {
+                'summary': {
+                    'task_count': 2,
+                    'task_sources': {'snapshot': 2},
+                    'task_types': {'sector_breakout': 1, 'oversold_repair': 1},
+                },
+                'tasks': [
+                    {'task_id': 'task_ok', 'task_key': 'ok', 'task_source': 'snapshot', 'opportunity_type': 'sector_breakout', 'target_symbols': ['688981'], 'generation_limit': 1},
+                    {'task_id': 'task_fail', 'task_key': 'fail', 'task_source': 'snapshot', 'opportunity_type': 'oversold_repair', 'target_symbols': ['600036'], 'generation_limit': 1},
+                ],
+            }
+
+        monkeypatch.setattr("akshare_mcp.storage.get_db", lambda: db)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.DataCollector", _DummyCollector)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySpawner", _DummySpawner)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.BacktestFilter", _DummyFilter)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.Deduplicator", _DummyDedup)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySubmitter", _DummySubmitter)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.EliminationChecker", _DummyEliminator)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.MarketOpportunityScanner.scan", _scan)
+        monkeypatch.setattr("akshare_mcp.services.strategy_autonomy.get_strategy_autonomy_service", lambda: _DummyAutonomy())
+
+        result = await StrategyFactoryScheduler().run_once()
+
+        saved_run = db.save_strategy_factory_run.await_args.args[0]
+        assert result['status'] == 'success'
+        assert saved_run['stages']['autonomy']['lifecycle_state_counts']['completed'] == 1
+        assert saved_run['stages']['autonomy']['lifecycle_state_counts']['failed'] == 1
+        assert saved_run['stages']['autonomy']['phase_status_counts']['completed'] >= 5
+        assert saved_run['stages']['autonomy']['phase_status_counts']['failed'] >= 1
+        assert saved_run['stages']['autonomy']['failed_phase_counts']['generating'] == 1
+        assert saved_run['stages']['autonomy']['observable_phases'] == ['prepared', 'generating', 'reviewing', 'recording', 'submitting', 'completed']
+        assert result['summary']['autonomy_lifecycle_state_counts']['completed'] == 1
+        assert result['summary']['autonomy_lifecycle_state_counts']['failed'] == 1
+        assert result['summary']['autonomy_phase_status_counts']['failed'] >= 1
+
+    @pytest.mark.asyncio
     async def test_run_once_treats_skipped_external_llm_as_successful_local_completion(self, monkeypatch):
         db = MagicMock()
         db.save_strategy_task_run = AsyncMock(return_value={"id": 201})
@@ -6293,7 +6921,15 @@ class TestStrategyFactoryScheduler:
 
         class _DummySubmitter:
             async def submit(self, candidates, _snapshot, _db):
-                return {"submitted": len(candidates), "passed_quality_gate": len(candidates), "strategies": []}
+                return {
+                    "submitted": len(candidates),
+                    "passed_quality_gate": len(candidates),
+                    "gate_3_passed": len(candidates),
+                    "gate_3_failed": 0,
+                    "gate_3_provisional_passed": 0,
+                    "gate_3_failure_reason_topn": [],
+                    "strategies": [],
+                }
 
         class _DummyEliminator:
             async def check(self, _db, _fg_level):
@@ -6320,6 +6956,10 @@ class TestStrategyFactoryScheduler:
         assert saved_run["summary"]["candidates_passed_backtest"] == 1
         assert saved_run["summary"]["candidates_failed_backtest"] == 1
         assert saved_run["summary"]["backtest_failed_reason_counts"]["sharpe_below_threshold"] == 1
+        assert saved_run["summary"]["gate_3_passed"] == 1
+        assert saved_run["summary"]["gate_3_failed"] == 0
+        assert saved_run["summary"]["gate_3_provisional_passed"] == 0
+        assert saved_run["summary"]["gate_3_failure_reason_topn"] == []
         assert saved_run["summary"]["factor_research_used"] is True
         assert saved_run["summary"]["active_factor_count"] == 2
         assert saved_run["summary"]["top_factor_names"][:2] == ["value", "quality"]
@@ -6334,6 +6974,7 @@ class TestStrategyFactoryScheduler:
         assert saved_run["stages"]["backtest"]["input_count"] == 2
         assert saved_run["stages"]["backtest"]["summary"]["failed_reason_counts"]["sharpe_below_threshold"] == 1
         assert saved_run["stages"]["backtest"]["summary"]["thresholds_by_type"]["momentum"]["sharpe_min"] == 0.35
+        assert saved_run["stages"]["submit"]["gate_3_passed"] == 1
 
     def test_strategy_pipeline_initial_input_includes_factor_research_summary(self):
         from akshare_mcp.services.strategy_pipeline import MultiStageStrategyPipeline
@@ -6395,7 +7036,15 @@ class TestStrategyFactoryScheduler:
 
         class _DummySubmitter:
             async def submit(self, candidates, _snapshot, _db):
-                return {"submitted": 0, "passed_quality_gate": 0, "strategies": []}
+                return {
+                    "submitted": 0,
+                    "passed_quality_gate": 0,
+                    "gate_3_passed": 0,
+                    "gate_3_failed": 0,
+                    "gate_3_provisional_passed": 0,
+                    "gate_3_failure_reason_topn": [],
+                    "strategies": [],
+                }
 
         class _DummyEliminator:
             async def check(self, _db, _fg_level):
@@ -6438,6 +7087,11 @@ class TestStrategyFactoryScheduler:
         assert saved_run['summary']['external_llm_status'] == 'failed'
         assert saved_run['summary']['external_llm_last_error_type'] == 'ReadTimeout'
         assert saved_run['summary']['external_llm_elapsed_seconds'] == 12.5
+        assert saved_run['summary']['gate_3_passed'] == 0
+        assert saved_run['summary']['gate_3_failed'] == 0
+        assert saved_run['summary']['gate_3_provisional_passed'] == 0
+        assert saved_run['summary']['gate_3_failure_reason_topn'] == []
+        assert saved_run['stages']['submit']['gate_3_passed'] == 0
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -6636,7 +7290,16 @@ class TestDataCollector:
         assert snapshot["summary"]["listed_count"] == 3
         assert snapshot["summary"]["degraded"] is True
         assert snapshot["completeness"]["completion_ratio"] < 1.0
+        assert snapshot["source"] == "strategy_factory.collector"
+        assert snapshot["asof_time"]
+        assert snapshot["freshness_sec"] >= 0
+        assert "degraded" in snapshot["quality_flags"]
+        assert "incomplete" in snapshot["quality_flags"]
         assert snapshot["sources"]["factor_ic"]["status"] == "partial"
+        assert snapshot["sources"]["factor_ic"]["source"] == "factor_ic"
+        assert snapshot["sources"]["factor_ic"]["asof_time"] == snapshot["asof_time"]
+        assert snapshot["sources"]["factor_ic"]["freshness_sec"] >= 0
+        assert "partial" in snapshot["sources"]["factor_ic"]["quality_flags"]
         assert snapshot["degraded"] is True
         assert any(item["source"] == "factor_ic" for item in snapshot["failure_reasons"])
         db.save_daily_snapshot.assert_awaited_once()
@@ -6775,6 +7438,10 @@ class TestFactorSchedulerAndBatchFactors:
         assert result["computed"] == 2
         assert result["errors"] == 0
         assert result["universe_size"] == 2
+        assert result["source"] == "factor_scheduler"
+        assert result["asof_time"]
+        assert result["freshness_sec"] >= 0
+        assert result["quality_flags"] == []
         assert len(calls) == 2
 
     @pytest.mark.asyncio
@@ -6794,6 +7461,32 @@ class TestFactorSchedulerAndBatchFactors:
         assert result["computed"] == 0
         assert result["errors"] == 2
         assert result["universe_size"] == 2
+        assert result["source"] == "factor_scheduler"
+        assert "degraded" in result["quality_flags"]
+        assert "failed" in result["quality_flags"]
+
+    def test_factor_scheduler_status_marks_stale_result(self):
+        from akshare_mcp.services.factor_scheduler import FactorScheduler
+
+        scheduler = FactorScheduler(universe=["000001"], factors=["reversal"], batch_size=1)
+        scheduler.last_run = datetime.now(timezone.utc) - timedelta(days=2)
+        scheduler.last_result = {
+            "computed": 1,
+            "errors": 0,
+            "elapsed_seconds": 1.2,
+            "universe_size": 1,
+            "source": "factor_scheduler",
+            "asof_time": scheduler.last_run.isoformat(),
+            "freshness_sec": 0.0,
+            "quality_flags": [],
+        }
+
+        status = scheduler.status()
+
+        assert status["source"] == "factor_scheduler"
+        assert status["asof_time"] == scheduler.last_run.isoformat()
+        assert status["freshness_sec"] >= 2 * 24 * 60 * 60
+        assert "stale" in status["quality_flags"]
 
     @pytest.mark.asyncio
     async def test_collect_prefers_db_index_klines_before_external_fetch(self):

@@ -48,6 +48,14 @@ def _calc_macd_histogram(closes: list) -> float | None:
     dea = _ema(dif, 9)
     return float((dif[-1] - dea[-1]) * 2)
 
+
+def _calc_moving_average(closes: list, period: int) -> float | None:
+    """计算最近一个周期的简单移动平均。"""
+    if len(closes) < period:
+        return None
+    window = np.array(closes[-period:], dtype=float)
+    return float(np.mean(window))
+
 def _ema(data: np.ndarray, period: int) -> np.ndarray:
     """指数移动平均"""
     alpha = 2.0 / (period + 1)
@@ -91,6 +99,13 @@ async def _evaluate_indicator(alert: dict, quote_cache: dict) -> dict:
         quote_data = quote.get('data') or {} if isinstance(quote, dict) else {}
         current_value = quote_data.get('price')
 
+    elif indicator == 'change_pct':
+        if code and code not in quote_cache:
+            quote_cache[code] = get_realtime_quote(code) if code else {}
+        quote = quote_cache.get(code, {})
+        quote_data = quote.get('data') or {} if isinstance(quote, dict) else {}
+        current_value = quote_data.get('changePercent')
+
     elif indicator == 'rsi':
         closes = await _get_closes(code)
         current_value = _calc_rsi(closes)
@@ -98,6 +113,14 @@ async def _evaluate_indicator(alert: dict, quote_cache: dict) -> dict:
     elif indicator == 'macd':
         closes = await _get_closes(code)
         current_value = _calc_macd_histogram(closes)
+
+    elif indicator == 'ma5':
+        closes = await _get_closes(code)
+        current_value = _calc_moving_average(closes, 5)
+
+    elif indicator == 'ma20':
+        closes = await _get_closes(code)
+        current_value = _calc_moving_average(closes, 20)
 
     elif indicator == 'volume':
         if code and code not in quote_cache:

@@ -1,70 +1,108 @@
 'use client';
 
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { PageContainer, SectionCard, StockCodeInput } from '@/components/ui';
-import { ErrorState, LoadingState } from '@/components/status-state';
-import { BFF_BASE } from '@/lib/api';
+import { useMemo, useState } from 'react';
+import { PageContainer, SectionCard } from '@/components/ui';
+import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
+import { useApiQuery } from '@/hooks/use-api-query';
 
-// Ensure generic typing aligns with other modules
-type OptionGreek = {
-    delta: number;
-    gamma: number;
-    theta: number;
-    vega: number;
-    rho: number;
-    implied_volatility: number;
-};
-
-type OptionContract = {
-    symbol: string;
-    strike: number;
-    lastPrice: number;
-    bid: number;
-    ask: number;
-    volume: number;
-    openInterest: number;
+type OptionChainItem = {
+    type?: string;
+    strike?: number;
+    last?: number;
+    lastPrice?: number;
+    changePercent?: number;
+    openInterest?: number;
     impliedVolatility?: number;
+    iv?: number;
 };
 
-type OptionData = {
-    calls: OptionContract[];
-    puts: OptionContract[];
-    expirationDate: string;
+type OptionChainData = {
+    underlying?: {
+        code?: string;
+        name?: string;
+        price?: number;
+        time?: string;
+        date?: string;
+    };
+    selectedExpiry?: string[];
+    options?: OptionChainItem[];
+};
+
+type GreeksData = {
+    code?: string;
+    option_type?: string;
+    spot?: number;
+    strike?: number;
+    option_price?: string;
+    volatility?: string;
+    risk_free_rate?: string;
+    time_to_maturity?: string;
+    greeks?: Record<string, string>;
+    interpretation?: Record<string, string>;
 };
 
 export default function OptionsPage() {
     const [symbol, setSymbol] = useState('510300'); // Default to 300 ETF
     const [querySymbol, setQuerySymbol] = useState('510300');
 
-    const { data: chainData, isLoading: chainLoading, error: chainError } = useQuery({
-        queryKey: ['options:chain', querySymbol],
-        queryFn: async () => {
-            const res = await fetch(`${BFF_BASE}/v1/options/chain/${querySymbol}`, { credentials: 'include' });
-            if (!res.ok) throw new Error('期权链获取失败');
-            const payload = await res.json();
-            return payload.data?.data || payload.data || [];
-        },
-        staleTime: 60 * 1000,
-    });
+    const { data: chainData, isPending: chainLoading, error: chainError, refetch: refetchChain } = useApiQuery<OptionChainData>(
+        `/v1/options/chain/${querySymbol}`,
+        { staleTime: 60 * 1000 },
+    );
 
-    const { data: greeksData, isLoading: greeksLoading, error: greeksError } = useQuery({
-        queryKey: ['options:greeks', querySymbol],
-        queryFn: async () => {
-            const res = await fetch(`${BFF_BASE}/v1/options/greeks/${querySymbol}`, { credentials: 'include' });
-            if (!res.ok) throw new Error('期权Greeks获取失败');
-            const payload = await res.json();
-            return payload.data?.data || payload.data || {};
-        },
-        staleTime: 60 * 1000,
-    });
+    const { data: greeksData, isPending: greeksLoading, error: greeksError, refetch: refetchGreeks } = useApiQuery<GreeksData>(
+        `/v1/options/greeks/${querySymbol}`,
+        { staleTime: 60 * 1000 },
+    );
+
+    const pairedRows = useMemo(() => {
+        const items = Array.isArray(chainData?.options) ? chainData.options : [];
+        const map = new Map<number, { strike: number; call?: OptionChainItem; put?: OptionChainItem }>();
+
+        items.forEach((item) => {
+            const strike = Number(item.strike ?? 0);
+            if (!Number.isFinite(strike) || strike <= 0) return;
+            const current = map.get(strike) ?? { strike };
+            if ((item.type ?? '').toLowerCase() === 'put') current.put = item;
+            else current.call = item;
+            map.set(strike, current);
+        });
+
+        return Array.from(map.values())
+            .sort((a, b) => a.strike - b.strike)
+            .slice(0, 20);
+    }, [chainData]);
+
+    const greekEntries = useMemo(() => {
+        if (!greeksData?.greeks || typeof greeksData.greeks !== 'object') return [];
+        return Object.entries(greeksData.greeks);
+    }, [greeksData]);
+
+    const interpretationEntries = useMemo(() => {
+        if (!greeksData?.interpretation || typeof greeksData.interpretation !== 'object') return [];
+        return Object.entries(greeksData.interpretation);
+    }, [greeksData]);
 
     const handleSearch = (e: React.FormEvent) => {
         e.preventDefault();
-        if (symbol.trim()) {
-            setQuerySymbol(symbol.trim().toUpperCase());
+        const nextSymbol = symbol.trim().toUpperCase();
+        if (nextSymbol) {
+            if (nextSymbol === querySymbol) {
+                void refetchChain();
+                void refetchGreeks();
+                return;
+            }
+            setQuerySymbol(nextSymbol);
         }
     };
+
+    const fmtPrice = (value: number | undefined, digits = 4) => (
+        typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '-'
+    );
+
+    const fmtPercent = (value: number | undefined) => (
+        typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(2)}%` : '-'
+    );
 
     return (
         <PageContainer>
@@ -91,16 +129,24 @@ export default function OptionsPage() {
             </div>
 
             {(chainError || greeksError) && (
-                <ErrorState text="数据获取失败" hint={chainError?.message || greeksError?.message || '未知错误，此代码可能无期权标的'} />
+                <ErrorState text="数据获取失败" hint={chainError || greeksError || '未知错误，此代码可能无期权标的'} />
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <SectionCard className="col-span-1 md:col-span-3">
                     <h3 className="font-bold text-lg mb-4">T型报价牌 (T-Quote) - {querySymbol}</h3>
+                    {chainData?.underlying ? (
+                        <div className="mb-3 text-sm text-text-muted flex flex-wrap gap-x-4 gap-y-1">
+                            <span>{chainData.underlying.name ?? chainData.underlying.code ?? querySymbol}</span>
+                            <span>现价 {fmtPrice(chainData.underlying.price, 3)}</span>
+                            <span>到期月 {(chainData.selectedExpiry ?? []).join(', ') || '-'}</span>
+                            <span>{chainData.underlying.date ?? ''} {chainData.underlying.time ?? ''}</span>
+                        </div>
+                    ) : null}
                     <div>
                         {chainLoading ? (
                             <LoadingState text="加载期权链中..." />
-                        ) : chainData && Array.isArray(chainData) && chainData.length > 0 ? (
+                        ) : pairedRows.length > 0 ? (
                             <div className="border border-glass-border rounded-md overflow-x-auto">
                                 <table className="w-full text-sm text-left">
                                     <thead className="bg-surface-alt">
@@ -124,24 +170,27 @@ export default function OptionsPage() {
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {chainData.slice(0, 20).map((row: any, i: number) => {
-                                            const call = row.call || {};
-                                            const put = row.put || {};
-                                            const strike = row.strike || row.strike_price || '-';
+                                        {pairedRows.map((row, i) => {
+                                            const call = row.call ?? {};
+                                            const put = row.put ?? {};
+                                            const callLast = typeof call.last === 'number' ? call.last : call.lastPrice;
+                                            const putLast = typeof put.last === 'number' ? put.last : put.lastPrice;
+                                            const callIv = typeof call.iv === 'number' ? call.iv : call.impliedVolatility;
+                                            const putIv = typeof put.iv === 'number' ? put.iv : put.impliedVolatility;
 
                                             return (
                                                 <tr key={i} className="text-sm hover:bg-surface-alt border-b border-glass-border/50">
-                                                    <td className="text-right py-2 px-2 text-red-500 font-mono">{call.last || '-'}</td>
-                                                    <td className="text-right py-2 px-2 text-red-500">{call.pct_change ? `${call.pct_change}%` : '-'}</td>
-                                                    <td className="text-right py-2 px-2 text-text-muted">{call.oi || '-'}</td>
-                                                    <td className="text-right py-2 px-2 font-mono text-blue-500/80">{call.iv ? `${(call.iv * 100).toFixed(2)}%` : '-'}</td>
+                                                    <td className="text-right py-2 px-2 text-red-500 font-mono">{fmtPrice(callLast)}</td>
+                                                    <td className="text-right py-2 px-2 text-red-500">{fmtPercent(call.changePercent)}</td>
+                                                    <td className="text-right py-2 px-2 text-text-muted">{call.openInterest ?? '-'}</td>
+                                                    <td className="text-right py-2 px-2 font-mono text-blue-500/80">{typeof callIv === 'number' ? `${(callIv * 100).toFixed(2)}%` : '-'}</td>
 
-                                                    <td className="text-center border-x border-glass-border font-bold bg-surface-alt py-2 px-2">{strike}</td>
+                                                    <td className="text-center border-x border-glass-border font-bold bg-surface-alt py-2 px-2">{fmtPrice(row.strike, 3)}</td>
 
-                                                    <td className="text-left py-2 px-2 text-green-500 font-mono">{put.last || '-'}</td>
-                                                    <td className="text-left py-2 px-2 text-green-500">{put.pct_change ? `${put.pct_change}%` : '-'}</td>
-                                                    <td className="text-left py-2 px-2 text-text-muted">{put.oi || '-'}</td>
-                                                    <td className="text-left py-2 px-2 font-mono text-blue-500/80">{put.iv ? `${(put.iv * 100).toFixed(2)}%` : '-'}</td>
+                                                    <td className="text-left py-2 px-2 text-green-500 font-mono">{fmtPrice(putLast)}</td>
+                                                    <td className="text-left py-2 px-2 text-green-500">{fmtPercent(put.changePercent)}</td>
+                                                    <td className="text-left py-2 px-2 text-text-muted">{put.openInterest ?? '-'}</td>
+                                                    <td className="text-left py-2 px-2 font-mono text-blue-500/80">{typeof putIv === 'number' ? `${(putIv * 100).toFixed(2)}%` : '-'}</td>
                                                 </tr>
                                             );
                                         })}
@@ -149,9 +198,7 @@ export default function OptionsPage() {
                                 </table>
                             </div>
                         ) : (
-                            <div className="h-32 flex items-center justify-center text-text-muted">
-                                暂无期权链数据
-                            </div>
+                            <EmptyState text="暂无期权链数据" />
                         )}
                     </div>
                 </SectionCard>
@@ -161,10 +208,46 @@ export default function OptionsPage() {
                     <div>
                         {greeksLoading ? (
                             <LoadingState text="计算 Greeks 中..." />
-                        ) : (
-                            <div className="h-64 flex items-center justify-center border border-glass-border rounded-md bg-surface-alt">
-                                <p className="text-sm text-text-muted">图表渲染区：隐含波动率微笑曲线 (Volatility Smile) 与 Greeks 曲面</p>
+                        ) : greekEntries.length > 0 ? (
+                            <div className="space-y-4">
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                        <div className="text-text-muted mb-1">标的/类型</div>
+                                        <div className="font-semibold">{greeksData?.code ?? querySymbol} / {(greeksData?.option_type ?? '-').toUpperCase()}</div>
+                                    </div>
+                                    <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                        <div className="text-text-muted mb-1">标的价 / 行权价</div>
+                                        <div className="font-semibold">{fmtPrice(greeksData?.spot, 3)} / {fmtPrice(greeksData?.strike, 3)}</div>
+                                    </div>
+                                    <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                        <div className="text-text-muted mb-1">理论价格</div>
+                                        <div className="font-semibold">{greeksData?.option_price ?? '-'}</div>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+                                    {greekEntries.map(([name, value]) => (
+                                        <div key={name} className="rounded-md border border-glass-border bg-surface-alt p-3">
+                                            <div className="text-xs uppercase tracking-wider text-text-muted mb-1">{name}</div>
+                                            <div className="font-semibold">{value}</div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="rounded-md border border-glass-border bg-surface-alt p-4">
+                                    <div className="text-sm font-semibold mb-2">Greeks 解读</div>
+                                    <div className="space-y-1 text-sm text-text-muted">
+                                        {interpretationEntries.map(([name, value]) => (
+                                            <div key={name}><span className="font-medium text-text-primary">{name}:</span> {value}</div>
+                                        ))}
+                                    </div>
+                                    <div className="mt-3 text-xs text-text-muted">
+                                        波动率 {greeksData?.volatility ?? '-'} / 无风险利率 {greeksData?.risk_free_rate ?? '-'} / 到期时间 {greeksData?.time_to_maturity ?? '-'}
+                                    </div>
+                                </div>
                             </div>
+                        ) : (
+                            <EmptyState text="暂无 Greeks 数据" />
                         )}
                     </div>
                 </SectionCard>

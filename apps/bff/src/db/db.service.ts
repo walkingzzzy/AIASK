@@ -18,7 +18,23 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    this.pool = new Pool({ connectionString: url, max: 10 });
+    const max = Math.max(1, Number(this.configService.get<string>('DATABASE_POOL_MAX', '10')));
+    const idleTimeoutMillis = Math.max(1000, Number(this.configService.get<string>('DATABASE_POOL_IDLE_TIMEOUT_MS', '30000')));
+    const connectionTimeoutMillis = Math.max(500, Number(this.configService.get<string>('DATABASE_POOL_CONNECTION_TIMEOUT_MS', '5000')));
+    const maxUses = Math.max(0, Number(this.configService.get<string>('DATABASE_POOL_MAX_USES', '0')));
+    const applicationName = this.configService.get<string>('DATABASE_POOL_APP_NAME', 'aiask-bff');
+
+    this.pool = new Pool({
+      connectionString: url,
+      max,
+      idleTimeoutMillis,
+      connectionTimeoutMillis,
+      application_name: applicationName,
+      ...(maxUses > 0 ? { maxUses } : {}),
+    });
+    this.logger.log(
+      `PostgreSQL 连接池已配置 max=${max}, idleTimeout=${idleTimeoutMillis}ms, connectTimeout=${connectionTimeoutMillis}ms${maxUses > 0 ? `, maxUses=${maxUses}` : ''}`,
+    );
     this.pool.on('error', (error: Error) => {
       this.logger.error(`PostgreSQL 连接池错误: ${error.message}`);
       this._healthy = false;
@@ -175,5 +191,4 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
     await this.pool.end();
   }
 }
-
 

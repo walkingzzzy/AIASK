@@ -1,10 +1,25 @@
 'use client';
 
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMemo, useState } from 'react';
 import { PageContainer, SectionCard, DataTable } from '@/components/ui';
 import { ErrorState, LoadingState } from '@/components/status-state';
-import { BFF_BASE } from '@/lib/api';
+import { LineChart } from '@/components/charts';
+import { useApiQuery } from '@/hooks/use-api-query';
+
+type MacroRecord = {
+    date?: string;
+    period?: string;
+    quarter?: string;
+    value?: number;
+    yoy?: number;
+    yoyChange?: number;
+    momChange?: number;
+};
+
+type MacroResponse = {
+    indicator?: string;
+    records?: MacroRecord[];
+};
 
 export default function MacroPage() {
     const [indicator, setIndicator] = useState('gdp');
@@ -17,16 +32,27 @@ export default function MacroPage() {
         { value: 'm2', label: '货币供应量 (M2)' }
     ];
 
-    const { data: macroData, isLoading, error } = useQuery({
-        queryKey: ['macro:indicator', indicator],
-        queryFn: async () => {
-            const res = await fetch(`${BFF_BASE}/v1/macro/indicator/${indicator}`, { credentials: 'include' });
-            if (!res.ok) throw new Error('宏观数据获取失败');
-            const payload = await res.json();
-            return payload.data?.data || payload.data || [];
-        },
-        staleTime: 5 * 60 * 1000,
-    });
+    const { data: macroData, isPending: isLoading, error } = useApiQuery<MacroResponse | MacroRecord[]>(
+        `/v1/macro/indicator/${indicator}`,
+        { staleTime: 5 * 60 * 1000 },
+    );
+
+    const macroRows = useMemo(() => {
+        if (macroData && !Array.isArray(macroData) && Array.isArray(macroData.records)) {
+            return macroData.records;
+        }
+        return Array.isArray(macroData) ? macroData : [];
+    }, [macroData]);
+
+    const chartData = useMemo(() => {
+        if (!macroRows.length) return null;
+        const ordered = [...macroRows].reverse();
+        return {
+            categories: ordered.map((row) => String(row.date || row.period || row.quarter || '-')),
+            values: ordered.map((row) => Number(row.value ?? 0)),
+            change: ordered.map((row) => Number(row.yoy ?? row.yoyChange ?? row.momChange ?? 0)),
+        };
+    }, [macroRows]);
 
     return (
         <PageContainer>
@@ -53,7 +79,7 @@ export default function MacroPage() {
             </div>
 
             {error ? (
-                <ErrorState text="数据获取失败" hint={error instanceof Error ? error.message : '未知错误'} />
+                <ErrorState text="数据获取失败" hint={error || '未知错误'} />
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <SectionCard className="col-span-1 md:col-span-2">
@@ -66,9 +92,19 @@ export default function MacroPage() {
                         <div>
                             {isLoading ? (
                                 <LoadingState text="加载宏观图表中..." />
+                            ) : chartData ? (
+                                <LineChart
+                                    categories={chartData.categories}
+                                    series={[
+                                        { name: '指标值', data: chartData.values, color: '#1a73e8' },
+                                        { name: '变动', data: chartData.change, color: '#10b981' },
+                                    ]}
+                                    height={260}
+                                    yAxisName="数值"
+                                />
                             ) : (
                                 <div className="h-64 flex items-center justify-center border border-glass-border rounded-md bg-surface-alt">
-                                    <p className="text-sm text-text-muted">图表渲染区：{indicator.toUpperCase()} 时序曲线</p>
+                                    <p className="text-sm text-text-muted">暂无可用历史数据</p>
                                 </div>
                             )}
                         </div>
@@ -82,14 +118,17 @@ export default function MacroPage() {
                         <div>
                             {isLoading ? (
                                 <LoadingState text="数据提取中..." />
-                            ) : macroData && Array.isArray(macroData) && macroData.length > 0 ? (
+                            ) : macroRows.length > 0 ? (
                                 <DataTable
                                     columns={[
                                         { key: 'date', label: '报告期 (Period)', render: (v, r) => String(r.date || r.period || r.quarter || '-') },
                                         { key: 'value', label: '指标数值' },
-                                        { key: 'yoy', label: '同比 / 环比增速', render: (v) => v !== undefined ? `${v}%` : '-' }
+                                        { key: 'yoy', label: '同比 / 环比增速', render: (v, r) => {
+                                            const delta = r.yoy ?? r.yoyChange ?? r.momChange;
+                                            return delta !== undefined && delta !== null ? `${delta}%` : '-';
+                                        } }
                                     ]}
-                                    rows={macroData.slice(0, 50)}
+                                    rows={macroRows.slice(0, 50)}
                                     maxHeight={500}
                                 />
                             ) : (

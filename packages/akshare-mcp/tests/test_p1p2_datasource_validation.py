@@ -10,13 +10,17 @@ P1/P2 数据源改造验证测试
 运行: python tests/test_p1p2_datasource_validation.py
 """
 
+import asyncio
 import sys
 import os
 import time
 import traceback
 
 # 确保能找到源码
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'packages', 'akshare-mcp', 'src'))
+TESTS_DIR = os.path.dirname(__file__)
+PACKAGE_SRC = os.path.abspath(os.path.join(TESTS_DIR, "..", "src"))
+if PACKAGE_SRC not in sys.path:
+    sys.path.insert(0, PACKAGE_SRC)
 
 PASS = 0
 FAIL = 0
@@ -119,7 +123,8 @@ def test_kline():
     section("5. kline K线数据")
     try:
         from akshare_mcp.tools.market.kline import get_kline
-        result = get_kline("600519", "daily", 10)
+        from akshare_mcp.storage import run_with_db_cleanup
+        result = run_with_db_cleanup(get_kline("600519", "daily", 10))
         if result.get("success"):
             data = result.get("data", [])
             record("get_kline(600519, daily, 10)", "PASS", f"{len(data)} 条K线")
@@ -326,7 +331,8 @@ def test_financials():
     section("17. finance 财务数据")
     try:
         from akshare_mcp.tools.finance import get_financials
-        result = get_financials("600519")
+        from akshare_mcp.storage import run_with_db_cleanup
+        result = run_with_db_cleanup(get_financials("600519"))
         if result.get("success"):
             data = result.get("data", {})
             record("get_financials(600519)", "PASS", f"keys={list(data.keys())[:5]}...")
@@ -483,6 +489,12 @@ if __name__ == "__main__":
     print(f"  耗时: {elapsed:.1f}s")
     print("=" * 60)
     
+    try:
+        from akshare_mcp.storage import close_db
+        asyncio.run(close_db())
+    except Exception:
+        pass
+
     if FAIL > 0:
         print("\n  ❌ 存在失败项，需要排查！")
         sys.exit(1)

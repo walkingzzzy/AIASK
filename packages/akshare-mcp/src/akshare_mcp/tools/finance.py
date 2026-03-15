@@ -20,6 +20,7 @@ import sys
 from datetime import datetime, timedelta
 from ..baostock_api import baostock_client
 from ..cache import cache
+from .data_quality import build_quality_meta, infer_missing_fields, normalize_reason_list
 from ..date_utils import get_latest_trading_date
 from ..data_source import data_source
 
@@ -27,6 +28,129 @@ _RETRY_SLEEP_SECONDS = float(os.getenv("AKSHARE_RETRY_SLEEP_SECONDS", "0.5"))
 _FINANCE_RETRY = int(os.getenv("AKSHARE_FINANCE_RETRY", "2"))
 
 T = TypeVar("T")
+
+
+def _financial_payload_is_complete(payload: Optional[dict]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    core_fields = ("reportDate", "revenue", "netProfit", "roe", "debtRatio")
+    return any(payload.get(field) is not None for field in core_fields)
+
+
+def _financial_payload_needs_enrichment(payload: Optional[dict]) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    return payload.get("revenue") is None or payload.get("netProfit") is None
+
+
+def _merge_financial_payload(primary: Optional[dict], fallback: Optional[dict], source_label: str) -> Optional[dict]:
+    if not isinstance(primary, dict) and not isinstance(fallback, dict):
+        return None
+    if not isinstance(primary, dict):
+        merged = dict(fallback or {})
+        if merged:
+            merged["source"] = source_label
+        return merged
+    merged = dict(primary)
+    if isinstance(fallback, dict):
+        for key, value in fallback.items():
+            if merged.get(key) is None and value is not None:
+                merged[key] = value
+    merged["source"] = source_label
+    return merged
+
+
+def _build_financial_cache_entry(
+    payload: dict,
+    *,
+    source_chain: list[str],
+    fallback_reason: Optional[list[str]] = None,
+) -> dict:
+    return {
+        "payload": dict(payload or {}),
+        "source_chain": [str(item).strip() for item in list(source_chain or []) if str(item).strip()],
+        "fallback_reason": normalize_reason_list(fallback_reason),
+    }
+
+
+def _read_financial_cache_entry(entry: Any) -> tuple[Optional[dict], list[str], list[str]]:
+    if not isinstance(entry, dict):
+        return None, [], []
+
+    payload = entry.get("payload")
+    if isinstance(payload, dict):
+        return (
+            dict(payload),
+            [str(item).strip() for item in list(entry.get("source_chain") or []) if str(item).strip()],
+            normalize_reason_list(entry.get("fallback_reason")),
+        )
+
+    payload = dict(entry)
+    source_chain = payload.pop("source_chain", None)
+    fallback_reason = payload.pop("fallback_reason", None)
+    return (
+        payload,
+        [str(item).strip() for item in list(source_chain or []) if str(item).strip()],
+        normalize_reason_list(fallback_reason),
+    )
+
+
+def _financial_missing_fields(payload: Optional[dict]) -> list[str]:
+    return infer_missing_fields(
+        payload,
+        ("reportDate", "revenue", "netProfit", "roe", "debtRatio"),
+    )
+
+
+def _ok_financial(
+    payload: dict,
+    *,
+    source_chain: list[str],
+    fallback_reason: Optional[list[str]] = None,
+    started_at: Optional[datetime] = None,
+    cached_result: bool = False,
+) -> dict:
+    data = dict(payload or {})
+    missing_fields = _financial_missing_fields(data)
+    degraded = bool(missing_fields)
+    response = ok(data, cached=cached_result)
+    response.update(
+        build_quality_meta(
+            source=str(data.get("source") or "unknown"),
+            source_chain=source_chain,
+            fallback_reason=fallback_reason,
+            asof_value=data.get("reportDate"),
+            missing_fields=missing_fields,
+            degraded=degraded,
+            success=True,
+            started_at=started_at,
+        )
+    )
+    return response
+
+
+def _fail_financial(
+    message: str,
+    *,
+    source_chain: list[str],
+    fallback_reason: Optional[list[str]] = None,
+    started_at: Optional[datetime] = None,
+) -> dict:
+    response = fail(message)
+    response.update(
+        build_quality_meta(
+            source="none",
+            source_chain=source_chain,
+            fallback_reason=fallback_reason or [message],
+            asof_value=None,
+            missing_fields=[],
+            degraded=True,
+            success=False,
+            started_at=started_at,
+        )
+    )
+    response["source"] = "none"
+    return response
 
 def _call_with_retry(fn: Callable[[], T]) -> T:
     last_error: Optional[Exception] = None
@@ -129,21 +253,31 @@ async def get_financials(stock_code: str) -> dict:
     limiter.acquire()
 
     code = normalize_code(stock_code)
+    started_at = datetime.now().astimezone()
 
     # 0. Check Cache (TTL 24h)
-    cached_data = cache.get(f"financials_{code}", ttl_seconds=86400)
-    if cached_data:
-        cached_data["cached"] = True
-        return ok(cached_data)
+    cached_entry = cache.get(f"financials_{code}", ttl_seconds=86400)
+    cached_payload, cached_source_chain, cached_fallback_reason = _read_financial_cache_entry(cached_entry)
+    if cached_payload and _financial_payload_is_complete(cached_payload) and not _financial_payload_needs_enrichment(cached_payload):
+        return _ok_financial(
+            cached_payload,
+            source_chain=cached_source_chain or [cached_payload.get("source") or "cache.financials"],
+            fallback_reason=cached_fallback_reason,
+            started_at=started_at,
+            cached_result=True,
+        )
 
     # 0.5. DB 优先：查 TimescaleDB financials 表
+    db_result = None
+    fallback_reason: list[str] = []
+    db_chain = ["db.get_financials"]
     try:
         from ..storage import get_db
         db = get_db()
         db_data = await db.get_financials(code)
         if db_data:
             row = db_data[0]
-            result = {
+            db_result = {
                 "code": code,
                 "reportDate": row.get("report_date"),
                 "revenue": row.get("revenue"),
@@ -152,11 +286,20 @@ async def get_financials(stock_code: str) -> dict:
                 "debtRatio": row.get("debt_ratio"),
                 "source": "timescaledb",
             }
-            cache.set(f"financials_{code}", result)
-            return ok(result)
+            if _financial_payload_is_complete(db_result) and not _financial_payload_needs_enrichment(db_result):
+                cache.set(
+                    f"financials_{code}",
+                    _build_financial_cache_entry(db_result, source_chain=db_chain),
+                )
+                return _ok_financial(
+                    db_result,
+                    source_chain=db_chain,
+                    started_at=started_at,
+                )
     except Exception as e_db:
         import sys
         print(f"[Finance] TimescaleDB query failed for {code}: {e_db}", file=sys.stderr)
+        fallback_reason.append(f"db.get_financials failed: {e_db}")
 
     # Strategy:
     # 1. Try Tushare Pro (custom/official) - 优先使用
@@ -170,11 +313,26 @@ async def get_financials(stock_code: str) -> dict:
     try:
         res = _get_financials_tushare(code)
         if res:
-            # Tushare Pro成功，直接缓存并返回
-            cache.set(f"financials_{code}", res)
-            return ok(res)
+            source_chain = [*db_chain, "tushare_pro"]
+            merged = _merge_financial_payload(db_result, res, res.get("source", "tushare_pro"))
+            if merged:
+                cache.set(
+                    f"financials_{code}",
+                    _build_financial_cache_entry(
+                        merged,
+                        source_chain=source_chain,
+                        fallback_reason=fallback_reason,
+                    ),
+                )
+                return _ok_financial(
+                    merged,
+                    source_chain=source_chain,
+                    fallback_reason=fallback_reason,
+                    started_at=started_at,
+                )
     except Exception as e:
         print(f"Tushare financial fetch failed for {code}: {e}", file=sys.stderr)
+        fallback_reason.append(f"tushare_pro failed: {e}")
 
     # 2 & 3. Try AkShare (降级)
     if not res:
@@ -182,6 +340,24 @@ async def get_financials(stock_code: str) -> dict:
             res = _get_financials_akshare(code)
         except Exception as e:
             print(f"AkShare financial fetch failed for {code}: {e}", file=sys.stderr)
+        if res:
+            source_chain = [*db_chain, "tushare_pro", "akshare_financials"]
+            merged = _merge_financial_payload(db_result, res, res.get("source", "akshare"))
+            if merged:
+                cache.set(
+                    f"financials_{code}",
+                    _build_financial_cache_entry(
+                        merged,
+                        source_chain=source_chain,
+                        fallback_reason=fallback_reason,
+                    ),
+                )
+                return _ok_financial(
+                    merged,
+                    source_chain=source_chain,
+                    fallback_reason=fallback_reason,
+                    started_at=started_at,
+                )
 
     # 4. Fallback to Baostock
     if not res:
@@ -221,11 +397,46 @@ async def get_financials(stock_code: str) -> dict:
             print(f"Baostock financial fetch failed for {code}: {e}", file=sys.stderr)
 
     if res:
-        # Cache Result
-        cache.set(f"financials_{code}", res)
-        return ok(res)
+        source_chain = [*db_chain, "tushare_pro", "akshare_financials", "baostock_financials"]
+        merged = _merge_financial_payload(db_result, res, res.get("source", "baostock"))
+        if merged:
+            cache.set(
+                f"financials_{code}",
+                _build_financial_cache_entry(
+                    merged,
+                    source_chain=source_chain,
+                    fallback_reason=fallback_reason,
+                ),
+            )
+            return _ok_financial(
+                merged,
+                source_chain=source_chain,
+                fallback_reason=fallback_reason,
+                started_at=started_at,
+            )
 
-    return fail(f"所有数据源均无法获取 {code} 的财务数据 (AkShare & Baostock)")
+    if db_result and _financial_payload_is_complete(db_result):
+        cache.set(
+            f"financials_{code}",
+            _build_financial_cache_entry(
+                db_result,
+                source_chain=[*db_chain, "tushare_pro", "akshare_financials", "baostock_financials"],
+                fallback_reason=fallback_reason,
+            ),
+        )
+        return _ok_financial(
+            db_result,
+            source_chain=[*db_chain, "tushare_pro", "akshare_financials", "baostock_financials"],
+            fallback_reason=fallback_reason,
+            started_at=started_at,
+        )
+
+    return _fail_financial(
+        f"所有数据源均无法获取 {code} 的财务数据 (AkShare & Baostock)",
+        source_chain=[*db_chain, "tushare_pro", "akshare_financials", "baostock_financials"],
+        fallback_reason=fallback_reason,
+        started_at=started_at,
+    )
 
 def _get_financials_akshare(code: str) -> Optional[dict]:
     try:

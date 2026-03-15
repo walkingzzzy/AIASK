@@ -6,6 +6,17 @@ import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import Link from 'next/link';
+import type {
+  AlertItem,
+  DashboardMarketNewsItem,
+  DashboardQuickAction,
+  DashboardQuoteSnapshot,
+  DashboardRecentStock,
+  DashboardWatchlistItem,
+  PaperTradingAccount,
+  PaperTradingPosition,
+  PaperTradingSummary,
+} from '@aiask/shared-types';
 
 /* ------------------------------------------------------------------ */
 /* Props                                                               */
@@ -14,23 +25,23 @@ import Link from 'next/link';
 export interface PersonalDashboardProps {
   /* Personal overview */
   nickname: string;
-  paperSummary: Record<string, unknown>;
-  paperAccount: Record<string, unknown>;
-  paperPositions: Record<string, unknown>[];
-  activeAlerts: Record<string, unknown>[];
+  paperSummary: PaperTradingSummary;
+  paperAccount: PaperTradingAccount;
+  paperPositions: PaperTradingPosition[];
+  activeAlerts: AlertItem[];
 
   /* Watchlist & recent */
-  watchlistItems: Array<{ code: string; name?: string }>;
-  recentStocks: Array<{ code: string; name?: string; ts: number }>;
-  quoteMap: Map<string, Record<string, unknown>>;
+  watchlistItems: DashboardWatchlistItem[];
+  recentStocks: DashboardRecentStock[];
+  quoteMap: Map<string, DashboardQuoteSnapshot>;
   batchQIsFetching: boolean;
   mounted: boolean;
 
   /* Market news */
-  marketNews: Record<string, unknown>[];
+  marketNews: DashboardMarketNewsItem[];
 
   /* Quick actions */
-  quickActions: Array<{ href: string; icon: string; title: string; description: string }>;
+  quickActions: DashboardQuickAction[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -89,7 +100,18 @@ function ThreeColumnCards({ watchlistItems, paperPositions, marketNews, quoteMap
               </div>
             );
           })}
-          {watchlistItems.length === 0 ? <EmptyState text="暂无自选股" /> : null}
+          {watchlistItems.length === 0 ? (
+            <EmptyState
+              text="还没有自选股"
+              hint="可以先从市场看板或个股详情页添加关注标的，首页才会开始展示实时行情。"
+              action={
+                <>
+                  <Link href="/market" className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline">去市场页</Link>
+                  <Link href="/watchlist" className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline">管理自选</Link>
+                </>
+              }
+            />
+          ) : null}
         </div>
       </SectionCard>
 
@@ -106,7 +128,13 @@ function ThreeColumnCards({ watchlistItems, paperPositions, marketNews, quoteMap
               <span className={Number(item.profit_rate ?? 0) >= 0 ? 'text-danger text-xs' : 'text-success text-xs'}>{fmtPct(item.profit_rate ?? 0)}</span>
             </div>
           ))}
-          {paperPositions.length === 0 ? <EmptyState text="暂无持仓" /> : null}
+          {paperPositions.length === 0 ? (
+            <EmptyState
+              text="模拟盘还没有持仓"
+              hint="先创建账户或载入示例委托后，这里会显示持仓收益与盈亏变化。"
+              action={<Link href="/paper-trading" className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline">去模拟盘建仓</Link>}
+            />
+          ) : null}
         </div>
       </SectionCard>
 
@@ -123,7 +151,13 @@ function ThreeColumnCards({ watchlistItems, paperPositions, marketNews, quoteMap
               <div className="text-xs text-text-secondary mt-1">{String(item.publish_time ?? item.time ?? item.date ?? '-')}</div>
             </div>
           ))}
-          {marketNews.length === 0 ? <EmptyState text="暂无市场快讯" /> : null}
+          {marketNews.length === 0 ? (
+            <EmptyState
+              text="当前没有市场快讯"
+              hint="可以去研究页查看完整资讯源，或稍后返回首页等待快讯更新。"
+              action={<Link href="/research" className="rounded-full border border-primary px-3 py-1 text-xs text-primary no-underline">去研究页</Link>}
+            />
+          ) : null}
         </div>
       </SectionCard>
     </div>

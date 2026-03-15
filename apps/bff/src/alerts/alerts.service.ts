@@ -35,12 +35,13 @@ export class AlertsService {
     @Optional() private readonly wsGateway?: WsGateway,
   ) { }
 
-  async create(input: CreateAlertInput) {
+  async create(input: CreateAlertInput, userId = 'default') {
     const normalized = {
       code: input.code.trim(),
       indicator: input.indicator.trim(),
       condition: input.condition,
       value: Number(input.value),
+      user_id: userId,
     };
 
     const args = {
@@ -53,9 +54,7 @@ export class AlertsService {
       this.pickString(payload, ['data.alert_id', 'data.alertId', 'data.id', 'alert_id', 'alertId', 'id']) ||
       `alert_${normalized.code}_${normalized.indicator}_${normalized.condition}`;
 
-    await this.cacheService.del('alerts:list:active');
-    await this.cacheService.del('alerts:list:inactive');
-    await this.cacheService.del('alerts:list:all');
+    await this.clearUserListCache(userId);
 
     return {
       alertId,
@@ -66,15 +65,17 @@ export class AlertsService {
   }
 
   /** 检查告警并推送触发的告警到 WebSocket */
-  async checkAndPush(userId?: string) {
-    const args = { action: 'check', kwargs: JSON.stringify({}) };
-    const payload = await this.callTool('alerts_manager', args);
+  async checkAndPush(userId = 'default') {
+    const payload = await this.callTool('alerts_manager', {
+      action: 'check',
+      kwargs: JSON.stringify({ user_id: userId }),
+    });
     const triggered = this.pickArray(payload, ['data.triggered', 'data.items', 'triggered', 'items']);
 
     if (triggered.length > 0 && this.wsGateway) {
       for (const alert of triggered) {
         const item = this.normalizeAlertItem(alert);
-        this.wsGateway.pushAlert(userId ?? null, {
+        this.wsGateway.pushAlert(userId || null, {
           alertId: item.id,
           code: item.code,
           indicator: item.indicator,
@@ -89,9 +90,9 @@ export class AlertsService {
     return { triggered: triggered.length, items: triggered.map((x) => this.normalizeAlertItem(x)) };
   }
 
-  async list(status = 'active'): Promise<AlertsListDto> {
+  async list(status = 'active', userId = 'default'): Promise<AlertsListDto> {
     const normalizedStatus = (status || 'active').trim().toLowerCase();
-    const cacheKey = `alerts:list:${normalizedStatus}`;
+    const cacheKey = this.listCacheKey(userId, normalizedStatus);
     const ttlSeconds = this.cacheService.resolveTtl('alerts.list', AlertsService.LIST_TTL_SECONDS);
     const cached = await this.cacheService.getWithMeta<AlertsListDto>(cacheKey);
     if (cached.value) {
@@ -106,7 +107,7 @@ export class AlertsService {
 
     const args = {
       action: 'list',
-      kwargs: JSON.stringify({ status: normalizedStatus }),
+      kwargs: JSON.stringify({ status: normalizedStatus, user_id: userId }),
     };
 
     const payload = await this.callTool('alerts_manager', args);
@@ -125,17 +126,15 @@ export class AlertsService {
     return result;
   }
 
-  async remove(alertId: string) {
+  async remove(alertId: string, userId = 'default') {
     const normalized = alertId.trim();
     const args = {
       action: 'delete',
-      kwargs: JSON.stringify({ alert_id: normalized }),
+      kwargs: JSON.stringify({ alert_id: normalized, user_id: userId }),
     };
 
     const payload = await this.callTool('alerts_manager', args);
-    await this.cacheService.del('alerts:list:active');
-    await this.cacheService.del('alerts:list:inactive');
-    await this.cacheService.del('alerts:list:all');
+    await this.clearUserListCache(userId);
 
     return {
       alertId: normalized,
@@ -147,7 +146,11 @@ export class AlertsService {
 
   private async callTool(name: string, args: Record<string, unknown>) {
     try {
-      return await this.mcpGatewayService.callTool(name, args);
+      const result = await this.mcpGatewayService.callTool(name, args);
+      if (typeof result === 'string' && /error executing tool|validation error/i.test(result)) {
+        throw new Error(result);
+      }
+      return result;
     } catch (error) {
       throw new BadGatewayException({
         success: false,
@@ -191,5 +194,16 @@ export class AlertsService {
   private readPath(obj: any, path: string): unknown {
     return path.split('.').reduce((acc: any, key: string) => (acc == null ? undefined : acc[key]), obj);
   }
-}
 
+  private listCacheKey(userId: string, status: string) {
+    return `alerts:list:${userId}:${status}`;
+  }
+
+  private async clearUserListCache(userId: string) {
+    await Promise.all([
+      this.cacheService.del(this.listCacheKey(userId, 'active')),
+      this.cacheService.del(this.listCacheKey(userId, 'inactive')),
+      this.cacheService.del(this.listCacheKey(userId, 'all')),
+    ]);
+  }
+}

@@ -1088,12 +1088,62 @@ class LLMProxyStrategyGenerator:
             if spec is not None:
                 specs.append(spec)
 
+        stage_requests: list[dict[str, Any]] = []
+        llm_attempt_count = 0
+        llm_success_count = 0
+        llm_elapsed_seconds = 0.0
+        last_error = None
+        last_error_type = None
+        for stage_id, stage_result in pipeline_result.stages.items():
+            if stage_result.error and last_error is None:
+                last_error = stage_result.error
+                last_error_type = stage_result.error.split(":", 1)[0] if ":" in stage_result.error else stage_result.error
+            if not getattr(stage_result, "llm_attempted", False):
+                continue
+            llm_attempt_count += 1
+            llm_elapsed_seconds += float(stage_result.elapsed_sec or 0.0)
+            if not stage_result.used_fallback:
+                llm_success_count += 1
+            stage_requests.append(
+                {
+                    "stage_id": stage_id,
+                    "status": "succeeded" if not stage_result.used_fallback else "fallback",
+                    "used_fallback": bool(stage_result.used_fallback),
+                    "elapsed_seconds": round(float(stage_result.elapsed_sec or 0.0), 4),
+                    "prompt_chars": int(stage_result.prompt_chars or 0),
+                    "response_chars": int(stage_result.response_chars or 0),
+                    "error": stage_result.error,
+                }
+            )
+
+        if specs:
+            external_status = "succeeded" if llm_success_count > 0 else "fallback_only"
+        elif pipeline_result.error:
+            external_status = "failed"
+        elif llm_attempt_count > 0:
+            external_status = "non_executable"
+        else:
+            external_status = "skipped"
+
         self.last_report = {
             'pipeline_mode': 'staged',
             'pipeline_provenance': pipeline_result.provenance,
             'pipeline_error': pipeline_result.error,
             'selected_count': len(specs),
             'selected_generators': {'pipeline_staged': len(specs)},
+            'external_provider': {
+                'enabled': True,
+                'provider': getattr(self.external_provider.config, 'provider', None),
+                'model': getattr(self.external_provider.config, 'model', None),
+                'status': external_status,
+                'requests': stage_requests,
+                'selected_count': len(specs),
+                'viable_selected_count': len(specs),
+                'fallback_count': len(specs) if external_status == 'fallback_only' else 0,
+                'elapsed_seconds': round(llm_elapsed_seconds, 4),
+                'last_error_type': last_error_type,
+                'last_error': last_error,
+            },
         }
         return specs
 

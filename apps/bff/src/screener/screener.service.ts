@@ -24,7 +24,7 @@ export class ScreenerService {
         }
 
         try {
-            const payload = await this.mcp.callTool('semantic_stock_search', { query, k: limit });
+            const payload = await this.mcp.callTool('semantic_stock_search', { query, limit });
             const result = {
                 data: payload,
                 meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } }
@@ -43,14 +43,14 @@ export class ScreenerService {
     async conditionScreen(conditions: string[], limit = 50) {
         try {
             const payload = await this.mcp.callTool('screener_manager', {
-                action: 'screen',
-                kwargs: JSON.stringify({ conditions, limit })
+                action: 'technical_screen',
+                params: { conditions, limit }
             });
             return { data: payload };
         } catch (error) {
             throw new BadGatewayException({
                 success: false,
-                message: '调用 MCP screener_manager (screen) 失败',
+                message: '调用 MCP screener_manager (technical_screen) 失败',
                 detail: error instanceof Error ? error.message : String(error),
             });
         }
@@ -58,7 +58,11 @@ export class ScreenerService {
 
     async similarStocks(symbol: string, limit = 10) {
         try {
-            const payload = await this.mcp.callTool('search_similar_stocks', { symbol, limit });
+            const payload = await this.mcp.callTool('search_similar_stocks', {
+                code: symbol,
+                top_n: limit,
+                similarity_type: 'both',
+            });
             return { data: payload };
         } catch (error) {
             throw new BadGatewayException({

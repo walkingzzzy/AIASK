@@ -22,7 +22,17 @@ export function StockCapitalPanel({ code }: { code: string }) {
         const floatShares = Number(obj.float_shares ?? obj.floatShares ?? obj.float_capital ?? 0);
         const restrictedShares = Number(obj.restricted_shares ?? obj.restrictedShares ?? 0) || Math.max(0, totalShares - floatShares);
 
-        const holders = extractArray(capitalQ.data, 'holders', 'top_holders', 'top10', 'shareholders')
+        const rawHolders = Array.isArray(obj.holders)
+            ? obj.holders
+            : Array.isArray(obj.top_holders)
+                ? obj.top_holders
+                : Array.isArray(obj.top10)
+                    ? obj.top10
+                    : Array.isArray(obj.shareholders)
+                        ? obj.shareholders
+                        : [];
+
+        const holders = rawHolders
             .slice(0, 10)
             .map((h: Record<string, unknown>) => ({
                 name: String(h.name ?? h.holder_name ?? h.shareholder ?? ''),

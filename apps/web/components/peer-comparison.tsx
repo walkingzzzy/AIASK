@@ -16,18 +16,24 @@ export function PeerComparisonTable({ code }: { code: string }) {
     );
 
     const peers = useMemo(() => {
+        const numOrNull = (value: unknown): number | null => {
+            if (value == null || value === '') return null;
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : null;
+        };
+
         const arr = extractArray(peerQ.data, 'peers', 'items', 'data', 'stocks');
         return arr.slice(0, 10).map((p: Record<string, unknown>) => ({
             code: String(p.code ?? p.stock_code ?? ''),
             name: String(p.name ?? p.stock_name ?? ''),
-            marketCap: Number(p.market_cap ?? p.marketCap ?? p.total_mv ?? 0),
-            pe: Number(p.pe ?? p.PE ?? p.pe_ttm ?? 0),
-            pb: Number(p.pb ?? p.PB ?? 0),
-            roe: Number(p.roe ?? p.ROE ?? 0),
-            revenueGrowth: Number(p.revenue_growth ?? p.revenueGrowth ?? p.rev_yoy ?? 0),
-            profitGrowth: Number(p.profit_growth ?? p.profitGrowth ?? p.net_yoy ?? 0),
-            price: Number(p.price ?? p.close ?? 0),
-            changePct: Number(p.change_pct ?? p.changePercent ?? p.pct_chg ?? 0),
+            marketCap: numOrNull(p.market_cap ?? p.marketCap ?? p.total_mv),
+            pe: numOrNull(p.pe ?? p.PE ?? p.pe_ttm),
+            pb: numOrNull(p.pb ?? p.PB),
+            roe: numOrNull(p.roe ?? p.ROE),
+            revenueGrowth: numOrNull(p.revenue_growth ?? p.revenueGrowth ?? p.rev_yoy),
+            profitGrowth: numOrNull(p.profit_growth ?? p.profitGrowth ?? p.net_yoy),
+            price: numOrNull(p.price ?? p.close),
+            changePct: numOrNull(p.change_pct ?? p.changePercent ?? p.pct_chg),
         }));
     }, [peerQ.data]);
 
@@ -68,18 +74,20 @@ export function PeerComparisonTable({ code }: { code: string }) {
                                     {isTarget && <Badge variant="info" className="ml-1 text-[10px]">当前</Badge>}
                                 </td>
                                 <td className="py-2 px-2 whitespace-nowrap">{p.name || '--'}</td>
-                                <td className="py-2 px-2 text-right whitespace-nowrap">{fmtAmount(p.marketCap)}</td>
-                                <td className="py-2 px-2 text-right whitespace-nowrap">{p.pe > 0 ? fmtNum(p.pe, 1) : '亏损'}</td>
-                                <td className="py-2 px-2 text-right whitespace-nowrap">{fmtNum(p.pb, 2)}</td>
-                                <td className="py-2 px-2 text-right whitespace-nowrap">{fmtPct(p.roe)}</td>
-                                <td className={`py-2 px-2 text-right whitespace-nowrap ${p.revenueGrowth >= 0 ? 'text-danger' : 'text-success'}`}>
-                                    {fmtPct(p.revenueGrowth)}
+                                <td className="py-2 px-2 text-right whitespace-nowrap">{p.marketCap != null ? fmtAmount(p.marketCap) : '--'}</td>
+                                <td className="py-2 px-2 text-right whitespace-nowrap">
+                                    {p.pe == null ? '--' : p.pe > 0 ? fmtNum(p.pe, 1) : '亏损'}
                                 </td>
-                                <td className={`py-2 px-2 text-right whitespace-nowrap ${p.profitGrowth >= 0 ? 'text-danger' : 'text-success'}`}>
-                                    {fmtPct(p.profitGrowth)}
+                                <td className="py-2 px-2 text-right whitespace-nowrap">{p.pb != null ? fmtNum(p.pb, 2) : '--'}</td>
+                                <td className="py-2 px-2 text-right whitespace-nowrap">{p.roe != null ? fmtPct(p.roe) : '--'}</td>
+                                <td className={`py-2 px-2 text-right whitespace-nowrap ${p.revenueGrowth == null ? 'text-text-secondary' : p.revenueGrowth >= 0 ? 'text-danger' : 'text-success'}`}>
+                                    {p.revenueGrowth != null ? fmtPct(p.revenueGrowth) : '--'}
                                 </td>
-                                <td className={`py-2 px-2 text-right whitespace-nowrap ${p.changePct >= 0 ? 'text-danger' : 'text-success'}`}>
-                                    {p.changePct >= 0 ? '+' : ''}{fmtPct(p.changePct)}
+                                <td className={`py-2 px-2 text-right whitespace-nowrap ${p.profitGrowth == null ? 'text-text-secondary' : p.profitGrowth >= 0 ? 'text-danger' : 'text-success'}`}>
+                                    {p.profitGrowth != null ? fmtPct(p.profitGrowth) : '--'}
+                                </td>
+                                <td className={`py-2 px-2 text-right whitespace-nowrap ${p.changePct == null ? 'text-text-secondary' : p.changePct >= 0 ? 'text-danger' : 'text-success'}`}>
+                                    {p.changePct != null ? `${p.changePct >= 0 ? '+' : ''}${fmtPct(p.changePct)}` : '--'}
                                 </td>
                             </tr>
                         );

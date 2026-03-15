@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { useStockContext } from '@/store/stock-context';
 
@@ -19,42 +19,24 @@ export function useStockCode(initial = '', syncUrl = true) {
   const router = useRouter();
   const pathname = usePathname();
   const { code: globalCode, setStock } = useStockContext();
+  const [hydrated, setHydrated] = useState(false);
 
-  // 初始值优先级：URL > 全局上下文 > initial
-  const urlCode = searchParams.get('code') || '';
-  const resolvedInitial = urlCode || globalCode || initial;
-
-  const [code, setCodeLocal] = useState(resolvedInitial);
-  const [codeError, setCodeError] = useState<string | null>(null);
-  // resolvedCode: 仅当代码来自 URL 或 Store（非页面默认值）时有值，供页面自动查询使用
-  const [resolvedCode, setResolvedCode] = useState<string | null>(null);
-  const initialized = useRef(false);
-
-  // 首次挂载：单向同步 URL → 全局上下文
-  // 注意：只允许 URL code 触发自动查询（resolvedCode）和 URL 同步。
-  // 若 URL 无 code 但全局上下文有 code，仅预填输入框，不自动触发查询，
-  // 也不修改 URL，避免行情/个股详情等页面相互污染全局 code 状态。
   useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
-    if (urlCode && STOCK_CODE_RE.test(urlCode)) {
-      // URL 有 code → 同步到 store，并标记 resolvedCode 供页面自动查询
-      setCodeLocal(urlCode);
-      setStock(urlCode);
-      setResolvedCode(urlCode);
-    } else if (globalCode && STOCK_CODE_RE.test(globalCode)) {
-      // store 有 code 但 URL 没有 → 预填输入框 + 触发自动查询（恢复跨页连续体验）
-      // 注意：只设 resolvedCode（自动查询），不调用 router.replace（不改 URL）
-      // 这样避免了 URL 被污染导致的页面跳转 bug，同时保留了"延续上次浏览"的体验
-      setCodeLocal(globalCode);
-      setResolvedCode(globalCode);
-      // 不调用 router.replace，URL 保持干净
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setHydrated(true);
   }, []);
 
+  const urlCode = hydrated ? (searchParams.get('code') || '') : '';
+  const normalizedUrlCode = hydrated && STOCK_CODE_RE.test(urlCode) ? urlCode : '';
+  const normalizedGlobalCode = hydrated && STOCK_CODE_RE.test(globalCode) ? globalCode : '';
+  const resolvedCode = normalizedUrlCode || normalizedGlobalCode || null;
+  const resolvedInitial = resolvedCode || initial;
+
+  const [draftCode, setDraftCode] = useState<string | null>(null);
+  const [codeError, setCodeError] = useState<string | null>(null);
+  const code = draftCode ?? resolvedInitial;
+
   const setCode = useCallback((value: string) => {
-    setCodeLocal(value);
+    setDraftCode(value);
   }, []);
 
   // 写入 URL（在查询提交时调用，不在每次输入时调用）

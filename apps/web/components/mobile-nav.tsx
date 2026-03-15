@@ -17,6 +17,9 @@ const MOBILE_NAV_ITEMS = [
  */
 export function MobileBottomNav() {
     const pathname = usePathname();
+    if (pathname === '/login' || pathname === '/register') {
+        return null;
+    }
 
     return (
         <nav className="fixed bottom-0 left-0 right-0 z-40 glass-strong border-t border-glass-border md:hidden safe-area-bottom">

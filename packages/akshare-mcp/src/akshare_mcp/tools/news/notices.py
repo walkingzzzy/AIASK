@@ -5,6 +5,8 @@ import time
 from datetime import timedelta
 from typing import Any, Optional
 
+import requests
+
 try:
     import akshare as ak
 except ImportError:
@@ -14,6 +16,122 @@ from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...utils import fail, format_period, normalize_code, ok, parse_date_input
 from .helpers import _RETRY_SLEEP_SECONDS, _try_tushare_anns
+
+
+_NOTICE_NODE_MAP = {
+    "全部": "0",
+    "财务报告": "1",
+    "融资公告": "2",
+    "风险提示": "3",
+    "信息变更": "4",
+    "重大事项": "5",
+    "资产重组": "6",
+    "持股变动": "7",
+}
+_NOTICE_DETAIL_URL = "https://data.eastmoney.com/notices/detail/{code}/{art_code}.html"
+_NOTICE_API_URL = "https://np-anotice-stock.eastmoney.com/api/security/ann"
+_NOTICE_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://data.eastmoney.com/",
+}
+
+
+def _select_notice_code(item: dict[str, Any]) -> str:
+    codes = item.get("codes") or []
+    if not isinstance(codes, list):
+        return ""
+    for code_item in codes:
+        if not isinstance(code_item, dict):
+            continue
+        ann_type = str(code_item.get("ann_type") or "")
+        if ann_type.startswith("A"):
+            return normalize_code(code_item.get("stock_code"))
+    if codes and isinstance(codes[0], dict):
+        return normalize_code(codes[0].get("stock_code"))
+    return ""
+
+
+def _map_notice_item(item: dict[str, Any], fallback_type: str) -> Optional[dict[str, Any]]:
+    code = _select_notice_code(item)
+    title = str(item.get("title") or item.get("title_ch") or "")
+    art_code = str(item.get("art_code") or "")
+    if not code or not title:
+        return None
+    column_items = item.get("columns") or []
+    notice_type = fallback_type
+    if column_items and isinstance(column_items[0], dict):
+        notice_type = str(column_items[0].get("column_name") or fallback_type)
+    return {
+        "code": code,
+        "name": str(((item.get("codes") or [{}])[0] or {}).get("short_name") or ""),
+        "title": title,
+        "type": notice_type,
+        "date": format_period(item.get("notice_date") or item.get("display_time")),
+        "url": _NOTICE_DETAIL_URL.format(code=code, art_code=art_code) if art_code else "",
+    }
+
+
+def _fetch_code_notice_range(
+    *,
+    start_iso: str,
+    end_iso: str,
+    code_filter: str,
+    notice_type: str,
+    max_items: int,
+    deadline: Optional[float],
+) -> tuple[list[dict[str, Any]], bool]:
+    """东财区间公告查询：单股票场景优先使用 stock_list，避免全市场逐日分页。"""
+    params = {
+        "sr": "-1",
+        "page_size": "100",
+        "page_index": "1",
+        "ann_type": "A",
+        "client_source": "web",
+        "f_node": _NOTICE_NODE_MAP.get(notice_type, "0"),
+        "s_node": "0",
+        "begin_time": start_iso,
+        "end_time": end_iso,
+        "stock_list": code_filter,
+    }
+
+    events: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    page = 1
+    partial = False
+
+    while len(events) < max_items:
+        if deadline is not None and time.monotonic() > deadline:
+            partial = True
+            break
+
+        params["page_index"] = str(page)
+        resp = requests.get(_NOTICE_API_URL, params=params, headers=_NOTICE_HEADERS, timeout=15)
+        payload = resp.json() if resp.status_code == 200 else {}
+        data = payload.get("data") or {}
+        items = data.get("list") or []
+        total_hits = int(data.get("total_hits") or 0)
+        total_pages = (total_hits + 99) // 100 if total_hits > 0 else 0
+
+        if not items:
+            break
+
+        for item in items:
+            mapped = _map_notice_item(item, notice_type)
+            if not mapped:
+                continue
+            key = mapped.get("url") or f"{mapped.get('code')}|{mapped.get('title')}|{mapped.get('date')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            events.append(mapped)
+            if len(events) >= max_items:
+                break
+
+        if total_pages <= 0 or page >= total_pages:
+            break
+        page += 1
+
+    return events, partial
 
 
 @cached(ttl=1800.0)
@@ -100,6 +218,48 @@ def get_stock_notices(
                 )
         except Exception:
             pass
+
+        # 1. 单股票优先用东财区间接口，避免全市场逐日扫描导致 partial/超时。
+        if code_filter:
+            try:
+                deadline = (start_ts + max_seconds) if max_seconds > 0 else None
+                fast_events: list[dict[str, Any]] = []
+                seen: set[str] = set()
+                partial = False
+                for notice_type in normalized_types:
+                    batch, batch_partial = _fetch_code_notice_range(
+                        start_iso=start.isoformat(),
+                        end_iso=end.isoformat(),
+                        code_filter=code_filter,
+                        notice_type=notice_type,
+                        max_items=max_items,
+                        deadline=deadline,
+                    )
+                    partial = partial or batch_partial
+                    for item in batch:
+                        key = item.get("url") or f"{item.get('code')}|{item.get('title')}|{item.get('date')}"
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        fast_events.append(item)
+                        if len(fast_events) >= max_items:
+                            break
+                    if len(fast_events) >= max_items or partial:
+                        break
+
+                fast_events = sorted(fast_events, key=lambda x: str(x.get("date") or ""), reverse=True)
+                return ok(
+                    {
+                        "startDate": start.isoformat(),
+                        "endDate": end.isoformat(),
+                        "types": normalized_types,
+                        "events": fast_events[:max_items],
+                        "truncated": len(fast_events) > max_items,
+                        "partial": partial,
+                    }
+                )
+            except Exception:
+                partial = False
 
         current = start
         while current <= end:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -17,9 +17,78 @@ class DataCollector:
     """汇总每日市场数据快照。"""
 
     @staticmethod
-    def _build_source_status(status: str, fields: List[str], reason: Optional[str] = None, details: Optional[dict] = None) -> dict:
+    def _iso_now() -> str:
+        return datetime.now().astimezone().isoformat()
+
+    @staticmethod
+    def _freshness_sec(asof_time: Optional[str], *, now: Optional[datetime] = None) -> float:
+        if not asof_time:
+            return 0.0
+        try:
+            observed = datetime.fromisoformat(str(asof_time).replace("Z", "+00:00"))
+        except Exception:
+            return 0.0
+        current = now or datetime.now().astimezone()
+        if observed.tzinfo is None:
+            observed = observed.astimezone()
+        return round(max((current - observed).total_seconds(), 0.0), 3)
+
+    @staticmethod
+    def _ordered_flags(flags: List[str]) -> List[str]:
+        seen: set[str] = set()
+        ordered: List[str] = []
+        for flag in list(flags or []):
+            item = str(flag or "").strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            ordered.append(item)
+        return ordered
+
+    @classmethod
+    def _build_quality_flags(
+        cls,
+        *,
+        status: str,
+        freshness_sec: float,
+        stale_after_sec: Optional[float] = None,
+        missing_fields: Optional[List[str]] = None,
+        extra_flags: Optional[List[str]] = None,
+    ) -> List[str]:
+        flags: List[str] = list(extra_flags or [])
+        normalized_status = str(status or "unknown").strip().lower() or "unknown"
+        if normalized_status in {"partial", "fallback"}:
+            flags.append(normalized_status)
+        if normalized_status != "success":
+            flags.append("degraded")
+        if missing_fields:
+            flags.append("missing_fields")
+        if stale_after_sec is not None and float(freshness_sec or 0.0) > float(stale_after_sec):
+            flags.append("stale")
+        return cls._ordered_flags(flags)
+
+    @classmethod
+    def _build_source_status(
+        cls,
+        status: str,
+        fields: List[str],
+        reason: Optional[str] = None,
+        details: Optional[dict] = None,
+        *,
+        source_name: Optional[str] = None,
+        asof_time: Optional[str] = None,
+    ) -> dict:
+        resolved_asof_time = asof_time or cls._iso_now()
+        freshness_sec = cls._freshness_sec(resolved_asof_time)
         payload = {
             "status": status,
+            "source": str(source_name or "strategy_factory.collector"),
+            "asof_time": resolved_asof_time,
+            "freshness_sec": freshness_sec,
+            "quality_flags": cls._build_quality_flags(
+                status=status,
+                freshness_sec=freshness_sec,
+            ),
             "fields": list(fields),
             "degraded": status != "success",
         }
@@ -114,8 +183,16 @@ class DataCollector:
                 return code
         return str(cluster.get("event_type") or fallback).strip() or fallback
 
-    @staticmethod
-    def _finalize_snapshot_contract(snapshot: Dict[str, Any], sources: Dict[str, dict], failure_reasons: List[dict], missing_fields: List[str]) -> dict:
+    @classmethod
+    def _finalize_snapshot_contract(
+        cls,
+        snapshot: Dict[str, Any],
+        sources: Dict[str, dict],
+        failure_reasons: List[dict],
+        missing_fields: List[str],
+        *,
+        asof_time: str,
+    ) -> dict:
         source_status_counts: Dict[str, int] = {}
         degraded_sources: List[str] = []
         missing_sources: List[str] = []
@@ -131,6 +208,12 @@ class DataCollector:
         available_sources = total_sources - len(degraded_sources)
         completion_ratio = round(available_sources / total_sources, 2) if total_sources else 1.0
         degraded = bool(degraded_sources)
+        freshness_sec = cls._freshness_sec(asof_time)
+        extra_flags: List[str] = []
+        if degraded:
+            extra_flags.append("degraded")
+        if degraded or missing_fields:
+            extra_flags.append("incomplete")
         event_state = dict(snapshot.get("event_driven") or {})
         snapshot["summary"] = {
             "date": snapshot.get("date"),
@@ -153,6 +236,16 @@ class DataCollector:
             "missing_sources": sorted(missing_sources),
             "completion_ratio": completion_ratio,
         }
+        snapshot["source"] = "strategy_factory.collector"
+        snapshot["asof_time"] = asof_time
+        snapshot["freshness_sec"] = freshness_sec
+        snapshot["quality_flags"] = cls._build_quality_flags(
+            status="partial" if degraded else "success",
+            freshness_sec=freshness_sec,
+            stale_after_sec=24 * 60 * 60,
+            missing_fields=missing_fields,
+            extra_flags=extra_flags,
+        )
         snapshot["sources"] = sources
         snapshot["failure_reasons"] = failure_reasons
         snapshot["missing_fields"] = sorted(set(missing_fields))
@@ -359,12 +452,20 @@ class DataCollector:
     async def collect(self, db) -> dict:
         factory_pkg = get_strategy_factory_package()
         snapshot: Dict[str, Any] = {"date": str(date.today())}
+        collected_at = self._iso_now()
         sources: Dict[str, dict] = {}
         failure_reasons: List[dict] = []
         missing_fields: List[str] = []
 
         def record_source(name: str, status: str, fields: List[str], reason: Optional[str] = None, details: Optional[dict] = None) -> None:
-            sources[name] = self._build_source_status(status, fields, reason=reason, details=details)
+            sources[name] = self._build_source_status(
+                status,
+                fields,
+                reason=reason,
+                details=details,
+                source_name=name,
+                asof_time=collected_at,
+            )
             if status != "success":
                 failure_reasons.append({
                     "source": name,
@@ -563,7 +664,13 @@ class DataCollector:
                 reason="strategy_population failed",
             )
 
-        self._finalize_snapshot_contract(snapshot, sources, failure_reasons, missing_fields)
+        self._finalize_snapshot_contract(
+            snapshot,
+            sources,
+            failure_reasons,
+            missing_fields,
+            asof_time=collected_at,
+        )
 
         try:
             await db.save_daily_snapshot(date.today(), snapshot)

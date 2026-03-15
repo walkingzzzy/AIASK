@@ -13,6 +13,11 @@ class KlineQueryDto extends StockCodeQueryDto {
   @IsString()
   @IsIn(['daily', 'weekly', 'monthly'], { message: 'period 仅支持 daily/weekly/monthly' })
   period?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d+$/, { message: 'limit 必须为正整数' })
+  limit?: string;
 }
 
 class MinuteKlineQueryDto extends StockCodeQueryDto {
@@ -103,7 +108,11 @@ export class MarketController {
     @Query() query: KlineQueryDto,
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
-    const data = await this.marketService.getKline(query.code, query.period ?? 'daily');
+    const data = await this.marketService.getKline(
+      query.code,
+      query.period ?? 'daily',
+      query.limit ? Number(query.limit) : undefined,
+    );
     const traceId =
       req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
 
@@ -140,6 +149,13 @@ export class MarketController {
   @Post('batch-quotes')
   async getBatchQuotes(@Body() body: BatchQuotesDto, @Req() req: any) {
     const data = await this.marketService.getBatchQuotes(body.codes);
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    return { success: true, data, traceId: String(traceId) };
+  }
+
+  @Post('index-batch-quotes')
+  async getIndexBatchQuotes(@Body() body: BatchQuotesDto, @Req() req: any) {
+    const data = await this.marketService.getIndexBatchQuotes(body.codes);
     const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
@@ -200,4 +216,3 @@ export class MarketController {
     return { success: true, data, traceId: String(traceId) };
   }
 }
-

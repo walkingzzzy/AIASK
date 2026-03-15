@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-import json
+from collections import Counter
 import logging
-import time
 from datetime import date
 from typing import Any, Optional
 from uuid import uuid4
 
-from .artifact_registry import register_experiment
 from .strategy_factory.utils import _extract_event_context
+from .strategy_autonomy_components import (  # noqa: F401
+    CandidateGenerationService,
+    CommitteeReviewService,
+    ExperimentRecorder,
+)
+from .strategy_autonomy_lifecycle import AutonomyLifecycleTracker
 
 # --- Sub-module re-exports (backward compatibility) ---
 from .strategy_spec import (  # noqa: F401
@@ -30,129 +34,203 @@ from .strategy_reviewer import MultiAgentStrategyReviewer  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
-class StrategyAutonomyService:
+class AutonomyCycleOrchestrator:
+    @staticmethod
+    def _submission_metrics(submit_result: Optional[dict]) -> dict:
+        payload = dict(submit_result or {})
+        items = list(payload.get('items') or payload.get('strategies') or [])
+        submitted_count = int(payload.get('submitted', len(items)))
+        passed_count = int(
+            payload.get(
+                'gate_3_passed',
+                payload.get(
+                    'passed_quality_gate',
+                    len([item for item in items if item.get('passed')]),
+                ),
+            )
+        )
+        failed_count = int(payload.get('gate_3_failed', max(submitted_count - passed_count, 0)))
+        return {
+            'submitted_count': submitted_count,
+            'passed_count': passed_count,
+            'failed_count': failed_count,
+        }
+
     def __init__(self):
-        self.rule_generator = RuleStrategyGenerator()
-        self.llm_generator = LLMProxyStrategyGenerator()
-        self.optimizer = BanditParameterOptimizer()
-        self.reviewer = MultiAgentStrategyReviewer()
+        self.generation_service = CandidateGenerationService(
+            rule_generator=RuleStrategyGenerator(),
+            llm_generator=LLMProxyStrategyGenerator(),
+            optimizer=BanditParameterOptimizer(),
+        )
+        self.review_service = CommitteeReviewService(reviewer=MultiAgentStrategyReviewer())
+        self.experiment_recorder = ExperimentRecorder()
+        self.rule_generator = self.generation_service.rule_generator
+        self.llm_generator = self.generation_service.llm_generator
+        self.optimizer = self.generation_service.optimizer
+        self.reviewer = self.review_service.reviewer
 
     async def _select_parents(self, db, parent_strategy_id: Optional[str] = None) -> list[dict]:
-        if parent_strategy_id:
-            strategy = await db.get_strategy(parent_strategy_id)
-            return [strategy] if strategy else []
-        parents = []
-        for status in ('incubating', 'listed'):
-            parents.extend(await db.list_strategies(status, limit=5))
-        return parents[:3]
+        return await self.generation_service.select_parents(db, parent_strategy_id=parent_strategy_id)
 
     @staticmethod
     def _attach_lineage(spec: StrategySpec, *, parent_strategy_id: Optional[str], task_run_id: Optional[int], review_rank: Optional[int] = None, is_champion: bool = False) -> StrategySpec:
-        metadata = dict(spec.metadata or {})
-        if parent_strategy_id and not metadata.get('parent_strategy_id'):
-            metadata['parent_strategy_id'] = parent_strategy_id
-        if task_run_id is not None:
-            metadata['task_run_id'] = task_run_id
-        committee_review = dict(metadata.get('committee_review') or {})
-        if review_rank is not None:
-            committee_review['rank'] = int(review_rank)
-        if is_champion:
-            committee_review['is_champion'] = True
-        elif review_rank is not None:
-            committee_review.setdefault('is_champion', False)
-        if committee_review:
-            metadata['committee_review'] = committee_review
-        spec.metadata = metadata
-        return spec
+        return CommitteeReviewService.attach_lineage(
+            spec,
+            parent_strategy_id=parent_strategy_id,
+            task_run_id=task_run_id,
+            review_rank=review_rank,
+            is_champion=is_champion,
+        )
 
     @staticmethod
     def _review_score(spec: StrategySpec) -> float:
-        review = dict((spec.metadata or {}).get('committee_review') or {})
-        value = review.get('final_score')
-        try:
-            return float(value)
-        except Exception:
-            return 0.0
+        return CommitteeReviewService.review_score(spec)
 
     async def _record_experiment(self, db, spec: StrategySpec, source: str, snapshot: dict, task_run: dict) -> dict:
-        experiment_id = f"exp_{int(time.time())}_{uuid4().hex[:8]}"
-        hypothesis = spec.description or f'{source}:{spec.strategy_type}'
-        artifact = register_experiment({
-            'experiment_id': experiment_id,
-            'hypothesis': hypothesis,
-            'method': spec.metadata.get('generator_type') or source,
-            'parameters': spec.params,
-            'status': 'running',
-            'tags': spec.tags,
-            'conclusion': '',
-        })
-        parent_strategy_id = spec.metadata.get('parent_strategy_id')
-        prompt_payload = spec.metadata.get('llm_prompt')
-        research_task = dict(spec.metadata.get('research_task') or {})
-        event_context = dict(spec.metadata.get('event_context') or {}) or _extract_event_context(research_task)
-        return await db.save_strategy_generation_experiment({
-            'experiment_id': experiment_id,
-            'strategy_id': parent_strategy_id,
-            'parent_strategy_id': parent_strategy_id,
-            'generated_strategy_id': spec.metadata.get('generated_strategy_id'),
-            'task_run_id': task_run.get('id'),
-            'source': source,
-            'generator_type': spec.metadata.get('generator_type') or source,
-            'optimizer_type': spec.metadata.get('optimizer_type'),
-            'status': 'generated',
-            'hypothesis': hypothesis,
-            'prompt': (str(prompt_payload) if prompt_payload is not None else str(snapshot.get('date') or date.today())),
-            'parameters': spec.params,
-            'strategy_spec': {
-                'strategy_type': spec.strategy_type,
-                'name': spec.name,
-                'description': spec.description,
-                'tags': spec.tags,
-                'params': spec.params,
-                'target_symbols': spec.metadata.get('target_symbols') or [],
-                'stock_pool': spec.metadata.get('stock_pool') or {},
-                'selection_logic': spec.metadata.get('selection_logic') or [],
-                'research_task': research_task,
-                'event_context': event_context,
-            },
-            'evaluation': {
-                'source': source,
-                'task_run_id': task_run.get('id'),
-                'generation_reason': spec.metadata.get('generation_reason') or {},
-                'committee_review': spec.metadata.get('committee_review') or {},
-                'llm_analysis': spec.metadata.get('llm_analysis') or {},
-                'llm_research_context': spec.metadata.get('llm_research_context') or {},
-                'llm_response': spec.metadata.get('llm_response') or {},
-                'target_symbols': spec.metadata.get('target_symbols') or [],
-                'stock_pool': spec.metadata.get('stock_pool') or {},
-                'selection_logic': spec.metadata.get('selection_logic') or [],
-                'research_scope': spec.metadata.get('research_scope') or {},
-                'research_task': research_task,
-                'event_context': event_context,
-            },
-            'result': {},
-            'parent_experiment_id': None,
-            'artifact_id': artifact.get('artifact_id'),
-        })
+        return await self.experiment_recorder.record_experiment(db, spec, source, snapshot, task_run)
 
     async def generate_factory_candidates(self, db, snapshot: dict, limit: int = 3, research_task: Optional[dict[str, Any]] = None, source: str = 'strategy_factory') -> dict:
         cycle = await self.run_cycle(db, snapshot=snapshot, limit=limit, source=source, auto_submit=False, research_task=research_task)
         return cycle
 
-    async def run_cycle(
+    @staticmethod
+    def _build_generation_result(candidates: list[dict], generation_stats: dict, llm_report: dict[str, Any]) -> dict:
+        return {
+            'count': len(candidates),
+            'stats': generation_stats,
+            'llm_generation': llm_report,
+            'candidates': candidates,
+        }
+
+    @staticmethod
+    def _build_review_result(reviewed_specs: list[StrategySpec], rejected_count: int, committee_reviews: list[dict[str, Any]], champion: Optional[dict[str, Any]]) -> dict:
+        return {
+            'reviewed_count': len(reviewed_specs),
+            'rejected_count': rejected_count,
+            'committee_reviews': committee_reviews,
+            'champion': champion,
+        }
+
+    @staticmethod
+    def _build_experiments_result(experiments: list[dict]) -> dict:
+        status_counts = Counter(
+            str((item or {}).get('status') or 'unknown')
+            for item in list(experiments or [])
+        )
+        return {
+            'count': len(experiments),
+            'items': experiments,
+            'status_counts': dict(status_counts),
+        }
+
+    @staticmethod
+    def _build_submission_result(auto_submit: bool, submit_result: Optional[dict], candidates: list[dict]) -> dict:
+        payload = dict(submit_result or {})
+        items = list(payload.get('items') or payload.get('strategies') or [])
+        submitted_count = int(payload.get('submitted', len(items) if auto_submit and items else 0))
+        inferred_passed_count = len([item for item in items if item.get('passed')])
+        passed_count = int(payload.get('gate_3_passed', payload.get('passed_quality_gate', inferred_passed_count)))
+        failed_count = int(payload.get('gate_3_failed', max(submitted_count - passed_count, 0)))
+        return {
+            'auto_submit': auto_submit,
+            'attempted': bool(auto_submit and candidates),
+            'submitted_count': submitted_count,
+            'passed_count': passed_count,
+            'failed_count': failed_count,
+            'provisional_passed_count': int(payload.get('gate_3_provisional_passed', 0)),
+            'failure_reason_topn': list(payload.get('gate_3_failure_reason_topn') or []),
+            'items': items,
+            'result': payload or None,
+        }
+
+    @staticmethod
+    def _build_task_run_result(task_run: dict, *, source: str, snapshot_date: Any, research_task: dict, event_context: dict) -> dict:
+        return {
+            'id': task_run.get('id'),
+            'trace_id': task_run.get('trace_id'),
+            'status': 'completed',
+            'source': source,
+            'snapshot_date': snapshot_date,
+            'research_task': research_task,
+            'event_context': event_context,
+        }
+
+    @staticmethod
+    def _build_cycle_result(
+        *,
+        task_run_result: dict,
+        generation_result: dict,
+        review_result: dict,
+        experiments_result: dict,
+        submission_result: dict,
+        snapshot_date: Any,
+        research_task: dict,
+        factor_research: dict,
+        event_context: dict,
+        lifecycle: dict,
+    ) -> dict:
+        experiment_items = list(experiments_result.get('items') or [])
+        return {
+            'task_run': task_run_result,
+            'generation': generation_result,
+            'review': review_result,
+            'experiments': experiments_result,
+            'submission': submission_result,
+            'lifecycle': lifecycle,
+            'task_run_id': task_run_result.get('id'),
+            'snapshot_date': snapshot_date,
+            'research_task': research_task,
+            'factor_research': factor_research,
+            'generated_count': generation_result.get('count', 0),
+            'reviewed_count': review_result.get('reviewed_count', 0),
+            'rejected_count': review_result.get('rejected_count', 0),
+            'committee_reviews': list(review_result.get('committee_reviews') or []),
+            'candidates': list(generation_result.get('candidates') or []),
+            'experiment_records': experiment_items,
+            'champion': review_result.get('champion'),
+            'submitted': submission_result.get('result'),
+            'llm_generation': generation_result.get('llm_generation') or {},
+            'event_context': event_context,
+            'generation_stats': generation_result.get('stats') or {},
+            'artifacts': {
+                'experiments': experiment_items,
+            },
+        }
+
+
+    async def _prepare_cycle_context(
         self,
         db,
-        snapshot: Optional[dict] = None,
-        limit: int = 3,
-        source: str = 'manual',
-        parent_strategy_id: Optional[str] = None,
-        auto_submit: bool = False,
-        research_task: Optional[dict[str, Any]] = None,
+        *,
+        snapshot: Optional[dict],
+        research_task: Optional[dict[str, Any]],
+    ) -> tuple[dict, dict, dict, dict]:
+        resolved_snapshot = snapshot or (
+            await db.get_daily_snapshot() if hasattr(db, 'get_daily_snapshot') else None
+        ) or {'date': str(date.today())}
+        resolved_task = dict(research_task or {})
+        factor_research = dict(resolved_snapshot.get('factor_research') or {})
+        task_metadata = dict(resolved_task.get('metadata') or {})
+        if factor_research and not task_metadata.get('factor_research'):
+            task_metadata['factor_research'] = factor_research
+        if task_metadata:
+            resolved_task = {**resolved_task, 'metadata': task_metadata}
+        event_context = _extract_event_context(resolved_task)
+        return resolved_snapshot, resolved_task, factor_research, event_context
+
+    async def _create_cycle_task_run(
+        self,
+        db,
+        *,
+        parent_strategy_id: Optional[str],
+        source: str,
+        limit: int,
+        snapshot: dict,
+        research_task: dict,
+        event_context: dict,
+        auto_submit: bool,
     ) -> dict:
-        snapshot = snapshot or (await db.get_daily_snapshot() if hasattr(db, 'get_daily_snapshot') else None) or {'date': str(date.today())}
-        research_task = dict(research_task or {})
-        event_context = _extract_event_context(research_task)
-        task_run = await db.save_strategy_task_run({
+        return await db.save_strategy_task_run({
             'strategy_id': parent_strategy_id,
             'task_name': 'strategy_ai_cycle',
             'task_scope': source,
@@ -168,145 +246,347 @@ class StrategyAutonomyService:
                 'auto_submit': auto_submit,
             },
         })
-        llm_report: dict[str, Any] = {}
-        try:
-            parents = await self._select_parents(db, parent_strategy_id=parent_strategy_id)
-            task_preferences = list(research_task.get('strategy_preferences') or [])
-            rule_limit = max(0, limit // 3) if research_task else max(1, limit // 2 or 1)
-            rule_specs = self.rule_generator.generate(snapshot, limit=rule_limit) if rule_limit > 0 else []
-            if task_preferences:
-                rule_specs = [spec for spec in rule_specs if spec.strategy_type in set(task_preferences)] or rule_specs
-            llm_specs = await self.llm_generator.generate(db, limit=max(1, limit), snapshot=snapshot, parent_strategies=parents, research_task=research_task)
-            llm_report = self.llm_generator.get_last_report() if hasattr(self.llm_generator, 'get_last_report') else {}
-            evolved_specs: list[StrategySpec] = []
-            for parent in parents[:2]:
-                evolved_specs.extend(await self.optimizer.evolve(db, parent, limit=2))
 
-            merged: list[StrategySpec] = []
-            seen = set()
-            for spec in [*rule_specs, *llm_specs, *evolved_specs]:
-                if research_task and not dict(spec.metadata or {}).get('research_task'):
-                    spec.metadata = {**dict(spec.metadata or {}), 'research_task': research_task}
-                key = (spec.strategy_type, json.dumps(spec.params or {}, sort_keys=True, ensure_ascii=False, default=str))
-                if key in seen:
-                    continue
-                seen.add(key)
-                merged.append(spec)
-                if len(merged) >= max(1, min(int(limit or 3), 10)):
-                    break
+    async def _run_cycle_pipeline(
+        self,
+        db,
+        *,
+        snapshot: dict,
+        limit: int,
+        source: str,
+        parent_strategy_id: Optional[str],
+        research_task: dict,
+        task_run: dict,
+        auto_submit: bool,
+        lifecycle: AutonomyLifecycleTracker,
+    ) -> dict:
+        lifecycle.enter_phase('generating', detail={
+            'source': source,
+            'limit': int(limit or 0),
+            'parent_strategy_id': parent_strategy_id,
+        })
+        generation_batch = await self.generation_service.generate(
+            db,
+            snapshot=snapshot,
+            limit=limit,
+            research_task=research_task,
+            parent_strategy_id=parent_strategy_id,
+        )
+        llm_report = dict(generation_batch.get('llm_report') or {})
+        rule_specs = list(generation_batch.get('rule_specs') or [])
+        llm_specs = list(generation_batch.get('llm_specs') or [])
+        evolved_specs = list(generation_batch.get('evolved_specs') or [])
+        merged_specs = list(generation_batch.get('merged_specs') or [])
+        lifecycle.complete_phase('generating', metrics={
+            'rule_count': len(rule_specs),
+            'llm_count': len(llm_specs),
+            'evolved_count': len(evolved_specs),
+            'merged_count': len(merged_specs),
+        })
 
-            reviewed_specs: list[StrategySpec] = []
-            committee_reviews: list[dict[str, Any]] = []
-            rejected_count = 0
-            for spec in merged:
-                reviewed_spec, review = self.reviewer.review(spec, snapshot)
-                committee_reviews.append({
-                    'strategy_type': spec.strategy_type,
-                    'name': spec.name,
-                    **review,
-                })
-                if reviewed_spec is None:
-                    rejected_count += 1
-                    continue
-                reviewed_specs.append(self._attach_lineage(reviewed_spec, parent_strategy_id=parent_strategy_id, task_run_id=task_run.get('id')))
+        lifecycle.enter_phase('reviewing', detail={'candidate_count': len(merged_specs)})
+        review_batch = self.review_service.review_candidates(
+            merged_specs,
+            snapshot=snapshot,
+            parent_strategy_id=parent_strategy_id,
+            task_run_id=task_run.get('id'),
+        )
+        reviewed_specs = list(review_batch.get('reviewed_specs') or [])
+        committee_reviews = list(review_batch.get('committee_reviews') or [])
+        rejected_count = int(review_batch.get('rejected_count') or 0)
+        lifecycle.complete_phase('reviewing', metrics={
+            'reviewed_count': len(reviewed_specs),
+            'rejected_count': rejected_count,
+            'committee_review_count': len(committee_reviews),
+        })
 
-            reviewed_specs.sort(key=self._review_score, reverse=True)
-            for rank, spec in enumerate(reviewed_specs, 1):
-                self._attach_lineage(spec, parent_strategy_id=parent_strategy_id, task_run_id=task_run.get('id'), review_rank=rank, is_champion=rank == 1)
+        lifecycle.enter_phase('recording', detail={'reviewed_count': len(reviewed_specs)})
+        experiment_batch = await self.experiment_recorder.record_candidates(
+            db,
+            reviewed_specs,
+            source=source,
+            snapshot=snapshot,
+            task_run=task_run,
+        )
+        experiments = list(experiment_batch.get('experiments') or [])
+        candidates = list(experiment_batch.get('candidates') or [])
+        champion = dict(experiment_batch.get('champion') or {}) or None
+        lifecycle.complete_phase('recording', metrics={
+            'experiment_count': len(experiments),
+            'candidate_count': len(candidates),
+            'champion_present': champion is not None,
+        })
 
-            experiments = []
-            candidates = []
-            champion = None
-            for spec in reviewed_specs:
-                experiment = await self._record_experiment(db, spec, source, snapshot, task_run)
-                experiments.append(experiment)
-                candidate = spec.to_candidate(source, experiment['experiment_id'])
-                candidates.append(candidate)
-                if champion is None:
-                    committee_review = dict((experiment.get('evaluation') or {}).get('committee_review') or {})
-                    champion = {
-                        'experiment_id': experiment.get('experiment_id'),
-                        'strategy_type': spec.strategy_type,
-                        'name': spec.name,
-                        'final_score': committee_review.get('final_score'),
-                        'decision': committee_review.get('decision'),
-                        'parent_strategy_id': experiment.get('parent_strategy_id') or experiment.get('strategy_id'),
-                    }
+        submit_result = None
+        if auto_submit and candidates:
+            lifecycle.enter_phase('submitting', detail={'candidate_count': len(candidates)})
+            from .strategy_factory import StrategySubmitter
+            submit_result = await StrategySubmitter().submit(candidates, snapshot, db)
+            submission_batch = await self.experiment_recorder.apply_submission_results(db, experiments, submit_result)
+            experiments = list(submission_batch.get('experiments') or [])
+            by_experiment = dict(submission_batch.get('items_by_experiment') or {})
+            if champion is not None:
+                champion_item = by_experiment.get(champion.get('experiment_id')) or {}
+                champion['generated_strategy_id'] = champion_item.get('strategy_id')
+                champion['status'] = 'accepted' if champion_item.get('passed') else 'rejected'
+            lifecycle.complete_phase('submitting', metrics=self._submission_metrics(submit_result))
+        elif auto_submit:
+            lifecycle.skip_phase('submitting', reason='no_candidates')
+        else:
+            lifecycle.skip_phase('submitting', reason='auto_submit_disabled')
 
-            submit_result = None
-            if auto_submit and candidates:
-                from .strategy_factory import StrategySubmitter
-                submit_result = await StrategySubmitter().submit(candidates, snapshot, db)
-                by_experiment = {item.get('experiment_id'): item for item in submit_result.get('items', [])}
-                updated_experiments = []
-                for experiment in experiments:
-                    item = by_experiment.get(experiment.get('experiment_id')) or {}
-                    evaluation = dict(experiment.get('evaluation') or {})
-                    evaluation['submission_result'] = item
-                    updated = await db.save_strategy_generation_experiment({
-                        **experiment,
-                        'strategy_id': experiment.get('parent_strategy_id') or experiment.get('strategy_id'),
-                        'generated_strategy_id': item.get('strategy_id') or experiment.get('generated_strategy_id'),
-                        'status': 'accepted' if item.get('passed') else 'rejected',
-                        'evaluation': evaluation,
-                        'result': item,
-                    })
-                    updated_experiments.append(updated)
-                experiments = updated_experiments
-                if champion is not None:
-                    champion_item = by_experiment.get(champion.get('experiment_id')) or {}
-                    champion['generated_strategy_id'] = champion_item.get('strategy_id')
-                    champion['status'] = 'accepted' if champion_item.get('passed') else 'rejected'
+        return {
+            'llm_report': llm_report,
+            'rule_specs': rule_specs,
+            'llm_specs': llm_specs,
+            'evolved_specs': evolved_specs,
+            'merged_specs': merged_specs,
+            'reviewed_specs': reviewed_specs,
+            'committee_reviews': committee_reviews,
+            'rejected_count': rejected_count,
+            'experiments': experiments,
+            'candidates': candidates,
+            'champion': champion,
+            'submit_result': submit_result,
+        }
 
-            result = {
-                'task_run_id': task_run.get('id'),
-                'snapshot_date': snapshot.get('date'),
-                'research_task': research_task,
+    async def _save_cycle_completed_event(
+        self,
+        db,
+        *,
+        parent_strategy_id: Optional[str],
+        task_run: dict,
+        snapshot: dict,
+        source: str,
+        candidates: list[dict],
+        reviewed_specs: list[StrategySpec],
+        rejected_count: int,
+        champion: Optional[dict[str, Any]],
+        research_task: dict,
+        event_context: dict,
+        factor_research: dict,
+        lifecycle: dict,
+    ) -> None:
+        if not hasattr(db, 'save_strategy_domain_event'):
+            return
+        await db.save_strategy_domain_event({
+            'strategy_id': parent_strategy_id,
+            'aggregate_type': 'strategy_ai_cycle',
+            'aggregate_id': str(task_run.get('id') or snapshot.get('date') or date.today()),
+            'event_type': 'strategy_ai_cycle.completed',
+            'source': source,
+            'severity': 'info',
+            'correlation_id': task_run.get('trace_id'),
+            'payload': {
                 'generated_count': len(candidates),
                 'reviewed_count': len(reviewed_specs),
                 'rejected_count': rejected_count,
-                'committee_reviews': committee_reviews,
-                'candidates': candidates,
-                'experiments': experiments,
-                'champion': champion,
-                'submitted': submit_result,
-                'llm_generation': llm_report,
+                'task_run_id': task_run.get('id'),
+                'champion_experiment_id': (champion or {}).get('experiment_id'),
+                'research_task': research_task,
                 'event_context': event_context,
-                'generation_stats': {
-                    'rule_count': len(rule_specs),
-                    'llm_count': len(llm_specs),
-                    'evolved_count': len(evolved_specs),
-                    'merged_count': len(merged),
-                    'llm_generation': llm_report,
-                    'research_task': research_task,
-                    'event_context': event_context,
-                },
+                'factor_research': factor_research,
+                'lifecycle': lifecycle,
+            },
+        })
+
+    async def _save_cycle_failed_event(
+        self,
+        db,
+        *,
+        parent_strategy_id: Optional[str],
+        task_run: dict,
+        snapshot: dict,
+        source: str,
+        research_task: dict,
+        event_context: dict,
+        factor_research: dict,
+        lifecycle: dict,
+        error: str,
+    ) -> None:
+        if not hasattr(db, 'save_strategy_domain_event'):
+            return
+        await db.save_strategy_domain_event({
+            'strategy_id': parent_strategy_id,
+            'aggregate_type': 'strategy_ai_cycle',
+            'aggregate_id': str(task_run.get('id') or snapshot.get('date') or date.today()),
+            'event_type': 'strategy_ai_cycle.failed',
+            'source': source,
+            'severity': 'error',
+            'correlation_id': task_run.get('trace_id'),
+            'payload': {
+                'task_run_id': task_run.get('id'),
+                'snapshot_date': snapshot.get('date'),
+                'research_task': research_task,
+                'event_context': event_context,
+                'factor_research': factor_research,
+                'lifecycle': lifecycle,
+                'error': error,
+            },
+        })
+
+
+    async def run_cycle(
+        self,
+        db,
+        snapshot: Optional[dict] = None,
+        limit: int = 3,
+        source: str = 'manual',
+        parent_strategy_id: Optional[str] = None,
+        auto_submit: bool = False,
+        research_task: Optional[dict[str, Any]] = None,
+    ) -> dict:
+        snapshot, research_task, factor_research, event_context = await self._prepare_cycle_context(
+            db,
+            snapshot=snapshot,
+            research_task=research_task,
+        )
+        lifecycle = AutonomyLifecycleTracker(auto_submit=auto_submit)
+        task_run = {'id': None, 'trace_id': None}
+        try:
+            lifecycle.enter_phase('prepared', detail={
+                'source': source,
+                'snapshot_date': snapshot.get('date'),
+                'task_source': research_task.get('task_source'),
+            })
+            task_run = await self._create_cycle_task_run(
+                db,
+                parent_strategy_id=parent_strategy_id,
+                source=source,
+                limit=limit,
+                snapshot=snapshot,
+                research_task=research_task,
+                event_context=event_context,
+                auto_submit=auto_submit,
+            )
+            lifecycle.complete_phase('prepared', metrics={
+                'task_run_id': task_run.get('id'),
+                'snapshot_date': snapshot.get('date'),
+                'auto_submit': bool(auto_submit),
+            })
+            pipeline = await self._run_cycle_pipeline(
+                db,
+                snapshot=snapshot,
+                limit=limit,
+                source=source,
+                parent_strategy_id=parent_strategy_id,
+                research_task=research_task,
+                task_run=task_run,
+                auto_submit=auto_submit,
+                lifecycle=lifecycle,
+            )
+            llm_report = dict(pipeline.get('llm_report') or {})
+            rule_specs = list(pipeline.get('rule_specs') or [])
+            llm_specs = list(pipeline.get('llm_specs') or [])
+            evolved_specs = list(pipeline.get('evolved_specs') or [])
+            merged_specs = list(pipeline.get('merged_specs') or [])
+            reviewed_specs = list(pipeline.get('reviewed_specs') or [])
+            committee_reviews = list(pipeline.get('committee_reviews') or [])
+            rejected_count = int(pipeline.get('rejected_count') or 0)
+            experiments = list(pipeline.get('experiments') or [])
+            candidates = list(pipeline.get('candidates') or [])
+            champion = dict(pipeline.get('champion') or {}) or None
+            submit_result = pipeline.get('submit_result')
+            lifecycle.enter_phase('completed', detail={
+                'generated_count': len(candidates),
+                'experiment_count': len(experiments),
+            })
+
+            generation_stats = {
+                'rule_count': len(rule_specs),
+                'llm_count': len(llm_specs),
+                'evolved_count': len(evolved_specs),
+                'merged_count': len(merged_specs),
+                'llm_generation': llm_report,
+                'research_task': research_task,
+                'event_context': event_context,
+                'factor_research': factor_research,
             }
-            if hasattr(db, 'save_strategy_domain_event'):
-                await db.save_strategy_domain_event({
-                    'strategy_id': parent_strategy_id,
-                    'aggregate_type': 'strategy_ai_cycle',
-                    'aggregate_id': str(task_run.get('id') or snapshot.get('date') or date.today()),
-                    'event_type': 'strategy_ai_cycle.completed',
-                    'source': source,
-                    'severity': 'info',
-                    'correlation_id': task_run.get('trace_id'),
-                    'payload': {
-                        'generated_count': len(candidates),
-                        'reviewed_count': len(reviewed_specs),
-                        'rejected_count': rejected_count,
-                        'task_run_id': task_run.get('id'),
-                        'champion_experiment_id': (champion or {}).get('experiment_id'),
-                        'research_task': research_task,
-                        'event_context': event_context,
-                    },
-                })
-            await db.update_strategy_task_run(task_run['id'], status='completed', result=result)
+            lifecycle.complete_phase('completed', metrics={
+                'generated_count': len(candidates),
+                'reviewed_count': len(reviewed_specs),
+                'experiment_count': len(experiments),
+                **self._submission_metrics(submit_result),
+            })
+            lifecycle_result = lifecycle.snapshot()
+            task_run_result = self._build_task_run_result(
+                task_run,
+                source=source,
+                snapshot_date=snapshot.get('date'),
+                research_task=research_task,
+                event_context=event_context,
+            )
+            task_run_result['lifecycle'] = lifecycle_result
+            generation_result = self._build_generation_result(candidates, generation_stats, llm_report)
+            review_result = self._build_review_result(reviewed_specs, rejected_count, committee_reviews, champion)
+            experiments_result = self._build_experiments_result(experiments)
+            submission_result = self._build_submission_result(auto_submit, submit_result, candidates)
+            result = self._build_cycle_result(
+                task_run_result=task_run_result,
+                generation_result=generation_result,
+                review_result=review_result,
+                experiments_result=experiments_result,
+                submission_result=submission_result,
+                snapshot_date=snapshot.get('date'),
+                research_task=research_task,
+                factor_research=factor_research,
+                event_context=event_context,
+                lifecycle=lifecycle_result,
+            )
+            await self._save_cycle_completed_event(
+                db,
+                parent_strategy_id=parent_strategy_id,
+                task_run=task_run,
+                snapshot=snapshot,
+                source=source,
+                candidates=candidates,
+                reviewed_specs=reviewed_specs,
+                rejected_count=rejected_count,
+                champion=champion,
+                research_task=research_task,
+                event_context=event_context,
+                factor_research=factor_research,
+                lifecycle=lifecycle_result,
+            )
+            if task_run.get('id') is not None:
+                await db.update_strategy_task_run(task_run['id'], status='completed', result=result)
             return result
         except Exception as exc:
+            lifecycle.fail_phase(error=exc)
+            lifecycle_result = lifecycle.snapshot()
             logger.error('StrategyAutonomyService.run_cycle failed: %s', exc, exc_info=True)
-            await db.update_strategy_task_run(task_run['id'], status='failed', error=str(exc), result={'snapshot_date': snapshot.get('date')})
+            if task_run.get('id') is not None:
+                await db.update_strategy_task_run(
+                    task_run['id'],
+                    status='failed',
+                    error=str(exc),
+                    result={
+                        'snapshot_date': snapshot.get('date'),
+                        'research_task': research_task,
+                        'event_context': event_context,
+                        'factor_research': factor_research,
+                        'lifecycle': lifecycle_result,
+                    },
+                )
+            await self._save_cycle_failed_event(
+                db,
+                parent_strategy_id=parent_strategy_id,
+                task_run=task_run,
+                snapshot=snapshot,
+                source=source,
+                research_task=research_task,
+                event_context=event_context,
+                factor_research=factor_research,
+                lifecycle=lifecycle_result,
+                error=str(exc),
+            )
+            setattr(exc, 'autonomy_lifecycle', lifecycle_result)
+            setattr(exc, 'autonomy_task_run_id', task_run.get('id'))
             raise
+
+
+class StrategyAutonomyService(AutonomyCycleOrchestrator):
+    """Backward-compatible public entry point for autonomy orchestration."""
 
 
 _strategy_autonomy_service: Optional[StrategyAutonomyService] = None

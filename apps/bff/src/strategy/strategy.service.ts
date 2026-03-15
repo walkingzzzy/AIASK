@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   BadGatewayException,
   Injectable,
   Logger,
@@ -6,12 +7,18 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
+import type {
+  StrategyManagerAction,
+  StrategyManagerErrorCode,
+} from '@aiask/shared-types';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
 
 @Injectable()
 export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   private static readonly RANKING_TTL = 1500; // 25 min
+  private static readonly FACTORY_RUNS_TTL = 60;
+  private static readonly FACTORY_RUN_DETAIL_TTL = 60;
   private static readonly AUTO_REFRESH_CHECK_MS = 5 * 60 * 1000; // 5 min
   private static readonly AUTO_REFRESH_HOUR = 15;
   private static readonly AUTO_REFRESH_MINUTE = 5;
@@ -82,22 +89,61 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async call(action: string, params: Record<string, unknown> = {}) {
+  private async call(action: StrategyManagerAction, params: Record<string, unknown> = {}) {
     try {
       const result = await this.mcp.callTool('strategy_manager', {
         action,
-        kwargs: JSON.stringify(params),
+        params,
       });
       if (result && typeof result === 'object') {
         const obj = result as Record<string, unknown>;
         if (obj.success === false) {
-          throw new Error(String(obj.error || obj.message || `${action} 操作失败`));
+          const errorCode = String(
+            obj.error_code || 'STRATEGY_MANAGER_BACKEND_ERROR',
+          ) as StrategyManagerErrorCode;
+          const message = String(obj.error || obj.message || `${action} 操作失败`);
+          const detail = {
+            action,
+            error_code: errorCode,
+            detail: obj.detail,
+          };
+          if (
+            errorCode === 'STRATEGY_MANAGER_INVALID_ACTION' ||
+            errorCode === 'STRATEGY_MANAGER_INVALID_PARAMS'
+          ) {
+            throw new BadRequestException({
+              success: false,
+              code: errorCode,
+              message,
+              detail,
+            });
+          }
+          if (errorCode === 'STRATEGY_MANAGER_NOT_FOUND') {
+            throw new NotFoundException({
+              success: false,
+              code: errorCode,
+              message,
+              detail,
+            });
+          }
+          throw new BadGatewayException({
+            success: false,
+            code: errorCode,
+            message,
+            detail,
+          });
         }
         if ('data' in obj) return obj.data;
       }
       return result;
     } catch (error) {
-      if (error instanceof BadGatewayException) throw error;
+      if (
+        error instanceof BadRequestException ||
+        error instanceof NotFoundException ||
+        error instanceof BadGatewayException
+      ) {
+        throw error;
+      }
       throw new BadGatewayException({
         success: false,
         message: `调用 strategy_manager.${action} 失败`,
@@ -111,6 +157,105 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     const limit = params.limit || 50;
     const rankKeys = (params.rank_keys || []).join(',');
     return `strategy:ranking:${type}:${limit}:${rankKeys}`;
+  }
+
+  private buildFactoryRunsCacheKey(limit?: number) {
+    return `strategy:factory:runs:${Math.max(1, Math.min(200, Number(limit) || 20))}`;
+  }
+
+  private buildFactoryRunDetailCacheKey(runId: string) {
+    return `strategy:factory:run:${runId}`;
+  }
+
+  private async clearFactoryRunCaches() {
+    await this.cache.clear('strategy:factory:runs:');
+    await this.cache.clear('strategy:factory:run:');
+  }
+
+  private normalizeFactoryStage(stageName: string, payload: unknown) {
+    const stage = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
+    const ok = typeof stage.ok === 'boolean' ? stage.ok : true;
+    const status = String(stage.status ?? (ok ? 'completed' : 'failed'));
+    return {
+      stage: String(stage.stage ?? stageName),
+      trace_id: stage.trace_id ?? null,
+      status,
+      ok,
+      ...stage,
+    };
+  }
+
+  private normalizeFactoryRun<T>(payload: T): T {
+    if (!payload || typeof payload !== 'object') return payload;
+    const run = payload as Record<string, unknown>;
+    const rawStages = (run.stages && typeof run.stages === 'object')
+      ? (run.stages as Record<string, unknown>)
+      : {};
+    const normalizedStages = Object.fromEntries(
+      Object.entries(rawStages).map(([stageName, value]) => [stageName, this.normalizeFactoryStage(stageName, value)]),
+    );
+    const failedStage = Object.values(normalizedStages).find((item) => item && typeof item === 'object' && (item as Record<string, unknown>).ok === false);
+    return {
+      ...(run as object),
+      dto_version: 'strategy_market.factory_run.v2',
+      trace_id: run.trace_id ?? ((run.summary as Record<string, unknown> | undefined)?.trace_id ?? null),
+      stages: normalizedStages,
+      pipeline: {
+        trace_id: run.trace_id ?? ((run.summary as Record<string, unknown> | undefined)?.trace_id ?? null),
+        failed_stage: (failedStage as Record<string, unknown> | undefined)?.stage ?? null,
+        stage_order: Object.keys(normalizedStages),
+        total_stage_count: Object.keys(normalizedStages).length,
+        completed_stage_count: Object.values(normalizedStages).filter((item) => (item as Record<string, unknown>).ok !== false).length,
+      },
+    } as T;
+  }
+
+  private normalizeFactoryRunsResponse<T>(payload: T): T {
+    if (!payload || typeof payload !== 'object') return payload;
+    const data = payload as Record<string, unknown>;
+    const items = Array.isArray(data.items) ? data.items.map((item) => this.normalizeFactoryRun(item)) : [];
+    const latest = items.length > 0 ? items[0] : null;
+    return {
+      ...(data as object),
+      dto_version: 'strategy_market.factory_runs.v2',
+      items,
+      latest,
+    } as T;
+  }
+
+  private normalizeStrategyDetail<T>(payload: T): T {
+    if (!payload || typeof payload !== 'object') return payload;
+    const data = payload as Record<string, unknown>;
+    return {
+      ...(data as object),
+      dto_version: 'strategy_market.detail.v2',
+      view_model: {
+        quality: {
+          latest_report: data.latest_quality_report ?? null,
+        },
+        incubation: {
+          account: data.incubation_account ?? null,
+          latest_metric: data.latest_incubation_metric ?? null,
+          latest_pipeline_snapshot: data.latest_incubation_pipeline_snapshot ?? null,
+        },
+        runtime: {
+          control: data.runtime_control ?? null,
+          latest_risk_snapshot: data.latest_runtime_risk_snapshot ?? null,
+          alerts: data.runtime_alerts ?? [],
+          risk_events: data.open_risk_events ?? [],
+        },
+        vectors: {
+          profiles: data.vector_profiles ?? [],
+          similar_profiles: data.similar_vector_profiles ?? [],
+          latest_index_snapshot: data.latest_vector_index_snapshot ?? null,
+        },
+        domain: {
+          events: data.domain_events ?? [],
+          task_runs: data.task_runs ?? [],
+          latest_projection_snapshot: data.latest_projection_snapshot ?? null,
+        },
+      },
+    } as T;
   }
 
   private async fetchRankingWithCache(
@@ -132,6 +277,38 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return { data, cacheKey, ttl, cacheHit: false };
   }
 
+  private async fetchFactoryRunsWithCache(limit?: number, forceRefresh = false) {
+    const cacheKey = this.buildFactoryRunsCacheKey(limit);
+    const ttl = this.cache.resolveTtl('strategy.factory_runs', StrategyMarketService.FACTORY_RUNS_TTL);
+
+    if (!forceRefresh) {
+      const cached = await this.cache.getWithMeta<Record<string, unknown>>(cacheKey);
+      if (cached.value) return cached.value;
+    } else {
+      await this.cache.del(cacheKey);
+    }
+
+    const data = this.normalizeFactoryRunsResponse(await this.call('factory_runs', { limit }));
+    await this.cache.set(cacheKey, data, ttl);
+    return data;
+  }
+
+  private async fetchFactoryRunDetailWithCache(runId: string, forceRefresh = false) {
+    const cacheKey = this.buildFactoryRunDetailCacheKey(runId);
+    const ttl = this.cache.resolveTtl('strategy.factory_run_detail', StrategyMarketService.FACTORY_RUN_DETAIL_TTL);
+
+    if (!forceRefresh) {
+      const cached = await this.cache.getWithMeta<Record<string, unknown>>(cacheKey);
+      if (cached.value) return cached.value;
+    } else {
+      await this.cache.del(cacheKey);
+    }
+
+    const data = this.normalizeFactoryRun(await this.call('factory_run_detail', { run_id: runId }));
+    await this.cache.set(cacheKey, data, ttl);
+    return data;
+  }
+
   async list(params: { status?: string; strategy_type?: string; limit?: number; offset?: number }) {
     return this.call('list', params);
   }
@@ -139,7 +316,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   async detail(id: string) {
     const result = await this.call('detail', { strategy_id: id });
     if (!result) throw new NotFoundException(`策略 ${id} 不存在`);
-    return result;
+    return this.normalizeStrategyDetail(result);
   }
 
   async reviewReport(id: string) {
@@ -237,15 +414,17 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   async factoryRunOnce() {
-    return this.call('factory_run_once');
+    const result = await this.call('factory_run_once');
+    await this.clearFactoryRunCaches();
+    return result;
   }
 
   async factoryRuns(limit?: number) {
-    return this.call('factory_runs', { limit });
+    return this.fetchFactoryRunsWithCache(limit);
   }
 
   async factoryRunDetail(runId: string) {
-    return this.call('factory_run_detail', { run_id: runId });
+    return this.fetchFactoryRunDetailWithCache(runId);
   }
 
   async getSignals(id: string, userId: string, params: { limit?: number } = {}) {

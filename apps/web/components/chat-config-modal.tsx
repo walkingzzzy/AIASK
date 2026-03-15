@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useRef, useState } from 'react';
 import { getLlmConfig, saveLlmConfig, getModelPresets, type ModelPreset } from '@/lib/chat-api';
 import { useChatStore } from '@/store/chat-store';
 
@@ -13,6 +13,9 @@ export default function ChatConfigModal({ onClose }: { onClose: () => void }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const setConfigLoaded = useChatStore((s) => s.setConfigLoaded);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
 
   useEffect(() => {
     getModelPresets().then(setPresets).catch(() => {});
@@ -20,6 +23,25 @@ export default function ChatConfigModal({ onClose }: { onClose: () => void }) {
       if (c) { setBaseUrl(c.baseUrl); setModel(c.model); setApiKey(c.apiKey); }
     }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const previousActive = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusable = dialogRef.current?.querySelector<HTMLElement>('input, select, button, textarea, [href], [tabindex]:not([tabindex="-1"])');
+    focusable?.focus();
+
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      previousActive?.focus();
+    };
+  }, [onClose]);
 
   function onProviderChange(p: string) {
     setProvider(p);
@@ -41,10 +63,44 @@ export default function ChatConfigModal({ onClose }: { onClose: () => void }) {
   const currentPreset = presets.find((x) => x.baseUrl === baseUrl);
   const modelOptions = currentPreset?.models ?? [];
 
+  function handleTrapFocus(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== 'Tab' || !dialogRef.current) return;
+
+    const focusable = Array.from(
+      dialogRef.current.querySelectorAll<HTMLElement>('input, select, button, textarea, [href], [tabindex]:not([tabindex="-1"])'),
+    ).filter((element) => !element.hasAttribute('disabled'));
+
+    if (focusable.length < 2) return;
+
+    const currentIndex = focusable.indexOf(document.activeElement as HTMLElement);
+    if (event.shiftKey) {
+      if (currentIndex <= 0) {
+        event.preventDefault();
+        focusable[focusable.length - 1]?.focus();
+      }
+      return;
+    }
+
+    if (currentIndex === focusable.length - 1) {
+      event.preventDefault();
+      focusable[0]?.focus();
+    }
+  }
+
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[1000]">
-      <div className="glass-strong rounded-2xl p-6 w-[440px] max-h-[80vh] overflow-auto">
-        <h3 className="mt-0">LLM 配置</h3>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[1000]" onClick={onClose}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        className="glass-strong rounded-2xl p-6 w-[440px] max-w-[92vw] max-h-[80vh] overflow-auto"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={handleTrapFocus}
+      >
+        <h2 id={titleId} className="mt-0">LLM 配置</h2>
+        <p id={descriptionId} className="text-[13px] text-text-secondary mt-1 mb-4">配置对话模型供应商、基础地址、模型和 API Key。按 `Esc` 可关闭窗口。</p>
         <label className="block mb-3">
           <span className="text-[13px] text-text-secondary">供应商</span>
           <select value={provider} onChange={(e) => onProviderChange(e.target.value)} className="block w-full mt-1 px-2 py-1.5">
@@ -70,7 +126,7 @@ export default function ChatConfigModal({ onClose }: { onClose: () => void }) {
           <span className="text-[13px] text-text-secondary">API Key</span>
           <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." className="block w-full mt-1 px-2 py-1.5 box-border" />
         </label>
-        {error ? <p className="text-danger text-[13px]">{error}</p> : null}
+        {error ? <p className="text-danger text-[13px]" role="alert">{error}</p> : null}
         <div className="flex gap-2 justify-end">
           <button type="button" onClick={onClose} className="px-4 py-1.5 cursor-pointer">取消</button>
           <button type="button" onClick={onSave} disabled={saving} className="px-4 py-1.5 cursor-pointer bg-primary text-white border-none rounded">

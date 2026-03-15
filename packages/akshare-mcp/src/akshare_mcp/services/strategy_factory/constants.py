@@ -94,6 +94,8 @@ AUTONOMY_STARTUP_DELAY_SEC = _env_int("STRATEGY_FACTORY_STARTUP_DELAY_SEC", 0, m
 RESEARCH_TASK_CONCURRENCY = _env_int("STRATEGY_FACTORY_RESEARCH_TASK_CONCURRENCY", 5, minimum=1, maximum=12)
 # 回测并发度（同时执行的候选回测上限）
 BACKTEST_CONCURRENCY = _env_int("STRATEGY_FACTORY_BACKTEST_CONCURRENCY", 4, minimum=1, maximum=10)
+# 单个候选内部股票回测并发度
+BACKTEST_CODE_CONCURRENCY = _env_int("STRATEGY_FACTORY_BACKTEST_CODE_CONCURRENCY", 4, minimum=1, maximum=12)
 # 提交并发度（同时执行的候选提交上限）
 SUBMIT_CONCURRENCY = _env_int("STRATEGY_FACTORY_SUBMIT_CONCURRENCY", 3, minimum=1, maximum=8)
 # 去重并发度
@@ -149,9 +151,9 @@ PIPELINE_STAGE_TIMEOUT_SEC: float = float(os.environ.get("STRATEGY_PIPELINE_STAG
 # 每阶段独立超时（秒），缺失则回退到 PIPELINE_STAGE_TIMEOUT_SEC
 PIPELINE_STAGE_TIMEOUTS: Dict[str, float] = {
     "event_recognition": 8.0,
-    "theme_propagation": 6.0,
-    "exposure_mapping": 8.0,
-    "market_confirmation": 6.0,
+    "theme_propagation": 10.0,
+    "exposure_mapping": 10.0,
+    "market_confirmation": 10.0,
     "strategy_generation": 12.0,
 }
 

@@ -7,6 +7,8 @@ import hashlib
 import json
 import logging
 import math
+import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -21,18 +23,86 @@ logger = logging.getLogger(__name__)
 class StrategyVectorPlatform:
     SUPPORTED_NUMERIC_METHODS = {'price_volume', 'ohlc', 'returns', 'technical'}
     TEXT_EMBEDDING_ALIASES = {'text', 'text_embedding', 'text_embed', 'semantic', 'semantic_text'}
+    PRODUCTION_BACKEND_STANDARD = 'pgvector_with_observable_fallback'
 
     def __init__(self):
         self.engine = VectorSearchEngine(backend='index', allow_fallback=True)
         self.text_embedding_service = get_strategy_text_embedding_service()
+        self.preferred_backend = str(os.getenv('STRATEGY_VECTOR_BACKEND') or '').strip().lower()
+        self.allow_fallback = str(os.getenv('STRATEGY_VECTOR_ALLOW_FALLBACK', '1')).strip().lower() not in {
+            '0', 'false', 'no', 'off'
+        }
+
+    def _resolved_preferred_backend(self) -> str:
+        requested = str(self.preferred_backend or '').strip().lower()
+        if requested in {'pgvector', 'index', 'python'}:
+            return requested
+        return 'pgvector'
+
+    def _policy_meta(self) -> dict:
+        return {
+            'production_backend_standard': self.PRODUCTION_BACKEND_STANDARD,
+            'fallback_allowed': bool(self.allow_fallback),
+        }
+
+    def requested_backend_name(self, db) -> str:
+        del db
+        return self._resolved_preferred_backend()
 
     def backend_name(self, db) -> str:
-        if hasattr(db, 'get_vector_backend'):
-            try:
-                return str(db.get_vector_backend() or 'index')
-            except Exception:
-                return 'index'
+        requested = self.requested_backend_name(db)
+        if requested == 'pgvector' and not getattr(db, 'supports_pgvector', lambda: False)():
+            if not self.allow_fallback:
+                return 'pgvector'
+            if hasattr(db, 'get_vector_backend'):
+                try:
+                    fallback = str(db.get_vector_backend() or '').strip().lower()
+                    if fallback in {'index', 'python'}:
+                        return fallback
+                except Exception:
+                    pass
+            return str(getattr(self.engine, 'backend', 'index') or 'index')
+        if requested in {'pgvector', 'index', 'python'}:
+            return requested
         return 'pgvector' if getattr(db, 'supports_pgvector', lambda: False)() else self.engine.backend
+
+    def _build_backend_audit(self, db, started_at: float) -> dict:
+        backend_requested = self.requested_backend_name(db)
+        backend_used = self.backend_name(db)
+        return {
+            'backend_requested': backend_requested,
+            'backend_used': backend_used,
+            'fallback_used': backend_requested != backend_used,
+            'fallback_reason': None if backend_requested == backend_used else 'preferred_backend_unavailable',
+            'latency_ms': round((time.perf_counter() - started_at) * 1000, 3),
+            **self._policy_meta(),
+        }
+
+    def _merge_backend_audit(
+        self,
+        *,
+        backend_requested: str,
+        backend_used: str,
+        started_at: float,
+        fallback_reason: Optional[str] = None,
+        fallback_used: Optional[bool] = None,
+    ) -> dict:
+        resolved_fallback_used = (
+            bool(fallback_reason) or backend_requested != backend_used
+            if fallback_used is None
+            else bool(fallback_used or backend_requested != backend_used)
+        )
+        resolved_reason = fallback_reason
+        if resolved_reason is None and backend_requested != backend_used:
+            resolved_reason = 'preferred_backend_unavailable'
+        return {
+            'backend_requested': backend_requested,
+            'backend_used': backend_used,
+            'fallback_used': resolved_fallback_used,
+            'fallback_reason': resolved_reason,
+            'latency_ms': round((time.perf_counter() - started_at) * 1000, 3),
+            **self._policy_meta(),
+        }
 
     def default_vector_method(self) -> str:
         return 'text_embedding' if self.text_embedding_service.is_enabled() else 'price_volume'
@@ -226,6 +296,7 @@ class StrategyVectorPlatform:
     ) -> Optional[dict]:
         try:
             from .strategy_factory import _build_strategy_panels
+            started_at = time.perf_counter()
 
             resolved_vector_method = self.ensure_vector_method_available(vector_method)
             panels = await _build_strategy_panels(
@@ -248,6 +319,7 @@ class StrategyVectorPlatform:
             )
             if embedding is None or len(embedding) == 0:
                 return None
+            backend_audit = self._build_backend_audit(db, started_at)
 
             profile = await db.save_strategy_vector_profile({
                 'strategy_id': strategy.get('id'),
@@ -265,6 +337,7 @@ class StrategyVectorPlatform:
                     'index_name': index_name,
                     'index_version': index_version,
                     'profile_type': profile_type,
+                    'audit': backend_audit,
                     **embedding_meta,
                 },
             })
@@ -279,6 +352,7 @@ class StrategyVectorPlatform:
                 'index_version': index_version,
                 'metadata': {
                     'last_strategy_id': strategy.get('id'),
+                    'audit': backend_audit,
                 },
             })
             return profile
@@ -590,6 +664,162 @@ class StrategyVectorPlatform:
                 bucket_rows.append(item)
         return primary, bucket_rows
 
+    async def archive_profile(
+        self,
+        db,
+        strategy: dict,
+        profile_type: str = 'behavior',
+        vector_method: Optional[str] = None,
+        metric: str = 'cosine',
+        index_name: str = 'strategy_behavior',
+        index_version: str = 'v1',
+    ) -> Optional[dict]:
+        return await self.build_strategy_profile(
+            db,
+            strategy,
+            profile_type=profile_type,
+            vector_method=vector_method,
+            metric=metric,
+            index_name=index_name,
+            index_version=index_version,
+        )
+
+    async def get_active_index(self, db, index_name: str = 'strategy_behavior', index_version: Optional[str] = None) -> Optional[dict]:
+        snapshot = await self._get_latest_snapshot(db, index_name, index_version=index_version)
+        if snapshot:
+            return {
+                'index_name': str(snapshot.get('index_name') or index_name),
+                'index_version': str(snapshot.get('index_version') or index_version or ''),
+                'backend': str(snapshot.get('backend') or self.backend_name(db)),
+                'status': str(snapshot.get('status') or 'active'),
+                'source': 'snapshot',
+            }
+        if hasattr(db, 'list_vector_index_registry'):
+            rows = await db.list_vector_index_registry(index_name=index_name, status='active', limit=20)
+            if index_version:
+                rows = [row for row in rows if str(row.get('index_version') or '') == str(index_version)]
+            if rows:
+                row = rows[0]
+                return {
+                    'index_name': str(row.get('index_name') or index_name),
+                    'index_version': str(row.get('index_version') or index_version or ''),
+                    'backend': str(row.get('backend') or self.backend_name(db)),
+                    'status': str(row.get('status') or 'active'),
+                    'source': 'registry',
+                }
+        return None
+
+    async def search_similar(
+        self,
+        db,
+        strategy_id: str,
+        profile_type: str = 'behavior',
+        limit: int = 5,
+        candidate_limit: int = 80,
+        index_name: Optional[str] = None,
+        index_version: Optional[str] = None,
+    ) -> dict:
+        started_at = time.perf_counter()
+        requested_backend = self.requested_backend_name(db)
+        resolved_index_name = str(index_name or 'strategy_behavior')
+        active_index = await self.get_active_index(db, resolved_index_name, index_version=index_version)
+        rows = await self.ann_search_profiles(
+            db,
+            strategy_id,
+            profile_type=profile_type,
+            limit=limit,
+            candidate_limit=candidate_limit,
+            index_name=index_name,
+            index_version=index_version,
+        )
+        fallback_used = False
+        fallback_reason = None
+        if not rows and self.allow_fallback:
+            rows = await self.find_similar_profiles(
+                db,
+                strategy_id,
+                profile_type=profile_type,
+                limit=limit,
+                index_name=index_name,
+                index_version=index_version,
+            )
+            if rows:
+                fallback_used = True
+                fallback_reason = 'ann_empty_result'
+        first = rows[0] if rows else {}
+        resolved_index_name = str(
+            first.get('index_name')
+            or (active_index or {}).get('index_name')
+            or index_name
+            or 'strategy_behavior'
+        )
+        resolved_index_version = str(
+            first.get('index_version')
+            or (active_index or {}).get('index_version')
+            or index_version
+            or ''
+        )
+        backend_used = str(
+            first.get('backend')
+            or (active_index or {}).get('backend')
+            or requested_backend
+        )
+        return {
+            'items': rows,
+            'count': len(rows),
+            'index_name': resolved_index_name,
+            'index_version': resolved_index_version,
+            'active_index': active_index,
+            **self._merge_backend_audit(
+                backend_requested=requested_backend,
+                backend_used=backend_used,
+                fallback_reason=fallback_reason,
+                fallback_used=fallback_used,
+                started_at=started_at,
+            ),
+        }
+
+    async def health_check(
+        self,
+        db,
+        index_name: str = 'strategy_behavior',
+        limit_versions: int = 20,
+        include_hnsw_indexes: bool = False,
+    ) -> dict:
+        started_at = time.perf_counter()
+        if not hasattr(db, 'get_strategy_vector_health'):
+            audit = self._merge_backend_audit(
+                backend_requested=self.requested_backend_name(db),
+                backend_used=self.backend_name(db),
+                fallback_reason='health_unsupported',
+                fallback_used=False,
+                started_at=started_at,
+            )
+            return {
+                'index_name': index_name,
+                'active_index': None,
+                **audit,
+            }
+        result = await db.get_strategy_vector_health(
+            index_name=index_name,
+            limit_versions=limit_versions,
+            include_hnsw_indexes=include_hnsw_indexes,
+        )
+        active_index = await self.get_active_index(db, index_name=index_name)
+        backend_requested = self.requested_backend_name(db)
+        backend_used = str((active_index or {}).get('backend') or result.get('backend') or backend_requested)
+        audit = self._merge_backend_audit(
+            backend_requested=backend_requested,
+            backend_used=backend_used,
+            started_at=started_at,
+        )
+        return {
+            **result,
+            'active_index': active_index,
+            **audit,
+        }
+
+
     async def ann_search_profiles(
         self,
         db,
@@ -603,6 +833,7 @@ class StrategyVectorPlatform:
         query_profile = await self._load_query_profile(db, strategy_id, profile_type=profile_type, preferred_version=index_version)
         if not query_profile:
             return []
+        requested_backend = self.requested_backend_name(db)
         resolved_index_name = self._resolved_index_name(index_name, query_profile)
         snapshot = await self._get_latest_snapshot(db, resolved_index_name, index_version=index_version)
         if snapshot and snapshot.get('index_version') and query_profile.get('index_version') != snapshot.get('index_version'):
@@ -614,7 +845,8 @@ class StrategyVectorPlatform:
             return []
         if not snapshot or not hasattr(db, 'list_strategy_vector_index_items'):
             return []
-        if getattr(db, 'supports_pgvector', lambda: False)() and hasattr(db, 'search_strategy_vector_index_items_by_embedding'):
+        pgvector_available = getattr(db, 'supports_pgvector', lambda: False)() and hasattr(db, 'search_strategy_vector_index_items_by_embedding')
+        if requested_backend == 'pgvector' and pgvector_available:
             pg_rows = await db.search_strategy_vector_index_items_by_embedding(
                 query_embedding=query_embedding.tolist(),
                 index_name=resolved_index_name,
@@ -652,6 +884,10 @@ class StrategyVectorPlatform:
                     })
                 results.sort(key=lambda row: (row.get('similarity', 0), row.get('coarse_score', 0)), reverse=True)
                 return results[: max(1, min(int(limit or 5), 20))]
+            if not self.allow_fallback:
+                return []
+        elif requested_backend == 'pgvector' and not self.allow_fallback:
+            return []
         primary_bucket, candidate_buckets = self._resolve_query_bucket(snapshot, query_embedding)
         if not candidate_buckets:
             return []
@@ -718,11 +954,13 @@ class StrategyVectorPlatform:
         query_profile = await self._load_query_profile(db, strategy_id, profile_type=profile_type, preferred_version=index_version)
         if not query_profile:
             return []
+        requested_backend = self.requested_backend_name(db)
         query_embedding = self._normalize_embedding(query_profile.get('embedding'))
         if len(query_embedding) == 0:
             return []
         resolved_index_name = self._resolved_index_name(index_name, query_profile)
-        if getattr(db, 'supports_pgvector', lambda: False)() and hasattr(db, 'search_strategy_vector_profiles_by_embedding'):
+        pgvector_available = getattr(db, 'supports_pgvector', lambda: False)() and hasattr(db, 'search_strategy_vector_profiles_by_embedding')
+        if requested_backend == 'pgvector' and pgvector_available:
             pg_rows = await db.search_strategy_vector_profiles_by_embedding(
                 query_embedding=query_embedding.tolist(),
                 profile_type=profile_type,
@@ -751,6 +989,10 @@ class StrategyVectorPlatform:
                     })
                 results.sort(key=lambda row: row.get('similarity', 0), reverse=True)
                 return results[: max(1, min(int(limit or 5), 20))]
+            if not self.allow_fallback:
+                return []
+        elif requested_backend == 'pgvector' and not self.allow_fallback:
+            return []
         profiles = await db.list_strategy_vector_profiles(
             profile_type=profile_type,
             index_name=resolved_index_name,

@@ -11,6 +11,9 @@ MIN_LOT_SIZE = 100
 
 def _normalize_kwargs(kwargs: dict) -> dict:
     """统一解析 kwargs 参数（兼容 JSON 字符串和 dict）"""
+    params = kwargs.get("params")
+    if isinstance(params, dict):
+        kwargs = {**kwargs, **params}
     raw = kwargs.get("kwargs")
     if isinstance(raw, dict):
         kwargs = {**kwargs, **raw}
@@ -122,7 +125,7 @@ def register_compliance_manager(mcp):
 
         Args:
             action (str, required): 操作类型，可选 help/check_order/get_restrictions/check/check_trade/rules
-            kwargs: JSON 字符串或关键字参数，不同 action 所需参数:
+            kwargs: 支持 structured ``params``、JSON 字符串 ``kwargs`` 或关键字参数，不同 action 所需参数:
                 - help: 无需额外参数
                 - check_order: code(str), direction(str, "buy"/"sell"), quantity(int), price(float)
                 - get_restrictions: code(str, optional)

@@ -6,7 +6,9 @@ from typing import Any
 
 import numpy as np
 
+from .factor_calculator import factor_calculator
 from .screen_engine import engine as screen_engine
+from .technical_analysis import TechnicalAnalysis
 from . import screen_conditions as _screen_conditions  # noqa: F401
 
 
@@ -37,6 +39,166 @@ def _normalize_conditions(conditions: Any) -> list[Any]:
     if isinstance(conditions, (list, tuple)):
         return list(conditions)
     return []
+
+
+def _safe_series_value(series: list[float], idx: int) -> float | None:
+    if idx < 0 or idx >= len(series):
+        return None
+    value = series[idx]
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(value):
+        return None
+    return float(value)
+
+
+def _compare(left: float | None, op: str, right: Any) -> bool:
+    if left is None:
+        return False
+    try:
+        right_value = float(right)
+    except (TypeError, ValueError):
+        return False
+
+    operator = str(op or "==").strip().lower()
+    if operator in {">", "gt"}:
+        return left > right_value
+    if operator in {">=", "gte"}:
+        return left >= right_value
+    if operator in {"<", "lt"}:
+        return left < right_value
+    if operator in {"<=", "lte"}:
+        return left <= right_value
+    if operator in {"!=", "<>", "ne"}:
+        return left != right_value
+    return left == right_value
+
+
+def _declared_condition_value(window: list[dict[str, Any]], field: str) -> float | None:
+    if not window:
+        return None
+
+    latest = window[-1]
+    field_key = str(field or "").strip().lower()
+    if not field_key:
+        return None
+
+    if field_key in {"open", "high", "low", "close", "volume", "amount", "turnover"}:
+        raw = latest.get(field_key)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return float(value) if np.isfinite(value) else None
+
+    closes = [float(row.get("close", 0) or 0) for row in window]
+    volumes = [float(row.get("volume", 0) or 0) for row in window]
+    idx = len(window) - 1
+
+    if field_key in {"pct_change", "change_pct", "return_1d"}:
+        current = latest.get("change_pct")
+        if current is not None:
+            try:
+                value = float(current)
+            except (TypeError, ValueError):
+                value = None
+            if value is not None and np.isfinite(value):
+                return float(value)
+        if len(closes) < 2 or closes[-2] <= 0:
+            return None
+        return float((closes[-1] - closes[-2]) / closes[-2] * 100.0)
+
+    if field_key == "volume_ratio":
+        if len(volumes) < 6:
+            return None
+        avg_prev_5 = float(np.mean(volumes[-6:-1]))
+        if avg_prev_5 <= 0:
+            return None
+        return float(volumes[-1] / avg_prev_5)
+
+    if field_key.startswith("ma_"):
+        try:
+            period = int(field_key.split("_", 1)[1])
+        except (IndexError, ValueError):
+            return None
+        return _safe_series_value(TechnicalAnalysis.calculate_sma(closes, period), idx)
+
+    if field_key.startswith("ema_"):
+        try:
+            period = int(field_key.split("_", 1)[1])
+        except (IndexError, ValueError):
+            return None
+        return _safe_series_value(TechnicalAnalysis.calculate_ema(closes, period), idx)
+
+    if field_key.startswith("rsi_"):
+        try:
+            period = int(field_key.split("_", 1)[1])
+        except (IndexError, ValueError):
+            return None
+        series = factor_calculator.calculate_rsi(closes, period=period, as_series=True)
+        arr = np.asarray(series, dtype=np.float64)
+        if arr.size == 0:
+            return None
+        padded = np.full(len(closes), np.nan, dtype=np.float64)
+        usable = min(arr.size, max(0, len(closes) - 1))
+        if usable > 0:
+            padded[-usable:] = arr[-usable:]
+        value = padded[idx]
+        return float(value) if np.isfinite(value) else None
+
+    if field_key.startswith("roc_"):
+        try:
+            period = int(field_key.split("_", 1)[1])
+        except (IndexError, ValueError):
+            return None
+        value = factor_calculator.calculate_roc(closes, period=period)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return float(value) if np.isfinite(value) else None
+
+    return None
+
+
+def _evaluate_conditions(window: list[dict[str, Any]], conditions: list[Any], logic: str) -> dict[str, Any]:
+    details: dict[str, bool] = {}
+    results: list[bool] = []
+    deferred_engine_conditions: list[Any] = []
+
+    for index, condition in enumerate(conditions):
+        if isinstance(condition, dict) and condition.get("id"):
+            deferred_engine_conditions.append(condition)
+            continue
+        if isinstance(condition, str):
+            deferred_engine_conditions.append(condition)
+            continue
+
+        cond_key = f"condition_{index + 1}"
+        field = condition.get("field") if isinstance(condition, dict) else None
+        op = condition.get("op") if isinstance(condition, dict) else None
+        value = condition.get("value") if isinstance(condition, dict) else None
+        if field:
+            cond_key = str(field)
+        match = _compare(_declared_condition_value(window, str(field or "")), str(op or "=="), value)
+        details[cond_key] = bool(match)
+        results.append(bool(match))
+
+    if deferred_engine_conditions:
+        engine_result = screen_engine.evaluate_multi(deferred_engine_conditions, window, logic="AND")
+        engine_details = engine_result.get("details", {}) if isinstance(engine_result, dict) else {}
+        if isinstance(engine_details, dict):
+            details.update(engine_details)
+            results.extend(bool(v) for v in engine_details.values())
+
+    if not results:
+        return {"match": False, "details": details}
+
+    logic_value = str(logic or "AND").upper()
+    matched = all(results) if logic_value == "AND" else any(results)
+    return {"match": matched, "details": details}
 
 
 def _stats(values: list[float]) -> dict[str, Any]:
@@ -87,7 +249,7 @@ def calculate_conditional_returns(
 
     for idx in range(len(ordered) - 1):
         window = ordered[: idx + 1]
-        evaluated = screen_engine.evaluate_multi(normalized_conditions, window, logic=logic_value)
+        evaluated = _evaluate_conditions(window, normalized_conditions, logic=logic_value)
         if not evaluated.get("match"):
             continue
         current_close = float(window[-1].get("close") or 0)
