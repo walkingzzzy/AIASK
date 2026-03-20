@@ -1,7 +1,9 @@
 import { Body, Controller, Post, Req } from '@nestjs/common';
 import { Type } from 'class-transformer';
 import { IsNumber, IsOptional, IsString, Matches, Min } from 'class-validator';
+import { AssistantUnifiedService } from './assistant-unified.service';
 import { AssistantService } from './assistant.service';
+import { UnifiedDecisionBodyDto } from './dto/unified-decision.dto';
 
 class StockCodeBodyDto {
   @IsString()
@@ -31,7 +33,20 @@ class SellDecisionBodyDto extends StockCodeBodyDto {
 
 @Controller('assistant')
 export class AssistantController {
-  constructor(private readonly assistantService: AssistantService) {}
+  constructor(
+    private readonly assistantService: AssistantService,
+    private readonly assistantUnifiedService: AssistantUnifiedService,
+  ) {}
+
+  private getTraceId(req: { traceId?: string; headers?: Record<string, string | undefined> }) {
+    return String(
+      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN',
+    );
+  }
+
+  private getUserId(req: { user?: { sub?: string; id?: string } }) {
+    return String(req.user?.sub ?? req.user?.id ?? '').trim();
+  }
 
   @Post('diagnosis')
   async diagnosis(
@@ -39,9 +54,7 @@ export class AssistantController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.assistantService.diagnosis(body.code);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Post('should-buy')
@@ -50,9 +63,7 @@ export class AssistantController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.assistantService.shouldBuy(body.code);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Post('should-sell')
@@ -61,22 +72,54 @@ export class AssistantController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.assistantService.shouldSell(body.code, body.buyPrice, body.holdingDays);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
+  }
+
+  @Post('unified-decision')
+  async unifiedDecision(
+    @Body() body: UnifiedDecisionBodyDto,
+    @Req() req: {
+      user?: { sub?: string; id?: string };
+      traceId?: string;
+      headers?: Record<string, string | undefined>;
+    },
+  ) {
+    const userId = this.getUserId(req);
+    const data = await this.assistantUnifiedService.getUnifiedDecisionSummary(
+      body.code,
+      body.investmentStyle ?? 'balanced',
+      userId || undefined,
+    );
+    return { success: true, data, traceId: this.getTraceId(req) };
+  }
+
+  @Post('unified-decision/details')
+  async unifiedDecisionDetails(
+    @Body() body: UnifiedDecisionBodyDto,
+    @Req() req: {
+      user?: { sub?: string; id?: string };
+      traceId?: string;
+      headers?: Record<string, string | undefined>;
+    },
+  ) {
+    const userId = this.getUserId(req);
+    const data = await this.assistantUnifiedService.getUnifiedDecisionDetails(
+      body.code,
+      body.investmentStyle ?? 'balanced',
+      userId || undefined,
+    );
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Post('industry-chain')
   async getIndustryChain(@Body() body: IndustryChainDto, @Req() req: any) {
     const data = await this.assistantService.getIndustryChain(body.keyword, body.chainId);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Post('daily-report')
   async generateDailyReport(@Body() body: DailyReportDto, @Req() req: any) {
     const data = await this.assistantService.generateDailyReport(body.date);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 }

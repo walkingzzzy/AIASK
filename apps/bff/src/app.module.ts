@@ -22,7 +22,6 @@ import { RiskModule } from './risk/risk.module';
 import { FundFlowModule } from './fund-flow/fund-flow.module';
 import { FactorModule } from './factor/factor.module';
 import { AssistantModule } from './assistant/assistant.module';
-import { TdxModule } from './tdx/tdx.module';
 import { ValuationModule } from './valuation/valuation.module';
 import { TechnicalModule } from './technical/technical.module';
 import { SentimentModule } from './sentiment/sentiment.module';
@@ -61,7 +60,6 @@ import { AdminModule } from './admin/admin.module';
     FundFlowModule,
     FactorModule,
     AssistantModule,
-    TdxModule,
     ValuationModule,
     TechnicalModule,
     SentimentModule,
@@ -90,4 +88,3 @@ import { AdminModule } from './admin/admin.module';
   ],
 })
 export class AppModule { }
-

@@ -4,10 +4,7 @@ import './globals.css';
 import QueryProvider from '@/lib/query-provider';
 import AppShell from '@/components/app-shell';
 import { ToastProvider } from '@/components/ui/toast';
-import { AlertToastProvider } from '@/components/alert-toast';
-import { Spotlight } from '@/components/spotlight';
-import { MobileBottomNav } from '@/components/mobile-nav';
-import { WatchlistInit } from '@/components/watchlist-init';
+import { GlobalOverlays } from '@/components/global-overlays';
 
 export const viewport: Viewport = {
   width: 'device-width',
@@ -63,10 +60,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Suspense fallback={<LoadingFallback />}>
               <AppShell>{children}</AppShell>
             </Suspense>
-            <AlertToastProvider />
-            <Spotlight />
-            <MobileBottomNav />
-            <WatchlistInit />
+            <GlobalOverlays />
           </ToastProvider>
         </QueryProvider>
       </body>

@@ -1,0 +1,62 @@
+name: AKShare Tool Healthcheck
+
+on:
+  pull_request:
+    paths:
+      - "packages/akshare-mcp/src/**"
+      - "packages/akshare-mcp/tests/**"
+      - "packages/akshare-mcp/scripts/run_tool_healthcheck.py"
+      - "packages/akshare-mcp/scripts/export_tool_registry.py"
+      - "packages/akshare-mcp/scripts/audit_real_world_scenarios.py"
+      - "packages/akshare-mcp/src/akshare_mcp/tool_registry.py"
+      - "packages/akshare-mcp/src/akshare_mcp/scenario_artifact_audit.py"
+      - "packages/akshare-mcp/Makefile"
+      - "docs/171工具全量对话式深度测试任务.md"
+      - "packages/akshare-mcp/tests/real_world_scenarios/**"
+      - ".github/workflows/akshare-tool-healthcheck.yml"
+  push:
+    branches: ["master", "main"]
+    paths:
+      - "packages/akshare-mcp/src/**"
+      - "packages/akshare-mcp/tests/**"
+      - "packages/akshare-mcp/scripts/run_tool_healthcheck.py"
+      - "packages/akshare-mcp/scripts/export_tool_registry.py"
+      - "packages/akshare-mcp/scripts/audit_real_world_scenarios.py"
+      - "packages/akshare-mcp/src/akshare_mcp/tool_registry.py"
+      - "packages/akshare-mcp/src/akshare_mcp/scenario_artifact_audit.py"
+      - "packages/akshare-mcp/Makefile"
+      - "docs/171工具全量对话式深度测试任务.md"
+      - "packages/akshare-mcp/tests/real_world_scenarios/**"
+      - ".github/workflows/akshare-tool-healthcheck.yml"
+
+jobs:
+  tool-healthcheck:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packages/akshare-mcp/requirements.txt
+
+      - name: Run quick healthcheck
+        run: |
+          cd packages/akshare-mcp
+          python scripts/run_tool_healthcheck.py --mode quick
+
+      - name: Upload healthcheck artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: akshare-tool-healthcheck
+          path: |
+            reports/tool_healthcheck/
+            reports/tool_registry/
+            reports/real_world_scenarios/

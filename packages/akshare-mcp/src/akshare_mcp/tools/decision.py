@@ -10,8 +10,12 @@ from ..services import (
     set_conclusion,
     summarize_chain,
 )
+from ..services.decision_contracts import (
+    get_unified_decision_details_payload,
+    get_unified_decision_summary_payload,
+)
 from ..services.factor_calculator import factor_calculator
-from ..utils import ok, fail
+from ..utils import ok, fail, resolve_security_code
 import statistics
 import time
 
@@ -29,8 +33,16 @@ from . import investment_analysis as investment_analysis_mod
 from .investment_analysis import get_investment_analysis as _raw_get_investment_analysis
 
 
-async def get_investment_analysis(code: str) -> dict:
+async def get_investment_analysis(
+    code: str | None = None,
+    stock_code: str | None = None,
+    symbol: str | None = None,
+    ticker: str | None = None,
+) -> dict:
     """兼容导出：默认将 decision.get_db 透传到 investment_analysis 模块。"""
+    code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+    if not code:
+        return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
     original_get_db = getattr(investment_analysis_mod, 'get_db', None)
     investment_analysis_mod.get_db = get_db
     try:
@@ -45,13 +57,16 @@ def register(mcp):
 
     @mcp.tool()
     async def should_i_buy(
-        code: str,
+        code: str | None = None,
         investment_style: str = 'balanced',
         as_of: str = '',
         adjust: str = '',
         price_source_policy: str = 'auto',
         explain: bool = True,
-        strict_mode: bool = False
+        strict_mode: bool = False,
+        stock_code: str | None = None,
+        symbol: str | None = None,
+        ticker: str | None = None,
     ):
         """
         买入建议 - 综合估值、技术、基本面、因子分析
@@ -66,6 +81,9 @@ def register(mcp):
             strict_mode: 严格模式（空值严格处理）
         """
         start_time = time.perf_counter()
+        code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+        if not code:
+            return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
         trace_id = f"should_i_buy:{code}:{int(time.time() * 1000)}"
         evidence_chain = None
         try:
@@ -149,6 +167,18 @@ def register(mcp):
 
             closes = [k['close'] for k in klines]
             volumes = [k['volume'] for k in klines]
+            latest_kline = max(
+                klines,
+                key=lambda item: str(item.get('date') or item.get('trade_date') or item.get('timestamp') or ''),
+            )
+            analysis_date = (
+                latest_kline.get('date')
+                or latest_kline.get('trade_date')
+                or latest_kline.get('timestamp')
+                or ''
+            )
+            current_price = float(latest_kline.get('close') or closes[0])
+            time_precision = 'historical_eod_close'
 
             analysis_context = {}
             context_error = None
@@ -552,7 +582,6 @@ def register(mcp):
                         risks.append(item)
 
             # 9. 目标价位（优先行业中位数PE估值法）
-            current_price = closes[0]
             industry_peer_pes: list[float] = []
             industry_name = stock_info.get('industry') or stock_info.get('industry_name') or ''
             if industry_name:
@@ -596,7 +625,6 @@ def register(mcp):
                 horizon=10,
             )
 
-            analysis_date = klines[0].get('date', '')
             payload = {
                 'code': code,
                 'name': stock_info.get('name', ''),
@@ -615,6 +643,8 @@ def register(mcp):
                 'signal_breakdown': signal_breakdown,
                 'investment_style': investment_style,
                 'analysis_date': analysis_date,
+                'time_precision': time_precision,
+                'price_basis': 'kline_latest_close',
                 'failed_modules': ([f"investment_analysis:{context_error}"] if context_error else []),
                 'decision_probability': {
                     'buy_probability': round(float(buy_probability), 4),
@@ -674,6 +704,8 @@ def register(mcp):
                 }
             result = _ok(payload)
             result['meta']['data_timestamp'] = analysis_date
+            result['meta']['time_precision'] = time_precision
+            result['meta']['price_basis'] = 'kline_latest_close'
             result['meta']['evidence_chain_saved'] = bool(payload.get('evidence_trace_id'))
             return result
 
@@ -682,9 +714,12 @@ def register(mcp):
 
     @mcp.tool()
     async def should_i_sell(
-        code: str,
-        buy_price: float,
-        holding_days: int = 0
+        code: str | None = None,
+        buy_price: float = 0.0,
+        holding_days: int = 0,
+        stock_code: str | None = None,
+        symbol: str | None = None,
+        ticker: str | None = None,
     ):
         """
         卖出建议 - 综合止盈止损、技术信号、持仓时间分析
@@ -695,6 +730,11 @@ def register(mcp):
             holding_days: 持有天数
         """
         try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            if buy_price <= 0:
+                return fail('buy_price 必须 > 0')
             db = get_db()
 
             # 1. 获取基础信息
@@ -882,6 +922,83 @@ def register(mcp):
 
             return ok(payload)
 
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def get_unified_decision_summary(
+        code: str | None = None,
+        investment_style: str = 'balanced',
+        user_id: str | None = None,
+        stock_code: str | None = None,
+        symbol: str | None = None,
+        ticker: str | None = None,
+    ):
+        """统一决策摘要：输出前端友好的 summary 卡片。"""
+        try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            payload = await get_unified_decision_summary_payload(
+                code=code,
+                investment_style=investment_style,
+                user_id=user_id,
+            )
+            return ok(payload)
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def get_unified_decision_details(
+        code: str | None = None,
+        investment_style: str = 'balanced',
+        user_id: str | None = None,
+        stock_code: str | None = None,
+        symbol: str | None = None,
+        ticker: str | None = None,
+    ):
+        """统一决策详情：输出 summary + 全量 details 证据。"""
+        try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            payload = await get_unified_decision_details_payload(
+                code=code,
+                investment_style=investment_style,
+                user_id=user_id,
+            )
+            return ok(payload)
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def get_unified_decision(
+        code: str | None = None,
+        detail_level: str = 'summary',
+        investment_style: str = 'balanced',
+        user_id: str | None = None,
+        stock_code: str | None = None,
+        symbol: str | None = None,
+        ticker: str | None = None,
+    ):
+        """统一决策兼容包装器：按 detail_level 返回 summary 或 details。"""
+        try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            if str(detail_level or 'summary').strip().lower() == 'details':
+                payload = await get_unified_decision_details_payload(
+                    code=code,
+                    investment_style=investment_style,
+                    user_id=user_id,
+                )
+            else:
+                payload = await get_unified_decision_summary_payload(
+                    code=code,
+                    investment_style=investment_style,
+                    user_id=user_id,
+                )
+            return ok(payload)
         except Exception as e:
             return fail(str(e))
 

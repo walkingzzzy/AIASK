@@ -1,31 +1,85 @@
 """宏观管理器 - 宏观经济数据"""
 
-from ...storage import get_db
-from ...utils import ok, fail
-import json
 import logging
+import time
+
+from ...data_source import data_source
+from ...storage import get_db
+from ...utils import parse_numeric
+from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
 
 logger = logging.getLogger(__name__)
+def _breadth_from_pct_list(values: list[float]) -> dict:
+    up = sum(1 for value in values if value > 0)
+    down = sum(1 for value in values if value < 0)
+    flat = sum(1 for value in values if value == 0)
+    return {
+        "advance_count": up,
+        "decline_count": down,
+        "flat_count": flat,
+        "quoted_count": up + down + flat,
+    }
 
 
-def _normalize_kwargs(kwargs: dict) -> dict:
-    logger.info(f"[MacroManager] _normalize_kwargs input: {kwargs}")
-    extra = kwargs.get("kwargs")
-    if extra is not None:
-        if isinstance(extra, str):
-            try:
-                extra = json.loads(extra or "{}")
-                logger.info(f"[MacroManager] Parsed kwargs JSON: {extra}")
-            except Exception as e:
-                logger.warning(f"[MacroManager] Failed to parse kwargs JSON: {e}, raw={extra!r}")
-                extra = None
-        if isinstance(extra, dict):
-            kwargs = {**kwargs, **extra}
-            logger.info(f"[MacroManager] After merge: {kwargs}")
-    return kwargs
+def _fallback_market_breadth() -> tuple[dict, float | None, float | None, str | None]:
+    try:
+        ts_pro = data_source.get_tushare_pro()
+        if ts_pro:
+            import datetime as _dt
+            for days_back in range(7):
+                check_date = (_dt.datetime.now() - _dt.timedelta(days=days_back)).strftime("%Y%m%d")
+                try:
+                    df = ts_pro.daily(trade_date=check_date, fields="ts_code,pct_chg")
+                    if df is not None and not df.empty and len(df) >= 100:
+                        pct_values = [float(value) for value in df["pct_chg"].tolist() if value is not None]
+                        if pct_values:
+                            return _breadth_from_pct_list(pct_values), None, None, f"tushare.daily({check_date})"
+                except Exception:
+                    continue
+    except Exception as exc:
+        logger.warning("[MacroManager] Tushare breadth fallback failed: %s", exc)
+
+    try:
+        import akshare as ak
+        df = ak.stock_zh_a_spot_em()
+        if df is not None and not df.empty and "涨跌幅" in df.columns:
+            pct_values = []
+            turnover_total = 0.0
+            market_cap_total = 0.0
+            for _, row in df.iterrows():
+                pct = parse_numeric(row.get("涨跌幅"))
+                if pct is not None:
+                    pct_values.append(float(pct))
+                amount = parse_numeric(row.get("成交额"))
+                if amount is not None:
+                    turnover_total += float(amount)
+                total_mv = parse_numeric(row.get("总市值"))
+                if total_mv is not None:
+                    market_cap_total += float(total_mv)
+            if pct_values:
+                breadth = _breadth_from_pct_list(pct_values)
+                turnover = round(turnover_total / 1e12, 4) if turnover_total > 0 else None
+                market_cap = round(market_cap_total / 1e12, 4) if market_cap_total > 0 else None
+                return breadth, turnover, market_cap, "akshare.stock_zh_a_spot_em"
+    except Exception as exc:
+        logger.warning("[MacroManager] AkShare breadth fallback failed: %s", exc)
+
+    return {}, None, None, None
 
 
-async def _build_market_overview(db) -> dict:
+def _dedupe_chain(values: list[str]) -> list[str]:
+    chain = []
+    seen = set()
+    for value in values:
+        label = str(value or "").strip()
+        if not label or label in seen:
+            continue
+        chain.append(label)
+        seen.add(label)
+    return chain
+
+
+async def _build_market_overview(db) -> tuple[dict, list[str]]:
     from ..market.quote import get_index_quote
 
     index_specs = {
@@ -65,6 +119,8 @@ async def _build_market_overview(db) -> dict:
     }
     market_cap = None
     turnover = None
+    overview_source = "real_time_quote+timescaledb"
+    source_chain = ["macro_manager", "market.quote.get_index_quote"]
     try:
         async with db.acquire() as conn:
             latest_quotes = await conn.fetchrow(
@@ -92,6 +148,7 @@ async def _build_market_overview(db) -> dict:
             )
             if latest_quotes:
                 latest_quotes = dict(latest_quotes)
+                source_chain.append("db.stock_quotes")
                 breadth = {
                     "advance_count": int(latest_quotes.get("advance_count") or 0),
                     "decline_count": int(latest_quotes.get("decline_count") or 0),
@@ -106,11 +163,26 @@ async def _build_market_overview(db) -> dict:
             if market_cap is None:
                 stock_row = await conn.fetchrow("SELECT SUM(market_cap) AS total_market_cap FROM stocks")
                 if stock_row:
+                    source_chain.append("db.stocks")
                     stock_row = dict(stock_row)
                     if stock_row.get("total_market_cap"):
                         market_cap = round(float(stock_row.get("total_market_cap")) / 1e12, 4)
     except Exception as exc:
         logger.warning("[MacroManager] market overview DB aggregate failed: %s", exc)
+
+    quoted_count = int(breadth.get("quoted_count") or 0)
+    if quoted_count < 100:
+        fallback_breadth, fallback_turnover, fallback_market_cap, fallback_source = _fallback_market_breadth()
+        fallback_count = int(fallback_breadth.get("quoted_count") or 0)
+        if fallback_count >= 100:
+            breadth = fallback_breadth
+            turnover = fallback_turnover if fallback_turnover is not None else turnover
+            market_cap = fallback_market_cap if fallback_market_cap is not None else market_cap
+            overview_source = fallback_source or overview_source
+            if fallback_source and fallback_source.startswith("tushare.daily"):
+                source_chain.append("tushare.daily")
+            elif fallback_source == "akshare.stock_zh_a_spot_em":
+                source_chain.append("akshare.stock_zh_a_spot_em")
 
     avg_change = sum(index_changes) / len(index_changes) if index_changes else 0.0
     adv = breadth.get("advance_count") or 0
@@ -122,14 +194,17 @@ async def _build_market_overview(db) -> dict:
     else:
         sentiment = "neutral"
 
-    return {
-        "market_sentiment": sentiment,
-        "major_indices": major_indices,
-        "market_cap": market_cap,
-        "turnover": turnover,
-        "breadth": breadth,
-        "source": "real_time_quote+timescaledb",
-    }
+    return (
+        {
+            "market_sentiment": sentiment,
+            "major_indices": major_indices,
+            "market_cap": market_cap,
+            "turnover": turnover,
+            "breadth": breadth,
+            "source": overview_source,
+        },
+        _dedupe_chain(source_chain),
+    )
 
 
 def register_macro_manager(mcp):
@@ -157,18 +232,37 @@ def register_macro_manager(mcp):
             # 市场概览
             macro_manager(action="market_overview", kwargs="{}")
         """
+        start_time = time.perf_counter()
         try:
             db = get_db()
-            kwargs = _normalize_kwargs(kwargs)
+            kwargs = normalize_manager_kwargs(kwargs)
+
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="macro_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="macro_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
             
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'get_indicators': '获取宏观指标（支持 indicator/type 或 indicators 列表）',
                         'market_overview': '市场概览',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['macro_manager'])
 
             elif action == 'get_indicators':
                 # P1-2 修复说明：
@@ -252,6 +346,7 @@ def register_macro_manager(mcp):
 
                 results_by_indicator = {}
                 sources_by_indicator = {}
+                source_chain = ['macro_manager']
 
                 for indicator_type in requested_indicators:
                     data = None
@@ -263,7 +358,8 @@ def register_macro_manager(mcp):
                         result = get_macro_indicator(indicator=indicator_type, limit=limit)
                         if result.get('success') and result.get('data'):
                             data = result.get('data')
-                            source = result.get('data', [{}])[0].get('source', 'macro_indicator') if isinstance(result.get('data'), list) else 'macro_indicator'
+                            source = result.get('source') or 'macro_indicator'
+                            source_chain.append('macro.get_macro_indicator')
                     except Exception as e:
                         logger.warning(f"[MacroManager] get_macro_indicator failed for {indicator_type}: {e}")
 
@@ -271,6 +367,7 @@ def register_macro_manager(mcp):
                     if data is None and indicator_type in fallback_indicators:
                         data = fallback_indicators[indicator_type]
                         source = 'fallback'
+                        source_chain.append('macro_manager.fallback_indicators')
 
                     results_by_indicator[indicator_type] = data
                     sources_by_indicator[indicator_type] = source
@@ -291,7 +388,7 @@ def register_macro_manager(mcp):
                             'supported_indicators': list(fallback_indicators.keys()),
                             'message': f'指标 "{indicator_type}" 暂无数据，支持的指标: {", ".join(fallback_indicators.keys())}',
                         })
-                    return ok(payload)
+                    return _ok(payload, source_chain=_dedupe_chain(source_chain))
 
                 # 多指标：返回分指标结果，严格与请求口径一致
                 payload = {
@@ -305,12 +402,22 @@ def register_macro_manager(mcp):
                         'supported_indicators': list(fallback_indicators.keys()),
                         'message': '部分指标暂无数据，请参考 supported_indicators',
                     })
-                return ok(payload)
+                return _ok(payload, source_chain=_dedupe_chain(source_chain))
             
             elif action == 'market_overview':
-                return ok(await _build_market_overview(db))
+                overview, source_chain = await _build_market_overview(db)
+                return _ok(overview, source_chain=source_chain)
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, get_indicators, market_overview')
+                return _fail(
+                    f'Unknown action: {action}. Supported: help, get_indicators, market_overview',
+                    source_chain=['macro_manager'],
+                )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='macro_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['macro_manager'],
+            )

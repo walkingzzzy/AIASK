@@ -57,7 +57,7 @@ function PersonalOverview({ nickname, paperSummary, paperAccount, paperPositions
       </div>
 
       <div data-tour="dashboard">
-        <SectionCard className="p-4 mb-4">
+        <SectionCard className="min-h-[180px] p-4 mb-4">
           <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
             <h3 className="mt-0 mb-0">个人总览</h3>
             <Link href="/paper-trading" className="text-xs text-primary no-underline">进入模拟盘</Link>
@@ -82,7 +82,7 @@ function ThreeColumnCards({ watchlistItems, paperPositions, marketNews, quoteMap
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
       {/* Watchlist */}
-      <SectionCard className="p-4 lg:col-span-1">
+      <SectionCard className="min-h-[220px] p-4 lg:col-span-1">
         <div className="flex items-center justify-between mb-2">
           <h3 className="mt-0 mb-0">自选股行情</h3>
           <Link href="/watchlist" className="text-xs text-primary no-underline">更多</Link>
@@ -116,7 +116,7 @@ function ThreeColumnCards({ watchlistItems, paperPositions, marketNews, quoteMap
       </SectionCard>
 
       {/* Positions */}
-      <SectionCard className="p-4 lg:col-span-1">
+      <SectionCard className="min-h-[220px] p-4 lg:col-span-1">
         <div className="flex items-center justify-between mb-2">
           <h3 className="mt-0 mb-0">持仓概览</h3>
           <Link href="/paper-trading" className="text-xs text-primary no-underline">更多</Link>
@@ -139,7 +139,7 @@ function ThreeColumnCards({ watchlistItems, paperPositions, marketNews, quoteMap
       </SectionCard>
 
       {/* Market news */}
-      <SectionCard className="p-4 lg:col-span-1">
+      <SectionCard className="min-h-[220px] p-4 lg:col-span-1">
         <div className="flex items-center justify-between mb-2">
           <h3 className="mt-0 mb-0">市场快讯</h3>
           <Link href="/research" className="text-xs text-primary no-underline">更多</Link>
@@ -169,11 +169,35 @@ function ThreeColumnCards({ watchlistItems, paperPositions, marketNews, quoteMap
 /* ------------------------------------------------------------------ */
 
 function WatchlistRecent({ mounted, watchlistItems, recentStocks, quoteMap, batchQIsFetching }: Pick<PersonalDashboardProps, 'mounted' | 'watchlistItems' | 'recentStocks' | 'quoteMap' | 'batchQIsFetching'>) {
-  if (!mounted || (watchlistItems.length === 0 && recentStocks.length === 0)) return null;
+  if (!mounted) {
+    return (
+      <div className="grid grid-cols-1 gap-4 mt-4 sm:grid-cols-2">
+        {Array.from({ length: 2 }).map((_, index) => (
+          <SectionCard key={`watchlist-recent-skeleton-${index}`} className="min-h-[220px] p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <Skeleton width={120} height={20} />
+              <Skeleton width={56} height={20} />
+            </div>
+            <div className="space-y-3">
+              {Array.from({ length: 5 }).map((__, itemIndex) => (
+                <div key={`watchlist-recent-skeleton-row-${index}-${itemIndex}`} className="flex items-center justify-between border-b border-border/30 py-1.5">
+                  <Skeleton width={110} height={16} />
+                  <Skeleton width={72} height={16} />
+                </div>
+              ))}
+            </div>
+          </SectionCard>
+        ))}
+      </div>
+    );
+  }
+
+  if (watchlistItems.length === 0 && recentStocks.length === 0) return null;
+
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
       {watchlistItems.length > 0 && (
-        <SectionCard className="p-4">
+        <SectionCard className="min-h-[220px] p-4">
           <h3 className="mt-0">我的自选 ({watchlistItems.length})</h3>
           <div className="space-y-1.5">
             {watchlistItems.slice(0, 8).map((item) => {
@@ -194,7 +218,7 @@ function WatchlistRecent({ mounted, watchlistItems, recentStocks, quoteMap, batc
         </SectionCard>
       )}
       {recentStocks.length > 0 && (
-        <SectionCard className="p-4">
+        <SectionCard className="min-h-[220px] p-4">
           <h3 className="mt-0">最近查看</h3>
           <div className="space-y-1.5">
             {recentStocks.slice(0, 8).map((item) => {
@@ -222,7 +246,7 @@ function WatchlistRecent({ mounted, watchlistItems, recentStocks, quoteMap, batc
 
 function QuickActions({ quickActions }: Pick<PersonalDashboardProps, 'quickActions'>) {
   return (
-    <SectionCard className="p-4 mb-4">
+    <SectionCard className="min-h-[180px] p-4 mb-4">
       <h3 className="mt-0">任务流入口</h3>
       <QuickActionGrid cols={5}>
         {quickActions.map((a) => (
@@ -247,13 +271,13 @@ export function PersonalDashboard(props: PersonalDashboardProps) {
         paperPositions={props.paperPositions}
         activeAlerts={props.activeAlerts}
       />
+      <QuickActions quickActions={props.quickActions} />
       <ThreeColumnCards
         watchlistItems={props.watchlistItems}
         paperPositions={props.paperPositions}
         marketNews={props.marketNews}
         quoteMap={props.quoteMap}
       />
-      <QuickActions quickActions={props.quickActions} />
     </>
   );
 }

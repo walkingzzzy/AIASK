@@ -59,6 +59,18 @@ export default function WatchlistPage() {
     const activeGroup = visibleGroups.find((g) => g.id === activeGroupId) || visibleGroups[0];
     const allCodes = hydrated ? visibleGroups.flatMap((g) => g.items.map((i) => i.code)) : [];
 
+    useEffect(() => {
+        if (!hydrated || visibleGroups.length === 0) return;
+
+        const hasActiveGroup = activeGroupId != null && visibleGroups.some((g) => g.id === activeGroupId);
+        if (hasActiveGroup) return;
+
+        const preferredGroup = visibleGroups.find((g) => g.items.length > 0) || visibleGroups[0];
+        if (preferredGroup && preferredGroup.id !== activeGroupId) {
+            setActiveGroupId(preferredGroup.id);
+        }
+    }, [activeGroupId, hydrated, visibleGroups]);
+
     // Batch quote for all watchlist stocks
     const batchQ = useApiQuery<unknown>(
         allCodes.length > 0 ? '/market/batch-quotes' : null,
@@ -85,9 +97,15 @@ export default function WatchlistPage() {
         return wsQuotes[code] || quoteMap.get(code) || {};
     };
 
-    const handleCreateGroup = () => {
-        if (!newGroupName.trim()) return;
-        void createGroup(newGroupName.trim());
+    const handleCreateGroup = async () => {
+        const groupName = newGroupName.trim();
+        if (!groupName) return;
+
+        const createdGroupId = await createGroup(groupName);
+        if (createdGroupId) {
+            setActiveGroupId(createdGroupId);
+        }
+
         setNewGroupName('');
         setShowNewGroup(false);
     };
@@ -105,6 +123,9 @@ export default function WatchlistPage() {
         if (pendingDialog.type === 'remove') {
             void remove(pendingDialog.code, pendingDialog.groupId);
         } else {
+            if (activeGroupId === pendingDialog.groupId) {
+                setActiveGroupId('default');
+            }
             void deleteGroup(pendingDialog.groupId);
         }
         setPendingDialog(null);
@@ -414,7 +435,27 @@ export default function WatchlistPage() {
                     </SectionCard>
                 )
             ) : (
-                <EmptyState text="暂无自选股，可使用上方搜索框添加股票" />
+                <EmptyState
+                    text="暂无自选股，可使用上方搜索框添加股票"
+                    hint="如果你刚开始使用，建议先从行情看板挑 1-2 只常看股票加入自选，后续这里会持续展示它们的价格和涨跌幅。"
+                    action={
+                        <>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setSearchKeyword('600519');
+                                    setSearchPath('/market/search?keyword=600519');
+                                }}
+                                className="rounded-full border border-primary px-3 py-1 text-xs text-primary"
+                            >
+                                试试 600519
+                            </button>
+                            <Link href="/market" className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline">
+                                去行情看板添加
+                            </Link>
+                        </>
+                    }
+                />
             )}
 
             {/* Group Management */}

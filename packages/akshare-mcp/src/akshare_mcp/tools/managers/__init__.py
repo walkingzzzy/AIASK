@@ -4,7 +4,6 @@ from importlib import import_module
 from pkgutil import iter_modules
 from typing import Callable, List, Optional, Sequence, Tuple
 
-
 Registrar = Callable[[object], None]
 
 

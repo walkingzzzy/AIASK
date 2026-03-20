@@ -1,26 +1,16 @@
 """研究管理器 - 研报、评级"""
 
 from typing import Optional
-import json
+import time
+
 from ...storage import get_db
-from ...utils import ok, fail, normalize_code
-
-
-def _normalize_manager_kwargs(code: Optional[str], kwargs: dict) -> tuple[Optional[str], dict]:
-    """
-    兼容调用侧的多种传参方式：
-    - Code / stock_code / symbol → code
-    - kwargs="{}"（JSON字符串）→ 展开为 kwargs
-    """
-    if kwargs.get("kwargs") and isinstance(kwargs.get("kwargs"), str):
-        try:
-            extra = json.loads(kwargs.get("kwargs") or "{}")
-            if isinstance(extra, dict):
-                kwargs = {**kwargs, **extra}
-        except Exception:
-            pass
-    code = code or kwargs.get("code") or kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
-    return code, kwargs
+from ...utils import normalize_code
+from ..manager_protocol import (
+    fail_with_meta,
+    normalize_manager_code,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 
 
 def _normalize_limit(value, default: int = 10, minimum: int = 1, maximum: int = 50) -> int:
@@ -57,22 +47,42 @@ def register_research_manager(mcp):
             # 获取一致评级
             research_manager(action="get_ratings", code="600519", kwargs="{}")
         """
+        start_time = time.perf_counter()
         try:
             db = get_db()
-            code, kwargs = _normalize_manager_kwargs(code, kwargs)
+            kwargs = normalize_manager_kwargs(kwargs)
+            code, kwargs = normalize_manager_code(code, kwargs)
+
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name='research_manager',
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name='research_manager',
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
             
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'get_reports': '获取研报列表（需要 code）',
                         'get_ratings': '获取一致评级（需要 code）',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['research_manager'])
             
             elif action == 'get_reports':
                 if not code:
-                    return fail('需要提供股票代码')
+                    return _fail('需要提供股票代码')
                 
                 code = normalize_code(code)
                 limit = _normalize_limit(kwargs.get('limit', 10))
@@ -83,12 +93,12 @@ def register_research_manager(mcp):
                     result = get_stock_research(code, limit=limit)
                     if result.get('success') and result.get('data', {}).get('reports'):
                         reports_data = result['data']
-                        return ok({
+                        return _ok({
                             'code': code,
                             'reports': reports_data.get('reports', []),
                             'count': reports_data.get('total', 0),
                             'source': 'real_data'
-                        })
+                        }, source_chain=['research_manager', 'news.get_stock_research'])
                 except Exception:
                     pass
                 
@@ -111,25 +121,25 @@ def register_research_manager(mcp):
                                     'date': str(row.get('report_date', '') or ''),
                                 })
                             if reports:
-                                return ok({
+                                return _ok({
                                     'code': code,
                                     'reports': reports,
                                     'count': len(reports),
                                     'source': 'tushare'
-                                })
+                                }, source_chain=['research_manager', 'tushare.report_rc'])
                 except Exception:
                     pass
                 
-                return ok({
+                return _ok({
                     'code': code,
                     'reports': [],
                     'count': 0,
                     'message': f'暂无 {code} 的研报数据'
-                })
+                }, source_chain=['research_manager'])
             
             elif action == 'get_ratings':
                 if not code:
-                    return fail('需要提供股票代码')
+                    return _fail('需要提供股票代码')
                 
                 code = normalize_code(code)
                 
@@ -153,25 +163,31 @@ def register_research_manager(mcp):
                             total = sum(ratings.values())
                             if total > 0:
                                 consensus = max(ratings, key=ratings.get)
-                                return ok({
+                                return _ok({
                                     'code': code,
                                     'consensus_rating': consensus,
                                     'ratings': ratings,
                                     'total': total,
                                     'source': 'tushare'
-                                })
+                                }, source_chain=['research_manager', 'tushare.report_rc'])
                 except Exception:
                     pass
                 
-                return ok({
+                return _ok({
                     'code': code,
                     'consensus_rating': 'unknown',
                     'ratings': {'buy': 0, 'hold': 0, 'sell': 0},
                     'total': 0,
                     'message': f'暂无 {code} 的评级数据'
-                })
+                }, source_chain=['research_manager'])
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, get_reports, get_ratings')
+                return _fail(f'Unknown action: {action}. Supported: help, get_reports, get_ratings')
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='research_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['research_manager'],
+            )

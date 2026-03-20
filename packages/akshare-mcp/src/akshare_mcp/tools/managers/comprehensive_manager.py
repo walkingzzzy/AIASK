@@ -3,12 +3,43 @@
 from typing import Optional
 import json
 import logging
+import time
 from ...storage import get_db
-from ...utils import ok, fail, normalize_code
+from ...utils import normalize_code
 from ...data_source import data_source
 from ..market import get_kline
+from ..manager_protocol import (
+    fail_with_meta,
+    normalize_manager_code,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 
 logger = logging.getLogger(__name__)
+
+
+async def _safe_db_klines(db, code: str, limit: int):
+    try:
+        return await db.get_klines(code, limit=limit)
+    except Exception as e:
+        logger.warning("[ComprehensiveManager] DB get_klines failed for %s: %s", code, e)
+        return []
+
+
+async def _safe_db_financials(db, code: str, limit: int = 1):
+    try:
+        return await db.get_financials(code, limit=limit)
+    except Exception as e:
+        logger.warning("[ComprehensiveManager] DB get_financials failed for %s: %s", code, e)
+        return []
+
+
+async def _safe_db_stock_info(db, code: str):
+    try:
+        return await db.get_stock_info(code) or {}
+    except Exception as e:
+        logger.warning("[ComprehensiveManager] DB get_stock_info failed for %s: %s", code, e)
+        return {}
 
 
 def register_comprehensive_manager(mcp):
@@ -37,48 +68,62 @@ def register_comprehensive_manager(mcp):
             # 快速扫描
             comprehensive_manager(action="quick_scan", code="600519", kwargs="{}")
         """
+        start_time = time.perf_counter()
         try:
             db = get_db()
-            # 兼容 kwargs="{}" / Code 传参
-            if kwargs.get("kwargs") and isinstance(kwargs.get("kwargs"), str):
-                try:
-                    extra = json.loads(kwargs.get("kwargs") or "{}")
-                    if isinstance(extra, dict):
-                        kwargs = {**kwargs, **extra}
-                except Exception:
-                    pass
-            code = code or kwargs.get("code") or kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
+            kwargs = normalize_manager_kwargs(kwargs, field_aliases={"codes": ("Codes",)})
+            code, kwargs = normalize_manager_code(code, kwargs)
             if "codes" not in kwargs and "Codes" in kwargs:
                 kwargs["codes"] = kwargs.get("Codes")
+
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name='comprehensive_manager',
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name='comprehensive_manager',
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
             
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'full_analysis': '综合分析（需要 code）',
                         'quick_scan': '快速扫描（需要 code）',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['comprehensive_manager'])
             
             elif action == 'full_analysis':
                 if not code:
-                    return fail('需要提供股票代码')
+                    return _fail('需要提供股票代码')
                 code = normalize_code(code)
                 
-                # 综合分析：K 线优先 DB，无则 TDX/akshare
-                klines = await db.get_klines(code, limit=60)
+                # 综合分析：K 线优先 DB，无则公共行情工具补齐
+                klines = await _safe_db_klines(db, code, 60)
+                source_chain = ['db.get_klines', 'db.get_financials', 'db.get_stock_info']
                 if not klines:
                     res = await get_kline(code, 'daily', 60)
                     if res.get('success') and res.get('data'):
                         klines = res['data']
-                financials = await db.get_financials(code, limit=1)
+                        source_chain = ['tools.market.get_kline', 'db.get_financials', 'db.get_stock_info']
+                financials = await _safe_db_financials(db, code, 1)
                 
                 if not klines:
-                    return fail('无K线数据')
+                    return _fail('无K线数据', source_chain=source_chain)
                 
                 klines = sorted(klines, key=lambda x: x.get('date') or '')
                 current_price = klines[-1]['close']
-                stock_info = await db.get_stock_info(code) or {}
+                stock_info = await _safe_db_stock_info(db, code)
 
                 pe_ratio = float(financials[0].get('pe_ratio', 0)) if financials else 0.0
                 roe = float(financials[0].get('roe', 0)) if financials else 0.0
@@ -103,7 +148,7 @@ def register_comprehensive_manager(mcp):
                     score_from_pe = max(0.0, min(40.0, 40.0 - max(0.0, pe_ratio - 15.0)))
                 total_score = round(score_from_roe + score_from_pe, 2)
 
-                return ok({
+                return _ok({
                     # 新版结构
                     'code': code,
                     'current_price': float(current_price),
@@ -127,7 +172,7 @@ def register_comprehensive_manager(mcp):
                     'score': {
                         'total_score': float(total_score),
                     },
-                })
+                }, source_chain=source_chain)
             
             elif action == 'quick_scan':
                 codes = kwargs.get('codes', [])
@@ -149,7 +194,7 @@ def register_comprehensive_manager(mcp):
                 for c in codes[:10]:
                     c = normalize_code(c)
                     # 优先数据库
-                    klines = await db.get_klines(c, limit=1)
+                    klines = await _safe_db_klines(db, c, 1)
                     # 降级到数据源
                     if not klines:
                         logger.info(f"[ComprehensiveManager] DB无数据，从数据源获取: {c}")
@@ -169,14 +214,21 @@ def register_comprehensive_manager(mcp):
                             'trend': 'up' if change_pct > 0 else ('down' if change_pct < 0 else 'flat')
                         })
                 
-                return ok({
+                return _ok({
                     'scanned': len(results),
                     'results': results,
                     'data_source': 'database+fallback' if results else 'none',
                     'message': f'成功扫描 {len(results)}/{len(codes[:10])} 只股票'
-                })
+                }, source_chain=['comprehensive_manager', 'db.get_klines', 'tools.market.get_kline'])
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, full_analysis, quick_scan')
+                return _fail(f'Unknown action: {action}. Supported: help, full_analysis, quick_scan')
         except Exception as e:
-            return fail(str(e))
+            message = str(e).strip() or f'{action} 执行失败'
+            return fail_with_meta(
+                message,
+                tool_name='comprehensive_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['comprehensive_manager'],
+            )

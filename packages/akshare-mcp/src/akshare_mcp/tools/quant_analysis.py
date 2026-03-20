@@ -858,12 +858,19 @@ async def run_factor_oos_validation(
     _perf_add(perf, "oos", time.perf_counter() - oos_stage_start)
 
     serialize_start = time.perf_counter()
+    n_periods = int(pdata.get("periods", 0))
+    n_stocks = int(len(pdata.get("codes", [])))
+    warnings: list[str] = []
+    if n_stocks < 10:
+        warnings.append("n_stocks_below_10_low_cross_sectional_confidence")
+    if n_periods < max(90, int(forward_period) * 3):
+        warnings.append("n_periods_below_recommended_validation_range")
     payload = {
             "factor": factor_name,
             "validation_report": report,
             "panel_info": {
-                "n_periods": int(pdata.get("periods", 0)),
-                "n_stocks": int(len(pdata.get("codes", []))),
+                "n_periods": n_periods,
+                "n_stocks": n_stocks,
                 "codes": pdata.get("codes", []),
                 "factor_lookback": int(factor_lookback),
                 "forward_period": int(forward_period),
@@ -878,6 +885,8 @@ async def run_factor_oos_validation(
                 "db.get_stock_info",
                 "validation.FactorValidationPipeline.run",
             ],
+            "warnings": warnings,
+            "insufficient_sample": bool(warnings),
     }
     _perf_add(perf, "serialize", time.perf_counter() - serialize_start)
     perf_breakdown = _build_perf_breakdown(
@@ -1039,6 +1048,15 @@ async def run_factor_robustness_check(
     _perf_add(perf, "robust", time.perf_counter() - robust_stage_start)
 
     serialize_start = time.perf_counter()
+    warnings: list[str] = []
+    low_sample_windows = [k for k, v in multi_window_results.items() if int(v.get("sample_size", 0)) < 10]
+    low_sample_params = [k for k, v in param_results.items() if int(v.get("sample_size", 0)) < 10]
+    if low_sample_windows:
+        warnings.append(f"low_sample_windows:{','.join(low_sample_windows)}")
+    if low_sample_params:
+        warnings.append(f"low_sample_params:{','.join(low_sample_params)}")
+    if "note" in subsample_detail:
+        warnings.append("insufficient_codes_for_subsample_split")
     payload = {
         "factor": factor_name,
         "robustness_score": robustness_score,
@@ -1048,6 +1066,8 @@ async def run_factor_robustness_check(
         "subsample_consistency": {"score": subsample_consistency, "detail": subsample_detail},
         "weights": {"multi_window": 0.4, "param_sensitivity": 0.3, "subsample": 0.3},
         "prefetch": prefetch_meta,
+        "warnings": warnings,
+        "insufficient_sample": bool(warnings),
     }
     _perf_add(perf, "serialize", time.perf_counter() - serialize_start)
     perf_breakdown = _build_perf_breakdown(

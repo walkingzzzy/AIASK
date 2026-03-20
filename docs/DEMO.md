@@ -1,26 +1,27 @@
 # AIASK 功能演示文档（DEMO）
 
-> 本文用于直观展示 AIASK 核心能力，示例与当前 README 统计口径对齐：**158 个 MCP Tools、20 个 Skills**。
+> 本文用于展示 AIASK 项目当前可见能力的典型使用方式。
+> 说明：本文属于演示文档，不代表所有场景在任意环境下都可直接运行；工具数量、Skills 数量与能力覆盖请以当前运行时审计结果和实际部署环境为准。
 
 ## 1. 快速开始（5 分钟上手）
 
 ### 1.1 目标
-用最小步骤完成一次“**对话式行情查询 + 日线K线拉取**”，不写代码、不跑脚本。
+用最小步骤完成一次“对话式行情查询 + 日线 K 线拉取”，不写代码、不跑脚本。
 
 ### 1.2 前置条件
 - MCP 服务已启动并可被 AI 客户端连接（Claude Desktop / Cursor）。
-- 若要获得更高实时性：建议配置 `TDX_PLUGIN_PATH`。
 - 若要提升结构化覆盖：建议配置 `TUSHARE_TOKEN`。
+- 若要提升缓存命中与回放能力：建议启用数据库与同步任务。
 
 ### 1.3 对话式最小用例（可直接复制）
 **你对 AI 说：**
-> 帮我查 600519 最新行情，并返回最近 5 条日线K线，结果用简表展示。
+> 帮我查 600519 最新行情，并返回最近 5 条日线 K 线，结果用简表展示。
 
-**AI 应调用的工具（示例）：**
+**可能调用的工具（示例）：**
 - `get_realtime_quote`
 - `get_kline`
 
-**预期返回（文本示例）：**
+**示例返回（文本示例）：**
 ```text
 行情：600519（贵州茅台）
 最新价：17xx.xx  涨跌幅：x.xx%
@@ -33,7 +34,7 @@
 ### 1.4 常见问题
 - 返回 `success=false`：通常是网络或上游源暂不可用，可稍后重试。
 - 价格为 `None`：可能处于非交易时段，返回最近收盘快照。
-- 盘中实时性不稳定：优先检查 `TDX_PLUGIN_PATH` 与本地通达信运行状态。
+- 盘中实时性不稳定：优先检查网络连通性、令牌配置和上游数据源状态。
 
 ---
 
@@ -45,14 +46,14 @@
 | 基本面分析 | 财务质量、估值、研报与公告联合判断 | Skills: `akshare-fundamental` / Tools: financials、valuation、research |
 | 量化回测 | 策略有效性验证与参数对比 | Skills: `akshare-quant-research-process` / Tools: backtest、performance |
 | 组合管理 | 持仓优化、风险暴露、压力测试 | Skills: `akshare-fund-manager-pro` / Tools: portfolio、risk、optimize |
-| TDX 联动 | 公式验证、条件选股、客户端同步 | Skills: `akshare-tdx-runtime-ops` / Tools: tdx_* |
+| 告警与跟踪 | 价格提醒、条件组合、日报输出 | Skills: `akshare-macro-options-alerts` / Tools: alerts、watchlist、report |
 
 ---
 
 ## 3. 进阶场景演示（对话式工具测试）
 
-### 3.1 场景A：行情查询（盘中盯盘）
-**场景描述**：快速获取单票行情、盘口与分钟K线，辅助盘中决策。
+### 3.1 场景 A：行情查询（盘中盯盘）
+**场景描述**：快速获取单票行情、盘口与分钟 K 线，辅助盘中决策。
 
 **推荐使用**：
 - Skills：`akshare-market`
@@ -60,21 +61,21 @@
 
 **对话式测试**
 - 你对 AI 说：
-  > 帮我看下 000001 的最新价、买卖五档和最近20根5分钟K线，按“价格-量能-波动”给个简短结论。
-- AI 预期调用：
+  > 帮我看下 000001 的最新价、买卖五档和最近 20 根 5 分钟 K 线，按“价格-量能-波动”给个简短结论。
+- 可能调用的工具（示例）：
   1. `get_realtime_quote("000001")`
   2. `get_order_book("000001")`
   3. `get_minute_kline("000001", period="5m", limit=20)`
-- 预期返回（示例）：
+- 示例返回（可能出现的结果）：
   - 最新价与涨跌幅
   - 买一到买五、卖一到卖五价格/量
   - 最近 20 根 5m K 线的高低点与成交量变化
 
-**关键配置**：`AKSHARE_SPOT_TTL_SECONDS`、`AKSHARE_SPOT_TIMEOUT_SECONDS`。
+**关键配置**：`AKSHARE_SPOT_TTL_SECONDS`、`AKSHARE_SPOT_TIMEOUT_SECONDS`
 
-**注意事项**：分钟K在非交易时段可能返回当日最后快照。
+**注意事项**：分钟 K 在非交易时段可能返回当日最后快照。
 
-### 3.2 场景B：基本面分析（财务+估值+研究）
+### 3.2 场景 B：基本面分析（财务 + 估值 + 研究）
 **场景描述**：做“是否值得继续研究”的第一轮筛查。
 
 **推荐使用**：
@@ -84,11 +85,11 @@
 **对话式测试**
 - 你对 AI 说：
   > 请对 600519 做一轮基本面快筛：财务健康度、当前估值水平、最近研报观点，最后给“继续研究/暂缓”建议。
-- AI 预期调用：
+- 可能调用的工具（示例）：
   1. `get_financials("600519")`
   2. `get_valuation_metrics("600519")`
   3. `get_stock_research("600519", limit=5)`
-- 预期返回（示例）：
+- 示例返回（可能出现的结果）：
   - 营收/利润/ROE 等核心财务指标摘要
   - PE/PB/PS 等估值指标区间判断
   - 最近研报数量、评级倾向、目标价分布（如可得）
@@ -97,7 +98,7 @@
 
 **注意事项**：部分财务数据是日频/T+1 更新，不应与盘中指标混用。
 
-### 3.3 场景C：量化回测（策略可行性）
+### 3.3 场景 C：量化回测（策略可行性）
 **场景描述**：验证策略在历史区间的收益、回撤、胜率等表现。
 
 **推荐使用**：
@@ -109,7 +110,7 @@
   > 用均线交叉策略回测 600519（2023-01-01 到 2025-12-31），输出收益率、最大回撤、夏普比率，并给参数调优建议。
 - AI 预期调用：
   1. `run_simple_backtest(code="600519", strategy="ma_cross", start_date="2023-01-01", end_date="2025-12-31", short_period=5, long_period=20)`
-  2. `performance_manager(action="backtest_metrics", kwargs='{"artifact_id":"..."}')`（如产生工件）
+  2. `performance_manager(action="backtest_metrics", kwargs='{"artifact_id":"..."}')`
 - 预期返回（示例）：
   - 累计收益、年化收益、最大回撤、夏普
   - 交易次数、胜率、盈亏比
@@ -119,7 +120,7 @@
 
 **注意事项**：先小样本验证，再扩到批量回测，避免参数过拟合。
 
-### 3.4 场景D：组合管理（优化+风控）
+### 3.4 场景 D：组合管理（优化 + 风控）
 **场景描述**：给定股票池，输出权重建议并进行风险分析。
 
 **推荐使用**：
@@ -142,28 +143,28 @@
 
 **注意事项**：优化结果依赖历史窗口，不同窗口会导致权重变化。
 
-### 3.5 场景E：TDX 联动（本地终端协同）
-**场景描述**：进行公式计算/选股并推送到通达信前端。
+### 3.5 场景 E：告警与日报联动
+**场景描述**：将研究结论沉淀为提醒和日报，方便持续跟踪。
 
 **推荐使用**：
-- Skills：`akshare-tdx-runtime-ops`、`akshare-tdx-front-sync`
-- MCP Tools：`tdx_calculate_indicator`、`tdx_screen_stocks`、`push_message`
+- Skills：`akshare-macro-options-alerts`
+- MCP Tools：`create_indicator_alert`、`create_combo_alert`、`generate_daily_report`
 
 **对话式测试**
 - 你对 AI 说：
-  > 用 TDX 公式给我算 600519 的 MACD（12,26,9），再做一次“MACD金叉”条件筛选；如果有结果，把提示消息同步到通达信前端。
+  > 给 600519 设置一个跌破 1350 的提醒，再做一个“RSI>80 且成交量放大 2 倍”的组合提醒。最后把今天的分析整理成日报摘要。
 - AI 预期调用：
-  1. `tdx_calculate_indicator(stock_code="600519", formula_name="MACD", formula_args="12,26,9", period="1d", count=120)`
-  2. `tdx_screen_stocks(formula_name="MACD金叉")`
-  3. `push_message(message="...")`（可选）
+  1. `create_indicator_alert(code="600519", indicator="price", condition="<", value=1350)`
+  2. `create_combo_alert(name="momentum-alert", conditions=[...], logic="AND")`
+  3. `generate_daily_report()`
 - 预期返回（示例）：
-  - MACD 指标序列（DIF/DEA/MACD）
-  - 条件筛选匹配数量与标的列表
-  - 前端同步成功/失败信息
+  - 预警创建状态
+  - 触发条件摘要
+  - 当日市场与组合跟踪报告
 
-**关键配置**：必须配置 `TDX_PLUGIN_PATH`，并确保本地通达信运行时可用。
+**关键配置**：建议配置数据库与通知通道，便于后续检查和复盘。
 
-**注意事项**：若运行时不可用，部分能力会降级或返回失败说明。
+**注意事项**：预警是辅助提醒，不应替代仓位控制和合规判断。
 
 ---
 
@@ -171,7 +172,7 @@
 
 ### 4.1 快速分析提示词
 ```text
-请用 AIASK 先执行 akshare-market 获取 600519 最新行情与近20根5分钟K线，
+请用 AIASK 先执行 akshare-market 获取 600519 最新行情与近 20 根 5 分钟 K 线，
 再用 akshare-fundamental 给出财务与估值摘要，最后输出“观察/继续研究/回避”建议。
 ```
 
@@ -190,12 +191,12 @@
 
 ---
 
-## 5. 完整工作流演示（研究 → 回测 → 风控 → 执行建议）
+## 5. 完整工作流演示（研究 → 回测 → 风控 → 跟踪）
 
-1. **研究阶段**：`akshare-market` + `akshare-fundamental`（行情与基本面联合）
-2. **验证阶段**：`akshare-quant-research-process`（回测与指标评估）
-3. **风控阶段**：`akshare-fund-manager-pro`（风险暴露、压力测试、权重建议）
-4. **执行联动（可选）**：`akshare-tdx-front-sync`（推送提示/板块同步到 TDX）
+1. **研究阶段**：`akshare-market` + `akshare-fundamental`
+2. **验证阶段**：`akshare-quant-research-process`
+3. **风控阶段**：`akshare-fund-manager-pro`
+4. **跟踪阶段**：`alerts_manager` / `watchlist_manager` / `generate_daily_report`
 
 **工作流输出应至少包含**：
 - 投资结论（买入/观察/回避）
@@ -235,7 +236,7 @@
 - 理由：趋势中性偏强、估值不高、回撤风险可控
 - 动作：先 30% 仓位；回落到 X~Y 分批补；跌破 Z 暂停加仓
 - 风险：盘中波动放大；行业情绪转弱
-- 数据来源：TDX/AKShare/Tushare（自动降级）
+- 数据来源：AKShare/Tushare/公开行情源（自动降级）
 - 时效性：行情为盘中近实时，财务为最近披露期
 
 ### 7.3 场景二：我有 10 万元，怎么分配更稳？
@@ -321,7 +322,7 @@
   ],
   "data_provenance": [
     {
-      "source": "tdxquant",
+      "source": "akshare_live",
       "dataset": "realtime_quote",
       "timestamp": "2026-02-18T10:35:00+08:00"
     },
@@ -356,4 +357,3 @@
 ---
 
 - 若面向纯新手演示，建议优先使用第 7 节与第 8 节内容；第 3~5 节作为专业模式补充。
-

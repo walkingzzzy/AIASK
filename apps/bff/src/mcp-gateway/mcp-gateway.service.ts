@@ -52,7 +52,10 @@ export class McpGatewayService implements OnModuleDestroy {
   }
 
   async checkAvailableTools(): Promise<McpHealth> {
-    const expectedTools = Number(this.configService.get<string>('MCP_EXPECTED_TOOLS', '171'));
+    const defaultExpectedTools = process.platform === 'win32' ? '171' : '134';
+    const expectedTools = Number(
+      this.configService.get<string>('MCP_EXPECTED_TOOLS', defaultExpectedTools),
+    );
 
     try {
       const conn = await this.acquire();

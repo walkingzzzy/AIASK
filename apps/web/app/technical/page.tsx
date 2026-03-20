@@ -2,7 +2,6 @@
 
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { PageContainer, TabBar, SectionCard, StockCodeInput, Badge, DataTable } from '@/components/ui';
-import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
@@ -12,6 +11,7 @@ import { exportCSV } from '@/lib/export';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { extractToolError, unwrapToolPayload } from '@/lib/tool-result';
+import Link from 'next/link';
 
 const TABS = [
   { key: 'indicators', label: '技术指标' },
@@ -20,6 +20,8 @@ const TABS = [
 ] as const;
 
 type Tab = (typeof TABS)[number]['key'];
+type SubmittedPayload = Record<string, unknown>;
+
 const INDICATOR_OPTIONS = ['MA', 'EMA', 'RSI', 'MACD', 'KDJ', 'BOLL', 'ATR', 'CCI', 'WR'];
 const PERIOD_PRESETS = [
   { label: '日线 120', period: 'daily', limit: '120' },
@@ -31,6 +33,7 @@ const INDICATOR_PRESETS = [
   { label: '趋势跟踪', values: ['MA', 'EMA', 'MACD', 'BOLL'] },
   { label: '震荡观察', values: ['RSI', 'KDJ', 'CCI', 'WR'] },
 ] as const;
+const actionLinkCls = 'rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline';
 
 /**
  * Transform indicator response into chart-friendly data.
@@ -74,16 +77,25 @@ export default function TechnicalPage() {
   const [period, setPeriod] = useState('daily');
   const [limit, setLimit] = useState('100');
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>(['MA', 'RSI', 'MACD']);
+  const [indicatorBody, setIndicatorBody] = useState<SubmittedPayload | null>(null);
+  const [patternBody, setPatternBody] = useState<SubmittedPayload | null>(null);
   const [availablePath, setAvailablePath] = useState<string | null>(null);
   const availableQ = useApiQuery<unknown>(availablePath);
-  const { trigger, data: mutData, isPending: mutPending, error: mutError, reset } = useApiMutation<unknown>();
+  const indicatorsQ = useApiQuery<unknown>(indicatorBody ? '/technical/indicators' : null, {
+    body: indicatorBody ?? undefined,
+    fetchOptions: { method: 'POST' },
+  });
+  const patternsQ = useApiQuery<unknown>(patternBody ? '/technical/patterns' : null, {
+    body: patternBody ?? undefined,
+    fetchOptions: { method: 'POST' },
+  });
 
   // Auto-fetch indicators on mount
   const autoFetched = useRef(false);
   useEffect(() => {
     if (!autoFetched.current && resolvedCode) {
       autoFetched.current = true;
-      trigger('/technical/indicators', { method: 'POST' }, {
+      setIndicatorBody({
         code: resolvedCode, indicators: selectedIndicators, period, limit: Number(limit),
       });
     }
@@ -100,10 +112,15 @@ export default function TechnicalPage() {
       if (availablePath) availableQ.refetch(); else setAvailablePath('/technical/available-patterns');
     } else {
       if (!validate()) return;
-      const endpoint = tab === 'indicators' ? '/technical/indicators' : '/technical/patterns';
-      const body: Record<string, unknown> = { code: trimmedCode, period, limit: Number(limit) };
-      if (tab === 'indicators') body.indicators = selectedIndicators;
-      trigger(endpoint, { method: 'POST' }, body);
+      const body: SubmittedPayload = { code: trimmedCode, period, limit: Number(limit) };
+      if (tab === 'indicators') {
+        body.indicators = selectedIndicators;
+        if (indicatorBody && JSON.stringify(indicatorBody) === JSON.stringify(body)) indicatorsQ.refetch();
+        else setIndicatorBody(body);
+        return;
+      }
+      if (patternBody && JSON.stringify(patternBody) === JSON.stringify(body)) patternsQ.refetch();
+      else setPatternBody(body);
     }
   }
 
@@ -123,7 +140,7 @@ export default function TechnicalPage() {
     if (tab === 'indicators') {
       const indicators = ['MA', 'RSI', 'MACD'];
       setSelectedIndicators(indicators);
-      trigger('/technical/indicators', { method: 'POST' }, {
+      setIndicatorBody({
         code: nextCode,
         indicators,
         period: nextPeriod,
@@ -132,18 +149,26 @@ export default function TechnicalPage() {
       return;
     }
 
-    trigger('/technical/patterns', { method: 'POST' }, {
+    setPatternBody({
       code: nextCode,
       period: nextPeriod,
       limit: nextLimit,
     });
   }
 
-  const rawData = tab === 'available' ? availableQ.data : mutData;
-  const isPending = availableQ.isFetching || mutPending;
-  const fetchError = availableQ.error || mutError;
+  const activeQ = tab === 'available' ? availableQ : tab === 'indicators' ? indicatorsQ : patternsQ;
+  const hasRequested = tab === 'available' ? availablePath != null : tab === 'indicators' ? indicatorBody != null : patternBody != null;
+  const rawData = activeQ.data;
+  const isAutoBootstrapping = tab === 'indicators' && resolvedCode && indicatorBody == null;
+  const isPending = isAutoBootstrapping || (hasRequested && (activeQ.isPending || (activeQ.isFetching && rawData == null)));
+  const isSubmitting = hasRequested && activeQ.isPending;
+  const fetchError = activeQ.error;
   const mcpErr = rawData ? extractToolError(rawData) : null;
   const error = fetchError || mcpErr;
+  const lastUpdatedText = activeQ.dataUpdatedAt ? new Date(activeQ.dataUpdatedAt).toLocaleString('zh-CN') : null;
+  const requestSummary = tab === 'available'
+    ? '当前查看：系统支持的 K 线形态库'
+    : `最近一次参数：${trimmedCode || resolvedCode || '600519'} / ${period === 'daily' ? '日线' : period === 'weekly' ? '周线' : '月线'} / ${limit} 根${tab === 'indicators' ? ` / ${selectedIndicators.join('、')}` : ''}`;
 
   // Unwrap MCP envelope for all tabs
   const unwrapped = useMemo(() => rawData ? unwrapToolPayload(rawData) : null, [rawData]);
@@ -163,6 +188,45 @@ export default function TechnicalPage() {
   }, [unwrapped, tab]);
 
   const hasIndicatorData = indSeries.length > 0 || indSummary.length > 0;
+  const explanation = useMemo(() => {
+    if (!rawData || error) return null;
+    if (tab === 'indicators') {
+      if (!hasIndicatorData) return {
+        title: '当前指标信号不足',
+        description: '这通常意味着参数过窄或指标组合过多，建议先回到日线 120 根 + 常用三件套，确认趋势和动量是否一致。',
+      };
+      return {
+        title: '先用指标确认趋势与动量',
+        description: '这一屏更适合回答“当前趋势是否延续、动量是否转弱”。看完后建议继续去个股详情、资金流或回测页验证信号是否具备可执行性。',
+      };
+    }
+    if (tab === 'patterns') {
+      return rows.length > 0 ? {
+        title: '形态结果适合做二次确认',
+        description: 'K 线形态更偏提示信号，不建议单独下结论。下一步优先叠加情绪、资金流和风险页，确认这类形态是否有资金或预期配合。',
+      } : {
+        title: '未识别到典型形态',
+        description: '说明当前价格结构相对平稳，可切换周线或扩大观察窗口，再观察是否出现更明确的突破/反转模式。',
+      };
+    }
+    return rows.length > 0 ? {
+      title: '先确认有哪些可用形态',
+      description: '可用形态列表更适合作为识别前的准备动作。明确名称和方向后，再回到上一页对具体股票做筛查。',
+    } : {
+      title: '形态库暂未返回',
+      description: '如果形态库为空，优先检查后端能力是否就绪；前端已经为“先看能力，再做筛查”的路径预留了解释层。',
+    };
+  }, [error, hasIndicatorData, rawData, rows.length, tab]);
+  const actionLinks = useMemo(() => {
+    const c = encodeURIComponent(trimmedCode || resolvedCode || '600519');
+    return [
+      { label: '个股详情', href: `/stock?code=${c}` },
+      { label: '资金流', href: `/fund-flow?code=${c}` },
+      { label: '情绪分析', href: `/sentiment?code=${c}` },
+      { label: '风险页', href: `/risk?code=${c}` },
+      { label: '回测', href: `/backtest?code=${c}` },
+    ];
+  }, [resolvedCode, trimmedCode]);
   return (
     <PageContainer>
       <h1>技术分析</h1>
@@ -172,7 +236,7 @@ export default function TechnicalPage() {
           <WatchlistButton code={resolvedCode} name="" />
         </div>
       )}
-      <TabBar tabs={TABS} active={tab} onChange={(key) => { setTab(key); reset(); }} />
+      <TabBar tabs={TABS} active={tab} onChange={setTab} />
       <SectionCard tabAttached>
         {tab !== 'available' ? (
           <div className="mb-3 space-y-3">
@@ -196,7 +260,7 @@ export default function TechnicalPage() {
               <label htmlFor="technical-limit" className="grid gap-1 text-xs text-text-secondary">
                 <span>K线数量</span>
                 <input id="technical-limit" value={limit} onChange={(e) => setLimit(e.target.value)}
-                  className="w-[96px] px-2 py-1 border border-border rounded text-sm" />
+                  className="w-24 px-2 py-1 border border-border rounded text-sm" />
               </label>
             </div>
             <div className="flex gap-2 flex-wrap items-center text-xs text-text-secondary">
@@ -241,11 +305,24 @@ export default function TechnicalPage() {
             </div>
           </div>
         ) : null}
-        <button type="button" disabled={isPending} onClick={submit}
-          className="px-3 py-1 border border-border rounded text-sm disabled:opacity-50">
-          {tab === 'available' ? '查看可用形态' : tab === 'indicators' ? '计算指标' : '识别形态'}
-        </button>
-        {isPending ? <LoadingState text="计算中..." /> : null}
+        <div className="flex flex-wrap items-center gap-3">
+          <button type="button" disabled={isSubmitting} onClick={submit}
+            className="px-3 py-1 border border-border rounded text-sm disabled:opacity-50">
+            {isSubmitting ? '处理中...' : tab === 'available' ? '查看可用形态' : tab === 'indicators' ? '计算指标' : '识别形态'}
+          </button>
+          <button
+            type="button"
+            onClick={runRecommendedAnalysis}
+            className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary"
+          >
+            使用推荐参数
+          </button>
+          <div className="text-xs text-text-secondary">
+            {requestSummary}
+            {lastUpdatedText ? ` ｜ 更新：${lastUpdatedText}` : ''}
+          </div>
+        </div>
+        {isPending ? <LoadingState text={isAutoBootstrapping ? '正在自动加载默认指标...' : '计算中...'} /> : null}
         {error ? <ErrorState text={error} hint="请检查参数后重试" /> : null}
         {!isPending && !rawData && !error ? (
           <EmptyState
@@ -253,6 +330,19 @@ export default function TechnicalPage() {
             hint={tab === 'available' ? '这一步适合先了解系统能识别哪些经典形态，再回到上一页做实盘筛查。' : tab === 'indicators' ? '推荐先用日线 120 根 + MA / RSI / MACD 的组合，作为第一次分析入口。' : '推荐先从日线 120 根开始，适合观察近期是否出现吞没、十字星或突破信号。'}
             action={<button type="button" onClick={runRecommendedAnalysis} className="rounded-full border border-primary px-3 py-1 text-xs text-primary">使用推荐参数</button>}
           />
+        ) : null}
+        {rawData != null && !error && explanation ? (
+          <div className="mt-3 rounded-xl border border-border bg-surface-alt/50 p-3">
+            <div className="text-sm font-medium text-text-primary">{explanation.title}</div>
+            <p className="mt-1 mb-0 text-sm text-text-secondary">{explanation.description}</p>
+            <div className="mt-3 flex gap-2 flex-wrap">
+              {actionLinks.map((link) => (
+                <Link key={link.href} href={link.href} className={actionLinkCls}>
+                  {link.label}
+                </Link>
+              ))}
+            </div>
+          </div>
         ) : null}
 {/* Indicators tab */}
         {rawData != null && !mcpErr && tab === 'indicators' ? (

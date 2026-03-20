@@ -16,6 +16,7 @@ from typing import Optional, List
 
 from ..services.data_sync import data_sync_service, CACHE_TTL
 from ..cache import cache
+from ..utils import ok
 
 
 def register(mcp):
@@ -33,7 +34,7 @@ def register(mcp):
         """
         同步K线数据（带多层缓存）
 
-        数据流向: SimpleCache → TimescaleDB → API（TDX/Tushare/AkShare）
+        数据流向: SimpleCache → TimescaleDB → API（DataSource/Tushare/AkShare）
 
         Args:
             stock_code (str, required): 股票代码，如 "600519"、"000001"
@@ -181,7 +182,10 @@ def register(mcp):
         """
         stats = cache.get_stats()
         stats["ttl_config"] = CACHE_TTL
-        return stats
+        result = ok(stats)
+        # 保留平铺字段，兼容历史调用方直接读取 file_count/hit_rate 等键。
+        result.update(stats)
+        return result
 
     @mcp.tool()
     def clear_cache() -> dict:
@@ -200,4 +204,3 @@ def register(mcp):
             "cleared_count": count,
             "message": f"已清除 {count} 个缓存文件"
         }
-

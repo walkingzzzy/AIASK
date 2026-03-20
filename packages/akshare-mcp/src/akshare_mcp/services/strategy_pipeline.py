@@ -19,6 +19,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from strategy_factory import PIPELINE_STAGE_TIMEOUT_SEC, PIPELINE_STAGE_TIMEOUTS
+
 from .strategy_stages import (
     EXTENDED_THEME_LIBRARY,
     STAGE_ORDER,
@@ -32,7 +34,6 @@ from .strategy_llm_provider import (
     StrategyLLMRequestError,
     get_strategy_llm_provider,
 )
-from .strategy_factory.constants import PIPELINE_STAGE_TIMEOUT_SEC, PIPELINE_STAGE_TIMEOUTS
 
 logger = logging.getLogger(__name__)
 
@@ -303,28 +304,38 @@ class MultiStageStrategyPipeline:
         research_task: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """构建 Stage 1 (event_recognition) 的输入。"""
-        # 市场快照摘要
         market_snapshot: dict[str, Any] = {}
-        for key in ("fear_greed", "date", "sentiment"):
-            if key in snapshot:
-                market_snapshot[key] = snapshot[key]
+        snapshot_date = snapshot.get("date") or snapshot.get("snapshot_date")
+        if snapshot_date is not None:
+            market_snapshot["date"] = snapshot_date
 
-        # 板块涨跌
+        fear_greed = snapshot.get("fear_greed")
+        if fear_greed is None:
+            fear_greed = snapshot.get("fear_greed_index")
+        if fear_greed is not None:
+            market_snapshot["fear_greed"] = fear_greed
+            market_snapshot["fear_greed_index"] = snapshot.get("fear_greed_index", fear_greed)
+
+        sentiment = snapshot.get("sentiment") or snapshot.get("fg_level")
+        if sentiment is not None:
+            market_snapshot["sentiment"] = sentiment
+
         sector_data = snapshot.get("hot_sectors") or snapshot.get("sectors") or []
         if isinstance(sector_data, list):
             market_snapshot["sectors"] = sector_data[:20]
 
-        # 北向资金
-        north_fund = snapshot.get("north_fund") or snapshot.get("capital_flow") or {}
+        north_fund = snapshot.get("north_fund")
+        if not north_fund and snapshot.get("north_fund_3d_net") is not None:
+            north_fund = {"net_3d": snapshot.get("north_fund_3d_net")}
+        if not north_fund:
+            north_fund = snapshot.get("capital_flow") or {}
         if north_fund:
             market_snapshot["north_fund"] = north_fund
 
-        # 龙虎榜摘要
         dragon_tiger = snapshot.get("dragon_tiger") or []
         if isinstance(dragon_tiger, list):
             market_snapshot["dragon_tiger_summary"] = dragon_tiger[:10]
 
-        # 主题库目录（仅 code + name，节省 token）
         theme_directory = [
             {"theme_code": t["theme_code"], "name": t["name"]}
             for t in EXTENDED_THEME_LIBRARY
@@ -344,7 +355,6 @@ class MultiStageStrategyPipeline:
                 "degraded": bool(factor_research.get("degraded")),
             }
 
-        # 传递 research_task 上下文（如有）
         if research_task:
             initial["research_task"] = {
                 k: research_task[k]

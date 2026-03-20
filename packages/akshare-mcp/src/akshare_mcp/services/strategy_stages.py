@@ -307,7 +307,7 @@ _VALIDATORS: dict[str, Callable[[dict[str, Any]], bool]] = {
 
 async def _fallback_event_recognition(db: Any, input_data: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
     """使用 LocalEventDrivenResearchEngine 的规则检测作为 fallback。"""
-    from .strategy_factory.event_engine import get_local_event_engine
+    from strategy_factory import get_local_event_engine
 
     engine = get_local_event_engine()
     result = await engine.refresh(db, snapshot=snapshot)
@@ -373,7 +373,7 @@ async def _fallback_exposure_mapping(db: Any, input_data: dict[str, Any], snapsh
     exposures: list[dict[str, Any]] = []
 
     # 尝试从 DB 加载股票池并按主题关键词匹配
-    from .strategy_factory.runtime import _call_optional_async
+    from strategy_factory import _call_optional_async
     universe = await _call_optional_async(db, "list_stock_universe", limit=200, offset=0, default=[])
 
     for th in themes:
@@ -407,7 +407,7 @@ async def _fallback_exposure_mapping(db: Any, input_data: dict[str, Any], snapsh
 
 async def _fallback_market_confirmation(db: Any, input_data: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
     """使用技术面扫描逻辑做确认。"""
-    from .strategy_factory.runtime import _call_optional_async
+    from strategy_factory import _call_optional_async
 
     exposures = list(input_data.get("exposures") or [])
     confirmations: list[dict[str, Any]] = []
@@ -610,7 +610,7 @@ def _match_sector_to_theme(sector_name: str) -> str:
 
 def _build_stage_definitions() -> dict[str, StageDefinition]:
     """构建 5 个 Stage 的定义。"""
-    from .strategy_factory.constants import (
+    from strategy_factory import (
         PIPELINE_STAGE_MAX_TOKENS,
         PIPELINE_STAGE_TEMPERATURE,
     )

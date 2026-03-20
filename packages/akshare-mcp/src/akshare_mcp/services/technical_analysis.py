@@ -23,8 +23,8 @@ except ImportError:
     talib = None
 
 
-def _tdx_sma(data: List[float], n: int, m: int = 1) -> List[float]:
-    """通达信 SMA 兼容实现。
+def _formula_sma(data: List[float], n: int, m: int = 1) -> List[float]:
+    """公式引擎兼容的 SMA 实现。
 
     公式：Y = (M * X + (N - M) * Y') / N
     其中首个值取原始序列首值。
@@ -146,7 +146,7 @@ class TechnicalAnalysis:
 
     @staticmethod
     def calculate_rsi_series(closes: List[float], period: int = 14) -> List[float]:
-        """计算 RSI 序列（用于 TDX 公式 Python 回退）"""
+        """计算 RSI 序列（用于公式筛选的 Python 回退）"""
         if len(closes) < 2:
             return [0.0] * len(closes)
 

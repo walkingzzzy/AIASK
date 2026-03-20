@@ -8,8 +8,9 @@ from datetime import date
 from typing import Any, Optional
 from uuid import uuid4
 
+from strategy_factory import extract_event_context as _extract_event_context
+
 from .artifact_registry import register_experiment
-from .strategy_factory.utils import _extract_event_context
 from .strategy_generators import LLMProxyStrategyGenerator, RuleStrategyGenerator
 from .strategy_optimizer import BanditParameterOptimizer
 from .strategy_reviewer import MultiAgentStrategyReviewer
@@ -37,6 +38,27 @@ class CandidateGenerationService:
             parents.extend(await db.list_strategies(status, limit=5))
         return parents[:3]
 
+    async def build_shared_generation_context(
+        self,
+        db,
+        *,
+        snapshot: dict,
+        parent_strategy_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        parents = await self.select_parents(db, parent_strategy_id=parent_strategy_id)
+        history_summary = await self.llm_generator._recent_experiments(db, parent_strategies=parents)
+        research_context = await self.llm_generator.build_shared_research_context(
+            db,
+            snapshot=snapshot,
+            parent_strategies=parents,
+            history_summary=history_summary,
+        )
+        return {
+            "parent_strategies": parents,
+            "history_summary": history_summary,
+            "research_context": research_context,
+        }
+
     async def generate(
         self,
         db,
@@ -46,7 +68,12 @@ class CandidateGenerationService:
         research_task: dict[str, Any],
         parent_strategy_id: Optional[str] = None,
     ) -> dict:
-        parents = await self.select_parents(db, parent_strategy_id=parent_strategy_id)
+        shared_generation_context = dict(snapshot.get("_shared_generation_context") or {})
+        parents = [dict(item or {}) for item in list(shared_generation_context.get("parent_strategies") or [])]
+        if parent_strategy_id:
+            parents = await self.select_parents(db, parent_strategy_id=parent_strategy_id)
+        elif not parents:
+            parents = await self.select_parents(db, parent_strategy_id=parent_strategy_id)
         task_preferences = list(research_task.get("strategy_preferences") or [])
         rule_limit = max(0, limit // 3) if research_task else max(1, limit // 2 or 1)
         rule_specs = self.rule_generator.generate(snapshot, limit=rule_limit) if rule_limit > 0 else []

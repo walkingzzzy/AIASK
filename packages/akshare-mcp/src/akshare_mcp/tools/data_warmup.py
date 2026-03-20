@@ -17,13 +17,30 @@ _LAST_WARMUP_STATE: Dict[str, Any] = {
 }
 
 
+def _normalize_warmup_stocks(stocks: Optional[List[str] | str]) -> List[str]:
+    if isinstance(stocks, str):
+        raw_items = [part.strip() for part in stocks.split(",") if part.strip()]
+    else:
+        raw_items = [str(item).strip() for item in (stocks or []) if str(item).strip()]
+
+    normalized: List[str] = []
+    seen = set()
+    for item in raw_items:
+        code = normalize_code(item)
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        normalized.append(code)
+    return normalized
+
+
 def register(mcp):
     """注册数据预热工具"""
 
     @mcp.tool()
     async def data_warmup(
         action: str,
-        stocks: Optional[List[str]] = None,
+        stocks: Optional[List[str] | str] = None,
         lookback_days: int = 250,
         force_update: bool = False,
         include_financials: bool = True
@@ -42,7 +59,7 @@ def register(mcp):
             action = str(action or "").strip().lower()
 
             if action == "warmup":
-                normalized_stocks = [normalize_code(s) for s in (stocks or []) if str(s).strip()]
+                normalized_stocks = _normalize_warmup_stocks(stocks)
                 if not normalized_stocks:
                     return fail("stocks is empty")
 

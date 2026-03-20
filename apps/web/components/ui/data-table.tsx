@@ -15,6 +15,8 @@ type ColumnDef = {
 
 type SortState = { key: string; dir: 'asc' | 'desc' } | null;
 
+type MobileCardRender = (row: Record<string, unknown>, index: number) => React.ReactNode;
+
 export function DataTable({
   rows,
   columns,
@@ -26,6 +28,7 @@ export function DataTable({
   searchable,
   onRowClick,
   stickyFirstCol,
+  mobileCardRender,
 }: {
   rows: Record<string, unknown>[];
   columns?: ColumnDef[];
@@ -37,6 +40,7 @@ export function DataTable({
   searchable?: boolean;
   onRowClick?: (row: Record<string, unknown>) => void;
   stickyFirstCol?: boolean;
+  mobileCardRender?: MobileCardRender;
 }) {
   const [sort, setSort] = useState<SortState>(null);
   const [page, setPage] = useState(0);
@@ -107,7 +111,20 @@ export function DataTable({
           <button onClick={onExport} className="text-xs text-primary cursor-pointer hover:underline">导出 CSV</button>
         </div>
       ) : null}
-      <div className="overflow-auto glass rounded-xl" style={{ maxHeight }}>
+      {mobileCardRender ? (
+        <div className="grid gap-3 md:hidden">
+          {paged.map((row, i) => (
+            <div
+              key={i}
+              className={`glass rounded-xl border border-glass-border p-3 ${onRowClick ? 'cursor-pointer' : ''}`}
+              onClick={() => onRowClick?.(row)}
+            >
+              {mobileCardRender(row, i)}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className={`${mobileCardRender ? 'hidden md:block ' : ''}overflow-auto glass rounded-xl`} style={{ maxHeight }}>
         <table className="w-full border-collapse text-[13px]">
           <thead className="sticky top-0" style={{ background: 'var(--color-glass-strong)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)' }}>
             <tr>

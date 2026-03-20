@@ -4,6 +4,11 @@
 > 版本: v1.0
 > 范围: AKShare MCP 服务全模块（因子、策略、回测、风控、数据）
 
+> 校准说明：本文属于 2026-03-05 编制的增强方案与能力规划，主要用于记录当时对 MCP 预测能力的能力盘点、差距识别与优化方向，不应直接视为当前仓库已全部落地的现状说明。
+>
+> 文中关于“当前系统能力”“增强后能力”“全模块覆盖”等表述，需结合当前代码、运行时审计结果与最近测试产物重新核实；若与现状不一致，应以当前事实为准。
+
+
 ---
 
 ## 一、当前系统能力全景
@@ -32,7 +37,7 @@
 
 | 层级 | 已实现模块 | 成熟度 |
 |------|-----------|--------|
-| **数据层** | AKShare/Tushare/Baostock/TDX 四源降级、TimescaleDB 存储、智能缓存 | 较成熟 |
+| **数据层** | AKShare/Tushare/Baostock/多源降级、TimescaleDB 存储、智能缓存 | 较成熟 |
 | **因子层** | 技术因子(25+)、基本面因子(30+)、波动率因子(8)、量价因子(16)、情绪因子 | 中等 |
 | **分析层** | IC/IR 分析、分组回测、Walk-Forward/Purged K-Fold 验证、Bootstrap CI | 较好 |
 | **策略层** | MA交叉/动量/RSI/买入持有/多因子/宏观择时、策略工厂自动生成/淘汰 | 中等 |
@@ -50,7 +55,7 @@ akshare_mcp/
 │   ├── market/                  # 行情：K线/盘口/涨停/指数/板块
 │   ├── news/                    # 资讯：新闻/公告/研报/分析师
 │   ├── semantic/                # 语义：NLP选股/产业链/诊断/日报
-│   ├── tdx_formula/             # TDX：公式计算/条件选股/专家信号
+│   ├── formula_fallback/        # 通用公式回退与指标兼容层
 │   ├── managers/                # 30+ Manager：统一编排层
 │   ├── decision.py              # should_i_buy / should_i_sell
 │   ├── quant.py                 # 因子计算/IC分析/分组回测
@@ -70,7 +75,7 @@ akshare_mcp/
 │   ├── evidence_chain.py        # 证据链决策审计
 │   └── ...                      # 30+ 其他服务
 ├── core/                        # 缓存/限流/重试/向量化指标
-├── data_source/                 # 四源数据管理(TDX/Tushare/AKShare/Baostock)
+├── data_source/                 # 多源数据管理(Tushare/AKShare/Baostock 等)
 └── storage/timescaledb/         # DB 存储层
 ```
 

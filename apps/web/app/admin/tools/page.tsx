@@ -38,6 +38,13 @@ export default function ToolsDashboardPage() {
         label: t.name.replace(/^(get_|create_|update_|delete_)/, ''),
         value: t.calls,
     }));
+    const abnormalTools = useMemo(() => data.tools.filter((tool) => tool.status !== 'healthy' || tool.errors > 0).slice(0, 6), [data.tools]);
+    const sortedTools = useMemo(() => [...data.tools].sort((a, b) => {
+        const aRisk = a.status !== 'healthy' || a.errors > 0 ? 1 : 0;
+        const bRisk = b.status !== 'healthy' || b.errors > 0 ? 1 : 0;
+        if (aRisk !== bRisk) return bRisk - aRisk;
+        return b.calls - a.calls;
+    }), [data.tools]);
 
     const STATUS_COLORS: Record<string, 'success' | 'warning' | 'danger'> = {
         healthy: 'success', degraded: 'warning', down: 'danger',
@@ -63,6 +70,22 @@ export default function ToolsDashboardPage() {
                 <KpiCard title="错误率" value={`${(data.errorRate * 100).toFixed(2)}%`} />
             </KpiGrid>
 
+            {abnormalTools.length > 0 && (
+                <SectionCard className="mt-4 p-4">
+                    <h3 className="mt-0 text-sm font-semibold">优先关注工具</h3>
+                    <p className="mt-1 text-xs text-text-secondary">以下工具当前存在降级、不可用或错误次数偏高的情况，已前置到首屏方便管理员优先处理。</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                        {abnormalTools.map((tool) => (
+                            <div key={tool.name} className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary">
+                                <span className="font-medium text-text-primary">{tool.name}</span>
+                                {' · '}
+                                {tool.status !== 'healthy' ? `状态 ${tool.status}` : `错误 ${tool.errors} 次`}
+                            </div>
+                        ))}
+                    </div>
+                </SectionCard>
+            )}
+
             {barData.length > 0 && (
                 <SectionCard className="mt-4 p-3">
                     <h3 className="mt-0 text-sm font-semibold">调用频次 Top 20</h3>
@@ -85,7 +108,7 @@ export default function ToolsDashboardPage() {
                                 </tr>
                             </thead>
                             <tbody>
-                                {data.tools.map((t) => (
+                                {sortedTools.map((t) => (
                                     <tr key={t.name} className="border-b border-glass-border/50 hover:bg-white/5">
                                         <td className="py-2 px-2 font-mono text-xs">{t.name}</td>
                                         <td className="py-2 px-2 text-right">{t.calls}</td>

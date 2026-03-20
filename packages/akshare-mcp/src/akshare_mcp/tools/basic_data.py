@@ -12,7 +12,7 @@ Phase 3 实现 - MCP 服务开发方案
 
 from typing import Optional, List
 from ..data_source import data_source
-from ..utils import ok, fail
+from ..utils import ok, fail, resolve_security_code
 
 
 def register(mcp):
@@ -133,7 +133,11 @@ def register(mcp):
             return fail(str(e))
 
     @mcp.tool()
-    async def get_cb_info(code: str):
+    async def get_cb_info(
+        code: Optional[str] = None,
+        stock_code: Optional[str] = None,
+        symbol: Optional[str] = None,
+    ):
         """
         获取可转债基础信息
         
@@ -158,8 +162,9 @@ def register(mcp):
             get_cb_info("123039")
         """
         try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol)
             if not code:
-                return fail("可转债代码不能为空")
+                return fail("可转债代码不能为空（支持 code / stock_code / symbol）")
             
             result = data_source.get_cb_info(stock_code=code)
             
@@ -175,8 +180,11 @@ def register(mcp):
 
     @mcp.tool()
     async def get_stock_capital(
-        code: str,
-        dates: Optional[List[str]] = None
+        code: Optional[str] = None,
+        dates: Optional[List[str]] = None,
+        stock_code: Optional[str] = None,
+        symbol: Optional[str] = None,
+        ticker: Optional[str] = None,
     ):
         """
         获取股票股本数据
@@ -202,8 +210,9 @@ def register(mcp):
             get_stock_capital("600519", dates=["20260101", "20260601"])
         """
         try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
             if not code:
-                return fail("股票代码不能为空")
+                return fail("股票代码不能为空（支持 code / stock_code / symbol / ticker）")
             
             date_list = dates or []
             count = len(date_list) if date_list else 1
@@ -215,13 +224,22 @@ def register(mcp):
             )
             
             if result.get("success"):
+                capital_data = result.get("data") or []
                 return ok({
-                    "capital_data": result["data"],
-                    "count": len(result["data"]),
-                    "source": result.get("source", "unknown")
+                    "capital_data": capital_data,
+                    "count": len(capital_data),
+                    "source": result.get("source", "unknown"),
+                    "message": result.get("message"),
+                    "backend_requested": result.get("backend_requested"),
+                    "backend_used": result.get("backend_used"),
+                    "fallback_used": result.get("fallback_used", False),
+                    "fallback_reason": result.get("fallback_reason"),
+                    "quality_flags": result.get("quality_flags", []),
+                    "asof_time": result.get("asof_time"),
+                    "freshness_sec": result.get("freshness_sec"),
+                    "latency_ms": result.get("latency_ms"),
                 })
             else:
-                return fail(result.get("message", "获取股本数据失败"))
+                return fail(result.get("message") or result.get("error") or "获取股本数据失败")
         except Exception as e:
             return fail(str(e))
-

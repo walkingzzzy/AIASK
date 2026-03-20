@@ -5,7 +5,7 @@ Phase 4 实现 - MCP 服务开发方案
 
 功能：
 1. 统一数据访问层 - 先查缓存，再调用 API
-2. TDX 数据自动同步到 TimescaleDB
+2. 市场数据自动同步到 TimescaleDB
 3. 智能缓存策略 - 根据数据类型设置不同 TTL
 """
 
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # 数据源优先级配置
 DATA_SOURCE_PRIORITY = [
-    "tdxquant",      # 1. TdxQuant (最优先，实时性最好)
+    "data_source",   # 1. 统一数据源入口
     "tushare_pro",   # 2. Tushare Pro (数据全面)
     "eastmoney",     # 3. 东方财富直接 API (全市场行情/板块资金流)
 ]

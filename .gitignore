@@ -37,7 +37,6 @@ health_check.json
 limitup_data.json
 skill_tool_*.json
 skill_tool_*.txt
-tdx_sectors.txt
 test-screenshots/
 
 # Project cleanup outputs
@@ -45,5 +44,4 @@ reports/
 packages/akshare-mcp/htmlcov/
 packages/akshare-mcp/logs/*.log
 packages/akshare-mcp/sync_init_*.log
-packages/akshare-mcp/tdx_test_report.*
 packages/akshare-mcp/tests/archive/

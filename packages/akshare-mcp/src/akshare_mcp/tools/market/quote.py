@@ -31,7 +31,7 @@ import pandas as pd
 def _get_daily_snapshot(code: str) -> dict[str, Optional[float]]:
     """获取日K快照（用于补充 open/high/low/prev_close）
 
-    降级链: DataSource(TDX→Tushare) → AkShare
+    降级链: DataSource(Tushare/公开源) → AkShare
     """
     # 1. 优先 DataSource
     try:
@@ -234,38 +234,37 @@ def _fail_quote_response(
 def _get_minute_quote(code: str) -> dict:
     """获取分钟行情（用于实时价格）
 
-    降级链: DataSource(TDX 分钟K) → AkShare
+    降级链: DataSource(分钟K) → AkShare
     """
-    # 1. 优先 TDX 分钟K线
-    if data_source.is_tdx_available():
-        try:
-            ds_results = data_source.get_kline(code, "1m", 240)
-            if ds_results:
-                sample_date = str(ds_results[0].get('date', ''))
-                if len(sample_date) > 10:  # 确认是分钟数据
-                    last_row = ds_results[-1]
-                    first_row = ds_results[0]
-                    price = safe_float(last_row.get("close"))
-                    if price is not None:
-                        day_high = max((safe_float(r.get("high")) or 0) for r in ds_results)
-                        day_low = min((safe_float(r.get("low")) or float('inf')) for r in ds_results if safe_float(r.get("low")))
-                        day_volume = sum((safe_int(r.get("volume")) or 0) for r in ds_results)
-                        day_amount = sum((safe_float(r.get("amount")) or 0) for r in ds_results)
-                        return {
-                            "price": price,
-                            "open": safe_float(first_row.get("open")),
-                            "high": day_high if day_high > 0 else None,
-                            "low": day_low if day_low < float('inf') else None,
-                            "volume": day_volume,
-                            "amount": day_amount,
-                            "time": str(last_row.get("date", ""))[:19],
-                        }
-        except Exception:
-            pass
+    # 1. 优先 DataSource 分钟K线
+    try:
+        ds_results = data_source.get_kline(code, "1m", 240)
+        if ds_results:
+            sample_date = str(ds_results[0].get('date', ''))
+            if len(sample_date) > 10:  # 确认是分钟数据
+                last_row = ds_results[-1]
+                first_row = ds_results[0]
+                price = safe_float(last_row.get("close"))
+                if price is not None:
+                    day_high = max((safe_float(r.get("high")) or 0) for r in ds_results)
+                    day_low = min((safe_float(r.get("low")) or float('inf')) for r in ds_results if safe_float(r.get("low")))
+                    day_volume = sum((safe_int(r.get("volume")) or 0) for r in ds_results)
+                    day_amount = sum((safe_float(r.get("amount")) or 0) for r in ds_results)
+                    return {
+                        "price": price,
+                        "open": safe_float(first_row.get("open")),
+                        "high": day_high if day_high > 0 else None,
+                        "low": day_low if day_low < float('inf') else None,
+                        "volume": day_volume,
+                        "amount": day_amount,
+                        "time": str(last_row.get("date", ""))[:19],
+                    }
+    except Exception:
+        pass
 
     # 2. 降级 AkShare
     if ak is None:
-        raise RuntimeError(f"无法获取 {code} 分钟行情 (TDX 不可用, akshare 未安装)")
+        raise RuntimeError(f"无法获取 {code} 分钟行情 (DataSource 不可用, akshare 未安装)")
     df = _run_with_retry(
         lambda: ak.stock_zh_a_hist_min_em(symbol=code, period="1", adjust=""),
         _QUOTE_TIMEOUTS,
@@ -302,7 +301,7 @@ def _get_minute_quote(code: str) -> dict:
 def _get_daily_quote(code: str, name: str) -> Optional[dict]:
     """获取日K线行情（降级用）
 
-    降级链: DataSource(TDX→Tushare) → AkShare
+    降级链: DataSource(Tushare/公开源) → AkShare
     """
     # 1. 优先 DataSource
     try:
@@ -497,7 +496,7 @@ def _get_quote_tencent(code: str) -> Optional[dict]:
 
 
 def _get_realtime_quote_akshare(code: str) -> Optional[dict]:
-    """从 AkShare 获取实时行情（降级用）；仅在需补 name 时调 _get_name_map，避免先于 TDX 调 akshare。"""
+    """从 AkShare 获取实时行情（降级用）；仅在需补 name 时调 _get_name_map。"""
     def _lazy_name():
         _m = _get_name_map()
         return _m.get(code, "")
@@ -569,7 +568,7 @@ def _get_realtime_quote_akshare(code: str) -> Optional[dict]:
 def get_realtime_quote(stock_code: str) -> dict:
     """获取单只股票实时行情（优化版）
 
-    数据源优先级: DataSource(TDX → Tushare) → AkShare(分钟K/日K/全市场) → Sina → Tencent
+    数据源优先级: DataSource(Tushare/公开源) → AkShare(分钟K/日K/全市场) → Sina → Tencent
     时效性: 交易时段内接近实时（秒级），非交易时段返回最近收盘数据
 
     Args:
@@ -589,7 +588,7 @@ def get_realtime_quote(stock_code: str) -> dict:
         - preClose (float|None): 昨收
         - volume (int|None): 成交量(股)
         - amount (float|None): 成交额(元)
-        - source (str): 数据来源标识，如 "tdx"/"akshare_minute"/"sina"/"tencent"
+        - source (str): 数据来源标识，如 "data_source"/"akshare_minute"/"sina"/"tencent"
 
     Errors:
         - 所有数据源均不可用时返回 success=false
@@ -615,7 +614,7 @@ def get_realtime_quote(stock_code: str) -> dict:
         attempted_sources: list[str] = []
         fallback_reason_parts: list[str] = []
 
-        # 1. DataSource 优先：TDX → Tushare → akshare
+        # 1. DataSource 优先：Tushare / 公开源 → akshare
         attempted_sources.append("data_source")
         try:
             res = data_source.get_realtime_quote(code)
@@ -737,7 +736,7 @@ def get_realtime_quote(stock_code: str) -> dict:
 def get_batch_quotes(stock_codes: list[str]) -> dict:
     """批量获取股票实时行情
 
-    数据源优先级（逐只）: DataSource(TDX → Tushare) → AkShare(分钟K/全市场) → Sina → Tencent → 日K
+    数据源优先级（逐只）: DataSource(Tushare/公开源) → AkShare(分钟K/全市场) → Sina → Tencent → 日K
     时效性: 交易时段内接近实时；批量 ≤5 只走分钟K线，>5 只走全市场快照
 
     Args:
@@ -775,7 +774,7 @@ def get_batch_quotes(stock_codes: list[str]) -> dict:
 
         use_minute = len(codes) <= _MINUTE_BATCH_LIMIT
         for code in codes:
-            # 1. 优先 DataSource：TDX → Tushare → akshare
+            # 1. 优先 DataSource：Tushare / 公开源 → akshare
             try:
                 fallback = data_source.get_realtime_quote(code)
                 if fallback and fallback.get("price") is not None:

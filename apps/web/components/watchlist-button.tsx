@@ -1,10 +1,12 @@
 'use client';
 
+import { useHydrated } from '@/hooks/use-hydrated';
 import { useWatchlistStore } from '@/store/watchlist-store';
 
 export function WatchlistButton({ code, name, size = 'sm' }: { code: string; name?: string; size?: 'sm' | 'md' }) {
+  const hydrated = useHydrated();
   const { has, toggle } = useWatchlistStore();
-  const active = has(code);
+  const active = hydrated && has(code);
   const cls = size === 'md' ? 'text-lg px-2 py-1' : 'text-sm px-1';
 
   return (

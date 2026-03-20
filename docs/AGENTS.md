@@ -1,29 +1,28 @@
-﻿# AIASK 项目 AGENTS 提示词（MCP + Skills + TDX）
+# AIASK 项目 AGENTS 提示词（MCP + Skills）
 
-> 适用目录：`c:\Users\1\Desktop\股票`  
-> 更新时间：2026-02-12  
-> 目标：让代理在本项目内稳定执行“投研 -> 组合 -> 执行 -> 风控 -> 复盘 -> TDX联动”闭环，并保持可审计、可回退、可复核。
+> 适用目录：当前工作区中的 AIASK 股票项目（本次校对环境：`/Users/mac/Desktop/股票`）
+> 文档角色：项目级代理执行规范
+> 校准说明：本文保留“执行原则 / 路由规范 / 风险边界”作为当前规则；其中工具数、覆盖率、外部基线等以运行时审计文件重新生成结果为准，不要把历史统计当作永久事实。
 
-## 1. 项目事实基线（本地审计结果）
-- MCP 工具总数：`171`
-- Skills 总数：`20`
+## 1. 项目事实基线（需以本地审计结果复核）
+- MCP 工具总数：请以 `skill_tool_coverage_runtime.json` 与当前运行时注册结果为准
+- Skills 总数：请以当前 `.codex/skills` 与运行时审计为准
 - Skills 工具引用覆盖率：见 `skill_tool_coverage_runtime.json.coverage`
 - Skills 执行器覆盖率：见 `skill_tool_coverage_runtime.json.executors`
-- TDX 工具覆盖：`36/36`
-- Manager 工具覆盖：`32/32`
-- 审计时间（文件）：`skill_tool_coverage_runtime.json` 中 `generated_at`
+- 审计时间：以 `skill_tool_coverage_runtime.json.generated_at` 为准
 
 说明：
 1. `coverage` 代表 Skill 文档对 MCP 工具的引用覆盖率，不等价于“所有 Skill 都有内建执行器”。
 2. `executors` 代表 `packages/akshare-mcp/src/akshare_mcp/tools/skills.py` 中 `_SKILL_EXECUTORS` 的可执行覆盖率。
-3. 涉及 Skills 能力判断时，必须同时查看 `coverage` 与 `executors`，不要把 `100%` 工具引用覆盖率误解为 `100%` 可执行覆盖率。
+3. 涉及 Skills 能力判断时，必须同时查看 `coverage` 与 `executors`，不要把高引用覆盖率误解为高可执行覆盖率。
+4. 若 `executors.executor_coverage_pct` 明显低于 `coverage.coverage_pct`，应将系统表述为“文档编排覆盖较高，但内建执行器覆盖仍有限”。
+5. Windows-only 原生桌面集成能力当前不作为默认执行路径，任何流程都必须先以通用 MCP 工具链可用为前提。
 
 强制预检命令：
 1. `python scripts/skill_coverage_audit.py --check-thresholds`
 2. `python scripts/skill_coverage_audit.py --output-json skill_tool_coverage_runtime.json --output-gap skill_tool_gap_list.txt`
 
 若阈值检查失败，先修复 skills/tool 映射、未知引用和缺口，再执行业务任务。
-若 `executors.executor_coverage_pct` 明显低于 `coverage.coverage_pct`，说明当前更多是“文档编排覆盖”而非“内建执行器覆盖”，需要谨慎表述系统可执行边界。
 
 ## 2. 总体执行原则（必须遵守）
 1. 工具优先：能通过 MCP 工具获取结果时，不做主观臆测。
@@ -41,14 +40,13 @@
 - 资金流/新闻/公告/研报：`akshare-fund-news`
 - 量化研究：`akshare-quant` + `akshare-quant-research-process`
 - 顶级基金经理闭环：`akshare-fund-manager-pro`（必要时叠加 `akshare-portfolio-manager-core`）
-- TDX 运行态诊断：`akshare-tdx-runtime-ops`
-- TDX 公式验证/条件选股：`akshare-tdx-formula-research`
-- TDX 前端同步/推送：`akshare-tdx-front-sync`
+- 宏观/期权/预警：`akshare-macro-options-alerts`
+- 组合管理：`akshare-portfolio`
 
 多 skill 命中时的顺序：
 1. 全局编排：`akshare-fund-manager-pro`
 2. 领域 skill：`market/fundamental/fund-news/quant`
-3. TDX 专项：`runtime-ops -> formula-research -> front-sync`
+3. 风险与组合：`portfolio/portfolio-manager-core/macro-options-alerts`
 
 ## 4. MCP 调用标准流程
 1. 任务确认：标的、周期、时间窗口、复权口径、输出格式。
@@ -84,26 +82,11 @@
 
 成本参数（手续费、滑点、冲击、调仓频率）必须显式披露。
 
-## 7. TDX 交互强化规范（重点）
-### 7.1 预检必做
-任何 TDX 任务先执行 `akshare-tdx-runtime-ops`。
-
-必须确认：
-1. 客户端已启动并登录。
-2. 插件路径和依赖可用（如 `TDX_PLUGIN_PATH`）。
-3. 本地盘后数据包就绪（涉及 GP/BK/SC 字段时）。
-
-### 7.2 推荐调用链
-1. 运行态：`tdx_refresh_data`、`tdx_manage_subscription`、`tdx_list_available_fields`
-2. 研究态：`tdx_get_formula_data` / `tdx_calculate_indicator` / `tdx_screen_stocks`
-3. 联动态：`push_warn`、`send_backtest_result`、`send_backtest_trades`、`tdx_send_file`
-
-### 7.3 失败补偿链
-- TDX 失败时，降级到非 TDX 路径：`watchlist_manager` + `alerts_manager` + 市场数据工具。
-- 保留待补发队列，客户端恢复后补发消息/回测可视化。
-- 不将“TDX 不可用”解释为“无交易机会”。
-
-场景模板：`.codex/skills/akshare-tdx-front-sync/references/scenario_templates.md`
+## 7. 失败补偿与降级规范
+1. 外部数据源失败时，优先使用已实现的通用降级链，不因单源不可用直接终止任务。
+2. 原生桌面集成或平台相关能力不可用时，统一降级到通用 MCP 路径：`watchlist_manager`、`alerts_manager`、市场数据工具与报告输出。
+3. 不将“某个上游不可用”解释为“无交易机会”或“无法继续分析”。
+4. 所有降级输出都必须显式写明 `fallback_reason`、可用数据窗口与影响范围。
 
 ## 8. 输出模板与质量要求
 模板路径：
@@ -123,9 +106,9 @@
 ## 9. 深度联网检索规范（强制）
 以下场景必须联网且优先官方一手来源：
 1. MCP 协议/传输/授权/工具规范
-2. TDX API 规则与版本变化
-3. 交易监管、披露规则、绩效展示规范
-4. 回测成本、滑点、执行细节的规范化定义
+2. 交易监管、披露规则、绩效展示规范
+3. 回测成本、滑点、执行细节的规范化定义
+4. 第三方数据源、SDK 或部署要求发生明显变化的场景
 
 检索深度要求：
 1. 单一主题至少交叉 `>=6` 个页面。
@@ -151,7 +134,7 @@
 1. 跑覆盖审计并确认阈值通过。
 2. 根据任务语义命中最小 skill 集合。
 3. 先 manager 后原子工具，失败走 fallback。
-4. 涉及 TDX 必先做 runtime-ops 预检。
+4. 遇到平台相关原生能力时，默认走通用 MCP 替代链。
 5. 输出时附数据窗口、来源、风险、限制与下一步。
 
 ## 12. 外部依据（本次联网检索）
@@ -160,11 +143,6 @@
 - MCP Prompts（2025-11-05）：https://modelcontextprotocol.io/specification/2025-11-05/server/prompts
 - MCP Authorization（2025-11-05）：https://modelcontextprotocol.io/specification/2025-11-05/basic/authorization
 - MCP Security Best Practices：https://modelcontextprotocol.io/docs/tutorials/security/security-best-practices
-- TdxQuant 简介：https://help.tdx.com.cn/quant/docs/markdown/mindoc-1cfsjkbf8f3is
-- TdxQuant 常见问题：https://help.tdx.com.cn/quant/docs/markdown/mindoc-tdxpy.html
-- TdxQuant 常量字典（市场/周期/复权）：https://help.tdx.com.cn/quant/docs/markdown/Dict.html
-- TdxQuant 公式相关文档：https://help.tdx.com.cn/quant/docs/markdown/mindoc-u6th34v7x4h5ed7d.html
-- TdxQuant 公式系统数据：https://help.tdx.com.cn/quant/docs/markdown/mindoc-7j4jq8x47d3rxvrl.html
 - QuantConnect Algorithm Framework：https://www.quantconnect.com/docs/v2/writing-algorithms/algorithm-framework/overview
 - Backtrader Commission Schemes：https://www.backtrader.com/docu/commission-schemes/commission-schemes/
 - Backtrader Slippage：https://www.backtrader.com/docu/slippage/slippage/

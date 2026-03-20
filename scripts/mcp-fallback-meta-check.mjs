@@ -27,10 +27,10 @@ function main() {
     structuredContent: {
       success: true,
       source: 'tushare_pro',
-      backend_requested: 'tdx',
+      backend_requested: 'native_bridge',
     },
   });
-  assert.equal(structured.backend_requested, 'tdx');
+  assert.equal(structured.backend_requested, 'native_bridge');
   assert.equal(structured.backend_used, 'tushare_pro');
   assert.equal(structured.fallback_used, true);
   assert.equal(structured.fallback_reason, null);
@@ -64,4 +64,3 @@ try {
   console.error(error);
   process.exit(1);
 }
-

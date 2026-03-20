@@ -12,6 +12,7 @@ export function ConfirmDialog({
   confirmText = '确认',
   cancelText = '取消',
   danger = false,
+  confirmDisabled = false,
 }: {
   open: boolean;
   title?: string;
@@ -22,6 +23,7 @@ export function ConfirmDialog({
   confirmText?: string;
   cancelText?: string;
   danger?: boolean;
+  confirmDisabled?: boolean;
 }) {
   const confirmRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -30,7 +32,8 @@ export function ConfirmDialog({
 
   useEffect(() => {
     if (!open) return;
-    confirmRef.current?.focus();
+    if (confirmDisabled) cancelRef.current?.focus();
+    else confirmRef.current?.focus();
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') { onCancel(); return; }
       if (e.key === 'Tab') {
@@ -48,7 +51,7 @@ export function ConfirmDialog({
     }
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [open, onCancel]);
+  }, [confirmDisabled, open, onCancel]);
 
   if (!open) return null;
   return (
@@ -72,7 +75,8 @@ export function ConfirmDialog({
           <button
             ref={confirmRef}
             onClick={onConfirm}
-            className={`px-4 py-1.5 rounded-lg text-sm text-white cursor-pointer ${danger ? 'bg-danger' : 'bg-primary'}`}
+            disabled={confirmDisabled}
+            className={`px-4 py-1.5 rounded-lg text-sm text-white ${confirmDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'} ${danger ? 'bg-danger' : 'bg-primary'}`}
           >
             {confirmText}
           </button>

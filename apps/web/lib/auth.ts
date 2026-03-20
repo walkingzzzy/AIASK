@@ -12,6 +12,12 @@ export function clearLoggedIn() {
   document.cookie = 'logged_in=; Path=/; Max-Age=0; SameSite=Lax';
 }
 
+/** 读取非敏感登录指示器 */
+export function hasLoggedInHint() {
+  if (typeof document === 'undefined') return false;
+  return document.cookie.split(';').some((item) => item.trim() === 'logged_in=1');
+}
+
 /** 跳转到登录页 */
 export function redirectToLogin(returnPath?: string) {
   const p = returnPath ?? `${window.location.pathname}${window.location.search}`;

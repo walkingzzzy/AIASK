@@ -9,12 +9,11 @@ import requests
 import json
 import pandas as pd
 
-# 配置
-TUSHARE_TOKEN = '2ecc5201dcf93fff3ee466a622d40687b86ecfa6a69481aa8ff0b01ef02f'
-TUSHARE_HTTP_URL = 'http://lianghua.nanyangqiankun.top'
+from _config import TUSHARE_HTTP_URL, TUSHARE_TOKEN, ensure_tushare_token
 
 def call_tushare_api(api_name, params=None, fields=''):
     """通过HTTP调用Tushare代理API"""
+    ensure_tushare_token()
     payload = {
         'api_name': api_name,
         'token': TUSHARE_TOKEN,
@@ -140,4 +139,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(0 if main() else 1)
-

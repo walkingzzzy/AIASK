@@ -10,6 +10,72 @@ import statistics
 
 from ..storage import get_db
 from ..utils import ok, fail
+from .finance import normalize_financial_payload
+
+
+def _safe_float(value):
+    try:
+        return float(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def _normalize_ratio_fraction(value):
+    num = _safe_float(value)
+    if num is None:
+        return None
+    # 财务比率在不同源中可能以 0~1 或 0~100 表示；统一转成 0~1 便于比较。
+    if abs(num) > 1:
+        return num / 100.0
+    return num
+
+
+def _restore_ratio_scale(value, reference):
+    num = _safe_float(value)
+    ref = _safe_float(reference)
+    if num is None:
+        return None
+    if ref is not None and abs(ref) > 1:
+        return num * 100.0
+    return num
+
+
+def _sanitize_positive_metric(
+    value,
+    *,
+    metric: str,
+    invalid_bucket: Optional[dict[str, dict[str, object]]] = None,
+):
+    num = _safe_float(value)
+    if num is None:
+        if invalid_bucket is not None:
+            invalid_bucket[metric] = {
+                "reason": "missing",
+                "raw_value": value,
+            }
+        return None
+    if num <= 0:
+        if invalid_bucket is not None:
+            invalid_bucket[metric] = {
+                "reason": "non_positive",
+                "raw_value": num,
+            }
+        return None
+    return float(num)
+
+
+def _record_peer_invalid_metric(
+    store: dict[str, dict[str, object]],
+    *,
+    metric: str,
+    code: str,
+    reason: str,
+) -> None:
+    bucket = store.setdefault(metric, {"missing": 0, "non_positive": 0, "sample_codes": []})
+    bucket[reason] = int(bucket.get(reason, 0) or 0) + 1
+    sample_codes = bucket.setdefault("sample_codes", [])
+    if code not in sample_codes and len(sample_codes) < 5:
+        sample_codes.append(code)
 
 
 # ---------------------------------------------------------------------------
@@ -65,12 +131,6 @@ async def _relative_valuation_impl(
             return rows
         return None
 
-    def _safe_float(value):
-        try:
-            return float(value) if value is not None else None
-        except Exception:
-            return None
-
     def _first_number(row: dict, keys: List[str]):
         if not isinstance(row, dict):
             return None
@@ -82,21 +142,25 @@ async def _relative_valuation_impl(
         return None
 
     def _derive_growth(fin_row: dict):
+        fin_row = normalize_financial_payload(fin_row, include_aliases=False) or {}
         return _first_number(fin_row, [
+            'revenueGrowth', 'profitGrowth',
             'revenue_yoy', 'revenue_growth', 'growth_rate',
             'net_profit_growth', 'profit_growth',
         ])
 
     def _derive_cashflow_quality(fin_row: dict):
+        fin_row = normalize_financial_payload(fin_row, include_aliases=False) or {}
         ocf = _first_number(fin_row, [
+            'operatingCashFlow',
             'operating_cash_flow',
             'net_operate_cash_flow',
             'net_cash_flow_from_operating_activities',
             'cashflow_from_operations',
         ])
         net_profit = _first_number(fin_row, [
-            'net_profit',
             'netProfit',
+            'net_profit',
             'net_income',
             'profit',
         ])
@@ -105,21 +169,29 @@ async def _relative_valuation_impl(
             ratio = ocf / net_profit
         return ocf, net_profit, ratio
 
-    target_fin_row = _latest_row(target_financial) or {}
+    target_fin_row = normalize_financial_payload(_latest_row(target_financial) or {}, include_aliases=False) or {}
     target_roe = _safe_float(target_fin_row.get('roe'))
-    target_debt_ratio = _safe_float(target_fin_row.get('debt_ratio'))
+    target_debt_ratio = _safe_float(target_fin_row.get('debtRatio'))
     target_growth = _derive_growth(target_fin_row)
     target_ocf, target_net_profit, target_ocf_profit_ratio = _derive_cashflow_quality(target_fin_row)
 
     # 获取目标股票估值指标
     target_metrics = {}
+    invalid_target_metrics: dict[str, dict[str, object]] = {}
     for metric in metrics:
-        value = target_info.get(metric)
-        if value and value > 0:
-            target_metrics[metric] = float(value)
+        value = _sanitize_positive_metric(
+            target_info.get(metric) if isinstance(target_info, dict) else None,
+            metric=metric,
+            invalid_bucket=invalid_target_metrics,
+        )
+        if value is not None:
+            target_metrics[metric] = value
 
     if not target_metrics:
-        return fail(f'No valid valuation metrics for {code}')
+        response = fail(f'No valid valuation metrics for {code}')
+        response['requested_metrics'] = list(metrics or [])
+        response['invalid_target_metrics'] = invalid_target_metrics
+        return response
 
     # 查找可比公司（优先同行业，扩大样本后再做层层过滤）
     peer_source = 'explicit'
@@ -166,6 +238,8 @@ async def _relative_valuation_impl(
 
     # 获取候选可比公司估值与质量数据
     peer_candidates = []
+    invalid_peer_metrics: dict[str, dict[str, object]] = {}
+    peers_without_valid_metrics = 0
     for peer_code in peers:
         peer_info = await db.get_stock_info(peer_code)
         if not peer_info:
@@ -174,13 +248,21 @@ async def _relative_valuation_impl(
         peer_metrics = {'code': peer_code, 'name': peer_info.get('name', '')}
         valid = False
         for metric in metrics:
-            value = peer_info.get(metric)
-            if value and value > 0:
-                peer_metrics[metric] = float(value)
-                valid = True
+            value = _safe_float(peer_info.get(metric))
+            if value is None:
+                _record_peer_invalid_metric(invalid_peer_metrics, metric=metric, code=peer_code, reason='missing')
+                continue
+            if value <= 0:
+                _record_peer_invalid_metric(invalid_peer_metrics, metric=metric, code=peer_code, reason='non_positive')
+                continue
+            peer_metrics[metric] = float(value)
+            valid = True
 
         if valid:
-            peer_metrics['_market_cap'] = float(peer_info.get('market_cap') or 0.0)
+            peer_metrics['_market_cap'] = _sanitize_positive_metric(
+                peer_info.get('market_cap'),
+                metric='market_cap',
+            ) or 0.0
             peer_financial = None
             try:
                 peer_financial = await db.get_financials(peer_code, limit=1)
@@ -194,18 +276,24 @@ async def _relative_valuation_impl(
                         peer_financial = [fin_res['data']]
                 except Exception:
                     pass
-            peer_fin_row = _latest_row(peer_financial) or {}
+            peer_fin_row = normalize_financial_payload(_latest_row(peer_financial) or {}, include_aliases=False) or {}
             peer_metrics['_roe'] = _safe_float(peer_fin_row.get('roe'))
-            peer_metrics['_debt_ratio'] = _safe_float(peer_fin_row.get('debt_ratio'))
+            peer_metrics['_debt_ratio'] = _safe_float(peer_fin_row.get('debtRatio'))
             peer_metrics['_growth'] = _derive_growth(peer_fin_row)
             peer_ocf, peer_profit, peer_ocf_profit_ratio = _derive_cashflow_quality(peer_fin_row)
             peer_metrics['_ocf'] = peer_ocf
             peer_metrics['_net_profit'] = peer_profit
             peer_metrics['_ocf_profit_ratio'] = peer_ocf_profit_ratio
             peer_candidates.append(peer_metrics)
+        else:
+            peers_without_valid_metrics += 1
 
     if not peer_candidates:
-        return fail('No valid peer data found')
+        response = fail('No valid peer data found')
+        response['requested_metrics'] = list(metrics or [])
+        response['invalid_target_metrics'] = invalid_target_metrics
+        response['invalid_peer_metrics'] = invalid_peer_metrics
+        return response
 
     peer_pool_build = {
         'candidate_count': len(peer_candidates),
@@ -221,6 +309,8 @@ async def _relative_valuation_impl(
         'growth_thresholds': {},
         'cashflow_thresholds': {},
         'relaxation_reasons': [],
+        'requested_metrics': list(metrics or []),
+        'peers_without_valid_metrics': peers_without_valid_metrics,
     }
 
     # 过滤1：规模可比（默认 0.3x~3x）
@@ -244,12 +334,16 @@ async def _relative_valuation_impl(
     quality_filtered = peer_stage
     roe_threshold = None
     debt_threshold = None
+    debt_threshold_fraction = None
     if target_roe is not None:
         roe_threshold = max(0.05, target_roe * 0.5)
         peer_pool_build['quality_thresholds']['roe_min'] = roe_threshold
     if target_debt_ratio is not None:
-        debt_threshold = min(0.95, target_debt_ratio + 0.25)
-        peer_pool_build['quality_thresholds']['debt_ratio_max'] = debt_threshold
+        target_debt_fraction = _normalize_ratio_fraction(target_debt_ratio)
+        if target_debt_fraction is not None:
+            debt_threshold_fraction = min(0.95, target_debt_fraction + 0.25)
+            debt_threshold = _restore_ratio_scale(debt_threshold_fraction, target_debt_ratio)
+            peer_pool_build['quality_thresholds']['debt_ratio_max'] = debt_threshold
 
     if roe_threshold is not None or debt_threshold is not None:
         quality_filtered = []
@@ -260,9 +354,9 @@ async def _relative_valuation_impl(
                 ok_roe = (peer_roe is not None) and (peer_roe >= roe_threshold)
 
             ok_debt = True
-            if debt_threshold is not None:
-                peer_debt = p.get('_debt_ratio')
-                ok_debt = (peer_debt is None) or (peer_debt <= debt_threshold)
+            if debt_threshold_fraction is not None:
+                peer_debt = _normalize_ratio_fraction(p.get('_debt_ratio'))
+                ok_debt = (peer_debt is None) or (peer_debt <= debt_threshold_fraction)
 
             if ok_roe and ok_debt:
                 quality_filtered.append(p)
@@ -441,6 +535,8 @@ async def _relative_valuation_impl(
         'name': target_info.get('name', ''),
         'industry': target_industry,
         'target_metrics': target_metrics,
+        'invalid_target_metrics': invalid_target_metrics,
+        'invalid_peer_metrics': invalid_peer_metrics,
         'industry_stats': industry_stats,
         'comparison': comparison,
         'peer_count': len(peer_data),
@@ -468,9 +564,100 @@ async def _get_historical_valuation_impl(
     from datetime import datetime, timedelta
 
     db = get_db()
+    requested_rows = max(int(days or 30), 1)
     rows = []
+    db_query_failed = False
     source_chain: list[str] = ['db.stock_quotes']
     fallback_reason: list[str] = []
+
+    def _append_source(name: str) -> None:
+        if name not in source_chain:
+            source_chain.append(name)
+
+    def _to_float(value):
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    def _normalize_date(value) -> str | None:
+        if value is None:
+            return None
+        try:
+            if hasattr(value, 'strftime'):
+                return value.strftime('%Y-%m-%d')
+        except Exception:
+            pass
+        text = str(value).strip()
+        if not text:
+            return None
+        if len(text) >= 10 and text[4] == '-' and text[7] == '-':
+            return text[:10]
+        digits = ''.join(ch for ch in text if ch.isdigit())
+        if len(digits) >= 8:
+            return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+        return text[:10] or None
+
+    invalid_value_fields: dict[str, int] = {}
+
+    def _sanitize_history_metric(field: str, value):
+        number = _to_float(value)
+        if number is None:
+            return None
+        if field in ('pe_ratio', 'pb_ratio', 'ps_ratio', 'market_cap', 'price') and number <= 0:
+            invalid_value_fields[field] = invalid_value_fields.get(field, 0) + 1
+            return None
+        return number
+
+    def _make_history_row(
+        *,
+        date=None,
+        pe_ratio=None,
+        pb_ratio=None,
+        market_cap=None,
+        price=None,
+    ) -> dict:
+        return {
+            'date': _normalize_date(date),
+            'pe_ratio': _sanitize_history_metric('pe_ratio', pe_ratio),
+            'pb_ratio': _sanitize_history_metric('pb_ratio', pb_ratio),
+            'market_cap': _sanitize_history_metric('market_cap', market_cap),
+            'price': _sanitize_history_metric('price', price),
+        }
+
+    def _record_score(item: dict) -> int:
+        return sum(item.get(k) is not None for k in ('pe_ratio', 'pb_ratio', 'market_cap', 'price'))
+
+    def _deduplicate(items: list[dict]) -> list[dict]:
+        dedup_map: dict[str, dict] = {}
+        for idx, item in enumerate(items):
+            key = item.get('date') or f'__nodate_{idx}'
+            old = dedup_map.get(key)
+            if old is None or _record_score(item) > _record_score(old):
+                dedup_map[key] = item
+        history = list(dedup_map.values())
+        history.sort(key=lambda x: (x.get('date') is not None, x.get('date') or ''), reverse=True)
+        return history
+
+    def _history_quality(items: list[dict]) -> dict:
+        deduped = _deduplicate(items)
+        row_count = len(deduped)
+        valuation_rows = sum(
+            1 for item in deduped
+            if item.get('pe_ratio') is not None or item.get('pb_ratio') is not None
+        )
+        complete_rows = sum(
+            1 for item in deduped
+            if all(item.get(k) is not None for k in ('pe_ratio', 'pb_ratio', 'market_cap', 'price'))
+        )
+        return {
+            'history': deduped,
+            'row_count': row_count,
+            'valuation_rows': valuation_rows,
+            'complete_rows': complete_rows,
+        }
 
     try:
         async with db.acquire() as conn:
@@ -484,28 +671,29 @@ async def _get_historical_valuation_impl(
             )
     except Exception as e:
         rows = []
+        db_query_failed = True
         fallback_reason.append(f'stock_quotes查询失败: {e}')
 
-    def _to_float(value):
-        try:
-            if value is None:
-                return None
-            return float(value)
-        except Exception:
-            return None
+    history_raw = [
+        _make_history_row(
+            date=row.get('time') if isinstance(row, dict) else row['time'],
+            pe_ratio=row.get('pe') if isinstance(row, dict) else row['pe'],
+            pb_ratio=row.get('pb') if isinstance(row, dict) else row['pb'],
+            market_cap=row.get('mkt_cap') if isinstance(row, dict) else row['mkt_cap'],
+            price=row.get('price') if isinstance(row, dict) else row['price'],
+        )
+        for row in (rows or [])
+    ]
 
-    history_raw = []
-    for row in rows or []:
-        history_raw.append({
-            'date': row['time'].strftime('%Y-%m-%d') if row.get('time') else None,
-            'pe_ratio': _to_float(row.get('pe')),
-            'pb_ratio': _to_float(row.get('pb')),
-            'market_cap': _to_float(row.get('mkt_cap')),
-            'price': _to_float(row.get('price')),
-        })
+    quality = _history_quality(history_raw)
+    needs_external_valuation = (not db_query_failed) and quality['valuation_rows'] == 0
 
-    if not history_raw:
-        source_chain.append('tushare.daily_basic')
+    if needs_external_valuation:
+        if quality['row_count'] > 0:
+            fallback_reason.append('stock_quotes 历史估值覆盖不足，已补充外部数据源')
+        else:
+            fallback_reason.append('stock_quotes 无历史估值序列，已按降级链路补充外部数据源')
+        _append_source('tushare.daily_basic')
         try:
             from ..data_source import data_source
             pro = data_source.get_tushare_pro()
@@ -521,38 +709,56 @@ async def _get_historical_valuation_impl(
                 )
                 if df is not None and not df.empty:
                     for _, r in df.iterrows():
-                        trade_date = str(r.get('trade_date') or '').strip()
-                        dt = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}" if len(trade_date) == 8 else None
-                        history_raw.append({
-                            'date': dt,
-                            'pe_ratio': _to_float(r.get('pe_ttm')),
-                            'pb_ratio': _to_float(r.get('pb')),
-                            'market_cap': _to_float(r.get('total_mv')),
-                            'price': _to_float(r.get('close')),
-                        })
+                        history_raw.append(
+                            _make_history_row(
+                                date=r.get('trade_date'),
+                                pe_ratio=r.get('pe_ttm'),
+                                pb_ratio=r.get('pb'),
+                                market_cap=r.get('total_mv'),
+                                price=r.get('close'),
+                            )
+                        )
         except Exception as e:
             fallback_reason.append(f'Tushare降级失败: {e}')
 
-    if not history_raw:
-        source_chain.append('akshare.stock_a_indicator_lg')
+        quality = _history_quality(history_raw)
+        needs_external_valuation = quality['valuation_rows'] == 0
+
+    if needs_external_valuation:
         try:
             import akshare as ak
-            df = ak.stock_a_indicator_lg(symbol=code)
-            if df is not None and not df.empty:
-                for _, r in df.tail(max(days, 1)).iterrows():
-                    dt = str(r.get('trade_date') or r.get('日期') or '')[:10] or None
-                    history_raw.append({
-                        'date': dt,
-                        'pe_ratio': _to_float(r.get('pe') if 'pe' in r else r.get('市盈率')),
-                        'pb_ratio': _to_float(r.get('pb') if 'pb' in r else r.get('市净率')),
-                        'market_cap': _to_float(r.get('total_mv') if 'total_mv' in r else r.get('总市值')),
-                        'price': _to_float(r.get('close') if 'close' in r else r.get('收盘价')),
-                    })
-        except Exception as e:
-            fallback_reason.append(f'AkShare降级失败: {e}')
 
-    if not history_raw:
-        source_chain.append('baostock.history_k_data_plus')
+            preferred_attr = 'stock_a_indicator_lg' if hasattr(ak, 'stock_a_indicator_lg') else (
+                'stock_value_em' if hasattr(ak, 'stock_value_em') else None
+            )
+            if preferred_attr is None:
+                raise AttributeError('stock_a_indicator_lg / stock_value_em 均不可用')
+
+            source_name = f'akshare.{preferred_attr}'
+            _append_source(source_name)
+            try:
+                df = getattr(ak, preferred_attr)(symbol=code)
+                if df is not None and not df.empty:
+                    tail_df = df.tail(max(requested_rows, 1)) if hasattr(df, 'tail') else df
+                    for _, r in tail_df.iterrows():
+                        history_raw.append(
+                            _make_history_row(
+                                date=r.get('trade_date') or r.get('日期') or r.get('数据日期'),
+                                pe_ratio=r.get('pe') if 'pe' in r else (r.get('PE(TTM)') if 'PE(TTM)' in r else r.get('市盈率')),
+                                pb_ratio=r.get('pb') if 'pb' in r else r.get('市净率'),
+                                market_cap=r.get('total_mv') if 'total_mv' in r else r.get('总市值'),
+                                price=r.get('close') if 'close' in r else (r.get('当日收盘价') if '当日收盘价' in r else r.get('收盘价')),
+                            )
+                        )
+            except Exception as e:
+                fallback_reason.append(f'{source_name} 降级失败: {e}')
+        except Exception as e:
+            fallback_reason.append(f'AkShare导入失败: {e}')
+
+        quality = _history_quality(history_raw)
+
+    if not db_query_failed and quality['valuation_rows'] == 0 and quality['row_count'] == 0:
+        _append_source('baostock.history_k_data_plus')
         try:
             from ..baostock_api import baostock_client
             end_date = datetime.now().strftime('%Y-%m-%d')
@@ -566,42 +772,39 @@ async def _get_historical_valuation_impl(
                 adjustflag='2',
             )
             if df is not None and not df.empty:
-                for _, r in df.tail(max(days, 1)).iterrows():
-                    history_raw.append({
-                        'date': str(r.get('date') or '')[:10] or None,
-                        'pe_ratio': None,
-                        'pb_ratio': None,
-                        'market_cap': None,
-                        'price': _to_float(r.get('close')),
-                    })
+                tail_df = df.tail(max(requested_rows, 1)) if hasattr(df, 'tail') else df
+                for _, r in tail_df.iterrows():
+                    history_raw.append(
+                        _make_history_row(
+                            date=r.get('date'),
+                            price=r.get('close'),
+                        )
+                    )
         except Exception as e:
             fallback_reason.append(f'Baostock降级失败: {e}')
+        quality = _history_quality(history_raw)
 
-    if not history_raw:
-        source_chain.append('db.get_stock_info')
-        stock_info = await db.get_stock_info(code)
+    if quality['valuation_rows'] == 0:
+        history_raw = []
+        _append_source('db.get_stock_info')
+        stock_info = None
+        try:
+            stock_info = await db.get_stock_info(code)
+        except Exception as e:
+            fallback_reason.append(f'db.get_stock_info 降级失败: {e}')
         if stock_info:
             fallback_reason.append('无历史估值序列，已降级为股票基础估值快照')
-            history_raw.append({
-                'date': None,
-                'pe_ratio': _to_float(stock_info.get('pe_ratio')),
-                'pb_ratio': _to_float(stock_info.get('pb_ratio')),
-                'market_cap': _to_float(stock_info.get('market_cap')),
-                'price': None,
-            })
+            history_raw.append(
+                _make_history_row(
+                    date=None,
+                    pe_ratio=stock_info.get('pe_ratio'),
+                    pb_ratio=stock_info.get('pb_ratio'),
+                    market_cap=stock_info.get('market_cap'),
+                    price=None,
+                )
+            )
 
-    def _record_score(item: dict) -> int:
-        return sum(item.get(k) is not None for k in ('pe_ratio', 'pb_ratio', 'market_cap', 'price'))
-
-    dedup_map: dict[str, dict] = {}
-    for idx, item in enumerate(history_raw):
-        key = item.get('date') or f'__nodate_{idx}'
-        old = dedup_map.get(key)
-        if old is None or _record_score(item) >= _record_score(old):
-            dedup_map[key] = item
-
-    history = list(dedup_map.values())
-    history.sort(key=lambda x: (x.get('date') is not None, x.get('date') or ''), reverse=True)
+    history = _deduplicate(history_raw)[:requested_rows]
 
     pe_values = [h['pe_ratio'] for h in history if h.get('pe_ratio') is not None]
     pb_values = [h['pb_ratio'] for h in history if h.get('pb_ratio') is not None]
@@ -633,6 +836,8 @@ async def _get_historical_valuation_impl(
         'duplicate_removed': max(0, len(history_raw) - len(history)),
         'field_count': 4,
         'missing_cells': missing_cells,
+        'invalid_value_cells': int(sum(invalid_value_fields.values())),
+        'invalid_value_fields': invalid_value_fields,
         'completeness_ratio': round(completeness_ratio, 4),
         'missing_ratio': round(1.0 - completeness_ratio, 4),
     }
@@ -647,7 +852,7 @@ async def _get_historical_valuation_impl(
         'fallback_reason': fallback_reason,
         'data_quality': data_quality,
     }
-    if not rows:
+    if db_query_failed or not rows or len(source_chain) > 1:
         payload['message'] = 'stock_quotes 无历史数据或查询失败，已返回降级结果'
         payload['source'] = 'fallback'
 

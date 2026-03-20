@@ -3,7 +3,7 @@
 P1 重构: 核心数据获取函数脱离 AkShare 依赖
 - get_spot_indexed() → 东财 push2 API (主) → AkShare (降级)
 - get_index_spot_indexed() → 东财 push2 API (主) → AkShare (降级)
-- get_stock_list_cached() → Tushare stock_basic (主) → TDX (降级) → AkShare (降级)
+- get_stock_list_cached() → Tushare stock_basic (主) → AkShare (降级)
 """
 
 import os
@@ -333,7 +333,7 @@ def get_index_spot_indexed() -> tuple[pd.DataFrame, bool]:
 
 
 # ============================================================
-# 股票列表 — Tushare stock_basic (主) → TDX (降级) → AkShare (降级)
+# 股票列表 — Tushare stock_basic (主) → AkShare (降级)
 # ============================================================
 
 def _fetch_stock_list_tushare() -> Optional[list[dict]]:
@@ -375,33 +375,10 @@ def _fetch_stock_list_tushare() -> Optional[list[dict]]:
         return None
 
 
-def _fetch_stock_list_tdx() -> Optional[list[dict]]:
-    """TDX 获取股票列表（仅代码，无名称）"""
-    try:
-        from ...data_source import data_source
-        if not data_source.is_tdx_available():
-            return None
-        tq = data_source.get_tdxquant()
-        if not tq:
-            return None
-        # get_stock_list(5) 返回沪深A股代码列表 ['600519.SH', ...]
-        codes = tq.get_stock_list(5)
-        if not codes:
-            return None
-        records = []
-        for c in codes:
-            code = c.split('.')[0] if '.' in c else c
-            records.append({"code": code, "name": ""})
-        return records if records else None
-    except Exception as e:
-        safe_stderr_print(f"[helpers] TDX get_stock_list 失败: {e}")
-        return None
-
-
 def get_stock_list_cached() -> tuple[list[dict], bool]:
     """获取股票列表（带缓存）
     
-    降级链: Tushare stock_basic → TDX get_stock_list → AkShare (如可用)
+    降级链: Tushare stock_basic → AkShare (如可用)
     返回 list[dict]，每个 dict 至少包含 'code' 键，可能包含 'name' 键。
     """
     now = time.time()
@@ -416,11 +393,7 @@ def get_stock_list_cached() -> tuple[list[dict], bool]:
         # 1. 主路径: Tushare stock_basic（一次返回全部代码+名称）
         records = _fetch_stock_list_tushare()
 
-        # 2. 降级: TDX（仅代码，无名称）
-        if not records:
-            records = _fetch_stock_list_tdx()
-
-        # 3. 降级: AkShare (如可用)
+        # 2. 降级: AkShare (如可用)
         if not records and ak is not None:
             try:
                 df = ak.stock_info_a_code_name()

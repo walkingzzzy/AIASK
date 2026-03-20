@@ -1,7 +1,7 @@
 # 数据质量测试 09: MCP 工具集成测试
 # 通过 MCP 工具接口验证数据管道端到端质量
 # 对应问题: WARN #13/#15/#16/#17/#20 (manager 层问题)
-# 数据源: Tushare 代理 (HTTP) + TDX，不使用 AkShare
+# 数据源: Tushare 代理 (HTTP) + 本地桥接/多源回退，不使用 AkShare
 
 from config import *
 import json
@@ -59,9 +59,9 @@ def test_macro_cpi_pipeline():
 
 
 def test_financials_fallback_chain():
-    """财务数据降级链测试 (TDX → Tushare)"""
+    """财务数据降级链测试 (本地桥接 → Tushare)"""
     print("\n" + "=" * 60)
-    print("[Test 2] 财务数据降级链 (TDX → Tushare)")
+    print("[Test 2] 财务数据降级链 (本地桥接 → Tushare)")
     print("=" * 60)
     r = TestResult("financials_fallback")
 
@@ -307,7 +307,7 @@ def test_north_fund_pipeline():
 def main():
     print("#" * 60)
     print("#  数据质量测试 09: MCP 工具集成测试")
-    print("#  数据源: Tushare 代理 + TDX (不使用 AkShare)")
+    print("#  数据源: Tushare 代理 + 本地桥接/多源回退 (不使用 AkShare)")
     print("#" * 60)
 
     results = [

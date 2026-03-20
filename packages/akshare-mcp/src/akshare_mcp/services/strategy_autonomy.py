@@ -8,7 +8,7 @@ from datetime import date
 from typing import Any, Optional
 from uuid import uuid4
 
-from .strategy_factory.utils import _extract_event_context
+from strategy_factory import extract_event_context as _extract_event_context
 from .strategy_autonomy_components import (  # noqa: F401
     CandidateGenerationService,
     CommitteeReviewService,
@@ -320,7 +320,7 @@ class AutonomyCycleOrchestrator:
         submit_result = None
         if auto_submit and candidates:
             lifecycle.enter_phase('submitting', detail={'candidate_count': len(candidates)})
-            from .strategy_factory import StrategySubmitter
+            from strategy_factory import StrategySubmitter
             submit_result = await StrategySubmitter().submit(candidates, snapshot, db)
             submission_batch = await self.experiment_recorder.apply_submission_results(db, experiments, submit_result)
             experiments = list(submission_batch.get('experiments') or [])

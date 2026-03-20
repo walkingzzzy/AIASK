@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from .strategy_factory import (
+from strategy_factory import (
     DEPRECATION_THRESHOLDS,
     PROMOTION_THRESHOLDS,
 )

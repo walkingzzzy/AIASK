@@ -1,31 +1,21 @@
 """基本面分析管理器 - 杜邦分析、同行对比、内在价值（增强版）"""
 
 from typing import Optional
-import json
 import math
+import time
 from ...storage import get_db
-from ...utils import ok, fail, normalize_code
+from ...utils import normalize_code
 from ...data_source import data_source
+from ..manager_protocol import (
+    fail_with_meta,
+    normalize_manager_code,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 from ..valuation import _sanitize_distribution_samples, _run_dcf_distribution
 import logging
 
 logger = logging.getLogger(__name__)
-
-def _normalize_kwargs(code: Optional[str], kwargs: dict) -> tuple[Optional[str], dict]:
-    # 支持 kwargs="{}" 形式（JSON 字符串）
-    if kwargs.get("kwargs") and isinstance(kwargs.get("kwargs"), str):
-        try:
-            extra = json.loads(kwargs.get("kwargs") or "{}")
-            if isinstance(extra, dict):
-                kwargs = {**kwargs, **extra}
-        except Exception:
-            pass
-    # 支持多种 code 传参
-    code = code or kwargs.get("code") or kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
-    # compare 动作常见传参别名
-    if "codes" not in kwargs and "Codes" in kwargs:
-        kwargs["codes"] = kwargs.get("Codes")
-    return code, kwargs
 
 
 def _safe_float(value, default: float = 0.0) -> float:
@@ -45,6 +35,76 @@ def _latest_value(record: dict, *keys: str, default=None):
         if key in record and record.get(key) is not None:
             return record.get(key)
     return default
+
+
+async def _get_financial_tool_payload(code: str) -> tuple[Optional[dict], list[str]]:
+    try:
+        from ..finance import get_financials
+
+        result = await get_financials(code)
+    except Exception:
+        return None, []
+
+    if not result.get("success") or not result.get("data"):
+        return None, result.get("source_chain") or ["finance.get_financials"]
+
+    payload = result.get("data")
+    if isinstance(payload, dict):
+        return dict(payload), result.get("source_chain") or ["finance.get_financials"]
+    return None, result.get("source_chain") or ["finance.get_financials"]
+
+
+def _safe_metric_value(value, default=0):
+    if value is None:
+        return default
+    try:
+        import math as _math
+        import pandas as pd
+
+        if pd.isna(value):
+            return default
+        parsed = float(value)
+        return default if _math.isnan(parsed) else parsed
+    except (ValueError, TypeError):
+        return default
+
+
+def _build_metrics_from_latest(latest: dict) -> dict:
+    return {
+        "revenue": _safe_metric_value(latest.get("revenue") or latest.get("total_revenue")),
+        "net_income": _safe_metric_value(
+            latest.get("n_income")
+            or latest.get("net_income")
+            or latest.get("netProfit")
+            or latest.get("net_profit")
+        ),
+        "eps": _safe_metric_value(latest.get("basic_eps") or latest.get("eps")),
+        "pe_ratio": latest.get("pe_ratio"),
+        "pb_ratio": latest.get("pb_ratio"),
+        "roe": _safe_metric_value(latest.get("roe"), None),
+        "debt_ratio": _safe_metric_value(
+            latest.get("debt_ratio") or latest.get("debt_to_assets") or latest.get("debtRatio"),
+            None,
+        ),
+        "gross_margin": _safe_metric_value(
+            latest.get("gross_margin") or latest.get("grossprofit_margin") or latest.get("grossProfitMargin"),
+            None,
+        ),
+        "revenue_growth": _safe_metric_value(latest.get("revenue_growth") or latest.get("or_yoy"), None),
+        "profit_growth": _safe_metric_value(latest.get("profit_growth") or latest.get("netprofit_yoy"), None),
+    }
+
+
+def _dedupe_chain(items: list[str]) -> list[str]:
+    deduped = []
+    seen = set()
+    for item in items:
+        label = str(item or "").strip()
+        if not label or label in seen:
+            continue
+        deduped.append(label)
+        seen.add(label)
+    return deduped
 
 
 def _build_intrinsic_value_payload(code: str, method: str, latest: dict, kwargs: dict) -> dict:
@@ -201,45 +261,70 @@ def register_fundamental_analysis_manager(mcp):
             # 同行对比
             fundamental_analysis_manager(action="compare", code="600519", kwargs='{"peers":["000858","002304"]}')
         """
+        start_time = time.perf_counter()
         try:
             db = get_db()
-            code, kwargs = _normalize_kwargs(code, kwargs)
+            kwargs = normalize_manager_kwargs(
+                kwargs,
+                field_aliases={
+                    "codes": ("Codes", "peers"),
+                },
+            )
+            code, kwargs = normalize_manager_code(code, kwargs)
+
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="fundamental_analysis_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="fundamental_analysis_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
             
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'analyze': '基本面分析（需要 code）',
                         'dupont': '杜邦分析（需要 code）',
                         'compare': '同行对比（需要 code, peers）',
+                        'intrinsic_value': '内在价值估算（需要 code，可选 method=dcf/pe/pb）',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['fundamental_analysis_manager'])
             
             elif action == 'analyze' and code:
                 code = normalize_code(code)
-                
-                # 1. 尝试从DB获取财务数据
+                source_chain = ['fundamental_analysis_manager', 'db.get_financials']
+
+                # 1. 尝试从 DB 获取财务数据
                 financials = await db.get_financials(code, limit=4)
                 
-                # 2. DB无数据时从数据源获取
+                # 2. DB 无数据时从 Tushare 组合报表获取
                 if not financials:
                     logger.info(f"[FundamentalManager] Fetching financials for {code}")
+                    source_chain = ['fundamental_analysis_manager', 'tushare.income', 'tushare.fina_indicator']
                     
-                    # 尝试Tushare Pro — 同时获取利润表和财务指标
+                    # 尝试 Tushare Pro — 同时获取利润表和财务指标
                     ts_pro = data_source.get_tushare_pro()
                     if ts_pro:
                         try:
                             ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
-                            # 利润表
                             df_income = ts_pro.income(ts_code=ts_code, fields='end_date,revenue,n_income,basic_eps,total_revenue')
-                            # 财务指标（ROE、负债率等）
                             df_fina = None
                             try:
                                 df_fina = ts_pro.fina_indicator(ts_code=ts_code, fields='end_date,roe,debt_to_assets,grossprofit_margin,netprofit_yoy,or_yoy')
                             except Exception:
                                 pass
                             
-                            # 如果 fina_indicator 没有 debt_to_assets，尝试 balancesheet
                             df_balance = None
                             try:
                                 df_balance = ts_pro.balancesheet(ts_code=ts_code, fields='end_date,total_liab,total_assets')
@@ -257,7 +342,6 @@ def register_fundamental_analysis_manager(mcp):
                                                 rec[k] = None
                                         except (TypeError, ValueError):
                                             pass
-                                # 合并财务指标 — 使用前缀匹配（如 20241231 匹配 2024）
                                 if df_fina is not None and not df_fina.empty:
                                     fina_map = {}
                                     for _, row in df_fina.iterrows():
@@ -266,16 +350,13 @@ def register_fundamental_analysis_manager(mcp):
                                     for rec in records:
                                         ed = str(rec.get('end_date', ''))
                                         fina = fina_map.get(ed)
-                                        # 如果精确匹配失败，尝试同年最近的报告期
                                         if not fina and ed:
                                             year_prefix = ed[:4]
                                             candidates = [(k, v) for k, v in fina_map.items() if k.startswith(year_prefix)]
                                             if candidates:
-                                                # 取最近的报告期
                                                 candidates.sort(key=lambda x: x[0], reverse=True)
                                                 fina = candidates[0][1]
                                             else:
-                                                # 取 fina_indicator 中最新的一条
                                                 all_fina = sorted(fina_map.items(), key=lambda x: x[0], reverse=True)
                                                 if all_fina:
                                                     fina = all_fina[0][1]
@@ -286,7 +367,6 @@ def register_fundamental_analysis_manager(mcp):
                                             rec['revenue_growth'] = rec.get('revenue_growth') or fina.get('or_yoy')
                                             rec['profit_growth'] = rec.get('profit_growth') or fina.get('netprofit_yoy')
                                 
-                                # 如果 income 没有匹配到 fina_indicator，直接用 fina_indicator 最新数据补充
                                 if df_fina is not None and not df_fina.empty and records:
                                     latest_fina = df_fina.iloc[0].to_dict()
                                     for rec in records:
@@ -301,7 +381,6 @@ def register_fundamental_analysis_manager(mcp):
                                         if rec.get('profit_growth') is None:
                                             rec['profit_growth'] = latest_fina.get('netprofit_yoy')
                                 
-                                # 从资产负债表补充 debt_ratio
                                 if df_balance is not None and not df_balance.empty:
                                     balance_map = {}
                                     for _, row in df_balance.iterrows():
@@ -319,132 +398,162 @@ def register_fundamental_analysis_manager(mcp):
                         except Exception as e:
                             logger.warning(f"[FundamentalManager] Tushare failed: {e}")
                 
-                # 3. 降级到TDX
+                # 3. 当前运行环境下，降级到公共财务工具
                 if not financials:
-                    stock_info = data_source.get_stock_info_priority_tdx(code)
-                    if stock_info:
-                        financials = [{
-                            'code': code,
-                            'name': stock_info.get('name'),
-                            'industry': stock_info.get('industry'),
-                            'pe_ratio': stock_info.get('pe_ratio'),
-                            'pb_ratio': stock_info.get('pb_ratio'),
-                            'market_cap': stock_info.get('market_cap'),
-                            'source': 'tdx'
-                        }]
+                    tool_payload, tool_chain = await _get_financial_tool_payload(code)
+                    if tool_payload:
+                        financials = [tool_payload]
+                        source_chain = ['fundamental_analysis_manager'] + list(tool_chain or ['finance.get_financials'])
                 
                 if not financials:
-                    return fail(f'无法获取 {code} 的财务数据')
+                    return _fail(f'无法获取 {code} 的财务数据', source_chain=source_chain)
                 
-                # 4. 计算关键指标
                 metrics = {}
                 if financials and isinstance(financials[0], dict):
                     latest = financials[0]
-                    
-                    def _safe_num(val, default=0):
-                        if val is None:
-                            return default
-                        try:
-                            import math
-                            import pandas as pd
-                            if pd.isna(val):
-                                return default
-                            v = float(val)
-                            return default if math.isnan(v) else v
-                        except (ValueError, TypeError):
-                            return default
-                    
-                    metrics = {
-                        'revenue': _safe_num(latest.get('revenue') or latest.get('total_revenue')),
-                        'net_income': _safe_num(latest.get('n_income') or latest.get('net_income') or latest.get('netProfit') or latest.get('net_profit')),
-                        'eps': _safe_num(latest.get('basic_eps') or latest.get('eps')),
-                        'pe_ratio': latest.get('pe_ratio'),
-                        'pb_ratio': latest.get('pb_ratio'),
-                        'roe': _safe_num(latest.get('roe'), None),
-                        'debt_ratio': _safe_num(latest.get('debt_ratio') or latest.get('debt_to_assets') or latest.get('debtRatio'), None),
-                        'gross_margin': _safe_num(latest.get('gross_margin') or latest.get('grossprofit_margin') or latest.get('grossProfitMargin'), None),
-                        'revenue_growth': _safe_num(latest.get('revenue_growth') or latest.get('or_yoy'), None),
-                        'profit_growth': _safe_num(latest.get('profit_growth') or latest.get('netprofit_yoy'), None),
-                    }
+                    metrics = _build_metrics_from_latest(latest)
                 
-                # 如果核心字段仍为空，尝试 get_financials 工具补充
                 if not metrics.get('revenue') and not metrics.get('net_income'):
-                    try:
-                        from ..finance import get_financials
-                        fin_res = await get_financials(code)
-                        if fin_res.get('success') and fin_res.get('data'):
-                            fin_data = fin_res['data']
-                            metrics['revenue'] = metrics.get('revenue') or fin_data.get('revenue') or 0
-                            metrics['net_income'] = metrics.get('net_income') or fin_data.get('netProfit') or fin_data.get('net_income') or 0
-                            metrics['eps'] = metrics.get('eps') or fin_data.get('eps') or 0
-                            metrics['pe_ratio'] = metrics.get('pe_ratio') or fin_data.get('pe_ratio')
-                            metrics['roe'] = fin_data.get('roe')
-                            metrics['source'] = fin_data.get('source', 'finance_tool')
-                    except Exception:
-                        pass
+                    fin_data, tool_chain = await _get_financial_tool_payload(code)
+                    if fin_data:
+                        metrics['revenue'] = metrics.get('revenue') or fin_data.get('revenue') or 0
+                        metrics['net_income'] = metrics.get('net_income') or fin_data.get('netProfit') or fin_data.get('net_income') or 0
+                        metrics['eps'] = metrics.get('eps') or fin_data.get('eps') or 0
+                        metrics['pe_ratio'] = metrics.get('pe_ratio') or fin_data.get('pe_ratio')
+                        metrics['roe'] = fin_data.get('roe')
+                        metrics['source'] = fin_data.get('source', 'finance_tool')
+                        source_chain = _dedupe_chain(source_chain + ['finance.get_financials'] + list(tool_chain or []))
                 
-                return ok({
+                return _ok({
                     'code': code,
                     'financials': financials,
                     'metrics': metrics,
                     'data_points': len(financials)
-                })
+                }, source_chain=source_chain)
             
             elif action == 'dupont':
                 if not code:
-                    return fail('需要提供股票代码')
+                    return _fail('需要提供股票代码', source_chain=['fundamental_analysis_manager'])
                 
                 code = normalize_code(code)
+                source_chain = ['fundamental_analysis_manager', 'db.get_financials']
                 financials = await db.get_financials(code, limit=1)
                 if not financials:
-                    return fail('无财务数据')
+                    fin_data, tool_chain = await _get_financial_tool_payload(code)
+                    if fin_data:
+                        financials = [fin_data]
+                        source_chain = ['fundamental_analysis_manager'] + list(tool_chain or ['finance.get_financials'])
+                if not financials:
+                    return _fail('无财务数据', source_chain=source_chain)
                 
                 latest = financials[0]
-                roe = latest.get('roe', 0)
+                roe = _safe_float(latest.get('roe'), 0.0)
+                net_margin = _safe_float(
+                    latest.get('netprofit_margin')
+                    or latest.get('net_margin')
+                    or latest.get('netProfitMargin'),
+                    0.0,
+                )
+                asset_turnover = _safe_float(
+                    latest.get('asset_turnover')
+                    or latest.get('assets_turn')
+                    or latest.get('assetTurnover'),
+                    0.0,
+                )
+                equity_multiplier = _safe_float(
+                    latest.get('equity_multiplier')
+                    or latest.get('equityMultiplier'),
+                    0.0,
+                )
                 
-                return ok({
+                return _ok({
                     'code': code,
                     'roe': float(roe),
+                    'components': {
+                        'net_margin': float(net_margin),
+                        'asset_turnover': float(asset_turnover),
+                        'equity_multiplier': float(equity_multiplier),
+                    },
                     'analysis': '杜邦分析'
-                })
+                }, source_chain=source_chain)
             
             elif action == 'compare':
                 codes = kwargs.get('codes', [])
+                if isinstance(codes, str):
+                    codes = [item.strip() for item in codes.split(',') if item.strip()]
+                elif not isinstance(codes, list):
+                    codes = []
+                if code:
+                    codes = [code] + codes
+                codes = [normalize_code(item) for item in codes if str(item or '').strip()]
+                deduped_codes = []
+                seen_codes = set()
+                for item in codes:
+                    if item in seen_codes:
+                        continue
+                    deduped_codes.append(item)
+                    seen_codes.add(item)
+                codes = deduped_codes
                 if not codes:
-                    return fail('??????????')
+                    return _fail('需要提供对比股票代码（codes / peers）', source_chain=['fundamental_analysis_manager'])
                 
                 comparison = []
+                child_source_chain = ['fundamental_analysis_manager', 'fundamental_analysis_manager.analyze']
                 for c in codes[:5]:
                     result = await fundamental_analysis_manager('analyze', code=c)
                     if result.get('success'):
                         comparison.append({
                             'code': c,
-                            'metrics': result['data']['metrics']
+                            'metrics': result['data']['metrics'],
+                            'meta': result.get('meta'),
                         })
+                        child_source_chain.extend(result.get('meta', {}).get('source_chain') or [])
                 
-                return ok({'comparison': comparison})
+                return _ok(
+                    {
+                        'comparison': comparison,
+                        'requested_codes': codes[:5],
+                    },
+                    source_chain=_dedupe_chain(child_source_chain),
+                )
             
             elif action == 'intrinsic_value':
                 if not code:
-                    return fail('code is required')
+                    return _fail('code is required', source_chain=['fundamental_analysis_manager'])
 
                 code = normalize_code(code)
                 method = str(kwargs.get('method', 'dcf')).lower()
+                source_chain = ['fundamental_analysis_manager', 'db.get_financials']
                 financials = await db.get_financials(code, limit=4)
                 if not financials:
                     stock_info = await db.get_stock_info(code)
                     if stock_info:
                         financials = [dict(stock_info)]
+                        source_chain = ['fundamental_analysis_manager', 'db.get_stock_info']
+                if not financials:
+                    fin_data, tool_chain = await _get_financial_tool_payload(code)
+                    if fin_data:
+                        financials = [fin_data]
+                        source_chain = ['fundamental_analysis_manager'] + list(tool_chain or ['finance.get_financials'])
 
                 if not financials:
-                    return fail(f'no financial data for {code}')
+                    return _fail(f'no financial data for {code}', source_chain=source_chain)
 
                 payload = _build_intrinsic_value_payload(code, method, financials[0], kwargs)
-                return ok(payload)
+                return _ok(payload, source_chain=source_chain)
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, analyze, dupont, compare, intrinsic_value')
+                return _fail(
+                    f'Unknown action: {action}. Supported: help, analyze, dupont, compare, intrinsic_value',
+                    source_chain=['fundamental_analysis_manager'],
+                )
         
         except Exception as e:
             logger.error(f"[FundamentalManager] Error: {e}")
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='fundamental_analysis_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['fundamental_analysis_manager'],
+            )

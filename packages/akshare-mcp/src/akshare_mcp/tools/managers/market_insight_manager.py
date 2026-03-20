@@ -1,9 +1,9 @@
 """市场洞察管理器 - 市场趋势、板块分析（接入真实行情与资金流）"""
 
-import json
 import logging
+import time
 import numpy as np
-from ...utils import ok, fail
+from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
 
 logger = logging.getLogger(__name__)
 
@@ -15,18 +15,25 @@ def _safe_float(val, default=0.0):
         return default
 
 
-def _normalize_kwargs(kwargs: dict) -> dict:
-    raw = kwargs.get("kwargs")
-    if isinstance(raw, dict):
-        kwargs = {**kwargs, **raw}
-    elif isinstance(raw, str):
-        try:
-            extra = json.loads(raw or "{}")
-            if isinstance(extra, dict):
-                kwargs = {**kwargs, **extra}
-        except Exception:
-            pass
-    return kwargs
+def _rounded_or_none(val, digits=2):
+    if val is None:
+        return None
+    try:
+        return round(float(val), digits)
+    except (ValueError, TypeError):
+        return None
+
+
+def _dedupe_chain(values: list[str]) -> list[str]:
+    chain = []
+    seen = set()
+    for value in values:
+        label = str(value or "").strip()
+        if not label or label in seen:
+            continue
+        chain.append(label)
+        seen.add(label)
+    return chain
 
 
 def register_market_insight_manager(mcp):
@@ -54,51 +61,98 @@ def register_market_insight_manager(mcp):
             # 板块分析
             market_insight_manager(action="sector_analysis", kwargs="{}")
         """
+        start_time = time.perf_counter()
         try:
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_kwargs(
+                dict(kwargs),
+                field_aliases={"sector": ("block_name", "name")},
+            )
+
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="market_insight_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="market_insight_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'market_trend': '市场趋势分析（基于真实指数行情与K线）',
                         'sector_analysis': '板块分析（基于真实板块资金流向）',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['market_insight_manager'])
 
             elif action == 'market_trend':
-                return await _market_trend()
+                payload, source_chain = await _market_trend()
+                return _ok(payload, source_chain=source_chain)
 
             elif action == 'sector_analysis':
                 sector = kwargs.get('sector') or kwargs.get('block_name') or kwargs.get('name')
-                return await _sector_analysis(sector=sector)
+                payload, source_chain = await _sector_analysis(sector=sector)
+                return _ok(payload, source_chain=source_chain)
 
             else:
-                return fail(f'Unknown action: {action}. Supported: help, market_trend, sector_analysis')
+                return _fail(
+                    f'Unknown action: {action}. Supported: help, market_trend, sector_analysis',
+                    source_chain=['market_insight_manager'],
+                )
         except Exception as e:
             logger.exception("[market_insight_manager] error")
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='market_insight_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['market_insight_manager'],
+            )
 
     async def _market_trend():
         """基于真实指数行情判断市场趋势"""
         from ..market.quote import get_index_quote
         from ..market.kline import get_index_kline
+        source_chain = ['market_insight_manager', 'market.quote.get_index_quote']
 
         # 1. 获取上证指数实时行情
         idx_quote = get_index_quote("000001")
         current_price = 0.0
         change_pct = 0.0
+        day_open = None
+        day_high = None
+        day_low = None
+        pre_close = None
         if idx_quote.get('success') and idx_quote.get('data'):
             d = idx_quote['data']
             current_price = _safe_float(d.get('price') or d.get('最新价') or d.get('close'))
             change_pct = _safe_float(d.get('changePercent') or d.get('change_pct') or d.get('涨跌幅'))
+            day_open = _safe_float(d.get('open') or d.get('今开'), None)
+            day_high = _safe_float(d.get('high') or d.get('最高'), None)
+            day_low = _safe_float(d.get('low') or d.get('最低'), None)
+            pre_close = _safe_float(d.get('preClose') or d.get('昨收') or d.get('prev_close'), None)
+            if (change_pct == 0.0 or not np.isfinite(change_pct)) and current_price and pre_close:
+                change_pct = ((current_price - pre_close) / pre_close) * 100
 
         # 2. 获取近60日指数K线计算趋势（使用指数专用接口，避免与个股000001混淆）
         kline_res = await get_index_kline(index_code="000001", period="daily", limit=60)
+        source_chain.append('market.kline.get_index_kline')
         trend = 'unknown'
         strength = 'unknown'
-        support = 0.0
-        resistance = 0.0
-        ma5 = ma20 = ma60 = 0.0
+        support = None
+        resistance = None
+        ma5 = ma20 = ma60 = None
+        analysis_mode = 'insufficient_data'
 
         if kline_res.get('success') and kline_res.get('data'):
             klines = kline_res['data']
@@ -135,27 +189,71 @@ def register_market_insight_manager(mcp):
                     highs = [v for v in highs if v > 0]
                     support = round(min(lows), 2) if lows else 0.0
                     resistance = round(max(highs), 2) if highs else 0.0
+                    analysis_mode = 'kline'
 
-        return ok({
-            'trend': trend,
-            'strength': strength,
-            'currentPrice': round(current_price, 2),
-            'changePercent': round(change_pct, 2),
-            'keyLevels': {
-                'support': support,
-                'resistance': resistance,
+        if analysis_mode != 'kline' and current_price > 0:
+            quote_levels = [
+                value for value in (day_low, day_open, pre_close, current_price)
+                if value is not None and value > 0
+            ]
+            if quote_levels:
+                support = min(quote_levels)
+            resistance_levels = [
+                value for value in (day_high, day_open, pre_close, current_price)
+                if value is not None and value > 0
+            ]
+            if resistance_levels:
+                resistance = max(resistance_levels)
+
+            baseline = next((value for value in (pre_close, day_open, current_price) if value is not None and value > 0), None)
+            if baseline is not None:
+                ma20 = baseline
+                ma60 = baseline
+            ma5 = current_price
+
+            if change_pct >= 1.0:
+                trend = 'bullish'
+            elif change_pct <= -1.0:
+                trend = 'bearish'
+            else:
+                trend = 'sideways'
+
+            abs_change = abs(change_pct)
+            if abs_change >= 2.0:
+                strength = 'strong'
+            elif abs_change >= 0.8:
+                strength = 'medium'
+            else:
+                strength = 'weak'
+
+            analysis_mode = 'quote_fallback'
+            source_chain.append('market_trend.quote_fallback')
+
+        return (
+            {
+                'trend': trend,
+                'strength': strength,
+                'currentPrice': round(current_price, 2),
+                'changePercent': round(change_pct, 2),
+                'keyLevels': {
+                    'support': _rounded_or_none(support),
+                    'resistance': _rounded_or_none(resistance),
+                },
+                'movingAverages': {
+                    'ma5': _rounded_or_none(ma5),
+                    'ma20': _rounded_or_none(ma20),
+                    'ma60': _rounded_or_none(ma60),
+                },
+                'analysisMode': analysis_mode,
+                'index': '上证指数(000001)',
             },
-            'movingAverages': {
-                'ma5': round(ma5, 2),
-                'ma20': round(ma20, 2),
-                'ma60': round(ma60, 2),
-            },
-            'index': '上证指数(000001)',
-        })
+            _dedupe_chain(source_chain),
+        )
 
     async def _sector_analysis(sector: str | None = None):
         """基于真实板块资金流向数据"""
         from ..fund_flow import get_sector_fund_flow, get_concept_fund_flow
+        source_chain = ['market_insight_manager']
 
         hot_sectors = []
         cold_sectors = []
@@ -164,6 +262,7 @@ def register_market_insight_manager(mcp):
         # 行业板块资金流向
         sector_res = get_sector_fund_flow(top_n=10)
         if sector_res.get('success') and sector_res.get('data'):
+            source_chain.append('fund_flow.get_sector_fund_flow')
             sectors = sector_res['data']
             if isinstance(sectors, list) and len(sectors) > 0:
                 for s in sectors[:5]:
@@ -179,6 +278,7 @@ def register_market_insight_manager(mcp):
         concept_hot = []
         concept_res = get_concept_fund_flow(top_n=5)
         if concept_res.get('success') and concept_res.get('data'):
+            source_chain.append('fund_flow.get_concept_fund_flow')
             concepts = concept_res['data']
             if isinstance(concepts, list):
                 for c in concepts[:5]:
@@ -240,4 +340,4 @@ def register_market_insight_manager(mcp):
             payload['matchedCount'] = matched_count
             if matched_count == 0:
                 payload['message'] = f'未在当前热点板块中匹配到 {requested_sector}'
-        return ok(payload)
+        return payload, _dedupe_chain(source_chain)

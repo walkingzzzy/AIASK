@@ -1,218 +1,210 @@
 # AKShare MCP Server v2.0
 
-🎉 **完整的A股量化分析服务器** - 集成数据获取、技术分析、回测系统、因子分析、组合优化、智能分析于一体
+> 当前定位：本包是 AIASK monorepo 中的 **Python MCP 服务端**，为 Web / BFF / AI 客户端提供股票数据、研究、回测、风险分析、策略工厂等能力。
+>
+> **文档校准说明**：本 README 以当前仓库可见代码、脚本、测试与审计文档为依据，强调“当前状态 + 环境依赖 + 已知限制”。除非有明确证据，本文件不再使用“完整”“生产就绪”“全覆盖”等绝对表述。
 
 [![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Production%20Ready-success.svg)](.)
 
 ---
 
-## ✨ 特性
+## 1. 当前已确认的角色与边界
 
-### 🚀 核心功能
-- **数据获取**: 实时行情、历史K线、财务数据、龙虎榜、资金流向、板块数据
-- **技术分析**: 20+技术指标、形态识别、趋势分析、向量搜索
-- **回测系统**: 4种策略、动态止损、仓位管理、并行回测、参数优化
-- **因子系统**: 8大类32个因子、IC分析、分组回测、因子评估
-- **风险管理**: VaR/CVaR、4种压力测试、Barra风险分解
-- **组合优化**: Black-Litterman、有效前沿、风险平价、最大夏普
+### 1.1 在 monorepo 中的职责
+- `apps/web`：Next.js 前端，负责页面与交互层
+- `apps/bff`：NestJS BFF，负责 HTTP/WebSocket API、鉴权、降级包装、审计等
+- `packages/akshare-mcp`：Python MCP 服务，提供数据、回测、研究、策略等能力
+- `packages/shared-types`：前后端共享类型；当前仍存在 workspace 解析与构建顺序风险
 
-### 🤖 智能功能
-- **NLP查询**: 自然语言查询解析、智能诊断
-- **向量搜索**: K线形态相似度搜索、DTW动态时间规整
-- **知识图谱**: 产业链分析、影响传导、瓶颈识别
-- **AI决策**: 综合分析、智能推荐
+### 1.2 当前能力范围
+按代码与现有文档可确认，本包覆盖以下方向：
+- 行情 / K 线 / 盘口 / 板块 / 资金流 / 基本面 / 估值 / 研报等数据能力
+- 技术分析、回测、绩效指标、部分参数优化与批量研究能力
+- 风险分析、压力测试、组合优化、策略管理、策略工厂相关能力
+- Skills / Managers / 工具注册表支撑的流程化调用能力
+- 公共数据源降级与失败隔离能力
 
-### 🛠️ 管理工具
-- **30个Managers**: 统一接口管理所有功能
-- **100+工具**: 覆盖量化分析全流程
-
----
-
-## 📊 项目状态
-
-| 模块 | 完成度 | 状态 |
-|------|--------|------|
-| 数据获取 | 95% | ✅ 生产就绪 |
-| 技术分析 | 95% | ✅ 生产就绪 |
-| 回测系统 | 100% | ✅ 生产就绪 |
-| 因子系统 | 100% | ✅ 生产就绪 |
-| 风险管理 | 95% | ✅ 生产就绪 |
-| 组合优化 | 100% | ✅ 生产就绪 |
-| Manager系统 | 100% | ✅ 生产就绪 |
-| 智能分析 | 90% | ✅ 生产就绪 |
-
-**总体状态**: ✅ **生产就绪** (v2.0)
+### 1.3 不应被当作当前事实的表述
+以下内容在当前仓库中**不应直接写成既成事实**：
+- 所有模块“生产就绪”
+- 所有 171 个工具在任意环境下都可稳定调用
+- 所有数据源都长期稳定且口径一致
+- 所有回测、组合、压力测试口径都已完全统一
+- 所有可选环境能力都可在当前主机上直接运行
 
 ---
 
-## 🚀 快速开始
+## 2. 运行与环境依赖
 
-### 📦 安装依赖
+### 2.1 Python 与依赖
+- Python 基线：`>=3.12`
+- 项目定义见：`pyproject.toml`
+- 可选依赖组：
+  - `legacy`：包含 `akshare`、`baostock`、`efinance` 等兼容/历史数据链路依赖
+  - `parallel`：包含 `ray[default]`，用于部分并行能力
 
-#### 方式1：使用 uv（推荐）
+### 2.2 重要外部依赖
+不同能力对环境要求不同，请不要假设“开箱即全量可用”：
+- **数据库**：部分存储、回测工件、策略工厂、运行历史能力依赖 PostgreSQL / TimescaleDB 配置
+- **Tushare Token**：会影响部分结构化财务/基本面覆盖
+- **外部数据源可用性**：AKShare、Eastmoney、Sina、Tencent、Tushare 等链路都可能波动或降级
+
+### 2.3 当前已知运行约束
+- `start_server.py` 已确认会设置安全默认值：`MCP_HOST=127.0.0.1`、`MCP_ALLOW_TOKEN_PASSTHROUGH=false`
+- `start_server.py` 已明确 stdio 模式下日志走 `stderr`，避免污染 MCP 协议输出
+- 但“HTTP 启动时一定会强制拒绝所有不安全配置”的完整校验链，本次仅在部分代码中看到默认值设置，**仍需结合更多实现再次核实**
+
+---
+
+## 3. 安装与启动
+
+### 3.1 使用 uv（推荐）
 ```bash
 cd packages/akshare-mcp
-
-# 安装依赖（uv会自动创建虚拟环境）
-uv sync
-```
-
-#### 方式2：使用 pip + venv
-```bash
-cd packages/akshare-mcp
-
-# 创建虚拟环境
-python -m venv .venv
-
-# 激活虚拟环境
-# Windows:
-.venv\Scripts\activate
-# Linux/Mac:
-source .venv/bin/activate
-
-# 安装依赖
-pip install -r requirements.txt
-```
-
----
-
-### 🚀 启动MCP服务
-
-#### 方式1：使用 uv 启动（推荐）
-```bash
-cd packages/akshare-mcp
-
-# uv会自动管理虚拟环境并启动服务
+uv sync --extra legacy
 uv run python start_server.py
 ```
 
-#### 方式2：使用虚拟环境启动
+说明：
+- `legacy` extras 对当前仓库中的部分历史/兼容数据源导入很重要
+- 若首次在 macOS 上通过 MCP 客户端直接 `uv run`，可能因建环境和下载依赖而超时
+
+### 3.2 使用 venv / 已有 Python 环境
 ```bash
 cd packages/akshare-mcp
-
-# 激活虚拟环境
-# Windows:
-.venv\Scripts\activate
-# Linux/Mac:
-source .venv/bin/activate
-
-# 启动服务
+python -m venv .venv
+source .venv/bin/activate   # Windows 改为 .venv\Scripts\activate
+pip install -r requirements.txt
 python start_server.py
 ```
 
-#### 方式3：直接运行（需要已安装依赖）
-```bash
-cd packages/akshare-mcp
-python start_server.py
-```
-
-**启动成功标志**：
-```
-============================================================
-AKShare MCP Server v2
-============================================================
-Python版本: 3.12.x
-工作目录: /path/to/packages/akshare-mcp
-============================================================
-
-启动服务器...
-```
+### 3.3 推荐的 MCP 接入方式
+- **首选：stdio**
+- HTTP / SSE / streamable-http 仅建议在明确理解本地绑定、来源校验、鉴权与 token 透传风险后再启用
+- 配置示例请以 `docs/MCP_CONFIG_GUIDE.md` 为准
 
 ---
 
-### ⚙️ 环境配置
+## 4. 配置项说明
 
-在 `packages/akshare-mcp/.env` 文件中配置以下环境变量：
+建议在 `packages/akshare-mcp/.env` 中维护项目配置，并区分“必需项”和“增强项”：
 
 ```bash
-# 数据库配置（必需）
+# 数据库（部分功能强依赖）
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=stockdb
 DB_USER=postgres
 DB_PASSWORD=your_password
 
-# Tushare Token（可选，用于获取更多数据）
+# 可选：增强部分结构化数据能力
 TUSHARE_TOKEN=your_tushare_token
 
-# TDX配置（可选）
-TDX_HOST=119.147.212.81
-TDX_PORT=7709
 ```
 
-**注意**：
-- 如果没有 `.env` 文件，请复制 `.env.example` 并修改
-- 数据库配置是必需的，否则部分功能无法使用
-- Tushare Token 可在 [Tushare官网](https://tushare.pro/) 注册获取
+说明：
+- 数据库不是所有工具都强依赖，但部分能力没有数据库时会降级、不可用或无法沉淀结果
+- macOS / 非 Windows 主机会仅保留公共工具与降级逻辑
+- 若未配置相关依赖，请在文档、演示和测试时明确说明能力边界
 
 ---
 
-### 🔍 验证服务状态
+## 5. 验证方式（按当前仓库可见线索整理）
 
-启动服务后，可以通过以下方式验证：
+## 5. 验证方式（按当前仓库可见线索整理）
 
-#### 1. 检查服务日志
-服务启动后会显示：
-- Python版本信息
-- 工作目录路径
-- 服务器启动状态
+### 5.1 基础启动验证
+```bash
+cd packages/akshare-mcp
+python start_server.py
+```
 
-#### 2. 测试数据库连接
+可观察点：
+- 进程能否正常启动
+- stdio 场景下日志是否写入 `stderr`
+- `.env` 与 `PYTHONPATH` 是否生效
+
+### 5.2 数据库与测试
 ```bash
 cd packages/akshare-mcp
 python scripts/verify_db_connection.py
-```
-
-#### 3. 运行测试套件
-```bash
-cd packages/akshare-mcp
 pytest tests/ -v
 ```
 
+说明：
+- 测试存在并不等于所有模块都被充分覆盖
+- 数据质量、跨源一致性、回测口径等仍应结合专项报告复核
+
+### 5.3 守卫与审计脚本
+```bash
+cd /Users/mac/Desktop/股票
+python scripts/skill_coverage_audit.py --check-thresholds
+python scripts/skill_coverage_audit.py --output-json skill_tool_coverage_runtime.json --output-gap skill_tool_gap_list.txt
+```
+
+若需要继续核对运行时注册、健康检查和回归结果，可再结合仓库中已有的 `make` 目标与 `reports/` 目录产物进行复核；但请以实际存在的命令和当前环境为准，不要默认所有目标在所有机器上都能直接通过。
+
 ---
 
-### 🐛 常见问题
+## 6. 当前已知限制与风险提示
 
-#### 问题1：找不到模块 `akshare_mcp`
-**解决方案**：
-```bash
-# 确保在正确的目录
-cd packages/akshare-mcp
+### 6.1 数据质量与跨源一致性
+历史数据质量报告显示，部分数据链路曾出现以下问题：
+- CPI、财务、估值等字段存在 `null` 或覆盖不足
+- 涨停统计异常为 0
+- DMA / 指标值跳变
+- 跨源一致性不足
 
-# 使用 uv 运行
-uv run python start_server.py
+这些问题更适合被理解为：**已有历史审计证据，当前状态需结合最新测试与数据源返回重新验证。**
 
-# 或者安装为可编辑模式
-pip install -e .
-```
+### 6.2 回测与指标口径
+当前仓库中已有 `docs/metrics-contract.md` 对 Sharpe、`win_rate`、执行时点、JIT / mask 路径一致性提出契约要求；但历史审计文档也记录过：
+- Sharpe 口径差异
+- `win_rate` 统计口径不统一
+- look-ahead bias
+- 滑点建模仍偏简化
 
-#### 问题2：数据库连接失败
-**解决方案**：
-1. 检查 `.env` 文件中的数据库配置
-2. 确保 PostgreSQL 服务正在运行
-3. 验证数据库用户名和密码正确
-4. 运行 `python scripts/verify_db_connection.py` 诊断
+因此，回测结果应视为**研究与验证辅助**，不应在文档中表述为“完全统一且无偏差”。
 
-#### 问题3：依赖包版本冲突
-**解决方案**：
-```bash
-# 使用 uv 重新同步依赖
-uv sync --reinstall
+### 6.3 平台专用能力
+- 当前文档与验证默认以 macOS / 非 Windows 主机的公共数据能力为前提
+- 无对应平台依赖时，专用能力会降级、跳过或失败
+- 相关能力可用不应被视为默认前提
 
-# 或者重新创建虚拟环境
-rm -rf .venv
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# 或 .venv\Scripts\activate  # Windows
-pip install -r requirements.txt
-```
+### 6.4 工具层 / 服务层不一致风险
+历史可行性分析报告记录过若干“工具层与服务层不一致”问题，例如恐贪指数与压力测试口径不对齐。这类问题会优先影响：
+- MCP 工具直接调用
+- AI 客户端消费结果
+- BFF 透传或编排链路
 
-#### 问题4：端口被占用
-**解决方案**：
-- MCP服务使用stdio通信，不占用网络端口
-- 如果是数据库端口冲突，修改 `.env` 中的 `DB_PORT`
+当前状态需按具体模块重新回归验证。
+
+### 6.5 日志与审计语义
+`logs/risk_audit.jsonl` 中存在 `success=false` 但 `reason="passed"`、`compliance_passed=true` 的记录，说明审计日志语义仍可能引发误解。若基于这些日志做风控结论，应先统一字段解释。
+
+---
+
+## 7. 常见问题（保留当前仍有参考价值的部分）
+
+### 7.1 找不到模块 `akshare_mcp`
+- 确认当前目录为 `packages/akshare-mcp`
+- 优先使用 `uv run python start_server.py`
+- 或执行 `pip install -e .`
+
+### 7.2 数据库连接失败
+- 检查 `.env` 中的数据库配置
+- 确认 PostgreSQL / TimescaleDB 服务正在运行
+- 用 `python scripts/verify_db_connection.py` 做最小验证
+
+### 7.3 首次 MCP 启动超时
+- 常见于 macOS + `uv run` 首次建环境
+- 可先执行 `uv sync --extra legacy`
+- 或改用 `.venv/bin/python start_server.py`
+
+### 7.4 依赖包冲突或可选依赖缺失
+- 优先执行 `uv sync --reinstall`
+- 若缺 `akshare` 等模块，检查是否安装了 `legacy` extras
 
 ---
 

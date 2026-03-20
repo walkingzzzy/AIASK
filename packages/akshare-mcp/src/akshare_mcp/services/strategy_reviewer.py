@@ -11,20 +11,54 @@ class MultiAgentStrategyReviewer:
     SUPPORTED_TYPES = {'momentum', 'ma_cross', 'rsi', 'value_factor', 'quality_factor', 'growth_factor', 'multi_factor', 'macro_timing', 'dsl_rule'}
 
     @staticmethod
-    def _planner_score(spec: StrategySpec, snapshot: dict) -> float:
+    def _factor_research_alignment(spec: StrategySpec, snapshot: dict) -> tuple[float, dict[str, Any]]:
+        factor_research = dict(snapshot.get('factor_research') or {})
+        preferred_types = [
+            str(item).strip()
+            for item in list(factor_research.get('preferred_strategy_types') or [])
+            if str(item).strip()
+        ]
+        top_factor_names = [
+            str(item).strip()
+            for item in list(
+                ((factor_research.get('summary') or {}).get('top_factor_names') or factor_research.get('active_factors') or [])
+            )
+            if str(item).strip()
+        ]
+        score_delta = 0.0
+        if spec.strategy_type in preferred_types[:2]:
+            score_delta += 0.16
+        elif spec.strategy_type in preferred_types:
+            score_delta += 0.1
+        if factor_research and bool(factor_research.get('degraded')):
+            score_delta -= 0.04
+        return max(min(score_delta, 0.2), -0.08), {
+            'preferred_strategy_types': preferred_types[:4],
+            'top_factor_names': top_factor_names[:3],
+            'artifact_degraded': bool(factor_research.get('degraded')),
+            'aligned': spec.strategy_type in preferred_types,
+        }
+
+    @classmethod
+    def _planner_score(cls, spec: StrategySpec, snapshot: dict) -> tuple[float, dict[str, Any]]:
         fg = int(snapshot.get('fear_greed_index') or 50)
         stype = spec.strategy_type
+        base_score = 0.6
         if fg >= 60 and stype in {'momentum', 'ma_cross'}:
-            return 0.9
-        if fg < 45 and stype in {'rsi', 'value_factor', 'quality_factor'}:
-            return 0.85
-        if stype == 'multi_factor':
-            return 0.82
-        if stype == 'macro_timing':
-            return 0.78
-        if stype == 'dsl_rule':
-            return 0.74
-        return 0.6
+            base_score = 0.9
+        elif fg < 45 and stype in {'rsi', 'value_factor', 'quality_factor'}:
+            base_score = 0.85
+        elif stype == 'multi_factor':
+            base_score = 0.82
+        elif stype == 'macro_timing':
+            base_score = 0.78
+        elif stype == 'dsl_rule':
+            base_score = 0.74
+        factor_delta, factor_context = cls._factor_research_alignment(spec, snapshot)
+        return max(0.05, min(1.0, round(base_score + factor_delta, 4))), {
+            'fear_greed_index': fg,
+            **factor_context,
+        }
 
     @staticmethod
     def _risk_score(spec: StrategySpec) -> float:
@@ -84,7 +118,7 @@ class MultiAgentStrategyReviewer:
         return revised
 
     def review(self, spec: StrategySpec, snapshot: dict) -> tuple[Optional[StrategySpec], dict[str, Any]]:
-        planner = self._planner_score(spec, snapshot)
+        planner, planner_context = self._planner_score(spec, snapshot)
         risk = self._risk_score(spec)
         feasibility = self._feasibility_score(spec)
         novelty = self._novelty_score(spec)
@@ -97,6 +131,8 @@ class MultiAgentStrategyReviewer:
             suggestions.append('参数存在高风险取值，建议收敛阈值与周期。')
         if planner < 0.65:
             suggestions.append('策略与当前市场环境匹配度一般，建议进入观察或微调。')
+        if planner_context.get('preferred_strategy_types') and not planner_context.get('aligned'):
+            suggestions.append('策略未对齐当前 factor_research 偏好，建议优先验证因子主链推荐类型。')
 
         reviewed = spec
         if decision == 'revise':
@@ -116,6 +152,7 @@ class MultiAgentStrategyReviewer:
             'final_score': final_score,
             'decision': decision,
             'suggestions': suggestions,
+            'planner_context': planner_context,
         }
         if decision == 'reject':
             return None, review

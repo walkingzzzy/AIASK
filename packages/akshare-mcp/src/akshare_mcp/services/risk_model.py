@@ -55,7 +55,20 @@ class RiskModel:
         returns_matrix: np.ndarray
     ) -> Dict[str, Any]:
         """计算组合风险"""
-        weights = np.array([h['weight'] for h in holdings])
+        if returns_matrix is None or getattr(returns_matrix, "ndim", 0) != 2 or returns_matrix.shape[0] == 0:
+            return {'volatility': 0.0, 'annual_volatility': 0.0, 'variance': 0.0}
+
+        weights = np.array([float(h.get('weight', 0) or 0) for h in holdings], dtype=float)
+        asset_count = int(returns_matrix.shape[0])
+        if weights.shape[0] != asset_count:
+            weights = weights[:asset_count]
+        if weights.shape[0] != asset_count or asset_count == 0:
+            weights = np.array([1.0 / asset_count] * asset_count, dtype=float) if asset_count > 0 else np.array([])
+        weight_sum = float(np.sum(weights)) if weights.size > 0 else 0.0
+        if weight_sum > 0:
+            weights = weights / weight_sum
+        elif asset_count > 0:
+            weights = np.array([1.0 / asset_count] * asset_count, dtype=float)
         
         # 计算协方差矩阵
         cov_matrix = _shrunk_cov(returns_matrix)

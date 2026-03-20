@@ -1,12 +1,12 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useMemo, useState } from 'react';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge } from '@/components/ui';
 import { BarChart, PieChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
-import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
+import { ErrorState, LoadingState, MetaLine } from '@/components/status-state';
 import { ensureRecord } from '@/lib/query-parse';
-import { useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 
 type ModuleKey = 'var' | 'stress' | 'exposure';
@@ -20,6 +20,13 @@ type RiskSummary = {
 
 const LOOKBACK_PRESETS = [90, 252, 504] as const;
 
+function buildRiskQueryString(portfolioId: string, lookbackDays: string) {
+  const qs = new URLSearchParams();
+  if (portfolioId) qs.set('portfolioId', portfolioId);
+  qs.set('lookbackDays', lookbackDays || '252');
+  return qs.toString();
+}
+
 function brief(v: unknown): string {
   if (v == null) return '无数据';
   if (Array.isArray(v)) return `数组(${v.length})`;
@@ -32,23 +39,17 @@ function brief(v: unknown): string {
 
 export default function RiskPage() {
   const searchParams = useSearchParams();
-  const [portfolioId, setPortfolioId] = useState(searchParams.get('portfolioId') ?? '');
-  const [lookbackDays, setLookbackDays] = useState(searchParams.get('lookbackDays') ?? '252');
+  const router = useRouter();
+  const pathname = usePathname();
+  const [portfolioId, setPortfolioId] = useState(() => searchParams.get('portfolioId') ?? '');
+  const [lookbackDays, setLookbackDays] = useState(() => searchParams.get('lookbackDays') ?? '252');
   const [formError, setFormError] = useState<string | null>(null);
-  const [submittedQs, setSubmittedQs] = useState<string | null>(null);
   const task = searchParams.get('task');
   const from = searchParams.get('from');
-
-  useEffect(() => {
-    const qs = new URLSearchParams();
-    const nextPortfolioId = searchParams.get('portfolioId') ?? '';
-    const nextLookback = searchParams.get('lookbackDays') ?? '252';
-    setPortfolioId(nextPortfolioId);
-    setLookbackDays(nextLookback);
-    if (nextPortfolioId) qs.set('portfolioId', nextPortfolioId);
-    qs.set('lookbackDays', nextLookback);
-    setSubmittedQs(qs.toString());
-  }, [searchParams]);
+  const submittedQs = useMemo(
+    () => buildRiskQueryString(searchParams.get('portfolioId') ?? '', searchParams.get('lookbackDays') ?? '252'),
+    [searchParams],
+  );
 
   const summaryQ = useApiQuery<RiskSummary>(
     submittedQs ? `/risk/summary?${submittedQs}` : null,
@@ -83,12 +84,9 @@ export default function RiskPage() {
     setFormError(null);
     if (portfolioId && !/^\d+$/.test(portfolioId)) return setFormError('portfolioId 必须为数字');
     if (!/^\d+$/.test(lookbackDays)) return setFormError('lookbackDays 必须为数字');
-    const qs = new URLSearchParams();
-    if (portfolioId) qs.set('portfolioId', portfolioId);
-    qs.set('lookbackDays', lookbackDays);
-    const newQs = qs.toString();
+    const newQs = buildRiskQueryString(portfolioId, lookbackDays);
     if (newQs === submittedQs) { summaryQ.refetch(); varQ.refetch(); }
-    else setSubmittedQs(newQs);
+    else router.replace(`${pathname}?${newQs}`, { scroll: false });
   }
 
   const topCards = useMemo(() => {
@@ -273,8 +271,24 @@ export default function RiskPage() {
         </div>
       )}
 
-      {summary ? <details className="mt-3"><summary className="cursor-pointer text-text-secondary text-sm">查看调试原始数据（summary）</summary><pre className="mt-1 text-xs glass p-3 rounded-xl overflow-auto max-h-[300px]">{JSON.stringify(summary, null, 2)}</pre></details> : null}
-      {varQ.data != null ? <details><summary className="cursor-pointer text-text-secondary text-sm">查看调试原始数据（varOnly）</summary><pre className="mt-1 text-xs glass p-3 rounded-xl overflow-auto max-h-[300px]">{JSON.stringify(varQ.data, null, 2)}</pre></details> : null}
+      {(summary || varQ.data != null) ? (
+        <SectionCard className="p-4 mt-3">
+          <h3 className="mt-0">技术详情（排查用）</h3>
+          <p className="text-sm text-text-secondary mt-1 mb-3">下面是接口返回的原始数据，默认收起，只有在需要排查数据源异常或降级原因时再展开查看。</p>
+          {summary ? (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-text-secondary text-sm">查看风险汇总原始数据（summary）</summary>
+              <pre className="mt-1 text-xs glass p-3 rounded-xl overflow-auto max-h-[300px]">{JSON.stringify(summary, null, 2)}</pre>
+            </details>
+          ) : null}
+          {varQ.data != null ? (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-text-secondary text-sm">查看 VaR 原始数据（varOnly）</summary>
+              <pre className="mt-1 text-xs glass p-3 rounded-xl overflow-auto max-h-[300px]">{JSON.stringify(varQ.data, null, 2)}</pre>
+            </details>
+          ) : null}
+        </SectionCard>
+      ) : null}
     </PageContainer>
   );
 }

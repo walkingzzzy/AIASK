@@ -39,19 +39,8 @@ class _FakeDailyBasicFrame:
 
 
 class _StubMarketData(MarketDataMixin):
-    def __init__(self, *, tdx_available=False, tq=None, ts_pro=None):
-        self._tdx_available = tdx_available
-        self._tq = tq
+    def __init__(self, *, ts_pro=None):
         self.ts_pro = ts_pro
-
-    def is_tdx_available(self):
-        return self._tdx_available
-
-    def get_tdxquant(self):
-        return self._tq
-
-    def _convert_to_tdx_code(self, stock_code):
-        return stock_code
 
 
 def test_get_trading_dates_invalid_start_time_has_normalized_fallback_meta():
@@ -66,7 +55,7 @@ def test_get_trading_dates_invalid_start_time_has_normalized_fallback_meta():
     assert 'fallback' in result['quality_flags']
     assert 'degraded' in result['quality_flags']
     assert 'invalid_request' in result['quality_flags']
-    assert result['backend_requested'] == 'tdx'
+    assert result['backend_requested'] == 'tushare_pro'
     assert result['backend_used'] == 'none'
     assert result['fallback_used'] is True
     assert result['fallback_reason'] == 'invalid_start_time'
@@ -93,10 +82,10 @@ def test_get_cb_info_tushare_fallback_has_normalized_meta():
     assert result['source'] == 'tushare_pro'
     assert result['asof_time']
     assert result['freshness_sec'] == 0.0
-    assert result['quality_flags'] == ['fallback']
-    assert result['backend_requested'] == 'tdx'
+    assert result['quality_flags'] == []
+    assert result['backend_requested'] == 'tushare_pro'
     assert result['backend_used'] == 'tushare_pro'
-    assert result['fallback_used'] is True
+    assert result['fallback_used'] is False
     assert result['fallback_reason'] is None
     assert result['latency_ms'] >= 0
     assert result['data']['KZZCode'] == '123039'
@@ -133,9 +122,54 @@ def test_get_gb_info_akshare_fallback_has_normalized_meta(monkeypatch):
     assert result['asof_time']
     assert result['freshness_sec'] == 0.0
     assert result['quality_flags'] == ['fallback']
-    assert result['backend_requested'] == 'tdx'
+    assert result['backend_requested'] == 'tushare_pro'
     assert result['backend_used'] == 'akshare'
     assert result['fallback_used'] is True
     assert result['fallback_reason'] is None
     assert result['latency_ms'] >= 0
     assert result['data'][0]['zgb'] == 456.7
+
+
+def test_get_gb_info_cninfo_secondary_fallback_has_normalized_meta(monkeypatch):
+    class _EmptyAkFrame:
+        empty = True
+
+    class _FakeCninfoFrame:
+        empty = False
+        columns = ['总股本', '流通股']
+
+        def __init__(self, row):
+            self.iloc = _FakeILoc(row)
+
+    class _NoTsPro:
+        def daily_basic(self, **kwargs):
+            return None
+
+    class _FakeAk:
+        @staticmethod
+        def stock_individual_info_em(symbol):
+            assert symbol == '600519'
+            return _EmptyAkFrame()
+
+        @staticmethod
+        def stock_profile_cninfo(symbol):
+            assert symbol == '600519'
+            return _FakeCninfoFrame({
+                '总股本': '125.6亿',
+                '流通股': '98.7亿',
+            })
+
+    monkeypatch.setattr(market_data_mod, 'ak', _FakeAk)
+    ds = _StubMarketData(ts_pro=_NoTsPro())
+
+    result = ds.get_gb_info('600519', count=1)
+
+    assert result['success'] is True
+    assert result['source'] == 'akshare'
+    assert result['quality_flags'] == ['fallback']
+    assert result['backend_requested'] == 'tushare_pro'
+    assert result['backend_used'] == 'akshare'
+    assert result['fallback_used'] is True
+    assert result['fallback_reason'] is None
+    assert result['data'][0]['ltgb'] == 9_870_000_000.0
+    assert result['data'][0]['zgb'] == 12_560_000_000.0

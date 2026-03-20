@@ -38,6 +38,7 @@ export default function FactorAnalysisPage() {
   const decayQ = useApiQuery<DecayResponse>(decayPath);
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
   const [factor, setFactor] = useState('momentum');
+  const sampleUniverse = useMemo(() => Array.from(new Set([trimmedCode || '600519', ...DEFAULT_FACTOR_UNIVERSE])).filter(Boolean), [trimmedCode]);
 
   function loadLibrary() {
     if (!libraryLoaded) setLibraryLoaded(true);
@@ -50,8 +51,7 @@ export default function FactorAnalysisPage() {
 
   function runAnalysis() {
     if (!validate()) return;
-    const stockCodes = Array.from(new Set([trimmedCode, ...DEFAULT_FACTOR_UNIVERSE])).filter(Boolean);
-    const body = { factor_name: factor, stock_codes: stockCodes };
+    const body = { factor_name: factor, stock_codes: sampleUniverse };
     icApi.trigger('/factor/ic', { method: 'POST' }, body);
     btApi.trigger('/factor/backtest', { method: 'POST' }, body);
     setIcHistoryPath(`/factor/ic-history?factor_name=${encodeURIComponent(factor)}&period=20&limit=60`);
@@ -99,19 +99,23 @@ export default function FactorAnalysisPage() {
     <PageContainer>
       <h1>因子分析</h1>
 
-      <div className="flex gap-2 flex-wrap items-center">
-        <StockCodeInput value={code} onChange={setCode} error={codeError} />
-        <select
-          value={factor}
-          onChange={(e) => setFactor(e.target.value)}
-          onFocus={loadLibrary}
-          className="px-2 py-1 border border-border rounded text-sm min-w-[160px]"
-        >
-          {factors.length > 0
-            ? factors.map((f) => <option key={f.name} value={f.name}>{f.name} - {f.description}</option>)
-            : <option value={factor}>{factor}</option>
-          }
-        </select>
+      <div className="flex gap-2 flex-wrap items-end">
+        <StockCodeInput id="factor-analysis-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} placeholder="如 600519" />
+        <label htmlFor="factor-analysis-factor" className="grid gap-1 text-xs text-text-secondary">
+          <span>分析维度</span>
+          <select
+            id="factor-analysis-factor"
+            value={factor}
+            onChange={(e) => setFactor(e.target.value)}
+            onFocus={loadLibrary}
+            className="px-2 py-1 border border-border rounded text-sm min-w-[220px]"
+          >
+            {factors.length > 0
+              ? factors.map((f) => <option key={f.name} value={f.name}>{f.name} - {f.description}</option>)
+              : <option value={factor}>{factor}</option>
+            }
+          </select>
+        </label>
         <button
           onClick={runAnalysis}
           disabled={loading}
@@ -120,6 +124,7 @@ export default function FactorAnalysisPage() {
           {loading ? '分析中...' : '运行分析'}
         </button>
       </div>
+      <p className="mt-2 text-sm text-text-secondary">当前会使用目标股票加默认样本池共 {sampleUniverse.length} 只股票，IC 历史窗口为 20 期，最多展示 60 个观察点。</p>
 
       {loading && <LoadingState text="因子分析中..." />}
       {error && <ErrorState text={error} />}

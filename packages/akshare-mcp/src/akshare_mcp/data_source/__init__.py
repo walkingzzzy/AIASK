@@ -1,7 +1,7 @@
 """
 数据源管理模块
 
-全局策略：数据源优先级为 TDX → Tushare → akshare，失败后按序降级。
+全局策略：数据源优先级为 Tushare → AkShare/公开数据源，失败后按序降级。
 
 向后兼容：DataSourceManager 类通过 Mixin 组合所有子模块功能。
 所有外部 import（如 from ..data_source import data_source）保持不变。
@@ -15,20 +15,18 @@ import tushare as ts
 
 from ..tushare_whitelist import load_tushare_whitelist
 from ..utils import safe_stderr_print
-from .tdx import TdxMixin
 from .quotes import QuotesMixin
 from .market_data import MarketDataMixin
 
 logger = logging.getLogger(__name__)
 
 
-class DataSourceManager(TdxMixin, QuotesMixin, MarketDataMixin):
+class DataSourceManager(QuotesMixin, MarketDataMixin):
     """
     数据源管理器 — 单例模式
 
     通过 Mixin 组合:
-    - TdxMixin: TdxQuant 初始化、行情快照、K线、股票信息、除权因子、板块、订阅
-    - QuotesMixin: 多源实时行情、K线（TDX → Tushare → eFinance/Baostock）
+    - QuotesMixin: 多源实时行情、K线（Tushare → eFinance/Baostock）
     - MarketDataMixin: 交易日历、IPO、可转债、股本
     """
     _instance = None
@@ -57,9 +55,6 @@ class DataSourceManager(TdxMixin, QuotesMixin, MarketDataMixin):
             except Exception as e:
                 safe_stderr_print(f"[DataSource] Tushare init failed: {e}")
 
-        # TDX 初始化（来自 TdxMixin）
-        self._init_tdx_config()
-
     # ---- Tushare 辅助方法 ----
 
     def get_tushare_pro(self):
@@ -80,7 +75,7 @@ data_source = DataSourceManager()
 
 
 class DataSource:
-    """便捷的数据源访问类，优先级 TDX → Tushare → akshare"""
+    """便捷的数据源访问类，优先级 Tushare → AkShare/公开数据源"""
 
     def __init__(self):
         self.manager = data_source

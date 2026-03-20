@@ -383,17 +383,18 @@ class StrategyCrudMixin:
         async with self.acquire() as conn:
             await conn.execute(
                 """INSERT INTO daily_snapshot_history
-                   (snapshot_date, fear_greed_index, fg_components, factor_ic, factor_ic_trend,
+                   (snapshot_date, fear_greed_index, fg_components, factor_ic, factor_ic_trend, factor_research,
                     north_fund_3d_net, margin_5d_change_pct, hot_sectors, cold_sectors,
                     listed_count, category_counts, summary, completeness, sources,
                     failure_reasons, missing_fields, degraded)
-                   VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8::jsonb, $9::jsonb,
-                           $10, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb, $17)
+                   VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9::jsonb, $10::jsonb,
+                           $11, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb, $17::jsonb, $18)
                    ON CONFLICT (snapshot_date) DO UPDATE SET
                     fear_greed_index = EXCLUDED.fear_greed_index,
                     fg_components = EXCLUDED.fg_components,
                     factor_ic = EXCLUDED.factor_ic,
                     factor_ic_trend = EXCLUDED.factor_ic_trend,
+                    factor_research = EXCLUDED.factor_research,
                     north_fund_3d_net = EXCLUDED.north_fund_3d_net,
                     margin_5d_change_pct = EXCLUDED.margin_5d_change_pct,
                     hot_sectors = EXCLUDED.hot_sectors,
@@ -412,6 +413,7 @@ class StrategyCrudMixin:
                 json.dumps(data.get("fg_components") or {}, ensure_ascii=False, default=str),
                 json.dumps(data.get("factor_ic") or {}, ensure_ascii=False, default=str),
                 json.dumps(data.get("factor_ic_trend") or {}, ensure_ascii=False, default=str),
+                json.dumps(data.get("factor_research") or {}, ensure_ascii=False, default=str),
                 data.get("north_fund_3d_net"),
                 data.get("margin_5d_change_pct"),
                 json.dumps(data.get("hot_sectors") or [], ensure_ascii=False, default=str),
@@ -428,10 +430,24 @@ class StrategyCrudMixin:
 
     def _decode_daily_snapshot(self, row: dict) -> dict:
         result = dict(row)
-        for key in ("fg_components", "factor_ic", "factor_ic_trend", "category_counts", "summary", "completeness", "sources"):
+        for key in ("fg_components", "factor_ic", "factor_ic_trend", "factor_research", "category_counts", "summary", "completeness", "sources"):
             result[key] = self._decode_json_field(result.get(key), {})
         for key in ("hot_sectors", "cold_sectors", "failure_reasons", "missing_fields"):
             result[key] = self._decode_json_field(result.get(key), [])
+        fg_level = result.get("fg_level")
+        if not fg_level:
+            fg_value = result.get("fear_greed_index")
+            try:
+                fg_numeric = int(fg_value)
+            except Exception:
+                fg_numeric = 50
+            fg_level = "greed" if fg_numeric >= 70 else ("fear" if fg_numeric <= 30 else "neutral")
+            result["fg_level"] = fg_level
+        result.setdefault("date", str(result.get("snapshot_date") or ""))
+        result.setdefault("fear_greed", result.get("fear_greed_index"))
+        result.setdefault("sentiment", fg_level)
+        result["north_fund"] = dict(result.get("north_fund") or {})
+        result["north_fund"].setdefault("net_3d", result.get("north_fund_3d_net"))
         return result
 
     async def get_daily_snapshot(self, snapshot_date = None) -> Optional[dict]:

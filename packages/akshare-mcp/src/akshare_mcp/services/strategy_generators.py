@@ -10,10 +10,16 @@ import time
 from typing import Any, Optional
 
 import pandas as pd
+from strategy_factory import (
+    CATEGORY_MINIMUMS,
+    LLM_FAN_OUT_COUNT,
+    PIPELINE_MODE,
+    extract_event_context as _extract_event_context,
+    preferred_strategy_types_for_factor,
+)
 
 from .llm_alpha import LLMAlphaMiner
 from .strategy_dsl import compile_strategy_blueprint
-from .strategy_factory.constants import LLM_FAN_OUT_COUNT, PIPELINE_MODE
 from .strategy_llm_provider import get_strategy_llm_provider
 from .strategy_pipeline import get_strategy_pipeline
 from .strategy_spec import (
@@ -26,49 +32,128 @@ from .strategy_spec import (
     RESEARCH_UNIVERSE_SCAN_LIMIT,
     StrategySpec,
 )
-from .strategy_factory.utils import _extract_event_context
 
 logger = logging.getLogger(__name__)
 
 
 class RuleStrategyGenerator:
+    @staticmethod
+    def _factor_research_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
+        factor_research = dict(snapshot.get('factor_research') or {})
+        summary = dict(factor_research.get('summary') or {})
+        return {
+            'top_factor_names': list(summary.get('top_factor_names') or factor_research.get('active_factors') or [])[:3],
+            'preferred_strategy_types': [
+                str(item).strip()
+                for item in list(factor_research.get('preferred_strategy_types') or [])
+                if str(item).strip()
+            ][:4],
+            'degraded': bool(factor_research.get('degraded')),
+        }
+
+    @classmethod
+    def _build_rule_spec(
+        cls,
+        strategy_type: str,
+        *,
+        fg: int,
+        regime: str,
+        source: str,
+        factor_summary: dict[str, Any],
+    ) -> Optional[StrategySpec]:
+        templates: dict[str, dict[str, Any]] = {
+            'momentum': {
+                'params': {'lookback': 15, 'threshold': 0.018},
+                'name': 'AI 动量强化',
+                'description': '高情绪或因子偏强阶段偏向动量追随。',
+            },
+            'ma_cross': {
+                'params': {'short_period': 6, 'long_period': 24},
+                'name': 'AI 均线趋势',
+                'description': '趋势确认阶段用均线结构过滤噪音。',
+            },
+            'rsi': {
+                'params': {'rsi_period': 14, 'oversold': 28, 'overbought': 72},
+                'name': 'AI RSI 反转',
+                'description': '低情绪或反转因子活跃阶段偏向均值回归。',
+            },
+            'value_factor': {
+                'params': {'lookback': 60, 'buy_quantile': 0.8, 'sell_quantile': 0.2},
+                'name': 'AI 价值回归',
+                'description': '估值修复阶段偏向价值/反转组合。',
+            },
+            'quality_factor': {
+                'params': {'lookback': 50, 'buy_quantile': 0.75, 'sell_quantile': 0.25},
+                'name': 'AI 质量精选',
+                'description': '质量因子占优阶段偏向盈利能力与稳健性筛选。',
+            },
+            'growth_factor': {
+                'params': {'lookback': 40, 'buy_quantile': 0.78, 'sell_quantile': 0.22},
+                'name': 'AI 成长加速',
+                'description': '成长因子活跃阶段偏向高景气扩张。',
+            },
+            'multi_factor': {
+                'params': {'factor_weights': {'value': 0.4, 'quality': 0.35, 'momentum': 0.25}},
+                'name': 'AI 多因子平衡',
+                'description': '因子共振时优先使用多因子组合。',
+            },
+            'macro_timing': {
+                'params': {'risk_on_threshold': 0.55, 'rebalance_days': 10},
+                'name': 'AI 宏观择时',
+                'description': '波动与风险偏好分化阶段偏向宏观择时。',
+            },
+        }
+        template = templates.get(strategy_type)
+        if template is None:
+            return None
+        return StrategySpec(
+            strategy_type=strategy_type,
+            params=dict(template['params']),
+            name=str(template['name']),
+            description=str(template['description']),
+            tags=['rule', 'factor_research' if source == 'factor_research' else 'fear_greed'],
+            metadata={
+                'generator_type': 'rule',
+                'generation_reason': {
+                    'source': source,
+                    'fg': fg,
+                    'regime': regime,
+                    'factor_research': factor_summary,
+                },
+            },
+        )
+
     def generate(self, snapshot: dict, limit: int = 2) -> list[StrategySpec]:
         fg = int(snapshot.get('fear_greed_index') or 50)
+        regime = 'greed' if fg >= 60 else ('fear' if fg < 45 else 'neutral')
+        factor_summary = self._factor_research_summary(snapshot)
+        preferred_types = [
+            item for item in factor_summary.get('preferred_strategy_types') or []
+            if item in CATEGORY_MINIMUMS
+        ]
+        if not preferred_types:
+            for factor_name in list(factor_summary.get('top_factor_names') or []):
+                for strategy_type in preferred_strategy_types_for_factor(factor_name):
+                    if strategy_type in CATEGORY_MINIMUMS and strategy_type not in preferred_types:
+                        preferred_types.append(strategy_type)
+        regime_defaults = (
+            ['momentum', 'ma_cross', 'quality_factor']
+            if regime == 'greed'
+            else ['rsi', 'value_factor', 'quality_factor']
+        )
+        strategy_order = list(dict.fromkeys([*preferred_types, *regime_defaults]))
         specs: list[StrategySpec] = []
-        if fg >= 60:
-            specs.append(StrategySpec(
-                strategy_type='momentum',
-                params={'lookback': 15, 'threshold': 0.018},
-                name='AI 动量强化',
-                description='高情绪阶段偏向动量追随。',
-                tags=['rule'],
-                metadata={'generator_type': 'rule', 'generation_reason': {'fg': fg, 'regime': 'greed'}},
-            ))
-            specs.append(StrategySpec(
-                strategy_type='ma_cross',
-                params={'short_period': 6, 'long_period': 24},
-                name='AI 均线趋势',
-                description='情绪偏强阶段用均线趋势过滤。',
-                tags=['rule'],
-                metadata={'generator_type': 'rule', 'generation_reason': {'fg': fg, 'regime': 'greed'}},
-            ))
-        else:
-            specs.append(StrategySpec(
-                strategy_type='rsi',
-                params={'rsi_period': 14, 'oversold': 28, 'overbought': 72},
-                name='AI RSI 反转',
-                description='低情绪阶段偏向均值回归与超跌反弹。',
-                tags=['rule'],
-                metadata={'generator_type': 'rule', 'generation_reason': {'fg': fg, 'regime': 'fear_or_neutral'}},
-            ))
-            specs.append(StrategySpec(
-                strategy_type='value_factor',
-                params={'lookback': 60, 'buy_quantile': 0.8, 'sell_quantile': 0.2},
-                name='AI 价值回归',
-                description='低情绪阶段偏向价值/反转。',
-                tags=['rule'],
-                metadata={'generator_type': 'rule', 'generation_reason': {'fg': fg, 'regime': 'fear_or_neutral'}},
-            ))
+        for index, strategy_type in enumerate(strategy_order):
+            source = 'factor_research' if index < len(preferred_types) and preferred_types else 'fear_greed'
+            spec = self._build_rule_spec(
+                strategy_type,
+                fg=fg,
+                regime=regime,
+                source=source,
+                factor_summary=factor_summary,
+            )
+            if spec is not None:
+                specs.append(spec)
         return specs[: max(1, min(int(limit or 2), 10))]
 
 
@@ -495,6 +580,148 @@ class LLMProxyStrategyGenerator:
                 factor_snapshot.setdefault(code, {})[factor_name] = payload[1]
         return {code: values for code, values in factor_snapshot.items() if values}
 
+    async def build_shared_research_context(
+        self,
+        db,
+        snapshot: Optional[dict[str, Any]],
+        *,
+        parent_strategies: Optional[list[dict]] = None,
+        history_summary: Optional[list[dict]] = None,
+    ) -> dict[str, Any]:
+        base_snapshot = dict(snapshot or {})
+        base_snapshot.pop('_shared_generation_context', None)
+        return await self._build_research_context(
+            db,
+            base_snapshot,
+            parent_strategies=parent_strategies,
+            history_summary=history_summary,
+            research_task={},
+        )
+
+    @classmethod
+    def _reuse_shared_research_context(
+        cls,
+        shared_context: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+        parent_strategies: Optional[list[dict]] = None,
+        history_summary: Optional[list[dict]] = None,
+        research_task: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
+        if not shared_context:
+            return None
+        research_task = dict(research_task or {})
+        task_target_symbols = cls._normalize_code_list(research_task.get('target_symbols'))
+        task_focus_industries = [str(item).strip() for item in list(research_task.get('focus_industries') or []) if str(item).strip()]
+        task_focus_markets = [str(item).strip() for item in list(research_task.get('focus_markets') or []) if str(item).strip()]
+        target_symbol_set = set(task_target_symbols)
+        task_focus_market_set = set(task_focus_markets)
+        symbol_insights = [dict(item or {}) for item in list(shared_context.get('symbol_insights') or [])]
+        candidate_universe = [dict(item or {}) for item in list(shared_context.get('candidate_universe') or [])]
+
+        def _matches(item: dict[str, Any]) -> bool:
+            if not item:
+                return False
+            code = str(item.get('code') or '').strip()
+            industry_text = str(item.get('industry') or item.get('sector') or '')
+            market = str(item.get('market') or '').strip()
+            if target_symbol_set and code not in target_symbol_set:
+                return False
+            if task_focus_industries and not any(keyword in industry_text for keyword in task_focus_industries):
+                return False
+            if task_focus_market_set and market not in task_focus_market_set:
+                return False
+            return True
+
+        has_filters = bool(task_target_symbols or task_focus_industries or task_focus_markets)
+        if has_filters:
+            filtered_symbols = [item for item in symbol_insights if _matches(item)]
+            filtered_candidates = [item for item in candidate_universe if _matches(item)]
+            if task_target_symbols and not filtered_symbols and not filtered_candidates:
+                return None
+            if task_focus_industries and not filtered_symbols and not filtered_candidates:
+                return None
+            symbol_insights = filtered_symbols or symbol_insights[: max(1, min(len(symbol_insights), RESEARCH_SYMBOL_DETAIL_LIMIT))]
+            candidate_universe = filtered_candidates or candidate_universe[: max(1, min(len(candidate_universe), RESEARCH_CANDIDATE_POOL_LIMIT))]
+
+        symbol_insights = [dict(item) for item in symbol_insights[:RESEARCH_SYMBOL_DETAIL_LIMIT]]
+        candidate_universe = [dict(item) for item in candidate_universe[:RESEARCH_CANDIDATE_POOL_LIMIT]]
+        trend_up_count = len([item for item in symbol_insights if item.get('trend_state') == 'uptrend'])
+        trend_down_count = len([item for item in symbol_insights if item.get('trend_state') == 'downtrend'])
+        avg_return_20d = round(sum(cls._safe_float(item.get('return_20d')) for item in symbol_insights) / max(len(symbol_insights), 1), 6) if symbol_insights else 0.0
+        avg_volatility_20d = round(sum(cls._safe_float(item.get('volatility_20d')) for item in symbol_insights) / max(len(symbol_insights), 1), 6) if symbol_insights else 0.0
+        market_regime = {
+            'fg_level': snapshot.get('fg_level'),
+            'fear_greed_index': snapshot.get('fear_greed_index'),
+            'hot_sectors': list(snapshot.get('hot_sectors') or [])[:4],
+            'cold_sectors': list(snapshot.get('cold_sectors') or [])[:3],
+            'factor_ic': dict(snapshot.get('factor_ic') or {}),
+            'factor_ic_trend': dict(snapshot.get('factor_ic_trend') or {}),
+            'factor_research': dict(snapshot.get('factor_research') or {}),
+        }
+        universe_scan = dict(shared_context.get('universe_scan') or {})
+        universe_scan.update({
+            'detail_symbol_count': len(symbol_insights),
+            'candidate_universe_count': len(candidate_universe),
+            'cache_reused': True,
+        })
+        return {
+            **dict(shared_context or {}),
+            'research_task': {
+                'task_id': research_task.get('task_id'),
+                'theme': research_task.get('theme'),
+                'opportunity_type': research_task.get('opportunity_type'),
+                'focus_industries': task_focus_industries,
+                'focus_markets': task_focus_markets,
+                'target_symbols': task_target_symbols,
+                'priority': research_task.get('priority'),
+                'strategy_preferences': list(research_task.get('strategy_preferences') or []),
+                'generation_limit': research_task.get('generation_limit'),
+                'rationale': research_task.get('rationale'),
+            },
+            'market_regime': market_regime,
+            'market_breadth': {
+                'symbol_count': len(symbol_insights),
+                'trend_up_count': trend_up_count,
+                'trend_down_count': trend_down_count,
+                'avg_return_20d': avg_return_20d,
+                'avg_volatility_20d': avg_volatility_20d,
+            },
+            'symbol_insights': symbol_insights,
+            'candidate_universe': candidate_universe,
+            'universe_scan': universe_scan,
+            'selection_framework': {
+                'technical': ['trend_state', 'return_20d', 'return_5d', 'volume_ratio_20', 'price_vs_sma20'],
+                'fundamental': ['market_cap', 'pe_ratio', 'pb_ratio', 'revenue_growth', 'profit_growth'],
+                'factor_names': [
+                    str(key)
+                    for key in list(
+                        ((snapshot.get('factor_research') or {}).get('summary') or {}).get('top_factor_names')
+                        or (snapshot.get('factor_research') or {}).get('active_factors')
+                        or list((snapshot.get('factor_ic_trend') or {}).keys())[:3]
+                    )[:3]
+                ],
+            },
+            'parent_context': [
+                {
+                    'id': item.get('id'),
+                    'name': item.get('name'),
+                    'strategy_type': item.get('strategy_type'),
+                    'status': item.get('status'),
+                }
+                for item in list(parent_strategies or [])[:3]
+            ],
+            'experiment_feedback': [
+                {
+                    'generator_type': item.get('generator_type'),
+                    'status': item.get('status'),
+                    'decision': item.get('decision'),
+                    'final_score': item.get('final_score'),
+                }
+                for item in list(history_summary or [])[:4]
+            ],
+        }
+
     async def _build_research_context(
         self,
         db,
@@ -506,6 +733,18 @@ class LLMProxyStrategyGenerator:
     ) -> dict[str, Any]:
         snapshot = snapshot or {}
         research_task = dict(research_task or {})
+        shared_generation_context = dict(snapshot.get('_shared_generation_context') or {})
+        shared_research_context = dict(shared_generation_context.get('research_context') or {})
+        if shared_research_context:
+            reused_context = self._reuse_shared_research_context(
+                shared_research_context,
+                snapshot=snapshot,
+                parent_strategies=parent_strategies,
+                history_summary=history_summary,
+                research_task=research_task,
+            )
+            if reused_context is not None:
+                return reused_context
         universe_rows = await self._load_universe_rows(db)
         universe_total_count = 0
         if hasattr(db, 'count_stock_universe'):
@@ -664,6 +903,7 @@ class LLMProxyStrategyGenerator:
                 'detail_symbol_count': len(symbol_insights),
                 'candidate_universe_count': len(candidate_universe),
                 'top_industries': top_industries,
+                'cache_reused': False,
             },
             'selection_framework': {
                 'technical': ['trend_state', 'return_20d', 'return_5d', 'volume_ratio_20', 'price_vs_sma20'],
@@ -728,6 +968,7 @@ class LLMProxyStrategyGenerator:
             'universe_scanned_count': int(universe_scan.get('scanned_stock_count') or 0),
             'data_ready_count': int(universe_scan.get('data_ready_count') or 0),
             'coverage_ratio': universe_scan.get('coverage_ratio'),
+            'cache_reused': bool(universe_scan.get('cache_reused')),
             'fg_level': regime.get('fg_level'),
             'fear_greed_index': regime.get('fear_greed_index'),
             'hot_sectors': list(regime.get('hot_sectors') or [])[:3],
@@ -1217,6 +1458,10 @@ class LLMProxyStrategyGenerator:
     # ------------------------------------------------------------------
 
     async def generate(self, db, limit: int = 3, snapshot: Optional[dict] = None, parent_strategies: Optional[list[dict]] = None, research_task: Optional[dict[str, Any]] = None) -> list[StrategySpec]:
+        snapshot = snapshot or {}
+        shared_generation_context = dict(snapshot.get('_shared_generation_context') or {})
+        if parent_strategies is None and shared_generation_context.get('parent_strategies'):
+            parent_strategies = [dict(item or {}) for item in list(shared_generation_context.get('parent_strategies') or [])]
         # 多阶段 pipeline 路径
         _pipeline_fallback_reason: Optional[str] = None
         if PIPELINE_MODE == 'staged' and self.external_provider.is_enabled():
@@ -1235,10 +1480,15 @@ class LLMProxyStrategyGenerator:
         frame = await self._build_market_frame(db, research_task=research_task)
         frame_source = 'primary_market_frame' if frame is not None and not frame.empty else 'none'
         requested_limit = max(1, min(int(limit or 3), 10))
-        history_summary = await self._recent_experiments(db, parent_strategies=parent_strategies)
+        history_summary = [
+            dict(item or {})
+            for item in list(shared_generation_context.get('history_summary') or [])
+        ]
+        if not history_summary:
+            history_summary = await self._recent_experiments(db, parent_strategies=parent_strategies)
         research_context = await self._build_research_context(
             db,
-            snapshot or {},
+            snapshot,
             parent_strategies=parent_strategies,
             history_summary=history_summary,
             research_task=research_task,
@@ -1289,7 +1539,7 @@ class LLMProxyStrategyGenerator:
             external_started_at = time.perf_counter()
             request_results = await asyncio.gather(*[
                 self._run_external_provider_request(
-                    snapshot=snapshot or {},
+                    snapshot=snapshot,
                     frame=frame,
                     frame_cache=frame_cache,
                     research_context=research_context,

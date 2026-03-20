@@ -1,27 +1,29 @@
 """交易数据管理器 - 龙虎榜、大单追踪"""
 
 from datetime import datetime
-import json
 import logging
+import time
 from ...storage import get_db
-from ...utils import ok, fail
+from ...utils import normalize_code
+from ..manager_protocol import (
+    fail_with_meta,
+    normalize_manager_code,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 
 logger = logging.getLogger(__name__)
 
-
-def _normalize_kwargs(kwargs: dict) -> dict:
-    extra = kwargs.get("kwargs")
-    if extra is not None:
-        if isinstance(extra, str):
-            try:
-                extra = json.loads(extra or "{}")
-            except Exception:
-                extra = None
-        if isinstance(extra, dict):
-            kwargs = {**kwargs, **extra}
-    if "code" not in kwargs or kwargs.get("code") is None:
-        kwargs["code"] = kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
-    return kwargs
+def _dedupe_chain(values: list[str]) -> list[str]:
+    chain = []
+    seen = set()
+    for value in values:
+        label = str(value or "").strip()
+        if not label or label in seen:
+            continue
+        chain.append(label)
+        seen.add(label)
+    return chain
 
 
 def register_trading_data_manager(mcp):
@@ -52,23 +54,48 @@ def register_trading_data_manager(mcp):
             # 机构资金流向
             trading_data_manager(action="institutional_flow", kwargs="{}")
         """
+        start_time = time.perf_counter()
         try:
             db = get_db()
-            kwargs = _normalize_kwargs(kwargs)
+            kwargs = normalize_manager_kwargs(kwargs)
+            code, kwargs = normalize_manager_code(None, kwargs)
+            if code:
+                kwargs['code'] = normalize_code(code)
+
+            def _ok(data: dict, source_chain=None, data_timestamp: str | None = None):
+                return ok_with_meta(
+                    data,
+                    tool_name="trading_data_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                    data_timestamp=data_timestamp,
+                )
+
+            def _fail(message: str, source_chain=None, data_timestamp: str | None = None):
+                return fail_with_meta(
+                    message,
+                    tool_name="trading_data_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                    data_timestamp=data_timestamp,
+                )
             
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'dragon_tiger': '龙虎榜查询（可选 date, stock_code）',
                         'block_trades': '大宗交易查询（可选 date, stock_code）',
                         'institutional_flow': '机构资金流向（可选 date）',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['trading_data_manager'])
             
             elif action == 'dragon_tiger':
                 date_raw = kwargs.get('date', datetime.now().strftime('%Y-%m-%d'))
                 limit = kwargs.get('limit', 50)
+                source_chain = ['trading_data_manager']
                 
                 if hasattr(date_raw, 'toordinal'):
                     date_val = date_raw
@@ -87,6 +114,8 @@ def register_trading_data_manager(mcp):
                             date_val, limit
                         )
                         data = [dict(row) for row in rows]
+                        if data:
+                            source_chain.append('db.dragon_tiger')
                     except Exception:
                         rows = await conn.fetch(
                             """SELECT stock_code AS code, trade_date, reason, 
@@ -99,6 +128,8 @@ def register_trading_data_manager(mcp):
                             date_val, limit
                         )
                         data = [dict(row) for row in rows]
+                        if data:
+                            source_chain.append('db.dragon_tiger_list')
                 
                 # 如果当日无数据，尝试获取最近的龙虎榜数据
                 if not data:
@@ -117,6 +148,7 @@ def register_trading_data_manager(mcp):
                             data = [dict(row) for row in rows]
                             if data:
                                 date_val = data[0]['trade_date']
+                                source_chain.append('db.dragon_tiger')
                         except Exception:
                             rows = await conn.fetch(
                                 """SELECT stock_code AS code, trade_date, reason, 
@@ -131,6 +163,7 @@ def register_trading_data_manager(mcp):
                             data = [dict(row) for row in rows]
                             if data:
                                 date_val = data[0]['trade_date']
+                                source_chain.append('db.dragon_tiger_list')
                 
                 if data:
                     total_buy = sum(row.get('buy_amount', 0) or 0 for row in data)
@@ -152,6 +185,7 @@ def register_trading_data_manager(mcp):
                         date_str = str(date_val).replace('-', '')
                         dt_res = get_dragon_tiger(date=date_str)
                         if dt_res.get('success') and dt_res.get('data'):
+                            source_chain.extend(dt_res.get('source_chain') or ['fund_flow.get_dragon_tiger'])
                             dt_data = dt_res['data']
                             if isinstance(dt_data, list):
                                 for item in dt_data:
@@ -190,28 +224,32 @@ def register_trading_data_manager(mcp):
                             'activeStocks': 0
                         }
                 
-                return ok({
+                return _ok({
                     'date': str(date_val),
                     'data': data,
                     'analysis': analysis,
                     'message': '返回最近龙虎榜数据' if not data or str(date_val) != str(kwargs.get('date', datetime.now().strftime('%Y-%m-%d'))[:10]) else None
-                })
+                }, source_chain=_dedupe_chain(source_chain), data_timestamp=str(date_val))
             
             elif action == 'block_trades':
                 code = kwargs.get('code')
                 days = kwargs.get('days', 5)
-                
-                if not code:
-                    return fail('需要提供股票代码')
-                
-                async with db.acquire() as conn:
-                    rows = await conn.fetch(
-                        """SELECT * FROM block_trades 
-                           WHERE code = $1 AND trade_date >= CURRENT_DATE - ($2::integer * INTERVAL '1 day')
-                           ORDER BY trade_date DESC, trade_amount DESC""",
-                        code, int(days)
-                    )
-                    trades = [dict(row) for row in rows]
+                limit = int(kwargs.get('limit', 50) or 50)
+                date_raw = kwargs.get('date')
+                source_chain = ['trading_data_manager']
+
+                trades = []
+                if code:
+                    async with db.acquire() as conn:
+                        rows = await conn.fetch(
+                            """SELECT * FROM block_trades 
+                               WHERE code = $1 AND trade_date >= CURRENT_DATE - ($2::integer * INTERVAL '1 day')
+                               ORDER BY trade_date DESC, trade_amount DESC""",
+                            code, int(days)
+                        )
+                        trades = [dict(row) for row in rows]
+                        if trades:
+                            source_chain.append('db.block_trades')
                 
                 if trades:
                     total_amount = sum(t.get('trade_amount', 0) for t in trades)
@@ -236,20 +274,59 @@ def register_trading_data_manager(mcp):
                         'totalAmount': 0,
                         'signal': 'no_data'
                     }
-                
-                return ok({
+                    try:
+                        from ..fund_flow import get_block_trades as _get_block_trades
+
+                        tool_res = _get_block_trades(
+                            date=str(date_raw or ""),
+                            stock_code=str(code or ""),
+                            limit=limit,
+                        )
+                        if tool_res.get('success'):
+                            tool_trades = tool_res.get('data') or []
+                            if tool_trades:
+                                trades = tool_trades
+                                source_chain.extend(tool_res.get('source_chain') or ['fund_flow.get_block_trades'])
+                                total_amount = sum(float(t.get('amount') or t.get('trade_amount') or 0) for t in trades)
+                                price_values = [
+                                    float(t.get('price') or t.get('trade_price') or 0)
+                                    for t in trades
+                                    if (t.get('price') or t.get('trade_price')) is not None
+                                ]
+                                avg_price = sum(price_values) / len(price_values) if price_values else 0.0
+                                analysis = {
+                                    'totalTrades': len(trades),
+                                    'totalAmount': float(total_amount),
+                                    'avgPrice': float(avg_price),
+                                    'signal': 'neutral' if total_amount > 0 else 'no_data',
+                                }
+                                return _ok({
+                                    'code': code,
+                                    'days': days,
+                                    'trades': trades[:limit],
+                                    'analysis': analysis,
+                                    'data_quality': tool_res.get('data_quality'),
+                                    'source_chain': tool_res.get('source_chain'),
+                                    'fallback_reason': tool_res.get('fallback_reason'),
+                                    'degraded': bool(tool_res.get('degraded')),
+                                }, source_chain=_dedupe_chain(source_chain), data_timestamp=str(date_raw or datetime.now().date()))
+                    except Exception as e:
+                        logger.warning(f"[TradingData] get_block_trades fallback 失败: {e}")
+
+                return _ok({
                     'code': code,
                     'days': days,
                     'trades': trades,
                     'analysis': analysis
-                })
+                }, source_chain=_dedupe_chain(source_chain), data_timestamp=str(date_raw or datetime.now().date()))
             
             elif action == 'institutional_flow':
                 code = kwargs.get('code')
                 period = kwargs.get('period', 20)
+                source_chain = ['trading_data_manager']
                 
                 if not code:
-                    return fail('需要提供股票代码')
+                    return _fail('需要提供股票代码', source_chain=source_chain)
                 
                 async with db.acquire() as conn:
                     try:
@@ -263,6 +340,7 @@ def register_trading_data_manager(mcp):
                                ORDER BY trade_date DESC""",
                             code, period
                         )
+                        source_chain.append('db.dragon_tiger')
                     except Exception:
                         rows = await conn.fetch(
                             """SELECT stock_code AS code, trade_date, reason, 
@@ -274,6 +352,7 @@ def register_trading_data_manager(mcp):
                                ORDER BY trade_date DESC""",
                             code, period
                         )
+                        source_chain.append('db.dragon_tiger_list')
                     institutional_trades = [dict(row) for row in rows]
                 
                 if institutional_trades:
@@ -299,14 +378,23 @@ def register_trading_data_manager(mcp):
                         'tradeCount': 0
                     }
 
-                return ok({
+                return _ok({
                     'code': code,
                     'period': period,
                     'institutionalFlow': flow_analysis,
                     'trades': institutional_trades[:10]
-                })
+                }, source_chain=_dedupe_chain(source_chain))
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, dragon_tiger, block_trades, institutional_flow')
+                return _fail(
+                    f'Unknown action: {action}. Supported: help, dragon_tiger, block_trades, institutional_flow',
+                    source_chain=['trading_data_manager'],
+                )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='trading_data_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['trading_data_manager'],
+            )

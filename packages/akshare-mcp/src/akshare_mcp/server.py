@@ -8,6 +8,7 @@ import asyncio
 import atexit
 import os
 import logging
+import threading
 from pathlib import Path
 
 from .env_loader import load_mcp_env
@@ -31,21 +32,22 @@ for _log_name in ("mcp", "mcp.server", "mcp.server.server", "fastmcp", "uvicorn"
 from mcp.server.fastmcp import FastMCP
 
 # 分步导入以便 UnicodeDecodeError 时定位到具体子模块
-_tool_names = (
+_base_tool_names = (
     "market", "finance", "fund_flow", "macro", "news", "options",
     "technical", "backtest", "portfolio", "valuation", "decision",
     "search", "semantic", "data_warmup", "alerts",
     "vector", "skills", "quant", "sentiment", "market_blocks",
-    "tdx_formula", "basic_data", "data_sync", "tdx_integration", "tdx_trading_data", "tdx_file_sector", "tdx_realtime", "managers",
+    "basic_data", "data_sync", "managers",
     "factor_profile",
 )
+_tool_names = _base_tool_names
 try:
     from .tools import (
         market, finance, fund_flow, macro, news, options,
         technical, backtest, portfolio, valuation, decision,
         search, semantic, data_warmup, alerts,
         vector, skills, quant, sentiment, market_blocks,
-        tdx_formula, basic_data, data_sync, tdx_integration, tdx_trading_data, tdx_file_sector, tdx_realtime, managers,
+        basic_data, data_sync, managers,
         factor_profile,
     )
 except UnicodeDecodeError as e:
@@ -84,6 +86,29 @@ def _safe_shutdown_data_sync() -> None:
 
 
 atexit.register(_safe_shutdown_data_sync)
+
+
+def _run_async_task_in_daemon_thread(coro_factory, name: str) -> threading.Thread:
+    """Run an async task from the synchronous server bootstrap path."""
+    logger = logging.getLogger(__name__)
+
+    def _runner() -> None:
+        try:
+            asyncio.run(coro_factory())
+        except Exception as e:  # pragma: no cover - defensive logging for background thread
+            logger.warning("[Server] background task %s failed: %s", name, e, exc_info=True)
+
+    thread = threading.Thread(target=_runner, name=name, daemon=True)
+    thread.start()
+    return thread
+
+
+def _start_startup_validator_background() -> threading.Thread:
+    """Schedule StartupValidator without depending on a pre-existing event loop."""
+    from .services.startup_validator import get_startup_validator
+
+    validator = get_startup_validator()
+    return _run_async_task_in_daemon_thread(validator.run_async, "startup-validator")
 
 
 def _safe_shutdown_db() -> None:
@@ -129,26 +154,11 @@ sentiment.register(mcp)
 # 注册因子画像工具 (Phase 3)
 factor_profile.register(mcp)
 
-# 注册 TDX 公式计算工具 (Phase 1)
-tdx_formula.register(mcp)
-
 # 注册基础数据工具 (Phase 3)
 basic_data.register(mcp)
 
 # 注册数据同步工具 (Phase 4)
 data_sync.register(mcp)
-
-# 注册 TdxQuant 前端集成工具 (Phase 5)
-tdx_integration.register(mcp)
-
-# 注册 TDX 交易数据工具 (Phase 1 扩展 - GP/BK/SC 系列)
-tdx_trading_data.register(mcp)
-
-# 注册 TDX 文件交互与板块管理补全工具 (Phase 2 扩展)
-tdx_file_sector.register(mcp)
-
-# 注册 TDX 行情订阅与缓存管理工具 (Phase 4 扩展)
-tdx_realtime.register(mcp)
 
 # 注册市场板块工具
 @mcp.tool()
@@ -282,16 +292,14 @@ def main() -> None:
 
         # Start strategy factory for daily auto-generation & elimination
         if _as_bool(os.getenv("STRATEGY_FACTORY_ENABLED", "true")):
-            from .services.strategy_factory import get_strategy_factory_scheduler
+            from strategy_factory import get_strategy_factory_scheduler
             factory = get_strategy_factory_scheduler()
             factory.start()
             logger.info("[Server] StrategyFactory started")
 
         # Run startup validation (DB connectivity, schema, data freshness, coverage)
         if _as_bool(os.getenv("STARTUP_VALIDATION_ENABLED", "true")):
-            from .services.startup_validator import get_startup_validator
-            _validator = get_startup_validator()
-            asyncio.ensure_future(_validator.run_async())
+            _start_startup_validator_background()
             logger.info("[Server] StartupValidator scheduled")
 
         # Start data sync scheduler for automatic DB sync on startup & daily after market close

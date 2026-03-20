@@ -32,6 +32,15 @@ def _normalize_kwargs(kwargs: dict) -> dict:
                 kwargs = {**kwargs, **extra}
         except Exception:
             pass
+    if "code" not in kwargs or not kwargs.get("code"):
+        kwargs["code"] = kwargs.get("stock_code") or kwargs.get("symbol") or kwargs.get("ticker")
+    if "codes" not in kwargs or not kwargs.get("codes"):
+        kwargs["codes"] = (
+            kwargs.get("stock_codes")
+            or kwargs.get("symbols")
+            or kwargs.get("target_symbols")
+            or kwargs.get("targets")
+        )
     return kwargs
 
 
@@ -85,7 +94,16 @@ def _parse_dict_param(value: Any) -> dict:
 
 def _parse_codes_weights(kwargs: dict) -> tuple[list[str], list[float], str | None]:
     """Parse codes/weights and normalize weights to sum to 1."""
-    raw_codes = _parse_list_param(kwargs.get("codes"))
+    raw_codes = _parse_list_param(
+        kwargs.get("codes")
+        or kwargs.get("stock_codes")
+        or kwargs.get("symbols")
+        or kwargs.get("target_symbols")
+    )
+    if not raw_codes:
+        single_code = kwargs.get("code") or kwargs.get("stock_code") or kwargs.get("symbol") or kwargs.get("ticker")
+        if single_code:
+            raw_codes = [single_code]
     codes = [normalize_code(str(c)) for c in raw_codes if str(c).strip()]
     if not codes:
         return [], [], None

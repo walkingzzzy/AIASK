@@ -166,8 +166,11 @@ def register(mcp):
     
     @mcp.tool()
     async def analyze_portfolio_risk(
-        holdings: List[Dict[str, Any]],
-        lookback_days: int = 252
+        holdings: Optional[List[Dict[str, Any]]] = None,
+        lookback_days: int = 252,
+        portfolio_id: Optional[str] = None,
+        codes: Optional[List[str]] = None,
+        weights: Optional[List[float]] = None,
     ):
         """
         分析组合风险
@@ -175,18 +178,75 @@ def register(mcp):
         Args:
             holdings: 持仓列表 [{'code': '600519', 'weight': 0.3}, ...]
             lookback_days: 回溯天数
+            portfolio_id: 组合ID，可从持仓表读取
+            codes: 股票代码列表
+            weights: 权重列表，与 codes 对应
         """
         try:
             db = get_db()
+            requested_holdings: List[Dict[str, Any]] = []
+
+            if holdings:
+                requested_holdings = [dict(item) for item in holdings if isinstance(item, dict) and item.get('code')]
+            elif codes:
+                normalized_codes = [str(code).strip() for code in codes if str(code).strip()]
+                if not normalized_codes:
+                    return fail('codes 不能为空')
+                raw_weights = weights or []
+                if raw_weights and len(raw_weights) != len(normalized_codes):
+                    return fail('weights 数量必须与 codes 一致')
+                if raw_weights:
+                    requested_holdings = [
+                        {'code': code, 'weight': float(raw_weights[idx])}
+                        for idx, code in enumerate(normalized_codes)
+                    ]
+                else:
+                    equal_weight = 1.0 / len(normalized_codes)
+                    requested_holdings = [
+                        {'code': code, 'weight': equal_weight}
+                        for code in normalized_codes
+                    ]
+            elif portfolio_id:
+                if not hasattr(db, 'acquire'):
+                    return fail('当前数据源不支持通过 portfolio_id 加载持仓')
+                async with db.acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT code, shares, cost_price, weight FROM holdings WHERE portfolio_id = $1",
+                        portfolio_id,
+                    )
+                requested_holdings = [
+                    {
+                        'code': row['code'],
+                        'weight': float(row.get('weight') or 0),
+                        'shares': row.get('shares'),
+                        'cost_price': row.get('cost_price'),
+                    }
+                    for row in rows
+                    if row.get('code')
+                ]
+            else:
+                return fail('需要提供 holdings、portfolio_id 或 codes + weights')
+
+            if not requested_holdings:
+                return fail('未获取到可分析的持仓数据')
+
             returns_list = []
+            valid_holdings = []
+            dropped_holdings = []
             
-            for holding in holdings:
+            for holding in requested_holdings:
                 code = holding['code']
                 klines = await db.get_klines(code, limit=lookback_days)
-                if klines:
+                if klines and len(klines) >= 2:
                     closes = [k['close'] for k in klines]
                     returns = np.diff(closes) / closes[:-1]
                     returns_list.append(returns)
+                    valid_holdings.append(dict(holding))
+                else:
+                    dropped_holdings.append({
+                        'code': code,
+                        'reason': 'insufficient_kline_data',
+                    })
             
             if not returns_list:
                 return fail('No data available')
@@ -195,18 +255,35 @@ def register(mcp):
             returns_matrix = np.array([r[:min_len] for r in returns_list])
             
             # 计算组合收益率
-            weights = np.array([h['weight'] for h in holdings])
+            weights = np.array([float(h.get('weight', 0) or 0) for h in valid_holdings], dtype=float)
+            weight_sum = float(np.sum(weights))
+            if weight_sum <= 0:
+                weights = np.array([1.0 / len(valid_holdings)] * len(valid_holdings), dtype=float)
+            else:
+                weights = weights / weight_sum
+            analyzed_holdings = [
+                {**holding, 'weight': float(weights[idx])}
+                for idx, holding in enumerate(valid_holdings)
+            ]
             portfolio_returns = np.dot(weights, returns_matrix)
             
             # 计算VaR
             var_result = risk_model.calculate_var(portfolio_returns.tolist())
             
             # 计算组合风险
-            risk_result = risk_model.calculate_portfolio_risk(holdings, returns_matrix)
+            risk_result = risk_model.calculate_portfolio_risk(analyzed_holdings, returns_matrix)
             
             return ok({
                 'var': var_result,
                 'risk': risk_result,
+                'portfolio_id': portfolio_id,
+                'analyzed_holdings': analyzed_holdings,
+                'dropped_holdings': dropped_holdings,
+                'coverage': {
+                    'requested': len(requested_holdings),
+                    'used': len(analyzed_holdings),
+                    'dropped': len(dropped_holdings),
+                },
             })
         
         except Exception as e:

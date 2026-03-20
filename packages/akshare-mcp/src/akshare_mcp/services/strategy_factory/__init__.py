@@ -1,4 +1,8 @@
-"""策略工厂包兼容导出。"""
+"""策略工厂兼容导出层。
+
+真正实现已迁至同级独立包 ``packages/strategy-factory``。
+这里继续保留旧导入路径，目的是兼容历史调用方与 monkeypatch/patch 测试面。
+"""
 
 from __future__ import annotations
 
@@ -32,7 +36,6 @@ from .constants import (
     REPRESENTATIVE_STOCKS,
     RISK_REPORT_THRESHOLDS,
 )
-from .deduplicator import Deduplicator
 from .event_engine import LocalEventDrivenResearchEngine, get_local_event_engine
 from .elimination import EliminationChecker
 from .factor_research import FactorResearchBuilder
@@ -59,6 +62,7 @@ from .utils import (
     get_strategy_factory_package,
 )
 
+# 旧路径仍保留单例语义，避免历史启动/测试代码行为变化。
 _factory_scheduler: Optional[StrategyFactoryScheduler] = None
 
 
@@ -73,6 +77,14 @@ def get_strategy_factory_scheduler() -> StrategyFactoryScheduler:
     if _factory_scheduler is None:
         _factory_scheduler = StrategyFactoryScheduler()
     return _factory_scheduler
+
+
+def __getattr__(name: str):
+    if name == "Deduplicator":
+        from .deduplicator import Deduplicator as _Deduplicator
+
+        return _Deduplicator
+    raise AttributeError(name)
 
 
 __all__ = [

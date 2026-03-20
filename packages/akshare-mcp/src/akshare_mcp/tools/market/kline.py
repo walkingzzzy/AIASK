@@ -29,18 +29,64 @@ except ImportError:
 import pandas as pd
 
 
+_SOFT_KLINE_FIELDS = frozenset({"turnover", "change_pct"})
+
+
 def _append_chain_step(chain: list[str], step: str) -> None:
     text = str(step or "").strip()
     if text and text not in chain:
         chain.append(text)
 
 
+def _kline_row_date(row: dict) -> Optional[datetime]:
+    raw_value = str((row or {}).get("date") or "").strip()
+    if not raw_value:
+        return None
+    if len(raw_value) >= 10 and raw_value[4:5] in {"-", "/"}:
+        parsed = parse_date_input(raw_value[:10])
+    elif len(raw_value) >= 8 and raw_value[:8].isdigit():
+        parsed = parse_date_input(raw_value[:8])
+    else:
+        parsed = parse_date_input(raw_value)
+    if parsed is None:
+        return None
+    return datetime.combine(parsed, datetime.min.time())
+
+
+def _latest_kline_row(rows: list[dict]) -> dict:
+    latest_row: Optional[dict] = None
+    latest_date: Optional[datetime] = None
+    for item in rows or []:
+        if not isinstance(item, dict):
+            continue
+        row_date = _kline_row_date(item)
+        if latest_row is None:
+            latest_row = item
+        if row_date is not None and (latest_date is None or row_date > latest_date):
+            latest_date = row_date
+            latest_row = item
+    return dict(latest_row or {})
+
+
 def _kline_missing_fields(rows: list[dict]) -> list[str]:
-    latest = dict((rows or [None])[-1] or {})
+    latest = _latest_kline_row(rows)
     return infer_missing_fields(
         latest,
         ("date", "open", "close", "high", "low", "volume", "amount", "turnover", "change_pct"),
     )
+
+
+def _kline_missing_core_fields(rows: list[dict]) -> list[str]:
+    return [field for field in _kline_missing_fields(rows) if field not in _SOFT_KLINE_FIELDS]
+
+
+def _kline_rows_usable(rows: list[dict]) -> bool:
+    return bool(rows) and not _kline_missing_core_fields(rows)
+
+
+def _is_fund_like_code(code: str) -> bool:
+    normalized = normalize_code(code)
+    return normalized.startswith(("1", "5"))
 
 
 def _ok_kline_response(
@@ -52,13 +98,19 @@ def _ok_kline_response(
     started_at: Optional[datetime] = None,
 ) -> dict:
     response = ok(rows)
-    resolved_source = str(source or (((rows or [None])[-1] or {}).get("source") or ((rows or [None])[0] or {}).get("source") or "unknown"))
+    latest_row = _latest_kline_row(rows)
+    resolved_source = str(
+        source
+        or latest_row.get("source")
+        or ((rows or [None])[0] or {}).get("source")
+        or "unknown"
+    )
     response.update(
         build_quality_meta(
             source=resolved_source,
             source_chain=source_chain,
             fallback_reason=fallback_reason,
-            asof_value=((rows or [None])[-1] or {}).get("date"),
+            asof_value=latest_row.get("date"),
             missing_fields=_kline_missing_fields(rows),
             degraded=bool(_kline_missing_fields(rows)),
             success=True,
@@ -126,7 +178,7 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
 
     适用场景: 趋势分析、波动率估算、回测数据准备、技术指标计算
 
-    数据源优先级: TimescaleDB → DataSource(TDX → Tushare) → AkShare → Tencent → Baostock
+    数据源优先级: TimescaleDB → DataSource(Tushare/公开源) → AkShare → Tencent → Baostock
     时效性: 日线通常 T+0~T+1；周线/月线按自然周期更新
 
     Args:
@@ -162,6 +214,7 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
     code = normalize_code(raw_code)
     fallback_reason: list[str] = []
     source_chain: list[str] = ["db.get_klines"] if period == "daily" else []
+    _db_fallback: Optional[list[dict]] = None
 
     # 0. DB 优先：查 TimescaleDB（仅日线）
     if period == "daily":
@@ -169,11 +222,13 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
             db = get_db()
             db_data = await db.get_klines(code, limit=limit)
             if db_data:
-                has_turnover = any(item.get('turnover') is not None for item in db_data)
-                if has_turnover:
-                    validated_results = [validate_kline(item).model_dump() for item in db_data]
+                validated_results = [validate_kline(item).model_dump() for item in db_data]
+                has_turnover = any(item.get('turnover') is not None for item in validated_results)
+                if has_turnover or (_is_fund_like_code(code) and _kline_rows_usable(validated_results)):
                     return _ok_kline_response(validated_results, source="timescaledb", source_chain=["db.get_klines"], started_at=started_at)
-                # DB 数据缺换手率，记录但继续向下层获取
+                if _kline_rows_usable(validated_results):
+                    _db_fallback = validated_results
+                # DB 数据缺软字段时继续向下层获取 richer source；全部失败时回退到已验证数据
                 safe_stderr_print(f"[Kline] DB data for {code} has null turnover, falling through to fetch complete data")
                 fallback_reason.append("db.get_klines missing turnover, falling through")
         except Exception as e_db:
@@ -183,13 +238,13 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
     _ds_fallback: Optional[list] = None  # 备用：DataSource有数据但无换手率时保存，Baostock失败时返回
     _append_chain_step(source_chain, "data_source.get_kline")
     try:
-        # 1. DataSource 优先：TDX → Tushare（仅当结果包含换手率时才直接返回）
+        # 1. DataSource 优先：Tushare / 公开源（仅当结果包含换手率时才直接返回）
         ds_results = data_source.get_kline(code, period, limit)
         if ds_results:
-            ds_has_turnover = any(item.get('turnover') is not None for item in ds_results)
             validated_results = [validate_kline(item).model_dump() for item in ds_results]
+            ds_has_turnover = any(item.get('turnover') is not None for item in validated_results)
             await _async_save_klines_to_db(code, validated_results)
-            if ds_has_turnover:
+            if ds_has_turnover or (_is_fund_like_code(code) and _kline_rows_usable(validated_results)):
                 return _ok_kline_response(
                     validated_results,
                     source="data_source",
@@ -198,7 +253,7 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
                     started_at=started_at,
                 )
             # DataSource 无换手率 → 先保存结果以备 Baostock 失败时回退
-            _ds_fallback = validated_results
+            _ds_fallback = validated_results if _kline_rows_usable(validated_results) else None
             safe_stderr_print(f"[Kline] DataSource for {code} has no turnover, trying Baostock")
             fallback_reason.append("data_source.get_kline missing turnover, trying richer fallback")
     except Exception as e:
@@ -247,6 +302,15 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
                     fallback_reason=fallback_reason,
                     started_at=started_at,
                 )
+            if _db_fallback:
+                reasons = list(dict.fromkeys(fallback_reason + ["using db.get_klines partial data after richer fallbacks failed"]))
+                return _ok_kline_response(
+                    _db_fallback,
+                    source="timescaledb",
+                    source_chain=list(source_chain),
+                    fallback_reason=reasons,
+                    started_at=started_at,
+                )
 
     # Baostock 跳过 + 有DataSource备用数据时直接返回
     if _ds_fallback:
@@ -255,6 +319,15 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
             source="data_source",
             source_chain=list(source_chain),
             fallback_reason=fallback_reason,
+            started_at=started_at,
+        )
+    if _db_fallback:
+        reasons = list(dict.fromkeys(fallback_reason + ["using db.get_klines partial data after richer fallbacks failed"]))
+        return _ok_kline_response(
+            _db_fallback,
+            source="timescaledb",
+            source_chain=list(source_chain),
+            fallback_reason=reasons,
             started_at=started_at,
         )
 
@@ -431,7 +504,7 @@ def _get_minute_kline_from_sina(code: str, minutes: int, limit: int) -> list[dic
 def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> dict:
     """获取分钟级K线数据（盘中实时）
 
-    数据源优先级: TDX（唯一支持分钟级的 DataSource 路径） → AkShare → Sina
+    数据源优先级: DataSource 分钟链路 → AkShare → Sina
     时效性: 仅交易时段（9:30-15:00）有效，盘后数据为当日最后快照
 
     Args:
@@ -465,23 +538,20 @@ def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> d
     fallback_reason: list[str] = []
     source_chain: list[str] = ["data_source.get_kline"]
 
-    # 1. 优先 TDX 分钟K线（TDX 是唯一支持分钟级的 DataSource 路径）
-    if data_source.is_tdx_available():
-        try:
-            ds_results = data_source.get_kline(code, period, limit)
-            if ds_results:
-                # 验证返回的确实是分钟数据（日期字段应包含时间部分）
-                sample_date = str(ds_results[0].get('date', ''))
-                if len(sample_date) > 10:  # 分钟数据日期格式: "2026-02-06 14:30:00"
-                    validated_results = [validate_kline(item).model_dump() for item in ds_results]
-                    return _ok_kline_response(validated_results, source="data_source", source_chain=list(source_chain), started_at=started_at)
-                # 如果返回的是日线数据（仅日期），跳过
-                fallback_reason.append("data_source.get_kline returned non_intraday rows")
-        except Exception as e:
-            safe_stderr_print(f"DataSource minute kline fetch failed for {code}: {e}")
-            fallback_reason.append(f"data_source.get_kline failed: {e}")
-    else:
-        fallback_reason.append("data_source.get_kline unavailable")
+    # 1. 优先 DataSource 分钟K线
+    try:
+        ds_results = data_source.get_kline(code, period, limit)
+        if ds_results:
+            # 验证返回的确实是分钟数据（日期字段应包含时间部分）
+            sample_date = str(ds_results[0].get('date', ''))
+            if len(sample_date) > 10:  # 分钟数据日期格式: "2026-02-06 14:30:00"
+                validated_results = [validate_kline(item).model_dump() for item in ds_results]
+                return _ok_kline_response(validated_results, source="data_source", source_chain=list(source_chain), started_at=started_at)
+            # 如果返回的是日线数据（仅日期），跳过
+            fallback_reason.append("data_source.get_kline returned non_intraday rows")
+    except Exception as e:
+        safe_stderr_print(f"DataSource minute kline fetch failed for {code}: {e}")
+        fallback_reason.append(f"data_source.get_kline failed: {e}")
 
     _append_chain_step(source_chain, "akshare.stock_zh_a_hist_min_em")
     results = _get_minute_kline_from_akshare(code, minutes, limit)
@@ -518,7 +588,7 @@ async def get_kline_data(
     与 get_kline 的区别: 支持 start_date/end_date 日期区间过滤和复权类型选择。
     Node 兼容映射: 已作为独立工具注册；无日期参数时内部 fallback 到 get_kline。
 
-    数据源优先级: TimescaleDB → DataSource(TDX → Tushare) → AkShare → Tencent → Baostock
+    数据源优先级: TimescaleDB → DataSource(Tushare/公开源) → AkShare → Tencent → Baostock
 
     Args:
         code (str, required): 股票/ETF 代码，6位数字，如 "600519"、"510050"
@@ -581,7 +651,7 @@ async def get_kline_data(
                 safe_stderr_print(f"TimescaleDB K-line (date range) query failed for {code_normalized}: {e_db}")
                 fallback_reason.append(f"db.get_klines failed: {e_db}")
 
-        # 1. DataSource 优先：TDX → Tushare
+        # 1. DataSource 优先：Tushare / 公开源
         _append_chain_step(source_chain, "data_source.get_kline")
         try:
             from datetime import datetime as _dt
@@ -658,17 +728,6 @@ async def get_kline_data(
 # 指数 K 线（独立于个股 K 线，避免代码混淆）
 # ============================================================
 
-# 指数代码 → TDX 代码映射（上证指数在 TDX 中为 999999.SH）
-_INDEX_TDX_MAP = {
-    "000001": "999999.SH",   # 上证指数
-    "000300": "000300.SH",   # 沪深300
-    "000016": "000016.SH",   # 上证50
-    "000905": "000905.SH",   # 中证500
-    "399001": "399001.SZ",   # 深证成指
-    "399006": "399006.SZ",   # 创业板指
-    "399005": "399005.SZ",   # 中小板指
-}
-
 # 指数代码 → AkShare symbol 映射
 _INDEX_AK_MAP = {
     "000001": "sh000001",
@@ -686,7 +745,7 @@ async def get_index_kline(index_code: str, period: str = "daily", limit: int = 6
 
     适用场景: 指数趋势分析、大盘走势回顾
 
-    数据源优先级: TDX (get_market_data) → AkShare (stock_zh_index_daily_em) → Tushare
+    数据源优先级: AkShare (stock_zh_index_daily_em) → Tushare
     时效性: 日线 T+0~T+1
 
     Args:
@@ -722,50 +781,7 @@ async def get_index_kline(index_code: str, period: str = "daily", limit: int = 6
         except Exception as e_db:
             safe_stderr_print(f"TimescaleDB index K-line query failed for {ak_symbol}: {e_db}")
 
-    # 1. TDX 优先
-    if data_source.is_tdx_available():
-        try:
-            tq = data_source.get_tdxquant()
-            if tq is not None:
-                tdx_code = _INDEX_TDX_MAP.get(code)
-                if tdx_code is None:
-                    # 通用映射：上海指数 .SH，深圳指数 .SZ
-                    if code.startswith("39"):
-                        tdx_code = f"{code}.SZ"
-                    else:
-                        tdx_code = f"{code}.SH"
-
-                period_map = {"daily": "1d", "weekly": "1w", "monthly": "1M"}
-                tdx_period = period_map.get(period, "1d")
-
-                data = tq.get_market_data(
-                    stock_list=[tdx_code],
-                    period=tdx_period,
-                    count=limit,
-                    dividend_type='none',
-                    fill_data=True,
-                )
-                if data and "Close" in data:
-                    close_df = data.get("Close")
-                    if close_df is not None and not close_df.empty:
-                        results = []
-                        for idx in close_df.index:
-                            results.append({
-                                "date": str(idx)[:10],
-                                "open": safe_float(data["Open"].loc[idx, tdx_code]) if "Open" in data else None,
-                                "close": safe_float(data["Close"].loc[idx, tdx_code]) if "Close" in data else None,
-                                "high": safe_float(data["High"].loc[idx, tdx_code]) if "High" in data else None,
-                                "low": safe_float(data["Low"].loc[idx, tdx_code]) if "Low" in data else None,
-                                "volume": safe_int(data["Volume"].loc[idx, tdx_code]) if "Volume" in data else None,
-                                "amount": safe_float(data["Amount"].loc[idx, tdx_code]) if "Amount" in data else None,
-                                "source": "tdxquant_index",
-                            })
-                        if results:
-                            return ok(results)
-        except Exception as e:
-            safe_stderr_print(f"TDX index kline failed for {code}: {e}")
-
-    # 2. AkShare 降级：使用指数专用 API
+    # 1. AkShare：使用指数专用 API
     if ak is not None:
         try:
             df = _run_with_retry(

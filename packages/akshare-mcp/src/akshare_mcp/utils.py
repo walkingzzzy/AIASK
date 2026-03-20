@@ -4,12 +4,14 @@ AKShare MCP Server Utilities
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import sys
+from contextlib import contextmanager, redirect_stdout
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -62,6 +64,18 @@ def safe_stderr_print(*args: Any, sep: str = " ", end: str = "\n") -> None:
     except Exception:
         # Never let diagnostics logging mask the original exception.
         return
+
+
+@contextmanager
+def suppress_stdout(log_prefix: str | None = None) -> Iterator[None]:
+    """Protect MCP stdio by swallowing unexpected third-party stdout."""
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        yield
+    leaked = buf.getvalue().strip()
+    if leaked and log_prefix:
+        preview = leaked if len(leaked) <= 1000 else leaked[:1000] + "...(truncated)"
+        safe_stderr_print(f"{log_prefix} suppressed stdout: {preview}")
 
 
 def safe_float(val: Any) -> Optional[float]:
@@ -126,6 +140,31 @@ def normalize_code(code: str) -> str:
     if not m:
         return s
     return m.group(1).zfill(6)
+
+
+def resolve_security_code(
+    code: Any = None,
+    *,
+    stock_code: Any = None,
+    symbol: Any = None,
+    ticker: Any = None,
+    normalize: bool = True,
+) -> str:
+    """
+    统一解析证券代码别名。
+
+    兼容 MCP / 前端常见传参:
+    - code
+    - stock_code
+    - symbol
+    - ticker
+    """
+    for candidate in (code, stock_code, symbol, ticker):
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        return normalize_code(text) if normalize else text
+    return ""
 
 
 def format_period(value: Any) -> str:

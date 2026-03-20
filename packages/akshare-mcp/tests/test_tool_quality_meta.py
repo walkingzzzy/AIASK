@@ -5,8 +5,11 @@ import pytest
 
 import akshare_mcp.storage as storage_mod
 import akshare_mcp.tools.finance as finance_mod
+import akshare_mcp.tools.fund_flow_market as fund_flow_market_mod
 import akshare_mcp.tools.market.kline as kline_mod
+import akshare_mcp.tools.market.limit_up as limit_up_mod
 import akshare_mcp.tools.market.quote as quote_mod
+import akshare_mcp.tools.valuation as valuation_mod
 
 
 class _DummyLimiter:
@@ -22,6 +25,54 @@ class _FinanceDB:
 class _KlineDB:
     async def get_klines(self, code, **kwargs):
         raise RuntimeError("db unavailable")
+
+
+class _PartialFundKlineDB:
+    async def get_klines(self, code, **kwargs):
+        return [
+            {
+                "date": date.today().isoformat(),
+                "open": 2.95,
+                "close": 3.01,
+                "high": 3.03,
+                "low": 2.94,
+                "volume": 123456,
+                "amount": 789012.0,
+                "turnover": None,
+                "change_pct": None,
+                "source": "timescaledb",
+            }
+        ]
+
+
+class _DummyMCP:
+    def tool(self):
+        def _decorator(fn):
+            setattr(self, fn.__name__, fn)
+            return fn
+        return _decorator
+
+
+class _Acquire:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        return self.conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _ValuationStockInfoDB:
+    async def get_stock_info(self, code):
+        return {
+            "code": code,
+            "name": "贵州茅台",
+            "pe_ratio": 21.8,
+            "pb_ratio": 6.4,
+            "market_cap": 1234.0,
+        }
 
 
 @pytest.mark.asyncio
@@ -70,6 +121,46 @@ async def test_get_financials_quality_meta_exposes_fallback_chain(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_financials_normalizes_aliases_and_zero_values(monkeypatch):
+    today = date.today().isoformat()
+
+    monkeypatch.setattr(finance_mod, "get_limiter", lambda *args, **kwargs: _DummyLimiter())
+    monkeypatch.setattr(finance_mod.cache, "get", lambda key, ttl_seconds: None)
+    monkeypatch.setattr(finance_mod.cache, "set", lambda key, value: None)
+    monkeypatch.setattr(storage_mod, "get_db", lambda: _FinanceDB())
+    monkeypatch.setattr(
+        finance_mod,
+        "_get_financials_tushare",
+        lambda code: {
+            "code": code,
+            "report_date": today,
+            "revenue": 0,
+            "net_profit": 0,
+            "roe": None,
+            "debt_ratio": 0,
+            "source": "tushare_pro",
+        },
+    )
+    monkeypatch.setattr(finance_mod, "_get_financials_akshare", lambda code: None)
+    monkeypatch.setattr(finance_mod, "baostock_client", None)
+
+    result = await finance_mod.get_financials.__wrapped__("600519")
+
+    assert result["success"] is True
+    assert result["data"]["reportDate"] == today
+    assert result["data"]["report_date"] == today
+    assert result["data"]["netProfit"] == 0.0
+    assert result["data"]["net_profit"] == 0.0
+    assert result["data"]["debtRatio"] == 0.0
+    assert result["data"]["debt_ratio"] == 0.0
+    assert result["data"]["data_quality"]["field_state"]["netProfit"] == "present_zero"
+    assert result["data"]["data_quality"]["field_state"]["debtRatio"] == "present_zero"
+    assert result["data"]["data_quality"]["field_state"]["roe"] == "null"
+    assert "roe" in result["missing_fields"]
+    assert "partial" in result["quality_flags"]
+
+
+@pytest.mark.asyncio
 async def test_get_kline_quality_meta_tracks_db_to_datasource_fallback(monkeypatch):
     today = date.today().isoformat()
 
@@ -112,11 +203,34 @@ async def test_get_kline_quality_meta_tracks_db_to_datasource_fallback(monkeypat
     assert result["fallback_reason"] == ["db.get_klines failed: db unavailable"]
 
 
+@pytest.mark.asyncio
+async def test_get_kline_accepts_partial_db_rows_for_fund_code(monkeypatch):
+    monkeypatch.setattr(kline_mod, "get_limiter", lambda *args, **kwargs: _DummyLimiter())
+    monkeypatch.setattr(kline_mod, "get_db", lambda: _PartialFundKlineDB())
+
+    def _should_not_run(*args, **kwargs):
+        raise AssertionError("fund-like partial DB rows should return before external fallbacks")
+
+    monkeypatch.setattr(kline_mod.data_source, "get_kline", _should_not_run)
+
+    result = await kline_mod.get_kline.__wrapped__("510050", "daily", 5)
+
+    assert result["success"] is True
+    assert result["source"] == "timescaledb"
+    assert result["backend_requested"] == "db.get_klines"
+    assert result["backend_used"] == "timescaledb"
+    assert result["source_chain"] == ["db.get_klines"]
+    assert result["fallback_used"] is False
+    assert "partial" in result["quality_flags"]
+    assert "degraded" in result["quality_flags"]
+    assert result["missing_fields"] == ["turnover", "change_pct"]
+    assert result["data"][0]["close"] == 3.01
+
+
 def test_get_minute_kline_quality_meta_marks_fallback_source_chain(monkeypatch):
     now = datetime.now().replace(microsecond=0).isoformat(sep=" ")
 
     monkeypatch.setattr(kline_mod, "get_limiter", lambda *args, **kwargs: _DummyLimiter())
-    monkeypatch.setattr(kline_mod.data_source, "is_tdx_available", lambda: False)
     monkeypatch.setattr(
         kline_mod,
         "_get_minute_kline_from_akshare",
@@ -147,7 +261,7 @@ def test_get_minute_kline_quality_meta_marks_fallback_source_chain(monkeypatch):
     assert result["fallback_used"] is True
     assert result["quality_flags"] == ["fallback"]
     assert result["missing_fields"] == []
-    assert result["fallback_reason"] == ["data_source.get_kline unavailable"]
+    assert result["fallback_reason"] == ["data_source.get_kline returned non_intraday rows"]
 
 
 @pytest.mark.asyncio
@@ -213,6 +327,129 @@ async def test_get_kline_data_quality_meta_keeps_full_attempt_chain(monkeypatch)
         "db.get_klines failed: db unavailable",
         "data_source.get_kline failed: ds unavailable",
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_valuation_metrics_filters_non_positive_db_values(monkeypatch):
+    class _ValuationConn:
+        async def fetchrow(self, query, code):
+            return {
+                "code": code,
+                "stock_name": "贵州茅台",
+                "pe_ratio": 0.0,
+                "pb_ratio": -1.0,
+                "market_cap": 1234.0,
+            }
+
+    class _ValuationDB(_ValuationStockInfoDB):
+        def acquire(self):
+            return _Acquire(_ValuationConn())
+
+    mcp = _DummyMCP()
+    valuation_mod.register(mcp)
+    monkeypatch.setattr(valuation_mod, "get_db", lambda: _ValuationDB())
+
+    result = await mcp.get_valuation_metrics("600519")
+
+    assert result["success"] is True
+    assert result["data"]["pe_ratio"] == 21.8
+    assert result["data"]["pb_ratio"] == 6.4
+    assert result["data"]["market_cap"] == 1234.0
+    assert result["data"]["data_quality"]["source_chain"] == [
+        "db.stocks",
+        "db.get_stock_info",
+    ]
+    assert result["data"]["data_quality"]["fallback_used"] is True
+    assert result["data"]["data_quality"]["invalid_metrics"]["pe_ratio"][0]["reason"] == "non_positive"
+    assert result["data"]["data_quality"]["invalid_metrics"]["pb_ratio"][0]["reason"] == "non_positive"
+
+
+def test_get_limit_up_stocks_quality_metadata_distinguishes_missing_vs_derived(monkeypatch):
+    monkeypatch.setattr(limit_up_mod, "get_limiter", lambda *args, **kwargs: _DummyLimiter())
+
+    def _fake_tushare(api_name, params=None, fields=""):
+        if api_name == "stk_limit":
+            return pd.DataFrame(
+                [
+                    {"ts_code": "000001.SZ", "trade_date": "20260318", "up_limit": 11.0},
+                ]
+            )
+        if api_name == "daily":
+            return pd.DataFrame(
+                [
+                    {"ts_code": "000001.SZ", "trade_date": "20260318", "close": 11.0, "pct_chg": 10.0, "vol": 12345},
+                ]
+            )
+        if api_name == "daily_basic":
+            return pd.DataFrame(
+                [
+                    {"ts_code": "000001.SZ", "turnover_rate": 1.8, "total_mv": 2200},
+                ]
+            )
+        if api_name == "stock_basic" and fields == "ts_code,name":
+            return pd.DataFrame([{"ts_code": "000001.SZ", "name": "平安银行"}])
+        if api_name == "stock_basic" and fields == "ts_code,industry":
+            return pd.DataFrame([{"ts_code": "000001.SZ", "industry": "银行"}])
+        return pd.DataFrame()
+
+    def _fake_fill_continuous(results, current_date):
+        for item in results:
+            limit_up_mod._mark_limit_up_field(item, "continuousDays", 2)
+
+    monkeypatch.setattr(limit_up_mod, "_tushare_http_call", _fake_tushare)
+    monkeypatch.setattr(limit_up_mod, "_fill_continuous_days", _fake_fill_continuous)
+    monkeypatch.setattr(limit_up_mod, "_get_limit_up_stocks_from_akshare", lambda date: [])
+
+    result = limit_up_mod.get_limit_up_stocks.__wrapped__("2026-03-18")
+
+    assert result["success"] is True
+    assert result["source"] == "tushare_combo"
+    assert result["data_quality"]["derived_field_counts"]["name"] == 1
+    assert result["data_quality"]["derived_field_counts"]["continuousDays"] == 1
+    assert result["data_quality"]["missing_field_counts"]["openTimes"] == 1
+    assert result["data"][0]["dataQuality"]["derived_fields"] == [
+        "continuousDays",
+        "industry",
+        "marketCap",
+        "name",
+        "turnoverRate",
+    ]
+    assert "openTimes" in result["data"][0]["dataQuality"]["missing_fields"]
+    assert result["data"][0]["openTimes"] is None
+
+
+def test_get_block_trades_backfills_name_and_marks_quality(monkeypatch):
+    monkeypatch.setattr(fund_flow_market_mod, "get_limiter", lambda *args, **kwargs: _DummyLimiter())
+    monkeypatch.setattr(
+        fund_flow_market_mod,
+        "_fetch_eastmoney_datacenter",
+        lambda params: [
+            {
+                "TRADE_DATE": "2026-03-18 00:00:00",
+                "SECURITY_CODE": "600519",
+                "SECUCODE": "600519.SH",
+                "SECURITY_NAME_ABBR": "",
+                "DEAL_PRICE": "1500.5",
+                "DEAL_VOLUME": "1000",
+                "DEAL_AMT": "1500500",
+                "PREMIUM_RATIO": "1.2",
+                "BUYER_NAME": "机构专用",
+                "SELLER_NAME": "营业部A",
+            }
+        ],
+    )
+    monkeypatch.setattr(fund_flow_market_mod, "_get_cached_name_map", lambda: {"600519": "贵州茅台"})
+    monkeypatch.setattr(fund_flow_market_mod.data_source, "get_tushare_pro", lambda: None)
+
+    result = fund_flow_market_mod.get_block_trades("2026-03-18", "600519", 10)
+
+    assert result["success"] is True
+    assert result["source"] == "eastmoney_block_trade"
+    assert result["data"][0]["name"] == "贵州茅台"
+    assert result["data"][0]["dataQuality"]["derived_fields"] == ["name"]
+    assert result["data_quality"]["name_backfilled_count"] == 1
+    assert result["data_quality"]["missing_name_count"] == 0
+    assert result["source_chain"] == ["eastmoney.block_trades"]
 
 
 def test_get_realtime_quote_quality_meta_tracks_fallback_chain(monkeypatch):

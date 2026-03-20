@@ -1,30 +1,30 @@
 """涨停板管理器"""
 
 from datetime import datetime
-import json
 import logging
-from ...utils import ok, fail
 from ...data_source import data_source
+import time
+
+from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
 
 logger = logging.getLogger(__name__)
-
-
-def _normalize_kwargs(kwargs: dict) -> dict:
-    extra = kwargs.get("kwargs")
-    if extra is not None:
-        if isinstance(extra, str):
-            try:
-                extra = json.loads(extra or "{}")
-            except Exception:
-                extra = None
-        if isinstance(extra, dict):
-            kwargs = {**kwargs, **extra}
-    return kwargs
 
 
 def _normalize_date(raw) -> str:
     """统一日期格式为 YYYYMMDD"""
     return str(raw).replace('-', '').replace('/', '').replace(' ', '')[:8]
+
+
+def _dedupe_chain(values: list[str]) -> list[str]:
+    chain = []
+    seen = set()
+    for value in values:
+        label = str(value or "").strip()
+        if not label or label in seen:
+            continue
+        chain.append(label)
+        seen.add(label)
+    return chain
 
 
 def register_limit_up_manager(mcp):
@@ -52,22 +52,44 @@ def register_limit_up_manager(mcp):
             # 获取指定日期涨停统计
             limit_up_manager(action="statistics", kwargs='{"date":"2025-01-15"}')
         """
+        start_time = time.perf_counter()
         try:
-            kwargs = _normalize_kwargs(kwargs)
+            kwargs = normalize_manager_kwargs(kwargs)
+
+            def _ok(data: dict, source_chain=None, data_timestamp: str | None = None):
+                return ok_with_meta(
+                    data,
+                    tool_name="limit_up_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                    data_timestamp=data_timestamp,
+                )
+
+            def _fail(message: str, source_chain=None, data_timestamp: str | None = None):
+                return fail_with_meta(
+                    message,
+                    tool_name="limit_up_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                    data_timestamp=data_timestamp,
+                )
             
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'list': '涨停板列表（可选 date，格式 YYYYMMDD 或 YYYY-MM-DD）',
                         'statistics': '涨停统计（可选 date）',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['limit_up_manager'])
             
             elif action == 'list':
                 raw_date = kwargs.get('date') or kwargs.get('trade_date') or kwargs.get('Date') or ''
                 date = _normalize_date(raw_date) if raw_date else datetime.now().strftime('%Y%m%d')
                 request_date = date
+                source_chain = ['limit_up_manager']
 
                 # 委托给 get_limit_up_stocks 工具（内部走 Tushare stk_limit）
                 limit_up_stocks = []
@@ -75,6 +97,7 @@ def register_limit_up_manager(mcp):
                     from ..market.limit_up import get_limit_up_stocks as _get_zt
                     zt_res = _get_zt(date=date)
                     if zt_res.get('success') and zt_res.get('data'):
+                        source_chain.extend(zt_res.get('source_chain') or ['market.limit_up.get_limit_up_stocks'])
                         zt_data = zt_res['data']
                         if isinstance(zt_data, list):
                             for item in zt_data:
@@ -126,6 +149,7 @@ def register_limit_up_manager(mcp):
                                                 'limit_up_count': 0,
                                             })
                                         if limit_up_stocks:
+                                            source_chain.append('tushare.stk_limit')
                                             date = check_date  # 更新为实际有数据的日期
                                             break
                                 except Exception:
@@ -134,54 +158,88 @@ def register_limit_up_manager(mcp):
                         logger.warning(f"[LimitUp] Tushare stk_limit 失败: {e}")
 
                 if limit_up_stocks:
-                    return ok({
+                    payload = {
                         'request_date': request_date,
                         'date': date,
                         'limit_up_stocks': limit_up_stocks,
-                        'count': len(limit_up_stocks)
-                    })
+                        'count': len(limit_up_stocks),
+                        'data_quality': zt_res.get('data_quality') if 'zt_res' in locals() else None,
+                        'source_chain': zt_res.get('source_chain') if 'zt_res' in locals() else None,
+                        'fallback_reason': zt_res.get('fallback_reason') if 'zt_res' in locals() else None,
+                        'degraded': bool(zt_res.get('degraded')) if 'zt_res' in locals() else False,
+                    }
+                    return _ok(payload, source_chain=_dedupe_chain(source_chain), data_timestamp=date)
 
-                return ok({
+                return _ok({
                     'request_date': request_date,
                     'date': date,
                     'limit_up_stocks': [],
                     'count': 0,
                     'message': f'{date} 暂无涨停板数据（可能为非交易日）'
-                })
+                }, source_chain=_dedupe_chain(source_chain), data_timestamp=date)
             
             elif action == 'statistics':
                 raw_date = kwargs.get('date') or kwargs.get('trade_date') or kwargs.get('Date') or ''
                 date = _normalize_date(raw_date) if raw_date else datetime.now().strftime('%Y%m%d')
                 request_date = date
+                source_chain = ['limit_up_manager']
 
                 # 委托给 get_limit_up_statistics 工具
                 try:
                     from ..market.limit_up import get_limit_up_statistics as _get_stat
                     stat_res = _get_stat(date=date)
-                    if stat_res.get('success') and stat_res.get('data'):
-                        stat_data = stat_res['data']
-                        return ok({
-                            'request_date': request_date,
-                            'date': date,
-                            'total_limit_up': stat_data.get('totalLimitUp', 0),
-                            'sealed_limit_up': stat_data.get('totalLimitUp', 0) - stat_data.get('failedBoard', 0),
-                            'broken_limit_up': stat_data.get('failedBoard', 0),
-                            'seal_rate': f"{stat_data.get('successRate', 0):.2f}%",
-                        })
                 except Exception as e:
                     logger.warning(f"[LimitUp] get_limit_up_statistics 失败: {e}")
+                    return _fail(
+                        f'涨停统计查询失败: {e}',
+                        source_chain=_dedupe_chain(source_chain + ['market.limit_up.get_limit_up_statistics']),
+                        data_timestamp=date,
+                    )
 
-                return ok({
+                if not stat_res.get('success'):
+                    message = stat_res.get('error') or stat_res.get('message') or '涨停统计查询失败'
+                    return _fail(
+                        message,
+                        source_chain=_dedupe_chain(source_chain + (stat_res.get('source_chain') or ['market.limit_up.get_limit_up_statistics'])),
+                        data_timestamp=date,
+                    )
+
+                if stat_res.get('data'):
+                    source_chain.extend(stat_res.get('source_chain') or ['market.limit_up.get_limit_up_statistics'])
+                    stat_data = stat_res['data']
+                    return _ok({
+                        'request_date': request_date,
+                        'date': date,
+                        'total_limit_up': stat_data.get('totalLimitUp', 0),
+                        'sealed_limit_up': stat_data.get('totalLimitUp', 0) - (stat_data.get('failedBoard') or 0),
+                        'broken_limit_up': stat_data.get('failedBoard') or 0,
+                        'seal_rate': f"{stat_data.get('successRate', 0):.2f}%",
+                        'data_quality': stat_res.get('data_quality'),
+                        'source_chain': stat_res.get('source_chain'),
+                        'fallback_reason': stat_res.get('fallback_reason'),
+                        'degraded': bool(stat_res.get('degraded')),
+                    }, source_chain=_dedupe_chain(source_chain), data_timestamp=date)
+
+                return _ok({
                     'request_date': request_date,
                     'date': date,
                     'total_limit_up': 0,
                     'sealed_limit_up': 0,
                     'broken_limit_up': 0,
                     'message': f'{date} 暂无涨停统计数据（可能为非交易日）'
-                })
+                }, source_chain=_dedupe_chain(source_chain), data_timestamp=date)
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, list, statistics')
+                return _fail(
+                    f'Unknown action: {action}. Supported: help, list, statistics',
+                    source_chain=['limit_up_manager'],
+                )
         except Exception as e:
             logger.error(f"[LimitUp] Error: {e}")
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='limit_up_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['limit_up_manager'],
+            )

@@ -178,6 +178,86 @@ const portfolioRiskSchema = envelope({
   required: ['riskMetrics'],
 });
 
+const unifiedGateFlagSchema = {
+  type: 'object',
+  properties: {
+    name: { type: 'string' },
+    status: { type: 'string' },
+    severity: { type: 'string' },
+    blocking: { type: 'boolean' },
+    message: { type: 'string' },
+    source: { type: 'string' },
+  },
+  required: ['name', 'status', 'severity', 'blocking', 'message'],
+};
+
+const unifiedPositionSignalSchema = {
+  type: 'object',
+  properties: {
+    label: { type: 'string' },
+    suggestedPositionPct: nullableNumber,
+    positionCapPct: nullableNumber,
+    requestedStyle: { type: 'string' },
+    userRiskLevel: { type: ['string', 'null'] },
+  },
+  required: ['label'],
+};
+
+const unifiedDecisionCardSchema = {
+  type: 'object',
+  properties: {
+    action: { type: 'string' },
+    confidence: nullableNumber,
+    finalScore: nullableNumber,
+    summary: { type: 'string' },
+    reasons: { type: 'array', items: { type: 'string' } },
+    executionPlan: { type: 'array', items: { type: 'string' } },
+    risks: { type: 'array', items: { type: 'string' } },
+    gateFlags: { type: 'array', items: unifiedGateFlagSchema },
+    vetoReason: { type: ['string', 'null'] },
+    positionSignal: { anyOf: [unifiedPositionSignalSchema, { type: 'null' }] },
+    dataProvenance: { type: 'array' },
+    complianceNotice: { type: 'string' },
+  },
+  required: ['action', 'summary', 'reasons', 'risks', 'gateFlags', 'complianceNotice'],
+};
+
+const unifiedDecisionSummarySchema = envelope({
+  type: 'object',
+  properties: {
+    card: unifiedDecisionCardSchema,
+    raw: { type: 'object' },
+    detailsAvailable: { type: 'boolean' },
+    request: {
+      type: 'object',
+      properties: {
+        code: { type: 'string' },
+        investmentStyle: { type: 'string' },
+      },
+      required: ['code', 'investmentStyle'],
+    },
+  },
+  required: ['card', 'raw', 'detailsAvailable', 'request'],
+});
+
+const unifiedDecisionDetailsSchema = envelope({
+  type: 'object',
+  properties: {
+    card: unifiedDecisionCardSchema,
+    details: { type: 'object' },
+    raw: { type: 'object' },
+    request: {
+      type: 'object',
+      properties: {
+        code: { type: 'string' },
+        investmentStyle: { type: 'string' },
+      },
+      required: ['code', 'investmentStyle'],
+    },
+  },
+  required: ['card', 'details', 'raw', 'request'],
+});
+
 export const CONTRACTS = {
   'GET /market/quote': {
     name: 'Quote Envelope',
@@ -202,6 +282,14 @@ export const CONTRACTS = {
   'POST /portfolio/risk-analysis': {
     name: 'Portfolio Risk Envelope',
     responseSchema: portfolioRiskSchema,
+  },
+  'POST /assistant/unified-decision': {
+    name: 'Unified Decision Summary Envelope',
+    responseSchema: unifiedDecisionSummarySchema,
+  },
+  'POST /assistant/unified-decision/details': {
+    name: 'Unified Decision Details Envelope',
+    responseSchema: unifiedDecisionDetailsSchema,
   },
 } as const;
 

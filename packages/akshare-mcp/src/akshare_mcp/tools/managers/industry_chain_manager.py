@@ -1,9 +1,10 @@
 """产业链管理器 - 产业链分析和关联股票"""
 
-import json
 import logging
-from ...utils import ok, fail
+import time
+from ...utils import fail, normalize_code
 from ...storage import get_db
+from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
 
 logger = logging.getLogger(__name__)
 
@@ -60,19 +61,39 @@ INDUSTRY_CHAINS = {
         }
     }
 }
+def _resolve_chain_name(keyword: str | None = None, chain_id: str | None = None) -> str | None:
+    raw_terms = [chain_id, keyword]
+    for term in raw_terms:
+        query = str(term or "").strip()
+        if not query:
+            continue
+        for chain_name in INDUSTRY_CHAINS:
+            if query == chain_name or query in chain_name or chain_name in query:
+                return chain_name
+    return None
 
 
-def _normalize_kwargs(kwargs: dict) -> dict:
-    extra = kwargs.get("kwargs")
-    if extra is not None:
-        if isinstance(extra, str):
-            try:
-                extra = json.loads(extra or "{}")
-            except Exception:
-                extra = None
-        if isinstance(extra, dict):
-            kwargs = {**kwargs, **extra}
-    return kwargs
+def _flatten_key_stocks(chain_name: str) -> list[dict]:
+    chain = INDUSTRY_CHAINS.get(chain_name) or {}
+    key_stocks = chain.get("key_stocks") or {}
+    items = []
+    for stage in ("upstream", "midstream", "downstream"):
+        for code in key_stocks.get(stage, []):
+            items.append(
+                {
+                    "code": normalize_code(code),
+                    "stage": stage,
+                }
+            )
+    deduped = []
+    seen = set()
+    for item in items:
+        key = (item["code"], item["stage"])
+        if key in seen:
+            continue
+        deduped.append(item)
+        seen.add(key)
+    return deduped
 
 
 def register_industry_chain_manager(mcp):
@@ -100,21 +121,40 @@ def register_industry_chain_manager(mcp):
             # 获取产业链关联股票
             industry_chain_manager(action="related_stocks", kwargs='{"keyword":"半导体"}')
         """
+        start_time = time.perf_counter()
         try:
-            kwargs = _normalize_kwargs(kwargs)
+            kwargs = normalize_manager_kwargs(kwargs)
             db = get_db()
+
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="industry_chain_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="industry_chain_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
             
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'get_chain': '获取产业链信息（需要 keyword/industry）',
-                        'related_stocks': '获取产业链关联股票（需要 code）',
+                        'related_stocks': '获取产业链关联股票（支持 code / keyword / chain_id）',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['industry_chain_manager'])
             
             elif action == 'get_chain':
-                industry = (
+                keyword = (
                     kwargs.get('industry')
                     or kwargs.get('industry_name')
                     or kwargs.get('keyword')
@@ -122,53 +162,75 @@ def register_industry_chain_manager(mcp):
                     or kwargs.get('query')
                     or kwargs.get('sector')
                 )
-                if not industry or (isinstance(industry, str) and not industry.strip()):
-                    return fail('需要提供行业名称（可传 industry / keyword / query / sector 等）')
-                industry = industry.strip() if isinstance(industry, str) else str(industry)
-                
-                # 查找匹配的产业链
-                matched_chain = None
-                for chain_name, chain_data in INDUSTRY_CHAINS.items():
-                    if industry in chain_name or chain_name in industry:
-                        matched_chain = chain_name
-                        break
+                chain_id = kwargs.get('chain_id')
+                if not keyword and not chain_id:
+                    return _fail(
+                        '需要提供行业名称（可传 industry / keyword / query / sector / chain_id 等）',
+                        source_chain=['industry_chain_manager'],
+                    )
+                keyword = keyword.strip() if isinstance(keyword, str) else str(keyword or '').strip()
+                chain_id = str(chain_id or '').strip()
+
+                matched_chain = _resolve_chain_name(keyword=keyword, chain_id=chain_id)
                 
                 if matched_chain:
                     chain_data = INDUSTRY_CHAINS[matched_chain]
-                    return ok({
+                    return _ok({
                         'industry': matched_chain,
                         'upstream': chain_data['upstream'],
                         'midstream': chain_data['midstream'],
                         'downstream': chain_data['downstream'],
                         'key_stocks': chain_data['key_stocks'],
                         'source': 'preset'
-                    })
+                    }, source_chain=['industry_chain_manager', 'preset.industry_chains'])
                 else:
                     # 尝试从数据库查找同行业股票
                     async with db.acquire() as conn:
                         rows = await conn.fetch(
                             "SELECT code, stock_name FROM stocks WHERE industry LIKE $1 LIMIT 10",
-                            f'%{industry}%'
+                            f'%{keyword or chain_id}%'
                         )
                         related_stocks = [{'code': row['code'], 'name': row['stock_name']} for row in rows]
                     
-                    return ok({
-                        'industry': industry,
+                    return _ok({
+                        'industry': keyword or chain_id,
                         'upstream': [],
                         'midstream': [],
                         'downstream': [],
                         'related_stocks': related_stocks,
-                        'message': f'未找到 {industry} 的预置产业链数据，返回同行业股票',
+                        'message': f'未找到 {keyword or chain_id} 的预置产业链数据，返回同行业股票',
                         'available_chains': list(INDUSTRY_CHAINS.keys())
-                    })
+                    }, source_chain=['industry_chain_manager', 'db.stocks'])
             
             elif action == 'related_stocks':
-                code = kwargs.get('code') or kwargs.get('Code') or kwargs.get('stock_code')
+                code = kwargs.get('code') or kwargs.get('Code') or kwargs.get('stock_code') or kwargs.get('symbol')
+                keyword = (
+                    kwargs.get('keyword')
+                    or kwargs.get('industry')
+                    or kwargs.get('industry_name')
+                    or kwargs.get('query')
+                    or kwargs.get('sector')
+                )
+                chain_id = kwargs.get('chain_id')
+
+                matched_chain = _resolve_chain_name(keyword=keyword, chain_id=chain_id)
+                if matched_chain:
+                    related_stocks = _flatten_key_stocks(matched_chain)
+                    return _ok(
+                        {
+                            'industry': matched_chain,
+                            'related_stocks': related_stocks,
+                            'count': len(related_stocks),
+                            'source': 'preset',
+                        },
+                        source_chain=['industry_chain_manager', 'preset.industry_chains'],
+                    )
+
                 if not code:
-                    code = kwargs.get('chain_id')
-                if not code:
-                    return fail('需要提供股票代码')
-                
+                    return _fail('需要提供股票代码或产业链关键词', source_chain=['industry_chain_manager'])
+
+                code = normalize_code(code)
+
                 # 获取股票所属行业
                 async with db.acquire() as conn:
                     stock_info = await conn.fetchrow(
@@ -177,11 +239,11 @@ def register_industry_chain_manager(mcp):
                     )
                 
                 if not stock_info:
-                    return ok({
+                    return _ok({
                         'code': code,
                         'related_stocks': [],
                         'message': '未找到该股票信息'
-                    })
+                    }, source_chain=['industry_chain_manager', 'db.stocks'])
                 
                 industry = stock_info['industry']
                 
@@ -193,16 +255,25 @@ def register_industry_chain_manager(mcp):
                     )
                     related_stocks = [{'code': row['code'], 'name': row['stock_name']} for row in rows]
                 
-                return ok({
+                return _ok({
                     'code': code,
                     'name': stock_info['stock_name'],
                     'industry': industry,
                     'related_stocks': related_stocks,
                     'count': len(related_stocks)
-                })
+                }, source_chain=['industry_chain_manager', 'db.stocks'])
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, get_chain, related_stocks')
+                return _fail(
+                    f'Unknown action: {action}. Supported: help, get_chain, related_stocks',
+                    source_chain=['industry_chain_manager'],
+                )
         except Exception as e:
             logger.error(f"[IndustryChain] Error: {e}")
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='industry_chain_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['industry_chain_manager'],
+            )

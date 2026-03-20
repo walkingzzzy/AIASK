@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import numpy as np
+import time
+from typing import Any
 
 from ...storage import get_db
-from ...utils import fail, normalize_code, ok
+from ...utils import normalize_code
+from ..manager_protocol import fail_with_meta, ok_with_meta
 
 from .risk_mgr_helpers import (
     _classify_size_bucket,
@@ -23,6 +26,90 @@ from .risk_mgr_helpers import (
 )
 
 
+def _extract_holding_code(holding: dict) -> str:
+    return normalize_code(
+        str(
+            holding.get("code")
+            or holding.get("stock_code")
+            or holding.get("symbol")
+            or ""
+        )
+    )
+
+
+def _extract_holding_shares(holding: dict) -> float:
+    raw = holding.get("shares")
+    if raw is None:
+        raw = holding.get("quantity")
+    if raw is None:
+        raw = holding.get("qty")
+    return float(raw or 0)
+
+
+async def _load_portfolio_holdings(conn, portfolio_id: Any) -> list[dict]:
+    rows = await conn.fetch("SELECT * FROM holdings WHERE portfolio_id = $1", portfolio_id)
+    holdings = []
+    for row in rows:
+        item = dict(row)
+        code = _extract_holding_code(item)
+        shares = _extract_holding_shares(item)
+        if not code or shares <= 0:
+            continue
+        holdings.append({**item, "code": code, "shares": shares})
+    return holdings
+
+
+async def _get_klines_with_fallback(db, code: str, limit: int) -> list[dict]:
+    try:
+        klines = await db.get_klines(code, limit=limit)
+        if klines:
+            return klines, ["db.get_klines"]
+    except Exception:
+        pass
+
+    try:
+        from ..market import get_kline
+
+        res = await get_kline(code, "daily", limit)
+        if res.get("success") and isinstance(res.get("data"), list):
+            return res["data"], ["tools.market.get_kline"]
+    except Exception:
+        pass
+    return [], []
+
+
+async def _get_stock_info_with_fallback(db, code: str) -> dict:
+    try:
+        payload = await db.get_stock_info(code)
+        if isinstance(payload, dict):
+            return payload, ["db.get_stock_info"]
+    except Exception:
+        pass
+    return {}, []
+
+
+async def _get_financials_with_fallback(db, code: str):
+    try:
+        payload = await db.get_financials(code, limit=1)
+        if isinstance(payload, (list, dict)):
+            return payload, ["db.get_financials"]
+    except Exception:
+        pass
+    return [], []
+
+
+def _dedupe_chain(values: list[str]) -> list[str]:
+    chain = []
+    seen = set()
+    for value in values:
+        label = str(value or "").strip()
+        if not label or label in seen:
+            continue
+        chain.append(label)
+        seen.add(label)
+    return chain
+
+
 def register_risk_manager(mcp):
     """Register risk manager tool."""
 
@@ -38,12 +125,31 @@ def register_risk_manager(mcp):
         - stress_test
         - risk_exposure
         """
+        start_time = time.perf_counter()
         try:
             db = get_db()
             kwargs = _normalize_kwargs(dict(kwargs))
 
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="risk_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="risk_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
             if action == "help":
-                return ok(
+                return _ok(
                     {
                         "supported_actions": {
                             "list": "list available actions and parameter hints",
@@ -52,11 +158,12 @@ def register_risk_manager(mcp):
                             "risk_exposure": "exposure and concentration analysis using portfolio_id or codes+weights",
                             "help": "show help information",
                         }
-                    }
+                    },
+                    source_chain=["risk_manager"],
                 )
 
             if action == "list":
-                return ok(
+                return _ok(
                     {
                         "actions": [
                             {
@@ -76,10 +183,12 @@ def register_risk_manager(mcp):
                             },
                         ],
                         "count": 3,
-                    }
+                    },
+                    source_chain=["risk_manager"],
                 )
 
             if action == "calculate_var":
+                source_chain = ["risk_manager"]
                 portfolio_id = _safe_portfolio_id(kwargs.get("portfolio_id"))
                 confidence = float(kwargs.get("confidence", 0.95) or 0.95)
                 confidence = max(0.5, min(0.999, confidence))
@@ -94,15 +203,20 @@ def register_risk_manager(mcp):
 
                 if portfolio_id is not None:
                     async with db.acquire() as conn:
-                        holdings = await conn.fetch("SELECT * FROM holdings WHERE portfolio_id = $1", portfolio_id)
+                        holdings = await _load_portfolio_holdings(conn, portfolio_id)
+                    source_chain.append("db.holdings")
 
                     if not holdings:
-                        return ok(_empty_var_payload(portfolio_id, input_mode, confidence, method))
+                        return _ok(
+                            _empty_var_payload(portfolio_id, input_mode, confidence, method),
+                            source_chain=_dedupe_chain(source_chain),
+                        )
 
                     for holding in holdings:
-                        code = normalize_code(str(holding["code"]))
-                        shares = float(holding["shares"])
-                        klines = await db.get_klines(code, limit=lookback_days)
+                        code = _extract_holding_code(holding)
+                        shares = _extract_holding_shares(holding)
+                        klines, one_chain = await _get_klines_with_fallback(db, code, lookback_days)
+                        source_chain.extend(one_chain)
                         if len(klines) < 2:
                             continue
 
@@ -131,15 +245,17 @@ def register_risk_manager(mcp):
                 else:
                     codes, weights, parse_error = _parse_codes_weights(kwargs)
                     if parse_error:
-                        return fail(parse_error)
+                        return _fail(parse_error, source_chain=source_chain)
                     if not codes:
-                        return fail("portfolio_id or codes+weights required")
+                        return _fail("portfolio_id or codes+weights required", source_chain=source_chain)
 
                     input_mode = "codes_weights"
+                    source_chain.append("input.codes_weights")
                     total_value = portfolio_value_input
 
                     for code, weight in zip(codes, weights):
-                        klines = await db.get_klines(code, limit=lookback_days)
+                        klines, one_chain = await _get_klines_with_fallback(db, code, lookback_days)
+                        source_chain.extend(one_chain)
                         if len(klines) < 2:
                             continue
 
@@ -165,7 +281,7 @@ def register_risk_manager(mcp):
                                 item["current_value"] = item["weight"] * total_value
 
                 if not returns_data:
-                    return fail("no available kline data for VaR calculation")
+                    return _fail("no available kline data for VaR calculation", source_chain=_dedupe_chain(source_chain))
 
                 min_length = min(len(item["returns"]) for item in returns_data)
                 portfolio_returns = np.array(
@@ -195,7 +311,7 @@ def register_risk_manager(mcp):
                 cvar = float(np.mean(cvar_returns)) if len(cvar_returns) > 0 else var
                 cvar_amount = abs(cvar * total_value)
 
-                return ok(
+                return _ok(
                     {
                         "portfolio_id": portfolio_id,
                         "input_mode": input_mode,
@@ -215,10 +331,12 @@ def register_risk_manager(mcp):
                         },
                         "volatility": float(np.std(portfolio_returns)),
                         "max_drawdown": float(np.min(portfolio_returns)),
-                    }
+                    },
+                    source_chain=_dedupe_chain(source_chain),
                 )
 
             if action == "stress_test":
+                source_chain = ["risk_manager"]
                 portfolio_id = _safe_portfolio_id(kwargs.get("portfolio_id"))
                 scenario = kwargs.get("scenario")
                 scenarios_input = _parse_list_param(kwargs.get("scenarios")) or [scenario or "market_crash"]
@@ -284,40 +402,48 @@ def register_risk_manager(mcp):
 
                 if portfolio_id is not None:
                     async with db.acquire() as conn:
-                        holdings = await conn.fetch("SELECT * FROM holdings WHERE portfolio_id = $1", portfolio_id)
+                        holdings = await _load_portfolio_holdings(conn, portfolio_id)
+                    source_chain.append("db.holdings")
 
                     if not holdings:
                         first_name = str(scenarios_input[0]) if scenarios_input else "market_crash"
                         if first_name not in scenario_defs:
                             first_name = "market_crash"
-                        return ok(_empty_stress_payload(portfolio_id, input_mode, first_name, scenario_defs[first_name]["description"]))
+                        return _ok(
+                            _empty_stress_payload(portfolio_id, input_mode, first_name, scenario_defs[first_name]["description"]),
+                            source_chain=_dedupe_chain(source_chain),
+                        )
 
                     for holding in holdings:
-                        code = normalize_code(str(holding["code"]))
-                        shares = float(holding["shares"])
-                        klines = await db.get_klines(code, limit=1)
+                        code = _extract_holding_code(holding)
+                        shares = _extract_holding_shares(holding)
+                        klines, one_kline_chain = await _get_klines_with_fallback(db, code, 1)
+                        source_chain.extend(one_kline_chain)
                         if not klines:
                             continue
-                        stock_info = await db.get_stock_info(code)
+                        stock_info, one_info_chain = await _get_stock_info_with_fallback(db, code)
+                        source_chain.extend(one_info_chain)
                         sector = stock_info.get("industry", "unknown") if stock_info else "unknown"
                         current_price = float(klines[0]["close"])
                         holdings_values.append({"code": code, "value": float(shares * current_price), "sector": sector})
                 else:
                     codes, weights, parse_error = _parse_codes_weights(kwargs)
                     if parse_error:
-                        return fail(parse_error)
+                        return _fail(parse_error, source_chain=source_chain)
                     if not codes:
-                        return fail("portfolio_id or codes+weights required")
+                        return _fail("portfolio_id or codes+weights required", source_chain=source_chain)
 
                     input_mode = "codes_weights"
+                    source_chain.append("input.codes_weights")
                     portfolio_value = float(kwargs.get("portfolio_value", 1_000_000) or 1_000_000)
                     for code, weight in zip(codes, weights):
-                        stock_info = await db.get_stock_info(code)
+                        stock_info, one_info_chain = await _get_stock_info_with_fallback(db, code)
+                        source_chain.extend(one_info_chain)
                         sector = stock_info.get("industry", "unknown") if stock_info else "unknown"
                         holdings_values.append({"code": code, "value": float(weight * portfolio_value), "sector": sector})
 
                 if not holdings_values:
-                    return fail("no positions or quotes available for stress test")
+                    return _fail("no positions or quotes available for stress test", source_chain=_dedupe_chain(source_chain))
 
                 total_value = float(sum(item["value"] for item in holdings_values))
 
@@ -425,13 +551,13 @@ def register_risk_manager(mcp):
                     result["input_mode"] = input_mode
                     result["scenario_results"] = scenario_results
                     result["summary"] = summary
-                    return ok(result)
+                    return _ok(result, source_chain=_dedupe_chain(source_chain))
 
                 batch = {}
                 for one in scenario_results:
                     batch[one["scenario"]] = one
 
-                return ok(
+                return _ok(
                     {
                         "portfolio_id": portfolio_id,
                         "input_mode": input_mode,
@@ -440,10 +566,12 @@ def register_risk_manager(mcp):
                         "summary": summary,
                         "current_value": total_value,
                         "count": len(scenario_results),
-                    }
+                    },
+                    source_chain=_dedupe_chain(source_chain),
                 )
 
             if action == "risk_exposure":
+                source_chain = ["risk_manager"]
                 portfolio_id = _safe_portfolio_id(kwargs.get("portfolio_id"))
                 input_mode = "portfolio_id"
                 position_rows = []
@@ -456,29 +584,34 @@ def register_risk_manager(mcp):
 
                 if portfolio_id is not None:
                     async with db.acquire() as conn:
-                        holdings = await conn.fetch("SELECT * FROM holdings WHERE portfolio_id = $1", portfolio_id)
+                        holdings = await _load_portfolio_holdings(conn, portfolio_id)
+                    source_chain.append("db.holdings")
 
                     if not holdings:
-                        return ok(
+                        return _ok(
                             {
                                 "message": "empty portfolio, add holdings first",
                                 "quick_start": {
                                     "step1": 'portfolio_manager(action="add_holding", portfolio_id="xxx", code="600519", shares=100)',
                                     "step2": 'risk_manager(action="risk_exposure", portfolio_id="xxx")',
                                 },
-                            }
+                            },
+                            source_chain=_dedupe_chain(source_chain),
                         )
 
                     for holding in holdings:
-                        code = normalize_code(str(holding["code"]))
-                        shares = float(holding["shares"])
-                        stock_info = await db.get_stock_info(code)
-                        klines = await db.get_klines(code, limit=max(lookback_days, monitor_points, 2))
+                        code = _extract_holding_code(holding)
+                        shares = _extract_holding_shares(holding)
+                        stock_info, one_info_chain = await _get_stock_info_with_fallback(db, code)
+                        source_chain.extend(one_info_chain)
+                        klines, one_kline_chain = await _get_klines_with_fallback(db, code, max(lookback_days, monitor_points, 2))
+                        source_chain.extend(one_kline_chain)
                         if not klines:
                             continue
                         financial_row = None
                         try:
-                            financials = await db.get_financials(code, limit=1)
+                            financials, one_fin_chain = await _get_financials_with_fallback(db, code)
+                            source_chain.extend(one_fin_chain)
                             if isinstance(financials, list) and financials:
                                 financial_row = financials[0]
                             elif isinstance(financials, dict):
@@ -537,20 +670,24 @@ def register_risk_manager(mcp):
                 else:
                     codes, weights, parse_error = _parse_codes_weights(kwargs)
                     if parse_error:
-                        return fail(parse_error)
+                        return _fail(parse_error, source_chain=source_chain)
                     if not codes:
-                        return fail("portfolio_id or codes+weights required")
+                        return _fail("portfolio_id or codes+weights required", source_chain=source_chain)
 
                     input_mode = "codes_weights"
+                    source_chain.append("input.codes_weights")
                     portfolio_value = float(kwargs.get("portfolio_value", 1_000_000) or 1_000_000)
                     for code, weight in zip(codes, weights):
-                        stock_info = await db.get_stock_info(code)
-                        klines = await db.get_klines(code, limit=max(lookback_days, monitor_points, 2))
+                        stock_info, one_info_chain = await _get_stock_info_with_fallback(db, code)
+                        source_chain.extend(one_info_chain)
+                        klines, one_kline_chain = await _get_klines_with_fallback(db, code, max(lookback_days, monitor_points, 2))
+                        source_chain.extend(one_kline_chain)
                         if not klines:
                             continue
                         financial_row = None
                         try:
-                            financials = await db.get_financials(code, limit=1)
+                            financials, one_fin_chain = await _get_financials_with_fallback(db, code)
+                            source_chain.extend(one_fin_chain)
                             if isinstance(financials, list) and financials:
                                 financial_row = financials[0]
                             elif isinstance(financials, dict):
@@ -609,7 +746,7 @@ def register_risk_manager(mcp):
                         )
 
                 if not position_rows:
-                    return fail("no positions or quotes available for exposure analysis")
+                    return _fail("no positions or quotes available for exposure analysis", source_chain=_dedupe_chain(source_chain))
 
                 total_value = float(sum(item["value"] for item in position_rows))
                 sector_totals: dict[str, float] = {}
@@ -812,7 +949,7 @@ def register_risk_manager(mcp):
                     key=lambda x: (x["days_to_exit"] is None, -(x["days_to_exit"] or 0.0)),
                 )
 
-                return ok(
+                return _ok(
                     {
                         "portfolio_id": portfolio_id,
                         "input_mode": input_mode,
@@ -876,11 +1013,20 @@ def register_risk_manager(mcp):
                                 "series": daily_monitor,
                             },
                         },
-                    }
+                    },
+                    source_chain=_dedupe_chain(source_chain),
                 )
 
-            return fail(
-                f"Unknown action: {action}. Supported: help, list, calculate_var, stress_test, risk_exposure"
+            return _fail(
+                f"Unknown action: {action}. Supported: help, list, calculate_var, stress_test, risk_exposure",
+                source_chain=["risk_manager"],
             )
         except Exception as exc:
-            return fail(str(exc))
+            message = str(exc).strip() or f"{action} 执行失败"
+            return fail_with_meta(
+                message,
+                tool_name="risk_manager",
+                action=action,
+                started_at=start_time,
+                source_chain=["risk_manager"],
+            )

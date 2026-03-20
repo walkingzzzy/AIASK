@@ -32,21 +32,27 @@ export type WsConnectionStatus = 'connected' | 'connecting' | 'disconnected';
 
 let _socket: Socket | null = null;
 let _refCount = 0;
+let _status: WsConnectionStatus = 'connecting';
 let _statusListeners = new Set<(s: WsConnectionStatus) => void>();
+let _releaseTimer: ReturnType<typeof setTimeout> | null = null;
+
+const SOCKET_RELEASE_GRACE_MS = 1500;
 
 function notifyStatus(status: WsConnectionStatus) {
+  _status = status;
   _statusListeners.forEach((fn) => fn(status));
 }
 
 function getSocket(): Socket {
   if (!_socket) {
+    const transports = process.env.NODE_ENV === 'production' ? ['websocket', 'polling'] : ['polling'];
     _socket = io(`${WS_URL}/ws`, {
-      transports: ['websocket', 'polling'],
+      transports,
       withCredentials: true,
       reconnection: true,
-      reconnectionAttempts: Infinity,
+      reconnectionAttempts: process.env.NODE_ENV === 'production' ? Infinity : 2,
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 10000,
+      reconnectionDelayMax: process.env.NODE_ENV === 'production' ? 10000 : 3000,
       autoConnect: false,
     });
     _socket.on('connect', () => notifyStatus('connected'));
@@ -57,6 +63,11 @@ function getSocket(): Socket {
 }
 
 function acquireSocket(): Socket {
+  if (_releaseTimer) {
+    clearTimeout(_releaseTimer);
+    _releaseTimer = null;
+  }
+
   const s = getSocket();
   _refCount++;
   if (!s.connected && !s.active) {
@@ -68,11 +79,16 @@ function acquireSocket(): Socket {
 
 function releaseSocket() {
   _refCount = Math.max(0, _refCount - 1);
-  if (_refCount === 0 && _socket) {
+  if (_refCount > 0 || !_socket || _releaseTimer) return;
+
+  _releaseTimer = setTimeout(() => {
+    _releaseTimer = null;
+    if (_refCount !== 0 || !_socket) return;
+
     _socket.disconnect();
     _socket = null;
     notifyStatus('disconnected');
-  }
+  }, SOCKET_RELEASE_GRACE_MS);
 }
 
 // ── 基础 Hook ────────────────────────────────────────────────
@@ -85,6 +101,8 @@ interface UseWebSocketOptions {
   subscribe?: { event: string; payload: Record<string, unknown> };
   /** 监听的事件列表 */
   events?: Record<WsEvent, WsHandler>;
+  /** 是否启用连接，默认 true */
+  enabled?: boolean;
 }
 
 interface UseWebSocketReturn {
@@ -96,11 +114,17 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   const [connected, setConnected] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const optionsRef = useRef(options);
+  const enabled = options.enabled ?? true;
   useEffect(() => {
     optionsRef.current = options;
   }, [options]);
 
   useEffect(() => {
+    if (!enabled) {
+      setConnected(false);
+      return;
+    }
+
     const socket = acquireSocket();
     socketRef.current = socket;
 
@@ -134,7 +158,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       releaseSocket();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [enabled]);
 
   const emit = useCallback((event: string, data: unknown) => {
     socketRef.current?.emit(event, data);
@@ -147,10 +171,9 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
 
 /** 获取全局 WebSocket 连接状态 */
 export function useWsStatus(): WsConnectionStatus {
-  const [status, setStatus] = useState<WsConnectionStatus>(
-    _socket?.connected ? 'connected' : 'disconnected',
-  );
+  const [status, setStatus] = useState<WsConnectionStatus>(_status);
   useEffect(() => {
+    setStatus(_status);
     _statusListeners.add(setStatus);
     return () => { _statusListeners.delete(setStatus); };
   }, []);
@@ -258,16 +281,18 @@ interface UseAlertSubscriptionOptions {
   userId?: string;
   onAlert?: (data: AlertData) => void;
   onWarn?: (data: AlertData) => void;
+  enabled?: boolean;
 }
 
 export function useAlertSubscription(options: UseAlertSubscriptionOptions = {}) {
-  const { onAlert, onWarn } = options;
+  const { onAlert, onWarn, enabled = true } = options;
   const cbRef = useRef({ onAlert, onWarn });
   useEffect(() => {
     cbRef.current = { onAlert, onWarn };
   }, [onAlert, onWarn]);
 
   return useWebSocket({
+    enabled,
     subscribe: {
       event: 'subscribe:alert',
       payload: {},
@@ -293,10 +318,11 @@ interface TradeUpdateData {
 interface UseTradeSubscriptionOptions {
   accountId?: string;
   onUpdate?: (data: TradeUpdateData) => void;
+  enabled?: boolean;
 }
 
 export function useTradeSubscription(options: UseTradeSubscriptionOptions) {
-  const { accountId, onUpdate } = options;
+  const { accountId, onUpdate, enabled = true } = options;
   const cbRef = useRef({ onUpdate });
   useEffect(() => {
     cbRef.current = { onUpdate };
@@ -304,6 +330,7 @@ export function useTradeSubscription(options: UseTradeSubscriptionOptions) {
   const normalizedAccountId = accountId && accountId !== 'default' ? accountId : undefined;
 
   return useWebSocket({
+    enabled,
     subscribe: {
       event: 'subscribe:trade',
       payload: normalizedAccountId ? { accountId: normalizedAccountId } : {},

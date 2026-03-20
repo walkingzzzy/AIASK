@@ -1,6 +1,7 @@
 """回测工具"""
 
 import asyncio
+import logging
 import time
 from typing import Optional, Dict, Any, List, Tuple
 from ..services import backtest_engine
@@ -8,7 +9,6 @@ from ..services.data_sync import data_sync_service
 from ..storage import get_db
 from ..utils import ok, fail, normalize_code, parse_date_input
 from .market import get_kline_data
-from .tdx_integration import send_backtest_result, send_backtest_trades
 
 # 检查Ray是否可用
 RAY_AVAILABLE = False
@@ -155,6 +155,114 @@ async def _fetch_klines_batch_global(
     return klines_dict, source_counter
 
 
+def _dedupe_failure_reasons(reasons: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    deduped: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in reasons or []:
+        if not isinstance(item, dict):
+            continue
+        code = normalize_code(item.get("code") or "") if item.get("code") else ""
+        reason = str(item.get("reason") or "").strip() or "unknown"
+        key = (code, reason)
+        if key in seen:
+            continue
+        seen.add(key)
+        payload = {"reason": reason}
+        if code:
+            payload["code"] = code
+        deduped.append(payload)
+    return deduped
+
+
+def _finalize_batch_backtest_payload(
+    payload: Dict[str, Any],
+    *,
+    normalized_codes: List[str],
+    source_stats: Dict[str, int],
+    fetch_concurrency: int,
+    execution_mode: str,
+    total_start: float,
+    io_seconds: float,
+    compute_seconds: Optional[float] = None,
+    aggregation_seconds: Optional[float] = None,
+    warmup_before_fetch: bool = False,
+    warmup_result: Optional[Dict[str, Any]] = None,
+    failure_reasons: Optional[List[Dict[str, Any]]] = None,
+    processed_codes: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    payload = dict(payload or {})
+    payload["execution_mode"] = execution_mode
+    payload["codes_count"] = len(normalized_codes)
+    payload["requested_codes"] = normalized_codes
+    payload["fetch_concurrency"] = max(1, min(int(fetch_concurrency or 1), 20))
+    payload["source_stats"] = source_stats
+    payload["warmup_enabled"] = bool(warmup_before_fetch)
+    if warmup_result is not None:
+        payload["warmup"] = warmup_result
+
+    successful_results = [
+        r for r in (payload.get("results") or []) if isinstance(r, dict) and r.get("success", True)
+    ]
+    payload["successful_count"] = len(successful_results)
+    payload["failed_count"] = payload["codes_count"] - payload["successful_count"]
+
+    reasons = list(failure_reasons or [])
+    if payload["successful_count"] == 0:
+        processed = {normalize_code(code) for code in (processed_codes or []) if str(code).strip()}
+        covered_codes = {
+            normalize_code(item.get("code") or "")
+            for item in reasons
+            if isinstance(item, dict) and item.get("code")
+        }
+        for code in normalized_codes:
+            if code in covered_codes:
+                continue
+            reasons.append({
+                "code": code,
+                "reason": "backtest_failed" if code in processed else "no_kline_data",
+            })
+        payload["degraded"] = True
+        payload["quality_flags"] = list(dict.fromkeys(list(payload.get("quality_flags") or []) + ["degraded", "all_fetch_failed"]))
+    else:
+        payload.setdefault("degraded", False)
+        payload.setdefault("quality_flags", [])
+
+    if reasons:
+        payload["failure_reasons"] = _dedupe_failure_reasons(reasons)
+
+    if successful_results:
+        avg_return = sum(r.get("total_return", 0) for r in successful_results) / len(successful_results)
+        avg_sharpe = sum(r.get("sharpe_ratio", 0) for r in successful_results) / len(successful_results)
+        summary = {
+            "avg_return": float(avg_return),
+            "avg_return_pct": f"{avg_return * 100:.2f}%",
+            "avg_sharpe_ratio": float(avg_sharpe),
+        }
+        avg_max_dd = [
+            r.get("max_drawdown")
+            for r in successful_results
+            if isinstance(r, dict) and r.get("max_drawdown") is not None
+        ]
+        if avg_max_dd:
+            avg_max_dd_value = sum(avg_max_dd) / len(avg_max_dd)
+            summary["avg_max_drawdown"] = float(avg_max_dd_value)
+            summary["avg_max_drawdown_pct"] = f"{avg_max_dd_value * 100:.2f}%"
+        payload["summary"] = summary
+
+    total_seconds = time.perf_counter() - total_start
+    timings = {
+        "io_fetch_seconds": round(io_seconds, 6),
+        "total_seconds": round(total_seconds, 6),
+    }
+    if compute_seconds is not None:
+        timings["compute_seconds"] = round(compute_seconds, 6)
+    if aggregation_seconds is not None:
+        timings["aggregation_seconds"] = round(aggregation_seconds, 6)
+    payload["timings"] = timings
+    payload["execution_time"] = f"{total_seconds:.2f}s"
+    return payload
+
+
 async def run_simple_backtest(
     code: str,
     strategy: str = 'ma_cross',
@@ -260,40 +368,34 @@ async def run_batch_backtest(
         io_seconds = time.perf_counter() - io_start
 
         results: List[Dict[str, Any]] = []
+        failure_reasons: List[Dict[str, Any]] = []
         for code in normalized_codes:
             klines = klines_dict.get(code) or []
             if not klines:
+                failure_reasons.append({"code": code, "reason": "no_kline_data"})
                 continue
             single = backtest_engine.run_backtest(code, klines, strategy, params)
             if single.get('success'):
                 results.append(single.get('data') or {})
+            else:
+                failure_reasons.append({
+                    "code": code,
+                    "reason": str(single.get("error") or "backtest_failed"),
+                })
 
-        payload: Dict[str, Any] = {
+        payload = _finalize_batch_backtest_payload({
             'results': results,
             'count': len(results),
-            'execution_mode': 'parallel_optimized' if (use_parallel and RAY_AVAILABLE) else 'local_sequential',
-            'codes_count': len(normalized_codes),
-            'requested_codes': normalized_codes,
-            'successful_count': len(results),
-            'failed_count': len(normalized_codes) - len(results),
-            'fetch_concurrency': max(1, min(int(fetch_concurrency or 1), 20)),
-            'source_stats': source_stats,
-            'timings': {
-                'io_fetch_seconds': round(io_seconds, 6),
-                'total_seconds': round(time.perf_counter() - total_start, 6),
-            },
-        }
-
-        if results:
-            avg_return = sum(r.get('total_return', 0) for r in results) / len(results)
-            avg_sharpe = sum(r.get('sharpe_ratio', 0) for r in results) / len(results)
-            payload['summary'] = {
-                'avg_return': float(avg_return),
-                'avg_return_pct': f"{avg_return * 100:.2f}%",
-                'avg_sharpe_ratio': float(avg_sharpe),
-            }
-
-        payload['execution_time'] = f"{(time.perf_counter() - total_start):.2f}s"
+        },
+            normalized_codes=normalized_codes,
+            source_stats=source_stats,
+            fetch_concurrency=fetch_concurrency,
+            execution_mode='parallel_optimized' if (use_parallel and RAY_AVAILABLE) else 'local_sequential',
+            total_start=total_start,
+            io_seconds=io_seconds,
+            failure_reasons=failure_reasons,
+            processed_codes=list(klines_dict.keys()),
+        )
         return ok(payload)
     except Exception as e:
         return fail(str(e))
@@ -425,87 +527,6 @@ def register(mcp):
         except Exception as e:
             return fail(str(e))
 
-
-    @mcp.tool()
-    async def run_backtest_and_send_to_tdx(
-        code: str,
-        strategy: str = 'ma_cross',
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        initial_capital: float = 100000,
-        send_to_tdx: bool = True,
-        send_mode: str = 'result',
-    ):
-        """运行回测并发送结果到TDX（兼容字段）。
-
-        Args:
-            code: 股票代码
-            strategy: 回测策略
-            start_date: 开始日期
-            end_date: 结束日期
-            initial_capital: 初始资金
-            send_to_tdx: 是否发送到TDX，默认 True
-            send_mode: 发送模式，'result' 或 'trades'，默认 'result'
-        """
-        try:
-            backtest_result = await run_simple_backtest(
-                code=code,
-                strategy=strategy,
-                start_date=start_date,
-                end_date=end_date,
-                initial_capital=initial_capital,
-            )
-
-            if not isinstance(backtest_result, dict) or not backtest_result.get('success'):
-                return fail((backtest_result or {}).get('error', 'Backtest failed'))
-
-            bt_data = backtest_result.get('data') if isinstance(backtest_result.get('data'), dict) else {}
-
-            if not send_to_tdx:
-                tdx_result = {
-                    "success": True,
-                    "message": "TDX send skipped (send_to_tdx=false)",
-                    "skipped": True,
-                }
-            else:
-                mode = (send_mode or 'result').strip().lower()
-                if mode not in ('result', 'trades'):
-                    return fail(f"Invalid send_mode: {send_mode}, expected 'result' or 'trades'")
-
-                norm_code = normalize_code(code)
-                date_token = (end_date or start_date or time.strftime('%Y-%m-%d'))
-
-                if mode == 'trades':
-                    pnl = float(bt_data.get('final_capital', 0.0) or 0.0) - float(bt_data.get('initial_capital', 0.0) or 0.0)
-                    synthetic_trades = [{
-                        'date': str(date_token)[:10],
-                        'price': float(bt_data.get('final_capital') or 0.0),
-                        'signal': 0,
-                        'shares': 0,
-                        'profit': pnl,
-                    }]
-                    tdx_result = send_backtest_trades(stock_code=norm_code, trades=synthetic_trades)
-                else:
-                    metric_value = float(bt_data.get('total_return', 0.0) or 0.0)
-                    time_list = [str(date_token)[:10]]
-                    data_list = [[str(metric_value)]]
-                    tdx_result = send_backtest_result(
-                        stock_code=norm_code,
-                        time_list=time_list,
-                        data_list=data_list,
-                        count=1,
-                    )
-
-            # 兼容测试断言：同时保留两个字段，且指向同一个对象
-            return ok({
-                "backtest_result": bt_data,
-                "tdx_send_result": tdx_result,
-                "tdx_send_status": tdx_result,
-            })
-        except Exception as e:
-            return fail(str(e))
-
-
     @mcp.tool()
     async def run_batch_backtest(
         codes: List[str],
@@ -589,6 +610,11 @@ def register(mcp):
             compute_start = time.perf_counter()
             engine = globals().get("ParallelBacktestEngine")
             can_parallel = bool(use_parallel and RAY_AVAILABLE and engine)
+            failure_reasons: List[Dict[str, Any]] = [
+                {"code": code, "reason": "no_kline_data"}
+                for code in normalized_codes
+                if code not in klines_dict
+            ]
             if can_parallel:
                 result = engine.batch_backtest(
                     list(klines_dict.keys()),
@@ -617,6 +643,11 @@ def register(mcp):
                     )
                     if single.get("success"):
                         local_results.append(single.get("data") or {})
+                    else:
+                        failure_reasons.append({
+                            "code": code,
+                            "reason": str(single.get("error") or "backtest_failed"),
+                        })
                 result = {
                     "success": True,
                     "data": {"results": local_results, "count": len(local_results)},
@@ -629,43 +660,22 @@ def register(mcp):
 
             # 阶段3：汇总统计
             aggregation_start = time.perf_counter()
-            payload = result.get("data") or {}
-            payload["execution_mode"] = execution_mode
-            payload["codes_count"] = len(normalized_codes)
-            payload["requested_codes"] = normalized_codes
-            payload["fetch_concurrency"] = max(1, min(int(fetch_concurrency or 1), 20))
-            payload["source_stats"] = source_stats
-            payload["warmup_enabled"] = bool(warmup_before_fetch)
-            if warmup_result is not None:
-                payload["warmup"] = warmup_result
-
-            successful_results = [
-                r for r in (payload.get("results") or []) if r.get("success", True)
-            ]
-            payload["successful_count"] = len(successful_results)
-            payload["failed_count"] = payload["codes_count"] - payload["successful_count"]
-
-            if successful_results:
-                avg_return = sum(r.get("total_return", 0) for r in successful_results) / len(successful_results)
-                avg_sharpe = sum(r.get("sharpe_ratio", 0) for r in successful_results) / len(successful_results)
-                avg_max_dd = sum(r.get("max_drawdown", 0) for r in successful_results) / len(successful_results)
-                payload["summary"] = {
-                    "avg_return": float(avg_return),
-                    "avg_return_pct": f"{avg_return * 100:.2f}%",
-                    "avg_sharpe_ratio": float(avg_sharpe),
-                    "avg_max_drawdown": float(avg_max_dd),
-                    "avg_max_drawdown_pct": f"{avg_max_dd * 100:.2f}%",
-                }
-
             aggregation_seconds = time.perf_counter() - aggregation_start
-            total_seconds = time.perf_counter() - total_start
-            payload["timings"] = {
-                "io_fetch_seconds": round(io_seconds, 6),
-                "compute_seconds": round(compute_seconds, 6),
-                "aggregation_seconds": round(aggregation_seconds, 6),
-                "total_seconds": round(total_seconds, 6),
-            }
-            payload["execution_time"] = f"{total_seconds:.2f}s"
+            payload = _finalize_batch_backtest_payload(
+                result.get("data") or {},
+                normalized_codes=normalized_codes,
+                source_stats=source_stats,
+                fetch_concurrency=fetch_concurrency,
+                execution_mode=execution_mode,
+                total_start=total_start,
+                io_seconds=io_seconds,
+                compute_seconds=compute_seconds,
+                aggregation_seconds=aggregation_seconds,
+                warmup_before_fetch=warmup_before_fetch,
+                warmup_result=warmup_result,
+                failure_reasons=failure_reasons,
+                processed_codes=list(klines_dict.keys()),
+            )
             payload["performance_goal"] = {
                 "target": "same codes, total time reduce 30%+",
                 "io_parallel_enabled": True,

@@ -7,24 +7,16 @@ from datetime import datetime
 from typing import Optional, List, Any
 
 from ...storage import get_db
-from ...utils import ok, fail, normalize_code
 from ...data_source import data_source
+from ...utils import normalize_code
+from ..manager_protocol import (
+    extract_common_meta,
+    fail_with_meta,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _normalize_kwargs(kwargs: dict) -> dict:
-    """解析 kwargs 字符串并合并到顶层，便于 MCP 传入的 code/indicators 被正确读取。"""
-    extra = kwargs.get("kwargs")
-    if extra is not None:
-        if isinstance(extra, str):
-            try:
-                extra = json.loads(extra or "{}")
-            except Exception:
-                extra = None
-        if isinstance(extra, dict):
-            kwargs = {**kwargs, **extra}
-    return kwargs
 
 
 def _ensure_serializable(obj: Any) -> Any:
@@ -215,8 +207,9 @@ def register_technical_analysis_manager(mcp):
             # 列出支持的指标
             technical_analysis_manager(action="list_indicators", kwargs="{}")
         """
+        start_time = time.perf_counter()
         try:
-            kwargs = _normalize_kwargs(kwargs)
+            kwargs = normalize_manager_kwargs(kwargs)
             action = (action or '').strip()
             code = code or kwargs.get("code") or kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
             if indicators is None:
@@ -235,41 +228,39 @@ def register_technical_analysis_manager(mcp):
                     indicators = ["MA", "RSI", "MACD"]
 
             # 统一可选参数（向后兼容）
-            as_of = kwargs.get('as_of', '')
-            adjust = kwargs.get('adjust', '')
-            price_source_policy = kwargs.get('price_source_policy', 'auto')
-            explain = kwargs.get('explain', True)
-            strict_mode = kwargs.get('strict_mode', False)
-
-            # 统一 meta
-            start_time = time.perf_counter()
-            trace_id = f"technical_analysis_manager:{action}:{int(time.time() * 1000)}"
-            tool_version = "v1.1"
-
-            def _with_meta(resp: dict, source_chain=None, data_timestamp: str | None = None):
-                if source_chain is None:
-                    source_chain = ['technical_analysis_manager']
-                latency_ms = int((time.perf_counter() - start_time) * 1000)
-                resp['meta'] = {
-                    'trace_id': trace_id,
-                    'tool_version': tool_version,
-                    'data_timestamp': data_timestamp or datetime.now().strftime('%Y-%m-%d'),
-                    'source_chain': source_chain,
-                    'cached': False,
-                    'latency_ms': latency_ms,
-                    'as_of': as_of,
-                    'adjust': adjust,
-                    'price_source_policy': price_source_policy,
-                    'explain': explain,
-                    'strict_mode': strict_mode,
-                }
-                return resp
+            common_meta = extract_common_meta(
+                kwargs,
+                defaults={
+                    'as_of': '',
+                    'adjust': '',
+                    'price_source_policy': 'auto',
+                    'explain': True,
+                    'strict_mode': False,
+                },
+            )
+            explain = common_meta['explain']
 
             def _ok(data: dict, source_chain=None, data_timestamp: str | None = None):
-                return _with_meta(ok(data), source_chain, data_timestamp)
+                return ok_with_meta(
+                    data,
+                    tool_name='technical_analysis_manager',
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                    data_timestamp=data_timestamp,
+                    extra_meta=common_meta,
+                )
 
             def _fail(message: str, source_chain=None, data_timestamp: str | None = None):
-                return _with_meta(fail(message), source_chain, data_timestamp)
+                return fail_with_meta(
+                    message,
+                    tool_name='technical_analysis_manager',
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                    data_timestamp=data_timestamp,
+                    extra_meta=common_meta,
+                )
 
             if action == 'help':
                 return _ok({
@@ -397,4 +388,10 @@ def register_technical_analysis_manager(mcp):
                 return _fail(f'Unknown action: {action}. Supported: help, calculate, check_patterns, list_indicators')
         except Exception as e:
             logger.error(f"[TechnicalAnalysisManager] Error: {e}")
-            return _fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='technical_analysis_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['technical_analysis_manager'],
+            )

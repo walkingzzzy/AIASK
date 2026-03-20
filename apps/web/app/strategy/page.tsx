@@ -20,6 +20,35 @@ type PortfolioDetailRecord = Record<string, unknown> & {
   strategyAllocations?: Array<Record<string, unknown>>;
 };
 
+function WorkbenchField({
+  id,
+  label,
+  value,
+  onChange,
+  placeholder,
+  className = '',
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  className?: string;
+}) {
+  return (
+    <label htmlFor={id} className={`grid gap-1 text-xs text-text-secondary ${className}`}>
+      <span>{label}</span>
+      <input
+        id={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded border border-border bg-surface px-3 py-2 text-sm text-text-primary"
+      />
+    </label>
+  );
+}
+
 export default function StrategyPage() {
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
   const [strategy, setStrategy] = useState('ma_cross');
@@ -183,6 +212,7 @@ export default function StrategyPage() {
   return (
     <PageContainer>
       <h1>策略工作台</h1>
+      <p className="mt-2 text-sm text-text-secondary">建议先在试验区跑回测、确认 artifact 与收益指标，再进入落地区创建组合、调仓并做优化与风控分析。</p>
       {loading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} /> : null}
 
@@ -195,17 +225,38 @@ export default function StrategyPage() {
       </KpiGrid>
 
       <SectionCard>
-        <h3 className="mt-0">回测执行</h3>
-        <form onSubmit={runBacktest} className="flex gap-2 flex-wrap">
-          <StockCodeInput value={code} onChange={setCode} error={codeError} />
-          <input value={strategy} onChange={(e) => setStrategy(e.target.value)} placeholder="策略，如 ma_cross" className="w-[180px] px-2 py-1 border border-border rounded text-sm" />
-          <button type="submit">运行回测</button>
-          <button type="button" onClick={loadBacktests}>最近回测</button>
-        </form>
-        <div className="mt-2 flex items-center gap-2 text-sm text-text-secondary">
-          <span>artifactId: {artifactId || '-'}</span>
-          <button type="button" onClick={() => loadMetrics()} className="ml-2">刷新指标</button>
-        </div>
+        <h3 className="mt-0">试验区 · 回测执行</h3>
+        <fieldset className="mb-4 rounded-xl border border-border bg-surface-alt/30 p-3">
+          <legend className="px-1 text-sm font-medium text-text-primary">运行新的回测</legend>
+          <p className="mt-1 mb-3 text-xs text-text-secondary">先确认标的和策略标识，再运行回测并保留 artifactId 供后续指标刷新。</p>
+          <form onSubmit={runBacktest} className="grid gap-3 lg:grid-cols-[160px_220px_auto_auto] items-end">
+            <StockCodeInput id="strategy-backtest-code" label="股票代码" value={code} onChange={setCode} error={codeError} />
+            <WorkbenchField
+              id="strategy-backtest-name"
+              label="策略标识"
+              value={strategy}
+              onChange={setStrategy}
+              placeholder="例如 ma_cross"
+            />
+            <button type="submit">运行回测</button>
+            <button type="button" onClick={loadBacktests}>最近回测</button>
+          </form>
+        </fieldset>
+        <fieldset className="rounded-xl border border-border bg-surface-alt/30 p-3">
+          <legend className="px-1 text-sm font-medium text-text-primary">回测结果定位</legend>
+          <div className="grid gap-3 md:grid-cols-[minmax(0,260px)_auto] items-end">
+            <WorkbenchField
+              id="strategy-artifact-id"
+              label="Artifact ID"
+              value={artifactId}
+              onChange={setArtifactId}
+              placeholder="粘贴或保留最近一次回测的 artifactId"
+            />
+            <div className="flex gap-2">
+              <button type="button" onClick={() => loadMetrics()}>刷新指标</button>
+            </div>
+          </div>
+        </fieldset>
         {backtestRows.length > 0 && (
           <DataTable
             rows={backtestRows}
@@ -227,21 +278,58 @@ export default function StrategyPage() {
       </SectionCard>
 
       <SectionCard>
-        <h3 className="mt-0">组合管理</h3>
-        <div className="flex gap-2 flex-wrap">
-          <input value={portfolioName} onChange={(e) => setPortfolioName(e.target.value)} placeholder="组合名称" className="w-[220px] px-2 py-1 border border-border rounded text-sm" />
-          <button type="button" onClick={createPortfolio}>创建组合</button>
-          <button type="button" onClick={loadPortfolios}>组合列表</button>
-        </div>
-        <div className="flex gap-2 flex-wrap mt-2">
-          <input value={holdingOp.portfolioId} onChange={(e) => setHoldingOp({ ...holdingOp, portfolioId: e.target.value })} placeholder="portfolioId" className="w-[120px] px-2 py-1 border border-border rounded text-sm" />
-          <input value={holdingOp.code} onChange={(e) => setHoldingOp({ ...holdingOp, code: e.target.value })} maxLength={6} placeholder="code" className="w-[120px] px-2 py-1 border border-border rounded text-sm" />
-          <input value={holdingOp.shares} onChange={(e) => setHoldingOp({ ...holdingOp, shares: e.target.value })} placeholder="shares" className="w-[100px] px-2 py-1 border border-border rounded text-sm" />
-          <input value={holdingOp.costPrice} onChange={(e) => setHoldingOp({ ...holdingOp, costPrice: e.target.value })} placeholder="costPrice" className="w-[100px] px-2 py-1 border border-border rounded text-sm" />
-          <button type="button" onClick={addHolding}>加仓</button>
-          <button type="button" onClick={removeHolding}>减仓</button>
-          <button type="button" onClick={loadPortfolioDetail}>查看详情</button>
-        </div>
+        <h3 className="mt-0">落地区 · 组合管理</h3>
+        <fieldset className="mb-4 rounded-xl border border-border bg-surface-alt/30 p-3">
+          <legend className="px-1 text-sm font-medium text-text-primary">创建组合</legend>
+          <p className="mt-1 mb-3 text-xs text-text-secondary">先建组合容器，再把选定策略和持仓逐步落地到组合里。</p>
+          <div className="grid gap-3 md:grid-cols-[minmax(0,240px)_auto_auto] items-end">
+            <WorkbenchField
+              id="strategy-portfolio-name"
+              label="组合名称"
+              value={portfolioName}
+              onChange={setPortfolioName}
+              placeholder="例如 我的策略组合"
+            />
+            <button type="button" onClick={createPortfolio}>创建组合</button>
+            <button type="button" onClick={loadPortfolios}>组合列表</button>
+          </div>
+        </fieldset>
+        <fieldset className="rounded-xl border border-border bg-surface-alt/30 p-3">
+          <legend className="px-1 text-sm font-medium text-text-primary">持仓与详情操作</legend>
+          <div className="grid gap-3 lg:grid-cols-[140px_140px_120px_120px_auto_auto_auto] items-end">
+            <WorkbenchField
+              id="strategy-portfolio-id"
+              label="组合 ID"
+              value={holdingOp.portfolioId}
+              onChange={(value) => setHoldingOp({ ...holdingOp, portfolioId: value })}
+              placeholder="输入 portfolioId"
+            />
+            <WorkbenchField
+              id="strategy-holding-code"
+              label="股票代码"
+              value={holdingOp.code}
+              onChange={(value) => setHoldingOp({ ...holdingOp, code: value.slice(0, 6) })}
+              placeholder="6 位股票代码"
+            />
+            <WorkbenchField
+              id="strategy-holding-shares"
+              label="持仓股数"
+              value={holdingOp.shares}
+              onChange={(value) => setHoldingOp({ ...holdingOp, shares: value })}
+              placeholder="例如 100"
+            />
+            <WorkbenchField
+              id="strategy-holding-cost"
+              label="成本价"
+              value={holdingOp.costPrice}
+              onChange={(value) => setHoldingOp({ ...holdingOp, costPrice: value })}
+              placeholder="例如 12.56"
+            />
+            <button type="button" onClick={addHolding}>加仓</button>
+            <button type="button" onClick={removeHolding}>减仓</button>
+            <button type="button" onClick={loadPortfolioDetail}>查看详情</button>
+          </div>
+        </fieldset>
         {portfolioRows.length > 0 && (
           <DataTable
             rows={portfolioRows}
@@ -291,7 +379,8 @@ export default function StrategyPage() {
       </SectionCard>
 
       <SectionCard>
-        <h3 className="mt-0">组合优化</h3>
+        <h3 className="mt-0">落地区 · 组合优化与风控</h3>
+        <p className="mt-1 text-sm text-text-secondary">以下动作默认基于当前填写的组合 ID 执行，适合在持仓落地后继续做优化、风险和压力校验。</p>
         <div className="flex gap-2">
           <button type="button" onClick={optimizePortfolio}>优化配置</button>
           <button type="button" onClick={analyzeRisk}>风险分析</button>

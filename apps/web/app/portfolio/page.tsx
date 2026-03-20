@@ -122,6 +122,11 @@ export default function PortfolioPage() {
     if (Array.isArray(s)) return s as Record<string, unknown>[];
     return extractArray(stressApi.data, 'scenarios', 'data') as Record<string, unknown>[];
   }, [stressApi.data]);
+  const activePortfolioId = portfolioId.trim();
+  const selectedPortfolio = useMemo(
+    () => portfolioList.find((item) => String(item.id ?? '').trim() === activePortfolioId) ?? null,
+    [portfolioList, activePortfolioId],
+  );
 
   return (
     <PageContainer>
@@ -131,14 +136,30 @@ export default function PortfolioPage() {
 
       <SectionCard className="p-3">
         <h2 className="mt-0 text-base font-semibold">当前组合操作</h2>
-        <p className="text-sm text-text-secondary mt-1 mb-3">先从下方列表选择组合，或先创建一个新组合。选中后再执行加仓、优化、风险分析和压力测试。</p>
+        <p className="text-sm text-text-secondary mt-1 mb-3">优先从下方组合列表点选目标组合；创建成功后也会自动选中，随后再执行加仓、优化、风险分析和压力测试。</p>
+        <div className="mb-3 grid gap-3 md:grid-cols-3">
+          <div className="rounded-xl border border-border bg-surface p-3">
+            <div className="text-xs text-text-secondary">当前选中</div>
+            <div className="mt-1 text-sm font-medium">{selectedPortfolio ? String(selectedPortfolio.name ?? activePortfolioId) : '尚未选择组合'}</div>
+            <div className="mt-1 text-xs text-text-secondary">{activePortfolioId || '请从列表点选一条组合后继续'}</div>
+          </div>
+          <div className="rounded-xl border border-border bg-surface p-3">
+            <div className="text-xs text-text-secondary">组合总数</div>
+            <div className="mt-1 text-sm font-medium">{portfolioList.length}</div>
+            <div className="mt-1 text-xs text-text-secondary">支持从列表直接切换查看详情</div>
+          </div>
+          <div className="rounded-xl border border-border bg-surface p-3">
+            <div className="text-xs text-text-secondary">下一步建议</div>
+            <div className="mt-1 text-sm font-medium">{activePortfolioId ? '继续查看详情、加仓或执行分析' : '先创建新组合或在列表中选择组合'}</div>
+          </div>
+        </div>
         <div className="flex gap-2 flex-wrap items-end">
           <label htmlFor="portfolio-selected-id" className="grid gap-1 text-xs text-text-secondary">
             <span>当前组合 ID</span>
-            <input id="portfolio-selected-id" value={portfolioId} onChange={(e) => { setPortfolioId(e.target.value); setFormError(null); }} placeholder="选择或输入组合 ID" className="w-[160px] px-2 py-1 border border-border rounded text-sm" />
+            <input id="portfolio-selected-id" value={portfolioId} onChange={(e) => { setPortfolioId(e.target.value); setFormError(null); }} placeholder="优先从列表选择；必要时可手动输入" className="w-[220px] px-2 py-1 border border-border rounded text-sm" />
           </label>
           <button type="button" onClick={() => listQ.refetch()}>组合列表</button>
-          <button type="button" onClick={() => { if (!portfolioId.trim()) { setFormError('请输入 portfolioId'); return; } detailQ.refetch(); }}>查看详情</button>
+          <button type="button" onClick={() => { if (!activePortfolioId) { setFormError('请先选择组合'); return; } detailQ.refetch(); }}>查看详情</button>
           <button type="button" onClick={optimize}>优化配置</button>
           <button type="button" onClick={analyzeRisk}>风险分析</button>
           <button type="button" onClick={runStress}>压力测试</button>
@@ -167,9 +188,9 @@ export default function PortfolioPage() {
       </SectionCard>
 
       {/* Add Holding (only when portfolioId is set) */}
-      {portfolioId.trim() && (
+      {activePortfolioId && (
         <SectionCard className="p-4 mt-4">
-          <h3 className="mt-0">添加持仓（组合 {portfolioId}）</h3>
+          <h3 className="mt-0">添加持仓（组合 {activePortfolioId}）</h3>
           <div className="flex gap-2 flex-wrap items-end">
             <StockCodeInput id="portfolio-holding-code" label="股票代码" value={holdCode} onChange={setHoldCode} error={holdCodeError} placeholder="股票代码" />
             <label htmlFor="portfolio-holding-shares" className="grid gap-1 text-xs text-text-secondary">
@@ -204,6 +225,27 @@ export default function PortfolioPage() {
             pageSize={10}
             searchable
             onExport={() => exportCSV(portfolioList, 'portfolio-list')}
+            mobileCardRender={(row) => {
+              const rowId = String(row.id ?? '-');
+              const isActive = rowId === activePortfolioId;
+              return (
+                <div className="space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-text-primary">{String(row.name ?? rowId)}</div>
+                      <div className="text-xs text-text-secondary">组合 ID：{rowId}</div>
+                    </div>
+                    <div className={`text-xs ${isActive ? 'text-primary' : 'text-text-secondary'}`}>{isActive ? '已选中' : '点按切换'}</div>
+                  </div>
+                  <div className="text-xs text-text-secondary">描述：{String(row.description ?? '-')}</div>
+                  <div className="grid grid-cols-2 gap-2 text-xs text-text-secondary">
+                    <div>策略数：{String(row.strategyAllocationCount ?? '-')}</div>
+                    <div>初始资金：{fmtNum(Number(row.initialCapital ?? 0), 2)}</div>
+                    <div className="col-span-2">当前资产：{fmtNum(Number(row.currentValue ?? 0), 2)}</div>
+                  </div>
+                </div>
+              );
+            }}
             onRowClick={(row) => {
               const selectedId = String(row.id ?? '').trim();
               if (!selectedId || selectedId === '-') return;
@@ -214,9 +256,9 @@ export default function PortfolioPage() {
         </SectionCard>
       )}
 
-      {!portfolioId.trim() ? (
+      {!activePortfolioId ? (
         <SectionCard className="mt-4 p-4">
-          <EmptyState text="还没有选中组合。可以先从“组合列表”点选一条，或在上方创建新组合后继续。"/>
+          <EmptyState text="还没有选中组合。可以先从“组合列表”点选一条，或在上方创建新组合后继续。" hint="后续的详情、加仓、优化和压力测试都会围绕当前选中的组合展开。" />
         </SectionCard>
       ) : null}
 
@@ -237,9 +279,24 @@ export default function PortfolioPage() {
                 { key: 'weight', label: '权重', align: 'right', render: (value) => fmtPct(Number(value ?? 0) * 100) },
               ]}
               className="mt-3"
+              mobileCardRender={(row) => (
+                <div className="space-y-2">
+                  <div className="text-sm font-medium text-text-primary">策略 {String(row.strategyId ?? row.strategy_id ?? '-')}</div>
+                  <div className="text-xs text-text-secondary">权重：{fmtPct(Number(row.weight ?? 0) * 100)}</div>
+                </div>
+              )}
             />
           )}
-          {detailHoldings.length > 0 && <DataTable rows={detailHoldings} pageSize={10} onExport={() => exportCSV(detailHoldings, 'portfolio-holdings')} />}
+          {detailHoldings.length > 0 && <DataTable rows={detailHoldings} pageSize={10} onExport={() => exportCSV(detailHoldings, 'portfolio-holdings')} mobileCardRender={(row) => (
+            <div className="space-y-2">
+              <div className="flex items-start justify-between gap-3">
+                <div className="text-sm font-medium text-text-primary">{String(row.code ?? row.stockCode ?? '-')}</div>
+                <div className="text-xs text-text-secondary">数量：{String(row.shares ?? row.quantity ?? '-')}</div>
+              </div>
+              <div className="text-xs text-text-secondary">成本价：{fmtNum(Number(row.costPrice ?? row.cost_price ?? 0), 2)}</div>
+              <div className="text-xs text-text-secondary">市值：{fmtNum(Number(row.marketValue ?? row.market_value ?? 0), 2)}</div>
+            </div>
+          )} />}
         </SectionCard>
       )}
 
@@ -286,7 +343,13 @@ export default function PortfolioPage() {
       {stressScenarios.length > 0 && (
         <SectionCard className="mt-4 p-3">
           <h3 className="mt-0">压力测试</h3>
-          <DataTable rows={stressScenarios} onExport={() => exportCSV(stressScenarios, 'stress-test')} />
+          <DataTable rows={stressScenarios} onExport={() => exportCSV(stressScenarios, 'stress-test')} mobileCardRender={(row) => (
+            <div className="space-y-2">
+              <div className="text-sm font-medium text-text-primary">{String(row.name ?? '-')}</div>
+              <div className="text-xs text-text-secondary">影响：{fmtPct(Number(row.impact ?? 0))}</div>
+              <div className="text-xs text-text-secondary">{String(row.description ?? '无额外说明')}</div>
+            </div>
+          )} />
         </SectionCard>
       )}
     </PageContainer>

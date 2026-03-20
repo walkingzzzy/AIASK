@@ -41,13 +41,12 @@ logger = logging.getLogger('sync_daily')
 class DailySync(StockSyncMixin, FinancialSyncMixin, MarketSyncMixin):
     """日常增量同步管理器
 
-    数据源优先级: TDX → Tushare Pro → Baostock → eFinance → AkShare
+    数据源优先级: Tushare Pro → Baostock → eFinance → AkShare
     """
 
     def __init__(self):
         self.db = get_db()
         self.ts_pro = data_source.get_tushare_pro()
-        self.tdx_available = data_source.is_tdx_available()
         self.start_time = None
         self.stats = {}
         self.errors: List[str] = []
@@ -70,7 +69,7 @@ class DailySync(StockSyncMixin, FinancialSyncMixin, MarketSyncMixin):
     # ---- 数据获取 ----
 
     def _get_kline_multi_source(self, code: str, period: str = 'daily', limit: int = 250):
-        """多数据源获取K线（TDX → Tushare → Baostock → eFinance → AkShare）"""
+        """多数据源获取K线（Tushare → Baostock → eFinance → AkShare）"""
         return data_source.get_kline(code, period, limit)
 
     # ---- 建表 ----
@@ -149,8 +148,6 @@ class DailySync(StockSyncMixin, FinancialSyncMixin, MarketSyncMixin):
             await self.db.initialize()
 
             sources = []
-            if self.tdx_available:
-                sources.append("TDX(优先)")
             if self.ts_pro:
                 sources.append("Tushare Pro")
             sources.append("AkShare/东财(兜底)")
@@ -218,7 +215,7 @@ async def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='日常增量同步（数据源: TDX→Tushare Pro→AkShare/东财）'
+        description='日常增量同步（数据源: Tushare Pro→AkShare/东财）'
     )
     parser.add_argument('--skip-klines', action='store_true', help='跳过K线同步')
     parser.add_argument('--skip-financials', action='store_true', help='跳过财务同步')

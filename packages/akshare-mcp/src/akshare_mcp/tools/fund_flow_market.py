@@ -12,6 +12,8 @@ import requests
 from ..utils import fail, normalize_code, ok, parse_numeric, safe_float
 from ..core.rate_limiter import get_limiter
 from ..date_utils import get_latest_trading_date, format_date_dash
+from ..data_source import data_source
+from .market.helpers import get_name_map as _get_cached_name_map
 
 from .fund_flow_common import _fetch_eastmoney_datacenter
 
@@ -266,6 +268,144 @@ def get_margin_ranking(top_n: int = 20, sort_by: str = "balance") -> dict:
 # Block trades
 # =====================
 
+def _normalize_name_text(value: Any) -> str:
+    return "".join(str(value or "").strip().upper().split())
+
+
+def _get_security_meta_map(codes: set[str]) -> dict[str, dict[str, str]]:
+    meta_map: dict[str, dict[str, str]] = {}
+    if not codes:
+        return meta_map
+
+    try:
+        name_map = _get_cached_name_map()
+    except Exception:
+        name_map = {}
+
+    for code in codes:
+        if code in name_map:
+            meta_map[code] = {"name": str(name_map.get(code) or "").strip(), "industry": ""}
+
+    if len(codes) > 50:
+        return meta_map
+
+    try:
+        pro = data_source.get_tushare_pro()
+    except Exception:
+        pro = None
+
+    if not pro:
+        return meta_map
+
+    for code in sorted(codes):
+        ts_code = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
+        try:
+            df = pro.stock_basic(ts_code=ts_code, list_status="L", fields="ts_code,name,industry")
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+        row = df.iloc[0]
+        meta_map[code] = {
+            "name": str(row.get("name") or meta_map.get(code, {}).get("name") or "").strip(),
+            "industry": str(row.get("industry") or "").strip(),
+        }
+    return meta_map
+
+
+def _finalize_block_trade_results(
+    items: list[dict],
+    *,
+    source_chain: list[str],
+    fallback_reason: list[str] | None = None,
+) -> tuple[list[dict], dict]:
+    results: list[dict] = []
+    codes = {normalize_code(item.get("code")) for item in items if item.get("code")}
+    security_meta = _get_security_meta_map(codes)
+
+    name_backfilled = 0
+    name_corrected = 0
+    code_mismatch_count = 0
+    industry_backfilled = 0
+    missing_name_count = 0
+
+    for item in items:
+        code = normalize_code(item.get("code"))
+        if not code:
+            continue
+
+        raw_name = str(item.get("name") or "").strip()
+        alt_code = normalize_code(item.get("alt_code") or "")
+        if alt_code and alt_code != code:
+            code_mismatch_count += 1
+
+        meta = security_meta.get(code, {})
+        canonical_name = str(meta.get("name") or "").strip()
+        canonical_industry = str(meta.get("industry") or "").strip()
+
+        derived_fields: list[str] = []
+        final_name = raw_name
+        if canonical_name:
+            if not raw_name:
+                final_name = canonical_name
+                name_backfilled += 1
+                derived_fields.append("name")
+            elif _normalize_name_text(raw_name) != _normalize_name_text(canonical_name):
+                final_name = canonical_name
+                name_corrected += 1
+                derived_fields.append("name")
+        if not final_name:
+            missing_name_count += 1
+
+        industry = str(item.get("industry") or "").strip()
+        if not industry and canonical_industry:
+            industry = canonical_industry
+            industry_backfilled += 1
+            derived_fields.append("industry")
+
+        missing_fields = []
+        if not final_name:
+            missing_fields.append("name")
+        if item.get("price") is None:
+            missing_fields.append("price")
+        if item.get("volume") is None:
+            missing_fields.append("volume")
+        if item.get("amount") is None:
+            missing_fields.append("amount")
+
+        results.append(
+            {
+                "date": item.get("date"),
+                "code": code,
+                "name": final_name,
+                "industry": industry,
+                "price": item.get("price"),
+                "volume": item.get("volume"),
+                "amount": item.get("amount"),
+                "premium": item.get("premium"),
+                "buyer": item.get("buyer"),
+                "seller": item.get("seller"),
+                "dataQuality": {
+                    "source": "eastmoney_block_trade",
+                    "derived_fields": derived_fields,
+                    "missing_fields": missing_fields,
+                },
+            }
+        )
+
+    data_quality = {
+        "count": len(results),
+        "name_backfilled_count": name_backfilled,
+        "name_corrected_count": name_corrected,
+        "industry_backfilled_count": industry_backfilled,
+        "missing_name_count": missing_name_count,
+        "code_mismatch_count": code_mismatch_count,
+        "fallback_used": len(source_chain) > 1,
+        "source_chain": source_chain,
+        "fallback_reason": [str(item).strip() for item in list(fallback_reason or []) if str(item).strip()],
+    }
+    return results, data_quality
+
 def get_block_trades(date: str = "", stock_code: str = "", limit: int = 500) -> dict:
     """获取大宗交易数据"""
     try:
@@ -274,6 +414,8 @@ def get_block_trades(date: str = "", stock_code: str = "", limit: int = 500) -> 
 
         target = date or datetime.now().strftime("%Y-%m-%d")
         code = normalize_code(stock_code) if stock_code else ""
+        source_chain = ["eastmoney.block_trades"]
+        fallback_reason: list[str] = []
 
         def _fetch_for_trade_date(trade_date: str) -> list[dict]:
             params: dict[str, Any] = {
@@ -302,22 +444,40 @@ def get_block_trades(date: str = "", stock_code: str = "", limit: int = 500) -> 
                 fallback_date = (datetime.now() - timedelta(days=offset)).strftime("%Y-%m-%d")
                 items = _fetch_for_trade_date(fallback_date)
                 if items:
+                    source_chain.append("eastmoney.block_trades.backtrack")
+                    fallback_reason.append(f"no block trades on {target}, fallback to {fallback_date}")
                     break
         results = []
         for item in items:
+            security_code = normalize_code(item.get("SECURITY_CODE"))
+            secucode = normalize_code(str(item.get("SECUCODE", "")).split(".")[0] if item.get("SECUCODE") else "")
+            normalized_code = security_code or secucode
             results.append(
                 {
                     "date": str(item.get("TRADE_DATE", "")).split(" ")[0],
-                    "code": normalize_code(item.get("SECURITY_CODE")),
+                    "code": normalized_code,
+                    "alt_code": secucode,
                     "name": str(item.get("SECURITY_NAME_ABBR") or ""),
-                    "price": parse_numeric(item.get("DEAL_PRICE")) or 0,
-                    "volume": parse_numeric(item.get("DEAL_VOLUME")) or 0,
-                    "amount": parse_numeric(item.get("DEAL_AMT")) or 0,
-                    "premium": parse_numeric(item.get("PREMIUM_RATIO")) or 0,
+                    "price": parse_numeric(item.get("DEAL_PRICE")),
+                    "volume": parse_numeric(item.get("DEAL_VOLUME")),
+                    "amount": parse_numeric(item.get("DEAL_AMT")),
+                    "premium": parse_numeric(item.get("PREMIUM_RATIO")),
                     "buyer": str(item.get("BUYER_NAME") or ""),
                     "seller": str(item.get("SELLER_NAME") or ""),
                 }
             )
-        return ok(results)
+        finalized, data_quality = _finalize_block_trade_results(
+            results,
+            source_chain=source_chain,
+            fallback_reason=fallback_reason,
+        )
+        response = ok(finalized)
+        response["source"] = "eastmoney_block_trade"
+        response["source_chain"] = source_chain
+        if fallback_reason:
+            response["fallback_reason"] = fallback_reason
+        response["degraded"] = bool(data_quality.get("missing_name_count")) or bool(data_quality.get("code_mismatch_count"))
+        response["data_quality"] = data_quality
+        return response
     except Exception as e:
         return fail(e)

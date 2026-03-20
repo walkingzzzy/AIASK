@@ -253,6 +253,45 @@ class TestStrategySpawner:
         assert artifact["summary"]["active_factor_count"] == 2
         assert artifact["degraded"] is False
 
+    @pytest.mark.asyncio
+    async def test_factor_research_builder_exposes_freshness_and_decay_metadata(self):
+        from akshare_mcp.services.strategy_factory import FactorResearchBuilder
+
+        db = MagicMock()
+        db.get_factor_ic_history = AsyncMock(side_effect=[
+            [
+                {"ic_date": "2026-03-19", "ic_value": 0.06},
+                {"ic_date": "2026-03-18", "ic_value": 0.05},
+                {"ic_date": "2026-03-17", "ic_value": 0.04},
+                {"ic_date": "2026-03-16", "ic_value": 0.03},
+                {"ic_date": "2026-03-15", "ic_value": 0.02},
+                {"ic_date": "2026-03-14", "ic_value": -0.01},
+                {"ic_date": "2026-03-13", "ic_value": -0.02},
+                {"ic_date": "2026-03-12", "ic_value": -0.01},
+                {"ic_date": "2026-03-11", "ic_value": -0.02},
+                {"ic_date": "2026-03-10", "ic_value": -0.03},
+            ],
+            [],
+            [],
+            [],
+            [],
+        ])
+
+        artifact = await FactorResearchBuilder.build(
+            db,
+            {
+                "date": "2026-03-19",
+                "factor_ic": {"value": 0.05},
+                "factor_ic_trend": {"value": "rising"},
+                "sources": {"factor_ic": {"status": "success"}},
+            },
+        )
+
+        assert artifact["latest_factor_date"] == "2026-03-19"
+        assert artifact["freshness_days"] == 0
+        assert artifact["factor_history"]["value"]["stability_tag"] in {"improving", "stable", "regime_flip"}
+        assert artifact["summary"]["quality_flags"] == []
+
     def test_fear_market_generates_rsi_and_value(self):
         spawner = StrategySpawner()
         candidates = spawner._from_fear_greed({"fear_greed_index": 20})
@@ -5863,6 +5902,45 @@ class TestStrategyFactoryScheduler:
         assert context['selection_framework']['factor_names'] == ['value', 'quality']
 
     @pytest.mark.asyncio
+    async def test_build_research_context_reuses_shared_cache_when_available(self):
+        from akshare_mcp.services.strategy_autonomy import LLMProxyStrategyGenerator
+
+        generator = LLMProxyStrategyGenerator()
+        generator._load_universe_rows = AsyncMock(side_effect=AssertionError("shared cache should avoid reloading universe"))
+        db = MagicMock()
+
+        context = await generator._build_research_context(
+            db,
+            {
+                'date': '2026-03-08',
+                'fg_level': 'greed',
+                'fear_greed_index': 63,
+                'factor_research': {
+                    'active_factors': ['value', 'quality'],
+                    'summary': {'top_factor_names': ['value', 'quality']},
+                    'preferred_strategy_types': ['value_factor', 'quality_factor'],
+                    'degraded': False,
+                },
+                '_shared_generation_context': {
+                    'research_context': {
+                        'symbol_insights': [
+                            {'code': '600519', 'trend_state': 'uptrend', 'return_20d': 0.12, 'return_5d': 0.03, 'volatility_20d': 0.02, 'industry': '白酒', 'market': 'SH'},
+                        ],
+                        'candidate_universe': [
+                            {'code': '600519', 'trend_state': 'uptrend', 'return_20d': 0.12, 'return_5d': 0.03, 'volatility_20d': 0.02, 'industry': '白酒', 'market': 'SH'},
+                        ],
+                        'universe_scan': {'total_stock_count': 1, 'scanned_stock_count': 1, 'data_ready_count': 1, 'coverage_ratio': 1.0},
+                        'analysis_scope': {'scan_limit': 1},
+                    },
+                },
+            },
+            research_task={'task_id': 'task_cache_ctx'},
+        )
+
+        assert context['universe_scan']['cache_reused'] is True
+        assert context['symbol_insights'][0]['code'] == '600519'
+
+    @pytest.mark.asyncio
     async def test_generate_event_task_local_fallback_prioritizes_breakout_categories(self):
         import pandas as pd
         from akshare_mcp.services.strategy_autonomy import LLMProxyStrategyGenerator
@@ -6995,6 +7073,63 @@ class TestStrategyFactoryScheduler:
         assert initial["factor_research"]["top_factor_names"] == ["value", "quality"]
         assert initial["factor_research"]["preferred_strategy_types"] == ["value_factor", "quality_factor"]
 
+    def test_strategy_pipeline_initial_input_accepts_collector_field_aliases(self):
+        from akshare_mcp.services.strategy_pipeline import MultiStageStrategyPipeline
+
+        initial = MultiStageStrategyPipeline._build_initial_input(
+            {
+                "snapshot_date": "2026-03-08",
+                "fear_greed_index": 67,
+                "fg_level": "greed",
+                "north_fund_3d_net": 123456789.0,
+            }
+        )
+
+        assert initial["market_snapshot"]["date"] == "2026-03-08"
+        assert initial["market_snapshot"]["fear_greed"] == 67
+        assert initial["market_snapshot"]["fear_greed_index"] == 67
+        assert initial["market_snapshot"]["sentiment"] == "greed"
+        assert initial["market_snapshot"]["north_fund"]["net_3d"] == 123456789.0
+
+    def test_rule_generator_prioritizes_factor_research_preferences(self):
+        from akshare_mcp.services.strategy_autonomy import RuleStrategyGenerator
+
+        specs = RuleStrategyGenerator().generate(
+            {
+                "fear_greed_index": 72,
+                "factor_research": {
+                    "preferred_strategy_types": ["quality_factor", "value_factor"],
+                    "summary": {"top_factor_names": ["quality", "value"]},
+                    "degraded": False,
+                },
+            },
+            limit=2,
+        )
+
+        assert [spec.strategy_type for spec in specs] == ["quality_factor", "value_factor"]
+        assert specs[0].metadata["generation_reason"]["source"] == "factor_research"
+
+    def test_reviewer_uses_factor_research_alignment(self):
+        from akshare_mcp.services.strategy_autonomy import MultiAgentStrategyReviewer, StrategySpec
+
+        reviewer = MultiAgentStrategyReviewer()
+        spec = StrategySpec(strategy_type="quality_factor", params={"lookback": 50}, name="q")
+        _, aligned = reviewer.review(
+            spec,
+            {
+                "fear_greed_index": 70,
+                "factor_research": {
+                    "preferred_strategy_types": ["quality_factor", "value_factor"],
+                    "summary": {"top_factor_names": ["quality"]},
+                    "degraded": False,
+                },
+            },
+        )
+        _, baseline = reviewer.review(spec, {"fear_greed_index": 70})
+
+        assert aligned["planner_context"]["aligned"] is True
+        assert aligned["planner_score"] > baseline["planner_score"]
+
     @pytest.mark.asyncio
     async def test_run_once_persists_external_llm_observability(self, monkeypatch):
         db = MagicMock()
@@ -7092,6 +7227,119 @@ class TestStrategyFactoryScheduler:
         assert saved_run['summary']['gate_3_provisional_passed'] == 0
         assert saved_run['summary']['gate_3_failure_reason_topn'] == []
         assert saved_run['stages']['submit']['gate_3_passed'] == 0
+
+    @pytest.mark.asyncio
+    async def test_run_once_persists_factor_research_back_to_daily_snapshot(self, monkeypatch):
+        db = MagicMock()
+        db.save_strategy_factory_run = AsyncMock()
+        db.save_daily_snapshot = AsyncMock()
+
+        class _DummyCollector:
+            async def collect(self, _db):
+                return {
+                    "date": "2026-03-09",
+                    "fear_greed_index": 58,
+                    "fg_level": "neutral",
+                    "listed_count": 1,
+                    "incubating_count": 0,
+                    "degraded": False,
+                    "completeness": {"completion_ratio": 1.0, "missing_sources": []},
+                    "failure_reasons": [],
+                }
+
+        class _DummySpawner:
+            def spawn(self, _snapshot):
+                return []
+
+            def get_last_report(self):
+                return {"summary": {"candidate_count": 0, "quota_fill_count": 0, "signal_trigger_count": 0}}
+
+        class _DummyFilter:
+            async def filter(self, candidates, _db):
+                return candidates
+
+            def get_last_report(self):
+                return {"summary": {"input_count": 0, "passed_count": 0, "failed_count": 0, "failed_reason_counts": {}, "thresholds_by_type": {}}, "passed": [], "failed": []}
+
+        class _DummyDedup:
+            async def deduplicate(self, candidates, _db):
+                return candidates
+
+            def get_last_report(self):
+                return {"summary": {"input_count": 0, "kept_count": 0, "dropped_count": 0}, "kept": [], "dropped": []}
+
+        class _DummySubmitter:
+            async def submit(self, candidates, _snapshot, _db):
+                return {
+                    "submitted": 0,
+                    "passed_quality_gate": 0,
+                    "gate_3_passed": 0,
+                    "gate_3_failed": 0,
+                    "gate_3_provisional_passed": 0,
+                    "gate_3_failure_reason_topn": [],
+                    "strategies": [],
+                }
+
+        class _DummyEliminator:
+            async def check(self, _db, _fg_level):
+                return []
+
+        async def _fake_factor_research_build(_db, _snapshot):
+            return {
+                "active_factors": ["value"],
+                "preferred_strategy_types": ["value_factor"],
+                "summary": {"active_factor_count": 1, "top_factor_names": ["value"], "preferred_strategy_types": ["value_factor"]},
+                "degraded": False,
+            }
+
+        monkeypatch.setattr("akshare_mcp.storage.get_db", lambda: db)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.DataCollector", _DummyCollector)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySpawner", _DummySpawner)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.BacktestFilter", _DummyFilter)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.Deduplicator", _DummyDedup)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySubmitter", _DummySubmitter)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.EliminationChecker", _DummyEliminator)
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.FactorResearchBuilder.build", AsyncMock(side_effect=_fake_factor_research_build))
+
+        await StrategyFactoryScheduler().run_once()
+
+        persisted_snapshot = db.save_daily_snapshot.await_args.args[1]
+        assert persisted_snapshot["factor_research"]["active_factors"] == ["value"]
+        assert persisted_snapshot["factor_research"]["preferred_strategy_types"] == ["value_factor"]
+
+    @pytest.mark.asyncio
+    async def test_run_autonomy_batches_records_pre_generation_failures(self, monkeypatch):
+        scheduler = StrategyFactoryScheduler()
+        db = MagicMock()
+
+        class _DummyScanner:
+            async def scan(self, _db, _snapshot):
+                return {
+                    "tasks": [{
+                        "task_id": "task_fail_1",
+                        "task_key": "task_fail_1",
+                        "task_source": "snapshot",
+                        "opportunity_type": "factor_acceleration",
+                    }],
+                    "summary": {"task_sources": {"snapshot": 1}, "event_task_count": 0},
+                }
+
+        class _DummyAutonomy:
+            generation_service = MagicMock()
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("evidence persistence failed")
+
+        monkeypatch.setattr("akshare_mcp.services.strategy_factory.MarketOpportunityScanner", _DummyScanner)
+        monkeypatch.setattr("akshare_mcp.services.strategy_autonomy.get_strategy_autonomy_service", lambda: _DummyAutonomy())
+        monkeypatch.setattr(scheduler, "_persist_task_evidence", _boom)
+
+        report = await scheduler._run_autonomy_batches(db, {"date": "2026-03-09", "fear_greed_index": 50})
+
+        assert report["stage"]["failed_task_count"] == 1
+        assert report["stage"]["external_llm_status"] == "failed"
+        assert report["stage"]["task_results"][0]["status"] == "failed"
+        assert report["stage"]["task_results"][0]["lifecycle_summary"]["failed_phase"] == "preparing"
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -47,10 +47,24 @@ def _safe_float(value):
         return None
 
 
+def _db_supports_acquire(db) -> bool:
+    acquire = getattr(db, "acquire", None)
+    return callable(acquire)
+
+
 def _canonical_stock_code(code: str | None) -> str:
     text = str(code or '').strip()
     digits = ''.join(ch for ch in text if ch.isdigit())
     return digits[-6:] if len(digits) >= 6 else text
+
+
+def _normalize_risk_pct(value, default: float) -> float:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return float(default)
+    if 0 < numeric <= 1:
+        numeric *= 100.0
+    return float(max(numeric, 0.0))
 
 
 def _price_limit_pct(code: str, stock_name: str | None = None) -> float:
@@ -322,6 +336,113 @@ async def _fill_order(conn, account_id: str, code: str, trade_type: str,
         new_capital, total_value, account_id
     )
     return trade_id, commission
+
+
+async def _ensure_positions_consistency(db, account_id: str) -> list[dict]:
+    """当 paper_positions 为空时，尝试基于成交记录重建持仓，避免 orders/positions 不一致。"""
+    async with db.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM paper_positions WHERE account_id=$1 ORDER BY stock_code",
+            account_id
+        )
+        if rows:
+            return [dict(row) for row in rows]
+
+        trades = await conn.fetch(
+            "SELECT * FROM paper_trades WHERE account_id=$1 ORDER BY trade_time, created_at, id",
+            account_id
+        )
+        if not trades:
+            return []
+
+    rebuilt: dict[str, dict] = {}
+    for trade in trades:
+        item = dict(trade)
+        code = str(item.get('stock_code') or '').strip()
+        if not code:
+            continue
+        quantity = int(item.get('quantity') or 0)
+        if quantity <= 0:
+            continue
+        trade_type = str(item.get('trade_type') or '').strip().lower()
+        price = float(item.get('price') or 0.0)
+        current = rebuilt.get(code) or {
+            'stock_code': code,
+            'stock_name': item.get('stock_name') or code,
+            'quantity': 0,
+            'cost_price': 0.0,
+        }
+
+        old_qty = int(current.get('quantity') or 0)
+        old_cost = float(current.get('cost_price') or 0.0)
+
+        if trade_type == 'buy':
+            new_qty = old_qty + quantity
+            new_cost = ((old_cost * old_qty) + (price * quantity)) / new_qty if new_qty > 0 else price
+            current['quantity'] = new_qty
+            current['cost_price'] = new_cost
+            current['stock_name'] = item.get('stock_name') or current.get('stock_name') or code
+            rebuilt[code] = current
+        elif trade_type == 'sell':
+            new_qty = max(old_qty - quantity, 0)
+            if new_qty <= 0:
+                rebuilt.pop(code, None)
+            else:
+                current['quantity'] = new_qty
+                rebuilt[code] = current
+
+    rebuilt_rows: list[dict] = []
+    async with db.acquire() as conn:
+        await conn.execute("DELETE FROM paper_positions WHERE account_id=$1", account_id)
+        for code, current in rebuilt.items():
+            cost_price = float(current.get('cost_price') or 0.0)
+            quantity = int(current.get('quantity') or 0)
+            current_price = await _get_price(code, db) or cost_price
+            market_value = float(current_price or 0.0) * quantity
+            profit_rate = ((float(current_price or 0.0) - cost_price) / cost_price) if cost_price else 0.0
+            await conn.execute(
+                """INSERT INTO paper_positions
+                   (account_id, stock_code, stock_name, quantity, cost_price, current_price, market_value, profit_rate, created_at, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
+                   ON CONFLICT (account_id, stock_code) DO UPDATE SET
+                       stock_name=EXCLUDED.stock_name,
+                       quantity=EXCLUDED.quantity,
+                       cost_price=EXCLUDED.cost_price,
+                       current_price=EXCLUDED.current_price,
+                       market_value=EXCLUDED.market_value,
+                       profit_rate=EXCLUDED.profit_rate,
+                       updated_at=NOW()""",
+                account_id,
+                code,
+                current.get('stock_name') or code,
+                quantity,
+                cost_price,
+                current_price,
+                market_value,
+                profit_rate,
+            )
+            rebuilt_rows.append({
+                'account_id': account_id,
+                'stock_code': code,
+                'stock_name': current.get('stock_name') or code,
+                'quantity': quantity,
+                'cost_price': cost_price,
+                'current_price': current_price,
+                'market_value': market_value,
+                'profit_rate': profit_rate,
+            })
+
+        account = await conn.fetchrow("SELECT * FROM paper_accounts WHERE id=$1", account_id)
+        if account:
+            current_capital = float(account.get('current_capital') or 0.0)
+            total_market_value = float(sum(row.get('market_value') or 0.0 for row in rebuilt_rows))
+            await conn.execute(
+                "UPDATE paper_accounts SET total_value=$1, updated_at=NOW() WHERE id=$2",
+                current_capital + total_market_value,
+                account_id,
+            )
+
+    return rebuilt_rows
 
 
 async def _check_risk_before_buy(conn, account_id: str, code: str, amount: float) -> str | None:
@@ -628,6 +749,7 @@ def register_paper_trading_manager(mcp):
                 account_id = kwargs.get('account_id')
                 if not account_id:
                     account_id = await _ensure_account(user_id, db)
+                await _ensure_positions_consistency(db, account_id)
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
                         "SELECT * FROM paper_positions WHERE account_id=$1", account_id
@@ -699,6 +821,8 @@ def register_paper_trading_manager(mcp):
                     pending = await conn.fetchval(
                         "SELECT COUNT(*) FROM paper_orders WHERE account_id=$1 AND status='pending'", account_id
                     )
+                if not positions:
+                    positions = await _ensure_positions_consistency(db, account_id)
                 acct = dict(account)
                 initial = float(acct.get('initial_capital') or 0)
                 total = float(acct.get('total_value') or 0)
@@ -721,9 +845,12 @@ def register_paper_trading_manager(mcp):
 
             # --- update_prices ---
             elif action == 'update_prices':
+                if not _db_supports_acquire(db):
+                    return fail('update_prices 执行失败')
                 account_id = kwargs.get('account_id')
                 if not account_id:
                     account_id = await _ensure_account(user_id, db)
+                await _ensure_positions_consistency(db, account_id)
                 positions = await _refresh_account_prices(db, account_id)
                 async with db.acquire() as conn:
                     enriched_positions = []
@@ -759,10 +886,27 @@ def register_paper_trading_manager(mcp):
                 account_id = kwargs.get('account_id')
                 if not account_id:
                     account_id = await _ensure_account(user_id, db)
+                raw_rules = kwargs.get('rules')
+                if isinstance(raw_rules, str):
+                    try:
+                        raw_rules = json.loads(raw_rules or "{}")
+                    except Exception:
+                        raw_rules = {}
+                if not isinstance(raw_rules, dict):
+                    raw_rules = {}
                 rules = {
-                    'max_position_pct': float(kwargs.get('max_position_pct', DEFAULT_RISK_RULES['max_position_pct'])),
-                    'max_drawdown_pct': float(kwargs.get('max_drawdown_pct', DEFAULT_RISK_RULES['max_drawdown_pct'])),
-                    'stop_loss_pct': float(kwargs.get('stop_loss_pct', DEFAULT_RISK_RULES['stop_loss_pct'])),
+                    'max_position_pct': _normalize_risk_pct(
+                        raw_rules.get('max_position_pct', kwargs.get('max_position_pct')),
+                        DEFAULT_RISK_RULES['max_position_pct'],
+                    ),
+                    'max_drawdown_pct': _normalize_risk_pct(
+                        raw_rules.get('max_drawdown_pct', kwargs.get('max_drawdown_pct')),
+                        DEFAULT_RISK_RULES['max_drawdown_pct'],
+                    ),
+                    'stop_loss_pct': _normalize_risk_pct(
+                        raw_rules.get('stop_loss_pct', kwargs.get('stop_loss_pct')),
+                        DEFAULT_RISK_RULES['stop_loss_pct'],
+                    ),
                 }
                 async with db.acquire() as conn:
                     await conn.execute(
@@ -795,4 +939,3 @@ def register_paper_trading_manager(mcp):
             logger.error("[PaperTrading] %s error: %s", action, e, exc_info=True)
             message = str(e).strip() or f'{action} 执行失败'
             return fail(message)
-

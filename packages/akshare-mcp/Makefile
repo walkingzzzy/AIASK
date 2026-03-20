@@ -1,6 +1,6 @@
 # AKShare MCP Makefile
 
-.PHONY: help install test test-perf lint format clean
+.PHONY: help install test test-perf lint format tool-registry scenario-audit healthcheck healthcheck-extended healthcheck-full tool-description-audit clean
 
 help:
 	@echo "Available commands:"
@@ -9,6 +9,12 @@ help:
 	@echo "  make test-perf   - Run performance benchmarks"
 	@echo "  make lint        - Run linting"
 	@echo "  make format      - Format code"
+	@echo "  make tool-registry - Export runtime tool registry"
+	@echo "  make scenario-audit - Audit legacy real-world scenario artifacts"
+	@echo "  make healthcheck - Run tool healthcheck (quick)"
+	@echo "  make healthcheck-extended - Run tool healthcheck (extended)"
+	@echo "  make healthcheck-full - Run tool healthcheck (full)"
+	@echo "  make tool-description-audit - Generate tool description audit report"
 	@echo "  make clean       - Clean cache files"
 
 install:
@@ -26,6 +32,24 @@ lint:
 
 format:
 	black src/ tests/ --line-length=120
+
+tool-registry:
+	python scripts/export_tool_registry.py
+
+scenario-audit:
+	python scripts/audit_real_world_scenarios.py
+
+healthcheck:
+	python scripts/run_tool_healthcheck.py --mode quick
+
+healthcheck-extended:
+	python scripts/run_tool_healthcheck.py --mode extended
+
+healthcheck-full:
+	python scripts/run_tool_healthcheck.py --mode full
+
+tool-description-audit:
+	python scripts/generate_tool_description_audit.py
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +

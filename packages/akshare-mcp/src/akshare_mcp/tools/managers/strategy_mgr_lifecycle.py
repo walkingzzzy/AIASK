@@ -137,7 +137,7 @@ async def handle_incubation_overview(db, params: dict) -> dict:
 
 
 async def handle_factory_status(db, params: dict) -> dict:
-    from ...services.strategy_factory import get_strategy_factory_scheduler
+    from strategy_factory import get_strategy_factory_scheduler
 
     scheduler = get_strategy_factory_scheduler()
     status = scheduler.status()
@@ -155,7 +155,7 @@ async def handle_factory_status(db, params: dict) -> dict:
 
 
 async def handle_factory_run_once(db, params: dict) -> dict:
-    from ...services.strategy_factory import get_strategy_factory_scheduler
+    from strategy_factory import get_strategy_factory_scheduler
 
     scheduler = get_strategy_factory_scheduler()
     return ok(await scheduler.run_once())
@@ -188,7 +188,7 @@ async def run_quality_gate(
     backtest_metrics: Optional[dict] = None,
 ) -> dict:
     """Run the shared submission-stage quality gate and normalize the result."""
-    from ...services.strategy_factory.submission_gate import run_submission_quality_gate
+    from strategy_factory import run_submission_quality_gate
 
     return normalize_quality_gate_result(
         await run_submission_quality_gate(

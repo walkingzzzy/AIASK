@@ -19,6 +19,7 @@ dependencies = [
     # 技术分析依赖
     "pandas-ta>=0.3.14",
     "TA-Lib>=0.4.28",
+    "strategy-factory",
 ]
 
 [project.optional-dependencies]
@@ -44,3 +45,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/akshare_mcp"]
+
+[tool.uv.sources]
+strategy-factory = { path = "../strategy-factory", editable = true }

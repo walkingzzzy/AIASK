@@ -35,7 +35,6 @@ _FALLBACK_SKILLS: List[Dict[str, Any]] = [
 ]
 
 _SKILL_STATUS_VALUES = {"registered", "executable", "deprecated"}
-
 _ORCHESTRATED_SKILL_OUTPUT_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -67,44 +66,6 @@ _SKILL_CONTRACTS: Dict[str, Dict[str, Any]] = {
                 "minute_period": {"type": "string"},
                 "start_date": {"type": "string"},
                 "end_date": {"type": "string"},
-            },
-            "additionalProperties": True,
-        },
-        "output_schema": _ORCHESTRATED_SKILL_OUTPUT_SCHEMA,
-    },
-    "akshare-tdx-runtime-ops": {
-        "supported_tasks": ["runtime_precheck", "refresh_cache", "refresh_kline"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task": {
-                    "type": "string",
-                    "enum": ["runtime_precheck", "refresh_cache", "refresh_kline"],
-                },
-                "market": {"type": "string"},
-                "data_type": {"type": "string"},
-                "stock_codes": {"type": "array", "items": {"type": "string"}},
-                "code": {"type": "string"},
-                "period": {"type": "string"},
-                "force": {"type": "boolean"},
-            },
-            "additionalProperties": True,
-        },
-        "output_schema": _ORCHESTRATED_SKILL_OUTPUT_SCHEMA,
-    },
-    "akshare-tdx-formula-research": {
-        "supported_tasks": ["formula_check", "smoke_test"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task": {"type": "string", "enum": ["formula_check", "smoke_test"]},
-                "code": {"type": "string"},
-                "period": {"type": "string"},
-                "count": {"type": "integer", "minimum": 1},
-                "formula_name": {"type": "string"},
-                "formula_args": {"type": "string"},
-                "run_screen": {"type": "boolean"},
-                "stock_pool": {"type": "array", "items": {"type": "string"}},
             },
             "additionalProperties": True,
         },
@@ -384,21 +345,6 @@ _SKILL_CONTRACTS.update(
             },
             "output_schema": _ORCHESTRATED_SKILL_OUTPUT_SCHEMA,
         },
-        "akshare-tdx-front-sync": {
-            "supported_tasks": ["sync_blueprint", "scenario_pack", "smoke_test"],
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "task": {"type": "string", "enum": ["sync_blueprint", "scenario_pack", "smoke_test"]},
-                    "watchlist_name": {"type": "string"},
-                    "codes": {"type": "array", "items": {"type": "string"}},
-                    "message_title": {"type": "string"},
-                    "file_name": {"type": "string"},
-                },
-                "additionalProperties": True,
-            },
-            "output_schema": _ORCHESTRATED_SKILL_OUTPUT_SCHEMA,
-        },
     }
 )
 
@@ -508,7 +454,7 @@ def _parse_skill_md(md_path: Path) -> Dict[str, Any]:
 def _load_skills() -> List[Dict[str, Any]]:
     skills_roots = _list_skill_roots()
     if not skills_roots:
-        return _FALLBACK_SKILLS
+        return _filter_visible_skills(_FALLBACK_SKILLS)
 
     deduped: Dict[str, Dict[str, Any]] = {}
     for skills_root in skills_roots:
@@ -523,10 +469,14 @@ def _load_skills() -> List[Dict[str, Any]]:
 
     skills = list(deduped.values())
     if not skills:
-        return _FALLBACK_SKILLS
+        return _filter_visible_skills(_FALLBACK_SKILLS)
 
     skills.sort(key=lambda x: x.get("id", ""))
-    return skills
+    return list(skills or [])
+
+
+def _available_skill_handlers() -> Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]]:
+    return dict(_SKILL_EXECUTORS)
 
 
 def _load_skill_coverage_audit() -> Dict[str, Any] | None:
@@ -559,11 +509,12 @@ def _resolve_skill_status(skill: Dict[str, Any], *, handler_available: bool, con
 
 
 def _enrich_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    available_handlers = _available_skill_handlers()
     enriched: List[Dict[str, Any]] = []
     for skill in skills:
         skill_id = str(skill.get("id") or "")
         contract = dict(_SKILL_CONTRACTS.get(skill_id) or {})
-        handler_available = skill_id in _SKILL_EXECUTORS
+        handler_available = skill_id in available_handlers
         status = _resolve_skill_status(skill, handler_available=handler_available, contract=contract)
         executable = status == "executable" and handler_available
         execution_mode = "deprecated" if status == "deprecated" else ("orchestrated" if executable else "no_handler")
@@ -608,6 +559,7 @@ def _build_skill_registry_summary(skills: List[Dict[str, Any]]) -> Dict[str, Any
         }
     )
     executors = dict(audit.get("executors") or {})
+    available_handlers = sorted(_available_skill_handlers().keys())
     return {
         "total_count": total,
         "executable_count": executable,
@@ -616,7 +568,7 @@ def _build_skill_registry_summary(skills: List[Dict[str, Any]]) -> Dict[str, Any
         "executor_coverage_ratio": round(executable / total, 4) if total else 0.0,
         "executable_skill_ids": [skill.get("id") for skill in skills if skill.get("executable")],
         "execution_gap": execution_gap,
-        "available_handlers": sorted(_SKILL_EXECUTORS.keys()),
+        "available_handlers": available_handlers,
         "tool_reference_coverage": tool_reference_coverage or None,
         "executor_audit": executors or None,
     }
@@ -903,51 +855,6 @@ def _static_step(step: str, output: Dict[str, Any]) -> Dict[str, Any]:
     return _step_result(step, output=output)
 
 
-def _exec_tdx_runtime_ops(params: Dict[str, Any]) -> Dict[str, Any]:
-    from .tdx_realtime import tdx_manage_subscription, tdx_refresh_data
-    from .tdx_trading_data import tdx_list_available_fields
-
-    task = str(params.get("task") or "runtime_precheck").strip().lower()
-    market = str(params.get("market") or "AG").strip().upper()
-    data_type = str(params.get("data_type") or "all").strip().lower()
-
-    steps: List[Dict[str, Any]] = []
-    if task in {"runtime_precheck", "precheck", "smoke_test"}:
-        steps.append(_run_step("tdx_refresh_data", tdx_refresh_data, refresh_type="cache", market=market, force=False))
-        steps.append(_run_step("tdx_manage_subscription", tdx_manage_subscription, action="list"))
-        steps.append(_run_step("tdx_list_available_fields", tdx_list_available_fields, data_type=data_type))
-        return _finalize_skill_result(task, steps)
-
-    if task in {"refresh_cache", "refresh"}:
-        steps.append(_run_step("tdx_refresh_data", tdx_refresh_data, refresh_type="cache", market=market, force=bool(params.get("force", False))))
-        return _finalize_skill_result(task, steps)
-
-    if task in {"refresh_kline", "kline_refresh"}:
-        stock_codes = params.get("stock_codes") or [str(params.get("code") or "600519")]
-        period = str(params.get("period") or "1d")
-        steps.append(
-            _run_step(
-                "tdx_refresh_data",
-                tdx_refresh_data,
-                refresh_type="kline",
-                stock_codes=stock_codes,
-                period=period,
-            )
-        )
-        return _finalize_skill_result(task, steps)
-
-    return {
-        "task": task,
-        "status": "unsupported_task",
-        "steps": [],
-        "summary": {
-            "total_steps": 0,
-            "failed_steps": [],
-            "supported_tasks": ["runtime_precheck", "refresh_cache", "refresh_kline"],
-        },
-    }
-
-
 async def _exec_market(params: Dict[str, Any]) -> Dict[str, Any]:
     from .market.kline import get_kline, get_kline_data, get_minute_kline
     from .market.order_book import get_order_book
@@ -997,59 +904,6 @@ async def _exec_market(params: Dict[str, Any]) -> Dict[str, Any]:
             "total_steps": 0,
             "failed_steps": [],
             "supported_tasks": ["smoke_test", "quick_scan", "quote_only"],
-        },
-    }
-
-
-def _exec_tdx_formula_research(params: Dict[str, Any]) -> Dict[str, Any]:
-    from .tdx_formula.api import calculate_indicator, get_formula_data, screen_stocks
-
-    task = str(params.get("task") or "formula_check").strip().lower()
-    code = normalize_code(str(params.get("code") or "600519"))
-    period = str(params.get("period") or "1d")
-    count = int(params.get("count", 100) or 100)
-    formula_name = str(params.get("formula_name") or "MACD").strip().upper()
-    formula_args = str(params.get("formula_args") or "12,26,9")
-
-    steps: List[Dict[str, Any]] = []
-    if task in {"formula_check", "smoke_test"}:
-        steps.append(_run_step("tdx_get_formula_data", get_formula_data, stock_code=code, period=period, count=count))
-        steps.append(
-            _run_step(
-                "tdx_calculate_indicator",
-                calculate_indicator,
-                stock_code=code,
-                formula_name=formula_name,
-                formula_args=formula_args,
-                period=period,
-                count=count,
-                dividend_type=1,
-            )
-        )
-        run_screen = bool(params.get("run_screen", True))
-        if run_screen:
-            stock_pool = params.get("stock_pool") or ["600519", "000001", "000858", "600036", "601318"]
-            steps.append(
-                _run_step(
-                    "tdx_screen_stocks",
-                    screen_stocks,
-                    formula_name=params.get("screen_formula", "MACD金叉"),
-                    formula_args=str(params.get("screen_args") or ""),
-                    stock_pool=stock_pool,
-                    period=period,
-                    count=min(count, 120),
-                )
-            )
-        return _finalize_skill_result(task, steps)
-
-    return {
-        "task": task,
-        "status": "unsupported_task",
-        "steps": [],
-        "summary": {
-            "total_steps": 0,
-            "failed_steps": [],
-            "supported_tasks": ["formula_check", "smoke_test"],
         },
     }
 
@@ -2211,44 +2065,9 @@ async def _exec_quant_research_process(params: Dict[str, Any]) -> Dict[str, Any]
     return result
 
 
-def _exec_tdx_front_sync(params: Dict[str, Any]) -> Dict[str, Any]:
-    task = str(params.get("task") or "sync_blueprint").strip().lower()
-    supported_tasks = ["sync_blueprint", "scenario_pack", "smoke_test"]
-    if task not in supported_tasks:
-        return _unsupported_task_result(task, supported_tasks)
-
-    codes = _normalize_codes_input(params.get("codes"), ["600519", "000001", "000858"])
-    watchlist_name = str(params.get("watchlist_name") or "strategy_followup").strip()
-    scenario_pack = {
-        "watchlist_name": watchlist_name,
-        "codes": codes,
-        "message_title": str(params.get("message_title") or "TDX sync package"),
-        "file_name": str(params.get("file_name") or "strategy_sync.txt"),
-        "push_sequence": ["push_message", "push_warn", "send_backtest_result", "tdx_send_file"],
-        "fallback_sequence": ["watchlist_manager(action=add)", "alerts_manager(action=create)", "retry_after_client_recovery"],
-    }
-    steps = [
-        _static_step("prepare_sync_blueprint", scenario_pack),
-        _static_step(
-            "define_failure_compensation",
-            {
-                "compensation_rules": [
-                    "If TDX client is unavailable, keep the watchlist and alert plan active.",
-                    "Re-send files and backtest views after the client reconnects.",
-                    "Do not treat push failure as a signal invalidation event.",
-                ]
-            },
-        ),
-    ]
-    result = _finalize_skill_result(task, steps)
-    result["summary"]["watchlist_name"] = watchlist_name
-    return result
-
-
 _SKILL_EXECUTORS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "akshare-asset-allocation": _exec_asset_allocation,
     "akshare-fee-costs": _exec_fee_costs,
-    "akshare-tdx-runtime-ops": _exec_tdx_runtime_ops,
     "akshare-fund-news": _exec_fund_news,
     "akshare-fundamental": _exec_fundamental,
     "akshare-investor-protection": _exec_investor_protection,
@@ -2263,8 +2082,6 @@ _SKILL_EXECUTORS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "akshare-quant-methods-foundation": _exec_quant_methods_foundation,
     "akshare-quant-ml-signals": _exec_quant_ml_signals,
     "akshare-quant-research-process": _exec_quant_research_process,
-    "akshare-tdx-formula-research": _exec_tdx_formula_research,
-    "akshare-tdx-front-sync": _exec_tdx_front_sync,
     "akshare-fund-manager-pro": _exec_fund_manager_pro,
 }
 
@@ -2272,6 +2089,11 @@ _SKILL_EXECUTORS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
 def register(mcp):
     @mcp.tool()
     def list_skills():
+        """列出当前可发现的内置技能及其执行状态。
+
+        Returns:
+            dict: 标准技能响应，包含技能列表、数量、来源和注册表摘要。
+        """
         started_at = datetime.now()
         skills = _enrich_skills(_load_skills())
         source = _skills_source(skills)
@@ -2287,6 +2109,14 @@ def register(mcp):
 
     @mcp.tool()
     def search_skills(keyword: str):
+        """按关键字检索技能元数据。
+
+        Args:
+            keyword: 技能 ID、名称、分类或描述关键字；为空时返回全部技能。
+
+        Returns:
+            dict: 标准技能响应，包含匹配技能和注册表摘要。
+        """
         started_at = datetime.now()
         skills = _enrich_skills(_load_skills())
         source = _skills_source(skills)
@@ -2321,6 +2151,15 @@ def register(mcp):
 
     @mcp.tool()
     async def run_skill(skill_id: str, params: dict = None):
+        """执行指定技能的编排处理器。
+
+        Args:
+            skill_id: 技能唯一标识。
+            params: 传递给技能执行器的参数字典，缺省时会被标准化为空字典。
+
+        Returns:
+            dict: 标准技能成功/失败响应，包含执行结果、错误码和回退元信息。
+        """
         started_at = datetime.now()
         normalized_params = _normalize_params(params)
         skills = _enrich_skills(_load_skills())
@@ -2338,7 +2177,8 @@ def register(mcp):
                 detail={"skill_id": skill_id},
             )
 
-        executor = _SKILL_EXECUTORS.get(skill_id)
+        available_handlers = _available_skill_handlers()
+        executor = available_handlers.get(skill_id)
         if skill.get("status") == "deprecated":
             fallback_reasons = []
             if source != "codex_registry":
@@ -2370,7 +2210,7 @@ def register(mcp):
                 error_code="SKILL_NOT_EXECUTABLE",
                 detail={
                     "skill": skill,
-                    "available_handlers": sorted(_SKILL_EXECUTORS.keys()),
+                    "available_handlers": sorted(available_handlers.keys()),
                 },
             )
 

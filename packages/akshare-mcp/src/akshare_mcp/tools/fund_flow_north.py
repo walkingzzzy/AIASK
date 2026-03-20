@@ -18,7 +18,7 @@ import akshare as ak
 import pandas as pd
 import requests
 
-from ..utils import fail, normalize_code, ok, parse_numeric, safe_float
+from ..utils import fail, normalize_code, ok, parse_numeric, safe_float, suppress_stdout
 from ..data_source import data_source
 from ..core.cache_manager import cached
 from ..core.rate_limiter import get_limiter
@@ -62,34 +62,68 @@ def _format_date(d: date) -> str:
 
 
 def _north_fund_is_valid(results: list[dict], stale_days: int) -> bool:
-    if not results:
+    if not _north_fund_has_values(results) or not _north_fund_is_plausible(results):
         return False
-    has_flow = any(
-        (r.get("shConnect") not in (None, 0))
-        or (r.get("szConnect") not in (None, 0))
-        or (r.get("total") not in (None, 0))
-        for r in results
-    )
-    if not has_flow:
+    if not _north_fund_has_flow(results):
         return False
-    latest = max((_parse_date(r.get("date")) for r in results), default=None)
+    latest = _north_fund_latest_date(results)
     if latest is None:
         return False
-    if stale_days > 0:
-        if (date.today() - latest).days > stale_days:
-            return False
+    if stale_days > 0 and (date.today() - latest).days > stale_days:
+        return False
     return True
 
 
-def _north_fund_has_flow(results: list[dict]) -> bool:
+def _north_fund_latest_date(results: list[dict]) -> Optional[date]:
+    return max((_parse_date(r.get("date")) for r in results), default=None)
+
+
+def _north_fund_age_days(results: list[dict]) -> Optional[int]:
+    latest = _north_fund_latest_date(results)
+    if latest is None:
+        return None
+    return max((date.today() - latest).days, 0)
+
+
+def _north_fund_has_values(results: list[dict]) -> bool:
     if not results:
         return False
     return any(
-        (r.get("shConnect") not in (None, 0))
-        or (r.get("szConnect") not in (None, 0))
-        or (r.get("total") not in (None, 0))
+        r.get("shConnect") is not None
+        and r.get("szConnect") is not None
+        and r.get("total") is not None
         for r in results
     )
+
+
+def _north_fund_has_flow(results: list[dict]) -> bool:
+    if not _north_fund_has_values(results):
+        return False
+    return any(
+        abs(parse_numeric(r.get("shConnect")) or 0.0) > 0
+        or abs(parse_numeric(r.get("szConnect")) or 0.0) > 0
+        or abs(parse_numeric(r.get("total")) or 0.0) > 0
+        for r in results
+    )
+
+
+def _north_fund_is_plausible(results: list[dict]) -> bool:
+    if not results:
+        return False
+    quota = _NORTH_FUND_DAILY_QUOTA
+    saturation_rows = 0
+    comparable_rows = 0
+    for row in results:
+        sh = parse_numeric(row.get("shConnect"))
+        sz = parse_numeric(row.get("szConnect"))
+        if sh is None or sz is None:
+            continue
+        comparable_rows += 1
+        if abs(sh) >= quota * 0.98 and abs(sz) >= quota * 0.98:
+            saturation_rows += 1
+    if comparable_rows and saturation_rows / comparable_rows >= 0.6:
+        return False
+    return True
 
 
 def _tushare_pick_multiplier(
@@ -404,8 +438,10 @@ def _north_fund_from_akshare(days: int) -> list[dict]:
             signal.alarm(30)
 
         try:
-            sh_df = ak.stock_hsgt_hist_em(symbol="沪股通")
-            sz_df = ak.stock_hsgt_hist_em(symbol="深股通")
+            with suppress_stdout("[north_fund] ak.stock_hsgt_hist_em_sh"):
+                sh_df = ak.stock_hsgt_hist_em(symbol="沪股通")
+            with suppress_stdout("[north_fund] ak.stock_hsgt_hist_em_sz"):
+                sz_df = ak.stock_hsgt_hist_em(symbol="深股通")
         finally:
             if sys.platform != "win32":
                 signal.alarm(0)
@@ -483,7 +519,10 @@ def _north_fund_from_em_summary(days: int) -> list[dict]:
 
     summary: dict[str, dict[str, Optional[float]]] = {}
     for _, row in df.iterrows():
-        date_str = _format_date(_parse_date(row.get("交易日")) or date.today())
+        trade_date = _parse_date(row.get("交易日"))
+        if trade_date is None:
+            continue
+        date_str = _format_date(trade_date)
         board = str(row.get("板块") or "").strip()
         direction = str(row.get("资金方向") or "").strip()
         if direction != "北向":
@@ -547,7 +586,8 @@ def get_north_fund(days: int = 30) -> dict:
             return fail("days 必须为正整数")
 
         sources_status = []
-        stale_candidates: list[tuple[str, list[dict]]] = []
+        fallback_candidates: list[tuple[str, list[dict], int, bool]] = []
+        max_stale_age_days = max(int(_NORTH_FUND_STALE_DAYS) * 3, 45)
 
         if _NORTH_FUND_FAST_MODE:
             source_chain = [
@@ -566,19 +606,66 @@ def get_north_fund(days: int = 30) -> dict:
             results = fetcher(days)
             if _north_fund_is_valid(results, _NORTH_FUND_STALE_DAYS):
                 return ok({"items": results, "source": name})
-            if _north_fund_has_flow(results):
-                stale_candidates.append((name, results))
-            sources_status.append(f"{name}: invalid/stale")
+            age_days = _north_fund_age_days(results)
+            has_values = _north_fund_has_values(results)
+            has_flow = _north_fund_has_flow(results)
+            plausible = _north_fund_is_plausible(results)
 
-        if stale_candidates:
-            def latest_date(rows: list[dict]) -> Optional[date]:
-                return max((_parse_date(r.get("date")) for r in rows), default=None)
+            if (
+                has_values
+                and plausible
+                and age_days is not None
+                and age_days <= max_stale_age_days
+            ):
+                fallback_candidates.append((name, results, age_days, has_flow))
 
-            best_source, best_rows = max(
-                stale_candidates,
-                key=lambda item: latest_date(item[1]) or date.min,
+            reason_bits = []
+            if not results:
+                reason_bits.append("empty")
+            elif not plausible:
+                reason_bits.append("implausible")
+            if age_days is None:
+                reason_bits.append("bad_date")
+            elif age_days > _NORTH_FUND_STALE_DAYS:
+                reason_bits.append("stale")
+            if has_values and not has_flow:
+                reason_bits.append("no_flow")
+            if not has_values:
+                reason_bits.append("missing_values")
+            sources_status.append(f"{name}: {'/'.join(dict.fromkeys(reason_bits)) or 'invalid'}")
+
+        if fallback_candidates:
+            best_source, best_rows, stale_age_days, has_flow = max(
+                fallback_candidates,
+                key=lambda item: (
+                    1 if item[3] else 0,
+                    -(item[2]),
+                    len(item[1]),
+                ),
             )
-            result = ok({"items": best_rows, "source": f"{best_source}_stale", "stale": True})
+            is_stale = stale_age_days > _NORTH_FUND_STALE_DAYS
+            is_partial = (not has_flow) or len(best_rows) < min(days, 2)
+            suffix: list[str] = []
+            if is_partial:
+                suffix.append("partial")
+            if is_stale:
+                suffix.append("stale")
+            source_name = best_source if not suffix else f"{best_source}_{'_'.join(suffix)}"
+            message = None
+            if is_partial and not has_flow:
+                message = "已回退到最近可用的结构化北向资金快照，但净流值仍为 0，请结合交易时段或上游刷新状态判断。"
+            elif is_stale:
+                message = "已回退到最近有效交易日的北向资金数据。"
+            result = ok(
+                {
+                    "items": best_rows,
+                    "source": source_name,
+                    "stale": is_stale,
+                    "stale_age_days": stale_age_days,
+                    "partial": is_partial,
+                    "message": message,
+                }
+            )
             result["_no_cache"] = True
             return result
 

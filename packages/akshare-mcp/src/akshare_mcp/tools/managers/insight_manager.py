@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import re
 import statistics
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ...utils import fail, ok
+from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
 
 
 _PLACEHOLDER_PATTERN = re.compile(r"\{([a-zA-Z0-9_]+)\}")
@@ -418,17 +419,19 @@ async def _enrich_daily_kwargs(kwargs: dict) -> dict:
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
-    raw = kwargs.get("kwargs")
-    if isinstance(raw, dict):
-        kwargs = {**kwargs, **raw}
-    elif isinstance(raw, str):
-        try:
-            extra = json.loads(raw or "{}")
-            if isinstance(extra, dict):
-                kwargs = {**kwargs, **extra}
-        except Exception:
-            pass
-    return kwargs
+    return normalize_manager_kwargs(kwargs)
+
+
+def _dedupe_chain(values: list[str]) -> list[str]:
+    chain = []
+    seen = set()
+    for value in values:
+        label = str(value or "").strip()
+        if not label or label in seen:
+            continue
+        chain.append(label)
+        seen.add(label)
+    return chain
 
 
 def _repo_root() -> Path:
@@ -613,11 +616,30 @@ def register_insight_manager(mcp):
         - daily_brief
         - generate_report
         """
+        start_time = time.perf_counter()
         try:
             kwargs = _normalize_kwargs(dict(kwargs))
 
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="insight_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="insight_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
             if action == "help":
-                return ok(
+                return _ok(
                     {
                         "supported_actions": {
                             "list": "list available operations",
@@ -626,11 +648,12 @@ def register_insight_manager(mcp):
                             "generate_report": "auto-fill daily/weekly/monthly template and persist markdown+json",
                             "help": "show help information",
                         }
-                    }
+                    },
+                    source_chain=["insight_manager"],
                 )
 
             if action == "list":
-                return ok(
+                return _ok(
                     {
                         "actions": [
                             {
@@ -650,7 +673,8 @@ def register_insight_manager(mcp):
                             },
                         ],
                         "count": 3,
-                    }
+                    },
+                    source_chain=["insight_manager"],
                 )
 
             if action == "generate":
@@ -678,36 +702,47 @@ def register_insight_manager(mcp):
                         "recommendation": "focus on relative strength with risk budget constraints",
                     },
                 }
-                return ok(
+                return _ok(
                     {
                         "topic": topic,
                         "code": code,
                         "insight": insight.get(topic, insight["market"]),
                         "generated_at": datetime.now().strftime("%Y-%m-%d"),
-                    }
+                    },
+                    source_chain=["insight_manager"],
                 )
 
             if action == "daily_brief":
-                return ok(
+                return _ok(
                     {
                         "date": datetime.now().strftime("%Y-%m-%d"),
                         "market_summary": "Indices moved in a narrow range with mild liquidity improvement.",
                         "hot_sectors": ["technology", "consumer", "pharma"],
                         "key_events": ["macro policy watch", "earnings season follow-up"],
-                    }
+                    },
+                    source_chain=["insight_manager"],
                 )
 
             if action == "generate_report":
+                source_chain = ["insight_manager", "templates.report"]
                 report_type = str(kwargs.get("report_type", "daily") or "daily").strip().lower()
                 if report_type not in _TEMPLATE_FILES:
-                    return fail("report_type must be one of daily/weekly/monthly")
+                    return _fail("report_type must be one of daily/weekly/monthly", source_chain=source_chain)
 
                 if report_type == "daily":
                     kwargs = await _enrich_daily_kwargs(kwargs)
+                    source_chain.extend(
+                        [
+                            "semantic.daily_report.generate_daily_report",
+                            "news.news_feed.get_market_news",
+                            "market.kline.get_kline_data",
+                            "market.quote.get_batch_quotes",
+                        ]
+                    )
 
                 tpl_path = _template_path(report_type)
                 if not tpl_path.exists():
-                    return fail(f"template not found: {tpl_path.as_posix()}")
+                    return _fail(f"template not found: {tpl_path.as_posix()}", source_chain=source_chain)
 
                 payload = _build_payload(report_type, kwargs)
                 template_text = tpl_path.read_text(encoding="utf-8")
@@ -715,8 +750,9 @@ def register_insight_manager(mcp):
 
                 output_dir = str(kwargs.get("output_dir", "reports") or "reports")
                 artifacts = _write_report_artifacts(report_type, markdown, payload, output_dir)
+                source_chain.append("filesystem.write_report_artifacts")
 
-                return ok(
+                return _ok(
                     {
                         "report_type": report_type,
                         "artifacts": artifacts,
@@ -731,9 +767,19 @@ def register_insight_manager(mcp):
                             "trigger_conditions": payload.get("trigger_conditions"),
                         },
                         "generated_at": payload.get("generated_at"),
-                    }
+                    },
+                    source_chain=_dedupe_chain(source_chain),
                 )
 
-            return fail("Unknown action: {0}. Supported: help, list, generate, daily_brief, generate_report".format(action))
+            return _fail(
+                "Unknown action: {0}. Supported: help, list, generate, daily_brief, generate_report".format(action),
+                source_chain=["insight_manager"],
+            )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="insight_manager",
+                action=action,
+                started_at=start_time,
+                source_chain=["insight_manager"],
+            )

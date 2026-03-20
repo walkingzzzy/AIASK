@@ -117,9 +117,7 @@ export default function HomePage() {
   );
 
   const watchlistItems = useWatchlistStore((s) => s.groups.flatMap((g) => g.items));
-  const syncFromServer = useWatchlistStore((s) => s.syncFromServer);
   const recentStocks = useStockContext((s) => s.recent);
-  useEffect(() => { syncFromServer(); }, [syncFromServer]);
 
   /* ── WS real-time quotes ─────────────────────────────────────── */
   const wsQuotesRef = useRef<Map<string, DashboardQuoteSnapshot>>(new Map());
@@ -266,22 +264,17 @@ export default function HomePage() {
   /* ── Render ────────────────────────────────────────────────────── */
   return (
     <PageContainer>
-      <PersonalDashboard
-        nickname={nickname} paperSummary={paperSummary} paperAccount={paperAccount}
-        paperPositions={paperPositions} activeAlerts={activeAlerts} watchlistItems={watchlistItems}
-        recentStocks={recentStocks} quoteMap={quoteMap} batchQIsFetching={batchQ.isFetching}
-        mounted={mounted} marketNews={marketNews} quickActions={quickActions}
-      />
       <MarketOverview
         mounted={mounted} dateStr={dateStr} lastUpdated={lastUpdated} fgValue={fgValue} luStats={luStats}
         latestNorth={latestNorth} fmtAmount={fmtAmount} dashboardVisibility={dashboardVisibility}
         idxQ={idxQ} validIndices={validIndices} INDEX_CODES={INDEX_CODES}
         sectorQ={sectorQ} sectors={sectors}
       />
-      <SystemStatus
-        moduleStatuses={moduleStatuses} showDashboardSettings={showDashboardSettings}
-        setShowDashboardSettings={setShowDashboardSettings} dashboardVisibility={dashboardVisibility}
-        toggleDashboardModule={toggleDashboardModule} healthQ={healthQ} health={health} mcp={mcp}
+      <PersonalDashboard
+        nickname={nickname} paperSummary={paperSummary} paperAccount={paperAccount}
+        paperPositions={paperPositions} activeAlerts={activeAlerts} watchlistItems={watchlistItems}
+        recentStocks={recentStocks} quoteMap={quoteMap} batchQIsFetching={batchQ.isFetching}
+        mounted={mounted} marketNews={marketNews} quickActions={quickActions}
       />
       <DashboardCards
         mounted={mounted} dashboardVisibility={dashboardVisibility} dashboardCards={dashboardCards}
@@ -295,6 +288,11 @@ export default function HomePage() {
       <WatchlistRecent
         mounted={mounted} watchlistItems={watchlistItems} recentStocks={recentStocks}
         quoteMap={quoteMap} batchQIsFetching={batchQ.isFetching}
+      />
+      <SystemStatus
+        moduleStatuses={moduleStatuses} showDashboardSettings={showDashboardSettings}
+        setShowDashboardSettings={setShowDashboardSettings} dashboardVisibility={dashboardVisibility}
+        toggleDashboardModule={toggleDashboardModule} healthQ={healthQ} health={health} mcp={mcp}
       />
     </PageContainer>
   );

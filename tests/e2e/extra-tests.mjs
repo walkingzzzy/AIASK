@@ -71,8 +71,7 @@ async function run() {
         ['Screener', 'GET', '/v1/screener/condition'],
         ['Macro', 'GET', '/v1/macro/indicator/LPR'],
         ['Options', 'GET', '/v1/options/chain/510300'],
-        ['Skills', 'GET', '/v1/skills'],
-        ['TDX', 'GET', '/tdx/watchlist']
+        ['Skills', 'GET', '/v1/skills']
     ];
 
     let passed = 0;

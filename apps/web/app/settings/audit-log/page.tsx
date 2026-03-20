@@ -31,6 +31,27 @@ type RawAuditEntry = {
     duration_ms?: number;
 };
 
+function parseAuditError(raw: string) {
+    const normalized = String(raw || '').trim();
+    const traceId = normalized.match(/trace(?:[_\s-]?id)?[:=]\s*([A-Za-z0-9-]+)/i)?.[1] ?? null;
+    const path = normalized.match(/(\/[A-Za-z0-9/_-]+)/)?.[1] ?? null;
+    const status = normalized.match(/\b(401|403|404|500)\b/)?.[1] ?? null;
+    const permissionDenied = /403|forbidden|权限|permission/i.test(normalized);
+
+    return {
+        message: permissionDenied ? '当前账号没有查看审计日志的权限。' : '审计日志暂时不可用，请稍后重试。',
+        hint: permissionDenied
+            ? '如果你需要排查线上问题，请联系管理员为当前账号开通审计日志读取权限。'
+            : '你仍可以继续使用其他设置页功能；如果问题持续，再查看下面的技术详情。',
+        details: [
+            status ? `状态码：${status}` : null,
+            path ? `接口：${path}` : null,
+            traceId ? `Trace ID：${traceId}` : null,
+            normalized ? `原始错误：${normalized}` : null,
+        ].filter(Boolean) as string[],
+    };
+}
+
 function normalizeAuditEntry(entry: RawAuditEntry, index: number): AuditEntry {
     const user = typeof entry.user === 'string'
         ? entry.user
@@ -80,6 +101,7 @@ export default function AuditLogPage() {
     const logs = useMemo(() => {
         return filter === 'all' ? rawLogs : rawLogs.filter((l) => l.action?.includes(filter));
     }, [rawLogs, filter]);
+    const friendlyError = useMemo(() => logsQ.error ? parseAuditError(logsQ.error) : null, [logsQ.error]);
 
     const actionTypes = useMemo(() => {
         const set = new Set<string>();
@@ -121,15 +143,29 @@ export default function AuditLogPage() {
                 ))}
             </div>
 
-            {logsQ.error ? (
-                <ErrorState
-                    text={logsQ.error}
-                    hint="当前接口通常仅对具备审计日志权限的账号开放。"
-                    onRetry={() => logsQ.refetch()}
-                />
+            {friendlyError ? (
+                <>
+                    <ErrorState
+                        text={friendlyError.message}
+                        hint={friendlyError.hint}
+                        onRetry={() => logsQ.refetch()}
+                    />
+                    <SectionCard className="mt-3 p-4">
+                        <h3 className="mt-0 text-sm font-medium">技术详情</h3>
+                        <p className="mt-1 mb-2 text-xs text-text-secondary">下面的信息主要用于排查权限或接口问题，普通使用时可以忽略。</p>
+                        <details>
+                            <summary className="cursor-pointer text-sm text-text-secondary">展开查看原始错误</summary>
+                            <ul className="mt-2 mb-0 list-disc pl-5 text-xs text-text-secondary space-y-1">
+                                {friendlyError.details.map((detail) => (
+                                    <li key={detail}>{detail}</li>
+                                ))}
+                            </ul>
+                        </details>
+                    </SectionCard>
+                </>
             ) : null}
 
-            {!logsQ.error && logs.length === 0 ? (
+            {!friendlyError && logs.length === 0 ? (
                 <SectionCard>
                     <div className="text-center py-12 text-text-secondary text-sm">
                         {logsQ.isFetching ? '加载中...' : '暂无审计日志'}

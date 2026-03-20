@@ -145,22 +145,64 @@ export default function DataPage() {
     return <EmptyState text="无数据" />;
   }
 
+  function renderStarterState() {
+    if (tab === 'option') {
+      return (
+        <EmptyState
+          text="先输入 ETF 期权标的，再加载期权链。"
+          hint="常用示例是 510050 和 510300；如果你只是在熟悉页面，直接点一个示例即可。"
+          action={
+            <>
+              {['510050', '510300'].map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setUnderlying(item)}
+                  className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt"
+                >
+                  使用 {item}
+                </button>
+              ))}
+            </>
+          }
+        />
+      );
+    }
+    if (tab === 'calendar') {
+      return <EmptyState text="加载最近 30 个交易日，快速确认节假日与开市节奏。" action={<button type="button" onClick={submit} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">加载交易日历</button>} />;
+    }
+    if (tab === 'ipo') {
+      return <EmptyState text="这里适合看最近的新股与新债申购安排。" action={<button type="button" onClick={submit} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">查询 IPO 信息</button>} />;
+    }
+    if (tab === 'cb') {
+      return <EmptyState text="请输入可转债代码后再查询。" hint="示例：123039" action={<button type="button" onClick={() => setCode('123039')} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">填入示例 123039</button>} />;
+    }
+    return <EmptyState text="请输入股票代码后查看股本结构。" hint="示例：600519" action={<button type="button" onClick={() => setCode('600519')} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">填入示例 600519</button>} />;
+  }
+
   return (
     <PageContainer>
       <h1>数据中心</h1>
       <TabBar tabs={TABS} active={tab} onChange={(key) => { setTab(key); setQueryPath(null); }} />
       <SectionCard tabAttached>
         {tab === 'option' ? (
-          <div className="flex gap-2 items-center">
-            <input
-              value={underlying}
-              onChange={(e) => setUnderlying(e.target.value)}
-              placeholder="标的代码 如 510050"
-              className="w-[160px] px-2 py-1 border border-border rounded text-sm"
-            />
-            <button type="button" disabled={isPending} onClick={submit} className="px-3 py-1 border border-border rounded text-sm disabled:opacity-50">
-              查询期权链
-            </button>
+          <div className="grid gap-2">
+            <label htmlFor="data-option-underlying" className="grid gap-1 text-xs text-text-secondary">
+              <span>期权标的代码</span>
+              <div className="flex gap-2 items-center flex-wrap">
+                <input
+                  id="data-option-underlying"
+                  value={underlying}
+                  onChange={(e) => setUnderlying(e.target.value)}
+                  placeholder="标的代码 如 510050"
+                  className="w-[160px] px-2 py-1 border border-border rounded text-sm"
+                />
+                <button type="button" disabled={isPending} onClick={submit} className="px-3 py-1 border border-border rounded text-sm disabled:opacity-50">
+                  查询期权链
+                </button>
+              </div>
+            </label>
+            <p className="m-0 text-xs text-text-secondary">这里的“标的代码”指 ETF 期权对应的基础标的，不是单只股票代码。</p>
           </div>
         ) : null}
         {tab === 'calendar' ? (
@@ -175,7 +217,7 @@ export default function DataPage() {
         ) : null}
         {tab === 'cb' ? (
           <div className="flex gap-2 items-center">
-            <StockCodeInput value={code} onChange={setCode} error={codeError} placeholder="可转债代码" />
+            <StockCodeInput id="data-cb-code" label="可转债代码" value={code} onChange={setCode} error={codeError} placeholder="如 123039" />
             <button type="button" disabled={isPending} onClick={submit} className="px-3 py-1 border border-border rounded text-sm disabled:opacity-50">
               查询可转债
             </button>
@@ -183,7 +225,7 @@ export default function DataPage() {
         ) : null}
         {tab === 'capital' ? (
           <div className="flex gap-2 items-center">
-            <StockCodeInput value={code} onChange={setCode} error={codeError} />
+            <StockCodeInput id="data-capital-code" label="股票代码" value={code} onChange={setCode} error={codeError} placeholder="如 600519" />
             <button type="button" disabled={isPending} onClick={submit} className="px-3 py-1 border border-border rounded text-sm disabled:opacity-50">
               查询股本
             </button>
@@ -191,7 +233,7 @@ export default function DataPage() {
         ) : null}
         {isPending ? <LoadingState text="加载中..." /> : null}
         {error ? <ErrorState text={error} hint="请检查输入后重试" /> : null}
-        {!isPending && !data && !error ? <EmptyState text="点击按钮查询数据" /> : null}
+        {!isPending && !data && !error ? renderStarterState() : null}
         {renderData()}
       </SectionCard>
     </PageContainer>

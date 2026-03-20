@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { isPublicPathname } from '@/lib/public-routes';
 
 const MOBILE_NAV_ITEMS = [
     { href: '/', icon: '🏠', label: '首页' },
@@ -17,13 +18,16 @@ const MOBILE_NAV_ITEMS = [
  */
 export function MobileBottomNav() {
     const pathname = usePathname();
-    if (pathname === '/login' || pathname === '/register') {
+    if (isPublicPathname(pathname)) {
         return null;
     }
 
     return (
-        <nav className="fixed bottom-0 left-0 right-0 z-40 glass-strong border-t border-glass-border md:hidden safe-area-bottom">
-            <div className="flex justify-around items-center h-14">
+        <nav
+            className="fixed bottom-0 left-0 right-0 z-40 glass-strong border-t border-glass-border md:hidden safe-area-bottom"
+            style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+        >
+            <div className="flex justify-around items-center h-14" style={{ minHeight: 'var(--mobile-bottom-nav-height)' }}>
                 {MOBILE_NAV_ITEMS.map((item) => {
                     const active = pathname === item.href;
                     return (

@@ -10,7 +10,8 @@
 使用方式:
     from .startup_validator import get_startup_validator
     validator = get_startup_validator()
-    asyncio.ensure_future(validator.run_async())
+    # server.py 会在线程中通过 asyncio.run(...) 调度本协程，
+    # 避免同步启动路径下没有可用事件循环的问题。
 """
 
 import asyncio

@@ -1,16 +1,25 @@
 """用户管理器"""
 
 import json
+import time
 from ...storage import get_db
-from ...utils import ok, fail
 from ...services.kyc_dynamic import kyc_service
+from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
+
+
+def _normalize_limit(value, default: int = 50, minimum: int = 1, maximum: int = 200) -> int:
+    try:
+        limit = int(value)
+    except Exception:
+        limit = default
+    return max(minimum, min(limit, maximum))
 
 
 def register_user_manager(mcp):
     """注册用户管理器工具"""
 
     @mcp.tool()
-    async def user_manager(action: str, kwargs: str = '{}'):
+    async def user_manager(action: str, kwargs: str = '{}', **extra_kwargs):
         """用户管理器（统一 action + kwargs 协议）
 
         Args:
@@ -37,19 +46,30 @@ def register_user_manager(mcp):
             # 动态KYC评估
             user_manager(action="assess_kyc", kwargs='{"user_id":"default"}')
         """
+        start_time = time.perf_counter()
         try:
             db = get_db()
+            raw_kwargs = dict(extra_kwargs)
+            raw_kwargs["kwargs"] = kwargs
+            params = normalize_manager_kwargs(raw_kwargs)
 
-            # Normalize kwargs from JSON string
-            if isinstance(kwargs, str):
-                try:
-                    params = json.loads(kwargs)
-                except (json.JSONDecodeError, TypeError):
-                    params = {}
-            elif isinstance(kwargs, dict):
-                params = kwargs
-            else:
-                params = {}
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="user_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="user_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
 
             SUPPORTED_ACTIONS = {
                 'get_profile': '获取用户信息',
@@ -61,7 +81,7 @@ def register_user_manager(mcp):
             }
 
             if action == 'help':
-                return ok({'supported_actions': SUPPORTED_ACTIONS})
+                return _ok({'supported_actions': SUPPORTED_ACTIONS}, source_chain=['user_manager'])
             
             elif action == 'get_profile':
                 user_id = params.get('user_id', 'default')
@@ -71,31 +91,53 @@ def register_user_manager(mcp):
                         user_id
                     )
                     if not user:
-                        return fail('User not found')
+                        return _fail('User not found', source_chain=['user_manager', 'db.users'])
                     profile = dict(user)
                 
-                return ok(profile)
+                return _ok(profile, source_chain=['user_manager', 'db.users'])
             
             elif action == 'update_preferences':
                 user_id = params.get('user_id', 'default')
                 preferences = params.get('preferences', {})
+                if not isinstance(preferences, dict):
+                    return _fail('preferences 必须为对象', source_chain=['user_manager'])
                 
                 async with db.acquire() as conn:
+                    row = await conn.fetchrow(
+                        "SELECT settings FROM users WHERE id = $1",
+                        user_id,
+                    )
+                    if not row:
+                        return _fail('User not found', source_chain=['user_manager', 'db.users'])
+                    current_settings = {}
+                    existing = row.get('settings') if isinstance(row, dict) else row['settings']
+                    if existing:
+                        if isinstance(existing, dict):
+                            current_settings = dict(existing)
+                        else:
+                            try:
+                                current_settings = json.loads(existing)
+                            except Exception:
+                                current_settings = {}
+                    merged_settings = {**current_settings, **preferences}
                     await conn.execute(
                         "UPDATE users SET settings = $1, updated_at = NOW() WHERE id = $2",
-                        json.dumps(preferences), user_id
+                        json.dumps(merged_settings), user_id
                     )
-                return ok({'user_id': user_id, 'updated': True})
+                return _ok(
+                    {'user_id': user_id, 'updated': True, 'preferences': merged_settings},
+                    source_chain=['user_manager', 'db.users'],
+                )
             
             elif action in ['list', 'list_users']:
-                limit = params.get('limit', 50)
+                limit = _normalize_limit(params.get('limit', 50))
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
                         "SELECT id, username, email, created_at FROM users ORDER BY created_at DESC LIMIT $1",
                         limit
                     )
                     users = [dict(row) for row in rows]
-                return ok({'users': users, 'count': len(users)})
+                return _ok({'users': users, 'count': len(users)}, source_chain=['user_manager', 'db.users'])
 
             elif action == 'assess_kyc':
                 user_id = params.get('user_id', 'default')
@@ -113,9 +155,18 @@ def register_user_manager(mcp):
                         "UPDATE users SET settings = $1, updated_at = NOW() WHERE id = $2",
                         json.dumps(settings), user_id,
                     )
-                return ok(result)
+                return _ok(result, source_chain=['user_manager', 'kyc_service', 'db.users'])
 
             else:
-                return fail(f'Unknown action: {action}. Supported: {", ".join(SUPPORTED_ACTIONS.keys())}')
+                return _fail(
+                    f'Unknown action: {action}. Supported: {", ".join(SUPPORTED_ACTIONS.keys())}',
+                    source_chain=['user_manager'],
+                )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='user_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['user_manager'],
+            )

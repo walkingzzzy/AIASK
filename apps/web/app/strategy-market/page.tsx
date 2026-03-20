@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { PageContainer, SectionCard, TabBar } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -118,6 +119,7 @@ export default function StrategyMarketPage() {
   const trendRuns = useMemo(() => [...comparableRuns].reverse(), [comparableRuns]);
 
   const [showCart, setShowCart] = useState(false);
+  const showEmptyStrategyState = !rankQ.isPending && strategies.length === 0 && !rankQ.error;
   const factoryOverview = useMemo(
     () => [
       { label: '调度状态', value: factoryStatusQ.data?.running ? '运行中' : '待命' },
@@ -173,9 +175,11 @@ export default function StrategyMarketPage() {
       <SectionCard className="mt-4 p-4 min-h-[164px]">
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div>
-            <h2 className="m-0 text-base font-semibold">工厂摘要</h2>
+            <h2 className="m-0 text-base font-semibold">{showEmptyStrategyState ? '工厂状态' : '工厂摘要'}</h2>
             <p className="m-0 mt-1 text-sm text-text-secondary">
-              当前仅保留关键状态与快捷动作，详细运行历史放到下方展开查看。
+              {showEmptyStrategyState
+                ? '当前目录为空时，先看工厂有没有产出候选、是否卡在质量门控，再决定下一步动作。'
+                : '当前仅保留关键状态与快捷动作，详细运行历史放到下方展开查看。'}
             </p>
           </div>
           <div className="flex gap-2 flex-wrap">
@@ -207,7 +211,42 @@ export default function StrategyMarketPage() {
         {runFactoryApi.error ? <p className="mt-3 mb-0 text-sm text-danger">{runFactoryApi.error}</p> : null}
       </SectionCard>
 
-      <TabBar tabs={CATEGORIES} active={category} onChange={(c) => { setCategory(c); setSearch(''); }} />
+      {showEmptyStrategyState ? (
+        <SectionCard className="mt-4 p-5">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h2 className="m-0 text-base font-semibold">当前还没有可选策略</h2>
+              <p className="m-0 mt-1 text-sm text-text-secondary">常见原因是工厂尚未运行、最新候选还在质量门控里，或者策略仍停留在孵化态。建议先用下面三个动作定位问题，再回到目录页挑选。</p>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => runFactoryApi.trigger('/strategy-market/factory/run-once', { method: 'POST' })}
+                disabled={runFactoryApi.isPending}
+                className="px-3 py-1.5 text-sm rounded bg-primary text-white cursor-pointer disabled:opacity-50"
+              >
+                {runFactoryApi.isPending ? '运行中...' : '立即运行一轮工厂'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowFactoryDetails(true)}
+                className="px-3 py-1.5 text-sm rounded border border-border cursor-pointer hover:bg-surface-alt"
+              >
+                查看最近快照与运行态
+              </button>
+              <Link href="/paper-trading" className="px-3 py-1.5 text-sm rounded border border-border no-underline text-inherit hover:bg-surface-alt">
+                了解孵化后的落地路径
+              </Link>
+            </div>
+          </div>
+        </SectionCard>
+      ) : null}
+
+      <div className="overflow-x-auto pb-1">
+        <div className="min-w-max">
+          <TabBar tabs={CATEGORIES} active={category} onChange={(c) => { setCategory(c); setSearch(''); }} />
+        </div>
+      </div>
 
       {rankQ.isPending && <LoadingState text="加载策略列表..." />}
       {rankQ.error && <ErrorState text={rankQ.error} />}
@@ -222,29 +261,6 @@ export default function StrategyMarketPage() {
             />
           ))}
         </div>
-      )}
-
-      {!rankQ.isPending && strategies.length === 0 && !rankQ.error && (
-        <SectionCard className="mt-4 p-6 text-center text-text-secondary">
-          <p className="m-0">暂无已发布的策略，可先运行一次工厂或展开运行态查看最近结果。</p>
-          <div className="mt-3 flex justify-center gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={() => runFactoryApi.trigger('/strategy-market/factory/run-once', { method: 'POST' })}
-              disabled={runFactoryApi.isPending}
-              className="px-3 py-1.5 text-sm rounded bg-primary text-white cursor-pointer disabled:opacity-50"
-            >
-              {runFactoryApi.isPending ? '运行中...' : '运行一次工厂'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowFactoryDetails(true)}
-              className="px-3 py-1.5 text-sm rounded border border-border cursor-pointer hover:bg-surface-alt"
-            >
-              查看工厂运行态
-            </button>
-          </div>
-        </SectionCard>
       )}
 
       {showFactoryDetails ? (

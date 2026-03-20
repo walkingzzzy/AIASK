@@ -14,6 +14,67 @@ from ...utils import fail, format_period, normalize_code, ok, pick_value, safe_f
 from .helpers import _dedup_reports, _fetch_eastmoney_research
 
 
+def _iter_keyword_bigrams(keyword: str) -> list[str]:
+    text = str(keyword or "").strip().lower()
+    if len(text) < 2:
+        return []
+    return list(dict.fromkeys(text[i:i + 2] for i in range(len(text) - 1)))
+
+
+def _research_candidate_match(text: str, keyword: str, match_fn) -> bool:
+    if match_fn(text, keyword):
+        return True
+    text_lower = str(text or "").lower()
+    if len(keyword or "") < 4:
+        return False
+    return any(token in text_lower for token in _iter_keyword_bigrams(keyword))
+
+
+def _search_research_candidate_codes(keyword: str, limit: int, match_fn) -> list[dict]:
+    keyword_stripped = str(keyword or "").strip()
+    if not keyword_stripped or limit <= 0:
+        return []
+
+    try:
+        pro = data_source.get_tushare_pro()
+        if not pro:
+            return []
+        df = pro.stock_basic(
+            exchange="",
+            list_status="L",
+            fields="ts_code,symbol,name,industry",
+        )
+        if df is None or df.empty:
+            return []
+        candidates: list[dict] = []
+        seen_codes: set[str] = set()
+        for _, row in df.iterrows():
+            symbol = str(row.get("symbol", "") or "")
+            code = normalize_code(symbol) if symbol else normalize_code(row.get("ts_code", ""))
+            if not code or code in seen_codes:
+                continue
+            name = str(row.get("name", "") or "").strip()
+            industry = str(row.get("industry", "") or "").strip()
+            if not any(
+                _research_candidate_match(field, keyword_stripped, match_fn)
+                for field in (code, name, industry)
+            ):
+                continue
+            seen_codes.add(code)
+            candidates.append(
+                {
+                    "code": code,
+                    "name": name,
+                    "industry": industry,
+                }
+            )
+            if len(candidates) >= limit:
+                break
+        return candidates
+    except Exception:
+        return []
+
+
 @cached(ttl=3600.0)
 def get_stock_research(stock_code: str, limit: int = 10) -> dict:
     """
@@ -189,6 +250,69 @@ def search_research(keyword: str = "", stock_code: str = "", days: int = 30) -> 
                     reports = _dedup_reports(reports)
                     if reports:
                         return ok({"keyword": keyword, "stockCode": code, "reports": reports, "total": len(reports)})
+            except Exception:
+                pass
+        elif keyword:
+            try:
+                candidate_codes = _search_research_candidate_codes(keyword, 5, _keyword_match)
+                fallback_reports = []
+                per_code_limit = max(3, min(6, 20 // max(len(candidate_codes), 1)))
+                for candidate in candidate_codes:
+                    items = _fetch_eastmoney_research(candidate["code"], per_code_limit)
+                    if not items and ak is not None:
+                        try:
+                            df = ak.stock_research_report_em(symbol=candidate["code"])
+                            if df is not None and not df.empty:
+                                items = []
+                                for _, row in df.head(per_code_limit).iterrows():
+                                    items.append({
+                                        "title": str(pick_value(row, ["报告名称", "标题", "研报标题", "title"]) or "").strip(),
+                                        "institution": str(pick_value(row, ["机构名称", "机构", "研究机构", "发布机构", "institution"]) or "").strip(),
+                                        "author": str(pick_value(row, ["研究员", "作者", "分析师", "author"]) or "").strip(),
+                                        "rating": str(pick_value(row, ["最新评级", "评级", "投资评级", "rating"]) or "").strip(),
+                                        "date": format_period(pick_value(row, ["发布日期", "日期", "发布时间", "date"])),
+                                    })
+                        except Exception:
+                            items = []
+                    for item in items:
+                        match_score = 2 if (
+                            _keyword_match(item.get("title", ""), keyword)
+                            or _keyword_match(item.get("institution", ""), keyword)
+                        ) else 1
+                        fallback_reports.append(
+                            {
+                                "stockCode": candidate["code"],
+                                "stockName": candidate["name"],
+                                "title": item.get("title", ""),
+                                "institution": item.get("institution", ""),
+                                "rating": item.get("rating", ""),
+                                "date": item.get("date", ""),
+                                "_match_score": match_score,
+                            }
+                        )
+
+                if fallback_reports:
+                    fallback_reports.sort(
+                        key=lambda item: (
+                            item.get("_match_score", 0),
+                            item.get("date", ""),
+                        ),
+                        reverse=True,
+                    )
+                    reports = []
+                    for report in _dedup_reports(fallback_reports):
+                        report.pop("_match_score", None)
+                        reports.append(report)
+                    if reports:
+                        return ok(
+                            {
+                                "keyword": keyword,
+                                "stockCode": "",
+                                "reports": reports[:20],
+                                "total": len(reports[:20]),
+                                "message": "已使用候选股票研报作为关键词检索补充结果",
+                            }
+                        )
             except Exception:
                 pass
 

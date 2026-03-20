@@ -1,13 +1,13 @@
 'use client';
 
-import { PageContainer, SectionCard, StockCodeInput, Badge } from '@/components/ui';
+import { PageContainer, SectionCard, StockCodeInput, Badge, Skeleton } from '@/components/ui';
 import { GaugeChart, BarChart, COLORS } from '@/components/charts';
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState, LoadingState, EmptyState } from '@/components/status-state';
-import { extractObject, fmtNum } from '@/lib/data-utils';
+import { fmtNum } from '@/lib/data-utils';
 import { ensureRecord } from '@/lib/query-parse';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
@@ -62,6 +62,19 @@ export default function SentimentPage() {
     if (ssScore <= 30) return { title: '情绪偏冷', description: '市场预期较谨慎，适合叠加基本面或风险页判断是否属于错杀。' };
     return { title: '情绪中性', description: '当前情绪没有明显单边倾向，更适合与技术形态和资金流一起交叉验证。' };
   }, [ssScore]);
+  const resultActionLinks = useMemo(() => {
+    if (!ssCode) return [];
+    const c = encodeURIComponent(ssCode);
+    return [
+      { label: '个股详情', href: `/stock?code=${c}` },
+      { label: '技术分析', href: `/technical?code=${c}` },
+      { label: '资金流', href: `/fund-flow?code=${c}` },
+      { label: '估值', href: `/valuation?code=${c}` },
+      { label: '风险页', href: `/risk?code=${c}` },
+    ];
+  }, [ssCode]);
+  const showStockSkeleton = stockSentimentQ.isPending && !stockSentimentQ.data;
+  const showFearGreedSkeleton = fearGreedQ.isPending && fgIndex == null;
 
   function loadSampleSentiment(sampleCode = '600519') {
     setCode(sampleCode);
@@ -74,7 +87,7 @@ export default function SentimentPage() {
       <h1>情绪分析</h1>
       {(stockSentimentQ.error || fearGreedQ.error) && <ErrorState text={stockSentimentQ.error || fearGreedQ.error!} />}
 
-      <SectionCard className="p-4">
+      <SectionCard className="p-4 min-h-[620px]">
         <h3 className="mt-0">个股情绪</h3>
         <div className="flex gap-3 flex-wrap items-end">
           <StockCodeInput id="sentiment-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} />
@@ -88,62 +101,86 @@ export default function SentimentPage() {
             {ssSentiment && <Badge variant={ssSentiment === 'positive' ? 'success' : ssSentiment === 'negative' ? 'danger' : 'neutral'}>{ssSentiment}</Badge>}
           </div>
         )}
-        {ssScore != null ? (
-          <>
-            {sentimentSummary ? (
-              <div className="mt-3 rounded-xl border border-border bg-surface-alt/60 p-3">
-                <div className="text-sm font-medium text-text-primary">{sentimentSummary.title}</div>
-                <p className="mt-1 text-sm text-text-secondary">{sentimentSummary.description}</p>
-              </div>
-            ) : null}
-            <div className="my-4">
-              <GaugeChart value={ssScore} min={0} max={100} title={`情绪分数 ${fmtNum(ssScore, 1)}`} height={250} />
+        <div className="mt-3 min-h-[470px]">
+          {showStockSkeleton ? (
+            <div className="space-y-4">
+              <Skeleton height={76} />
+              <Skeleton height={250} />
+              <Skeleton height={180} />
             </div>
-            {ssComponents.length > 0 && (
-              <BarChart items={ssComponents} horizontal height={Math.max(160, ssComponents.length * 50)} yAxisName="分数" />
-            )}
-          </>
-        ) : !stockSentimentQ.data ? (
-          <EmptyState
-            text="输入股票代码后查看个股情绪分数"
-            hint="推荐先从关注名单中的个股开始，确认市场讨论与预期是偏热还是偏冷。"
-            action={
-              <>
-                <button type="button" onClick={() => loadSampleSentiment('600519')} className={primaryActionCls}>示例：600519</button>
-                <Link href="/watchlist" className={secondaryActionCls}>查看自选股</Link>
-              </>
-            }
-          />
-        ) : (
-          <EmptyState text="当前没有可展示的个股情绪结果" hint="可以换一只股票后重试，或稍后刷新等待情绪数据更新。" />
-        )}
+          ) : ssScore != null ? (
+            <>
+              {sentimentSummary ? (
+                <div className="rounded-xl border border-border bg-surface-alt/60 p-3">
+                  <div className="text-sm font-medium text-text-primary">{sentimentSummary.title}</div>
+                  <p className="mt-1 text-sm text-text-secondary">{sentimentSummary.description}</p>
+                  {resultActionLinks.length > 0 ? (
+                    <div className="mt-3 flex gap-2 flex-wrap">
+                      {resultActionLinks.map((link) => (
+                        <Link key={link.href} href={link.href} className={secondaryActionCls}>
+                          {link.label}
+                        </Link>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="my-4">
+                <GaugeChart value={ssScore} min={0} max={100} title={`情绪分数 ${fmtNum(ssScore, 1)}`} height={250} />
+              </div>
+              {ssComponents.length > 0 && (
+                <BarChart items={ssComponents} horizontal height={Math.max(160, ssComponents.length * 50)} yAxisName="分数" />
+              )}
+            </>
+          ) : !stockSentimentQ.data ? (
+            <EmptyState
+              text="输入股票代码后查看个股情绪分数"
+              hint="推荐先从关注名单中的个股开始，确认市场讨论与预期是偏热还是偏冷。"
+              action={
+                <>
+                  <button type="button" onClick={() => loadSampleSentiment('600519')} className={primaryActionCls}>示例：600519</button>
+                  <Link href="/watchlist" className={secondaryActionCls}>查看自选股</Link>
+                </>
+              }
+            />
+          ) : (
+            <EmptyState text="当前没有可展示的个股情绪结果" hint="可以换一只股票后重试，或稍后刷新等待情绪数据更新。" />
+          )}
+        </div>
       </SectionCard>
 
-      <SectionCard className="p-4 mt-4">
+      <SectionCard className="p-4 mt-4 min-h-[560px]">
         <h3 className="mt-0">恐贪指数</h3>
-        {fgIndex != null ? (
-          <>
-            <div className="my-4">
-              <GaugeChart
-                value={fgIndex}
-                min={0}
-                max={100}
-                title={`${fgLevel} (${fgIndex})`}
-                height={280}
-                zones={[
-                  { start: 0, end: 25, color: COLORS.success },
-                  { start: 25, end: 50, color: COLORS.warning },
-                  { start: 50, end: 75, color: '#f97316' },
-                  { start: 75, end: 100, color: COLORS.danger },
-                ]}
-              />
+        <div className="min-h-[470px]">
+          {showFearGreedSkeleton ? (
+            <div className="space-y-4">
+              <Skeleton height={280} />
+              <Skeleton height={180} />
             </div>
-            {fgComponents.length > 0 && (
-              <BarChart items={fgComponents} horizontal height={Math.max(160, fgComponents.length * 50)} yAxisName="分数" />
-            )}
-            <button type="button" className="mt-2 text-xs text-text-secondary" onClick={() => fearGreedQ.refetch()}>刷新</button>
-          </>
-        ) : fearGreedQ.isPending ? <LoadingState text="加载中..." /> : <EmptyState text="当前没有可用的恐贪指数" hint="非交易时段或上游情绪源暂缺时可能为空，建议稍后再刷新。" />}
+          ) : fgIndex != null ? (
+            <>
+              <div className="my-4">
+                <GaugeChart
+                  value={fgIndex}
+                  min={0}
+                  max={100}
+                  title={`${fgLevel} (${fgIndex})`}
+                  height={280}
+                  zones={[
+                    { start: 0, end: 25, color: COLORS.success },
+                    { start: 25, end: 50, color: COLORS.warning },
+                    { start: 50, end: 75, color: '#f97316' },
+                    { start: 75, end: 100, color: COLORS.danger },
+                  ]}
+                />
+              </div>
+              {fgComponents.length > 0 && (
+                <BarChart items={fgComponents} horizontal height={Math.max(160, fgComponents.length * 50)} yAxisName="分数" />
+              )}
+              <button type="button" className="mt-2 text-xs text-text-secondary" onClick={() => fearGreedQ.refetch()}>刷新</button>
+            </>
+          ) : fearGreedQ.isPending ? <LoadingState text="加载中..." /> : <EmptyState text="当前没有可用的恐贪指数" hint="非交易时段或上游情绪源暂缺时可能为空，建议稍后再刷新。" />}
+        </div>
       </SectionCard>
     </PageContainer>
   );

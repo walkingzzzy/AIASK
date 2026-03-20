@@ -121,31 +121,6 @@ export class BacktestService {
     };
   }
 
-  /** P3-5: Send backtest result to TDX */
-  async sendToTdx(input: { code: string; strategy: string }) {
-    const args = {
-      code: input.code.trim(),
-      strategy: input.strategy.trim(),
-      send_to_tdx: true,
-      send_mode: 'result',
-    };
-    const payload = await this.callTool('run_backtest_and_send_to_tdx', args);
-    const tdxStatus = this.pickObject(payload, [
-      'data.tdx_send_status',
-      'data.tdx_send_result',
-      'tdx_send_status',
-      'tdx_send_result',
-    ]);
-    if (tdxStatus?.success === false) {
-      throw new BadGatewayException({
-        success: false,
-        message: String(tdxStatus.message ?? 'TDX 发送失败'),
-        detail: tdxStatus.diagnostics ?? tdxStatus,
-      });
-    }
-    return payload;
-  }
-
   /** P3-3: Batch backtest multiple codes */
   async batch(input: BatchBacktestInput): Promise<BacktestBatchResponse> {
     const args: Record<string, unknown> = {

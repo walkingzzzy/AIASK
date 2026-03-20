@@ -5,7 +5,7 @@
 用于初始化数据库并回填近N年的完整历史数据。
 日常使用请用 sync_daily.py。
 
-数据源优先级: TDX → Tushare Pro
+数据源优先级: Tushare Pro → 公开数据源
 
 同步数据清单（10类，深度回填）:
 1.  股票基础信息 (stocks)
@@ -108,7 +108,6 @@ class InitSync:
     def __init__(self):
         self.db = get_db()
         self.ts_pro = data_source.get_tushare_pro()
-        self.tdx_available = data_source.is_tdx_available()
         self.start_time = None
 
     def _safe_print(self, text: str, end: str = "\n", flush: bool = False):
@@ -181,7 +180,7 @@ class InitSync:
     # ==================================================================
 
     async def sync_klines(self, years: int = 5):
-        """全量回填K线（TDX → Tushare Pro → Baostock → eFinance）"""
+        """全量回填K线（Tushare Pro → Baostock → eFinance）"""
         self.log(f"\n[2/10] 同步K线数据 (近{years}年全量)...")
 
         async with self.db.acquire() as conn:
@@ -203,12 +202,11 @@ class InitSync:
         for i, code in enumerate(codes):
             klines = []
 
-            # --- TDX 优先 ---
-            if self.tdx_available:
-                try:
-                    klines = data_source.get_kline(code, 'daily', years * 250)
-                except Exception:
-                    pass
+            # --- 多源聚合链路 ---
+            try:
+                klines = data_source.get_kline(code, 'daily', years * 250)
+            except Exception:
+                klines = []
 
             # --- Tushare Pro ---
             if not klines and self.ts_pro:
@@ -349,7 +347,6 @@ class InitSync:
         ds = DailySync.__new__(DailySync)
         ds.db = self.db
         ds.ts_pro = self.ts_pro
-        ds.tdx_available = self.tdx_available
         ds.log = self.log
         ds.progress = self.progress
         return await ds.sync_valuations()
@@ -444,7 +441,6 @@ class InitSync:
         ds = DailySync.__new__(DailySync)
         ds.db = self.db
         ds.ts_pro = self.ts_pro
-        ds.tdx_available = self.tdx_available
         ds.log = self.log
         ds.progress = self.progress
         return await ds.sync_market_blocks()
@@ -528,7 +524,6 @@ class InitSync:
         ds = DailySync.__new__(DailySync)
         ds.db = self.db
         ds.ts_pro = self.ts_pro
-        ds.tdx_available = self.tdx_available
         ds.log = self.log
         ds.progress = self.progress
         return await ds.sync_block_stocks()
@@ -591,15 +586,13 @@ class InitSync:
             await self.db.initialize()
 
             sources = []
-            if self.tdx_available:
-                sources.append("TDX(优先)")
             if self.ts_pro:
                 sources.append("Tushare Pro")
             sources.append("东财直接API(兜底)")
 
-            if not self.ts_pro and not self.tdx_available:
-                self.log("❌ 首次初始化至少需要配置 TDX 或 Tushare Pro")
-                self.log("   请设置 TDX_PLUGIN_PATH 或 TUSHARE_TOKEN 环境变量")
+            if not self.ts_pro:
+                self.log("❌ 首次初始化至少需要配置 Tushare Pro")
+                self.log("   请设置 TUSHARE_TOKEN 环境变量")
                 return
 
             self.log("=" * 70)
@@ -641,7 +634,7 @@ async def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='首次部署 / 历史深度同步（数据源: TDX→Tushare Pro→东财API）'
+        description='首次部署 / 历史深度同步（数据源: Tushare Pro→东财API）'
     )
     parser.add_argument('--years', type=int, default=5, help='回填年数 (默认5年)')
 

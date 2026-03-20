@@ -1,6 +1,11 @@
+import platform
+
 import pytest
 
 import akshare_mcp.tools.skills as skills_mod
+
+
+RUNTIME_TOOL_COUNT = 171 if platform.system() == "Windows" else 134
 
 
 class _DummyMCP:
@@ -23,9 +28,9 @@ def test_list_skills_exposes_status_and_schema(monkeypatch):
         "_load_skill_coverage_audit",
         lambda: {
             "generated_at": "2026-03-13T00:00:00+00:00",
-            "tool_count": 171,
+            "tool_count": RUNTIME_TOOL_COUNT,
             "skills_count": 20,
-            "coverage": {"covered_count": 171, "coverage_pct": 100.0, "missing_count": 0},
+            "coverage": {"covered_count": RUNTIME_TOOL_COUNT, "coverage_pct": 100.0, "missing_count": 0},
             "executors": {"registered_skill_count": 20, "executable_skill_count": 4, "executor_coverage_pct": 20.0},
         },
     )
@@ -91,10 +96,10 @@ def test_list_skills_exposes_status_and_schema(monkeypatch):
     assert registry_summary["executable_skill_ids"] == ["akshare-market"]
     assert registry_summary["available_handlers"] == ["akshare-market"]
     assert registry_summary["tool_reference_coverage"] == {
-        "covered_count": 171,
+        "covered_count": RUNTIME_TOOL_COUNT,
         "coverage_pct": 100.0,
         "missing_count": 0,
-        "tool_count": 171,
+        "tool_count": RUNTIME_TOOL_COUNT,
         "skills_count": 20,
         "generated_at": "2026-03-13T00:00:00+00:00",
     }

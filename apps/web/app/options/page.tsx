@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { PageContainer, SectionCard } from '@/components/ui';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -44,6 +45,7 @@ type GreeksData = {
 export default function OptionsPage() {
     const [symbol, setSymbol] = useState('510300'); // Default to 300 ETF
     const [querySymbol, setQuerySymbol] = useState('510300');
+    const exampleSymbols = ['510050', '510300'];
 
     const { data: chainData, isPending: chainLoading, error: chainError, refetch: refetchChain } = useApiQuery<OptionChainData>(
         `/v1/options/chain/${querySymbol}`,
@@ -82,6 +84,10 @@ export default function OptionsPage() {
         if (!greeksData?.interpretation || typeof greeksData.interpretation !== 'object') return [];
         return Object.entries(greeksData.interpretation);
     }, [greeksData]);
+    const showChainLoading = (chainLoading || greeksLoading) && pairedRows.length === 0 && !chainError;
+    const showGreeksLoading = (greeksLoading || chainLoading) && greekEntries.length === 0 && !greeksError;
+    const showChainEmpty = !chainLoading && !greeksLoading && pairedRows.length === 0 && !chainError;
+    const showGreeksEmpty = !greeksLoading && !chainLoading && greekEntries.length === 0 && !greeksError;
 
     const handleSearch = (e: React.FormEvent) => {
         e.preventDefault();
@@ -115,16 +121,37 @@ export default function OptionsPage() {
                     <p className="text-muted-foreground mt-1 text-sm text-text-muted">全面洞察期权链分布、隐含波动率偏倚与希腊字母</p>
                 </div>
 
-                <form onSubmit={handleSearch} className="flex gap-2 w-full md:w-auto">
-                    <input
-                        value={symbol}
-                        onChange={(e) => setSymbol(e.target.value)}
-                        placeholder="输入标的代码 (如 510300)"
-                        className="w-full md:w-[250px] border border-glass-border bg-surface px-3 py-2 rounded-md"
-                    />
-                    <button type="submit" className="bg-primary text-white px-4 py-2 rounded-md">
-                        查询
-                    </button>
+                <form onSubmit={handleSearch} className="grid gap-2 w-full md:w-auto">
+                    <label htmlFor="options-symbol" className="grid gap-1 text-xs text-text-secondary">
+                        <span>期权标的代码</span>
+                        <div className="flex gap-2 w-full md:w-auto flex-wrap">
+                            <input
+                                id="options-symbol"
+                                value={symbol}
+                                onChange={(e) => setSymbol(e.target.value)}
+                                placeholder="输入标的代码 (如 510300)"
+                                className="w-full md:w-[250px] border border-glass-border bg-surface px-3 py-2 rounded-md"
+                            />
+                            <button type="submit" className="bg-primary text-white px-4 py-2 rounded-md">
+                                查询
+                            </button>
+                        </div>
+                    </label>
+                    <div className="flex gap-2 flex-wrap">
+                        {exampleSymbols.map((item) => (
+                            <button
+                                key={item}
+                                type="button"
+                                onClick={() => {
+                                    setSymbol(item);
+                                    setQuerySymbol(item);
+                                }}
+                                className="px-3 py-1 rounded-full border border-border text-xs cursor-pointer hover:bg-surface-alt"
+                            >
+                                示例 {item}
+                            </button>
+                        ))}
+                    </div>
                 </form>
             </div>
 
@@ -144,7 +171,7 @@ export default function OptionsPage() {
                         </div>
                     ) : null}
                     <div>
-                        {chainLoading ? (
+                        {showChainLoading ? (
                             <LoadingState text="加载期权链中..." />
                         ) : pairedRows.length > 0 ? (
                             <div className="border border-glass-border rounded-md overflow-x-auto">
@@ -197,16 +224,42 @@ export default function OptionsPage() {
                                     </tbody>
                                 </table>
                             </div>
-                        ) : (
-                            <EmptyState text="暂无期权链数据" />
-                        )}
+                        ) : showChainEmpty ? (
+                            <EmptyState
+                                text="当前标的暂无期权链数据"
+                                hint="先切换到 50ETF 或 300ETF 这类覆盖度更高的示例标的，能更快确认页面、数据源和期权链结构是否正常。"
+                                action={
+                                    <>
+                                        {exampleSymbols.map((item) => (
+                                            <button
+                                                key={`chain-${item}`}
+                                                type="button"
+                                                onClick={() => {
+                                                    setSymbol(item);
+                                                    setQuerySymbol(item);
+                                                }}
+                                                className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt"
+                                            >
+                                                切换到 {item}
+                                            </button>
+                                        ))}
+                                        <button type="button" onClick={() => void refetchChain()} className="px-3 py-1.5 rounded border border-primary text-primary text-sm cursor-pointer hover:bg-primary/5">
+                                            重新加载
+                                        </button>
+                                        <Link href="/research" className="px-3 py-1.5 rounded border border-border text-sm no-underline text-inherit hover:bg-surface-alt">
+                                            去研究页看标的背景
+                                        </Link>
+                                    </>
+                                }
+                            />
+                        ) : null}
                     </div>
                 </SectionCard>
 
                 <SectionCard className="col-span-1 md:col-span-3">
                     <h3 className="font-bold text-lg mb-4">希腊字母与波动率 (Greeks & IV)</h3>
                     <div>
-                        {greeksLoading ? (
+                        {showGreeksLoading ? (
                             <LoadingState text="计算 Greeks 中..." />
                         ) : greekEntries.length > 0 ? (
                             <div className="space-y-4">
@@ -246,9 +299,32 @@ export default function OptionsPage() {
                                     </div>
                                 </div>
                             </div>
-                        ) : (
-                            <EmptyState text="暂无 Greeks 数据" />
-                        )}
+                        ) : showGreeksEmpty ? (
+                            <EmptyState
+                                text="当前暂无 Greeks 数据"
+                                hint="当前会等同批期权链一起返回后再判断是否真的为空，避免你在加载过程中误以为没有结果。若持续为空，通常意味着当前标的或参数覆盖不足。"
+                                action={
+                                    <>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setSymbol('510300');
+                                                setQuerySymbol('510300');
+                                            }}
+                                            className="px-3 py-1.5 rounded border border-primary text-primary text-sm cursor-pointer hover:bg-primary/5"
+                                        >
+                                            用 510300 重试
+                                        </button>
+                                        <button type="button" onClick={() => void refetchGreeks()} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">
+                                            重新计算
+                                        </button>
+                                        <Link href="/market" className="px-3 py-1.5 rounded border border-border text-sm no-underline text-inherit hover:bg-surface-alt">
+                                            回行情页确认标的
+                                        </Link>
+                                    </>
+                                }
+                            />
+                        ) : null}
                     </div>
                 </SectionCard>
             </div>

@@ -8,6 +8,42 @@ from ...utils import ok, fail
 from ...data_source import data_source
 
 
+def _parse_date_like(value: Optional[str]):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text[:10], fmt).date()
+        except Exception:
+            continue
+    return None
+
+
+def _normalize_hot_sector_item(item: dict) -> dict:
+    return {
+        'name': str(
+            item.get('name')
+            or item.get('blockName')
+            or item.get('block_name')
+            or ''
+        ),
+        'change_pct': round(float(
+            item.get('change_pct')
+            or item.get('avgChange')
+            or item.get('avgChangePct')
+            or item.get('avg_change_pct')
+            or 0
+        ), 2),
+        'stock_count': int(
+            item.get('stock_count')
+            or item.get('stockCount')
+            or item.get('stocksCount')
+            or 0
+        ),
+    }
+
+
 async def generate_daily_report(date: Optional[str] = None):
     """
     生成每日市场报告 - 聚合指数、板块、资金流向、涨跌统计等数据
@@ -238,11 +274,9 @@ async def _fetch_hot_sectors(db) -> list:
             blocks_res = await get_market_blocks(block_type='industry', limit=5)
             if blocks_res.get('success') and blocks_res.get('data', {}).get('blocks'):
                 for b in blocks_res['data']['blocks'][:5]:
-                    hot_sectors.append({
-                        'name': b.get('block_name', ''),
-                        'change_pct': round(float(b.get('avg_change_pct', 0)), 2),
-                        'stock_count': b.get('stock_count', 0)
-                    })
+                    normalized = _normalize_hot_sector_item(b)
+                    if normalized['name']:
+                        hot_sectors.append(normalized)
         except Exception:
             pass
 
@@ -261,7 +295,22 @@ def _fetch_capital_flow(report_date: str) -> dict:
         if nf_res and nf_res.get('success') and nf_res.get('data'):
             nf_data = nf_res['data']
             items = nf_data.get('items', []) if isinstance(nf_data, dict) else nf_data
-            if isinstance(items, list) and len(items) > 0:
+            report_dt = _parse_date_like(report_date)
+            latest_date = _parse_date_like(items[-1].get('date')) if isinstance(items, list) and items else None
+            source_name = str(nf_data.get('source') or '') if isinstance(nf_data, dict) else ''
+            is_stale = bool(nf_data.get('stale')) if isinstance(nf_data, dict) else False
+            is_fresh_enough = (
+                report_dt is not None
+                and latest_date is not None
+                and abs((report_dt - latest_date).days) <= 3
+            )
+            if (
+                isinstance(items, list)
+                and len(items) > 0
+                and not is_stale
+                and not source_name.endswith('_stale')
+                and is_fresh_enough
+            ):
                 latest = items[-1]
                 capital_flow['north_fund'] = {
                     'net_inflow': latest.get('total', 0),

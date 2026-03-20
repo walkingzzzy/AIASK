@@ -126,16 +126,41 @@ def _build_similar_pattern_report(klines: list[dict], window_days: int, top_n: i
 def register(mcp):
     @mcp.tool()
     def get_factor_library(category: str = "all"):
+        """获取可用因子库与分类信息。
+
+        Args:
+            category: 因子分类，默认 ``all`` 返回全部分类。
+
+        Returns:
+            dict: 标准 ``ok(...)`` 响应，包含因子分类、说明和支持列表。
+        """
         return ok(_factor_library_payload(category))
 
     @mcp.tool()
     def list_factors(category: str = "all"):
+        """列出指定分类下的支持因子。
+
+        Args:
+            category: 因子分类，默认 ``all``。
+
+        Returns:
+            dict: 标准 ``ok(...)`` 响应，包含因子列表和来源标记。
+        """
         payload = _factor_library_payload(category)
         payload["source"] = "SUPPORTED_FACTORS"
         return ok(payload)
 
     @mcp.tool()
     async def calculate_factor(code: str, factor: str):
+        """计算单只股票的单个因子值。
+
+        Args:
+            code: 股票代码。
+            factor: 因子名称，支持 ``SUPPORTED_FACTORS`` 中的标准名称或别名。
+
+        Returns:
+            dict: 标准 ``ok(...)`` 响应，包含因子值、样本量和是否依赖财务数据。
+        """
         try:
             factor_name = _normalize_factor_name(factor)
             if factor_name not in SUPPORTED_FACTORS:
@@ -372,6 +397,18 @@ def register(mcp):
         forward_days: list = None,
         lookback_days: int = 360,
     ):
+        """基于历史 K 线窗口搜索相似形态并统计后续收益。
+
+        Args:
+            code: 股票代码。
+            window_days: 目标形态窗口长度。
+            top_n: 返回最相似样本数量。
+            forward_days: 统计未来收益的天数列表，默认 ``[5, 10, 20]``。
+            lookback_days: 回看 K 线样本长度。
+
+        Returns:
+            dict: 标准 ``ok(...)`` 响应，包含相似样本、聚合收益和窗口信息。
+        """
         try:
             forward = [int(day) for day in (forward_days or [5, 10, 20])]
             db = get_db()
@@ -395,6 +432,18 @@ def register(mcp):
         lookback_days: int = 250,
         signal_params: Optional[Dict[str, Any]] = None,
     ):
+        """统计历史信号命中率与未来收益表现。
+
+        Args:
+            code: 股票代码。
+            signal: 信号名称，默认 ``rsi_oversold``。
+            forward_days: 未来收益统计窗口列表，默认 ``[5, 10, 20]``。
+            lookback_days: 回看样本长度。
+            signal_params: 信号参数字典。
+
+        Returns:
+            dict: 标准 ``ok(...)`` 响应，包含命中次数、收益分布和窗口配置。
+        """
         try:
             forward = [int(day) for day in (forward_days or [5, 10, 20])]
             db = get_db()

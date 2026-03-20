@@ -3,7 +3,7 @@ P1/P2 数据源改造验证测试
 
 验证目标：
 1. 服务可以正常导入（无硬依赖崩溃）
-2. 各模块的主数据源（TDX/Tushare/东财直连/新浪直连）可用
+2. 各模块的主数据源（本地桥接/Tushare/东财直连/新浪直连）可用
 3. AkShare 已降级为可选回退
 4. 所有工具函数在 ak=None 时不会崩溃
 
@@ -57,7 +57,7 @@ def test_server_import():
         record("server import", "FAIL", str(e))
 
 # ============================================================
-# 测试 2: date_utils — TDX/Tushare 交易日历
+# 测试 2: date_utils — 本地桥接/Tushare 交易日历
 # ============================================================
 def test_date_utils():
     section("2. date_utils 交易日历")
@@ -78,7 +78,7 @@ def test_date_utils():
         record("date_utils", "FAIL", str(e))
 
 # ============================================================
-# 测试 3: helpers — 股票列表 (Tushare → TDX → AkShare)
+# 测试 3: helpers — 股票列表 (Tushare → 本地桥接 → AkShare)
 # ============================================================
 def test_stock_list():
     section("3. helpers.get_stock_list_cached()")
@@ -95,7 +95,7 @@ def test_stock_list():
         record("get_stock_list_cached()", "FAIL", str(e))
 
 # ============================================================
-# 测试 4: quote — 单股行情 (TDX → Tushare → AkShare)
+# 测试 4: quote — 单股行情 (本地桥接 → Tushare → AkShare)
 # ============================================================
 def test_single_quote():
     section("4. quote 单股行情")
@@ -117,7 +117,7 @@ def test_single_quote():
         record("get_realtime_quote()", "FAIL", str(e))
 
 # ============================================================
-# 测试 5: kline — K线数据 (DataSource TDX→Tushare → AkShare)
+# 测试 5: kline — K线数据 (DataSource 本地桥接→Tushare → AkShare)
 # ============================================================
 def test_kline():
     section("5. kline K线数据")
@@ -134,7 +134,7 @@ def test_kline():
         record("get_kline()", "FAIL", str(e))
 
 # ============================================================
-# 测试 6: order_book — 五档盘口 (TDX → AkShare → Sina → Tencent)
+# 测试 6: order_book — 五档盘口 (本地桥接 → AkShare → Sina → Tencent)
 # ============================================================
 def test_order_book():
     section("6. order_book 五档盘口")
@@ -325,7 +325,7 @@ def test_market_news():
         record("get_market_news()", "FAIL", str(e))
 
 # ============================================================
-# 测试 17: finance — 财务数据 (TDX → Tushare → AkShare)
+# 测试 17: finance — 财务数据 (本地桥接 → Tushare → AkShare)
 # ============================================================
 def test_financials():
     section("17. finance 财务数据")

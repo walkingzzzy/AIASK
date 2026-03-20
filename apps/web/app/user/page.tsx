@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { authedFetch, extractApiErrorMessage, fmt } from '@/lib/api';
-import { PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, Badge } from '@/components/ui';
+import { PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, Badge, Skeleton } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import { useAuthStore } from '@/store/auth-store';
@@ -85,33 +85,47 @@ export default function UserPage() {
   return (
     <PageContainer>
       <h1>用户中心</h1>
-      {profileQ.isPending ? <LoadingState text="加载用户信息..." /> : null}
       {(profileQ.error || saveError) ? <ErrorState text={(profileQ.error || saveError)!} hint="请稍后重试" /> : null}
-      {!profileQ.isPending && !user && !profileQ.error ? <EmptyState text="未获取到用户信息" /> : null}
-
-      {user ? (
-        <SectionCard className="p-4">
-          <div className="flex items-center justify-between">
-            <h3 className="mt-0">个人信息</h3>
+      <SectionCard className="p-4 min-h-[236px]">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <h3 className="mt-0 mb-0">个人信息</h3>
+          {user ? (
             <button type="button" onClick={onLogout}
               disabled={isLoggingOut}
               className="text-xs bg-danger/10 text-danger px-3 py-1 rounded cursor-pointer hover:bg-danger/20">
               {isLoggingOut ? '退出中...' : '退出登录'}
             </button>
+          ) : null}
+        </div>
+        {profileQ.isPending ? (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+            {Array.from({ length: 3 }).map((_, index) => (
+              <div key={index} className="glass rounded-lg p-3 min-h-[96px]">
+                <Skeleton width="35%" height={12} />
+                <Skeleton className="mt-3" width="72%" height={22} />
+                {index === 2 ? <Skeleton className="mt-3" width="58%" height={32} /> : null}
+              </div>
+            ))}
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-2">
-            <div className="glass rounded-lg p-3">
+        ) : user ? (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+            <div className="glass rounded-lg p-3 min-h-[96px]">
               <div className="text-text-secondary text-xs">用户名</div>
-              <div className="font-medium">{fmt(user.username)}</div>
+              <div className="font-medium mt-2">{fmt(user.username)}</div>
             </div>
-            <div className="glass rounded-lg p-3">
+            <div className="glass rounded-lg p-3 min-h-[96px]">
               <div className="text-text-secondary text-xs">角色</div>
-              <div className="font-medium">{fmt(user.role)}</div>
+              <div className="font-medium mt-2">{fmt(user.role)}</div>
             </div>
-            <div className="glass rounded-lg p-3">
-              <div className="text-text-secondary text-xs">风险等级</div>
-              <div className="flex items-center gap-2 mt-1">
-                <select value={riskLevel} onChange={(e) => setRiskLevel(e.target.value)} className="text-sm px-2 py-1 rounded">
+            <div className="glass rounded-lg p-3 min-h-[96px]">
+              <label htmlFor="user-risk-level" className="text-text-secondary text-xs">风险等级</label>
+              <div className="flex items-end gap-2 mt-2">
+                <select
+                  id="user-risk-level"
+                  value={riskLevel}
+                  onChange={(e) => setRiskLevel(e.target.value)}
+                  className="text-sm px-2 py-1 rounded"
+                >
                   {RISK_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
                 </select>
                 <button type="button" disabled={saving} onClick={onSave}
@@ -121,8 +135,10 @@ export default function UserPage() {
               </div>
             </div>
           </div>
-        </SectionCard>
-      ) : null}
+        ) : !profileQ.error ? (
+          <EmptyState text="未获取到用户信息" />
+        ) : null}
+      </SectionCard>
 
       {/* Paper Trading Summary */}
       {tradingQ.data != null && (

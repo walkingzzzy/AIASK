@@ -105,17 +105,6 @@ export class BacktestController {
     return { success: true, data, traceId: String(traceId) };
   }
 
-  /** P3-5: Send backtest result to TDX */
-  @Post('send-to-tdx')
-  async sendToTdx(
-    @Body() body: { code: string; strategy: string },
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
-  ) {
-    const data = await this.backtestService.sendToTdx(body);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
-  }
-
   /** P3-3: Batch backtest */
   @Post('batch')
   async batch(

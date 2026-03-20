@@ -3,6 +3,8 @@
 import { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import { useWatchlistStore } from '@/store/watchlist-store';
+import { hasLoggedInHint } from '@/lib/auth';
+import { isPublicPathname } from '@/lib/public-routes';
 
 /**
  * 全局自选股同步初始化组件。
@@ -14,8 +16,8 @@ export function WatchlistInit() {
     const synced = useWatchlistStore((s) => s.synced);
 
     useEffect(() => {
-        if (pathname === '/login' || pathname === '/register') return;
-        if (!document.cookie.includes('logged_in=1')) return;
+        if (isPublicPathname(pathname)) return;
+        if (!hasLoggedInHint()) return;
         if (!synced) {
             syncFromServer();
         }

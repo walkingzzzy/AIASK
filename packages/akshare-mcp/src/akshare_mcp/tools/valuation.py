@@ -8,7 +8,7 @@ from typing import Optional, List
 import statistics
 
 from ..storage import get_db
-from ..utils import ok, fail
+from ..utils import ok, fail, resolve_security_code
 
 # --- 从 engine 子模块导入纯计算函数 & 常量 ---
 from .valuation_engine import (
@@ -47,7 +47,12 @@ def register(mcp):
                 valuation_peer_mod.get_db = original_get_db
 
     @mcp.tool()
-    async def get_valuation_metrics(code: str):
+    async def get_valuation_metrics(
+        code: Optional[str] = None,
+        stock_code: Optional[str] = None,
+        symbol: Optional[str] = None,
+        ticker: Optional[str] = None,
+    ):
         """
         获取估值指标
 
@@ -55,11 +60,38 @@ def register(mcp):
             code: 股票代码
         """
         try:
-            from ..data_source import data_source
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
 
             db = get_db()
             pe = pb = mcap = None
             name = ""
+            source_chain = ['db.stocks']
+            invalid_metrics: dict[str, list[dict[str, object]]] = {}
+            fallback_used = False
+
+            def _record_invalid(metric_name: str, source_name: str, raw_value, reason: str) -> None:
+                invalid_metrics.setdefault(metric_name, []).append(
+                    {
+                        'source': source_name,
+                        'reason': reason,
+                        'raw_value': raw_value,
+                    }
+                )
+
+            def _sanitize_positive_metric(raw_value, *, metric_name: str, source_name: str):
+                try:
+                    if raw_value is None:
+                        return None
+                    numeric = float(raw_value)
+                except Exception:
+                    _record_invalid(metric_name, source_name, raw_value, 'unparseable')
+                    return None
+                if numeric <= 0:
+                    _record_invalid(metric_name, source_name, numeric, 'non_positive')
+                    return None
+                return float(numeric)
 
             # 从stocks表获取估值指标
             async with db.acquire() as conn:
@@ -71,36 +103,68 @@ def register(mcp):
                 )
                 if row:
                     name = row['stock_name'] or ""
-                    pe = float(row['pe_ratio']) if row['pe_ratio'] else None
-                    pb = float(row['pb_ratio']) if row['pb_ratio'] else None
-                    mcap = float(row['market_cap']) if row['market_cap'] else None
+                    pe = _sanitize_positive_metric(row['pe_ratio'], metric_name='pe_ratio', source_name='db.stocks')
+                    pb = _sanitize_positive_metric(row['pb_ratio'], metric_name='pb_ratio', source_name='db.stocks')
+                    mcap = _sanitize_positive_metric(row['market_cap'], metric_name='market_cap', source_name='db.stocks')
 
-            # DB 值为空时，从 TDX 实时计算
+            # DB 值为空时，尝试从 DB 股票信息接口补齐估值
             if pe is None or pb is None or mcap is None:
-                live = data_source.get_stock_info_priority_tdx(code)
+                source_chain.append('db.get_stock_info')
+                live = await db.get_stock_info(code)
                 if live:
+                    fallback_used = True
                     name = name or live.get("name", "")
-                    pe = pe or live.get("pe_ratio")
-                    pb = pb or live.get("pb_ratio")
-                    mcap = mcap or live.get("market_cap")
+                    pe = pe if pe is not None else _sanitize_positive_metric(
+                        live.get("pe_ratio"),
+                        metric_name='pe_ratio',
+                        source_name='db.get_stock_info',
+                    )
+                    pb = pb if pb is not None else _sanitize_positive_metric(
+                        live.get("pb_ratio"),
+                        metric_name='pb_ratio',
+                        source_name='db.get_stock_info',
+                    )
+                    mcap = mcap if mcap is not None else _sanitize_positive_metric(
+                        live.get("market_cap"),
+                        metric_name='market_cap',
+                        source_name='db.get_stock_info',
+                    )
 
             if not name and pe is None and pb is None and mcap is None:
-                return fail('Stock not found')
+                response = fail('Stock not found')
+                response['source_chain'] = source_chain
+                response['invalid_metrics'] = invalid_metrics
+                return response
 
-            return ok({
+            metrics_payload = {
                 'code': code,
                 'name': name,
-                'pe_ratio': round(pe, 2) if pe else None,
-                'pb_ratio': round(pb, 2) if pb else None,
-                'market_cap': round(mcap, 2) if mcap else None,
-            })
+                'pe_ratio': round(pe, 2) if pe is not None else None,
+                'pb_ratio': round(pb, 2) if pb is not None else None,
+                'market_cap': round(mcap, 2) if mcap is not None else None,
+                'data_quality': {
+                    'source_chain': source_chain,
+                    'fallback_used': fallback_used,
+                    'invalid_metrics': invalid_metrics,
+                    'missing_metrics': [
+                        metric_name
+                        for metric_name, metric_value in (
+                            ('pe_ratio', pe),
+                            ('pb_ratio', pb),
+                            ('market_cap', mcap),
+                        )
+                        if metric_value is None
+                    ],
+                },
+            }
+            return ok(metrics_payload)
 
         except Exception as e:
             return fail(str(e))
 
     @mcp.tool()
     async def dcf_valuation(
-        code: str,
+        code: Optional[str] = None,
         discount_rate: float = 0.10,
         growth_rate: float = 0.05,
         years: int = 5,
@@ -123,6 +187,9 @@ def register(mcp):
         distribution_discount_std: float = 0.1,
         distribution_terminal_std: float = 0.1,
         distribution_seed: Optional[int] = None,
+        stock_code: Optional[str] = None,
+        symbol: Optional[str] = None,
+        ticker: Optional[str] = None,
     ):
         """
         DCF估值（现金流折现，驱动项版本）
@@ -151,6 +218,9 @@ def register(mcp):
             enable_sensitivity: 是否执行敏感性分析
         """
         try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
             if years < 1:
                 return fail('years 必须 >= 1')
 
@@ -209,8 +279,15 @@ def register(mcp):
                 val = _first_number(row, keys)
                 return val if val is not None and val > 0 else None
 
-            profit_keys = ['net_profit', 'netProfit', 'net_income', 'n_income', 'profit']
-            revenue_keys = ['revenue', 'total_revenue', 'totalRevenue', 'operating_revenue', 'operatingRevenue']
+            profit_keys = [
+                'net_profit', 'netProfit', 'net_income', 'n_income', 'profit',
+                'n_income_attr_p', 'net_profit_atsopc', 'parent_net_profit',
+                '归母净利润', '净利润',
+            ]
+            revenue_keys = [
+                'revenue', 'total_revenue', 'totalRevenue', 'operating_revenue', 'operatingRevenue',
+                'oper_rev', 'main_business_income', '营业总收入', '营业收入',
+            ]
 
             latest_row = financials[0] if financials else None
             latest_profit = _first_positive(latest_row, profit_keys) if latest_row else None
@@ -395,10 +472,13 @@ def register(mcp):
 
     @mcp.tool()
     async def ddm_valuation(
-        code: str,
+        code: Optional[str] = None,
         dividend: Optional[float] = None,
         growth_rate: float = 0.05,
-        required_return: float = 0.10
+        required_return: float = 0.10,
+        stock_code: Optional[str] = None,
+        symbol: Optional[str] = None,
+        ticker: Optional[str] = None,
     ):
         """
         DDM估值（股息折现模型）
@@ -410,10 +490,15 @@ def register(mcp):
             required_return: 要求回报率
         """
         try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
             if growth_rate >= required_return:
                 return fail('增长率必须小于要求回报率')
 
             db = get_db()
+            source_chain = ['db.financials']
+            fallback_reason: list[str] = []
 
             # 获取股息数据（如果没有提供）
             if not dividend:
@@ -428,9 +513,24 @@ def register(mcp):
                         code
                     )
 
-                    if row and row['eps']:
+                    if row and row['eps'] is not None and float(row['eps']) > 0:
                         # 假设分红率为30%
                         dividend = float(row['eps']) * 0.3
+                    else:
+                        fallback_reason.append('DB eps 缺失或非正值')
+
+                if not dividend or dividend <= 0:
+                    source_chain.append('finance.get_financials')
+                    from .finance import get_financials as _api_get_financials
+                    from .finance import normalize_financial_payload as _normalize_financial_payload
+
+                    fin_res = await _api_get_financials(code)
+                    if fin_res and fin_res.get('success') and fin_res.get('data'):
+                        fin_data = _normalize_financial_payload(fin_res['data'], include_aliases=False) or {}
+                        eps = fin_data.get('eps')
+                        if eps is not None and float(eps) > 0:
+                            dividend = float(eps) * 0.3
+                            fallback_reason.append('已降级使用 finance.get_financials 的 eps 估算股息')
 
             if not dividend or dividend <= 0:
                 return fail(f'股票 {code} 无股息数据，DDM模型不适用')
@@ -447,6 +547,8 @@ def register(mcp):
                 'next_dividend': float(next_dividend),
                 'growth_rate': growth_rate,
                 'required_return': required_return,
+                'source_chain': source_chain,
+                'fallback_reason': fallback_reason,
             })
 
         except Exception as e:
@@ -454,9 +556,12 @@ def register(mcp):
 
     @mcp.tool()
     async def relative_valuation(
-        code: str,
+        code: Optional[str] = None,
         metrics: Optional[List[str]] = None,
-        peers: Optional[List[str]] = None
+        peers: Optional[List[str]] = None,
+        stock_code: Optional[str] = None,
+        symbol: Optional[str] = None,
+        ticker: Optional[str] = None,
     ):
         """
         相对估值分析
@@ -467,14 +572,20 @@ def register(mcp):
             peers: 可比公司列表（不填则自动查找同行业公司）
         """
         try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
             return await _run_valuation_peer_impl(_relative_valuation_impl, code, metrics, peers)
         except Exception as e:
             return fail(str(e))
 
     @mcp.tool()
     async def get_historical_valuation(
-        code: str,
-        days: int = 30
+        code: Optional[str] = None,
+        days: int = 30,
+        stock_code: Optional[str] = None,
+        symbol: Optional[str] = None,
+        ticker: Optional[str] = None,
     ):
         """
         获取历史估值数据
@@ -489,6 +600,9 @@ def register(mcp):
             days: 查询天数
         """
         try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
             return await _run_valuation_peer_impl(_get_historical_valuation_impl, code, days)
         except Exception as e:
             return fail(str(e))
@@ -514,8 +628,8 @@ def register(mcp):
 
     @mcp.tool()
     async def scenario_dcf_valuation(
-        code: str,
-        base_revenue: float,
+        code: Optional[str] = None,
+        base_revenue: float = 0.0,
         industry: Optional[str] = None,
         years: int = 5,
         tax_rate: float = 0.25,
@@ -547,6 +661,9 @@ def register(mcp):
         distribution_discount_std: float = 0.1,
         distribution_terminal_std: float = 0.1,
         distribution_seed: Optional[int] = None,
+        stock_code: Optional[str] = None,
+        symbol: Optional[str] = None,
+        ticker: Optional[str] = None,
     ):
         """
         多情景概率加权 DCF 估值（支持行业模板）
@@ -583,6 +700,82 @@ def register(mcp):
             terminal_growth: 覆盖行业模板的永续增长率
         """
         try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            source_chain: list[str] = []
+            fallback_reason: list[str] = []
+            base_revenue_source = 'user_input' if base_revenue and base_revenue > 0 else 'auto'
+
+            def _to_float(v):
+                try:
+                    if v is None:
+                        return None
+                    return float(v)
+                except Exception:
+                    return None
+
+            def _first_number(row: dict, keys: list[str]):
+                if not isinstance(row, dict):
+                    return None
+                for k in keys:
+                    val = _to_float(row.get(k))
+                    if val is not None:
+                        return val
+                return None
+
+            def _first_positive(row: dict, keys: list[str]):
+                val = _first_number(row, keys)
+                return val if val is not None and val > 0 else None
+
+            if base_revenue <= 0:
+                db = get_db()
+                source_chain.append('db.get_financials')
+                financials = await db.get_financials(code, limit=max(8, years * 2))
+                if isinstance(financials, dict):
+                    financials = [financials]
+                if not isinstance(financials, list):
+                    financials = []
+
+                if not financials:
+                    try:
+                        source_chain.append('finance.get_financials')
+                        from .finance import get_financials as _api_get_financials
+                        fin_res = await _api_get_financials(code)
+                        if fin_res and fin_res.get('success') and fin_res.get('data'):
+                            api_data = fin_res['data']
+                            financials = api_data if isinstance(api_data, list) else [api_data]
+                            fallback_reason.append('base_revenue 未提供，已降级使用 finance.get_financials 自动回填')
+                    except Exception as e:
+                        fallback_reason.append(f'finance.get_financials 降级失败: {e}')
+
+                revenue_keys = [
+                    'revenue', 'total_revenue', 'totalRevenue', 'operating_revenue', 'operatingRevenue',
+                    'oper_rev', 'main_business_income', '营业总收入', '营业收入',
+                ]
+                profit_keys = [
+                    'net_profit', 'netProfit', 'net_income', 'n_income', 'profit',
+                    'n_income_attr_p', 'net_profit_atsopc', 'parent_net_profit',
+                    '归母净利润', '净利润',
+                ]
+
+                revenue_candidates = [_first_positive(item, revenue_keys) for item in financials]
+                revenue_candidates = [float(v) for v in revenue_candidates if v is not None]
+                if revenue_candidates:
+                    base_revenue = float(revenue_candidates[0])
+                    base_revenue_source = 'financial_revenue'
+                else:
+                    profit_candidates = [_first_positive(item, profit_keys) for item in financials]
+                    profit_candidates = [float(v) for v in profit_candidates if v is not None]
+                    if profit_candidates:
+                        fallback_profit = float(statistics.mean(profit_candidates[: min(3, len(profit_candidates))]))
+                        inferred_margin = 0.20
+                        base_revenue = float(max(fallback_profit / inferred_margin, fallback_profit * 2))
+                        base_revenue_source = 'financial_profit_inferred_revenue'
+                        fallback_reason.append('缺少有效营收数据，已使用净利润反推 base_revenue')
+
+            if base_revenue <= 0:
+                return fail('base_revenue 必须 > 0，且无法从财务数据自动回填')
             # 1. 确定基准参数：行业模板 → 用户覆盖 → 默认值
             if industry and industry in INDUSTRY_TEMPLATES:
                 tpl = INDUSTRY_TEMPLATES[industry]
@@ -680,6 +873,10 @@ def register(mcp):
                 "model": "Multi-Scenario Probability-Weighted DCF",
                 "industry": industry or "custom",
                 "years": years,
+                "base_revenue": float(base_revenue),
+                "base_revenue_source": base_revenue_source,
+                "source_chain": source_chain,
+                "fallback_reason": fallback_reason,
                 **result,
             }
 

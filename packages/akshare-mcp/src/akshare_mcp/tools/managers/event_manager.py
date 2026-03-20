@@ -1,27 +1,32 @@
 """事件管理器 - 财报、分红、重组"""
 
 from datetime import date, timedelta
-
-import json
+import time
 
 from ...storage import get_db
-from ...utils import ok, fail
+from ..manager_protocol import (
+    fail_with_meta,
+    normalize_manager_code,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 from ..news import get_research_reports, get_stock_news, get_stock_notices, get_stock_research
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
-    extra = kwargs.get("kwargs")
-    if extra is not None:
-        if isinstance(extra, str):
-            try:
-                extra = json.loads(extra or "{}")
-            except Exception:
-                extra = None
-        if isinstance(extra, dict):
-            kwargs = {**kwargs, **extra}
-    if "code" not in kwargs or kwargs.get("code") is None:
-        kwargs["code"] = kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
-    return kwargs
+    return normalize_manager_kwargs(kwargs)
+
+
+def _dedupe_chain(values: list[str]) -> list[str]:
+    chain = []
+    seen = set()
+    for value in values:
+        label = str(value or "").strip()
+        if not label or label in seen:
+            continue
+        chain.append(label)
+        seen.add(label)
+    return chain
 
 
 def _pick_first(payload: dict, keys: list[str], default=None):
@@ -131,8 +136,29 @@ def register_event_manager(mcp):
             # 事件日历
             event_manager(action="calendar", kwargs='{"start_date":"2025-01-01","end_date":"2025-01-31"}')
         """
+        start_time = time.perf_counter()
         try:
             kwargs = _normalize_kwargs(kwargs)
+            code, kwargs = normalize_manager_code(None, kwargs)
+
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="event_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="event_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
             SUPPORTED_ACTIONS = {
                 'upcoming_events': '获取即将到来的事件',
                 'get_by_code': '根据股票代码获取事件',
@@ -143,7 +169,7 @@ def register_event_manager(mcp):
             }
             
             if action == 'help':
-                return ok({'supported_actions': SUPPORTED_ACTIONS})
+                return _ok({'supported_actions': SUPPORTED_ACTIONS}, source_chain=['event_manager'])
             
             elif action in ['upcoming_events', 'calendar', 'list_events']:
                 days = int(kwargs.get('days') or 7)
@@ -158,13 +184,21 @@ def register_event_manager(mcp):
                         days
                     )
                     events = [dict(row) for row in rows]
+
+                if event_type != 'all':
+                    events = [
+                        item for item in events
+                        if str(item.get('event_type') or '') == str(event_type)
+                    ]
                 
-                return ok({'events': events, 'count': len(events)})
+                return _ok(
+                    {'events': events, 'count': len(events)},
+                    source_chain=['event_manager', 'db.events'],
+                )
             
             elif action in ['get_by_code', 'get_events']:
-                code = kwargs.get('code')
                 if not code:
-                    return fail('需要提供股票代码')
+                    return _fail('需要提供股票代码', source_chain=['event_manager'])
                 limit = int(kwargs.get('limit') or 20)
                 
                 db = get_db()
@@ -176,7 +210,7 @@ def register_event_manager(mcp):
                     events = [dict(row) for row in rows]
 
                 source = 'db.events'
-                source_chain = ['db.events']
+                source_chain = ['event_manager', 'db.events']
                 fallback_used = False
                 if not events:
                     events, aggregated_chain = _aggregate_events_from_content(code, limit=limit)
@@ -184,17 +218,30 @@ def register_event_manager(mcp):
                         fallback_used = True
                         source = 'aggregated_content'
                         source_chain.extend(aggregated_chain)
-                
-                return ok({
-                    'code': code,
-                    'events': events,
-                    'count': len(events),
-                    'source': source,
-                    'source_chain': source_chain,
-                    'fallback_used': fallback_used,
-                })
+
+                response_chain = _dedupe_chain(source_chain)
+                return _ok(
+                    {
+                        'code': code,
+                        'events': events,
+                        'count': len(events),
+                        'source': source,
+                        'source_chain': response_chain,
+                        'fallback_used': fallback_used,
+                    },
+                    source_chain=response_chain,
+                )
             
             else:
-                return fail(f'Unknown action: {action}. Supported: {", ".join(SUPPORTED_ACTIONS.keys())}')
+                return _fail(
+                    f'Unknown action: {action}. Supported: {", ".join(SUPPORTED_ACTIONS.keys())}',
+                    source_chain=['event_manager'],
+                )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='event_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['event_manager'],
+            )

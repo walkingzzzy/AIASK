@@ -64,7 +64,7 @@ function MarketPulse({
 function MultiIndexQuotes({ dashboardVisibility, idxQ, validIndices, INDEX_CODES }: Pick<MarketOverviewProps, 'dashboardVisibility' | 'idxQ' | 'validIndices' | 'INDEX_CODES'>) {
   if (!dashboardVisibility['market']) return null;
   return (
-    <SectionCard className="p-4">
+    <SectionCard className="min-h-[220px] p-4">
       <h3 className="mt-0">主要指数</h3>
       {idxQ.error ? <ErrorState text={idxQ.error} onRetry={() => idxQ.refetch()} /> : null}
       {validIndices.length > 0 ? (
@@ -101,7 +101,7 @@ function MultiIndexQuotes({ dashboardVisibility, idxQ, validIndices, INDEX_CODES
 function SectorHeatmap({ dashboardVisibility, sectorQ, sectors }: Pick<MarketOverviewProps, 'dashboardVisibility' | 'sectorQ' | 'sectors'>) {
   if (!dashboardVisibility['market']) return null;
   return (
-    <SectionCard className="p-4 mt-4">
+    <SectionCard className="min-h-[220px] p-4 mt-4">
       <h3 className="mt-0">板块热力</h3>
       {sectorQ.error ? <ErrorState text={sectorQ.error} onRetry={() => sectorQ.refetch()} /> : null}
       {sectors.length > 0 ? (

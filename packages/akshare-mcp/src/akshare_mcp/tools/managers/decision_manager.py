@@ -1,34 +1,24 @@
 """决策管理器 - AI辅助决策（增强版）"""
 
-import numpy as np
 import json
+import logging
 import time
 from datetime import datetime
-from ...storage import get_db
-from ...utils import ok, fail, normalize_code
+
+import numpy as np
+
 from ...data_source import data_source
+from ...storage import get_db
 from ...tools.market.helpers import get_stock_list_cached
-import logging
+from ...utils import normalize_code
+from ..manager_protocol import (
+    extract_common_meta,
+    fail_with_meta,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 
 logger = logging.getLogger(__name__)
-
-def _normalize_kwargs(kwargs: dict) -> dict:
-    # 支持 MCP 将全部参数放在 kwargs 字符串里传入
-    extra = kwargs.get("kwargs")
-    if extra is not None:
-        if isinstance(extra, str):
-            try:
-                extra = json.loads(extra or "{}")
-            except Exception:
-                extra = None
-        if isinstance(extra, dict):
-            kwargs = {**kwargs, **extra}
-    # 统一 code 的多种传参方式
-    code = kwargs.get("code") or kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
-    if code is not None and isinstance(code, str):
-        code = code.strip() or None
-    kwargs["code"] = code
-    return kwargs
 
 
 def register_decision_manager(mcp):
@@ -59,45 +49,43 @@ def register_decision_manager(mcp):
             # 组合建议
             decision_manager(action="portfolio_advice", kwargs='{"codes":["600519","000858","002304"],"weights":[0.4,0.3,0.3]}')
         """
+        start_time = time.perf_counter()
         try:
-            start_time = time.perf_counter()
-            trace_id = f"decision_manager:{action}:{int(time.time() * 1000)}"
-            tool_version = "v1.1"
-
             db = get_db()
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_kwargs(dict(kwargs))
 
             # 统一可选参数（向后兼容）
-            as_of = kwargs.get('as_of', '')
-            adjust = kwargs.get('adjust', '')
-            price_source_policy = kwargs.get('price_source_policy', 'auto')
-            explain = kwargs.get('explain', True)
-            strict_mode = kwargs.get('strict_mode', False)
-
-            def _with_meta(resp: dict, source_chain=None, data_timestamp: str | None = None):
-                if source_chain is None:
-                    source_chain = ['decision_manager']
-                latency_ms = int((time.perf_counter() - start_time) * 1000)
-                resp['meta'] = {
-                    'trace_id': trace_id,
-                    'tool_version': tool_version,
-                    'data_timestamp': data_timestamp or datetime.now().strftime('%Y-%m-%d'),
-                    'source_chain': source_chain,
-                    'cached': False,
-                    'latency_ms': latency_ms,
-                    'as_of': as_of,
-                    'adjust': adjust,
-                    'price_source_policy': price_source_policy,
-                    'explain': explain,
-                    'strict_mode': strict_mode,
-                }
-                return resp
+            meta_defaults = {
+                'as_of': '',
+                'adjust': '',
+                'price_source_policy': 'auto',
+                'explain': True,
+                'strict_mode': False,
+            }
+            common_meta = extract_common_meta(kwargs, defaults=meta_defaults)
+            explain = common_meta['explain']
 
             def _ok(data: dict, source_chain=None, data_timestamp: str | None = None):
-                return _with_meta(ok(data), source_chain, data_timestamp)
+                return ok_with_meta(
+                    data,
+                    tool_name='decision_manager',
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                    data_timestamp=data_timestamp,
+                    extra_meta=common_meta,
+                )
 
             def _fail(message: str, source_chain=None, data_timestamp: str | None = None):
-                return _with_meta(fail(message), source_chain, data_timestamp)
+                return fail_with_meta(
+                    message,
+                    tool_name='decision_manager',
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                    data_timestamp=data_timestamp,
+                    extra_meta=common_meta,
+                )
 
             # action 可能也在 kwargs 里（部分 MCP 客户端把所有参数放进 kwargs）
             if not action and kwargs.get("action"):
@@ -108,7 +96,7 @@ def register_decision_manager(mcp):
                     'supported_actions': {
                         'analyze': '综合分析（需要 code）',
                         'recommend': '推荐股票（可选 criteria, limit）',
-                        'portfolio_advice': '组合建议（需要 portfolio_id）',
+                        'portfolio_advice': '组合建议（支持 portfolio_id 或 codes + weights）',
                         'help': '显示帮助信息',
                     }
                 })
@@ -534,15 +522,37 @@ def register_decision_manager(mcp):
             
             elif action == 'portfolio_advice':
                 portfolio_id = kwargs.get('portfolio_id')
-                
-                async with db.acquire() as conn:
-                    holdings = await conn.fetch(
-                        "SELECT * FROM holdings WHERE portfolio_id = $1",
-                        portfolio_id
-                    )
-                
+                codes = kwargs.get('codes') or []
+                weights = kwargs.get('weights') or []
+
+                if isinstance(codes, str):
+                    codes = [c.strip() for c in codes.split(',') if c.strip()]
+                if isinstance(weights, str):
+                    weights = [w.strip() for w in weights.split(',') if str(w).strip()]
+
+                holdings = []
+                if codes:
+                    if weights and len(weights) != len(codes):
+                        return _fail('weights 数量必须与 codes 一致')
+                    holdings = [
+                        {
+                            'code': normalize_code(code),
+                            'weight': float(weights[idx]) if weights else 1.0 / len(codes),
+                        }
+                        for idx, code in enumerate(codes)
+                        if normalize_code(code)
+                    ]
+                elif portfolio_id:
+                    async with db.acquire() as conn:
+                        holdings = await conn.fetch(
+                            "SELECT * FROM holdings WHERE portfolio_id = $1",
+                            portfolio_id
+                        )
+                else:
+                    return _fail('需要提供 portfolio_id 或 codes + weights')
+
                 if not holdings:
-                    return _ok({'message': '当前组合无持仓，请先添加持仓后再操作'})
+                    return _ok({'message': '当前组合无持仓，请先添加持仓后再操作', 'portfolio_id': portfolio_id, 'codes': codes})
                 
                 advice_list = []
                 
@@ -561,6 +571,9 @@ def register_decision_manager(mcp):
                                 '建议减仓' if data['decision'] in ['sell', 'strong_sell'] else '建议持有'
                             )
                         })
+
+                if not advice_list:
+                    return _fail('组合中的股票均未能完成分析，无法生成组合建议')
                 
                 avg_score = np.mean([a['score'] for a in advice_list])
                 
@@ -573,6 +586,7 @@ def register_decision_manager(mcp):
                 
                 return _ok({
                     'portfolio_id': portfolio_id,
+                    'codes': [h['code'] for h in holdings],
                     'overall_score': float(avg_score),
                     'overall_advice': overall_advice,
                     'holdings_advice': advice_list
@@ -581,4 +595,11 @@ def register_decision_manager(mcp):
             else:
                 return _fail(f'Unknown action: {action}. Supported: help, analyze, recommend, portfolio_advice')
         except Exception as e:
-            return _fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='decision_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['decision_manager'],
+                extra_meta=common_meta if 'common_meta' in locals() else None,
+            )

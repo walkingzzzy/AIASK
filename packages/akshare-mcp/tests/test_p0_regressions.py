@@ -1,30 +1,38 @@
 import pytest
 import numpy as np
+import sys
 from datetime import datetime
 
 import akshare
 import akshare_mcp.baostock_api as bs_api_mod
 import akshare_mcp.data_source as ds_mod
+import akshare_mcp.tools.backtest as backtest_mod
 import akshare_mcp.tools.decision as decision_mod
+import akshare_mcp.tools.data_warmup as data_warmup_mod
 import akshare_mcp.tools.finance as finance_mod
 import akshare_mcp.tools.fund_flow as fund_flow_mod
+import akshare_mcp.tools.market.limit_up as limit_up_mod
 import akshare_mcp.tools.market.quote as quote_mod
 import akshare_mcp.tools.news as news_mod
+import akshare_mcp.tools.portfolio as portfolio_mod
 import akshare_mcp.tools.quant as quant_mod
 import akshare_mcp.tools.search as search_mod
 import akshare_mcp.tools.vector as vector_mod
 import akshare_mcp.tools.alerts as alerts_tool_mod
 import akshare_mcp.tools.managers.alerts_manager as alerts_manager_mod
 import akshare_mcp.tools.managers.comprehensive_manager as comprehensive_manager_mod
+import akshare_mcp.tools.managers.decision_manager as decision_manager_mod
 import akshare_mcp.tools.managers.event_manager as event_manager_mod
+import akshare_mcp.tools.managers.limit_up_manager as limit_up_manager_mod
 import akshare_mcp.tools.managers.market_insight_manager as market_insight_manager_mod
+import akshare_mcp.tools.market_blocks as market_blocks_mod
 import akshare_mcp.tools.managers.paper_trading_manager as ptm
 import akshare_mcp.tools.managers.portfolio_manager as pm
 import akshare_mcp.tools.managers.research_manager as research_manager_mod
 import akshare_mcp.tools.managers.sector_manager as sector_manager_mod
+import akshare_mcp.tools.managers.trading_data_manager as trading_data_manager_mod
 import akshare_mcp.tools.managers.watchlist_manager as watchlist_manager_mod
 import akshare_mcp.tools.options as options_mod
-import akshare_mcp.tools.tdx_trading_data as tdx_trade_mod
 import akshare_mcp.tools.valuation as valuation_mod
 import akshare_mcp.services.portfolio_optimization as po_mod
 
@@ -157,6 +165,169 @@ class _FakeDB:
 class _PaperFakeDB(_FakeDB):
     async def get_klines(self, code, limit=2):
         return []
+
+
+class _BatchBacktestDB:
+    async def get_klines(self, code, start_date=None, end_date=None):
+        return [
+            {
+                'date': '2025-01-02',
+                'open': 10.0,
+                'close': 10.2,
+                'high': 10.3,
+                'low': 9.9,
+                'volume': 1000,
+            },
+            {
+                'date': '2025-01-03',
+                'open': 10.2,
+                'close': 10.1,
+                'high': 10.4,
+                'low': 10.0,
+                'volume': 1100,
+            },
+        ]
+
+
+class _EmptyFetchConn:
+    async def fetch(self, query, *args):
+        return []
+
+
+class _TradingDataDB(_FakeDB):
+    async def get_klines(self, code, limit=1):
+        return []
+
+
+@pytest.mark.asyncio
+async def test_p0_08_run_batch_backtest_should_mark_all_failures_degraded(monkeypatch):
+    monkeypatch.setattr(backtest_mod, 'get_db', lambda: _BatchBacktestDB())
+    monkeypatch.setattr(
+        backtest_mod.backtest_engine,
+        'run_backtest',
+        lambda code, klines, strategy, params: {'success': False, 'error': f'backtest failed for {code}'},
+    )
+
+    result = await backtest_mod.run_batch_backtest(['600519', '000858'], use_parallel=False)
+
+    assert result['success'] is True
+    data = result['data']
+    assert data['successful_count'] == 0
+    assert data['failed_count'] == 2
+    assert data['degraded'] is True
+    assert 'all_fetch_failed' in data['quality_flags']
+    assert len(data['failure_reasons']) == 2
+    assert data['failure_reasons'][0]['code'] == '600519'
+
+
+@pytest.mark.asyncio
+async def test_p0_08b_run_batch_backtest_tool_should_mark_all_failures_degraded(monkeypatch):
+    monkeypatch.setattr(backtest_mod, 'get_db', lambda: _BatchBacktestDB())
+    monkeypatch.setattr(
+        backtest_mod.backtest_engine,
+        'run_backtest',
+        lambda code, klines, strategy, params: {'success': False, 'error': f'backtest failed for {code}'},
+    )
+
+    mcp = _DummyMCP()
+    backtest_mod.register(mcp)
+
+    result = await mcp.run_batch_backtest(['600519', '000858'], use_parallel=False)
+
+    assert result['success'] is True
+    data = result['data']
+    assert data['successful_count'] == 0
+    assert data['failed_count'] == 2
+    assert data['degraded'] is True
+    assert 'all_fetch_failed' in data['quality_flags']
+    assert len(data['failure_reasons']) == 2
+
+
+@pytest.mark.asyncio
+async def test_p0_08c_trading_data_manager_should_fallback_to_tool_block_trades_with_quality_meta(monkeypatch):
+    mcp = _DummyMCP()
+    trading_data_manager_mod.register_trading_data_manager(mcp)
+
+    monkeypatch.setattr(trading_data_manager_mod, 'get_db', lambda: _TradingDataDB(_EmptyFetchConn()))
+    monkeypatch.setattr(
+        fund_flow_mod,
+        'get_block_trades',
+        lambda date="", stock_code="", limit=500: {
+            'success': True,
+            'data': [
+                {
+                    'date': '2026-03-18',
+                    'code': '600519',
+                    'name': '贵州茅台',
+                    'price': 1500.5,
+                    'amount': 1500500.0,
+                }
+            ],
+            'data_quality': {'name_backfilled_count': 1},
+            'source_chain': ['eastmoney.block_trades'],
+            'fallback_reason': ['db block_trades empty'],
+            'degraded': False,
+        },
+    )
+
+    result = await mcp.trading_data_manager(
+        action='block_trades',
+        kwargs='{"stock_code":"600519","limit":10,"date":"2026-03-18"}',
+    )
+
+    assert result['success'] is True
+    data = result['data']
+    assert data['code'] == '600519'
+    assert len(data['trades']) == 1
+    assert data['analysis']['totalTrades'] == 1
+    assert data['analysis']['avgPrice'] == pytest.approx(1500.5)
+    assert data['data_quality']['name_backfilled_count'] == 1
+    assert data['source_chain'] == ['eastmoney.block_trades']
+    assert data['fallback_reason'] == ['db block_trades empty']
+    assert data['degraded'] is False
+
+
+@pytest.mark.asyncio
+async def test_p0_08d_limit_up_manager_should_propagate_quality_meta(monkeypatch):
+    mcp = _DummyMCP()
+    limit_up_manager_mod.register_limit_up_manager(mcp)
+
+    monkeypatch.setattr(
+        limit_up_mod,
+        'get_limit_up_stocks',
+        lambda date="": {
+            'success': True,
+            'data': [
+                {
+                    'code': '000001',
+                    'name': '平安银行',
+                    'price': 11.0,
+                    'changePercent': 10.0,
+                    'turnoverRate': None,
+                    'industry': '银行',
+                    'concept': '',
+                    'firstLimitTime': '',
+                    'lastLimitTime': '',
+                    'continuousDays': 2,
+                }
+            ],
+            'data_quality': {'missing_field_counts': {'openTimes': 1}},
+            'source_chain': ['tushare.stk_limit', 'tushare.daily'],
+            'fallback_reason': ['openTimes unavailable from source'],
+            'degraded': True,
+        },
+    )
+
+    result = await mcp.limit_up_manager(action='list', kwargs='{"date":"2026-03-18"}')
+
+    assert result['success'] is True
+    data = result['data']
+    assert data['count'] == 1
+    assert data['limit_up_stocks'][0]['code'] == '000001'
+    assert data['data_quality']['missing_field_counts']['openTimes'] == 1
+    assert data['source_chain'] == ['tushare.stk_limit', 'tushare.daily']
+    assert data['fallback_reason'] == ['openTimes unavailable from source']
+    assert data['degraded'] is True
 
 
 class _WatchlistConn:
@@ -523,110 +694,6 @@ def test_p0_4_get_option_chain_none_months_should_degrade_gracefully(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_p0_5_tdx_financial_snapshot_fallback_from_empty_tdx(monkeypatch):
-    class _FakeTQ:
-        def get_gp_one_data(self, stock_code=None):
-            return {}
-
-    async def _fake_get_financials(code):
-        return {"success": True, "data": {"reportDate": "2024-12-31", "source": "tushare_pro"}}
-
-    monkeypatch.setattr(finance_mod.data_source, "is_tdx_available", lambda: True)
-    monkeypatch.setattr(finance_mod.data_source, "get_tdxquant", lambda: _FakeTQ())
-    monkeypatch.setattr(finance_mod.data_source, "_convert_to_tdx_code", lambda c: c)
-    monkeypatch.setattr(finance_mod, "get_financials", _fake_get_financials)
-
-    r = await finance_mod.tdx_get_financial_snapshot("600519")
-    assert r["success"] is True
-    data = r["data"]
-    assert "source_chain" in data
-    assert "tdxquant.get_gp_one_data" in data["source_chain"]
-    assert "finance.get_financials" in data["source_chain"]
-    assert any("TDX返回空结果" in msg for msg in data.get("fallback_reason", []))
-
-
-
-def test_p0_5b_tdx_financial_history_should_decode_mixed_bytes(monkeypatch):
-    class _FakeTQ:
-        def get_financial_data_by_date(self, stock_list, field_list, year, mmdd):
-            return {
-                b"code": stock_list[0],
-                "rows": [
-                    {b"name": b"\xc8\xd5\xc6\xda", b"value": b"20241231"},  # 日期(GBK)
-                    {"field": "ROE", "value": b"12.5"},
-                ],
-            }
-
-    monkeypatch.setattr(finance_mod.data_source, "is_tdx_available", lambda: True)
-    monkeypatch.setattr(finance_mod.data_source, "get_tdxquant", lambda: _FakeTQ())
-    monkeypatch.setattr(finance_mod.data_source, "_convert_to_tdx_code", lambda c: c)
-
-    r = finance_mod.tdx_get_financial_history(["600519"], ["ROE"], "20241231")
-    assert r["success"] is True
-    data = r["data"]
-    assert data["degraded"] is True
-    assert any("编码异常" in msg for msg in data.get("fallback_reason", []))
-    payload = data["data"]
-    assert "code" in payload
-    assert "rows" in payload
-
-
-def test_p0_5c_tdx_stock_trading_data_unsupported_fields_and_placeholder(monkeypatch):
-    class _FakeTQ:
-        def get_gpjy_value_by_date(self, stock_list, field_list, year, mmdd):
-            return {"600519": {"GP1": ["--", "--"]}}
-
-    monkeypatch.setattr(tdx_trade_mod.data_source, "is_tdx_available", lambda: True)
-    monkeypatch.setattr(tdx_trade_mod.data_source, "get_tdxquant", lambda: _FakeTQ())
-    monkeypatch.setattr(tdx_trade_mod.data_source, "_convert_to_tdx_code", lambda c: c)
-
-    r = tdx_trade_mod.tdx_get_stock_trading_data(["600519"], ["1", "GP999"])
-    assert r["success"] is True
-    assert r["degraded"] is True
-    assert any("字段不支持" in msg for msg in r.get("fallback_reason", []))
-    assert any("盘后数据未就绪" in msg for msg in r.get("fallback_reason", []))
-    assert r["data_quality"]["placeholder_values"] > 0
-
-
-def test_p0_5d_tdx_sector_trading_data_partial_placeholder(monkeypatch):
-    class _FakeTQ:
-        def get_bkjy_value_by_date(self, stock_list, field_list, year, mmdd):
-            return {"880660.SH": {"BK5": ["10.2", "--"]}}
-
-    monkeypatch.setattr(tdx_trade_mod.data_source, "is_tdx_available", lambda: True)
-    monkeypatch.setattr(tdx_trade_mod.data_source, "get_tdxquant", lambda: _FakeTQ())
-
-    r = tdx_trade_mod.tdx_get_sector_trading_data(["880660.SH"], ["BK5"])
-    assert r["success"] is True
-    assert r["degraded"] is True
-    assert any("部分字段" in msg for msg in r.get("fallback_reason", []))
-
-
-def test_p0_5e_tdx_market_trading_data_should_validate_end_date_dependency():
-    r = tdx_trade_mod.tdx_get_market_trading_data(["SC1"], end_date="20250131")
-    assert r["success"] is False
-    assert "仅传 end_date 无效" in (r.get("error") or "")
-
-
-def test_p0_5f_tdx_market_trading_data_unsupported_and_partial_placeholder(monkeypatch):
-    class _FakeTQ:
-        def get_scjy_value(self, field_list, start_time, end_time):
-            return {"SC1": ["100", "--"]}
-
-    monkeypatch.setattr(tdx_trade_mod.data_source, "is_tdx_available", lambda: True)
-    monkeypatch.setattr(tdx_trade_mod.data_source, "get_tdxquant", lambda: _FakeTQ())
-
-    r = tdx_trade_mod.tdx_get_market_trading_data(["1", "SC999"], start_date="20250101", end_date="20250131")
-    assert r["success"] is True
-    assert r["degraded"] is True
-    assert any("字段不支持" in msg for msg in r.get("fallback_reason", []))
-    assert any("部分字段" in msg for msg in r.get("fallback_reason", []))
-    assert r["data_quality"]["placeholder_values"] == 1
-
-
-
-
-@pytest.mark.asyncio
 async def test_p0_6_historical_valuation_dedup_and_data_quality(monkeypatch):
     class _ValuationConn:
         async def fetch(self, query, code, days):
@@ -769,6 +836,51 @@ async def test_p0_7b_historical_valuation_should_fallback_when_db_query_breaks(m
     assert data['history'][0]['pe_ratio'] == 18.0
     assert any('stock_quotes查询失败' in msg for msg in data.get('fallback_reason', []))
 
+
+
+@pytest.mark.asyncio
+async def test_p0_7c_historical_valuation_filters_non_positive_metrics(monkeypatch):
+    class _ValuationConn:
+        async def fetch(self, query, code, days):
+            return [
+                {
+                    "time": datetime(2026, 2, 2),
+                    "pe": 0.0,
+                    "pb": -1.0,
+                    "mkt_cap": 1200.0,
+                    "price": 101.0,
+                },
+                {
+                    "time": datetime(2026, 2, 1),
+                    "pe": 18.0,
+                    "pb": 2.5,
+                    "mkt_cap": 1190.0,
+                    "price": 99.0,
+                },
+            ]
+
+    class _ValuationDB:
+        def acquire(self):
+            return _Acquire(_ValuationConn())
+
+        async def get_stock_info(self, code):
+            return None
+
+    mcp = _DummyMCP()
+    valuation_mod.register(mcp)
+    monkeypatch.setattr(valuation_mod, "get_db", lambda: _ValuationDB())
+
+    result = await mcp.get_historical_valuation("600519", days=30)
+    assert result["success"] is True
+    data = result["data"]
+    assert data["history"][0]["date"] == "2026-02-02"
+    assert data["history"][0]["pe_ratio"] is None
+    assert data["history"][0]["pb_ratio"] is None
+    assert data["history"][1]["pe_ratio"] == 18.0
+    assert data["stats"]["pe"]["current"] == 18.0
+    assert data["data_quality"]["invalid_value_cells"] == 2
+    assert data["data_quality"]["invalid_value_fields"]["pe_ratio"] == 1
+    assert data["data_quality"]["invalid_value_fields"]["pb_ratio"] == 1
 
 
 class _DecisionConn:
@@ -1070,6 +1182,34 @@ async def test_p0_14_market_insight_sector_analysis_should_filter_requested_sect
 
 
 @pytest.mark.asyncio
+async def test_p0_14b_data_warmup_should_accept_comma_separated_stock_string(monkeypatch):
+    mcp = _DummyMCP()
+    data_warmup_mod.register(mcp)
+
+    captured = {}
+
+    async def _fake_sync_stock_klines(*, codes, start_date, end_date, period):
+        captured['codes'] = list(codes)
+        captured['start_date'] = start_date
+        captured['end_date'] = end_date
+        captured['period'] = period
+        return {'synced': len(codes), 'failed': 0, 'total': len(codes)}
+
+    monkeypatch.setattr(data_warmup_mod.data_sync_service, 'sync_stock_klines', _fake_sync_stock_klines)
+
+    result = await mcp.data_warmup(
+        action='warmup',
+        stocks='600519, 000001, 600519',
+        lookback_days=30,
+    )
+
+    assert result['success'] is True
+    assert result['data']['stocks_warmed'] == 2
+    assert captured['codes'] == ['600519', '000001']
+    assert captured['period'] == 'daily'
+
+
+@pytest.mark.asyncio
 async def test_p0_15_comprehensive_manager_quick_scan_should_honor_single_code(monkeypatch):
     class _ComprehensiveDB:
         async def get_klines(self, code, limit=1):
@@ -1195,6 +1335,192 @@ async def test_p0_19_semantic_stock_search_should_prioritize_industry_match(monk
 
 
 @pytest.mark.asyncio
+async def test_p0_19b_semantic_stock_search_should_not_match_single_char_sector_fallback(monkeypatch):
+    class _EmptyConn:
+        async def fetch(self, query, *args):
+            return []
+
+    class _EmptyDB:
+        def acquire(self):
+            return _Acquire(_EmptyConn())
+
+    class _Frame:
+        def __init__(self, rows):
+            self._rows = rows
+            self.empty = not rows
+
+        def iterrows(self):
+            for idx, row in enumerate(self._rows):
+                yield idx, row
+
+        def head(self, count):
+            return _Frame(self._rows[:count])
+
+    def _stock_sector_detail(sector):
+        if sector == 'new_whitewine':
+            return _Frame([{'code': '600519', 'name': '贵州茅台'}])
+        if sector == 'new_tourism':
+            return _Frame([{'code': '600054', 'name': '黄山旅游'}])
+        return _Frame([])
+
+    monkeypatch.setattr(vector_mod, 'get_db', lambda: _EmptyDB())
+    monkeypatch.setattr(
+        akshare,
+        'stock_sector_spot',
+        lambda: _Frame([
+            {'板块': '酒店旅游', 'label': 'new_tourism'},
+            {'板块': '白酒概念', 'label': 'new_whitewine'},
+        ]),
+        raising=False,
+    )
+    monkeypatch.setattr(akshare, 'stock_board_industry_name_ths', lambda: _Frame([]), raising=False)
+    monkeypatch.setattr(akshare, 'stock_sector_detail', _stock_sector_detail, raising=False)
+    monkeypatch.setitem(sys.modules, 'akshare', akshare)
+
+    mcp = _DummyMCP()
+    vector_mod.register(mcp)
+
+    result = await mcp.semantic_stock_search(query='白酒', limit=5)
+
+    assert result['success'] is True
+    returned_codes = [item['code'] for item in result['data']['results']]
+    assert '600519' in returned_codes
+    assert '600054' not in returned_codes
+    assert result['data']['results'][0]['code'] == '600519'
+    assert result['data']['results'][0]['match_type']
+
+
+@pytest.mark.asyncio
+async def test_p0_19c_semantic_stock_search_should_use_ths_concept_constituents(monkeypatch):
+    class _EmptyConn:
+        async def fetch(self, query, *args):
+            return []
+
+    class _EmptyDB:
+        def acquire(self):
+            return _Acquire(_EmptyConn())
+
+    class _Frame:
+        def __init__(self, rows):
+            self._rows = rows
+            self.empty = not rows
+
+        def iterrows(self):
+            for idx, row in enumerate(self._rows):
+                yield idx, row
+
+    def _concept_rows(block_code, block_name):
+        assert block_code == '301496'
+        assert block_name == '白酒概念'
+        return [
+            {'stock_code': '600519', 'stock_name': '贵州茅台'},
+            {'stock_code': '000858', 'stock_name': '五粮液'},
+        ]
+
+    monkeypatch.setattr(vector_mod, 'get_db', lambda: _EmptyDB())
+    monkeypatch.setattr(akshare, 'stock_sector_spot', lambda: _Frame([]), raising=False)
+    monkeypatch.setattr(akshare, 'stock_board_industry_name_ths', lambda: _Frame([]), raising=False)
+    monkeypatch.setattr(
+        akshare,
+        'stock_board_concept_name_ths',
+        lambda: _Frame([{'name': '白酒概念', 'code': '301496'}]),
+        raising=False,
+    )
+    monkeypatch.setattr(market_blocks_mod, '_fetch_concept_stocks_from_ths', _concept_rows)
+    monkeypatch.setitem(sys.modules, 'akshare', akshare)
+
+    mcp = _DummyMCP()
+    vector_mod.register(mcp)
+
+    result = await mcp.semantic_stock_search(query='白酒', limit=5)
+
+    assert result['success'] is True
+    returned_codes = [item['code'] for item in result['data']['results']]
+    assert returned_codes[:2] == ['600519', '000858']
+    assert all('industry' in item for item in result['data']['results'])
+    assert result['data']['results'][0]['industry'] == '白酒概念'
+
+
+@pytest.mark.asyncio
+async def test_p0_19d_semantic_stock_search_should_not_leak_akshare_stdout(monkeypatch, capsys):
+    class _EmptyConn:
+        async def fetch(self, query, *args):
+            return []
+
+    class _EmptyDB:
+        def acquire(self):
+            return _Acquire(_EmptyConn())
+
+    class _Frame:
+        def __init__(self, rows):
+            self._rows = rows
+            self.empty = not rows
+
+        def iterrows(self):
+            for idx, row in enumerate(self._rows):
+                yield idx, row
+
+        def head(self, count):
+            return _Frame(self._rows[:count])
+
+    def _noisy_sector_spot():
+        print("sector spot progress should not reach stdout")
+        return _Frame([])
+
+    def _noisy_industry_names():
+        print("industry ths progress should not reach stdout")
+        return _Frame([])
+
+    def _noisy_concept_names():
+        print("concept ths progress should not reach stdout")
+        return _Frame([{'name': '白酒概念', 'code': '301496'}])
+
+    def _concept_rows(block_code, block_name):
+        return [{'stock_code': '600519', 'stock_name': '贵州茅台'}]
+
+    monkeypatch.setattr(vector_mod, 'get_db', lambda: _EmptyDB())
+    monkeypatch.setattr(akshare, 'stock_sector_spot', _noisy_sector_spot, raising=False)
+    monkeypatch.setattr(akshare, 'stock_board_industry_name_ths', _noisy_industry_names, raising=False)
+    monkeypatch.setattr(akshare, 'stock_board_concept_name_ths', _noisy_concept_names, raising=False)
+    monkeypatch.setattr(market_blocks_mod, '_fetch_concept_stocks_from_ths', _concept_rows)
+    monkeypatch.setitem(sys.modules, 'akshare', akshare)
+
+    mcp = _DummyMCP()
+    vector_mod.register(mcp)
+
+    result = await mcp.semantic_stock_search(query='白酒', limit=5)
+    captured = capsys.readouterr()
+
+    assert result['success'] is True
+    assert result['data']['results'][0]['code'] == '600519'
+    assert captured.out == ''
+
+
+def test_p0_19e_market_blocks_ths_should_not_leak_akshare_stdout(monkeypatch, capsys):
+    class _Frame:
+        def __init__(self, rows):
+            self._rows = rows
+            self.empty = not rows
+
+        def iterrows(self):
+            for idx, row in enumerate(self._rows):
+                yield idx, row
+
+    def _noisy_concept_names():
+        print("market blocks concept progress should not reach stdout")
+        return _Frame([{'name': '白酒概念', 'code': '301496'}])
+
+    monkeypatch.setattr(market_blocks_mod.ak, 'stock_board_concept_name_ths', _noisy_concept_names, raising=False)
+
+    result = market_blocks_mod._fetch_from_ths('concept')
+    captured = capsys.readouterr()
+
+    assert result
+    assert result[0]['block_code'] == '301496'
+    assert captured.out == ''
+
+
+@pytest.mark.asyncio
 async def test_p0_20_event_manager_should_fallback_to_content_sources(monkeypatch):
     class _EventConn:
         async def fetch(self, query, *args):
@@ -1273,3 +1599,164 @@ async def test_p0_21_relative_valuation_should_fallback_to_market_peers_when_ind
     assert result['data']['peer_count'] == 5
     assert result['data']['peer_pool_build']['peer_source'] == 'market_cap_fallback'
     assert 'industry_missing' in result['data']['peer_pool_build']['fallback_reasons']
+
+
+@pytest.mark.asyncio
+async def test_p0_21b_relative_valuation_tracks_invalid_metrics_and_alias_financials(monkeypatch):
+    class _ValuationConn:
+        async def fetch(self, query, *args):
+            if 'WHERE industry = $1 AND code != $2' in query:
+                return [
+                    {'code': 'P1'}, {'code': 'P2'}, {'code': 'P3'}, {'code': 'P4'}, {'code': 'P5'}
+                ]
+            return []
+
+    class _ValuationDB:
+        def __init__(self):
+            self.stock_info = {
+                'TGT': {'name': '目标公司', 'industry': '白酒', 'market_cap': 100.0, 'pe_ratio': 0.0, 'pb_ratio': 3.0, 'ps_ratio': -1.0},
+                'P1': {'name': '同业1', 'market_cap': 95.0, 'pe_ratio': 15.0, 'pb_ratio': 2.0, 'ps_ratio': 1.0},
+                'P2': {'name': '同业2', 'market_cap': 98.0, 'pe_ratio': 16.0, 'pb_ratio': 2.1, 'ps_ratio': 1.1},
+                'P3': {'name': '同业3', 'market_cap': 102.0, 'pe_ratio': 17.0, 'pb_ratio': 2.2, 'ps_ratio': 1.2},
+                'P4': {'name': '同业4', 'market_cap': 105.0, 'pe_ratio': 18.0, 'pb_ratio': 2.3, 'ps_ratio': 1.3},
+                'P5': {'name': '同业5', 'market_cap': 110.0, 'pe_ratio': 19.0, 'pb_ratio': 0.0, 'ps_ratio': 1.4},
+            }
+            self.financials = {
+                'TGT': [{'roe': 0.15, 'debtRatio': 0.40, 'revenueGrowth': 0.12, 'operatingCashFlow': 120.0, 'net_profit': 100.0}],
+                'P1': [{'roe': 0.16, 'debt_ratio': 0.35, 'revenue_yoy': 0.11, 'operating_cash_flow': 130.0, 'netProfit': 100.0}],
+                'P2': [{'roe': 0.15, 'debt_ratio': 0.36, 'revenue_yoy': 0.12, 'operating_cash_flow': 125.0, 'netProfit': 100.0}],
+                'P3': [{'roe': 0.14, 'debtRatio': 0.38, 'revenueGrowth': 0.13, 'operatingCashFlow': 140.0, 'netProfit': 100.0}],
+                'P4': [{'roe': 0.17, 'debt_ratio': 0.39, 'revenue_growth': 0.14, 'operating_cash_flow': 150.0, 'net_profit': 100.0}],
+                'P5': [{'roe': 0.16, 'debt_ratio': 0.41, 'revenue_growth': 0.10, 'operating_cash_flow': 135.0, 'net_profit': 100.0}],
+            }
+
+        def acquire(self):
+            return _Acquire(_ValuationConn())
+
+        async def get_stock_info(self, code):
+            return self.stock_info.get(code)
+
+        async def get_financials(self, code, limit=1):
+            rows = self.financials.get(code, [])
+            return rows[:limit]
+
+    mcp = _DummyMCP()
+    valuation_mod.register(mcp)
+    monkeypatch.setattr(valuation_mod, 'get_db', lambda: _ValuationDB())
+
+    result = await mcp.relative_valuation('TGT', metrics=['pe_ratio', 'pb_ratio', 'ps_ratio'])
+    assert result['success'] is True
+    assert result['data']['target_metrics'] == {'pb_ratio': 3.0}
+    assert result['data']['invalid_target_metrics']['pe_ratio']['reason'] == 'non_positive'
+    assert result['data']['invalid_target_metrics']['ps_ratio']['reason'] == 'non_positive'
+    assert result['data']['invalid_peer_metrics']['pb_ratio']['non_positive'] == 1
+    assert result['data']['peer_count'] == 5
+    assert result['data']['peer_pool_build']['peer_source'] == 'industry'
+    assert result['data']['peer_pool_build']['quality_thresholds']['debt_ratio_max'] == pytest.approx(0.65)
+
+
+def test_p1_limit_up_statistics_should_handle_none_fields(monkeypatch):
+    monkeypatch.setattr(
+        limit_up_mod,
+        'get_limit_up_stocks',
+        lambda date='': {
+            'success': True,
+            'data': [
+                {'tradeDate': '2026-01-15', 'continuousDays': None, 'openTimes': None},
+                {'tradeDate': '2026-01-15', 'continuousDays': '2', 'openTimes': '1'},
+                {'tradeDate': '2026-01-15', 'continuousDays': 4, 'openTimes': 0},
+            ],
+            'source': 'unit_test',
+            'source_chain': ['unit_test'],
+            'data_quality': {'missing_field_counts': {'openTimes': 1}},
+        },
+    )
+
+    result = limit_up_mod.get_limit_up_statistics('2026-01-15')
+
+    assert result['success'] is True
+    assert result['data']['firstBoard'] == 0
+    assert result['data']['secondBoard'] == 1
+    assert result['data']['higherBoard'] == 1
+    assert result['data']['failedBoard'] == 1
+
+
+@pytest.mark.asyncio
+async def test_p1_analyze_portfolio_risk_should_accept_codes_weights(monkeypatch):
+    class _RiskDB:
+        async def get_klines(self, code, limit=252):
+            base = 10.0 if code == '600519' else 20.0
+            return [
+                {'close': base, 'volume': 1000},
+                {'close': base * 1.02, 'volume': 1100},
+                {'close': base * 1.03, 'volume': 1200},
+            ]
+
+    mcp = _DummyMCP()
+    portfolio_mod.register(mcp)
+    monkeypatch.setattr(portfolio_mod, 'get_db', lambda: _RiskDB())
+
+    result = await mcp.analyze_portfolio_risk(codes=['600519', '000858'], weights=[0.6, 0.4])
+
+    assert result['success'] is True
+    assert result['data']['coverage']['requested'] == 2
+    assert len(result['data']['analyzed_holdings']) == 2
+    assert result['data']['portfolio_id'] is None
+
+
+@pytest.mark.asyncio
+async def test_p1_decision_manager_portfolio_advice_should_use_explicit_codes_weights(monkeypatch):
+    class _DecisionDB:
+        async def get_klines(self, code, limit=100):
+            base = 10.0 if code == '600519' else 30.0
+            return [
+                {'close': base + i * 0.1, 'volume': 1000 + i * 10}
+                for i in range(100)
+            ]
+
+        async def get_financials(self, code, limit=1):
+            return [{
+                'roe': 18.0,
+                'pe_ratio': 20.0,
+                'debt_ratio': 0.3,
+                'pb_ratio': 2.0,
+            }]
+
+        async def save_klines(self, code, klines):
+            return None
+
+    mcp = _DummyMCP()
+    decision_manager_mod.register_decision_manager(mcp)
+    monkeypatch.setattr(decision_manager_mod, 'get_db', lambda: _DecisionDB())
+
+    result = await mcp.decision_manager(
+        action='portfolio_advice',
+        codes=['600519', '000858'],
+        weights=[0.4, 0.6],
+    )
+
+    assert result['success'] is True
+    assert result['data']['codes'] == ['600519', '000858']
+    assert len(result['data']['holdings_advice']) == 2
+    assert result['data']['overall_score'] >= 0
+
+
+@pytest.mark.asyncio
+async def test_p1_scenario_dcf_should_auto_fill_base_revenue(monkeypatch):
+    class _ScenarioDB:
+        async def get_financials(self, code, limit=8):
+            return [{
+                'revenue': 5_000_000_000,
+                'net_profit': 800_000_000,
+            }]
+
+    mcp = _DummyMCP()
+    valuation_mod.register(mcp)
+    monkeypatch.setattr(valuation_mod, 'get_db', lambda: _ScenarioDB())
+
+    result = await mcp.scenario_dcf_valuation(code='600519', industry='消费', years=3)
+
+    assert result['success'] is True
+    assert result['data']['base_revenue'] == pytest.approx(5_000_000_000.0)
+    assert result['data']['base_revenue_source'] == 'financial_revenue'
+    assert 'db.get_financials' in result['data']['source_chain']

@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
+import { hasLoggedInHint } from '@/lib/auth';
 import { useAlertSubscription } from '@/lib/ws';
 
 /* ── Toast 类型 ── */
@@ -19,6 +20,7 @@ const TOAST_TTL = 8000; // auto-dismiss after 8 seconds
 
 export function AlertToastProvider({ userId }: { userId?: string }) {
     const [toasts, setToasts] = useState<ToastItem[]>([]);
+    const [wsEnabled] = useState(() => hasLoggedInHint());
 
     const addToast = useCallback((item: Omit<ToastItem, 'id'>) => {
         const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -36,6 +38,7 @@ export function AlertToastProvider({ userId }: { userId?: string }) {
     // Subscribe to WS alert channel
     useAlertSubscription({
         userId,
+        enabled: wsEnabled,
         onAlert: (data) => {
             addToast({
                 message: data.message || `告警触发: ${data.code || ''} ${data.indicator || ''}`,

@@ -1,0 +1,19 @@
+{
+  "name": "AIASK 智能股票分析平台",
+  "short_name": "AIASK",
+  "description": "AI 驱动的智能股票分析平台",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b1020",
+  "theme_color": "#1a73e8",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
+

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { PageContainer, TabBar, SectionCard, StockCodeInput } from '@/components/ui';
-import { KpiCard, KpiGrid, DataTable } from '@/components/ui';
+import { KpiCard, KpiGrid, DataTable, QuickAction, QuickActionGrid } from '@/components/ui';
 import { BarChart, LineChart, PieChart, COLORS } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
@@ -79,6 +79,7 @@ export default function FundFlowPage() {
   const error = tabError[tab];
   const primaryActionCls = 'rounded-full border border-primary px-3 py-1 text-xs text-primary';
   const secondaryActionCls = 'rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline';
+  const secondaryButtonCls = 'rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary cursor-pointer';
 
   function loadStockFlow(nextCode = trimmedCode || resolvedCode || '600519') {
     setCode(nextCode);
@@ -103,13 +104,30 @@ export default function FundFlowPage() {
 
   return (
     <PageContainer>
-      <h1>资金流向</h1>
-      {resolvedCode && (
-        <div className="flex items-center gap-2 mb-2">
-          <StockLink code={resolvedCode} name={resolvedCode} />
-          <WatchlistButton code={resolvedCode} name="" />
+      <div className="mb-4 space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h1 className="mb-0">资金流向</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-text-secondary">
+              先判断钱正在流向哪里，再决定回到个股、研究、风险或自选页继续深入，能明显减少来回切换时的信息断层。
+            </p>
+          </div>
+          {resolvedCode ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <StockLink code={resolvedCode} name={resolvedCode} />
+              <WatchlistButton code={resolvedCode} name="" />
+            </div>
+          ) : null}
         </div>
-      )}
+
+        <QuickActionGrid cols={4}>
+          <QuickAction href="/market" icon="📈" title="市场看板" description="先确认指数、板块和题材强弱" />
+          <QuickAction href="/research" icon="🧭" title="研究分析" description="把资金流和基本面、估值放一起看" />
+          <QuickAction href="/watchlist" icon="⭐" title="自选联动" description="把关注标的拉回到日常跟踪清单" />
+          <QuickAction href="/risk" icon="🛡️" title="风险页" description="确认异常资金波动是否伴随仓位风险" />
+        </QuickActionGrid>
+      </div>
+
       {loading ? <LoadingState text="加载中..." /> : null}
       {error ? <ErrorState text={error} hint="请稍后重试" /> : null}
       <TabBar tabs={TABS} active={tab} onChange={setTab} />
@@ -214,7 +232,26 @@ export default function FundFlowPage() {
               />
               </>
             ) : <EmptyState text="当前没有板块资金流榜单" hint="非交易时段或数据源短暂波动时常见，建议稍后再次加载。" />;
-          })() : <EmptyState text="点击按钮查看板块资金流强弱" hint="适合盘中快速判断哪类板块正在获得资金关注，再决定深入看个股。" />}
+          })() : (
+            <EmptyState
+              text="点击按钮查看板块资金流强弱"
+              hint="适合盘中快速判断哪类板块正在获得资金关注，再决定深入看个股。"
+              action={
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (sectorPath) sectorQ.refetch(); else setSectorPath('/fund-flow/sector');
+                    }}
+                    className={primaryActionCls}
+                  >
+                    立即加载板块榜单
+                  </button>
+                  <Link href="/market" className={secondaryActionCls}>去市场看板对照</Link>
+                </>
+              }
+            />
+          )}
         </SectionCard>
       )}
 
@@ -243,7 +280,26 @@ export default function FundFlowPage() {
                 onExport={() => exportCSV(rows, '概念资金流')}
               />
             ) : <EmptyState text="当前没有概念资金流榜单" hint="如果你在追踪题材轮动，这里建议在交易时段再刷新一次确认强弱排序。" />;
-          })() : <EmptyState text="点击按钮查看概念题材的资金轮动" hint="这一步适合先确定热点概念，再回到市场页或个股页做细查。" />}
+          })() : (
+            <EmptyState
+              text="点击按钮查看概念题材的资金轮动"
+              hint="这一步适合先确定热点概念，再回到市场页或个股页做细查。"
+              action={
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (conceptPath) conceptQ.refetch(); else setConceptPath('/fund-flow/concept');
+                    }}
+                    className={primaryActionCls}
+                  >
+                    立即加载概念榜单
+                  </button>
+                  <Link href="/research" className={secondaryActionCls}>去研究页深挖</Link>
+                </>
+              }
+            />
+          )}
         </SectionCard>
       )}
 
@@ -268,7 +324,28 @@ export default function FundFlowPage() {
                 yAxisName="净流入(亿)"
               />
             ) : <EmptyState text="当前没有北向净流入序列" hint="非交易日或接口临时缺数时可能为空，建议稍后重新加载。" />;
-          })() : <EmptyState text="点击按钮加载北向资金走势" hint="适合先判断外资整体偏流入还是流出，再决定是否继续追踪北向明细。" />}
+          })() : (
+            <EmptyState
+              text="点击按钮加载北向资金走势"
+              hint="适合先判断外资整体偏流入还是流出，再决定是否继续追踪北向明细。"
+              action={
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (northPath) northQ.refetch(); else setNorthPath('/fund-flow/north');
+                    }}
+                    className={primaryActionCls}
+                  >
+                    加载北向走势
+                  </button>
+                  <button type="button" onClick={() => setTab('north-detail')} className={secondaryButtonCls}>
+                    去看北向明细
+                  </button>
+                </>
+              }
+            />
+          )}
         </SectionCard>
       )}
       {tab === 'dragon' && (
@@ -297,7 +374,26 @@ export default function FundFlowPage() {
                 onExport={() => exportCSV(rows, '龙虎榜')}
               />
             ) : <EmptyState text="当前没有龙虎榜记录" hint="不是每天都有足够的上榜样本；交易日收盘后再次查看通常更完整。" />;
-          })() : <EmptyState text="点击按钮加载龙虎榜数据" hint="适合用来识别短线活跃标的与异常成交，再联动到个股详情页核对。" />}
+          })() : (
+            <EmptyState
+              text="点击按钮加载龙虎榜数据"
+              hint="适合用来识别短线活跃标的与异常成交，再联动到个股详情页核对。"
+              action={
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (dragonPath) dragonQ.refetch(); else setDragonPath('/fund-flow/dragon-tiger');
+                    }}
+                    className={primaryActionCls}
+                  >
+                    加载龙虎榜
+                  </button>
+                  <Link href="/stock" className={secondaryActionCls}>去个股页核对</Link>
+                </>
+              }
+            />
+          )}
         </SectionCard>
       )}
 
@@ -399,7 +495,26 @@ export default function FundFlowPage() {
                 onExport={() => exportCSV(rows, '大宗交易')}
               />
             ) : <EmptyState text="当前没有大宗交易记录" hint="大宗交易在部分日期样本较少，建议交易日收盘后再次确认。" />;
-          })() : <EmptyState text="点击按钮加载大宗交易数据" hint="适合查看机构席位和折溢价交易，再结合个股走势评估影响。" />}
+          })() : (
+            <EmptyState
+              text="点击按钮加载大宗交易数据"
+              hint="适合查看机构席位和折溢价交易，再结合个股走势评估影响。"
+              action={
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (blockTradesPath) blockTradesQ.refetch(); else setBlockTradesPath('/fund-flow/block-trades');
+                    }}
+                    className={primaryActionCls}
+                  >
+                    加载大宗交易
+                  </button>
+                  <Link href="/research" className={secondaryActionCls}>去研究页联动分析</Link>
+                </>
+              }
+            />
+          )}
         </SectionCard>
       )}
 

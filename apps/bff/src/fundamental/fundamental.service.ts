@@ -85,28 +85,31 @@ export type NormalizedValuation = {
   pe: number | null; pb: number | null; ps: number | null; marketCap: number | null;
 };
 export type NormalizedFinancials = {
-  roe: number | null; netProfit: number | null; revenue: number | null; debtRatio: number | null;
+  roe: number | null;
+  netProfit: number | null;
+  revenue: number | null;
+  debtRatio: number | null;
+  grossProfitMargin: number | null;
+  netProfitMargin: number | null;
+  operatingCashFlow: number | null;
 };
 
-/** Map human-readable field names → TDX FN codes */
-const FIELD_TO_FN: Record<string, string> = {
-  eps: 'FN1',
-  eps_deducted: 'FN2',
-  undistributed_profit_per_share: 'FN3',
-  bvps: 'FN4',
-  roe: 'FN6',
-  cost_profit_rate: 'FN193',
-  operating_profit_rate: 'FN194',
-  roe_diluted: 'FN197',
-  net_profit_margin: 'FN199',
-  debt_ratio: 'FN210',
-  revenue: 'FN230',
-  operating_profit: 'FN231',
-  net_profit: 'FN232',
+/** 兼容历史财务字段编码，统一归一到可读字段名。 */
+const LEGACY_FIELD_ALIASES: Record<string, string> = {
+  FN1: 'eps',
+  FN2: 'eps_deducted',
+  FN3: 'undistributed_profit_per_share',
+  FN4: 'bvps',
+  FN6: 'roe',
+  FN193: 'cost_profit_rate',
+  FN194: 'operating_profit_rate',
+  FN197: 'roe_diluted',
+  FN199: 'net_profit_margin',
+  FN210: 'debt_ratio',
+  FN230: 'revenue',
+  FN231: 'operating_profit',
+  FN232: 'net_profit',
 };
-const FN_TO_FIELD: Record<string, string> = Object.fromEntries(
-  Object.entries(FIELD_TO_FN).map(([k, v]) => [v, k]),
-);
 
 @Injectable()
 export class FundamentalService {
@@ -160,20 +163,6 @@ export class FundamentalService {
       } catch (e) {
         this.logger.warn(`DB valuation fallback failed for ${normalized}: ${e}`);
       }
-    }
-
-    // Fallback 2: if PE/PB still null, try F10 data (TDX has MorePE, PB_MRQ, StaticPE_TTM)
-    if (valuation.pe == null || valuation.pb == null) {
-      try {
-        const f10 = await this.callWithArgs('tdx_get_f10_info', attempts);
-        const fd = (f10.payload as any)?.data?.data ?? (f10.payload as any)?.data ?? f10.payload ?? {};
-        valuation = {
-          pe: valuation.pe ?? this.toNum(fd.StaticPE_TTM ?? fd.MorePE),
-          pb: valuation.pb ?? this.toNum(fd.PB_MRQ),
-          ps: valuation.ps,
-          marketCap: valuation.marketCap,
-        };
-      } catch { /* F10 fallback is best-effort */ }
     }
 
     const result: FundamentalOverviewDto = {
@@ -435,58 +424,191 @@ export class FundamentalService {
   }
 
   async getFinancialSnapshot(code: string) {
-    const attempts: Array<Record<string, unknown>> = [{ stock_code: code.trim() }, { code: code.trim() }];
-    const { payload } = await this.callWithArgs('tdx_get_financial_snapshot', attempts);
-    return { code: code.trim(), snapshot: (payload as any)?.data ?? payload ?? {} };
+    const normalized = code.trim();
+    return { code: normalized, snapshot: await this.buildFinancialRecord(normalized) };
   }
 
   async getFinancialHistory(codes: string[], fields: string[], date: string) {
-    // Map human-readable field names to TDX FN codes
-    const fnFields = fields.map((f) => FIELD_TO_FN[f] ?? f);
+    const normalizedFields = fields.map((field) => LEGACY_FIELD_ALIASES[field] ?? field);
     const trimDate = date.trim();
-    // Try "00000000" (year=0, mmdd=0) for latest report, then the requested date
-    const datesToTry = ['00000000', trimDate];
-    let payload: any = null;
-    let usedDate = trimDate;
-    let hasRealData = false;
-    for (const d of datesToTry) {
-      try {
-        payload = await this.mcpGatewayService.callTool('tdx_get_financial_history', {
-          stock_codes: codes,
-          fields: fnFields,
-          date: d,
-        });
-        usedDate = d;
-        const raw = (payload as any)?.data ?? payload ?? {};
-        const innerData = raw.data ?? raw;
-        hasRealData = Object.values(innerData).some((stockFields: any) => {
-          if (!stockFields || typeof stockFields !== 'object') return false;
-          return Object.values(stockFields).some((v) => v != null && v !== '--' && v !== '');
-        });
-        if (hasRealData) break;
-      } catch { /* try next date */ }
+    const data: Record<string, Record<string, unknown>> = {};
+
+    for (const rawCode of codes) {
+      const normalizedCode = rawCode.replace(/\.\w+$/, '').trim();
+      if (!normalizedCode) continue;
+      const snapshotData = await this.buildFinancialFallback(normalizedCode, normalizedFields);
+      data[normalizedCode] = snapshotData?.[normalizedCode] ?? Object.fromEntries(
+        normalizedFields.map((field) => [field, null]),
+      );
     }
 
-    // Fallback: if TDX financial history returned all null, use snapshot + overview data
-    if (!hasRealData && codes.length > 0) {
-      try {
-        const code = codes[0].replace(/\.\w+$/, ''); // strip .SH/.SZ suffix
-        const snapshotData = await this.buildFinancialFallback(code);
-        if (snapshotData) {
-          return { date: trimDate, fields, fnFields, source: 'snapshot_fallback', data: snapshotData };
-        }
-      } catch { /* fallback failed */ }
-    }
-
-    const raw = (payload as any)?.data ?? payload ?? {};
-    const translated = this.translateFnFields(raw.data ?? raw);
-    return { date: usedDate, fields, fnFields, data: translated };
+    return {
+      date: trimDate,
+      requestedFields: fields,
+      fields: normalizedFields,
+      source: 'aggregated_financials',
+      data,
+    };
   }
 
   async getF10Info(code: string) {
-    const attempts: Array<Record<string, unknown>> = [{ stock_code: code.trim() }, { code: code.trim() }];
-    const { payload } = await this.callWithArgs('tdx_get_f10_info', attempts);
-    return { code: code.trim(), f10: (payload as any)?.data ?? payload ?? {} };
+    const normalized = code.trim();
+    const attempts: Array<Record<string, unknown>> = [{ stock_code: normalized }, { code: normalized }];
+
+    const readProviderMessage = (value: unknown): string => {
+      if (!value || typeof value !== 'object') return '';
+      const response = (value as { response?: unknown }).response;
+      if (response && typeof response === 'object') {
+        const message = (response as { message?: unknown }).message;
+        if (typeof message === 'string' && message.trim()) return message.trim();
+      }
+      const message = (value as { message?: unknown }).message;
+      return typeof message === 'string' ? message.trim() : '';
+    };
+
+    const hasMeaningfulF10Field = (value: Record<string, unknown>) => Object.entries(value).some(([key, fieldValue]) => (
+      !['code', 'source', 'degraded', 'fallbackHint', 'fallback_reason', 'source_chain', 'raw'].includes(key)
+      && fieldValue != null
+      && fieldValue !== ''
+    ));
+
+    const buildAggregatedProfile = async () => {
+      const fallbackReasons: string[] = [];
+      const sourceChain = ['bff.getF10Info'];
+      const f10: Record<string, unknown> = {
+        code: normalized,
+        source: 'aggregated_company_profile',
+        profileType: 'aggregated',
+        fallbackHint: '当前页面展示的是聚合公司资料与财务摘要。',
+      };
+      let hasFallbackData = false;
+
+      try {
+        const stockInfo = await this.getStockInfo(normalized);
+        const stockInfoHasData = Object.values(stockInfo).some((value, index) => index > 0 && value != null && value !== '');
+        if (stockInfoHasData) {
+          Object.assign(f10, stockInfo);
+          hasFallbackData = true;
+          sourceChain.push('bff.getStockInfo');
+        }
+      } catch (fallbackError) {
+        this.logger.warn(`F10 stock info fallback failed for ${normalized}: ${String(fallbackError)}`);
+        const message = readProviderMessage(fallbackError);
+        if (message) fallbackReasons.push(`get_stock_info: ${message}`);
+      }
+
+      try {
+        const { payload } = await this.callWithArgs('get_financials', attempts);
+        const financials = this.normalizeFinancials(payload);
+        const financialRoot = this.unwrapRoot(payload);
+        const reportDate = financialRoot?.reportDate ?? financialRoot?.report_date;
+        const financialPatch: Record<string, unknown> = {};
+        if (reportDate != null && String(reportDate).trim()) financialPatch.reportDate = String(reportDate).trim();
+        if (financials.roe != null) financialPatch.roe = financials.roe;
+        if (financials.netProfit != null) financialPatch.netProfit = financials.netProfit;
+        if (financials.revenue != null) financialPatch.revenue = financials.revenue;
+        if (financials.debtRatio != null) financialPatch.debtRatio = financials.debtRatio;
+        if (financials.grossProfitMargin != null) financialPatch.grossProfitMargin = financials.grossProfitMargin;
+        if (financials.netProfitMargin != null) financialPatch.netProfitMargin = financials.netProfitMargin;
+        if (financials.operatingCashFlow != null) financialPatch.operatingCashFlow = financials.operatingCashFlow;
+        if (Object.keys(financialPatch).length > 0) {
+          Object.assign(f10, financialPatch);
+          hasFallbackData = true;
+          sourceChain.push('bff.getFinancials');
+        }
+      } catch (financialError) {
+        this.logger.warn(`F10 financial fallback failed for ${normalized}: ${String(financialError)}`);
+        const message = readProviderMessage(financialError);
+        if (message) fallbackReasons.push(`get_financials: ${message}`);
+      }
+
+      try {
+        const { payload } = await this.callWithArgs('get_valuation_metrics', attempts);
+        const valuation = this.normalizeValuation(payload);
+        const valuationPatch: Record<string, unknown> = {};
+        if (valuation.pe != null) valuationPatch.pe = valuation.pe;
+        if (valuation.pb != null) valuationPatch.pb = valuation.pb;
+        if (valuation.ps != null) valuationPatch.ps = valuation.ps;
+        if (valuation.marketCap != null && f10.totalMarketCap == null) valuationPatch.totalMarketCap = valuation.marketCap;
+        if (Object.keys(valuationPatch).length > 0) {
+          Object.assign(f10, valuationPatch);
+          hasFallbackData = true;
+          sourceChain.push('bff.getValuationMetrics');
+        }
+      } catch (valuationError) {
+        this.logger.warn(`F10 valuation fallback failed for ${normalized}: ${String(valuationError)}`);
+        const message = readProviderMessage(valuationError);
+        if (message) fallbackReasons.push(`get_valuation_metrics: ${message}`);
+      }
+
+      try {
+        const { payload } = await this.callWithArgs('get_profit_forecast', [
+          { symbol: normalized },
+          { stock_code: normalized },
+          { code: normalized },
+        ]);
+        const root = (payload as any)?.data ?? payload ?? {};
+        const items = Array.isArray(root?.items) ? root.items : Array.isArray(root) ? root : [];
+        const latestForecast = items.find((item: any) => item && typeof item === 'object');
+        if (latestForecast) {
+          const forecastPatch: Record<string, unknown> = {};
+          const institution = String(latestForecast.institution ?? '').trim();
+          const rating = String(latestForecast.rating ?? '').trim();
+          const date = String(latestForecast.date ?? '').trim();
+          const epsForecast = this.toNum(latestForecast.eps_forecast ?? latestForecast.epsForecast);
+          const netprofitForecast = this.toNum(latestForecast.netprofit_forecast ?? latestForecast.netprofitForecast);
+          if (date) forecastPatch.forecastDate = date;
+          if (institution) forecastPatch.forecastInstitution = institution;
+          if (rating) forecastPatch.forecastRating = rating;
+          if (epsForecast != null) forecastPatch.epsForecast = epsForecast;
+          if (netprofitForecast != null) forecastPatch.netprofitForecast = netprofitForecast;
+          if (Object.keys(forecastPatch).length > 0) {
+            Object.assign(f10, forecastPatch);
+            hasFallbackData = true;
+            sourceChain.push('bff.getProfitForecast');
+          }
+        }
+      } catch (forecastError) {
+        this.logger.warn(`F10 profit forecast fallback failed for ${normalized}: ${String(forecastError)}`);
+        const message = readProviderMessage(forecastError);
+        if (message) fallbackReasons.push(`get_profit_forecast: ${message}`);
+      }
+
+      try {
+        const { payload } = await this.callWithArgs('get_stock_capital', attempts);
+        const capitalRows = this.normalizeCapitalData(payload);
+        const latestCapital = [...capitalRows].reverse().find((row) => row.totalShares != null || row.floatShares != null);
+        if (latestCapital) {
+          if (latestCapital.totalShares != null) f10.totalShares = latestCapital.totalShares;
+          if (latestCapital.floatShares != null) f10.floatShares = latestCapital.floatShares;
+          hasFallbackData = true;
+          sourceChain.push('bff.getStockCapital');
+        }
+      } catch (capitalError) {
+        this.logger.warn(`F10 capital fallback failed for ${normalized}: ${String(capitalError)}`);
+        const message = readProviderMessage(capitalError);
+        if (message) fallbackReasons.push(`get_stock_capital: ${message}`);
+      }
+
+      if (hasFallbackData) {
+        return {
+          code: normalized,
+          f10: {
+            ...f10,
+            source_chain: Array.from(new Set(sourceChain)),
+            fallback_reason: Array.from(new Set(fallbackReasons.filter(Boolean))),
+          },
+        };
+      }
+
+      throw new BadGatewayException({
+        success: false,
+        message: fallbackReasons.find(Boolean) || '公司资料暂不可用',
+        code: normalized,
+      });
+    };
+
+    return buildAggregatedProfile();
   }
 
   /**
@@ -519,13 +641,12 @@ export class FundamentalService {
       curPb = v.pb;
     } catch { /* valuation unavailable */ }
 
-    // If no current PE/PB, try F10 fallback
+    // If no current PE/PB, try overview fallback
     if (curPe == null || curPb == null) {
       try {
-        const f10 = await this.callWithArgs('tdx_get_f10_info', valAttempts);
-        const fd = (f10.payload as any)?.data?.data ?? (f10.payload as any)?.data ?? f10.payload ?? {};
-        curPe = curPe ?? this.toNum(fd.StaticPE_TTM ?? fd.MorePE);
-        curPb = curPb ?? this.toNum(fd.PB_MRQ);
+        const overview = await this.getOverview(code);
+        curPe = curPe ?? overview.valuation.pe;
+        curPb = curPb ?? overview.valuation.pb;
       } catch { /* best-effort */ }
     }
 
@@ -547,54 +668,70 @@ export class FundamentalService {
     });
   }
 
-  /** Translate FN codes in TDX response back to human-readable field names */
-  private translateFnFields(data: any): any {
-    if (!data || typeof data !== 'object') return data;
-    const result: Record<string, any> = {};
-    for (const [stockCode, fields] of Object.entries(data)) {
-      if (fields && typeof fields === 'object' && !Array.isArray(fields)) {
-        const translated: Record<string, unknown> = {};
-        for (const [fnKey, val] of Object.entries(fields as Record<string, unknown>)) {
-          const humanKey = FN_TO_FIELD[fnKey] ?? fnKey;
-          translated[humanKey] = val === '--' ? null : val;
-        }
-        result[stockCode] = translated;
-      } else {
-        result[stockCode] = fields;
-      }
-    }
-    return result;
+  private async buildFinancialFallback(
+    code: string,
+    fields?: string[],
+  ): Promise<Record<string, Record<string, unknown>> | null> {
+    const record = await this.buildFinancialRecord(code);
+    const keys = Array.isArray(fields) && fields.length > 0 ? fields : Object.keys(record);
+    const filtered = Object.fromEntries(keys.map((field) => [field, record[field] ?? null]));
+    const hasData = Object.values(filtered).some((value) => value != null && value !== '' && value !== '--');
+    if (!hasData) return null;
+    return { [code]: filtered };
   }
 
-  /** Fallback: build financial data from snapshot + overview when TDX history is unavailable */
-  private async buildFinancialFallback(code: string): Promise<Record<string, Record<string, unknown>> | null> {
+  private async buildFinancialRecord(code: string): Promise<Record<string, unknown>> {
     const attempts: Array<Record<string, unknown>> = [{ stock_code: code }, { code }];
     const results: Record<string, unknown> = {};
 
-    // Try financial snapshot
-    try {
-      const { payload } = await this.callWithArgs('tdx_get_financial_snapshot', attempts);
-      const snap = (payload as any)?.data ?? payload ?? {};
-      const d = snap.data ?? snap;
-      if (d && typeof d === 'object') {
-        for (const [k, v] of Object.entries(d)) {
-          if (v != null && v !== '' && v !== '--') results[k] = v;
-        }
-      }
-    } catch { /* best-effort */ }
-
-    // Try get_financials for ROE, net profit, revenue
     try {
       const { payload } = await this.callWithArgs('get_financials', attempts);
+      const root = this.unwrapRoot(payload);
       const fin = this.normalizeFinancials(payload);
-      if (fin.roe != null) results['roe'] = `${fin.roe}%`;
-      if (fin.netProfit != null) results['net_profit'] = fin.netProfit;
-      if (fin.revenue != null) results['revenue'] = fin.revenue;
-      if (fin.debtRatio != null) results['debt_ratio'] = `${fin.debtRatio}%`;
+      const reportDate = root.reportDate ?? root.report_date;
+      const eps = this.toNum(root.eps ?? root.basic_eps ?? root.EPS ?? root.eps_ttm);
+      const epsDeducted = this.toNum(root.eps_deducted ?? root.deducted_eps);
+      const bvps = this.toNum(root.bvps ?? root.book_value_per_share);
+      const undistributedProfitPerShare = this.toNum(
+        root.undistributed_profit_per_share ?? root.retained_profit_per_share,
+      );
+      const operatingProfitRate = this.toNum(
+        root.operating_profit_rate ?? root.op_profit_margin ?? root.operatingProfitRate,
+      );
+      const costProfitRate = this.toNum(root.cost_profit_rate ?? root.costProfitRate);
+      const roeDiluted = this.toNum(root.roe_diluted ?? root.roeDiluted);
+      const operatingProfit = this.toNum(root.operating_profit ?? root.operatingProfit);
+
+      if (reportDate != null && String(reportDate).trim()) results.reportDate = String(reportDate).trim();
+      if (eps != null) results.eps = eps;
+      if (epsDeducted != null) results.eps_deducted = epsDeducted;
+      if (undistributedProfitPerShare != null) results.undistributed_profit_per_share = undistributedProfitPerShare;
+      if (bvps != null) results.bvps = bvps;
+      if (fin.roe != null) results.roe = fin.roe;
+      if (costProfitRate != null) results.cost_profit_rate = costProfitRate;
+      if (operatingProfitRate != null) results.operating_profit_rate = operatingProfitRate;
+      if (roeDiluted != null) results.roe_diluted = roeDiluted;
+      if (fin.netProfitMargin != null) results.net_profit_margin = fin.netProfitMargin;
+      if (fin.debtRatio != null) results.debt_ratio = fin.debtRatio;
+      if (fin.revenue != null) results.revenue = fin.revenue;
+      if (operatingProfit != null) results.operating_profit = operatingProfit;
+      if (fin.netProfit != null) results.net_profit = fin.netProfit;
+      if (fin.grossProfitMargin != null) results.gross_profit_margin = fin.grossProfitMargin;
+      if (fin.operatingCashFlow != null) results.operating_cash_flow = fin.operatingCashFlow;
     } catch { /* best-effort */ }
 
-    if (Object.keys(results).length === 0) return null;
-    return { [code]: results };
+    try {
+      const stockInfo = await this.getStockInfo(code);
+      if (stockInfo.name) results.name = stockInfo.name;
+      if (stockInfo.industry) results.industry = stockInfo.industry;
+      if (stockInfo.listDate) results.listDate = stockInfo.listDate;
+      if (stockInfo.totalShares != null) results.totalShares = stockInfo.totalShares;
+      if (stockInfo.floatShares != null) results.floatShares = stockInfo.floatShares;
+      if (stockInfo.totalMarketCap != null) results.totalMarketCap = stockInfo.totalMarketCap;
+      if (stockInfo.floatMarketCap != null) results.floatMarketCap = stockInfo.floatMarketCap;
+    } catch { /* best-effort */ }
+
+    return results;
   }
 
   /** DB fallback: 从 stocks 表直查估值指标 */
@@ -628,12 +765,15 @@ export class FundamentalService {
   }
 
   private normalizeFinancials(payload: any): NormalizedFinancials {
-    const d = payload?.data ?? payload ?? {};
+    const d = this.unwrapRoot(payload);
     return {
       roe: this.toNum(d.roe ?? d.ROE),
       netProfit: this.toNum(d.net_profit ?? d.profit ?? d.netProfit),
       revenue: this.toNum(d.revenue ?? d.operating_revenue),
       debtRatio: this.toNum(d.debt_ratio ?? d.asset_liability_ratio ?? d.debtRatio),
+      grossProfitMargin: this.toNum(d.gross_profit_margin ?? d.grossProfitMargin ?? d.gross_margin),
+      netProfitMargin: this.toNum(d.net_profit_margin ?? d.netProfitMargin ?? d.net_margin),
+      operatingCashFlow: this.toNum(d.operating_cash_flow ?? d.n_cashflow_act ?? d.operatingCashFlow),
     };
   }
 

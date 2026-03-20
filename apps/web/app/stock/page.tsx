@@ -6,7 +6,7 @@ import { CandlestickChart, BarChart, GaugeChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useStockCode } from '@/hooks/use-stock-code';
-import { ErrorState, LoadingState } from '@/components/status-state';
+import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { fmtNum, fmtPct, fmtAmount, extractArray, extractObject } from '@/lib/data-utils';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { WatchlistButton } from '@/components/watchlist-button';
@@ -166,9 +166,6 @@ export default function StockPage() {
     doFetch(c);
   }
 
-  const loading = quoteQ.isFetching || klineQ.isFetching || sentimentQ.isFetching || fundFlowQ.isFetching || fundamentalQ.isFetching || newsQ.isFetching;
-  const error = quoteQ.error || klineQ.error || sentimentQ.error || fundFlowQ.error || fundamentalQ.error || newsQ.error;
-
   const candleData = useMemo(() => (klineQ.data?.kline ?? []).map((x) => ({
     date: x.date.slice(0, 10), open: x.open, close: x.close, low: x.low, high: x.high, volume: x.volume,
   })), [klineQ.data]);
@@ -184,6 +181,15 @@ export default function StockPage() {
       name: String(wsQuote?.name ?? base?.name ?? ''),
     } as NormalizedQuote;
   }, [liveQuoteCode, quoteQ.data?.quote, wsQuote]);
+  const hasRequested = Boolean(activeCode);
+  const hasQuoteData = Boolean(q);
+  const hasKlineData = candleData.length > 0;
+  const loading = hasRequested && (
+    (!hasQuoteData && (quoteQ.isPending || quoteQ.isFetching))
+    || (!hasQuoteData && !hasKlineData && (klineQ.isPending || klineQ.isFetching))
+  );
+  const error = quoteQ.error || klineQ.error || sentimentQ.error || fundFlowQ.error || fundamentalQ.error || newsQ.error;
+
   const contextCode = useMemo(() => String(q?.code ?? activeCode ?? '').trim(), [activeCode, q?.code]);
   const sentimentPayload = useMemo(() => unwrapToolPayload(sentimentQ.data), [sentimentQ.data]);
   const sentimentScore = Number(sentimentPayload.score ?? sentimentPayload.sentiment_score ?? 0);
@@ -300,11 +306,9 @@ export default function StockPage() {
   const chgColor = Number(q?.changePercent) >= 0 ? 'text-danger' : 'text-success';
   const amplitude = q?.high && q?.low && q?.prevClose
     ? ((Number(q.high) - Number(q.low)) / Number(q.prevClose) * 100).toFixed(2) + '%' : '-';
-  const showQuotePlaceholder = !q;
-
   return (
     <PageContainer>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 min-h-[40px] flex-wrap">
         <h1 className="mb-0">{q ? `${q.name} ${activeCode ?? ''}` : '股票详情'}</h1>
         {q && <WatchlistButton code={contextCode || code.trim()} name={String(q.name ?? '')} size="md" />}
         {quoteQ.isFetching && <span className="text-xs text-text-muted animate-pulse">刷新中...</span>}
@@ -320,31 +324,9 @@ export default function StockPage() {
       </form>
       {error ? <ErrorState text={error} /> : null}
 
-      {showQuotePlaceholder ? (
-        <SectionCard className="mt-4 p-4 min-h-[340px]">
-          <div className="space-y-4" aria-hidden="true">
-            <div className="flex items-center gap-3">
-              <Skeleton className="w-[180px]" height={36} />
-              <Skeleton className="w-[92px]" height={32} />
-            </div>
-            <KpiGrid cols={4}>
-              {Array.from({ length: 8 }).map((_, index) => <SkeletonCard key={index} />)}
-            </KpiGrid>
-            <div className="flex gap-2 flex-wrap">
-              {Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="w-[96px]" height={28} />)}
-            </div>
-            <Skeleton className="w-full" height={108} />
-          </div>
-          <div className="mt-4">
-            {loading ? (
-              <LoadingState text="正在加载个股报价与关键指标..." />
-            ) : (
-              <p className="m-0 text-sm text-text-secondary">输入股票代码后，这里会先展示报价头部、关键指标和下一步动作，避免页面在数据返回时整体下跳。</p>
-            )}
-          </div>
-        </SectionCard>
-      ) : (
-        <>
+      <SectionCard className="mt-4 p-4 min-h-[320px]">
+        {q ? (
+          <>
           <KpiGrid cols={4}>
             <KpiCard title="现价" value={fmtNum(Number(q.price))} className={chgColor} />
             <KpiCard title="涨跌幅" value={fmtPct(Number(q.changePercent))} className={chgColor} />
@@ -369,42 +351,90 @@ export default function StockPage() {
               <Link href={`/assistant?code=${contextCode}`} className="text-xs px-2.5 py-1 rounded-full border border-primary/50 text-primary hover:bg-primary hover:text-white transition-colors no-underline">🤖 AI诊断</Link>
             </>}
           </div>
-
-          {stockDetail.actions?.[0] ? (
-            <SectionCard className="mt-4 p-3">
-              <div className="flex items-start justify-between gap-3 flex-wrap">
-                <div>
-                  <h3 className="mt-0 mb-1">{stockDetail.actions[0].title}</h3>
-                  <p className="m-0 text-sm text-text-secondary">{stockDetail.actions[0].summary}</p>
-                </div>
-                <Badge variant={stockDetail.actions[0].tone}>行动建议</Badge>
-              </div>
-              <div className="flex flex-wrap gap-2 mt-3">
-                {stockDetail.actions[0].reasons.map((reason) => (
-                  <span key={reason} className="text-xs px-2 py-1 rounded-full border border-border text-text-secondary">
-                    {reason}
-                  </span>
-                ))}
-              </div>
-              <div className="flex gap-2 flex-wrap mt-3">
-                {stockDetail.actions[0].links.map((link) => (
-                  <Link key={link.href} href={link.href} className="text-xs px-2.5 py-1 rounded-full border border-primary/40 text-primary no-underline hover:bg-primary hover:text-white transition-colors">
-                    {link.label}
-                  </Link>
-                ))}
-              </div>
-            </SectionCard>
-          ) : null}
         </>
-      )}
+        ) : (
+          <div className="space-y-4" aria-hidden="true">
+            <KpiGrid cols={4}>
+              {Array.from({ length: 8 }).map((_, index) => <SkeletonCard key={index} />)}
+            </KpiGrid>
+            <div className="flex gap-2 flex-wrap">
+              {Array.from({ length: 6 }).map((_, index) => <Skeleton key={index} className="w-[96px]" height={28} />)}
+            </div>
+            <div className="pt-2">
+              {loading ? (
+                <LoadingState text="正在加载个股报价与关键指标..." />
+              ) : (
+                <p className="m-0 text-sm text-text-secondary">输入股票代码后，这里会先展示报价头部、关键指标和快捷动作，避免结果返回时把主图整体推下去。</p>
+              )}
+            </div>
+          </div>
+        )}
+      </SectionCard>
+
+      <SectionCard className="mt-4 p-3 min-h-[180px]">
+        {stockDetail.actions?.[0] ? (
+          <>
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div>
+                <h3 className="mt-0 mb-1">{stockDetail.actions[0].title}</h3>
+                <p className="m-0 text-sm text-text-secondary">{stockDetail.actions[0].summary}</p>
+              </div>
+              <Badge variant={stockDetail.actions[0].tone}>行动建议</Badge>
+            </div>
+            <div className="flex flex-wrap gap-2 mt-3">
+              {stockDetail.actions[0].reasons.map((reason) => (
+                <span key={reason} className="text-xs px-2 py-1 rounded-full border border-border text-text-secondary">
+                  {reason}
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2 flex-wrap mt-3">
+              {stockDetail.actions[0].links.map((link) => (
+                <Link key={link.href} href={link.href} className="text-xs px-2.5 py-1 rounded-full border border-primary/40 text-primary no-underline hover:bg-primary hover:text-white transition-colors">
+                  {link.label}
+                </Link>
+              ))}
+            </div>
+          </>
+        ) : q ? (
+          <EmptyState
+            text="行动卡已预留完成。"
+            hint="当报价、情绪和估值信号汇总完成后，这里会给出下一步操作建议，不再把图表区整体向下挤。"
+            className="py-10"
+          />
+        ) : (
+          <div className="space-y-3" aria-hidden="true">
+            <Skeleton className="w-56" height={22} />
+            <Skeleton className="w-full" height={18} />
+            <div className="flex gap-2 flex-wrap">
+              {Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="w-[92px]" height={28} />)}
+            </div>
+          </div>
+        )}
+      </SectionCard>
 
       {/* Tabbed Info Sections */}
       <TabBar tabs={INFO_TABS} active={infoTab} onChange={setInfoTab} />
 
       {infoTab === 'chart' && (
-        <SectionCard tabAttached className="p-3">
+        <SectionCard tabAttached className="p-3 min-h-[520px]">
           <h3 className="mt-0">K线图（{submittedPeriod === 'daily' ? '日线' : submittedPeriod === 'weekly' ? '周线' : '月线'}）</h3>
-          {candleData.length ? <CandlestickChart data={candleData} height={420} /> : <p className="text-text-secondary text-sm">暂无K线数据</p>}
+          {klineQ.isFetching && !candleData.length ? (
+            <div className="space-y-3" aria-hidden="true">
+              <Skeleton className="w-full" height={420} />
+              <div className="grid grid-cols-2 gap-4">
+                <Skeleton className="w-full" height={96} />
+                <Skeleton className="w-full" height={96} />
+              </div>
+            </div>
+          ) : candleData.length ? (
+            <CandlestickChart data={candleData} height={420} />
+          ) : (
+            <EmptyState
+              text="暂无 K 线数据"
+              hint="主图区已保留固定高度。切换股票或周期时，图表会在原位置刷新，不再把盘口和下方内容整体推移。"
+            />
+          )}
           {(orderBook.bids.length > 0 || orderBook.asks.length > 0) && (
             <div className="mt-4">
               <h3 className="mt-0">五档盘口</h3>

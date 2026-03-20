@@ -17,7 +17,7 @@ class StockSyncMixin:
     """股票 & K线同步方法"""
 
     async def sync_stocks(self):
-        """同步股票基础信息（TDX → Tushare Pro → AkShare）"""
+        """同步股票基础信息（Tushare Pro → AkShare）"""
         self.log("\n[1/10] 同步股票基础信息...")
 
         # 检查是否需要更新
@@ -112,7 +112,7 @@ class StockSyncMixin:
         return count
 
     async def sync_klines(self, days: int = 250):
-        """增量同步K线（TDX → Tushare Pro → Baostock → eFinance → AkShare）"""
+        """增量同步K线（Tushare Pro → Baostock → eFinance → AkShare）"""
         self.log(f"\n[2/10] 同步K线数据 (最近{days}天)...")
 
         async with self.db.acquire() as conn:

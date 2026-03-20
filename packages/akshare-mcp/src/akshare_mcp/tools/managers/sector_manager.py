@@ -1,24 +1,39 @@
 """板块管理器 - 板块轮动、板块分析"""
 
-import json
+import time
 import numpy as np
 from ...storage import get_db
-from ...utils import ok, fail
+from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
+
+_SECTOR_ALIAS_HINTS = {
+    "白酒": ["酿酒", "酒"],
+    "酿酒": ["白酒", "酒"],
+    "券商": ["证券", "金融"],
+    "银行": ["金融"],
+    "保险": ["金融"],
+}
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
     """统一解析 kwargs 参数（兼容 JSON 字符串和 dict）"""
-    raw = kwargs.get("kwargs")
-    if isinstance(raw, dict):
-        kwargs = {**kwargs, **raw}
-    elif isinstance(raw, str):
-        try:
-            extra = json.loads(raw or "{}")
-            if isinstance(extra, dict):
-                kwargs = {**kwargs, **extra}
-        except Exception:
-            pass
+    kwargs = normalize_manager_kwargs(kwargs)
+    if "sector" not in kwargs:
+        kwargs["sector"] = kwargs.get("block_name") or kwargs.get("sector_name") or kwargs.get("industry")
+    if "block_code" not in kwargs:
+        kwargs["block_code"] = kwargs.get("sector_code") or kwargs.get("code")
     return kwargs
+
+
+def _dedupe_chain(values: list[str]) -> list[str]:
+    chain = []
+    seen = set()
+    for value in values:
+        label = str(value or "").strip()
+        if not label or label in seen:
+            continue
+        chain.append(label)
+        seen.add(label)
+    return chain
 
 
 def _normalize_period(kwargs: dict, default: int = 20) -> int:
@@ -28,6 +43,34 @@ def _normalize_period(kwargs: dict, default: int = 20) -> int:
     except Exception:
         period = default
     return max(1, period)
+
+
+def _normalize_sector_key(text: str) -> str:
+    value = str(text or "").strip().lower()
+    for token in ("行业", "概念", "板块", "ⅰ", "ⅱ", "ⅲ", "ⅳ", "i", "ii", "iii", "iv"):
+        value = value.replace(token, "")
+    return value.strip()
+
+
+def _sector_match_score(query: str, candidate: str) -> int:
+    q = _normalize_sector_key(query)
+    c = _normalize_sector_key(candidate)
+    if not q or not c:
+        return 0
+    if q == c:
+        return 100
+    if q in c or c in q:
+        return 80
+
+    alias_terms = [q]
+    for key, values in _SECTOR_ALIAS_HINTS.items():
+        if key in q:
+            alias_terms.extend(values)
+    for term in alias_terms:
+        term = _normalize_sector_key(term)
+        if term and term in c:
+            return 60
+    return 0
 
 
 def register_sector_manager(mcp):
@@ -59,12 +102,31 @@ def register_sector_manager(mcp):
             # 板块相关性分析
             sector_manager(action="sector_correlation", kwargs="{}")
         """
+        start_time = time.perf_counter()
         try:
             db = get_db()
             kwargs = _normalize_kwargs(dict(kwargs))
+
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="sector_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="sector_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
             
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'list_sectors': '列出板块列表',
                         'sector_performance': '板块表现分析（需要 sector/block_code）',
@@ -72,109 +134,279 @@ def register_sector_manager(mcp):
                         'sector_correlation': '板块相关性分析',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['sector_manager'])
             
             elif action == 'list_sectors':
-                async with db.acquire() as conn:
-                    rows = await conn.fetch(
-                        "SELECT DISTINCT block_code, block_name, block_type FROM market_blocks ORDER BY block_name"
+                source_chain = ['sector_manager']
+                block_type = str(kwargs.get('block_type') or kwargs.get('type') or 'industry').strip().lower()
+                if block_type not in ('industry', 'concept', 'region'):
+                    return _fail(
+                        f'Invalid block_type: {block_type}. Supported: industry, concept, region',
+                        source_chain=source_chain,
                     )
-                    sectors = [dict(row) for row in rows]
-                
-                return ok({
+
+                sectors = []
+                source = 'db'
+                fallback_reason = None
+                try:
+                    async with db.acquire() as conn:
+                        rows = await conn.fetch(
+                            "SELECT DISTINCT block_code, block_name, block_type FROM market_blocks WHERE block_type = $1 ORDER BY block_name",
+                            block_type
+                        )
+                        sectors = [dict(row) for row in rows]
+                        if sectors:
+                            source_chain.append('db.market_blocks')
+                except Exception as exc:
+                    fallback_reason = f'DB读取失败: {exc}'
+
+                if not sectors:
+                    from ..market_blocks import get_market_blocks
+
+                    blocks_res = await get_market_blocks(block_type=block_type, limit=200)
+                    if not blocks_res.get('success'):
+                        if fallback_reason:
+                            return _fail(
+                                f'{fallback_reason}; {blocks_res.get("error")}',
+                                source_chain=_dedupe_chain(source_chain + ['market_blocks.get_market_blocks']),
+                            )
+                        return _fail(
+                            blocks_res.get('error') or '未获取到板块数据',
+                            source_chain=_dedupe_chain(source_chain + ['market_blocks.get_market_blocks']),
+                        )
+
+                    source = blocks_res.get('data', {}).get('source') or 'fallback'
+                    if not fallback_reason:
+                        fallback_reason = blocks_res.get('data', {}).get('fallback_reason')
+                    source_chain.append('market_blocks.get_market_blocks')
+                    sectors = [
+                        {
+                            'block_code': item.get('code') or item.get('blockCode') or item.get('block_code'),
+                            'block_name': item.get('name') or item.get('blockName') or item.get('block_name'),
+                            'block_type': block_type,
+                        }
+                        for item in blocks_res.get('data', {}).get('blocks', [])
+                        if item.get('code') or item.get('blockCode') or item.get('block_code')
+                    ]
+
+                return _ok({
                     'sectors': sectors,
-                    'count': len(sectors)
-                })
+                    'count': len(sectors),
+                    'block_type': block_type,
+                    'source': source,
+                    'fallback_reason': fallback_reason,
+                }, source_chain=_dedupe_chain(source_chain))
             
             elif action == 'sector_performance':
+                source_chain = ['sector_manager']
                 period = _normalize_period(kwargs, 20)
-                sector_type = kwargs.get('type', 'industry')
-                
-                async with db.acquire() as conn:
-                    sectors = await conn.fetch(
-                        "SELECT block_code, block_name FROM market_blocks WHERE block_type = $1 LIMIT 20",
-                        sector_type
-                    )
-                
-                # DB 无板块数据时自动拉取
-                if not sectors:
+                requested_sector = str(kwargs.get('sector') or '').strip()
+                requested_block_code = str(kwargs.get('block_code') or '').strip()
+                explicit_type = kwargs.get('type') or kwargs.get('block_type')
+                sector_type = str(explicit_type or 'industry').strip().lower()
+                search_types = [sector_type] if explicit_type else ['industry', 'concept', 'region']
+                sector_performance = []
+                source = 'db'
+                fallback_reason = None
+
+                from ..market_blocks import get_market_blocks, get_block_stocks
+
+                async def _load_sector_candidates() -> tuple[list[dict], str, str | None]:
+                    local_source = 'db'
+                    local_reason = None
+                    candidates: list[dict] = []
+
+                    if requested_sector or requested_block_code:
+                        best_match = None
+                        best_score = -1
+                        best_source = local_source
+                        for block_type in search_types:
+                            blocks_res = await get_market_blocks(block_type=block_type, limit=500)
+                            source_chain.append('market_blocks.get_market_blocks')
+                            if not blocks_res.get('success'):
+                                if not local_reason:
+                                    local_reason = blocks_res.get('error')
+                                continue
+                            current_source = blocks_res.get('data', {}).get('source') or local_source
+                            block_items = blocks_res.get('data', {}).get('blocks', [])
+                            for block in block_items:
+                                block_code = str(block.get('code') or block.get('blockCode') or block.get('block_code') or '').strip()
+                                block_name = str(block.get('name') or block.get('blockName') or block.get('block_name') or '').strip()
+                                if requested_block_code and block_code == requested_block_code:
+                                    return ([{
+                                        'block_code': block_code,
+                                        'block_name': block_name,
+                                        'block_type': block_type,
+                                        'avg_change_pct': block.get('avgChange') or block.get('avgChangePct') or block.get('avg_change_pct'),
+                                    }], current_source, local_reason)
+                                score = _sector_match_score(requested_sector, block_name)
+                                if score > best_score:
+                                    best_score = score
+                                    best_source = current_source
+                                    best_match = {
+                                        'block_code': block_code,
+                                        'block_name': block_name,
+                                        'block_type': block_type,
+                                        'avg_change_pct': block.get('avgChange') or block.get('avgChangePct') or block.get('avg_change_pct'),
+                                    }
+                        if best_match and best_score > 0:
+                            return [best_match], best_source, local_reason
+                        return [], local_source, local_reason
+
                     try:
-                        from ..market_blocks import get_market_blocks
-                        blocks_res = await get_market_blocks(block_type=sector_type, limit=20)
-                        if blocks_res.get('success') and blocks_res.get('data', {}).get('blocks'):
-                            # 重新从 DB 读取（get_market_blocks 已写入 DB）
-                            async with db.acquire() as conn:
-                                sectors = await conn.fetch(
-                                    "SELECT block_code, block_name FROM market_blocks WHERE block_type = $1 LIMIT 20",
-                                    sector_type
-                                )
-                            # 如果 DB 仍为空，直接用返回数据构造（camelCase output）
-                            if not sectors:
-                                fetched = blocks_res['data']['blocks'][:20]
-                                sectors = [
-                                    {'block_code': b.get('blockCode') or b.get('block_code'), 'block_name': b.get('blockName') or b.get('block_name')}
-                                    for b in fetched if b.get('blockCode') or b.get('block_code')
-                                ]
+                        async with db.acquire() as conn:
+                            rows = await conn.fetch(
+                                "SELECT block_code, block_name, block_type FROM market_blocks WHERE block_type = $1 LIMIT 20",
+                                sector_type
+                            )
+                            candidates = [dict(row) for row in rows]
+                            if candidates:
+                                source_chain.append('db.market_blocks')
+                    except Exception as exc:
+                        local_reason = f'DB读取失败: {exc}'
+                        candidates = []
+
+                    if candidates:
+                        return candidates, local_source, local_reason
+
+                    blocks_res = await get_market_blocks(block_type=sector_type, limit=20)
+                    source_chain.append('market_blocks.get_market_blocks')
+                    if not blocks_res.get('success'):
+                        local_reason = blocks_res.get('error') or local_reason
+                        return [], local_source, local_reason
+
+                    local_source = blocks_res.get('data', {}).get('source') or 'fallback'
+                    if not local_reason:
+                        local_reason = blocks_res.get('data', {}).get('fallback_reason')
+                    candidates = [
+                        {
+                            'block_code': b.get('code') or b.get('blockCode') or b.get('block_code'),
+                            'block_name': b.get('name') or b.get('blockName') or b.get('block_name'),
+                            'block_type': sector_type,
+                            'avg_change_pct': b.get('avgChange') or b.get('avgChangePct') or b.get('avg_change_pct'),
+                        }
+                        for b in blocks_res.get('data', {}).get('blocks', [])[:20]
+                        if b.get('code') or b.get('blockCode') or b.get('block_code')
+                    ]
+                    return candidates, local_source, local_reason
+
+                async def _load_stocks_for_sector(block_code: str) -> tuple[list[dict], str]:
+                    try:
+                        async with db.acquire() as conn:
+                            rows = await conn.fetch(
+                                "SELECT stock_code FROM block_stocks WHERE block_code = $1",
+                                block_code
+                            )
+                        if rows:
+                            source_chain.append('db.block_stocks')
+                            return [{'code': str(row['stock_code'])} for row in rows if row.get('stock_code')], 'db_block_stocks'
                     except Exception:
                         pass
-                
+
+                    stocks_res = await get_block_stocks(block_code)
+                    source_chain.append('market_blocks.get_block_stocks')
+                    if stocks_res.get('success'):
+                        items = stocks_res.get('data', {}).get('stocks', [])
+                        return [
+                            {
+                                'code': item.get('code') or item.get('stock_code'),
+                                'price': item.get('price'),
+                                'change_pct': item.get('changePercent') or item.get('change_pct'),
+                            }
+                            for item in items
+                            if item.get('code') or item.get('stock_code')
+                        ], stocks_res.get('data', {}).get('source') or 'block_api'
+                    return [], 'none'
+
+                sectors, source, fallback_reason = await _load_sector_candidates()
                 sector_performance = []
                 
                 for sector in sectors:
                     block_code = sector['block_code']
                     block_name = sector['block_name']
-                    
-                    async with db.acquire() as conn:
-                        stocks = await conn.fetch(
-                            "SELECT stock_code FROM block_stocks WHERE block_code = $1",
-                            block_code
-                        )
-                    
+                    stocks, stock_source = await _load_stocks_for_sector(block_code)
                     if not stocks:
                         continue
-                    
-                    total_return = 0
-                    valid_count = 0
-                    
-                    for stock in stocks[:10]:
-                        code = stock['stock_code']
-                        klines = await db.get_klines(code, limit=period + 1)
-                        
-                        if len(klines) >= 2:
-                            start_price = klines[0]['close']
-                            end_price = klines[-1]['close']
-                            stock_return = (end_price - start_price) / start_price
-                            total_return += stock_return
-                            valid_count += 1
-                    
-                    if valid_count > 0:
-                        avg_return = total_return / valid_count
+                    realtime_returns = []
+                    for stock in stocks[:20]:
+                        raw_change = stock.get('change_pct')
+                        try:
+                            if raw_change is not None:
+                                realtime_returns.append(float(raw_change) / 100.0)
+                        except Exception:
+                            pass
 
+                    avg_return = None
+                    valid_count = 0
+                    perf_source = stock_source
+                    if realtime_returns:
+                        avg_return = sum(realtime_returns) / len(realtime_returns)
+                        valid_count = len(realtime_returns)
+                    else:
+                        total_return = 0.0
+                        for stock in stocks[:10]:
+                            code = stock.get('code') or stock.get('stock_code')
+                            if not code:
+                                continue
+                            try:
+                                klines = await db.get_klines(code, limit=period + 1)
+                                if klines:
+                                    source_chain.append('db.get_klines')
+                            except Exception:
+                                klines = []
+
+                            if len(klines) >= 2:
+                                start_price = klines[0]['close']
+                                end_price = klines[-1]['close']
+                                if start_price:
+                                    stock_return = (end_price - start_price) / start_price
+                                    total_return += stock_return
+                                    valid_count += 1
+                        if valid_count > 0:
+                            avg_return = total_return / valid_count
+                            perf_source = 'db_kline'
+
+                    if avg_return is None:
+                        try:
+                            avg_change_pct = float(sector.get('avg_change_pct') or 0)
+                        except Exception:
+                            avg_change_pct = 0.0
+                        if avg_change_pct:
+                            avg_return = avg_change_pct / 100.0
+                            valid_count = 0
+                            perf_source = 'block_summary'
+
+                    if avg_return is not None:
                         sector_performance.append({
                             'blockCode': block_code,
                             'blockName': block_name,
                             'return': float(avg_return),
                             'returnPct': f"{avg_return*100:.2f}%",
-                            'stocksCount': valid_count,
-                            'strength': 'strong' if avg_return > 0.1 else ('weak' if avg_return < -0.05 else 'medium')
+                            'stocksCount': valid_count if valid_count > 0 else len(stocks),
+                            'strength': 'strong' if avg_return > 0.1 else ('weak' if avg_return < -0.05 else 'medium'),
+                            'source': perf_source,
                         })
                 
                 sector_performance.sort(key=lambda x: x['return'], reverse=True)
                 
-                return ok({
+                return _ok({
                     'period': period,
                     'sectors': sector_performance,
                     'top_sectors': sector_performance[:5],
                     'bottom_sectors': sector_performance[-5:] if len(sector_performance) > 5 else [],
-                })
+                    'source': source,
+                    'fallback_reason': fallback_reason,
+                }, source_chain=_dedupe_chain(source_chain))
             
             elif action == 'sector_rotation':
+                source_chain = ['sector_manager']
                 period = _normalize_period(kwargs, 20)
                 
                 performance_result = await sector_manager(
                     action='sector_performance',
                     period=period
                 )
+                source_chain.extend(performance_result.get('meta', {}).get('source_chain') or [])
                 
                 sectors = []
                 if performance_result.get('success') and performance_result.get('data'):
@@ -185,15 +417,21 @@ def register_sector_manager(mcp):
                     try:
                         from ..market_blocks import get_market_blocks
                         blocks_res = await get_market_blocks(block_type='industry', limit=20)
+                        source_chain.append('market_blocks.get_market_blocks')
                         if blocks_res.get('success') and blocks_res.get('data', {}).get('blocks'):
                             for b in blocks_res['data']['blocks']:
-                                avg_chg = float(b.get('avgChangePct') or b.get('avg_change_pct') or 0)
+                                avg_chg = float(
+                                    b.get('avgChange')
+                                    or b.get('avgChangePct')
+                                    or b.get('avg_change_pct')
+                                    or 0
+                                )
                                 sectors.append({
-                                    'blockCode': b.get('blockCode') or b.get('block_code', ''),
-                                    'blockName': b.get('blockName') or b.get('block_name', ''),
+                                    'blockCode': b.get('blockCode') or b.get('code') or b.get('block_code', ''),
+                                    'blockName': b.get('blockName') or b.get('name') or b.get('block_name', ''),
                                     'return': avg_chg / 100.0,
                                     'returnPct': f"{avg_chg:.2f}%",
-                                    'stocksCount': b.get('stockCount') or b.get('stock_count', 0),
+                                    'stocksCount': b.get('stockCount') or b.get('stock_count') or 0,
                                     'strength': 'strong' if avg_chg > 2 else ('weak' if avg_chg < -1 else 'medium')
                                 })
                             sectors.sort(key=lambda x: x['return'], reverse=True)
@@ -201,14 +439,14 @@ def register_sector_manager(mcp):
                         pass
                 
                 if not sectors:
-                    return ok({
+                    return _ok({
                         'period': period,
                         'message': '无板块数据，请先获取板块信息',
                         'strong_sectors': [],
                         'weak_sectors': [],
                         'rotation_advice': [],
                         'market_style': 'unknown'
-                    })
+                    }, source_chain=_dedupe_chain(source_chain))
                 
                 total_count = len(sectors)
                 strong_count = max(1, int(total_count * 0.3))
@@ -234,7 +472,7 @@ def register_sector_manager(mcp):
                     })
                 
                 top_return = strong_sectors[0]['return']
-                return ok({
+                return _ok({
                     'period': period,
                     'strong_sectors': strong_sectors,
                     'weak_sectors': weak_sectors,
@@ -242,14 +480,15 @@ def register_sector_manager(mcp):
                     'market_style': 'growth' if top_return > 0.15 else (
                         'value' if top_return < 0.05 else 'balanced'
                     )
-                })
+                }, source_chain=_dedupe_chain(source_chain))
             
             elif action == 'sector_correlation':
+                source_chain = ['sector_manager']
                 sectors = kwargs.get('sectors', [])
                 period = kwargs.get('period', 60)
                 
                 if len(sectors) < 2:
-                    return fail('需要至少2个板块代码')
+                    return _fail('需要至少2个板块代码', source_chain=source_chain)
                 
                 sector_returns = {}
                 
@@ -259,6 +498,7 @@ def register_sector_manager(mcp):
                             "SELECT stock_code FROM block_stocks WHERE block_code = $1 LIMIT 5",
                             sector_code
                         )
+                    source_chain.append('db.block_stocks')
                     
                     if not stocks:
                         continue
@@ -272,6 +512,8 @@ def register_sector_manager(mcp):
                         for stock in stocks:
                             code = stock['stock_code']
                             klines = await db.get_klines(code, limit=period + 1)
+                            if klines:
+                                source_chain.append('db.get_klines')
                             
                             if len(klines) > i + 1:
                                 ret = (klines[-(i+1)]['close'] - klines[-(i+2)]['close']) / klines[-(i+2)]['close']
@@ -305,7 +547,7 @@ def register_sector_manager(mcp):
                         else:
                             correlation_matrix[sector1][sector2] = 0.0
                 
-                return ok({
+                return _ok({
                     'sectors': sectors,
                     'period': period,
                     'correlation_matrix': correlation_matrix,
@@ -314,9 +556,18 @@ def register_sector_manager(mcp):
                         'low_correlation': '<0.3表示低相关',
                         'negative_correlation': '<0表示负相关'
                     }
-                })
+                }, source_chain=_dedupe_chain(source_chain))
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, list_sectors, sector_performance, sector_rotation, sector_correlation')
+                return _fail(
+                    f'Unknown action: {action}. Supported: help, list_sectors, sector_performance, sector_rotation, sector_correlation',
+                    source_chain=['sector_manager'],
+                )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='sector_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['sector_manager'],
+            )

@@ -1,26 +1,29 @@
 """绩效管理器 - 归因分析、绩效评估"""
 
-import json
+import time
 from datetime import datetime, timezone
 import numpy as np
 from ...storage import get_db
-from ...utils import ok, fail, normalize_code
+from ...utils import normalize_code
+from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
 from ..market import get_kline
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
     """统一解析 kwargs 参数（兼容 JSON 字符串和 dict）"""
-    raw = kwargs.get("kwargs")
-    if isinstance(raw, dict):
-        kwargs = {**kwargs, **raw}
-    elif isinstance(raw, str):
-        try:
-            extra = json.loads(raw or "{}")
-            if isinstance(extra, dict):
-                kwargs = {**kwargs, **extra}
-        except Exception:
-            pass
-    return kwargs
+    return normalize_manager_kwargs(kwargs)
+
+
+def _dedupe_chain(values: list[str]) -> list[str]:
+    chain = []
+    seen = set()
+    for value in values:
+        label = str(value or "").strip()
+        if not label or label in seen:
+            continue
+        chain.append(label)
+        seen.add(label)
+    return chain
 
 
 def _safe_portfolio_id(val):
@@ -409,12 +412,31 @@ def register_performance_manager(mcp):
             # 基准对比
             performance_manager(action="benchmark_comparison", kwargs='{"portfolio_id":1,"benchmark":"000300","lookback_days":252}')
         """
+        start_time = time.perf_counter()
         try:
             db = get_db()
             kwargs = _normalize_kwargs(dict(kwargs))
 
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="performance_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="performance_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'calculate_metrics': '计算绩效指标（需要 portfolio_id）',
                         'backtest_metrics': '按 backtest_id/artifact_id 查询回测绩效',
@@ -422,14 +444,15 @@ def register_performance_manager(mcp):
                         'benchmark_comparison': '基准对比（需要 portfolio_id, benchmark）',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['performance_manager'])
 
             elif action == 'backtest_metrics':
+                source_chain = ['performance_manager', 'db.backtest_results']
                 backtest_id = str(kwargs.get('backtest_id') or '').strip()
                 artifact_id = str(kwargs.get('artifact_id') or '').strip()
 
                 if not backtest_id and not artifact_id:
-                    return fail('需要提供 backtest_id 或 artifact_id')
+                    return _fail('需要提供 backtest_id 或 artifact_id', source_chain=source_chain)
 
                 async with db.acquire() as conn:
                     row = None
@@ -452,7 +475,7 @@ def register_performance_manager(mcp):
                         )
 
                 if not row:
-                    return fail('未找到匹配的回测结果')
+                    return _fail('未找到匹配的回测结果', source_chain=source_chain)
 
                 r = dict(row)
 
@@ -483,7 +506,7 @@ def register_performance_manager(mcp):
                         seg = params_text.split(marker_py, 1)[1]
                         resolved_artifact_id = seg.split("'", 1)[0]
 
-                return ok({
+                return _ok({
                     'backtest_id': r.get('id'),
                     'artifact_id': resolved_artifact_id or None,
                     'code': r.get('code'),
@@ -504,9 +527,17 @@ def register_performance_manager(mcp):
                     'win_rate': float(r.get('win_rate') or 0.0),
                     'win_rate_pct': _to_pct(float(r.get('win_rate') or 0.0)),
                     'trades_count': int(r.get('trades_count') or 0),
-                })
+                }, source_chain=source_chain)
 
             elif action == 'calculate_metrics':
+                source_chain = [
+                    'performance_manager',
+                    'db.portfolios',
+                    'db.holdings',
+                    'db.paper_trades',
+                    'db.get_klines',
+                    'tools.market.get_kline',
+                ]
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
                 lookback_days = int(kwargs.get('lookback_days', 252) or 252)
                 lookback_days = max(20, min(2000, lookback_days))
@@ -521,7 +552,7 @@ def register_performance_manager(mcp):
                     )
 
                     if not portfolio:
-                        return ok({
+                        return _ok({
                             'success': True,
                             'message': '未找到该组合，请先创建组合',
                             'portfolio_id': portfolio_id,
@@ -536,7 +567,7 @@ def register_performance_manager(mcp):
                                 {'name': '成长投资组合', 'stocks': ['300750', '688981', '002475']},
                                 {'name': '稳健投资组合', 'stocks': ['601318', '600887', '601166']}
                             ]
-                        })
+                        }, source_chain=source_chain)
 
                     holdings = await conn.fetch(
                         "SELECT * FROM holdings WHERE portfolio_id = $1",
@@ -614,7 +645,7 @@ def register_performance_manager(mcp):
                     rolling_window=rolling_window,
                 )
 
-                return ok({
+                return _ok({
                     'portfolio_id': portfolio_id,
                     'initial_capital': float(initial_capital),
                     'current_value': float(current_value),
@@ -651,9 +682,16 @@ def register_performance_manager(mcp):
                         'avg_loss': float(avg_loss),
                     },
                     'days_held': days_held,
-                })
+                }, source_chain=source_chain)
 
             elif action == 'attribution':
+                source_chain = [
+                    'performance_manager',
+                    'db.holdings',
+                    'db.get_klines',
+                    'tools.market.get_kline',
+                    'db.get_stock_info',
+                ]
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
                 lookback_days = int(kwargs.get('lookback_days', 252) or 252)
                 lookback_days = max(20, min(2000, lookback_days))
@@ -669,13 +707,13 @@ def register_performance_manager(mcp):
                     )
 
                 if not holdings:
-                    return ok({
+                    return _ok({
                         'message': '当前组合无持仓，请先添加持仓后再操作',
                         'quick_start': {
                             'step1': 'portfolio_manager(action="add_holding", portfolio_id="xxx", code="600519", shares=100)',
                             'step2': 'performance_manager(action="attribution", portfolio_id="xxx")'
                         }
-                    })
+                    }, source_chain=source_chain)
 
                 rows = []
                 total_weight_base = 0.0
@@ -720,7 +758,7 @@ def register_performance_manager(mcp):
                     total_weight_base += weight_base
 
                 if not rows or total_weight_base <= 0:
-                    return fail('持仓数据不足，无法进行归因分析')
+                    return _fail('持仓数据不足，无法进行归因分析', source_chain=source_chain)
 
                 # 日历对齐：取日期交集（含 benchmark）
                 bm_dates, bm_returns, _ = await _fetch_dated_returns_for_code(db, benchmark, lookback_days)
@@ -733,7 +771,7 @@ def register_performance_manager(mcp):
                     common_dates &= bm_date_set
                 common_dates = sorted(common_dates)
                 if len(common_dates) < 2:
-                    return fail('价格序列日期交集不足，无法计算择时贡献')
+                    return _fail('价格序列日期交集不足，无法计算择时贡献', source_chain=source_chain)
 
                 # benchmark 对齐收益率
                 bm_aligned_return = None
@@ -811,7 +849,7 @@ def register_performance_manager(mcp):
 
                 attribution_by_stock.sort(key=lambda x: x['contribution'], reverse=True)
 
-                return ok({
+                return _ok({
                     'portfolio_id': portfolio_id,
                     'total_return': float(total_return),
                     'total_return_pct': _to_pct(total_return),
@@ -868,9 +906,15 @@ def register_performance_manager(mcp):
                         aligned_days=int(timing_info.get('aligned_days', min_len)),
                         rolling_window=rolling_window,
                     ),
-                })
+                }, source_chain=source_chain)
 
             elif action == 'benchmark_comparison':
+                source_chain = [
+                    'performance_manager',
+                    'db.holdings',
+                    'db.get_klines',
+                    'tools.market.get_kline',
+                ]
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
                 benchmark = kwargs.get('benchmark', '000001')
                 lookback_days = int(kwargs.get('lookback_days', 252) or 252)
@@ -884,6 +928,7 @@ def register_performance_manager(mcp):
                     portfolio_id=portfolio_id,
                     lookback_days=lookback_days
                 )
+                source_chain.extend(metrics_result.get('meta', {}).get('source_chain') or [])
 
                 if not metrics_result.get('success'):
                     return metrics_result
@@ -916,7 +961,7 @@ def register_performance_manager(mcp):
 
                 min_len = min(len(portfolio_daily_returns), len(benchmark_daily_returns))
                 if min_len < 2:
-                    return fail('组合或基准收益序列不足，无法计算 tracking_error')
+                    return _fail('组合或基准收益序列不足，无法计算 tracking_error', source_chain=_dedupe_chain(source_chain))
 
                 p_ret = portfolio_daily_returns[-min_len:]
                 b_ret = benchmark_daily_returns[-min_len:]
@@ -930,7 +975,7 @@ def register_performance_manager(mcp):
                 annualized_excess_return = (1.0 + excess_return) ** (252 / min_len) - 1.0
                 information_ratio = annualized_excess_return / tracking_error if tracking_error > 0 else 0.0
 
-                return ok({
+                return _ok({
                     'portfolio_id': portfolio_id,
                     'benchmark': benchmark,
                     'portfolio_return': float(portfolio_return),
@@ -955,9 +1000,18 @@ def register_performance_manager(mcp):
                         aligned_days=int(min_len),
                         rolling_window=rolling_window,
                     ),
-                })
+                }, source_chain=_dedupe_chain(source_chain))
 
             else:
-                return fail(f'Unknown action: {action}. Supported: help, calculate_metrics, backtest_metrics, attribution, benchmark_comparison')
+                return _fail(
+                    f'Unknown action: {action}. Supported: help, calculate_metrics, backtest_metrics, attribution, benchmark_comparison',
+                    source_chain=['performance_manager'],
+                )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='performance_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['performance_manager'],
+            )

@@ -5,6 +5,7 @@ import akshare as ak
 
 from ..utils import (
     fail,
+    format_period,
     normalize_code,
     ok,
     parse_numeric,
@@ -20,6 +21,15 @@ import sys
 from datetime import datetime, timedelta
 from ..baostock_api import baostock_client
 from ..cache import cache
+from ..services.financial_schema import (
+    FINANCIAL_PRIMARY_FIELDS as _FINANCIAL_PRIMARY_FIELDS,
+    merge_financial_payload,
+    normalize_financial_payload,
+    financial_gap_summary,
+    financial_payload_is_complete,
+    financial_payload_is_usable,
+    financial_payload_needs_enrichment,
+)
 from .data_quality import build_quality_meta, infer_missing_fields, normalize_reason_list
 from ..date_utils import get_latest_trading_date
 from ..data_source import data_source
@@ -28,36 +38,11 @@ _RETRY_SLEEP_SECONDS = float(os.getenv("AKSHARE_RETRY_SLEEP_SECONDS", "0.5"))
 _FINANCE_RETRY = int(os.getenv("AKSHARE_FINANCE_RETRY", "2"))
 
 T = TypeVar("T")
-
-
-def _financial_payload_is_complete(payload: Optional[dict]) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    core_fields = ("reportDate", "revenue", "netProfit", "roe", "debtRatio")
-    return any(payload.get(field) is not None for field in core_fields)
-
-
-def _financial_payload_needs_enrichment(payload: Optional[dict]) -> bool:
-    if not isinstance(payload, dict):
-        return True
-    return payload.get("revenue") is None or payload.get("netProfit") is None
-
-
-def _merge_financial_payload(primary: Optional[dict], fallback: Optional[dict], source_label: str) -> Optional[dict]:
-    if not isinstance(primary, dict) and not isinstance(fallback, dict):
-        return None
-    if not isinstance(primary, dict):
-        merged = dict(fallback or {})
-        if merged:
-            merged["source"] = source_label
-        return merged
-    merged = dict(primary)
-    if isinstance(fallback, dict):
-        for key, value in fallback.items():
-            if merged.get(key) is None and value is not None:
-                merged[key] = value
-    merged["source"] = source_label
-    return merged
+_financial_payload_is_complete = financial_payload_is_complete
+_financial_payload_needs_enrichment = financial_payload_needs_enrichment
+_financial_payload_is_usable = financial_payload_is_usable
+_financial_gap_summary = financial_gap_summary
+_merge_financial_payload = merge_financial_payload
 
 
 def _build_financial_cache_entry(
@@ -66,8 +51,9 @@ def _build_financial_cache_entry(
     source_chain: list[str],
     fallback_reason: Optional[list[str]] = None,
 ) -> dict:
+    normalized_payload = normalize_financial_payload(payload, source_label=payload.get("source") if isinstance(payload, dict) else None)
     return {
-        "payload": dict(payload or {}),
+        "payload": dict(normalized_payload or payload or {}),
         "source_chain": [str(item).strip() for item in list(source_chain or []) if str(item).strip()],
         "fallback_reason": normalize_reason_list(fallback_reason),
     }
@@ -96,9 +82,10 @@ def _read_financial_cache_entry(entry: Any) -> tuple[Optional[dict], list[str], 
 
 
 def _financial_missing_fields(payload: Optional[dict]) -> list[str]:
+    normalized = normalize_financial_payload(payload, include_aliases=False)
     return infer_missing_fields(
-        payload,
-        ("reportDate", "revenue", "netProfit", "roe", "debtRatio"),
+        normalized,
+        _FINANCIAL_PRIMARY_FIELDS,
     )
 
 
@@ -110,7 +97,7 @@ def _ok_financial(
     started_at: Optional[datetime] = None,
     cached_result: bool = False,
 ) -> dict:
-    data = dict(payload or {})
+    data = normalize_financial_payload(payload, source_label=payload.get("source") if isinstance(payload, dict) else None) or dict(payload or {})
     missing_fields = _financial_missing_fields(data)
     degraded = bool(missing_fields)
     response = ok(data, cached=cached_result)
@@ -166,6 +153,58 @@ def _call_with_retry(fn: Callable[[], T]) -> T:
     raise RuntimeError("请求失败")
 
 
+def _row_non_null_count(row: Any, fields: tuple[str, ...]) -> int:
+    count = 0
+    for field in fields:
+        try:
+            value = row.get(field)
+        except Exception:
+            value = None
+        if value is not None and value == value and value != "":
+            count += 1
+    return count
+
+
+def _pick_best_statement_row(df: Any, fields: tuple[str, ...], date_field: str = "end_date", scan_limit: int = 6):
+    if df is None or getattr(df, "empty", True):
+        return None
+    try:
+        if date_field in getattr(df, "columns", []):
+            df = df.sort_values(date_field, ascending=False)
+        candidates = df.head(scan_limit)
+        best_row = None
+        best_key = (-1, "")
+        for _, row in candidates.iterrows():
+            raw_period = row.get(date_field)
+            period = str(raw_period or "")
+            score = _row_non_null_count(row, fields)
+            key = (score, period)
+            if best_row is None or key > best_key:
+                best_key = key
+                best_row = row
+        return best_row if best_row is not None else df.iloc[0]
+    except Exception:
+        try:
+            return df.iloc[0]
+        except Exception:
+            return None
+
+
+def _calc_ratio(numerator: Any, denominator: Any, multiplier: float = 100.0) -> Optional[float]:
+    num = parse_numeric(numerator)
+    den = parse_numeric(denominator)
+    if num is None or den in (None, 0):
+        return None
+    return (num / den) * multiplier
+
+
+def _first_not_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
 def _get_financials_tushare(code: str) -> Optional[dict]:
     pro = data_source.get_tushare_pro()
     if not pro:
@@ -190,15 +229,14 @@ def _get_financials_tushare(code: str) -> Optional[dict]:
     if (indicator_df is None or indicator_df.empty) and (income_df is None or income_df.empty):
         return None
 
-    indicator_row = None
-    if indicator_df is not None and not indicator_df.empty:
-        indicator_df = indicator_df.sort_values("end_date")
-        indicator_row = indicator_df.iloc[-1]
-
-    income_row = None
-    if income_df is not None and not income_df.empty:
-        income_df = income_df.sort_values("end_date")
-        income_row = income_df.iloc[-1]
+    indicator_row = _pick_best_statement_row(
+        indicator_df,
+        ("end_date", "roe", "debt_to_assets", "current_ratio", "eps", "grossprofit_margin", "netprofit_margin"),
+    )
+    income_row = _pick_best_statement_row(
+        income_df,
+        ("end_date", "total_revenue", "operate_profit", "n_income"),
+    )
 
     report_date = None
     if indicator_row is not None and indicator_row.get("end_date"):
@@ -206,24 +244,55 @@ def _get_financials_tushare(code: str) -> Optional[dict]:
     elif income_row is not None and income_row.get("end_date"):
         report_date = str(income_row.get("end_date"))
 
-    # 获取ROA，如果为空则尝试计算
-    roa_value = parse_numeric(indicator_row.get("roa")) if indicator_row is not None else None
-
-    # 如果ROA为空，尝试用净利润/总资产计算
-    if roa_value is None and income_row is not None:
+    balance_row = None
+    need_balance_sheet = (
+        indicator_row is None
+        or parse_numeric(indicator_row.get("debt_to_assets")) is None
+        or parse_numeric(indicator_row.get("current_ratio")) is None
+        or parse_numeric(indicator_row.get("roa")) is None
+    )
+    if need_balance_sheet:
         try:
             balance_df = pro.balancesheet(ts_code=ts_code, start_date=start_date, end_date=end_date)
-            if balance_df is not None and not balance_df.empty:
-                balance_df = balance_df.sort_values("end_date")
-                balance_row = balance_df.iloc[-1]
-                total_assets = parse_numeric(balance_row.get("total_assets"))
-                net_profit = parse_numeric(income_row.get("n_income"))
-
-                if total_assets and net_profit and total_assets > 0:
-                    roa_value = (net_profit / total_assets) * 100
-                    print(f"[Finance] Calculated ROA for {code}: {roa_value:.2f}%", file=sys.stderr)
         except Exception as e:
-            print(f"[Finance] ROA calculation failed: {e}", file=sys.stderr)
+            print(f"[Finance] Tushare balancesheet failed: {e}", file=sys.stderr)
+            balance_df = None
+        balance_row = _pick_best_statement_row(
+            balance_df,
+            ("end_date", "total_assets", "total_liab", "total_cur_assets", "total_cur_liab", "total_hldr_eqy_exc_min_int"),
+        )
+
+    if report_date is None and balance_row is not None and balance_row.get("end_date"):
+        report_date = str(balance_row.get("end_date"))
+
+    debt_ratio = parse_numeric(indicator_row.get("debt_to_assets")) if indicator_row is not None else None
+    if debt_ratio is None and balance_row is not None:
+        debt_ratio = _calc_ratio(balance_row.get("total_liab"), balance_row.get("total_assets"))
+
+    current_ratio = parse_numeric(indicator_row.get("current_ratio")) if indicator_row is not None else None
+    if current_ratio is None and balance_row is not None:
+        current_ratio = _calc_ratio(balance_row.get("total_cur_assets"), balance_row.get("total_cur_liab"), multiplier=1.0)
+
+    # 获取ROA，如果为空则尝试计算
+    roa_value = parse_numeric(indicator_row.get("roa")) if indicator_row is not None else None
+    if roa_value is None and income_row is not None and balance_row is not None:
+        roa_value = _calc_ratio(income_row.get("n_income"), balance_row.get("total_assets"))
+        if roa_value is not None:
+            print(f"[Finance] Calculated ROA for {code}: {roa_value:.2f}%", file=sys.stderr)
+
+    revenue_growth = None
+    profit_growth = None
+    if indicator_row is not None:
+        revenue_growth = _first_not_none(
+            parse_numeric(indicator_row.get("tr_yoy")),
+            parse_numeric(indicator_row.get("or_yoy")),
+            parse_numeric(indicator_row.get("q_gr_yoy")),
+        )
+        profit_growth = _first_not_none(
+            parse_numeric(indicator_row.get("netprofit_yoy")),
+            parse_numeric(indicator_row.get("q_netprofit_yoy")),
+            parse_numeric(indicator_row.get("profit_dedt")),
+        )
 
     return {
         "code": code,
@@ -234,10 +303,12 @@ def _get_financials_tushare(code: str) -> Optional[dict]:
         "netProfitMargin": parse_numeric(indicator_row.get("netprofit_margin")) if indicator_row is not None else None,
         "roe": parse_numeric(indicator_row.get("roe")) if indicator_row is not None else None,
         "roa": roa_value,
-        "debtRatio": parse_numeric(indicator_row.get("debt_to_assets")) if indicator_row is not None else None,
-        "currentRatio": parse_numeric(indicator_row.get("current_ratio")) if indicator_row is not None else None,
+        "debtRatio": debt_ratio,
+        "currentRatio": current_ratio,
         "eps": parse_numeric(indicator_row.get("eps")) if indicator_row is not None else None,
         "bvps": None,
+        "revenueGrowth": revenue_growth,
+        "profitGrowth": profit_growth,
         "source": "tushare_pro",
     }
 
@@ -269,8 +340,9 @@ async def get_financials(stock_code: str) -> dict:
 
     # 0.5. DB 优先：查 TimescaleDB financials 表
     db_result = None
+    best_payload = None
     fallback_reason: list[str] = []
-    db_chain = ["db.get_financials"]
+    source_chain = ["db.get_financials"]
     try:
         from ..storage import get_db
         db = get_db()
@@ -279,21 +351,18 @@ async def get_financials(stock_code: str) -> dict:
             row = db_data[0]
             db_result = {
                 "code": code,
-                "reportDate": row.get("report_date"),
-                "revenue": row.get("revenue"),
-                "netProfit": row.get("net_profit"),
-                "roe": row.get("roe"),
-                "debtRatio": row.get("debt_ratio"),
+                **row,
                 "source": "timescaledb",
             }
-            if _financial_payload_is_complete(db_result) and not _financial_payload_needs_enrichment(db_result):
+            best_payload = normalize_financial_payload(db_result, source_label="timescaledb")
+            if _financial_payload_is_complete(best_payload) and not _financial_payload_needs_enrichment(best_payload):
                 cache.set(
                     f"financials_{code}",
-                    _build_financial_cache_entry(db_result, source_chain=db_chain),
+                    _build_financial_cache_entry(best_payload, source_chain=source_chain),
                 )
                 return _ok_financial(
-                    db_result,
-                    source_chain=db_chain,
+                    best_payload,
+                    source_chain=source_chain,
                     started_at=started_at,
                 )
     except Exception as e_db:
@@ -307,65 +376,79 @@ async def get_financials(stock_code: str) -> dict:
     # 3. Try AkShare EM (Standard) - 降级
     # 4. Fallback to Baostock (Stable/Offline-like) - 最后降级
 
-    res = None
-
-    # 1. Try Tushare Pro (优先，如果成功则直接返回)
+    # 1. Try Tushare Pro (优先补齐核心财务)
     try:
-        res = _get_financials_tushare(code)
-        if res:
-            source_chain = [*db_chain, "tushare_pro"]
-            merged = _merge_financial_payload(db_result, res, res.get("source", "tushare_pro"))
+        source_chain.append("tushare_pro")
+        tushare_res = _get_financials_tushare(code)
+        if tushare_res:
+            merged = _merge_financial_payload(best_payload or db_result, tushare_res)
             if merged:
+                best_payload = merged
+            if _financial_payload_needs_enrichment(best_payload):
+                fallback_reason.append(f"tushare_pro incomplete: {_financial_gap_summary(best_payload)}")
+            else:
                 cache.set(
                     f"financials_{code}",
                     _build_financial_cache_entry(
-                        merged,
+                        best_payload,
                         source_chain=source_chain,
                         fallback_reason=fallback_reason,
                     ),
                 )
                 return _ok_financial(
-                    merged,
+                    best_payload,
                     source_chain=source_chain,
                     fallback_reason=fallback_reason,
                     started_at=started_at,
                 )
+        else:
+            fallback_reason.append("tushare_pro returned empty")
     except Exception as e:
         print(f"Tushare financial fetch failed for {code}: {e}", file=sys.stderr)
         fallback_reason.append(f"tushare_pro failed: {e}")
 
-    # 2 & 3. Try AkShare (降级)
-    if not res:
+    # 2 & 3. Try AkShare (补充 EPS/BVPS/比率等)
+    if best_payload is None or _financial_payload_needs_enrichment(best_payload):
         try:
-            res = _get_financials_akshare(code)
+            source_chain.append("akshare_financials")
+            akshare_res = _get_financials_akshare(code)
         except Exception as e:
             print(f"AkShare financial fetch failed for {code}: {e}", file=sys.stderr)
-        if res:
-            source_chain = [*db_chain, "tushare_pro", "akshare_financials"]
-            merged = _merge_financial_payload(db_result, res, res.get("source", "akshare"))
+            akshare_res = None
+            fallback_reason.append(f"akshare_financials failed: {e}")
+        if akshare_res:
+            merged = _merge_financial_payload(best_payload or db_result, akshare_res)
             if merged:
+                best_payload = merged
+            if _financial_payload_needs_enrichment(best_payload):
+                fallback_reason.append(f"akshare_financials incomplete: {_financial_gap_summary(best_payload)}")
+            else:
                 cache.set(
                     f"financials_{code}",
                     _build_financial_cache_entry(
-                        merged,
+                        best_payload,
                         source_chain=source_chain,
                         fallback_reason=fallback_reason,
                     ),
                 )
                 return _ok_financial(
-                    merged,
+                    best_payload,
                     source_chain=source_chain,
                     fallback_reason=fallback_reason,
                     started_at=started_at,
                 )
+        elif "akshare_financials failed:" not in " | ".join(fallback_reason):
+            fallback_reason.append("akshare_financials returned empty")
 
     # 4. Fallback to Baostock
-    if not res:
+    if best_payload is None or _financial_payload_needs_enrichment(best_payload):
         try:
+            source_chain.append("baostock_financials")
             # Baostock generally works with Quarter/Year, so we get the latest available
             # But for "latest", we might need to guess the quarter.
             # Let's try previous quarter relative to now.
             now = datetime.now()
+            baostock_res = None
             # Simple logic: Check last 4 quarters
             for i in range(4):
                 # approximate logic to go back quarters
@@ -383,7 +466,7 @@ async def get_financials(stock_code: str) -> dict:
                     row = df_profit.iloc[0]
                     # Map Baostock fields to our schema
                     # pubDate, statDate, epsTTM, mbEPS, ...
-                    res = {
+                    baostock_res = {
                         "code": code,
                         "reportDate": f"{year}-Q{quarter}",
                         "eps": parse_numeric(row.get("epsTTM")), # or mbEPS
@@ -392,48 +475,60 @@ async def get_financials(stock_code: str) -> dict:
                         "netProfitMargin": parse_numeric(row.get("netProfitMargin")),
                         "source": "baostock"
                     }
-                    if res: break
+                    if baostock_res:
+                        break
         except Exception as e:
             print(f"Baostock financial fetch failed for {code}: {e}", file=sys.stderr)
+            baostock_res = None
+            fallback_reason.append(f"baostock_financials failed: {e}")
 
-    if res:
-        source_chain = [*db_chain, "tushare_pro", "akshare_financials", "baostock_financials"]
-        merged = _merge_financial_payload(db_result, res, res.get("source", "baostock"))
-        if merged:
-            cache.set(
-                f"financials_{code}",
-                _build_financial_cache_entry(
-                    merged,
-                    source_chain=source_chain,
-                    fallback_reason=fallback_reason,
-                ),
-            )
-            return _ok_financial(
-                merged,
-                source_chain=source_chain,
-                fallback_reason=fallback_reason,
-                started_at=started_at,
-            )
+        if baostock_res:
+            merged = _merge_financial_payload(best_payload or db_result, baostock_res)
+            if merged:
+                best_payload = merged
+        else:
+            fallback_reason.append("baostock_financials returned empty")
 
-    if db_result and _financial_payload_is_complete(db_result):
+    if best_payload and _financial_payload_is_usable(best_payload):
+        if _financial_payload_needs_enrichment(best_payload):
+            fallback_reason.append(f"final payload partial: {_financial_gap_summary(best_payload)}")
         cache.set(
             f"financials_{code}",
             _build_financial_cache_entry(
-                db_result,
-                source_chain=[*db_chain, "tushare_pro", "akshare_financials", "baostock_financials"],
+                best_payload,
+                source_chain=source_chain,
                 fallback_reason=fallback_reason,
             ),
         )
         return _ok_financial(
-            db_result,
-            source_chain=[*db_chain, "tushare_pro", "akshare_financials", "baostock_financials"],
+            best_payload,
+            source_chain=source_chain,
+            fallback_reason=fallback_reason,
+            started_at=started_at,
+        )
+
+    if db_result and _financial_payload_is_usable(db_result):
+        best_payload = normalize_financial_payload(db_result, source_label="timescaledb") or db_result
+        if _financial_payload_needs_enrichment(best_payload):
+            fallback_reason.append(f"final payload partial: {_financial_gap_summary(best_payload)}")
+        cache.set(
+            f"financials_{code}",
+            _build_financial_cache_entry(
+                best_payload,
+                source_chain=source_chain,
+                fallback_reason=fallback_reason,
+            ),
+        )
+        return _ok_financial(
+            best_payload,
+            source_chain=source_chain,
             fallback_reason=fallback_reason,
             started_at=started_at,
         )
 
     return _fail_financial(
         f"所有数据源均无法获取 {code} 的财务数据 (AkShare & Baostock)",
-        source_chain=[*db_chain, "tushare_pro", "akshare_financials", "baostock_financials"],
+        source_chain=source_chain,
         fallback_reason=fallback_reason,
         started_at=started_at,
     )
@@ -621,283 +716,6 @@ def get_stock_info(stock_code: str) -> dict:
     except Exception as e:
         return fail(e)
 
-
-
-def _parse_yyyymmdd_to_year_mmdd(date: str) -> tuple[int, int]:
-    """将 YYYYMMDD 或 YYYY-MM-DD 转换为 (year, mmdd)。"""
-    if not date:
-        raise ValueError("date 不能为空")
-    cleaned = date.replace("-", "").replace("/", "").strip()
-    if len(cleaned) != 8 or not cleaned.isdigit():
-        raise ValueError(f"date 格式无法识别（收到 '{date}'），请使用 YYYYMMDD 或 YYYY-MM-DD")
-    return int(cleaned[:4]), int(cleaned[4:])
-
-
-async def tdx_get_financial_snapshot(stock_code: str) -> dict:
-    """
-    [TDX] 获取单只股票最新财务快照
-
-    底层 API: get_gp_one_data(stock_code)
-
-    已知限制与降级策略：
-    - 优先使用 TdxQuant；若 TDX 不可用或返回空对象，则降级到非TDX财务接口。
-    - 返回新增 source_chain / fallback_reason 审计字段，保留原有 code/source/data 兼容字段。
-    """
-    try:
-        code = normalize_code(stock_code)
-        source_chain: list[str] = []
-        fallback_reason: list[str] = []
-
-        tdx_ok = data_source.is_tdx_available()
-        tq = data_source.get_tdxquant() if tdx_ok else None
-
-        if tdx_ok and tq is not None:
-            source_chain.append("tdxquant.get_gp_one_data")
-            tdx_code = data_source._convert_to_tdx_code(code)
-
-            # 兼容不同 TdxQuant 版本：有的版本仅支持位置参数
-            try:
-                result = tq.get_gp_one_data(stock_code=tdx_code)
-            except TypeError:
-                result = tq.get_gp_one_data(tdx_code)
-
-            if isinstance(result, dict) and result.get("ErrorId") and result.get("ErrorId") != "0":
-                fallback_reason.append(result.get("Error", "TDX返回错误，准备降级"))
-            elif result not in (None, {}, []):
-                return ok({
-                    "code": code,
-                    "source": "tdxquant",
-                    "data": result,
-                    "source_chain": source_chain,
-                    "fallback_reason": fallback_reason,
-                })
-            else:
-                fallback_reason.append("TDX返回空结果，已触发降级")
-        else:
-            fallback_reason.append("TdxQuant 不可用或初始化失败，已触发降级")
-
-        # 降级链 1：finance.get_financials
-        source_chain.append("finance.get_financials")
-        try:
-            fin_res = await get_financials(code)
-            if fin_res and fin_res.get("success") and isinstance(fin_res.get("data"), dict):
-                payload_data = fin_res.get("data") or {}
-                payload_data.setdefault("source", payload_data.get("source") or "finance_fallback")
-                return ok({
-                    "code": code,
-                    "source": payload_data.get("source", "finance_fallback"),
-                    "data": payload_data,
-                    "source_chain": source_chain,
-                    "fallback_reason": fallback_reason,
-                })
-        except Exception as e:
-            fallback_reason.append(f"finance.get_financials 降级失败: {e}")
-
-        # 降级链 2：finance.get_stock_info
-        source_chain.append("finance.get_stock_info")
-        try:
-            info_res = get_stock_info(code)
-            if info_res and info_res.get("success") and isinstance(info_res.get("data"), dict):
-                info = info_res.get("data") or {}
-                minimal_data = {
-                    "code": code,
-                    "name": info.get("name"),
-                    "industry": info.get("industry"),
-                    "reportDate": None,
-                    "source": "stock_info_fallback",
-                }
-                return ok({
-                    "code": code,
-                    "source": "stock_info_fallback",
-                    "data": minimal_data,
-                    "source_chain": source_chain,
-                    "fallback_reason": fallback_reason,
-                })
-        except Exception as e:
-            fallback_reason.append(f"finance.get_stock_info 降级失败: {e}")
-
-        return fail(f"获取财务快照失败（所有数据源不可用）: {' | '.join(fallback_reason)}")
-    except Exception as e:
-        return fail(f"获取财务快照异常: {e}")
-
-
-def _safe_decode_text(value: Any) -> tuple[Any, bool]:
-    """尽力将 bytes 解码为 UTF-8 可读字符串。返回 (新值, 是否发生转换)。"""
-    if isinstance(value, bytes):
-        for enc in ("utf-8", "gbk"):
-            try:
-                return value.decode(enc), True
-            except Exception:
-                continue
-        return value.decode("utf-8", errors="replace"), True
-    return value, False
-
-
-def _normalize_utf8_payload(payload: Any) -> tuple[Any, bool]:
-    """递归清洗 payload 中的 bytes，确保 key/value 尽量为 UTF-8 字符串。"""
-    changed = False
-
-    if isinstance(payload, dict):
-        out: dict[Any, Any] = {}
-        for k, v in payload.items():
-            nk, ck = _safe_decode_text(k)
-            nv, cv = _normalize_utf8_payload(v)
-            out[nk] = nv
-            changed = changed or ck or cv
-        return out, changed
-
-    if isinstance(payload, list):
-        out_list: list[Any] = []
-        for item in payload:
-            ni, ci = _normalize_utf8_payload(item)
-            out_list.append(ni)
-            changed = changed or ci
-        return out_list, changed
-
-    if isinstance(payload, tuple):
-        out_items: list[Any] = []
-        for item in payload:
-            ni, ci = _normalize_utf8_payload(item)
-            out_items.append(ni)
-            changed = changed or ci
-        return tuple(out_items), changed
-
-    if isinstance(payload, set):
-        out_set: set[Any] = set()
-        for item in payload:
-            ni, ci = _normalize_utf8_payload(item)
-            changed = changed or ci
-            try:
-                out_set.add(ni)
-            except Exception:
-                out_set.add(str(ni))
-                changed = True
-        return out_set, changed
-
-    nv, cv = _safe_decode_text(payload)
-    return nv, cv
-
-
-def _safe_join_messages(messages: list[str]) -> str:
-    """去重拼接错误/降级原因。"""
-    seen = set()
-    ordered: list[str] = []
-    for msg in messages:
-        text = str(msg or "").strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        ordered.append(text)
-    return " | ".join(ordered)
-
-
-def tdx_get_financial_history(stock_codes: list[str], fields: list[str], date: str) -> dict:
-    """
-    [TDX] 获取指定日期财务数据
-
-    底层 API: get_financial_data_by_date(stock_list, field_list, year, mmdd)
-    """
-    try:
-        if not stock_codes:
-            return fail("stock_codes 不能为空")
-        if not fields:
-            return fail("fields 不能为空")
-
-        year, mmdd = _parse_yyyymmdd_to_year_mmdd(date)
-
-        source_chain: list[str] = []
-        fallback_reason: list[str] = []
-        degraded = False
-
-        if not data_source.is_tdx_available():
-            return fail("TdxQuant 不可用")
-
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return fail("TdxQuant 初始化失败")
-
-        tdx_codes = [data_source._convert_to_tdx_code(normalize_code(c)) for c in stock_codes]
-
-        source_chain.append("tdxquant.get_financial_data_by_date")
-        result = tq.get_financial_data_by_date(
-            stock_list=tdx_codes,
-            field_list=fields,
-            year=year,
-            mmdd=mmdd,
-        )
-
-        if isinstance(result, dict) and result.get("ErrorId") and result.get("ErrorId") != "0":
-            return fail(result.get("Error", "获取财务历史数据失败"))
-
-        normalized_result, converted = _normalize_utf8_payload(result)
-        if converted:
-            degraded = True
-            fallback_reason.append("检测到编码异常，已自动执行 UTF-8/GBK 解码清洗")
-
-        return ok({
-            "date": date,
-            "stockCodes": stock_codes,
-            "fields": fields,
-            "source": "tdxquant",
-            "source_chain": source_chain,
-            "fallback_reason": fallback_reason,
-            "degraded": degraded,
-            "data": normalized_result,
-        })
-    except Exception as e:
-        return fail(f"获取财务历史数据异常: {_safe_join_messages([str(e)])}")
-
-
-def tdx_get_f10_info(stock_code: str, info_type: int = 0) -> dict:
-    """
-    [TDX] 获取 F10 附加信息
-
-    底层 API: get_more_info(stock_code)
-    """
-    try:
-        code = normalize_code(stock_code)
-
-        if not data_source.is_tdx_available():
-            return fail("TdxQuant 不可用")
-
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return fail("TdxQuant 初始化失败")
-
-        # Official doc only guarantees get_more_info(stock_code).
-        # Keep info_type for backward compatibility but do not pass it downstream.
-        if info_type != 0:
-            return fail("当前 TdxQuant F10 接口不支持 info_type，请使用 info_type=0")
-
-        method = getattr(tq, "get_more_info", None)
-        if not callable(method):
-            return fail("当前 TdxQuant 版本不支持 get_more_info 接口")
-
-        tdx_code = data_source._convert_to_tdx_code(code)
-        try:
-            result = method(stock_code=tdx_code)
-        except TypeError:
-            # Some builds expose positional-only signatures.
-            result = method(tdx_code)
-
-        if isinstance(result, dict) and result.get("ErrorId") and result.get("ErrorId") != "0":
-            return fail(result.get("Error", "获取 F10 附加信息失败"))
-
-        return ok({
-            "code": code,
-            "infoType": info_type,
-            "method": "get_more_info",
-            "source": "tdxquant",
-            "data": result,
-            "note": "info_type retained for compatibility; call path uses get_more_info(stock_code).",
-        })
-    except Exception as e:
-        return fail(f"获取 F10 附加信息异常: {e}")
-
-
 def register(mcp):
     mcp.tool()(get_financials)
     mcp.tool()(get_stock_info)
-    mcp.tool()(tdx_get_financial_snapshot)
-    mcp.tool()(tdx_get_financial_history)
-    mcp.tool()(tdx_get_f10_info)

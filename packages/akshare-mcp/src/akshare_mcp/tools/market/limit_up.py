@@ -15,6 +15,10 @@ from datetime import datetime
 
 import pandas as pd
 import requests
+try:
+    import akshare as ak
+except ImportError:
+    ak = None
 
 from ..market.helpers import (
     normalize_code, parse_numeric, pick_value, parse_date_input,
@@ -25,6 +29,124 @@ from ...core.rate_limiter import get_limiter
 from ...data_source import data_source
 
 logger = logging.getLogger(__name__)
+_LIMIT_UP_TRACKED_FIELDS = (
+    "name",
+    "firstLimitTime",
+    "lastLimitTime",
+    "openTimes",
+    "continuousDays",
+    "turnoverRate",
+    "marketCap",
+    "industry",
+)
+
+
+def _format_trade_date(check_date: str) -> str:
+    text = str(check_date or "").strip()
+    if len(text) == 8 and text.isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+    return text
+
+
+def _normalize_limit_time(value) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"none", "nan", "--"}:
+        return ""
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) == 6:
+        return f"{digits[:2]}:{digits[2:4]}:{digits[4:6]}"
+    return text
+
+
+def _get_limit_up_stocks_from_akshare(check_date: str) -> list[dict]:
+    if ak is None or not hasattr(ak, "stock_zt_pool_em"):
+        return []
+    try:
+        df = ak.stock_zt_pool_em(date=check_date)
+    except Exception:
+        return []
+    if df is None or df.empty:
+        return []
+
+    trade_date = _format_trade_date(check_date)
+    results: list[dict] = []
+    for _, row in df.iterrows():
+        code = normalize_code(pick_value(row, ["代码", "code"]))
+        if not code:
+            continue
+        latest_price = parse_numeric(pick_value(row, ["最新价", "price"])) or 0.0
+        total_mv = parse_numeric(pick_value(row, ["总市值", "marketCap"]))
+        float_mv = parse_numeric(pick_value(row, ["流通市值"]))
+        market_cap = total_mv if total_mv is not None else (float_mv or 0.0)
+        continuous_days = parse_numeric(pick_value(row, ["连板数", "连续涨停天数"])) or 0.0
+        results.append({
+            "code": code,
+            "name": str(pick_value(row, ["名称", "name"]) or ""),
+            "price": float(latest_price),
+            "changePercent": float(parse_numeric(pick_value(row, ["涨跌幅", "changePercent"])) or 0.0),
+            "limitUpPrice": float(latest_price),
+            "firstLimitTime": _normalize_limit_time(pick_value(row, ["首次封板时间"])),
+            "lastLimitTime": _normalize_limit_time(pick_value(row, ["最后封板时间"])),
+            "openTimes": int(parse_numeric(pick_value(row, ["炸板次数", "openTimes"])) or 0),
+            "continuousDays": int(continuous_days or 0),
+            "turnoverRate": float(parse_numeric(pick_value(row, ["换手率", "turnoverRate"])) or 0.0),
+            "marketCap": float(market_cap or 0.0),
+            "industry": str(pick_value(row, ["所属行业", "industry"]) or ""),
+            "concept": "",
+            "tradeDate": trade_date,
+            "_derived_fields": set(),
+        })
+    return results
+
+
+def _mark_limit_up_field(item: dict, field: str, value) -> None:
+    item[field] = value
+    if field != "continuousDays" or value is not None:
+        item.setdefault("_derived_fields", set()).add(field)
+
+
+def _finalize_limit_up_response(
+    results: list[dict],
+    *,
+    source_used: str,
+    source_chain: list[str],
+    fallback_reason: list[str] | None = None,
+):
+    derived_field_counts: dict[str, int] = {}
+    missing_field_counts: dict[str, int] = {}
+
+    for item in results:
+        derived_fields = sorted(str(field) for field in item.pop("_derived_fields", set()) if str(field))
+        missing_fields: list[str] = []
+        for field in _LIMIT_UP_TRACKED_FIELDS:
+            value = item.get(field)
+            if value is None or value == "":
+                missing_fields.append(field)
+                missing_field_counts[field] = missing_field_counts.get(field, 0) + 1
+        for field in derived_fields:
+            derived_field_counts[field] = derived_field_counts.get(field, 0) + 1
+        item["dataQuality"] = {
+            "source": source_used,
+            "derived_fields": derived_fields,
+            "missing_fields": missing_fields,
+        }
+
+    response = ok(results)
+    response["source"] = source_used
+    response["source_chain"] = [str(item).strip() for item in source_chain if str(item).strip()]
+    reasons = [str(item).strip() for item in list(fallback_reason or []) if str(item).strip()]
+    if reasons:
+        response["fallback_reason"] = reasons
+    response["degraded"] = bool(missing_field_counts)
+    response["data_quality"] = {
+        "count": len(results),
+        "source_used": source_used,
+        "source_chain": response["source_chain"],
+        "derived_field_counts": derived_field_counts,
+        "missing_field_counts": missing_field_counts,
+        "fallback_used": len(response["source_chain"]) > 1,
+    }
+    return response
 
 
 def _tushare_http_call(api_name: str, params: dict | None = None, fields: str = ""):
@@ -102,130 +224,162 @@ def get_limit_up_stocks(date: str = "") -> dict:
     limiter.acquire()
 
     target_date = parse_date_input(date) if date else datetime.now().date()
-    results: list[dict] = []
-
+    fallback_reason: list[str] = []
     # 尝试最近 10 个交易日
     for days_back in range(10):
         check_date = (target_date - timedelta(days=days_back)).strftime("%Y%m%d")
+        results: list[dict] = []
+        source_chain = ["tushare.stk_limit", "tushare.daily"]
 
         # 1) 获取 stk_limit（涨停价/跌停价/昨收）
         limit_df = _tushare_http_call("stk_limit", {"trade_date": check_date})
-        if limit_df is None or limit_df.empty:
-            continue
+        if limit_df is not None and not limit_df.empty:
+            # 2) 获取 daily（收盘价/涨跌幅/成交量）
+            daily_df = _tushare_http_call(
+                "daily",
+                {"trade_date": check_date},
+                fields="ts_code,trade_date,open,high,low,close,pct_chg,vol,amount",
+            )
+            if daily_df is not None and not daily_df.empty:
+                # 3) 合并两个 DataFrame
+                merged = pd.merge(limit_df, daily_df, on=["ts_code", "trade_date"], how="inner")
 
-        # 2) 获取 daily（收盘价/涨跌幅/成交量）
-        daily_df = _tushare_http_call(
-            "daily",
-            {"trade_date": check_date},
-            fields="ts_code,trade_date,open,high,low,close,pct_chg,vol,amount",
-        )
-        if daily_df is None or daily_df.empty:
-            continue
+                if not merged.empty:
+                    # 4) 筛选涨停：close >= up_limit（允许 0.01 误差）
+                    merged["close_f"] = pd.to_numeric(merged["close"], errors="coerce").fillna(0)
+                    merged["up_limit_f"] = pd.to_numeric(merged["up_limit"], errors="coerce").fillna(0)
+                    merged["pre_close_f"] = pd.to_numeric(merged.get("pre_close", pd.Series(dtype=float)), errors="coerce").fillna(0)
+                    merged["pct_chg_f"] = pd.to_numeric(merged.get("pct_chg", pd.Series(dtype=float)), errors="coerce").fillna(0)
 
-        # 3) 合并两个 DataFrame
-        merged = pd.merge(limit_df, daily_df, on=["ts_code", "trade_date"], how="inner")
-        if merged.empty:
-            continue
+                    up_mask = (merged["up_limit_f"] > 0) & (merged["close_f"] >= merged["up_limit_f"] - 0.01)
+                    up_df = merged[up_mask]
 
-        # 4) 筛选涨停：close >= up_limit（允许 0.01 误差）
-        merged["close_f"] = pd.to_numeric(merged["close"], errors="coerce").fillna(0)
-        merged["up_limit_f"] = pd.to_numeric(merged["up_limit"], errors="coerce").fillna(0)
-        merged["pre_close_f"] = pd.to_numeric(merged.get("pre_close", pd.Series(dtype=float)), errors="coerce").fillna(0)
-        merged["pct_chg_f"] = pd.to_numeric(merged.get("pct_chg", pd.Series(dtype=float)), errors="coerce").fillna(0)
+                    # 5) 构建结果
+                    for _, row in up_df.iterrows():
+                        ts_code = str(row.get("ts_code", ""))
+                        code = ts_code.split(".")[0] if ts_code else ""
+                        if not code:
+                            continue
 
-        up_mask = (merged["up_limit_f"] > 0) & (merged["close_f"] >= merged["up_limit_f"] - 0.01)
-        up_df = merged[up_mask]
+                        close_price = float(row.get("close_f", 0))
+                        up_limit_price = float(row.get("up_limit_f", 0))
+                        pct_chg = float(row.get("pct_chg_f", 0))
+                        price = close_price or up_limit_price
 
-        if up_df.empty:
-            continue
+                        results.append({
+                            "code": normalize_code(code),
+                            "name": "",  # 后面批量补全
+                            "price": price,
+                            "changePercent": pct_chg,
+                            "limitUpPrice": up_limit_price or price,
+                            "firstLimitTime": "",
+                            "lastLimitTime": "",
+                            "openTimes": None,
+                            "continuousDays": None,  # 后面尝试计算
+                            "turnoverRate": None,
+                            "marketCap": None,
+                            "industry": "",
+                            "concept": "",
+                            "tradeDate": _format_trade_date(check_date),
+                            "_derived_fields": set(),
+                        })
 
-        # 5) 构建结果
-        for _, row in up_df.iterrows():
-            ts_code = str(row.get("ts_code", ""))
-            code = ts_code.split(".")[0] if ts_code else ""
-            if not code:
-                continue
+                    if results:
+                        # 6) 批量补全名称
+                        name_map = _get_name_map()
+                        if name_map:
+                            source_chain.append("tushare.stock_basic")
+                        if name_map:
+                            for r in results:
+                                name = name_map.get(r["code"], "")
+                                if name:
+                                    _mark_limit_up_field(r, "name", name)
 
-            close_price = float(row.get("close_f", 0))
-            up_limit_price = float(row.get("up_limit_f", 0))
-            pre_close = float(row.get("pre_close_f", 0))
-            pct_chg = float(row.get("pct_chg_f", 0))
-            price = close_price or up_limit_price
+                        # 6.5) 补全 turnoverRate / industry 从 daily_basic
+                        try:
+                            basic_df = _tushare_http_call(
+                                "daily_basic",
+                                {"trade_date": check_date},
+                                fields="ts_code,turnover_rate,pe,total_mv",
+                            )
+                            if basic_df is not None and not basic_df.empty:
+                                source_chain.append("tushare.daily_basic")
+                                basic_map = {}
+                                for _, brow in basic_df.iterrows():
+                                    bc = str(brow.get("ts_code", "")).split(".")[0]
+                                    if bc:
+                                        basic_map[bc] = brow
+                                for r in results:
+                                    brow = basic_map.get(r["code"])
+                                    if brow is not None:
+                                        tr = parse_numeric(brow.get("turnover_rate"))
+                                        if tr is not None:
+                                            _mark_limit_up_field(r, "turnoverRate", float(tr))
+                                        mv = parse_numeric(brow.get("total_mv"))
+                                        if mv is not None:
+                                            _mark_limit_up_field(r, "marketCap", float(mv))
+                        except Exception as e:
+                            fallback_reason.append(f"tushare.daily_basic failed: {e}")
 
-            results.append({
-                "code": normalize_code(code),
-                "name": "",  # 后面批量补全
-                "price": price,
-                "changePercent": pct_chg,
-                "limitUpPrice": up_limit_price or price,
-                "firstLimitTime": "",
-                "lastLimitTime": "",
-                "openTimes": 0,
-                "continuousDays": 0,  # 后面尝试计算
-                "turnoverRate": 0,
-                "marketCap": 0,
-                "industry": "",
-                "concept": "",
-            })
+                        # 6.6) 补全 industry 从 stock_basic
+                        try:
+                            industry_df = _tushare_http_call(
+                                "stock_basic",
+                                {"exchange": "", "list_status": "L"},
+                                fields="ts_code,industry",
+                            )
+                            if industry_df is not None and not industry_df.empty:
+                                if "tushare.stock_basic" not in source_chain:
+                                    source_chain.append("tushare.stock_basic")
+                                ind_map = {}
+                                for _, irow in industry_df.iterrows():
+                                    ic = str(irow.get("ts_code", "")).split(".")[0]
+                                    if ic:
+                                        ind_map[ic] = str(irow.get("industry", "") or "")
+                                for r in results:
+                                    ind = ind_map.get(r["code"], "")
+                                    if ind:
+                                        _mark_limit_up_field(r, "industry", ind)
+                        except Exception as e:
+                            fallback_reason.append(f"tushare.stock_basic(industry) failed: {e}")
 
-        if results:
-            # 6) 批量补全名称
-            name_map = _get_name_map()
-            if name_map:
-                for r in results:
-                    r["name"] = name_map.get(r["code"], "")
+                        # 7) 尝试计算连板天数（往前查最多 10 天）
+                        _fill_continuous_days(results, check_date)
+                        if results:
+                            return _finalize_limit_up_response(
+                                results,
+                                source_used="tushare_combo",
+                                source_chain=source_chain,
+                                fallback_reason=fallback_reason,
+                            )
 
-            # 6.5) 补全 turnoverRate / industry 从 daily_basic
-            try:
-                basic_df = _tushare_http_call(
-                    "daily_basic",
-                    {"trade_date": check_date},
-                    fields="ts_code,turnover_rate,pe,total_mv",
+        if not results:
+            results = _get_limit_up_stocks_from_akshare(check_date)
+            if results:
+                if days_back > 0:
+                    fallback_reason.append(f"tushare_combo empty for {check_date}, fallback to akshare")
+                return _finalize_limit_up_response(
+                    results,
+                    source_used="akshare_zt_pool",
+                    source_chain=["akshare.stock_zt_pool_em"],
+                    fallback_reason=fallback_reason,
                 )
-                if basic_df is not None and not basic_df.empty:
-                    basic_map = {}
-                    for _, brow in basic_df.iterrows():
-                        bc = str(brow.get("ts_code", "")).split(".")[0]
-                        if bc:
-                            basic_map[bc] = brow
-                    for r in results:
-                        brow = basic_map.get(r["code"])
-                        if brow is not None:
-                            tr = parse_numeric(brow.get("turnover_rate"))
-                            if tr is not None:
-                                r["turnoverRate"] = float(tr)
-                            mv = parse_numeric(brow.get("total_mv"))
-                            if mv is not None:
-                                r["marketCap"] = float(mv)
-            except Exception:
-                pass
 
-            # 6.6) 补全 industry 从 stock_basic
-            try:
-                industry_df = _tushare_http_call(
-                    "stock_basic",
-                    {"exchange": "", "list_status": "L"},
-                    fields="ts_code,industry",
-                )
-                if industry_df is not None and not industry_df.empty:
-                    ind_map = {}
-                    for _, irow in industry_df.iterrows():
-                        ic = str(irow.get("ts_code", "")).split(".")[0]
-                        if ic:
-                            ind_map[ic] = str(irow.get("industry", "") or "")
-                    for r in results:
-                        ind = ind_map.get(r["code"], "")
-                        if ind:
-                            r["industry"] = ind
-            except Exception:
-                pass
-
-            # 7) 尝试计算连板天数（往前查最多 10 天）
-            _fill_continuous_days(results, check_date)
-
-            break  # 找到有数据的交易日就停止
-
-    return ok(results)
+    response = ok([])
+    response["source"] = "none"
+    response["source_chain"] = ["tushare.stk_limit", "tushare.daily", "akshare.stock_zt_pool_em"]
+    if fallback_reason:
+        response["fallback_reason"] = fallback_reason
+    response["degraded"] = True
+    response["data_quality"] = {
+        "count": 0,
+        "source_used": "none",
+        "source_chain": response["source_chain"],
+        "derived_field_counts": {},
+        "missing_field_counts": {},
+        "fallback_used": True,
+    }
+    return response
 
 
 def _fill_continuous_days(results: list[dict], current_date: str):
@@ -282,7 +436,7 @@ def _fill_continuous_days(results: list[dict], current_date: str):
 
     # 写回结果
     for r in results:
-        r["continuousDays"] = cont_days.get(r["code"], 1)
+        _mark_limit_up_field(r, "continuousDays", cont_days.get(r["code"], 1))
 
 
 @cached(ttl=300.0)
@@ -318,15 +472,25 @@ def get_limit_up_statistics(date: str = "") -> dict:
     data = res.get("data") or []
     total = len(data)
 
-    def count_boards(target: int) -> int:
-        return sum(1 for item in data if int(item.get("continuousDays", 0)) == target)
+    def _safe_int(value, default: int = 0) -> int:
+        try:
+            if value is None or value == "":
+                return default
+            return int(float(value))
+        except Exception:
+            return default
 
-    higher = sum(1 for item in data if int(item.get("continuousDays", 0)) >= 4)
-    failed = sum(1 for item in data if int(item.get("openTimes", 0)) > 0)
+    def count_boards(target: int) -> int:
+        return sum(1 for item in data if _safe_int(item.get("continuousDays"), 0) == target)
+
+    higher = sum(1 for item in data if _safe_int(item.get("continuousDays"), 0) >= 4)
+    failed = sum(1 for item in data if _safe_int(item.get("openTimes"), 0) > 0)
     denom = total + failed
     success_rate = (total / denom) * 100 if denom > 0 else 0
 
-    target_date = (parse_date_input(date) or datetime.now().date()).isoformat()
+    target_date = next((str(item.get("tradeDate")) for item in data if item.get("tradeDate")), None)
+    if not target_date:
+        target_date = (parse_date_input(date) or datetime.now().date()).isoformat()
 
     result = {
         "date": target_date,
@@ -339,5 +503,23 @@ def get_limit_up_statistics(date: str = "") -> dict:
         "limitDown": 0,
         "successRate": round(success_rate, 2),
     }
+    open_times_missing = 0
+    if isinstance(res.get("data_quality"), dict):
+        open_times_missing = int((res["data_quality"].get("missing_field_counts") or {}).get("openTimes", 0) or 0)
 
-    return ok(result)
+    response = ok(result)
+    response["source"] = res.get("source", "akshare")
+    response["source_chain"] = res.get("source_chain", [])
+    if res.get("fallback_reason"):
+        response["fallback_reason"] = res.get("fallback_reason")
+    estimated_zero_fields = []
+    if open_times_missing > 0 and failed == 0:
+        estimated_zero_fields.append("failedBoard")
+    response["degraded"] = bool(estimated_zero_fields) or bool(res.get("degraded"))
+    response["data_quality"] = {
+        "base_count": total,
+        "open_times_missing_count": open_times_missing,
+        "estimated_zero_fields": estimated_zero_fields,
+        "fallback_used": len(response.get("source_chain") or []) > 1,
+    }
+    return response

@@ -6,13 +6,26 @@ from ..services.factor_calculator import factor_calculator
 from ..services import technical_analysis
 from ..services.vector_search import vector_search_engine
 from .search import _search_stocks_tushare_fallback
-from ..utils import ok, fail
+from ..utils import ok, fail, suppress_stdout
 import statistics
 
 
 _GENERIC_SEMANTIC_HINTS = {
     '龙头', '概念', '板块', '赛道', '题材', '核心', '精选', '优选', '成长', '价值'
 }
+_SEMANTIC_CONCEPT_HINTS = {'概念', '板块', '题材', '赛道'}
+_SEMANTIC_ST_PREFIXES = ('*st', 'st', 'sst', 's*st', '退市')
+_MIN_SEMANTIC_SCORE = 0.45
+
+
+def _semantic_is_special_treatment(name: str) -> bool:
+    text = str(name or '').strip().lower().replace(' ', '')
+    return any(text.startswith(prefix) for prefix in _SEMANTIC_ST_PREFIXES)
+
+
+def _semantic_is_concept_industry(industry: str) -> bool:
+    text = str(industry or '').strip().lower()
+    return any(hint in text for hint in _SEMANTIC_CONCEPT_HINTS)
 
 
 def register(mcp):
@@ -390,40 +403,83 @@ def register(mcp):
                 def _append_sector_candidates(match_text: str):
                     try:
                         import akshare as ak_mod
+                        from .market_blocks import _fetch_concept_stocks_from_ths
 
                         q_lower = match_text.lower()
-                        q_cjk_chars = [c for c in match_text if '\u4e00' <= c <= '\u9fff']
+                        strong_sector_tokens = [
+                            token.lower()
+                            for token in sector_tokens
+                            if len(token) >= 2 and token not in _GENERIC_SEMANTIC_HINTS
+                        ]
 
                         def _sector_match(name: str) -> bool:
                             name_l = name.lower()
                             if q_lower in name_l or name_l in q_lower:
                                 return True
-                            return any(c in name_l for c in q_cjk_chars)
+                            return any(token in name_l for token in strong_sector_tokens)
 
                         matched_sectors = []
-                        df_spot = ak_mod.stock_sector_spot()
+                        seen_sector_keys = set()
+                        candidate_limit = min(max(limit * 5, 50), 120)
+
+                        def _append_sector(label: str, name: str):
+                            label_s = str(label or '').strip()
+                            name_s = str(name or '').strip()
+                            if not label_s or not name_s:
+                                return
+                            key = (label_s, name_s)
+                            if key in seen_sector_keys:
+                                return
+                            seen_sector_keys.add(key)
+                            matched_sectors.append((label_s, name_s))
+
+                        with suppress_stdout("[semantic_stock_search] stock_sector_spot"):
+                            df_spot = ak_mod.stock_sector_spot()
                         if df_spot is not None and not df_spot.empty:
                             for _, srow in df_spot.iterrows():
                                 bname = str(srow.get('板块', '') or '')
                                 blabel = str(srow.get('label', '') or '')
                                 if _sector_match(bname):
-                                    matched_sectors.append((blabel, bname))
+                                    _append_sector(blabel, bname)
                         if len(matched_sectors) < 2:
-                            df_ths = ak_mod.stock_board_industry_name_ths()
+                            with suppress_stdout("[semantic_stock_search] stock_board_industry_name_ths"):
+                                df_ths = ak_mod.stock_board_industry_name_ths()
                             if df_ths is not None and not df_ths.empty:
                                 for _, brow in df_ths.iterrows():
                                     bname = str(brow.get('name', '') or '')
                                     bcode = str(brow.get('code', '') or '')
                                     if _sector_match(bname):
-                                        matched_sectors.append((bcode, bname))
-                        for blabel, bname in matched_sectors[:2]:
+                                        _append_sector(bcode, bname)
+                        if len(matched_sectors) < 3:
+                            with suppress_stdout("[semantic_stock_search] stock_board_concept_name_ths"):
+                                df_concept_ths = ak_mod.stock_board_concept_name_ths()
+                            if df_concept_ths is not None and not df_concept_ths.empty:
+                                for _, crow in df_concept_ths.iterrows():
+                                    bname = str(crow.get('name', '') or '')
+                                    bcode = str(crow.get('code', '') or '')
+                                    if _sector_match(bname):
+                                        _append_sector(bcode, bname)
+                        for blabel, bname in matched_sectors[:3]:
                             try:
                                 if not blabel.startswith('new_'):
+                                    if blabel.isdigit() and len(blabel) == 6:
+                                        with suppress_stdout("[semantic_stock_search] ths_concept_constituents"):
+                                            concept_rows = _fetch_concept_stocks_from_ths(blabel, bname)
+                                        for item in concept_rows[:candidate_limit]:
+                                            _append_row({
+                                                'code': str(item.get('stock_code', '') or ''),
+                                                'name': str(item.get('stock_name', '') or ''),
+                                                'industry': bname,
+                                                'market_cap': None,
+                                                'pe_ratio': None,
+                                                'pb_ratio': None,
+                                            })
                                     continue
-                                df_cons = ak_mod.stock_sector_detail(sector=blabel)
+                                with suppress_stdout("[semantic_stock_search] stock_sector_detail"):
+                                    df_cons = ak_mod.stock_sector_detail(sector=blabel)
                                 if df_cons is None or df_cons.empty:
                                     continue
-                                for _, crow in df_cons.head(limit).iterrows():
+                                for _, crow in df_cons.head(candidate_limit).iterrows():
                                     _append_row({
                                         'code': str(crow.get('code', '') or ''),
                                         'name': str(crow.get('name', '') or ''),
@@ -479,8 +535,34 @@ def register(mcp):
                 if not all_rows:
                     _append_sector_candidates(query_stripped)
 
+                # 用 stocks 主表补齐市值/估值字段，帮助行业结果按龙头优先排序。
+                missing_detail_codes = [
+                    row['code']
+                    for row in all_rows
+                    if row.get('market_cap') is None or row.get('pe_ratio') is None or row.get('pb_ratio') is None
+                ]
+                if missing_detail_codes:
+                    detail_rows = await conn.fetch(
+                        """SELECT code, market_cap, pe_ratio, pb_ratio
+                           FROM stocks
+                           WHERE code = ANY($1::text[])""",
+                        list(dict.fromkeys(missing_detail_codes))
+                    )
+                    detail_map = {str(row['code']): dict(row) for row in detail_rows}
+                    for row in all_rows:
+                        detail = detail_map.get(str(row.get('code') or ''))
+                        if not detail:
+                            continue
+                        if row.get('market_cap') is None:
+                            row['market_cap'] = detail.get('market_cap')
+                        if row.get('pe_ratio') is None:
+                            row['pe_ratio'] = detail.get('pe_ratio')
+                        if row.get('pb_ratio') is None:
+                            row['pb_ratio'] = detail.get('pb_ratio')
+
                 # 计算匹配分数
                 results = []
+                query_explicitly_conceptual = any(hint in query_stripped for hint in _SEMANTIC_CONCEPT_HINTS)
                 for row in all_rows:
                     score = 0.0
                     match_type = []
@@ -488,6 +570,8 @@ def register(mcp):
                     name_l = (row['stock_name'] or '').lower()
                     industry_l = (row['industry'] or '').lower()
                     q_l = query_stripped.lower()
+                    is_st = _semantic_is_special_treatment(row.get('stock_name'))
+                    is_concept = _semantic_is_concept_industry(row.get('industry'))
                     matched_name_tokens = [t for t in weighted_tokens if t in name_l]
                     matched_industry_tokens = [t for t in weighted_tokens if t in industry_l]
                     strong_name_tokens = [t for t in matched_name_tokens if t not in _GENERIC_SEMANTIC_HINTS]
@@ -505,13 +589,22 @@ def register(mcp):
                     elif generic_name_tokens:
                         score += 0.2; match_type.append('name_hint')
                     if industry_l and strong_industry_tokens:
-                        score += 0.85; match_type.append('industry')
+                        if is_concept and not query_explicitly_conceptual:
+                            score += 0.6; match_type.append('industry_concept')
+                        else:
+                            score += 0.85; match_type.append('industry')
                         if generic_tokens:
                             score += 0.2; match_type.append('industry_context')
                     elif industry_l and matched_industry_tokens:
                         score += 0.45; match_type.append('industry_hint')
+                    if is_concept and not query_explicitly_conceptual:
+                        score -= 0.1; match_type.append('concept_penalty')
+                    if is_st:
+                        score -= 0.9; match_type.append('special_treatment_penalty')
                     if score == 0:
-                        score = 0.3
+                        continue
+                    if score < _MIN_SEMANTIC_SCORE and not {'code_exact', 'code_partial', 'name_exact'} & set(match_type):
+                        continue
 
                     results.append({
                         'code': row['code'],
@@ -524,7 +617,13 @@ def register(mcp):
                         'match_type': match_type,
                     })
 
-                results.sort(key=lambda x: x['score'], reverse=True)
+                results.sort(
+                    key=lambda x: (
+                        x['score'],
+                        x['market_cap'] if x.get('market_cap') is not None else float('-inf'),
+                    ),
+                    reverse=True,
+                )
 
                 return ok({
                     'query': query_stripped,

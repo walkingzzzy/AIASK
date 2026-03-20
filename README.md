@@ -62,7 +62,6 @@
 
 当前核心实现位于 `packages/akshare-mcp`，已接入并在不同能力中使用的数据源包括：
 
-- **TDX / TdxQuant**（本地通达信运行时，支持分钟级、盘口、公式与前端联动）
 - **Tushare Pro**（高质量结构化日频/财务/公告/研报数据）
 - **AKShare**（通用市场数据与多类补充接口）
 - **东方财富（Eastmoney）**（指数推送、板块/资金流、公告等）
@@ -75,10 +74,10 @@
 
 系统采用“**能力域独立优先链 + 自动降级**”策略，不同工具按场景走不同链路：
 
-1. **实时行情**（示例）：`TDX/Tushare -> AKShare(分钟/全市场) -> Sina -> Tencent`
-2. **历史K线**（示例）：`TDX/Tushare -> AKShare -> Tencent -> Baostock`
+1. **实时行情**（示例）：`DataSource/Tushare -> AKShare(分钟/全市场) -> Sina -> Tencent`
+2. **历史K线**（示例）：`DataSource/Tushare -> AKShare -> Tencent -> Baostock`
 3. **指数行情**（示例）：`Eastmoney push2 -> AKShare(Sina指数接口)`
-4. **分钟K线**（示例）：`TDX -> AKShare -> Sina`
+4. **分钟K线**（示例）：`DataSource -> AKShare -> Sina`
 
 说明：
 
@@ -91,7 +90,6 @@
 **必需配置（按场景）**：
 
 - `TUSHARE_TOKEN`：启用 Tushare Pro 的前提。
-- `TDX_PLUGIN_PATH`：启用 TDX 本地运行时能力（公式/盘口/分钟线/前端联动）的前提。
 
 **可选配置（影响稳定性与性能）**：
 
@@ -105,7 +103,6 @@
 ```env
 # ===== 必需（按功能启用） =====
 TUSHARE_TOKEN=your_tushare_token
-TDX_PLUGIN_PATH=C:/new_tdx/T0002/plugins/Python
 
 # ===== 可选：代理与白名单 =====
 TUSHARE_HTTP_URL=http://your-tushare-proxy
@@ -116,38 +113,16 @@ AKSHARE_SPOT_TTL_SECONDS=2
 AKSHARE_SPOT_TIMEOUT_SECONDS=15
 ```
 
-#### TDX 配置说明（必需条件与快速验证）
+#### macOS 说明（当前默认行为）
 
-为避免“已配置 `TDX_PLUGIN_PATH` 但能力不可用”的情况，建议按以下步骤检查：
-
-1) **前置条件**
-- 本机已安装并可正常启动通达信客户端（TDX）。
-- `TDX_PLUGIN_PATH` 指向通达信插件 Python 目录，且当前用户有读取权限。
-- 需要 TDX 实时能力时（公式、盘口、分钟线、前端同步），必须保证本地运行时可用。
-
-2) **路径示例（按环境）**
-- Windows 常见路径：`C:/new_tdx/T0002/plugins/Python`
-- Wine（Linux/macOS）常见路径：`~/.wine/drive_c/new_tdx/T0002/plugins/Python`
-
-3) **最小验证步骤**
-```bash
-# 1) 检查环境变量是否生效
-python -c "import os; print(os.getenv('TDX_PLUGIN_PATH'))"
-
-# 2) 启动 MCP 服务后，调用任一 TDX 能力做健康检查（示例）
-# tdx_calculate_indicator(stock_code="600519", formula_name="MACD", formula_args="12,26,9")
-```
-
-4) **常见问题排查**
-- 返回 `success=false` 且提示 TDX 不可用：优先检查客户端是否启动、路径是否正确。
-- 路径已配置但仍失败：检查目录权限、路径分隔符、是否指向 `plugins/Python` 而非上级目录。
-- 非交易时段数据与盘中不一致：属于数据时效差异，优先使用历史/收盘口径验证。
-- 建议将 TDX 作为高优先实时源，同时保留 AKShare/Sina/Tencent 等降级链，避免单点不可用。
+- macOS / 非 Windows 主机仅启用公共数据源与降级链。
+- 启动时不依赖任何本地桌面端专用能力。
+- 如需恢复桌面端原生能力，请在 Windows 环境重新接入并单独回归验证。
 
 
 ### 2.5 适用场景与限制
 
-- **TDX**：盘中实时性与本地联动能力最强；限制是依赖本地客户端与插件环境。
+- 当前在 macOS / 非 Windows 环境仅启用公共数据源链路，不依赖本地桌面端能力。
 - **Tushare Pro**：结构化与覆盖面好；限制是需要 Token 且受积分/频控影响。
 - **AKShare/Eastmoney/Sina/Tencent**：适合作为公网降级链；限制是上游稳定性与字段一致性波动。
 - **Baostock/eFinance**：适合历史数据兜底；限制是字段与时效性不如主源。
@@ -235,23 +210,22 @@ AKSHARE_SPOT_TIMEOUT_SECONDS=15
 | 风险管理与组合优化 | 6 | 提供VaR/CVaR、压力测试、风险敞口与组合优化分析 | 组合风控、投后监控 |
 | 搜索/语义/向量能力 | 4 | 提供语义检索、相似股票/形态检索与自然语言条件解析 | 快速选股、相似案例发现 |
 | 数据同步/缓存/运维 | 12 | 提供数据同步、缓存管理、失败队列管理、日报与运维诊断 | 数据工程化、稳定性运维 |
-| TDX联动 | 36 | 提供通达信公式、条件选股、前端同步、文件与板块交互能力 | 本地终端联动、公式验证 |
 | Manager编排层 | 31 | 通过统一 `action + kwargs` 协议封装跨域流程编排 | AI Agent 工作流、低耦合集成 |
 | Skills与工具发现 | 5 | 提供工具清单、分类查询、Skill发现与执行入口 | 自动路由、能力发现 |
 | 其他通用能力 | 2 | 提供跨域辅助能力（如市场情绪指数） | 综合研判 |
 
 ### 4.2 覆盖结论（与代码对齐）
 
-- 工具总量：**158**（已对齐运行时审计文件）。
-- TDX 相关能力：**36/36 全覆盖**。
+- 工具总量：请以运行时审计文件为准。
+- 平台专用入口：不纳入默认可用能力声明，当前验证以公共数据能力为准。
 - Manager 编排能力：**31/31 全覆盖**。
 - Skills 覆盖：**157/158（99.37%）**，当前缺口工具为 `factor_robustness_check`。
 
 ### 4.3 最小可用验证（5 分钟）
 
 ```bash
-# 1) 查看工具总量与分类入口
-python -c "from akshare_mcp.tools.tools_info import available_tools; import json; r=available_tools(); print('success=', r.get('success')); print('count=', len(r.get('data',{}).get('tools',[])))"
+# 1) 查看当前运行时工具总量
+python -c "from akshare_mcp.tool_registry import build_tool_registry; print('count=', len(build_tool_registry()))"
 
 # 2) 验证行情能力（单只）
 python -c "from akshare_mcp.tools.market.quote import get_realtime_quote; print(get_realtime_quote('600519').get('success'))"
@@ -273,7 +247,7 @@ graph TD
   C --> D[Services 层\n业务服务与分析引擎]
   D --> E[Core 层\n缓存/限流/重试/校验/监控]
   D --> F[Storage 层\nTimescaleDB]
-  D --> G[Data Source 层\nTDX/Tushare/AkShare/东财/新浪/腾讯/Baostock]
+  D --> G[Data Source 层\nTushare/AkShare/东财/新浪/腾讯/Baostock]
 ```
 
 ### 5.2 架构价值
@@ -319,7 +293,6 @@ Skills 是位于 MCP 工具之上的**流程编排层**：
 | 组合与投顾 | `akshare-portfolio`、`akshare-portfolio-manager-core`、`akshare-asset-allocation`、`akshare-investor-protection`、`akshare-ips-discipline`、`akshare-fee-costs` | 组合构建、约束检查、投后纪律 |
 | 量化研究 | `akshare-quant`、`akshare-quant-research-process`、`akshare-quant-methods-foundation`、`akshare-quant-ml-signals`、`akshare-performance-attribution`、`akshare-quant-data-engineering` | 因子研究、回测验证、归因与数据工程 |
 | 基金经理工作流 | `akshare-fund-manager-pro` | 研究-决策-风控-复盘的一体化流程 |
-| TDX 专项 | `akshare-tdx-runtime-ops`、`akshare-tdx-formula-research`、`akshare-tdx-front-sync` | 通达信运行态诊断、公式验证、前端同步 |
 | 宏观与期权 | `akshare-macro-options-alerts` | 宏观+期权联合监控与预警 |
 
 ### 6.3 Skills 与 MCP Tools 的关系
@@ -339,7 +312,6 @@ graph LR
 
 - `akshare-fund-manager-pro`：适合“组合诊断 + 风险提示 + 调仓建议 + 报告输出”一站式任务。
 - `akshare-quant-research-process`：适合“数据门禁 → 信号构建 → 回测评估 → OOS 验证 → 归因复盘”的标准研究链路。
-- `akshare-tdx-runtime-ops`：适合“TDX 交互前预检”，先判断环境可用性，再进入公式/前端联动。
 
 ---
 
@@ -376,7 +348,7 @@ graph LR
 1. **任务是多步骤闭环**（如“研究→回测→风控→报告”）时，优先走 **Skills**。
 2. **任务是单点能力调用**（如“取一只股票实时价”）时，直调 **MCP Tools**。
 3. **先用 Skills，后按需下钻工具**：当需要解释中间结果或替换某一步时，再转工具级调用。
-4. **TDX 相关任务先做运行态检查**：先走 `akshare-tdx-runtime-ops`，再执行公式/前端同步。
+4. **桌面端专用联动在 macOS 下默认关闭**：优先使用公共数据源与常规 MCP Tools / Skills。
 
 ### 7.3 何时使用 Skills
 
@@ -423,7 +395,6 @@ graph LR
 ### 8.2 API / 工具文档
 
 - 工具审计数据：[`packages/akshare-mcp/TOOL_DOC_AUDIT_RAW.json`](./packages/akshare-mcp/TOOL_DOC_AUDIT_RAW.json)
-- TDX 相关文档：[`docs/tdx-quant/README.md`](./docs/tdx-quant/README.md)
 
 ### 8.3 测试与质量文档
 
@@ -434,7 +405,6 @@ graph LR
 ### 8.4 架构与评审资料
 
 - MCP 功能审查摘要：[`.claude/context-summary-mcp-review.md`](./.claude/context-summary-mcp-review.md)
-- TDX 扩展规划：[`TDX_MCP_EXTENSION_PLAN.md`](./TDX_MCP_EXTENSION_PLAN.md)
 
 ---
 
@@ -562,7 +532,6 @@ pytest tests/ -v
 - **因子工程能力**：提供因子组合、加权融合、正交化处理与自定义因子构建工具。
 
 ### 11.4 其他计划方向
-- **TDX 联动增强**：扩展更多公式类型、批量信号推送、自动化板块管理与客户端同步能力。
 - **多市场与多数据源**：持续扩展期货、期权、港股、美股等市场的数据接入与一致化处理。
 - **云端部署与协作**：提供云端部署方案、权限体系、多用户协作与审计能力。
 - **文档与教程体系**：补充视频教程、案例库、分层学习路径（新手/进阶/专业）与最佳实践手册。

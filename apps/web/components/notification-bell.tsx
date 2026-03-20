@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { hasLoggedInHint } from '@/lib/auth';
 import { apiKeys } from '@/lib/query-keys';
 import { useAlertSubscription } from '@/lib/ws';
 
@@ -33,17 +34,36 @@ const LEVEL_COLORS: Record<string, string> = {
 
 export function NotificationBell() {
     const [open, setOpen] = useState(false);
-    const [items, setItems] = useState<NotificationItem[]>([]);
     const [pendingUnreadEvents, setPendingUnreadEvents] = useState<number[]>([]);
     const [markAllReadAt, setMarkAllReadAt] = useState<number | null>(null);
+    const [notificationsEnabled] = useState(() => hasLoggedInHint());
+    const [pageVisible, setPageVisible] = useState(() =>
+        typeof document === 'undefined' ? true : document.visibilityState === 'visible'
+    );
+
+    useEffect(() => {
+        if (typeof document === 'undefined') return;
+
+        const handleVisibilityChange = () => {
+            setPageVisible(document.visibilityState === 'visible');
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    }, []);
+
+    const pollingEnabled = notificationsEnabled && pageVisible;
 
     // Fetch unread count
-    const unreadQ = useApiQuery<{ count?: number }>('/notifications/unread-count', {
-        refetchInterval: 30000,
+    const unreadQ = useApiQuery<{ count?: number }>(pollingEnabled ? '/notifications/unread-count' : null, {
+        enabled: pollingEnabled,
+        refetchInterval: pollingEnabled ? 30000 : false,
+        staleTime: 30000,
     });
-    const recentQ = useApiQuery<unknown>(open ? '/notifications/list?limit=10' : null, {
-        enabled: open,
-        refetchInterval: open ? 30000 : false,
+    const recentQ = useApiQuery<unknown>(notificationsEnabled && open && pageVisible ? '/notifications/list?limit=10' : null, {
+        enabled: notificationsEnabled && open && pageVisible,
+        refetchInterval: open && pageVisible ? 30000 : false,
+        staleTime: 30000,
     });
     const markAllReadApi = useApiMutation<{ markedCount?: number }>({
         invalidates: [[...apiKeys.notifications()]],
@@ -57,18 +77,27 @@ export function NotificationBell() {
         ? unreadSinceSnapshot
         : serverUnread + unreadSinceSnapshot;
 
-    // Increment unread on WS alert
+    // Increment unread on WS alert only when notification panel is open,
+    // so pages that don't need realtime updates won't always establish a WS connection.
     useAlertSubscription({
+        enabled: notificationsEnabled && open && pageVisible,
         onAlert: () => setPendingUnreadEvents((prev) => [...prev, Date.now()]),
         onWarn: () => setPendingUnreadEvents((prev) => [...prev, Date.now()]),
     });
 
-    useEffect(() => {
+    const items = useMemo(() => {
         const data = (recentQ.data as any)?.items ?? (recentQ.data as any)?.data?.items ?? [];
-        if (Array.isArray(data)) {
-            setItems(data);
-        }
-    }, [recentQ.data]);
+        if (!Array.isArray(data)) return [] as NotificationItem[];
+        return data.map((item) => {
+            const normalized = item as NotificationItem;
+            if (!markAllReadAt) return normalized;
+            const createdAt = Date.parse(String(normalized.createdAt ?? ''));
+            if (Number.isNaN(createdAt) || createdAt <= markAllReadAt) {
+                return { ...normalized, read: true };
+            }
+            return normalized;
+        });
+    }, [markAllReadAt, recentQ.data]);
 
     const handleOpen = () => {
         setOpen(!open);
@@ -78,7 +107,6 @@ export function NotificationBell() {
         try {
             await markAllReadApi.triggerAsync('/notifications/mark-all-read', { method: 'POST' });
             setMarkAllReadAt(Date.now());
-            setItems((prev) => prev.map((i) => ({ ...i, read: true })));
         } catch { /* ignore */ }
     };
 
@@ -91,7 +119,7 @@ export function NotificationBell() {
             >
                 🔔
                 {unread > 0 && (
-                    <span className="absolute -top-1 -right-1 min-w-[16px] h-4 flex items-center justify-center bg-danger text-white text-[10px] font-bold rounded-full px-1">
+                    <span className="absolute -top-1 -right-1 min-w-4 h-4 flex items-center justify-center bg-danger text-white text-[10px] font-bold rounded-full px-1">
                         {unread > 99 ? '99+' : unread}
                     </span>
                 )}

@@ -1,15 +1,19 @@
 ---
 name: akshare-fund-manager-pro
-description: 顶级基金经理专业流程：投研、组合、执行、风控、TDX联动与日报/周报/月报模板输出的一体化闭环。
+description: 顶级基金经理专业流程：投研、组合、执行、风控与日报/周报/月报模板输出的一体化闭环。
 ---
 
+> 校准说明：本 skill 用于定义推荐编排流程与门禁顺序，不代表其中引用的所有工具、模板与外部依赖在任意运行环境下都已自动可用。
+>
+> 实际可用能力应以当次 `available_tools`、`search_skills`、`skill_tool_coverage_runtime.json` 以及运行时探测结果为准；其中 skill 文档引用覆盖不等于内建执行器覆盖，涉及外部依赖时必须现场预检。
+
+
 # 目标
-把“研究结论”转成“可执行组合与可复盘报告”，并稳定打通 TDX 前端联动。
+把“研究结论”转成“可执行组合与可复盘报告”，并形成稳定的研究、执行与复盘闭环。
 
 # 适用触发
 - 用户要求“像顶级基金经理一样做完整流程”。
 - 需要“研究-执行-风控-复盘-报告”的端到端输出。
-- 需要把结果同步到 TDX 客户端并持续跟踪。
 
 # 强制阶段流程（按顺序执行）
 - 阶段 0（能力探测）：
@@ -42,14 +46,10 @@ description: 顶级基金经理专业流程：投研、组合、执行、风控�
 - 阶段 6（监控与告警）：
   - 用 `watchlist_manager`、`live_trading_manager` 建立跟踪。
   - 用 `alerts_manager` 建立规则，并用 `check_all_alerts` 做巡检。
-- 阶段 7（TDX 深度联动）：
-  - 前端联动按 `akshare-tdx-front-sync` 与 `../akshare-tdx-front-sync/references/scenario_templates.md` 执行。
-  - 公式补充可用 `tdx_calculate_cr`、`tdx_calculate_dma`、`tdx_calculate_dmi`、`tdx_calculate_expma`、`tdx_calculate_trix`、`tdx_calculate_vr`。
-  - 深度尽调可用 `tdx_get_f10_info`、`tdx_get_financial_snapshot`、`tdx_get_financial_history`、`tdx_download_data`。
-- 阶段 8（仿真与外部兼容）：
+- 阶段 7（仿真与外部兼容）：
   - 用 `paper_trading_manager` 做预演与成交行为检查。
   - Node 兼容行情输出可用 `get_batch_quotes_compat`。
-- 阶段 9（复盘与报告）：
+- 阶段 8（复盘与报告）：
   - 用 `performance_manager`、`benchmark_manager`、`backtest_manager` 形成绩效复盘与基准评分。
   - 报告模板按 `references/reporting_rules.md`：
     - 日报：`assets/templates/daily_report_template.md`
@@ -63,8 +63,6 @@ description: 顶级基金经理专业流程：投研、组合、执行、风控�
 - 研究管理器失败：`comprehensive_manager` 或 `decision_manager` 失败时，回退到基本面 + 技术面双轨分析。
 - 执行管理器失败：`execution_manager` 失败时只输出下单计划，不执行，并保留告警监控。
 - 监控链路失败：`live_trading_manager` 失败时回退到 `watchlist_manager` + `alerts_manager`。
-- TDX 链路失败：先走非 TDX 报告与告警链路，待客户端恢复后补发。
 
 # 参考
 - 报告规则：`references/reporting_rules.md`
-- TDX 场景：`../akshare-tdx-front-sync/references/scenario_templates.md`

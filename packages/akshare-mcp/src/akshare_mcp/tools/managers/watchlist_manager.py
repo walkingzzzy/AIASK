@@ -80,6 +80,7 @@ async def _ensure_group(conn, user_id: str, group_id: str, group_name: str | Non
           SELECT MAX(sort_order) + 1 FROM watchlist_groups WHERE user_id = $3
         ), 1), NOW())
         ON CONFLICT (id) DO UPDATE SET
+          user_id = COALESCE(NULLIF(EXCLUDED.user_id, ''), watchlist_groups.user_id),
           name = COALESCE(NULLIF(EXCLUDED.name, ''), watchlist_groups.name),
           color = COALESCE(NULLIF(EXCLUDED.color, ''), watchlist_groups.color)
         """,
@@ -120,7 +121,8 @@ def register_watchlist_manager(mcp):
                         """
                         SELECT id, name, user_id, color, sort_order, created_at
                         FROM watchlist_groups
-                        WHERE user_id = $1 OR (user_id = 'default' AND id = $2)
+                        WHERE COALESCE(user_id, 'default') = $1
+                           OR (COALESCE(user_id, 'default') = 'default' AND id = $2)
                         ORDER BY sort_order ASC, created_at ASC
                         """,
                         user_id,

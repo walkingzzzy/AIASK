@@ -3,16 +3,45 @@
 import sys
 import io
 import os
+from pathlib import Path
 
 # Windows 控制台编码修复
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-# ============ Tushare 配置 ============
-TUSHARE_TOKEN = os.getenv('TUSHARE_TOKEN', '2ecc5201dcf93fff3ee466a622d40687b86ecfa6a69481aa8ff0b01ef02f')
-TUSHARE_HTTP_URL = os.getenv('TUSHARE_HTTP_URL', 'http://lianghua.nanyangqiankun.top')
 
-# ============ TDX 配置 ============
-TDX_PLUGIN_PATH = os.getenv('TDX_PLUGIN_PATH', r'C:\new_tdx_test\PYPlugins\user')
+def _load_dotenv_values() -> dict[str, str]:
+    values: dict[str, str] = {}
+    candidates = [
+        Path(__file__).resolve().parents[2] / ".env",
+        Path.cwd() / ".env",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in values:
+                    values[key] = value
+        except Exception:
+            continue
+    return values
+
+
+_DOTENV_VALUES = _load_dotenv_values()
+
+
+def _resolve_setting(name: str, default: str = "") -> str:
+    return os.getenv(name, "").strip() or _DOTENV_VALUES.get(name, "").strip() or default
+
+# ============ Tushare 配置 ============
+TUSHARE_TOKEN = _resolve_setting('TUSHARE_TOKEN')
+TUSHARE_HTTP_URL = _resolve_setting('TUSHARE_HTTP_URL', 'http://lianghua.nanyangqiankun.top')
 
 # ============ 测试股票 ============
 TEST_STOCKS = {
@@ -31,7 +60,7 @@ THRESHOLDS = {
     'volume_min': 0,                   # 最低成交量
     'pe_range': (-1000, 10000),        # PE 合理范围
     'pb_range': (-100, 1000),          # PB 合理范围
-    'kline_price_tolerance': 0.05,     # 跨源K线价格容差 5%
+    'kline_price_tolerance': 0.05,     # 多源K线价格容差 5%
 }
 
 
@@ -44,6 +73,9 @@ def tushare_call_api(api_name, params=None, fields=''):
     """
     import requests
     import pandas as pd
+
+    if not TUSHARE_TOKEN:
+        raise RuntimeError("未配置 TUSHARE_TOKEN：请在环境变量或 packages/akshare-mcp/.env 中设置")
 
     params = dict(params or {})
     # 关键修复: 从 params 中提取 fields 到外层
@@ -73,6 +105,8 @@ def tushare_call_api(api_name, params=None, fields=''):
 def get_tushare_pro():
     """获取 Tushare Pro SDK 实例 (用于 cpi/ppi 等 SDK 专属方法)"""
     import tushare as ts
+    if not TUSHARE_TOKEN:
+        raise RuntimeError("未配置 TUSHARE_TOKEN：请在环境变量或 packages/akshare-mcp/.env 中设置")
     ts.set_token(TUSHARE_TOKEN)
     pro = ts.pro_api(TUSHARE_TOKEN)
     if TUSHARE_HTTP_URL:
@@ -82,21 +116,6 @@ def get_tushare_pro():
         except Exception:
             pass
     return pro
-
-
-def init_tdx():
-    """初始化 TDX 环境"""
-    if TDX_PLUGIN_PATH not in sys.path:
-        sys.path.insert(0, TDX_PLUGIN_PATH)
-    try:
-        from tqcenter import tq
-        tq.initialize(__file__)
-        return tq
-    except Exception as e:
-        print(f"[SKIP] TDX 初始化失败: {e}")
-        return None
-
-
 class TestResult:
     """测试结果收集器"""
 

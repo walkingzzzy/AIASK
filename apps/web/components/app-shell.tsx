@@ -6,11 +6,13 @@ import { ReactNode, useEffect, useState } from 'react';
 import { useAuthStore } from '@/store/auth-store';
 import { useStockContext } from '@/store/stock-context';
 import { authedFetch } from '@/lib/api';
+import { hasLoggedInHint } from '@/lib/auth';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { useTheme } from '@/hooks/use-theme';
 import { useWsStatus, type WsConnectionStatus } from '@/lib/ws';
 import { NotificationBell } from '@/components/notification-bell';
 import { Onboarding } from '@/components/onboarding';
+import { isPublicPathname } from '@/lib/public-routes';
 
 /* ── 分组导航定义 ── */
 type NavItem = { href: string; label: string };
@@ -74,7 +76,6 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: '/assistant', label: '智能助手' },
       { href: '/chat', label: 'AI 对话' },
-      { href: '/tdx', label: 'TDX联动' },
       { href: '/search', label: '智能搜索' },
       { href: '/data', label: '数据中心' },
     ],
@@ -85,7 +86,8 @@ const NAV_GROUPS: NavGroup[] = [
 const STOCK_AWARE_PATHS = new Set([
   '/stock', '/market', '/watchlist', '/fundamental', '/technical', '/fund-flow',
   '/sentiment', '/research', '/valuation', '/backtest', '/factor-analysis',
-  '/paper-trading', '/alerts', '/assistant', '/tdx', '/search', '/data',
+  '/paper-trading', '/alerts', '/assistant',
+  '/search', '/data',
 ]);
 
 function buildHref(basePath: string, stockCode: string): string {
@@ -188,7 +190,9 @@ const WS_STATUS_MAP: Record<WsConnectionStatus, { color: string; label: string }
 
 function WsIndicator() {
   const status = useWsStatus();
-  const { color, label } = WS_STATUS_MAP[status];
+  const hydrated = useHydrated();
+  const { color, label } = hydrated ? WS_STATUS_MAP[status] : WS_STATUS_MAP.connecting;
+
   return (
     <span className="flex items-center gap-1 text-xs text-text-secondary" title={`WebSocket: ${label}`}>
       <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, display: 'inline-block' }} />
@@ -202,14 +206,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const { user, setUser, logout } = useAuthStore();
   const storeCode = useStockContext((s) => s.code);
   const hydrated = useHydrated();
-  const isAuthPage = pathname === '/login' || pathname === '/register';
+  const isAuthPage = isPublicPathname(pathname);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [openGroup, setOpenGroup] = useState<string | null>(null);
 
   useEffect(() => {
     if (isAuthPage || user) return;
-    const hasLoginHint = typeof document !== 'undefined'
-      && document.cookie.split(';').some((item) => item.trim() === 'logged_in=1');
+    const hasLoginHint = hasLoggedInHint();
     if (!hasLoginHint) return;
     authedFetch('/auth/me', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
@@ -218,10 +221,6 @@ export default function AppShell({ children }: { children: ReactNode }) {
       })
       .catch(() => { });
   }, [isAuthPage, user, setUser]);
-
-  useEffect(() => {
-    setDrawerOpen(false);
-  }, [pathname]);
 
   // 仅在客户端挂载后使用 store 中的股票代码，避免 SSR/CSR hydration 不匹配
   const currentStockCode = hydrated ? storeCode : '';
@@ -320,7 +319,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             ) : null}
           </div>
         </header>
-        <main className="flex-1 overflow-auto">{children}</main>
+        <main className="mobile-safe-bottom flex-1 overflow-auto">{children}</main>
       </div>
     </div>
   );

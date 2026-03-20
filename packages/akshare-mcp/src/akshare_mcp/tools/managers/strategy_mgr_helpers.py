@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from ...services.strategy_factory.constants import (
+from strategy_factory import (
     BACKTEST_AI_PROTOTYPE_THRESHOLDS,
     DEPRECATION_THRESHOLDS,
     PROMOTION_THRESHOLDS,

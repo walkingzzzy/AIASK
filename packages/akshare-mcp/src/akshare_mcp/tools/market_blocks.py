@@ -1,14 +1,13 @@
 """
 市场板块工具 - 获取板块数据
-数据源优先级: DB缓存 → TDX → 东方财富datacenter HTTP → AKShare
+数据源优先级: DB缓存 → 东方财富datacenter HTTP → AKShare
 """
 
 import json
 import urllib.request
 from typing import Dict, Any, Optional, List
 from ..storage.timescaledb import get_db
-from ..data_source import data_source
-from ..utils import safe_stderr_print, safe_float
+from ..utils import safe_stderr_print, safe_float, parse_numeric, suppress_stdout
 from ..core.normalize import normalize_block_list, normalize_block_stock_list
 
 try:
@@ -21,7 +20,8 @@ def _fetch_from_sector_spot() -> list:
     if ak is None:
         return []
     try:
-        df = ak.stock_sector_spot()
+        with suppress_stdout("[MarketBlocks] stock_sector_spot"):
+            df = ak.stock_sector_spot()
         if df is None or df.empty:
             return []
         blocks = []
@@ -53,9 +53,11 @@ def _fetch_from_ths(block_type: str) -> list:
         return []
     try:
         if block_type == 'industry':
-            df = ak.stock_board_industry_name_ths()
+            with suppress_stdout("[MarketBlocks] stock_board_industry_name_ths"):
+                df = ak.stock_board_industry_name_ths()
         elif block_type == 'concept':
-            df = ak.stock_board_concept_name_ths()
+            with suppress_stdout("[MarketBlocks] stock_board_concept_name_ths"):
+                df = ak.stock_board_concept_name_ths()
         else:
             return []
         if df is None or df.empty:
@@ -70,15 +72,217 @@ def _fetch_from_ths(block_type: str) -> list:
                 'block_code': code,
                 'block_name': name,
                 'block_type': block_type,
-                'stock_count': 0,
-                'avg_change_pct': 0.0,
+                'stock_count': None,
+                'avg_change_pct': None,
                 'total_amount': None,
                 'leader_code': None,
                 'leader_name': None,
+                'degraded': True,
+                'fallback_reason': '同花顺名称列表不含实时统计字段，已降级为代码/名称摘要；如需成分股请调用 get_block_stocks',
             })
         return blocks
     except Exception as e:
         safe_stderr_print(f"[MarketBlocks] 同花顺{block_type}失败: {e}")
+        return []
+
+
+def _is_placeholder_summary(block: dict) -> bool:
+    try:
+        stock_count = block.get('stock_count')
+        avg_change = block.get('avg_change_pct')
+        total_amount = block.get('total_amount')
+        leader_code = block.get('leader_code')
+        leader_name = block.get('leader_name')
+        return (
+            (stock_count is None or int(stock_count or 0) == 0)
+            and (avg_change is None or float(avg_change or 0) == 0.0)
+            and (total_amount is None or float(total_amount or 0) == 0.0)
+            and not str(leader_code or '').strip()
+            and not str(leader_name or '').strip()
+        )
+    except Exception:
+        return False
+
+
+def _sanitize_placeholder_blocks(blocks: list[dict], block_type: str) -> list[dict]:
+    """把历史缓存中的占位 0 值恢复成“未知”，避免误导前端。"""
+    sanitized = []
+    for item in blocks:
+        block = dict(item)
+        if block_type in {'concept', 'industry'} and _is_placeholder_summary(block):
+            block['stock_count'] = None
+            block['avg_change_pct'] = None
+            block['total_amount'] = None
+            block['leader_code'] = None
+            block['leader_name'] = None
+            block['degraded'] = True
+            block.setdefault('fallback_reason', '板块摘要来自名称列表/历史占位缓存，统计字段暂不可用；可改查 get_block_stocks 获取成分股')
+        sanitized.append(block)
+    return sanitized
+
+
+def _fetch_region_area_summary() -> list:
+    """地域板块降级：使用 AKShare 的地区成交汇总接口返回可用地区列表。"""
+    if ak is None or not hasattr(ak, "stock_szse_area_summary"):
+        return []
+    try:
+        df = ak.stock_szse_area_summary()
+        if df is None or df.empty:
+            return []
+
+        blocks = []
+        for _, row in df.iterrows():
+            name = str(row.get("地区", "") or "").strip()
+            if not name:
+                continue
+
+            total_amount = safe_float(row.get("总交易额"))
+            stock_amount = safe_float(row.get("股票交易额"))
+            blocks.append({
+                "block_code": f"region::{name}",
+                "block_name": name,
+                "block_type": "region",
+                "stock_count": 0,
+                "avg_change_pct": 0.0,
+                "total_amount": total_amount if total_amount is not None else stock_amount,
+                "leader_code": None,
+                "leader_name": None,
+                "degraded": True,
+                "fallback_reason": "当前环境缺少地域板块接口，已降级为地区成交汇总列表，不含涨跌幅与成分股",
+            })
+
+        blocks.sort(key=lambda item: item.get("total_amount") or 0, reverse=True)
+        return blocks
+    except Exception as e:
+        safe_stderr_print(f"[MarketBlocks] 地区汇总降级失败: {e}")
+        return []
+
+
+def _fetch_concept_stocks_from_ths(block_code: str, block_name: str | None = None) -> list:
+    """通过同花顺概念详情页抓取成分股（支持分页 ajax 回退）。"""
+    if ak is None:
+        return []
+
+    try:
+        import requests
+        import py_mini_racer
+        from bs4 import BeautifulSoup
+        from akshare.stock_feature.stock_board_concept_ths import _get_file_content_ths
+        import time
+    except Exception as e:
+        safe_stderr_print(f"[BlockStocks] THS concept fallback import失败: {e}")
+        return []
+
+    try:
+        ths_code = str(block_code or "").strip()
+        if not (ths_code.isdigit() and len(ths_code) == 6):
+            if not block_name:
+                return []
+            try:
+                with suppress_stdout("[BlockStocks] stock_board_concept_name_ths"):
+                    df = ak.stock_board_concept_name_ths()
+                match = df[df["name"] == str(block_name).strip()]
+                if match.empty:
+                    return []
+                ths_code = str(match.iloc[0]["code"]).strip()
+            except Exception as e:
+                safe_stderr_print(f"[BlockStocks] THS concept name解析失败: {e}")
+                return []
+
+        def _build_session() -> tuple[requests.Session, dict[str, str]]:
+            js_code = py_mini_racer.MiniRacer()
+            js_code.eval(_get_file_content_ths("ths.js"))
+            v_code = js_code.call("v")
+            session = requests.Session()
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36"
+                ),
+                "Cookie": f"v={v_code}",
+                "Referer": f"https://q.10jqka.com.cn/gn/detail/code/{ths_code}/",
+            }
+            return session, headers
+
+        session, headers = _build_session()
+
+        def _parse_page(text: str) -> tuple[list[dict[str, Any]], int]:
+            soup = BeautifulSoup(text, features="lxml")
+            page_count = 1
+            page_info = soup.find(name="span", attrs={"class": "page_info"})
+            if page_info:
+                raw_page = str(page_info.get_text(strip=True) or "")
+                parts = raw_page.split("/")
+                if len(parts) == 2 and parts[1].isdigit():
+                    page_count = max(1, int(parts[1]))
+
+            table = soup.find(name="table", attrs={"class": "m-table"})
+            if table is None:
+                return [], page_count
+
+            page_items: list[dict[str, Any]] = []
+            rows = table.find_all("tr")
+            for row in rows[1:]:
+                cells = [cell.get_text(" ", strip=True) for cell in row.find_all("td")]
+                if len(cells) < 11:
+                    continue
+                stock_code = str(cells[1] or "").strip()
+                if not stock_code:
+                    continue
+                page_items.append({
+                    "stock_code": stock_code,
+                    "stock_name": str(cells[2] or "").strip(),
+                    "price": safe_float(cells[3]) or 0.0,
+                    "change_pct": safe_float(cells[4]) or 0.0,
+                    "volume": 0,
+                    "amount": parse_numeric(cells[10]) or 0.0,
+                    "_source": "ths_concept_detail",
+                })
+            return page_items, page_count
+
+        def _request_page(url: str, *, retries: int = 3) -> str:
+            nonlocal session, headers
+            last_exc = None
+            for attempt in range(1, retries + 1):
+                try:
+                    resp = session.get(url, headers=headers, timeout=20)
+                    resp.raise_for_status()
+                    if "<table" not in resp.text:
+                        raise ValueError("response does not contain table")
+                    return resp.text
+                except Exception as e:
+                    last_exc = e
+                    if attempt >= retries:
+                        break
+                    time.sleep(0.35 * attempt)
+                    session, headers = _build_session()
+            raise last_exc or RuntimeError("ths page request failed")
+
+        first_url = f"https://q.10jqka.com.cn/gn/detail/code/{ths_code}/"
+        first_text = _request_page(first_url)
+        first_items, page_count = _parse_page(first_text)
+        stocks = list(first_items)
+
+        for page in range(2, page_count + 1):
+            try:
+                page_url = f"https://q.10jqka.com.cn/gn/detail/code/{ths_code}/page/{page}/ajax/1/"
+                page_text = _request_page(page_url)
+                page_items, _ = _parse_page(page_text)
+                if not page_items:
+                    safe_stderr_print(f"[BlockStocks] THS concept第{page}页无数据: code={ths_code}")
+                    continue
+                stocks.extend(page_items)
+            except Exception as e:
+                safe_stderr_print(f"[BlockStocks] THS concept第{page}页失败(code={ths_code}): {e}")
+
+        deduped: dict[str, dict[str, Any]] = {}
+        for item in stocks:
+            code = str(item.get("stock_code") or "").strip()
+            if code and code not in deduped:
+                deduped[code] = item
+        return list(deduped.values())
+    except Exception as e:
+        safe_stderr_print(f"[BlockStocks] THS concept fallback失败(block_code={block_code}, name={block_name}): {e}")
         return []
 
 
@@ -101,58 +305,69 @@ async def _fetch_from_db(block_type: str, limit: Optional[int]) -> list:
         return []
 
 
-def _fetch_from_tdx(block_type: str) -> list:
-    """从TDX获取板块列表 — 先快照算涨跌幅排序，再对top N补名称"""
-    if block_type != 'industry' or not data_source.is_tdx_available():
-        return []
-    try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return []
-        codes = data_source.get_sector_list_tdxquant()
-        if not codes:
-            return []
-        industry_codes = [c for c in codes if isinstance(c, str) and c.startswith('880')]
-        # Phase 1: 快速获取所有板块快照(只需Now/LastClose算涨跌幅)
-        raw = []
-        for code in industry_codes:
-            try:
-                snap = tq.get_market_snapshot(stock_code=code)
-                if not snap or snap.get('ErrorId') != '0':
-                    continue
-                now = safe_float(snap.get('Now', 0))
-                last = safe_float(snap.get('LastClose', 0))
-                if not now or not last:
-                    continue
-                chg_pct = round((now - last) / last * 100, 2)
-                raw.append((code, chg_pct, safe_float(snap.get('Amount', 0))))
-            except Exception:
-                continue
-        # 按涨跌幅绝对值降序，取top 50补名称
-        raw.sort(key=lambda x: abs(x[1]), reverse=True)
-        blocks = []
-        for code, chg_pct, amount in raw[:50]:
-            try:
-                info = tq.get_stock_info(stock_code=code, field_list=['Name'])
-                name = (info or {}).get('Name', '') if isinstance(info, dict) else ''
-            except Exception:
-                name = code.replace('.SH', '')
-            blocks.append({
-                'block_code': code.replace('.SH', ''),
-                'block_name': name,
-                'block_type': block_type,
-                'stock_count': 0,
-                'avg_change_pct': chg_pct,
-                'total_amount': amount,
-                'leader_code': None,
-                'leader_name': None,
-            })
-        blocks.sort(key=lambda b: b['avg_change_pct'], reverse=True)
+async def _enrich_blocks_from_cache(blocks: list[dict]) -> list[dict]:
+    """用本地缓存补齐 THS 名称列表缺少的统计字段，避免把未知值伪装成 0。"""
+    if not blocks:
         return blocks
-    except Exception as e:
-        safe_stderr_print(f"[MarketBlocks] TDX失败: {e}")
-        return []
 
+    block_codes = [
+        str(item.get('block_code') or '').strip()
+        for item in blocks
+        if str(item.get('block_code') or '').strip()
+    ]
+    if not block_codes:
+        return blocks
+
+    try:
+        db = get_db()
+        async with db.acquire() as conn:
+            cached_rows = await conn.fetch(
+                """SELECT DISTINCT ON (block_code)
+                          block_code, stock_count, avg_change_pct, total_amount, leader_code, leader_name
+                   FROM market_blocks
+                   WHERE block_code = ANY($1)
+                   ORDER BY block_code, updated_at DESC""",
+                block_codes,
+            )
+            stock_rows = await conn.fetch(
+                """SELECT block_code, COUNT(*)::int AS stock_count
+                   FROM block_stocks
+                   WHERE block_code = ANY($1)
+                   GROUP BY block_code""",
+                block_codes,
+            )
+    except Exception as e:
+        safe_stderr_print(f"[MarketBlocks] 缓存补齐失败: {e}")
+        return blocks
+
+    meta_by_code = {
+        str(row.get('block_code') or ''): dict(row)
+        for row in (cached_rows or [])
+    }
+    stock_count_by_code = {
+        str(row.get('block_code') or ''): int(row.get('stock_count') or 0)
+        for row in (stock_rows or [])
+    }
+
+    enriched = []
+    for item in blocks:
+        code = str(item.get('block_code') or '').strip()
+        cached = meta_by_code.get(code, {})
+        merged = dict(item)
+
+        cached_count = stock_count_by_code.get(code)
+        if cached_count is not None and cached_count > 0:
+            merged['stock_count'] = cached_count
+        elif merged.get('stock_count') is None and cached.get('stock_count') is not None:
+            merged['stock_count'] = int(cached.get('stock_count') or 0)
+
+        for field in ('avg_change_pct', 'total_amount', 'leader_code', 'leader_name'):
+            if merged.get(field) is None and cached.get(field) is not None:
+                merged[field] = cached.get(field)
+
+        enriched.append(merged)
+
+    return enriched
 
 def _fetch_from_akshare(block_type: str) -> list:
     """从AKShare获取(最后降级)"""
@@ -191,48 +406,60 @@ async def get_market_blocks(
 ) -> Dict[str, Any]:
     """
     获取市场板块数据
-    数据源优先级: DB缓存(30min) → TDX → 东方财富直接HTTP → AKShare
+    数据源优先级: DB缓存(30min) → 东方财富直接HTTP → AKShare
     """
     if block_type not in ('industry', 'concept', 'region'):
         return {'success': False, 'error': f'Invalid block_type: {block_type}. Use: industry, concept, region'}
 
     source = 'none'
     blocks = []
+    attempted_sources: list[str] = []
 
     # 1. DB缓存
+    attempted_sources.append('db')
     blocks = await _fetch_from_db(block_type, limit)
     if blocks:
         source = 'db'
 
-    # 2. TDX
-    if not blocks:
-        blocks = _fetch_from_tdx(block_type)
-        if blocks:
-            source = 'tdx'
-
-    # 3. sector_spot (新浪接口, 不受Clash代理影响, 仅行业)
+    # 2. sector_spot (新浪接口, 不受Clash代理影响, 仅行业)
     if not blocks and block_type == 'industry':
+        attempted_sources.append('sina_sector')
         blocks = _fetch_from_sector_spot()
         if blocks:
             source = 'sina_sector'
 
-    # 4. 同花顺板块 (AKShare THS接口)
+    # 3. 同花顺板块 (AKShare THS接口)
     if not blocks:
+        attempted_sources.append('ths')
         blocks = _fetch_from_ths(block_type)
         if blocks:
             source = 'ths'
 
-    # 5. AKShare 东财接口(最后降级, push2可能被代理拦截)
+    # 4. AKShare 东财接口(最后降级, push2可能被代理拦截)
     if not blocks:
+        attempted_sources.append('akshare')
         blocks = _fetch_from_akshare(block_type)
         if blocks:
             source = 'akshare'
 
+    # 5. 地域板块降级：地区成交汇总
+    if not blocks and block_type == 'region':
+        attempted_sources.append('akshare_area_summary')
+        blocks = _fetch_region_area_summary()
+        if blocks:
+            source = 'akshare_area_summary'
+
     if not blocks:
-        return {'success': False, 'error': '所有数据源均失败'}
+        tried = ",".join(attempted_sources) or "none"
+        return {'success': False, 'error': f'所有数据源均失败 (block_type={block_type}, tried={tried})'}
 
     if limit:
         blocks = blocks[:limit]
+
+    if source == 'ths':
+        blocks = await _enrich_blocks_from_cache(blocks)
+
+    blocks = _sanitize_placeholder_blocks(blocks, block_type)
 
     # 非DB来源时写入DB缓存
     if source != 'db':
@@ -244,7 +471,7 @@ async def get_market_blocks(
 
     safe_stderr_print(f"[MarketBlocks] 成功获取 {len(blocks)} 个{block_type}板块 (source={source})")
 
-    return {
+    result = {
         'success': True,
         'data': {
             'blocks': normalize_block_list(blocks),
@@ -253,6 +480,13 @@ async def get_market_blocks(
             'source': source,
         }
     }
+    degraded = any(bool(item.get('degraded')) for item in blocks)
+    fallback_reason = next((str(item.get('fallback_reason')) for item in blocks if item.get('fallback_reason')), None)
+    if degraded or fallback_reason:
+        result['data']['degraded'] = True
+    if fallback_reason:
+        result['data']['fallback_reason'] = fallback_reason
+    return result
 
 
 async def get_block_stocks(block_code: str) -> Dict[str, Any]:
@@ -268,69 +502,207 @@ async def get_block_stocks(block_code: str) -> Dict[str, Any]:
     if ak is None:
         return {'success': False, 'error': 'akshare not available'}
 
+    if block_code.startswith("region::"):
+        return {
+            'success': False,
+            'error': f'Block {block_code} 来自地区成交汇总降级源，当前不提供成分股列表'
+        }
+
+    async def _resolve_block_meta(code: str) -> tuple[str | None, str | None]:
+        guessed_type = None
+        if code.startswith('new_'):
+            guessed_type = 'industry'
+        elif code.startswith('region::'):
+            guessed_type = 'region'
+        elif code.isdigit() and code.startswith('30'):
+            guessed_type = 'concept'
+
+        try:
+            db = get_db()
+            async with db.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT block_name, block_type FROM market_blocks WHERE block_code = $1 ORDER BY updated_at DESC LIMIT 1",
+                    code,
+                )
+                if row:
+                    row = dict(row)
+                    return str(row.get('block_name') or ''), str(row.get('block_type') or guessed_type or '')
+        except Exception as e:
+            safe_stderr_print(f"[BlockStocks] 读取 block meta 失败: {e}")
+
+        search_types = [guessed_type] if guessed_type else ['industry', 'concept']
+        for block_type in [bt for bt in search_types if bt]:
+            try:
+                blocks_res = await get_market_blocks(block_type=block_type, limit=500)
+                if not blocks_res.get('success'):
+                    continue
+                for item in blocks_res.get('data', {}).get('blocks', []):
+                    item_code = item.get('code') or item.get('blockCode') or item.get('block_code')
+                    if str(item_code or '') == code:
+                        item_name = item.get('name') or item.get('blockName') or item.get('block_name')
+                        return str(item_name or ''), block_type
+            except Exception as e:
+                safe_stderr_print(f"[BlockStocks] 拉取 {block_type} block meta 失败: {e}")
+        return None, guessed_type
+
+    async def _load_cached_block_stocks(code: str, resolved_name: str | None) -> list[dict[str, Any]]:
+        try:
+            db = get_db()
+            async with db.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT stock_code, stock_name
+                       FROM block_stocks
+                       WHERE block_code = $1
+                       ORDER BY stock_code ASC""",
+                    code,
+                )
+                if not rows and resolved_name:
+                    rows = await conn.fetch(
+                        """SELECT DISTINCT bs.stock_code, bs.stock_name
+                           FROM block_stocks bs
+                           JOIN market_blocks mb
+                             ON mb.block_code = bs.block_code
+                          WHERE mb.block_name = $1
+                          ORDER BY bs.stock_code ASC
+                          LIMIT 500""",
+                        resolved_name,
+                    )
+            cached_items = []
+            for row in rows:
+                item = dict(row)
+                if not str(item.get('stock_code') or '').strip():
+                    continue
+                cached_items.append({
+                    'stock_code': str(item.get('stock_code') or ''),
+                    'stock_name': str(item.get('stock_name') or ''),
+                    'change_pct': 0.0,
+                    'price': 0.0,
+                    'volume': 0,
+                    'amount': 0.0,
+                    '_source': 'db_cache',
+                })
+            return cached_items
+        except Exception as e:
+            safe_stderr_print(f"[BlockStocks] 读取 block_stocks 缓存失败: {e}")
+            return []
+
+    def _append_from_df(df, source_tag: str):
+        if df is None or df.empty:
+            return
+        for _, row in df.iterrows():
+            stock_code = str(row.get('代码', row.get('code', '')) or '')
+            if not stock_code:
+                continue
+            stocks.append({
+                'stock_code': stock_code,
+                'stock_name': str(row.get('名称', row.get('name', '')) or ''),
+                'change_pct': float(row.get('涨跌幅', row.get('changepercent', 0)) or 0),
+                'price': float(row.get('最新价', row.get('trade', 0)) or 0),
+                'volume': int(float(row.get('成交量', row.get('volume', 0)) or 0)),
+                'amount': float(row.get('成交额', row.get('amount', 0)) or 0),
+                '_source': source_tag,
+            })
+
     stocks = []
+    attempted: list[str] = []
+    block_name, block_type = await _resolve_block_meta(block_code)
+    candidate_symbols = []
+    for candidate in (block_code, block_name):
+        text = str(candidate or '').strip()
+        if text and text not in candidate_symbols:
+            candidate_symbols.append(text)
 
     # 路径1: 新浪 sector_detail（适用于 new_xxx 格式 label）
     if block_code.startswith('new_'):
         try:
+            attempted.append(f'sina_sector_detail:{block_code}')
             df = ak.stock_sector_detail(sector=block_code)
-            if df is not None and not df.empty:
-                for _, row in df.iterrows():
-                    code_raw = str(row.get('code', '') or '')
-                    stocks.append({
-                        'stock_code': code_raw,
-                        'stock_name': str(row.get('name', '') or ''),
-                        'change_pct': float(row.get('changepercent', 0) or 0),
-                        'price': float(row.get('trade', 0) or 0),
-                        'volume': int(float(row.get('volume', 0) or 0)),
-                        'amount': float(row.get('amount', 0) or 0),
-                    })
+            _append_from_df(df, 'sina_sector_detail')
         except Exception as e:
             safe_stderr_print(f"[BlockStocks] sector_detail失败: {e}")
 
-    # 路径2: 同花顺行业成分股（适用于 88xxxx / 308xxx 格式代码）
-    if not stocks:
-        try:
-            df = ak.stock_board_industry_cons_em(symbol=block_code)
-            if df is not None and not df.empty:
-                for _, row in df.iterrows():
-                    stocks.append({
-                        'stock_code': str(row.get('代码', '') or ''),
-                        'stock_name': str(row.get('名称', '') or ''),
-                        'change_pct': float(row.get('涨跌幅', 0) or 0),
-                        'price': float(row.get('最新价', 0) or 0),
-                        'volume': int(float(row.get('成交量', 0) or 0)),
-                        'amount': float(row.get('成交额', 0) or 0),
-                    })
-        except Exception as e:
-            safe_stderr_print(f"[BlockStocks] stock_board_industry_cons_em失败: {e}")
+    if not stocks and block_type in (None, '', 'industry'):
+        for symbol in candidate_symbols:
+            try:
+                attempted.append(f'eastmoney_industry_cons:{symbol}')
+                df = ak.stock_board_industry_cons_em(symbol=symbol)
+                _append_from_df(df, 'eastmoney_industry_cons')
+                if stocks:
+                    break
+            except Exception as e:
+                safe_stderr_print(f"[BlockStocks] stock_board_industry_cons_em失败({symbol}): {e}")
 
-    # 路径3: 同花顺概念成分股
-    if not stocks:
-        try:
-            df = ak.stock_board_concept_cons_em(symbol=block_code)
-            if df is not None and not df.empty:
-                for _, row in df.iterrows():
-                    stocks.append({
-                        'stock_code': str(row.get('代码', '') or ''),
-                        'stock_name': str(row.get('名称', '') or ''),
-                        'change_pct': float(row.get('涨跌幅', 0) or 0),
-                        'price': float(row.get('最新价', 0) or 0),
-                        'volume': int(float(row.get('成交量', 0) or 0)),
-                        'amount': float(row.get('成交额', 0) or 0),
-                    })
-        except Exception as e:
-            safe_stderr_print(f"[BlockStocks] stock_board_concept_cons_em失败: {e}")
+    if not stocks and block_type in (None, '', 'concept'):
+        for symbol in candidate_symbols:
+            try:
+                attempted.append(f'eastmoney_concept_cons:{symbol}')
+                df = ak.stock_board_concept_cons_em(symbol=symbol)
+                _append_from_df(df, 'eastmoney_concept_cons')
+                if stocks:
+                    break
+            except Exception as e:
+                safe_stderr_print(f"[BlockStocks] stock_board_concept_cons_em失败({symbol}): {e}")
+
+    if not stocks and block_type in (None, '', 'concept'):
+        attempted.append('ths_concept_detail')
+        stocks = _fetch_concept_stocks_from_ths(block_code, block_name)
 
     if not stocks:
-        return {'success': False, 'error': f'No stocks found in block {block_code}'}
+        attempted.append('db_cache')
+        stocks = await _load_cached_block_stocks(block_code, block_name)
+
+    if not stocks:
+        resolved = f", resolved_name={block_name}" if block_name else ""
+        tried = ", tried=" + "|".join(attempted) if attempted else ""
+        return {
+            'success': False,
+            'error': f'No stocks found in block {block_code}{resolved}{tried}',
+            'data': {
+                'block_code': block_code,
+                'block_name': block_name,
+                'block_type': block_type,
+                'tried': attempted,
+                'fallback_reason': 'upstream_unavailable_or_code_system_mismatch',
+            }
+        }
+
+    source = stocks[0].get('_source') if stocks else None
+    for item in stocks:
+        item.pop('_source', None)
+
+    try:
+        db = get_db()
+        async with db.acquire() as conn:
+            for item in stocks:
+                await conn.execute(
+                    """INSERT INTO block_stocks (block_code, stock_code, stock_name, updated_at)
+                       VALUES ($1, $2, $3, NOW())
+                       ON CONFLICT (block_code, stock_code) DO UPDATE SET
+                           stock_name = EXCLUDED.stock_name,
+                           updated_at = NOW()""",
+                    block_code,
+                    item.get('stock_code'),
+                    item.get('stock_name'),
+                )
+            await conn.execute(
+                """UPDATE market_blocks
+                   SET stock_count=$1, updated_at=NOW()
+                   WHERE block_code=$2""",
+                len(stocks),
+                block_code,
+            )
+    except Exception as e:
+        safe_stderr_print(f"[BlockStocks] 写 block_stocks 缓存失败: {e}")
 
     return {
         'success': True,
         'data': {
             'block_code': block_code,
+            'block_name': block_name,
+            'block_type': block_type,
             'stocks': normalize_block_stock_list(stocks),
             'count': len(stocks),
+            'source': source,
         }
     }
 

@@ -18,59 +18,6 @@ except ImportError:
 import pandas as pd
 
 
-def _get_order_book_tdxquant(code: str) -> Optional[dict]:
-    """从 TdxQuant 获取五档盘口数据"""
-    if not data_source.is_tdx_available():
-        return None
-
-    try:
-        tq = data_source.get_tdxquant()
-        if tq is None:
-            return None
-
-        # 转换代码格式
-        tdx_code = data_source._convert_to_tdx_code(code)
-        snapshot = tq.get_market_snapshot(stock_code=tdx_code)
-
-        if not snapshot or snapshot.get("ErrorId") != "0":
-            return None
-
-        # 解析五档盘口数据
-        buyp = snapshot.get("Buyp", [])
-        buyv = snapshot.get("Buyv", [])
-        sellp = snapshot.get("Sellp", [])
-        sellv = snapshot.get("Sellv", [])
-
-        bids = []
-        asks = []
-
-        for i in range(min(len(buyp), len(buyv), 5)):
-            price = parse_numeric(buyp[i])
-            volume = int(parse_numeric(buyv[i]) or 0)
-            if price is not None and price > 0:
-                bids.append({"price": price, "volume": volume})
-
-        for i in range(min(len(sellp), len(sellv), 5)):
-            price = parse_numeric(sellp[i])
-            volume = int(parse_numeric(sellv[i]) or 0)
-            if price is not None and price > 0:
-                asks.append({"price": price, "volume": volume})
-
-        if not bids and not asks:
-            return None
-
-        return {
-            "code": code,
-            "bids": bids,
-            "asks": asks,
-            "timestamp": int(time.time() * 1000),
-            "source": "tdxquant",
-        }
-    except Exception as e:
-        safe_stderr_print(f"[OrderBook] TdxQuant failed: {e}")
-        return None
-
-
 def _build_exchange_code(code: str) -> str:
     symbol = normalize_code(code)
     if symbol.startswith(("0", "3")):
@@ -306,7 +253,7 @@ def _get_trade_details_tencent_direct(code: str, limit: int) -> Optional[list[di
 def get_order_book(stock_code: str) -> dict:
     """获取五档盘口数据
 
-    数据源优先级: TdxQuant (官方实时) -> AkShare -> Sina -> Tencent
+    数据源优先级: AkShare -> Sina -> Tencent
 
     Args:
         stock_code (str, required): 股票代码，6位数字，如 "600519"、"000001"
@@ -318,7 +265,7 @@ def get_order_book(stock_code: str) -> dict:
         - bids (list[dict]): 买盘五档，每项含 price(float) 和 volume(int)
         - asks (list[dict]): 卖盘五档，每项含 price(float) 和 volume(int)
         - timestamp (int): 毫秒级时间戳
-        - source (str): 数据来源标识（仅 TdxQuant 源包含）
+        - source (str): 数据来源标识（如数据源提供）
 
     Errors:
         - 所有数据源均不可用时返回 success=false
@@ -331,11 +278,6 @@ def get_order_book(stock_code: str) -> dict:
     limiter.acquire()
 
     code = normalize_code(stock_code)
-
-    # 0. 优先使用 TdxQuant (官方实时数据)
-    tdx_result = _get_order_book_tdxquant(code)
-    if tdx_result and len(tdx_result.get("bids", [])) >= 3:
-        return ok(tdx_result)
 
     # 1. Try AkShare (if available)
     df = None
@@ -362,11 +304,7 @@ def get_order_book(stock_code: str) -> dict:
         if parsed:
             return ok(parsed)
 
-    # 3. All full sources failed; return partial TDX data if available
-    if tdx_result:
-        return ok(tdx_result)
-
-    return fail(f"未获取到 {code} 的盘口数据 (尝试源: TdxQuant, AkShare, Sina, Tencent)")
+    return fail(f"未获取到 {code} 的盘口数据 (尝试源: AkShare, Sina, Tencent)")
 
 
 @cached(ttl=5.0)

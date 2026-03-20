@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
+import Link from 'next/link';
 import { PageContainer, TabBar, SectionCard, StockCodeInput, KpiGrid, KpiCard, DataTable, Badge } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useStockCode } from '@/hooks/use-stock-code';
@@ -166,6 +167,23 @@ export default function ValuationPage() {
         <StockCodeInput id="valuation-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} />
       </div>
       <p className="mb-3 text-sm text-text-secondary">先确定标的，再根据公司特点选择模型：成熟分红公司更适合 DDM，成长型公司更适合 DCF 或情景 DCF。</p>
+      {resolvedCode ? (
+        <div className="mb-3 flex gap-2 flex-wrap">
+          <Link href={`/stock?code=${encodeURIComponent(resolvedCode)}`} className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline">
+            返回个股详情
+          </Link>
+          <button
+            type="button"
+            onClick={() => setTab('relative')}
+            className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary cursor-pointer"
+          >
+            快速看同行估值
+          </button>
+          <Link href={`/fundamental?code=${encodeURIComponent(resolvedCode)}`} className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline">
+            联动基本面
+          </Link>
+        </div>
+      ) : null}
       <TabBar tabs={TABS} active={tab} onChange={(key) => { setTab(key); reset(); setFormError(null); }} />
       <SectionCard tabAttached>
         {tab === 'dcf' ? (
@@ -234,7 +252,12 @@ export default function ValuationPage() {
           <EmptyState
             text={tab === 'dcf' ? '先设置现金流假设，再估算企业内在价值' : tab === 'ddm' ? '先填写分红假设，再估算每股价值' : tab === 'relative' ? '先查询同业估值对比，快速判断目标股票高估还是低估' : '先填写基础营收，再比较不同增长情景下的价值区间'}
             hint={tab === 'dcf' ? '推荐从折现率 10%、增长率 5%、5 年的稳健参数开始。' : tab === 'ddm' ? 'DDM 更适合稳定分红公司，推荐先从成熟分红模板开始。' : tab === 'relative' ? '相对估值是最快的入门方式，适合第一次进入页面时先做横向判断。' : '情景 DCF 适合不确定性较高的成长公司，先给一个基础营收就能看乐观/基准/悲观差异。'}
-            action={<button type="button" onClick={runRecommendedValuation} className="rounded-full border border-primary px-3 py-1 text-xs text-primary">使用推荐参数</button>}
+            action={
+              <>
+                <button type="button" onClick={runRecommendedValuation} className="rounded-full border border-primary px-3 py-1 text-xs text-primary">使用推荐参数</button>
+                {resolvedCode ? <Link href={`/stock?code=${encodeURIComponent(resolvedCode)}`} className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline">回个股详情</Link> : null}
+              </>
+            }
           />
         ) : null}
         {data != null && !friendlyErr && tab === 'dcf' && result ? (() => {
@@ -322,6 +345,16 @@ export default function ValuationPage() {
                   yAxisName="PE"
                   horizontal
                 />
+                {resolvedCode ? (
+                  <div className="flex gap-2 flex-wrap">
+                    <Link href={`/stock?code=${encodeURIComponent(resolvedCode)}`} className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline">
+                      返回个股详情
+                    </Link>
+                    <Link href={`/fundamental?code=${encodeURIComponent(resolvedCode)}`} className="rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline">
+                      去基本面对比
+                    </Link>
+                  </div>
+                ) : null}
               </>
             )}
             {relativeRows.length === 0 && result && (

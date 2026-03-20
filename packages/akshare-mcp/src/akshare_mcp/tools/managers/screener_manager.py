@@ -85,6 +85,24 @@ def _normalize_kwargs(kwargs: dict) -> dict:
     return kwargs
 
 
+def _safe_positive_int(value, default: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        return int(default)
+    return parsed if parsed > 0 else int(default)
+
+
+def _normalize_condition_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [c.strip() for c in value.split(',') if c.strip()]
+    if isinstance(value, list):
+        return value
+    return []
+
+
 async def _get_stock_pool_with_klines(
     stock_codes: list,
     period: str = 'daily',
@@ -108,7 +126,7 @@ async def _get_stock_pool_with_klines(
       4. 总任务超时 total_timeout，超时返回已完成的部分结果
       5. 任何异常只记录不抛出，保证返回部分结果
     """
-    from ..tdx_formula import _get_kline_for_fallback
+    from akshare_mcp.tools.formula_fallback import get_kline_for_formula_fallback
 
     # 截断股票池
     truncated = len(stock_codes) > pool_cap
@@ -119,20 +137,27 @@ async def _get_stock_pool_with_klines(
     timeout_count = 0
     error_count = 0
 
-    async def fetch_one(code: str):
+    async def fetch_one(item):
         nonlocal success_count, timeout_count, error_count
         async with semaphore:
-            code = code.split('.')[0] if '.' in code else code
+            name = ""
+            if isinstance(item, dict):
+                code = item.get("code") or item.get("stock_code") or item.get("symbol") or ""
+                name = str(item.get("name") or item.get("stock_name") or "").strip()
+            else:
+                code = item
+
+            code = code.split('.')[0] if '.' in str(code) else str(code)
             code = normalize_code(code)
             try:
                 klines = await asyncio.wait_for(
-                    asyncio.to_thread(_get_kline_for_fallback, code, period, limit),
+                    asyncio.to_thread(get_kline_for_formula_fallback, code, period, limit),
                     timeout=per_stock_timeout,
                 )
                 if klines:
                     klines = sorted(klines, key=lambda x: x.get('date', ''))
                     success_count += 1
-                    return {'code': code, 'name': '', 'klines': klines}
+                    return {'code': code, 'name': name, 'klines': klines}
                 error_count += 1
                 return None
             except asyncio.TimeoutError:
@@ -225,6 +250,7 @@ def register_screener_manager(mcp):
                 min_revenue_growth = criteria.get('min_revenue_growth', -100)
                 max_debt_ratio = criteria.get('max_debt_ratio', 100.0)
                 sectors = criteria.get('sectors', [])
+                result_limit = _safe_positive_int(kwargs.get('limit', 50), 50)
 
                 # 单位归一化：DB 中 roe/debt_ratio 存储为百分比数值（如 15.0 表示 15%）
                 # 用户可能传入小数形式（如 0.15 表示 15%），自动转换
@@ -273,7 +299,7 @@ def register_screener_manager(mcp):
                         query += f" AND s.industry IN ({placeholders})"
                         params.extend(sectors)
                     
-                    query += " ORDER BY s.market_cap DESC LIMIT 50"
+                    query += f" ORDER BY s.market_cap DESC LIMIT {result_limit}"
                     
                     rows = await conn.fetch(query, *params)
                     stocks = [dict(row) for row in rows]
@@ -435,12 +461,13 @@ def register_screener_manager(mcp):
             
             elif action == 'technical_screen':
                 # 技术面选股 — 使用增强选股引擎
-                from ...services.screen_engine import engine as screen_engine
-                from ...services import screen_conditions as _sc  # noqa: F401
+                from akshare_mcp.services.screen_engine import engine as screen_engine
+                from akshare_mcp.services import screen_conditions as _sc  # noqa: F401
 
-                condition_ids = kwargs.get('conditions', [])
-                if isinstance(condition_ids, str):
-                    condition_ids = [c.strip() for c in condition_ids.split(',') if c.strip()]
+                condition_ids = kwargs.get('conditions')
+                if condition_ids is None:
+                    condition_ids = kwargs.get('tech_conditions', kwargs.get('technical_conditions', []))
+                condition_ids = _normalize_condition_list(condition_ids)
                 if not condition_ids:
                     return fail('需要提供 conditions 参数（条件ID列表）')
 
@@ -455,10 +482,12 @@ def register_screener_manager(mcp):
                 pool = kwargs.get('stock_pool', [])
                 if isinstance(pool, str):
                     pool = [c.strip() for c in pool.split(',') if c.strip()]
+                result_limit = _safe_positive_int(kwargs.get('limit', 20), 20)
 
                 if not pool:
-                    from ..tdx_formula import _get_default_stock_pool
-                    pool = _get_default_stock_pool()
+                    from akshare_mcp.tools.formula_fallback import get_default_formula_stock_pool
+
+                    pool = get_default_formula_stock_pool()
 
                 # 异步并发获取K线数据（带超时保护）
                 kline_result = await _get_stock_pool_with_klines(pool)
@@ -466,6 +495,7 @@ def register_screener_manager(mcp):
                 diagnostics = kline_result['diagnostics']
 
                 matched = screen_engine.scan(stock_data, condition_ids, logic, params)
+                matched = matched[:result_limit]
 
                 return ok({
                     'matched': matched,
@@ -478,8 +508,8 @@ def register_screener_manager(mcp):
                 })
 
             elif action == 'list_conditions':
-                from ...services.screen_engine import engine as screen_engine
-                from ...services import screen_conditions as _sc  # noqa: F401
+                from akshare_mcp.services.screen_engine import engine as screen_engine
+                from akshare_mcp.services import screen_conditions as _sc  # noqa: F401
 
                 category = kwargs.get('category')
                 conditions = screen_engine.list_conditions(category)
@@ -494,12 +524,15 @@ def register_screener_manager(mcp):
 
             elif action == 'combined_screen':
                 # 组合选股：基本面 + 技术面
-                from ...services.screen_engine import engine as screen_engine
-                from ...services import screen_conditions as _sc  # noqa: F401
+                from akshare_mcp.services.screen_engine import engine as screen_engine
+                from akshare_mcp.services import screen_conditions as _sc  # noqa: F401
 
-                tech_conditions = kwargs.get('tech_conditions', [])
-                if isinstance(tech_conditions, str):
-                    tech_conditions = [c.strip() for c in tech_conditions.split(',') if c.strip()]
+                tech_conditions = kwargs.get('tech_conditions')
+                if tech_conditions is None:
+                    tech_conditions = kwargs.get('technical_conditions')
+                if tech_conditions is None:
+                    tech_conditions = kwargs.get('conditions', [])
+                tech_conditions = _normalize_condition_list(tech_conditions)
 
                 fundamental_criteria = kwargs.get('fundamental_criteria', {})
                 if isinstance(fundamental_criteria, str):
@@ -510,6 +543,7 @@ def register_screener_manager(mcp):
 
                 logic = kwargs.get('logic', 'AND')
                 params = kwargs.get('params', {})
+                result_limit = _safe_positive_int(kwargs.get('limit', 20), 20)
                 if isinstance(params, str):
                     try:
                         params = json.loads(params)
@@ -518,15 +552,30 @@ def register_screener_manager(mcp):
 
                 # 第一步：基本面筛选（如果有条件）
                 fundamental_codes = None
+                fundamental_stock_map = {}
                 if fundamental_criteria:
-                    fund_result = await screener_manager(action='screen', criteria=fundamental_criteria)
+                    fund_result = await screener_manager(action='screen', criteria=fundamental_criteria, limit=result_limit)
                     if fund_result.get('success') and fund_result.get('data'):
                         stocks = fund_result['data'].get('stocks', [])
-                        fundamental_codes = [s.get('code') or s.get('stock_code') for s in stocks]
+                        normalized_stocks = []
+                        for stock in stocks:
+                            raw_code = stock.get('code') or stock.get('stock_code')
+                            if not raw_code:
+                                continue
+                            code = normalize_code(raw_code)
+                            if not code:
+                                continue
+                            normalized_stocks.append(code)
+                            fundamental_stock_map[code] = {
+                                'code': code,
+                                'name': stock.get('name') or stock.get('stock_name') or code,
+                                'matched_conditions': ['fundamental_criteria'],
+                            }
+                        fundamental_codes = normalized_stocks
 
                 # 第二步：技术面筛选
                 if tech_conditions:
-                    from ..tdx_formula import _get_default_stock_pool
+                    from akshare_mcp.tools.formula_fallback import get_default_formula_stock_pool
 
                     # 优先使用传入的 stock_pool，其次基本面结果，最后默认池
                     user_pool = kwargs.get('stock_pool', [])
@@ -538,7 +587,7 @@ def register_screener_manager(mcp):
                     elif fundamental_codes is not None:
                         pool = fundamental_codes
                     else:
-                        pool = _get_default_stock_pool()
+                        pool = get_default_formula_stock_pool()
 
                     # 异步并发获取K线数据（带超时保护）
                     kline_result = await _get_stock_pool_with_klines(pool)
@@ -546,17 +595,27 @@ def register_screener_manager(mcp):
                     diagnostics = kline_result['diagnostics']
 
                     matched = screen_engine.scan(stock_data, tech_conditions, logic, params)
+                    for item in matched:
+                        code = normalize_code(item.get('code') or item.get('stock_code') or '')
+                        if code in fundamental_stock_map:
+                            if not str(item.get('name') or '').strip():
+                                item['name'] = fundamental_stock_map[code].get('name') or code
+                            existing_conditions = item.get('matched_conditions') or []
+                            if 'fundamental_criteria' not in existing_conditions:
+                                item['matched_conditions'] = [*existing_conditions, 'fundamental_criteria']
                 elif fundamental_codes is not None:
-                    matched = [{'code': c, 'name': '', 'matched_conditions': []} for c in fundamental_codes]
+                    matched = list(fundamental_stock_map.values())
                     diagnostics = None
                 else:
-                    return fail('需要提供 tech_conditions 或 fundamental_criteria')
+                    return fail('需要提供 tech_conditions / technical_conditions 或 fundamental_criteria')
 
+                matched = matched[:result_limit]
                 result_data = {
                     'matched': matched,
                     'matched_count': len(matched),
                     'fundamental_criteria': fundamental_criteria,
                     'tech_conditions': tech_conditions,
+                    'technical_conditions': tech_conditions,
                     'logic': logic,
                     'message': f"组合选股完成，命中 {len(matched)} 只"
                 }

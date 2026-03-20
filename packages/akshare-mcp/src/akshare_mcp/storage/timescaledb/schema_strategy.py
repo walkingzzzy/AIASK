@@ -152,6 +152,7 @@ async def init_strategy_tables(conn, pgvector_enabled: bool = False) -> None:
             fg_components JSONB DEFAULT '{}'::jsonb,
             factor_ic JSONB DEFAULT '{}'::jsonb,
             factor_ic_trend JSONB DEFAULT '{}'::jsonb,
+            factor_research JSONB DEFAULT '{}'::jsonb,
             north_fund_3d_net DOUBLE PRECISION,
             margin_5d_change_pct DOUBLE PRECISION,
             hot_sectors JSONB DEFAULT '[]'::jsonb,
@@ -174,6 +175,10 @@ async def init_strategy_tables(conn, pgvector_enabled: bool = False) -> None:
     await conn.execute("""
         ALTER TABLE daily_snapshot_history
         ADD COLUMN IF NOT EXISTS completeness JSONB DEFAULT '{}'::jsonb;
+    """)
+    await conn.execute("""
+        ALTER TABLE daily_snapshot_history
+        ADD COLUMN IF NOT EXISTS factor_research JSONB DEFAULT '{}'::jsonb;
     """)
     await conn.execute("""
         ALTER TABLE daily_snapshot_history

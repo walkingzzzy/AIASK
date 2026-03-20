@@ -6,7 +6,6 @@ from datetime import datetime
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-os.environ['TDX_ENABLED'] = 'false'
 
 from mcp.server.fastmcp.exceptions import ToolError
 from akshare_mcp.server import mcp as app

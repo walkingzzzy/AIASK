@@ -5,9 +5,11 @@ import math
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from ..services.document_index import build_document_index
+from ..services.event_extraction import extract_events
 from ..services.sentiment import sentiment_analyzer
 from ..storage import get_db
-from ..utils import ok, fail
+from ..utils import ok, fail, resolve_security_code
 
 
 def _to_float(value: Any) -> float | None:
@@ -64,9 +66,17 @@ def _detect_event_tags(texts: list[str]) -> list[dict[str, Any]]:
 
 def register(mcp):
     @mcp.tool()
-    async def analyze_stock_sentiment(code: str):
+    async def analyze_stock_sentiment(
+        code: str | None = None,
+        stock_code: str | None = None,
+        symbol: str | None = None,
+        ticker: str | None = None,
+    ):
         """分析个股市场情绪（三分量复合评分：价量动量+新闻情绪+资金流向）"""
         try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
             db = get_db()
             klines = await db.get_klines(code, limit=100)
 
@@ -259,10 +269,13 @@ def register(mcp):
 
     @mcp.tool()
     async def get_stock_text_signals(
-        code: str,
+        code: str | None = None,
         news_limit: int = 20,
         notice_days: int = 30,
         report_limit: int = 10,
+        stock_code: str | None = None,
+        symbol: str | None = None,
+        ticker: str | None = None,
     ):
         """聚合个股新闻/公告/研报原文，输出文本信号与事件标签。"""
         try:
@@ -271,9 +284,14 @@ def register(mcp):
             from .news.notices import get_stock_notices
             from .news.research import get_research_reports
 
-            normalized_code = str(code or '').strip()
+            normalized_code = resolve_security_code(
+                code,
+                stock_code=stock_code,
+                symbol=symbol,
+                ticker=ticker,
+            )
             if not normalized_code:
-                return fail('code is required')
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
 
             warnings: list[str] = []
             news_items: list[dict[str, Any]] = []
@@ -343,9 +361,12 @@ def register(mcp):
                     'target_price': item.get('targetPrice'),
                 })
 
-            texts = [item['text'] for item in merged_items if item.get('text')]
+            document_index = build_document_index(merged_items)
+            documents = document_index.get('documents', [])
+            texts = [item['text'] for item in documents if item.get('text')]
             text_signal = TextSignalPipeline.aggregate_signals(texts)
-            event_tags = _detect_event_tags(texts)
+            extraction = extract_events(documents)
+            event_tags = extraction.get('event_tags', [])
 
             rating_counts: dict[str, int] = {}
             target_prices = []
@@ -365,23 +386,29 @@ def register(mcp):
                 'negative_count': text_signal.get('negative_count', 0),
                 'evidence': text_signal.get('evidence', []),
                 'event_tags': event_tags,
+                'event_summary': extraction.get('summary_counts', {}),
+                'entities': extraction.get('entities', {}),
+                'keyword_hits': extraction.get('keyword_hits', {}),
                 'source_counts': {
                     'news': len(news_items),
                     'notices': len(notice_items),
                     'research_reports': len(report_items),
                     'total_texts': len(texts),
                 },
+                'document_index': document_index.get('stats', {}),
                 'rating_summary': {
                     'counts': rating_counts,
                     'avg_target_price': _round_or_none(sum(target_prices) / len(target_prices), 2) if target_prices else None,
                 },
-                'raw_texts': merged_items[: max(int(news_limit) + int(report_limit), 10)],
+                'raw_texts': documents[: max(int(news_limit) + int(report_limit), 10)],
                 'warnings': warnings,
                 'source_chain': [
                     'news.get_stock_news',
                     'news.get_stock_notices',
                     'news.get_research_reports',
                     'services.llm_alpha.TextSignalPipeline',
+                    'services.document_index',
+                    'services.event_extraction',
                 ],
             })
         except Exception as e:
@@ -479,6 +506,7 @@ def register(mcp):
     async def log_recommendation_audit(
         user_id: str = 'default',
         strategy_id: str = '',
+        code: str = '',
         stock_code: str = '',
         action: str = '',
         emotion_polarity: float = 0.0,
@@ -504,6 +532,7 @@ def register(mcp):
         """
         try:
             db = get_db()
+            stock_code = resolve_security_code(code, stock_code=stock_code)
             if isinstance(cognitive_biases, (list, tuple, set)):
                 biases_list = [str(b).strip() for b in cognitive_biases if str(b).strip()]
             else:

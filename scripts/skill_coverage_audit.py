@@ -25,19 +25,6 @@ CODE_SPAN_PATTERN = re.compile(r"`([^`]+)`")
 SPAN_HEAD_PATTERN = re.compile(r"^\s*([a-z][a-z0-9_]*)(?:\s*\(|\s*$)")
 
 
-# 这些工具虽然不以 tdx_ 前缀命名，但属于 TDX 前端/板块交互能力
-TDX_NON_PREFIX_TOOLS = {
-    "add_stocks_to_watchlist",
-    "create_watchlist",
-    "delete_watchlist",
-    "get_user_sectors",
-    "push_message",
-    "push_warn",
-    "send_backtest_result",
-    "send_backtest_trades",
-}
-
-
 @dataclass
 class SkillCoverage:
     skill: str
@@ -56,6 +43,35 @@ class SkillCoverage:
 
 def _load_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _looks_like_tool_name(name: str) -> bool:
+    if not name or "_" not in name:
+        return False
+    return name.endswith("_manager") or name.startswith(
+        (
+            "get_",
+            "list_",
+            "search_",
+            "calculate_",
+            "analyze_",
+            "create_",
+            "delete_",
+            "update_",
+            "remove_",
+            "add_",
+            "run_",
+            "check_",
+            "clear_",
+            "sync_",
+            "send_",
+            "push_",
+            "parse_",
+            "optimize_",
+            "validate_",
+            "should_",
+        )
+    )
 
 
 def discover_runtime_tools(server_file: Path, tools_dir: Path) -> tuple[list[str], list[Path]]:
@@ -105,7 +121,7 @@ def parse_skill_markdown(skill_name: str, skill_file: Path, all_tools: set[str])
         if name in all_tools:
             referenced.add(name)
         # 只把可能是工具名的未知引用记录下来（避免把参数名当工具）
-        elif name.endswith("_manager") or name.startswith("tdx_") or name in TDX_NON_PREFIX_TOOLS:
+        elif _looks_like_tool_name(name):
             unknown.add(name)
 
     return SkillCoverage(
@@ -225,11 +241,6 @@ def compute_report(
     )
     missing_tools = sorted(all_tools_set - set(union_covered))
 
-    tdx_tools = sorted(
-        [tool for tool in all_tools if tool.startswith("tdx_") or tool in TDX_NON_PREFIX_TOOLS]
-    )
-    covered_tdx = sorted(set(union_covered) & set(tdx_tools))
-
     manager_tools = sorted([tool for tool in all_tools if tool.endswith("_manager")])
     covered_manager = sorted(set(union_covered) & set(manager_tools))
 
@@ -241,7 +252,6 @@ def compute_report(
 
     tool_count = len(all_tools)
     covered_count = len(union_covered)
-    tdx_total = len(tdx_tools)
     manager_total = len(manager_tools)
     registry_skill_ids = sorted(item.skill for item in skill_coverages)
     executable_skill_ids = sorted(
@@ -276,11 +286,6 @@ def compute_report(
             "executor_count": int(skill_executor_audit.get("executor_count") or len(executable_skill_ids)),
             "skill_tool_file": skill_executor_audit.get("skill_tool_file"),
         },
-        "tdx": {
-            "total_count": tdx_total,
-            "covered_count": len(covered_tdx),
-            "coverage_pct": round((len(covered_tdx) * 100.0 / tdx_total), 2) if tdx_total else 0.0,
-        },
         "manager": {
             "total_count": manager_total,
             "covered_count": len(covered_manager),
@@ -292,8 +297,6 @@ def compute_report(
         "skills": [item.to_dict() for item in skill_coverages],
         "union_covered_tools": union_covered,
         "missing_tools": missing_tools,
-        "tdx_tools": tdx_tools,
-        "covered_tdx_by_skills": covered_tdx,
         "manager_tools": manager_tools,
         "covered_manager_by_skills": covered_manager,
         "unknown_tool_refs": unknown_refs,
@@ -310,12 +313,6 @@ def evaluate_thresholds(report: dict, baseline: dict) -> tuple[bool, list[str]]:
     if min_total is not None and report["coverage"]["coverage_pct"] < float(min_total):
         violations.append(
             f"total coverage {report['coverage']['coverage_pct']}% < min_total_coverage_pct {min_total}%"
-        )
-
-    min_tdx_count = thresholds.get("min_tdx_coverage_count")
-    if min_tdx_count is not None and report["tdx"]["covered_count"] < int(min_tdx_count):
-        violations.append(
-            f"tdx covered {report['tdx']['covered_count']} < min_tdx_coverage_count {min_tdx_count}"
         )
 
     min_manager_count = thresholds.get("min_manager_coverage_count")
@@ -449,7 +446,7 @@ def main() -> int:
     print(
         "[OK] tools={tool_count} skills={skills_count} covered={covered} "
         "coverage={coverage}% executable_skills={exec_cov}/{skill_count} "
-        "executor_coverage={exec_pct}% missing={missing} tdx={tdx_cov}/{tdx_total} "
+        "executor_coverage={exec_pct}% missing={missing} "
         "manager={mgr_cov}/{mgr_total} collisions={collisions}".format(
             tool_count=report["tool_count"],
             skills_count=report["skills_count"],
@@ -459,8 +456,6 @@ def main() -> int:
             skill_count=report["executors"]["registered_skill_count"],
             exec_pct=report["executors"]["executor_coverage_pct"],
             missing=report["coverage"]["missing_count"],
-            tdx_cov=report["tdx"]["covered_count"],
-            tdx_total=report["tdx"]["total_count"],
             mgr_cov=report["manager"]["covered_count"],
             mgr_total=report["manager"]["total_count"],
             collisions=report["module_name_collisions_count"],

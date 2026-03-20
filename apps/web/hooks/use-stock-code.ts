@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { useStockContext } from '@/store/stock-context';
 
@@ -19,15 +19,9 @@ export function useStockCode(initial = '', syncUrl = true) {
   const router = useRouter();
   const pathname = usePathname();
   const { code: globalCode, setStock } = useStockContext();
-  const [hydrated, setHydrated] = useState(false);
-
-  useEffect(() => {
-    setHydrated(true);
-  }, []);
-
-  const urlCode = hydrated ? (searchParams.get('code') || '') : '';
-  const normalizedUrlCode = hydrated && STOCK_CODE_RE.test(urlCode) ? urlCode : '';
-  const normalizedGlobalCode = hydrated && STOCK_CODE_RE.test(globalCode) ? globalCode : '';
+  const urlCode = searchParams.get('code') || '';
+  const normalizedUrlCode = STOCK_CODE_RE.test(urlCode) ? urlCode : '';
+  const normalizedGlobalCode = STOCK_CODE_RE.test(globalCode) ? globalCode : '';
   const resolvedCode = normalizedUrlCode || normalizedGlobalCode || null;
   const resolvedInitial = resolvedCode || initial;
 

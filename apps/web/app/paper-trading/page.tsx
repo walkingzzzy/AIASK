@@ -162,6 +162,35 @@ export default function PaperTradingPage() {
     if (!navOk) notes.push(`净值状态未确认：${readStatusProbeNote(navStatus, '请刷新价格或检查净值服务')}`);
     return notes;
   }, [matchOk, matchStatus, navOk, navStatus]);
+  const quantityValue = Number.parseInt(quantity, 10);
+  const limitPriceValue = price.trim() ? Number(price) : null;
+  const stopPriceValue = stopPrice.trim() ? Number(stopPrice) : null;
+  const previewUnitPrice = orderType === 'stop' ? stopPriceValue : limitPriceValue;
+  const estimatedAmount = useMemo(() => {
+    if (!Number.isFinite(quantityValue) || quantityValue <= 0) return null;
+    if (previewUnitPrice == null || !Number.isFinite(previewUnitPrice) || previewUnitPrice <= 0) return null;
+    return quantityValue * previewUnitPrice;
+  }, [previewUnitPrice, quantityValue]);
+  const orderTypeLabel = orderType === 'market' ? '市价单' : orderType === 'limit' ? '限价单' : '止损单';
+  const directionLabel = direction === 'buy' ? '买入' : '卖出';
+  const riskHints = useMemo(() => {
+    const hints: string[] = [];
+    if (!trimmedCode) hints.push('请先输入有效股票代码，再进入提交确认。');
+    if (!Number.isFinite(quantityValue) || quantityValue <= 0) hints.push('数量需为正整数。');
+    if (direction === 'buy' && Number.isFinite(quantityValue) && quantityValue > 0 && quantityValue % 100 !== 0) {
+      hints.push('买入数量需满足 100 股整数倍的手数规则。');
+    }
+    if (orderType === 'limit' && (limitPriceValue == null || !Number.isFinite(limitPriceValue) || limitPriceValue <= 0)) {
+      hints.push('限价单需填写有效价格，预览金额才会完整显示。');
+    }
+    if (orderType === 'stop' && (stopPriceValue == null || !Number.isFinite(stopPriceValue) || stopPriceValue <= 0)) {
+      hints.push('止损单需填写止损价，系统会先按止损触发价进行预览。');
+    }
+    if (useComplianceCheck) hints.push('已开启下单前合规风控，提交时会先做额外检查。');
+    if (urgentExecution) hints.push('已开启极速智能路由，提交成功文案会与普通委托不同。');
+    if (!useComplianceCheck && !urgentExecution) hints.push('当前为标准提交流程：直接确认并提交委托。');
+    return hints;
+  }, [direction, limitPriceValue, orderType, quantityValue, stopPriceValue, trimmedCode, urgentExecution, useComplianceCheck]);
 
   // 今日盈亏：最新 NAV 的 daily_return * 前一日总资产
   const todayPnl = useMemo(() => {
@@ -399,17 +428,198 @@ export default function PaperTradingPage() {
     setFormStatus(`已载入 ${nextCode} 的示例下单参数，可直接调整后提交。`);
   }
 
+  const matchStatusLabel = matchOk ? '运行中' : showAccountBootstrap ? '待确认' : '待检查';
+  const navStatusLabel = navOk ? '运行中' : showAccountBootstrap ? '待确认' : '待检查';
+
   return (
     <PageContainer>
       <div className="mb-3">
         <h1 className="text-lg font-semibold m-0">模拟交易</h1>
-        <p className="mt-1 mb-0 text-xs text-text-secondary">先确认账户状态，再下单、撤单和跟踪持仓盈亏。</p>
+        <p className="mt-1 mb-0 text-xs text-text-secondary">先完成一笔示例委托或真实模拟单，再继续看账户状态、持仓和绩效更顺手。</p>
       </div>
+
+      {error && <ErrorState text={error} />}
+
+      {/* WS 交易通知 */}
+      {tradeNotice && (
+        <div className="mb-3 px-4 py-2 rounded-lg bg-primary/10 border border-primary/30 text-sm text-primary flex items-center gap-2">
+          <span>📋</span> {tradeNotice}
+        </div>
+      )}
+
+      {showAccountBootstrap ? (
+        <SectionCard className="mb-4 p-4">
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(260px,0.8fr)]">
+            <div>
+              <h2 className="mt-0 text-base font-semibold">账户尚未开始交易</h2>
+              <p className="text-sm text-text-secondary mb-3">
+                当前还没有持仓、挂单、成交和净值轨迹。先载入一笔示例委托并直接在下方提交，比先读完整个绩效与流水面板更容易进入状态。
+              </p>
+              <div className="flex gap-2 flex-wrap">
+                <button type="button" onClick={() => loadExampleOrder('600519')} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">载入贵州茅台示例</button>
+                <button type="button" onClick={() => loadExampleOrder('000001')} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">载入平安银行示例</button>
+                <button type="button" onClick={() => void handleRefreshPrices()} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">先刷新价格</button>
+              </div>
+            </div>
+            <div className="rounded-xl border border-border bg-surface-alt/40 p-3">
+              <div className="text-sm font-medium text-text-primary">推荐流程</div>
+              <ol className="mt-2 mb-0 space-y-2 pl-4 text-xs text-text-secondary">
+                <li>载入示例代码，先用 100 股市价单完成首笔交易。</li>
+                <li>如需价格参考，可先手动刷新一次行情。</li>
+                <li>成交后再回来看持仓、净值和绩效变化。</li>
+              </ol>
+            </div>
+          </div>
+        </SectionCard>
+      ) : null}
+
+      {/* 下单面板 */}
+      <SectionCard className="mb-4">
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+          <h3 className="font-medium m-0">下单</h3>
+          {showAccountBootstrap ? <span className="text-xs text-text-secondary">首笔交易建议使用示例代码和 100 股市价单</span> : null}
+        </div>
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(300px,0.85fr)] xl:items-start">
+          <div>
+            <form onSubmit={handleOrder} className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <StockCodeInput
+                id="paper-order-code"
+                label="股票代码"
+                value={code}
+                onChange={setCode}
+                error={codeError}
+              />
+              <div className="flex flex-col gap-1">
+                <label htmlFor="paper-order-direction" className="text-xs text-text-secondary">交易方向</label>
+                <select
+                  id="paper-order-direction"
+                  value={direction}
+                  onChange={e => setDirection(e.target.value as 'buy' | 'sell')}
+                  className="border border-border rounded px-2 py-1.5 bg-surface text-sm"
+                >
+                  <option value="buy">买入</option>
+                  <option value="sell">卖出</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="paper-order-quantity" className="text-xs text-text-secondary">数量</label>
+                <input
+                  id="paper-order-quantity"
+                  type="number"
+                  value={quantity}
+                  onChange={e => setQuantity(e.target.value)}
+                  placeholder="数量"
+                  min={1}
+                  className="border border-border rounded px-2 py-1.5 bg-surface text-sm"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="paper-order-type" className="text-xs text-text-secondary">订单类型</label>
+                <select
+                  id="paper-order-type"
+                  value={orderType}
+                  onChange={e => setOrderType(e.target.value as 'market' | 'limit' | 'stop')}
+                  className="border border-border rounded px-2 py-1.5 bg-surface text-sm"
+                >
+                  <option value="market">市价单</option>
+                  <option value="limit">限价单</option>
+                  <option value="stop">止损单</option>
+                </select>
+              </div>
+              {(orderType === 'limit' || orderType === 'market') && (
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="paper-order-price" className="text-xs text-text-secondary">价格</label>
+                  <input
+                    id="paper-order-price"
+                    type="number"
+                    step="0.01"
+                    value={price}
+                    onChange={e => setPrice(e.target.value)}
+                    placeholder="价格（可选）"
+                    className="border border-border rounded px-2 py-1.5 bg-surface text-sm"
+                  />
+                </div>
+              )}
+              {orderType === 'stop' && (
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="paper-order-stop-price" className="text-xs text-text-secondary">止损价</label>
+                  <input
+                    id="paper-order-stop-price"
+                    type="number"
+                    step="0.01"
+                    value={stopPrice}
+                    onChange={e => setStopPrice(e.target.value)}
+                    placeholder="止损价"
+                    className="border border-border rounded px-2 py-1.5 bg-surface text-sm"
+                  />
+                </div>
+              )}
+              <button type="submit" disabled={placeApi.isPending || routeExecutionApi.isPending || complianceApi.isPending}
+                className={`col-span-2 sm:col-span-1 px-4 py-1.5 rounded text-sm font-medium text-white ${direction === 'buy' ? 'bg-danger' : 'bg-success'} disabled:opacity-50`}>
+                {placeApi.isPending || routeExecutionApi.isPending ? '提交中...' : complianceApi.isPending ? '风控检查中...' : direction === 'buy' ? '买入' : '卖出'}
+              </button>
+            </form>
+          </div>
+
+          <div className="rounded-2xl border border-border bg-surface-alt/40 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-text-primary">订单预览</div>
+                <p className="mb-0 mt-1 text-xs leading-5 text-text-secondary">在确认弹窗前先核对方向、数量、价格、风控与执行路径，移动端也能直接看到关键信息。</p>
+              </div>
+              <Badge variant={direction === 'buy' ? 'danger' : 'success'}>{directionLabel}</Badge>
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+              <div className="rounded-xl border border-border bg-surface p-3">
+                <div className="text-xs text-text-secondary">标的 / 类型</div>
+                <div className="mt-1 text-sm font-medium">{trimmedCode || '待填写代码'} · {orderTypeLabel}</div>
+              </div>
+              <div className="rounded-xl border border-border bg-surface p-3">
+                <div className="text-xs text-text-secondary">数量 / 账户</div>
+                <div className="mt-1 text-sm font-medium">{Number.isFinite(quantityValue) && quantityValue > 0 ? `${quantityValue} 股` : '待填写数量'} · {accountId || '默认账户'}</div>
+              </div>
+              <div className="rounded-xl border border-border bg-surface p-3">
+                <div className="text-xs text-text-secondary">预览价格</div>
+                <div className="mt-1 text-sm font-medium">{previewUnitPrice != null && Number.isFinite(previewUnitPrice) && previewUnitPrice > 0 ? fmtNum(previewUnitPrice, 2) : orderType === 'market' ? '未填写，按市价提交流程处理' : '待填写价格'}</div>
+              </div>
+              <div className="rounded-xl border border-border bg-surface p-3">
+                <div className="text-xs text-text-secondary">预估金额</div>
+                <div className="mt-1 text-sm font-medium">{estimatedAmount != null ? fmtNum(estimatedAmount) : '待补充价格后计算'}</div>
+              </div>
+            </div>
+
+            <div className="mt-3 rounded-xl border border-border bg-surface p-3">
+              <div className="text-xs font-medium text-text-primary">执行与风控开关</div>
+              <div className="mt-2 space-y-2 text-sm text-text-secondary">
+                <label htmlFor="paper-order-compliance-check" className="flex items-start gap-2 cursor-pointer">
+                  <input id="paper-order-compliance-check" type="checkbox" checked={useComplianceCheck} onChange={e => setUseComplianceCheck(e.target.checked)} className="mt-0.5 rounded border-border accent-primary" />
+                  <span>下单前执行合规风控，先检查规则再决定是否继续提交。</span>
+                </label>
+                <label htmlFor="paper-order-urgent-execution" className="flex items-start gap-2 cursor-pointer">
+                  <input id="paper-order-urgent-execution" type="checkbox" checked={urgentExecution} onChange={e => setUrgentExecution(e.target.checked)} className="mt-0.5 rounded border-border accent-primary" />
+                  <span className={urgentExecution ? 'text-primary' : ''}>启用极速智能路由，由 Execution Manager 优先决定提交路径。</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="mt-3 rounded-xl border border-border bg-surface p-3">
+              <div className="text-xs font-medium text-text-primary">提交前提醒</div>
+              <ul className="mb-0 mt-2 space-y-2 pl-4 text-xs leading-5 text-text-secondary">
+                {riskHints.map((hint) => <li key={hint}>{hint}</li>)}
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        {formError && <p className="text-danger text-xs mt-2 font-bold" role="alert">{formError}</p>}
+        {formStatus && <p className="text-primary text-xs mt-2" role="status">{formStatus}</p>}
+        {lastActionResult && <p className="text-success text-xs mt-2">{lastActionResult}</p>}
+      </SectionCard>
 
       {/* System Status + Account Selector */}
       <div className="flex items-center gap-3 mb-3 flex-wrap">
-        <Badge variant={matchOk ? 'success' : 'warning'}>撮合: {matchOk ? '运行中' : '未知'}</Badge>
-        <Badge variant={navOk ? 'success' : 'warning'}>净值: {navOk ? '运行中' : '未知'}</Badge>
+        <Badge variant={matchOk ? 'success' : 'warning'}>撮合: {matchStatusLabel}</Badge>
+        <Badge variant={navOk ? 'success' : 'warning'}>净值: {navStatusLabel}</Badge>
         <button
           type="button"
           onClick={handleRefreshPrices}
@@ -439,21 +649,17 @@ export default function PaperTradingPage() {
       </div>
       {statusNotes.length > 0 ? (
         <SectionCard className="mb-3 p-3">
-          <h2 className="mt-0 text-sm font-semibold">状态说明</h2>
+          <h2 className="mt-0 text-sm font-semibold">{showAccountBootstrap ? '首笔交易提示' : '状态说明'}</h2>
+          {showAccountBootstrap ? (
+            <p className="mt-1 mb-2 text-xs text-text-secondary">
+              首次进入模拟盘时，撮合和净值状态可能先显示为“待确认”。通常刷新价格或完成首笔委托后，状态会逐步稳定。
+            </p>
+          ) : null}
           <div className="space-y-1 text-xs text-text-secondary">
             {statusNotes.map((note) => <p key={note} className="m-0">{note}</p>)}
           </div>
         </SectionCard>
       ) : null}
-
-      {error && <ErrorState text={error} />}
-
-      {/* WS 交易通知 */}
-      {tradeNotice && (
-        <div className="mb-3 px-4 py-2 rounded-lg bg-primary/10 border border-primary/30 text-sm text-primary flex items-center gap-2">
-          <span>📋</span> {tradeNotice}
-        </div>
-      )}
 
       {/* KPI */}
       <KpiGrid cols={4} className="mb-4">
@@ -464,144 +670,34 @@ export default function PaperTradingPage() {
         <KpiCard title="今日盈亏" value={fmtNum(todayPnl)} change={todayPnl} />
       </KpiGrid>
 
-      {showAccountBootstrap ? (
-        <SectionCard className="mb-4 p-4">
-          <h2 className="mt-0 text-base font-semibold">账户尚未开始交易</h2>
-          <p className="text-sm text-text-secondary mb-3">当前还没有持仓、挂单、成交和净值轨迹。先完成一笔示例下单，比先读完整个绩效与流水面板更容易进入状态。</p>
-          <div className="flex gap-2 flex-wrap">
-            <button type="button" onClick={() => loadExampleOrder('600519')} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">载入贵州茅台示例</button>
-            <button type="button" onClick={() => loadExampleOrder('000001')} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">载入平安银行示例</button>
-            <button type="button" onClick={() => void handleRefreshPrices()} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">先刷新价格</button>
+      {!showAccountBootstrap ? (
+        <SectionCard className="mb-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+            <h3 className="font-medium m-0">绩效分析</h3>
+            <div className="flex items-center gap-2 flex-wrap">
+              {[7, 30, 90, 0].map((days) => (
+                <button
+                  key={days}
+                  type="button"
+                  onClick={() => setPerfDays(days)}
+                  className={`text-xs px-2 py-1 rounded border cursor-pointer ${perfDays === days ? 'border-primary text-primary' : 'border-glass-border text-text-secondary'}`}
+                >
+                  {days === 0 ? '全部' : `${days}天`}
+                </button>
+              ))}
+              <button type="button" onClick={() => exportCSV(performanceData.map((item) => ({ 日期: item.date ?? '', 净值: item.totalValue ?? 0, 日收益率: item.dailyReturn ?? 0 })), `paper-trading-performance-${perfDays || 'all'}.csv`)} className="text-xs px-3 py-1 rounded border border-glass-border cursor-pointer">导出 CSV</button>
+            </div>
           </div>
+          <KpiGrid cols={4} className="mb-3">
+            <KpiCard title="区间收益率" value={fmtPct(Number(performanceMetrics.totalReturn ?? 0) * 100)} change={Number(performanceMetrics.totalReturn ?? 0) * 100} />
+            <KpiCard title="夏普比率" value={fmtNum(Number(performanceMetrics.sharpe ?? 0))} />
+            <KpiCard title="最大回撤" value={fmtPct(Number(performanceMetrics.maxDrawdown ?? 0) * 100)} change={Number(performanceMetrics.maxDrawdown ?? 0) * 100} />
+            <KpiCard title="胜率" value={fmtPct(Number(performanceMetrics.winRate ?? 0) * 100)} change={Number(performanceMetrics.winRate ?? 0) * 100} />
+            <KpiCard title="平均持仓天数" value={fmtNum(Number(performanceMetrics.avgHoldDays ?? 0))} />
+          </KpiGrid>
+          {performanceData.length > 1 ? <LineChart categories={perfCategories} series={[{ name: '日收益率(%)', data: perfReturns }]} /> : <div className="text-sm text-text-secondary">暂无足够绩效数据</div>}
         </SectionCard>
       ) : null}
-
-      {!showAccountBootstrap ? (
-      <SectionCard className="mb-4">
-        <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
-          <h3 className="font-medium m-0">绩效分析</h3>
-          <div className="flex items-center gap-2 flex-wrap">
-            {[7, 30, 90, 0].map((days) => (
-              <button
-                key={days}
-                type="button"
-                onClick={() => setPerfDays(days)}
-                className={`text-xs px-2 py-1 rounded border cursor-pointer ${perfDays === days ? 'border-primary text-primary' : 'border-glass-border text-text-secondary'}`}
-              >
-                {days === 0 ? '全部' : `${days}天`}
-              </button>
-            ))}
-            <button type="button" onClick={() => exportCSV(performanceData.map((item) => ({ 日期: item.date ?? '', 净值: item.totalValue ?? 0, 日收益率: item.dailyReturn ?? 0 })), `paper-trading-performance-${perfDays || 'all'}.csv`)} className="text-xs px-3 py-1 rounded border border-glass-border cursor-pointer">导出 CSV</button>
-          </div>
-        </div>
-        <KpiGrid cols={4} className="mb-3">
-          <KpiCard title="区间收益率" value={fmtPct(Number(performanceMetrics.totalReturn ?? 0) * 100)} change={Number(performanceMetrics.totalReturn ?? 0) * 100} />
-          <KpiCard title="夏普比率" value={fmtNum(Number(performanceMetrics.sharpe ?? 0))} />
-          <KpiCard title="最大回撤" value={fmtPct(Number(performanceMetrics.maxDrawdown ?? 0) * 100)} change={Number(performanceMetrics.maxDrawdown ?? 0) * 100} />
-          <KpiCard title="胜率" value={fmtPct(Number(performanceMetrics.winRate ?? 0) * 100)} change={Number(performanceMetrics.winRate ?? 0) * 100} />
-          <KpiCard title="平均持仓天数" value={fmtNum(Number(performanceMetrics.avgHoldDays ?? 0))} />
-        </KpiGrid>
-        {performanceData.length > 1 ? <LineChart categories={perfCategories} series={[{ name: '日收益率(%)', data: perfReturns }]} /> : <div className="text-sm text-text-secondary">暂无足够绩效数据</div>}
-      </SectionCard>
-      ) : null}
-
-      {/* 下单面板 */}
-      <SectionCard className="mb-4">
-        <h3 className="font-medium mb-2">下单</h3>
-        <form onSubmit={handleOrder} className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StockCodeInput
-            id="paper-order-code"
-            label="股票代码"
-            value={code}
-            onChange={setCode}
-            error={codeError}
-          />
-          <div className="flex flex-col gap-1">
-            <label htmlFor="paper-order-direction" className="text-xs text-text-secondary">交易方向</label>
-            <select
-              id="paper-order-direction"
-              value={direction}
-              onChange={e => setDirection(e.target.value as 'buy' | 'sell')}
-              className="border border-border rounded px-2 py-1.5 bg-surface text-sm"
-            >
-              <option value="buy">买入</option>
-              <option value="sell">卖出</option>
-            </select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <label htmlFor="paper-order-quantity" className="text-xs text-text-secondary">数量</label>
-            <input
-              id="paper-order-quantity"
-              type="number"
-              value={quantity}
-              onChange={e => setQuantity(e.target.value)}
-              placeholder="数量"
-              min={1}
-              className="border border-border rounded px-2 py-1.5 bg-surface text-sm"
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label htmlFor="paper-order-type" className="text-xs text-text-secondary">订单类型</label>
-            <select
-              id="paper-order-type"
-              value={orderType}
-              onChange={e => setOrderType(e.target.value as 'market' | 'limit' | 'stop')}
-              className="border border-border rounded px-2 py-1.5 bg-surface text-sm"
-            >
-              <option value="market">市价单</option>
-              <option value="limit">限价单</option>
-              <option value="stop">止损单</option>
-            </select>
-          </div>
-          {(orderType === 'limit' || orderType === 'market') && (
-            <div className="flex flex-col gap-1">
-              <label htmlFor="paper-order-price" className="text-xs text-text-secondary">价格</label>
-              <input
-                id="paper-order-price"
-                type="number"
-                step="0.01"
-                value={price}
-                onChange={e => setPrice(e.target.value)}
-                placeholder="价格（可选）"
-                className="border border-border rounded px-2 py-1.5 bg-surface text-sm"
-              />
-            </div>
-          )}
-          {orderType === 'stop' && (
-            <div className="flex flex-col gap-1">
-              <label htmlFor="paper-order-stop-price" className="text-xs text-text-secondary">止损价</label>
-              <input
-                id="paper-order-stop-price"
-                type="number"
-                step="0.01"
-                value={stopPrice}
-                onChange={e => setStopPrice(e.target.value)}
-                placeholder="止损价"
-                className="border border-border rounded px-2 py-1.5 bg-surface text-sm"
-              />
-            </div>
-          )}
-          <button type="submit" disabled={placeApi.isPending || routeExecutionApi.isPending || complianceApi.isPending}
-            className={`col-span-2 sm:col-span-1 px-4 py-1.5 rounded text-sm font-medium text-white ${direction === 'buy' ? 'bg-danger' : 'bg-success'} disabled:opacity-50`}>
-            {placeApi.isPending || routeExecutionApi.isPending ? '提交中...' : complianceApi.isPending ? '风控检查中...' : direction === 'buy' ? '买入' : '卖出'}
-          </button>
-        </form>
-
-        <div className="flex gap-4 mt-4 items-center text-sm text-muted-foreground border-t pt-3">
-          <div className="flex items-center gap-1">
-            <input id="paper-order-compliance-check" type="checkbox" checked={useComplianceCheck} onChange={e => setUseComplianceCheck(e.target.checked)} className="rounded border-border accent-primary" />
-            <label htmlFor="paper-order-compliance-check" className="cursor-pointer">下单前执行合规风控 (Compliance Check)</label>
-          </div>
-          <div className="flex items-center gap-1">
-            <input id="paper-order-urgent-execution" type="checkbox" checked={urgentExecution} onChange={e => setUrgentExecution(e.target.checked)} className="rounded border-border accent-primary" />
-            <label htmlFor="paper-order-urgent-execution" className={`cursor-pointer ${urgentExecution ? 'text-primary' : ''}`}>启用极速智能路由 (Execution Manager)</label>
-          </div>
-        </div>
-
-        {formError && <p className="text-danger text-xs mt-2 font-bold" role="alert">{formError}</p>}
-        {formStatus && <p className="text-primary text-xs mt-2" role="status">{formStatus}</p>}
-        {lastActionResult && <p className="text-success text-xs mt-2">{lastActionResult}</p>}
-      </SectionCard>
 
       {/* 持仓列表 */}
       <SectionCard className="mb-4">
@@ -637,6 +733,34 @@ export default function PaperTradingPage() {
               },
             ]}
             rows={positions as Record<string, unknown>[]}
+            mobileCardRender={(row) => {
+              const profitRate = Number(row.profit_rate ?? 0) * 100;
+              return (
+                <div className="space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-text-primary">{String(row.stock_name ?? row.stock_code ?? '-')}</div>
+                      <div className="text-xs text-text-secondary">代码：{String(row.stock_code ?? '-')}</div>
+                    </div>
+                    <div className={`text-xs font-medium ${profitRate >= 0 ? 'text-danger' : 'text-success'}`}>{fmtPct(profitRate)}</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs text-text-secondary">
+                    <div>数量：{String(row.quantity ?? '-')}</div>
+                    <div>可卖：{String(row.sellable ?? '-')}</div>
+                    <div>成本：{fmtNum(Number(row.cost_price ?? 0), 2)}</div>
+                    <div>现价：{fmtNum(Number(row.current_price ?? 0), 2)}</div>
+                    <div className="col-span-2">市值：{fmtNum(Number(row.market_value ?? 0))}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => quickSell(row as PaperTradingPosition)}
+                    className="text-xs text-primary underline cursor-pointer"
+                  >
+                    快速卖出
+                  </button>
+                </div>
+              );
+            }}
           />
         ) : <p className="text-muted text-sm">{showAccountBootstrap ? '完成首笔下单后，这里会显示持仓摘要和快速卖出入口。' : '暂无持仓'}</p>}
       </SectionCard>
@@ -682,6 +806,33 @@ export default function PaperTradingPage() {
               },
             ]}
             rows={pending as Record<string, unknown>[]}
+            mobileCardRender={(row) => {
+              const orderId = Number(row.id ?? 0);
+              const isCanceling = cancelingOrderIds.includes(orderId);
+              return (
+                <div className="space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-text-primary">{String(row.code ?? '-')} · {String(row.direction ?? '-')}</div>
+                      <div className="text-xs text-text-secondary">{String(row.order_type ?? '-')} / {String(row.shares ?? '-')} 股</div>
+                    </div>
+                    <div className="text-xs text-text-secondary">#{orderId || '-'}</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs text-text-secondary">
+                    <div>价格：{row.price ? fmtNum(Number(row.price), 2) : '-'}</div>
+                    <div>止损价：{row.stop_price ? fmtNum(Number(row.stop_price), 2) : '-'}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleCancel(orderId)}
+                    disabled={isCanceling}
+                    className="text-xs text-danger underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isCanceling ? '撤单中...' : '撤单'}
+                  </button>
+                </div>
+              );
+            }}
           />
         </SectionCard>
       )}
@@ -703,6 +854,22 @@ export default function PaperTradingPage() {
                   { key: 'commission', label: '佣金', render: (v: unknown) => fmtNum(Number(v), 4) },
                 ]}
                 rows={trades as Record<string, unknown>[]}
+                mobileCardRender={(row) => (
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-text-primary">{String(row.stock_code ?? '-')} · {String(row.trade_type ?? '-')}</div>
+                        <div className="text-xs text-text-secondary">时间：{String(row.trade_time ?? '').slice(0, 16) || '-'}</div>
+                      </div>
+                      <div className="text-xs text-text-secondary">{String(row.quantity ?? '-')} 股</div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs text-text-secondary">
+                      <div>价格：{fmtNum(Number(row.price ?? 0), 2)}</div>
+                      <div>金额：{fmtNum(Number(row.amount ?? 0))}</div>
+                      <div className="col-span-2">佣金：{fmtNum(Number(row.commission ?? 0), 4)}</div>
+                    </div>
+                  </div>
+                )}
               />
             ) : <p className="text-muted text-sm">暂无成交</p>}
           </SectionCard>

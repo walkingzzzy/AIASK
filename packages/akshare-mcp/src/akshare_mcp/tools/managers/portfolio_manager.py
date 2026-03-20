@@ -1,30 +1,20 @@
 """组合管理器 - 创建、调整、查询组合"""
 
 import json
+import time
 
 from ...storage import get_db
-from ...utils import ok, fail
+from ..manager_protocol import (
+    fail_with_meta,
+    normalize_manager_code,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
     """统一解析 kwargs 参数（兼容 JSON 字符串和 dict）"""
-    params = kwargs.get("params")
-    if isinstance(params, dict):
-        kwargs = {**kwargs, **params}
-    raw = kwargs.get("kwargs")
-    if isinstance(raw, dict):
-        kwargs = {**kwargs, **raw}
-    elif isinstance(raw, str):
-        try:
-            extra = json.loads(raw or "{}")
-            if isinstance(extra, dict):
-                kwargs = {**kwargs, **extra}
-        except Exception:
-            pass
-    # 兼容 code / stock_code / symbol
-    if "code" not in kwargs or not kwargs.get("code"):
-        kwargs["code"] = kwargs.get("stock_code") or kwargs.get("symbol")
-    return kwargs
+    return normalize_manager_kwargs(kwargs)
 
 
 def _safe_portfolio_id(val):
@@ -107,10 +97,30 @@ def register_portfolio_manager(mcp):
             # 列出所有组合
             portfolio_manager(action="list", kwargs="{}")
         """
+        start_time = time.perf_counter()
         try:
             db = get_db()
             kwargs = _normalize_kwargs(dict(kwargs))
+            _, kwargs = normalize_manager_code(None, kwargs)
             user_id = str(kwargs.get('user_id') or 'default').strip() or 'default'
+
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="portfolio_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="portfolio_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
 
             if action == 'list':
                 async with db.acquire() as conn:
@@ -119,12 +129,12 @@ def register_portfolio_manager(mcp):
                         user_id
                     )
                     portfolios = [dict(row) for row in rows]
-                return ok({'portfolios': portfolios})
+                return _ok({'portfolios': portfolios}, source_chain=['portfolio_manager', 'db.portfolios'])
 
             elif action == 'create':
                 name = kwargs.get('name')
                 if not name:
-                    return fail('需要提供 name 参数')
+                    return _fail('需要提供 name 参数', source_chain=['portfolio_manager'])
                 user_id = kwargs.get('user_id', 'default')
                 initial_capital = kwargs.get('initial_capital', 100000)
                 description = kwargs.get('description')
@@ -141,15 +151,18 @@ def register_portfolio_manager(mcp):
                            RETURNING id""",
                         name, description, json.dumps(metadata or {}), user_id, initial_capital
                     )
-                return ok({'portfolio_id': portfolio_id, 'name': name, 'description': description, 'metadata': metadata})
+                return _ok(
+                    {'portfolio_id': portfolio_id, 'name': name, 'description': description, 'metadata': metadata},
+                    source_chain=['portfolio_manager', 'db.portfolios'],
+                )
 
             elif action == 'get':
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
                 async with db.acquire() as conn:
                     portfolio = await _load_portfolio(conn, portfolio_id, user_id)
                     if not portfolio:
-                        return fail('组合不存在')
-                return ok(dict(portfolio))
+                        return _fail('组合不存在', source_chain=['portfolio_manager', 'db.portfolios'])
+                return _ok(dict(portfolio), source_chain=['portfolio_manager', 'db.portfolios'])
 
             elif action == 'update':
                 # P0-1 修复说明：
@@ -157,7 +170,7 @@ def register_portfolio_manager(mcp):
                 # 新实现先读取现有记录并回填必填字段（尤其 current_value），同时兼容顶层字段与 updates 字段。
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
                 if not portfolio_id:
-                    return fail('需要提供 portfolio_id 参数')
+                    return _fail('需要提供 portfolio_id 参数', source_chain=['portfolio_manager'])
 
                 raw_updates = kwargs.get('updates', {})
                 updates = dict(raw_updates) if isinstance(raw_updates, dict) else {}
@@ -166,7 +179,10 @@ def register_portfolio_manager(mcp):
                         updates[key] = kwargs.get(key)
 
                 if not updates:
-                    return fail('需要提供 updates，或在顶层提供 name/description/current_value')
+                    return _fail(
+                        '需要提供 updates，或在顶层提供 name/description/current_value',
+                        source_chain=['portfolio_manager'],
+                    )
 
                 normalized = {}
                 if 'name' in updates and updates.get('name') is not None:
@@ -176,7 +192,7 @@ def register_portfolio_manager(mcp):
                 if 'current_value' in updates:
                     current_value = _safe_float(updates.get('current_value'))
                     if current_value is None:
-                        return fail('current_value 必须是数字')
+                        return _fail('current_value 必须是数字', source_chain=['portfolio_manager'])
                     normalized['current_value'] = current_value
 
                 async with db.acquire() as conn:
@@ -185,33 +201,39 @@ def register_portfolio_manager(mcp):
                         portfolio_id
                     )
                     if not existing:
-                        return fail('组合不存在')
+                        return _fail('组合不存在', source_chain=['portfolio_manager', 'db.portfolios'])
                     existing = dict(existing)
                     if str(existing.get('user_id') or 'default') != user_id:
-                        return fail('组合不存在')
+                        return _fail('组合不存在', source_chain=['portfolio_manager', 'db.portfolios'])
 
                     final_name = normalized.get('name', existing['name'])
                     final_description = normalized.get('description', existing['description'])
                     final_current_value = normalized.get('current_value', existing['current_value'])
 
                     if final_current_value is None:
-                        return fail('current_value 不能为空')
+                        return _fail('current_value 不能为空', source_chain=['portfolio_manager', 'db.portfolios'])
 
                     await conn.execute(
                         "UPDATE portfolios SET name = $1, description = $2, current_value = $3, updated_at = NOW() WHERE id = $4",
                         final_name, final_description, final_current_value, portfolio_id
                     )
-                return ok({'portfolio_id': portfolio_id, 'updated': True, 'applied_fields': list(normalized.keys())})
+                return _ok(
+                    {'portfolio_id': portfolio_id, 'updated': True, 'applied_fields': list(normalized.keys())},
+                    source_chain=['portfolio_manager', 'db.portfolios'],
+                )
 
             elif action == 'delete':
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
                 async with db.acquire() as conn:
                     portfolio = await _load_portfolio(conn, portfolio_id, user_id)
                     if not portfolio:
-                        return fail('组合不存在')
+                        return _fail('组合不存在', source_chain=['portfolio_manager', 'db.portfolios'])
                     await conn.execute("DELETE FROM holdings WHERE portfolio_id = $1", portfolio_id)
                     await conn.execute("DELETE FROM portfolios WHERE id = $1", portfolio_id)
-                return ok({'portfolio_id': portfolio_id, 'deleted': True})
+                return _ok(
+                    {'portfolio_id': portfolio_id, 'deleted': True},
+                    source_chain=['portfolio_manager', 'db.portfolios', 'db.holdings'],
+                )
 
             elif action == 'add_holding':
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
@@ -220,17 +242,20 @@ def register_portfolio_manager(mcp):
                 cost_price = kwargs.get('cost_price', 0)
 
                 if not portfolio_id:
-                    return fail('需要提供 portfolio_id 参数')
+                    return _fail('需要提供 portfolio_id 参数', source_chain=['portfolio_manager'])
                 if not code:
-                    return fail('需要提供 code 参数（股票代码）')
+                    return _fail('需要提供 code 参数（股票代码）', source_chain=['portfolio_manager'])
                 if shares is None:
-                    return fail('需要提供 shares 参数（持仓数量）')
+                    return _fail('需要提供 shares 参数（持仓数量）', source_chain=['portfolio_manager'])
 
                 async with db.acquire() as conn:
                     # 验证组合存在
                     portfolio = await _load_portfolio(conn, portfolio_id, user_id)
                     if not portfolio:
-                        return fail(f'组合 {portfolio_id} 不存在，请先创建组合')
+                        return _fail(
+                            f'组合 {portfolio_id} 不存在，请先创建组合',
+                            source_chain=['portfolio_manager', 'db.portfolios'],
+                        )
 
                     await conn.execute(
                         """INSERT INTO holdings (portfolio_id, code, shares, cost_price, created_at, updated_at)
@@ -239,51 +264,63 @@ def register_portfolio_manager(mcp):
                            SET shares = holdings.shares + EXCLUDED.shares, updated_at = NOW()""",
                         portfolio_id, code, int(shares), float(cost_price)
                     )
-                return ok({
-                    'portfolio_id': portfolio_id,
-                    'code': code,
-                    'shares': int(shares),
-                    'cost_price': float(cost_price),
-                    'added': True
-                })
+                return _ok(
+                    {
+                        'portfolio_id': portfolio_id,
+                        'code': code,
+                        'shares': int(shares),
+                        'cost_price': float(cost_price),
+                        'added': True,
+                    },
+                    source_chain=['portfolio_manager', 'db.portfolios', 'db.holdings'],
+                )
 
             elif action == 'remove_holding':
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
                 code = kwargs.get('code')
 
                 if not portfolio_id:
-                    return fail('需要提供 portfolio_id 参数')
+                    return _fail('需要提供 portfolio_id 参数', source_chain=['portfolio_manager'])
                 if not code:
-                    return fail('需要提供 code 参数（股票代码）')
+                    return _fail('需要提供 code 参数（股票代码）', source_chain=['portfolio_manager'])
 
                 async with db.acquire() as conn:
                     portfolio = await _load_portfolio(conn, portfolio_id, user_id)
                     if not portfolio:
-                        return fail(f'组合 {portfolio_id} 不存在，请先创建组合')
+                        return _fail(
+                            f'组合 {portfolio_id} 不存在，请先创建组合',
+                            source_chain=['portfolio_manager', 'db.portfolios'],
+                        )
                     await conn.execute(
                         "DELETE FROM holdings WHERE portfolio_id = $1 AND code = $2",
                         portfolio_id, code
                     )
-                return ok({'portfolio_id': portfolio_id, 'code': code, 'removed': True})
+                return _ok(
+                    {'portfolio_id': portfolio_id, 'code': code, 'removed': True},
+                    source_chain=['portfolio_manager', 'db.portfolios', 'db.holdings'],
+                )
 
             elif action == 'get_holdings':
                 portfolio_id = _safe_portfolio_id(kwargs.get('portfolio_id'))
                 if not portfolio_id:
-                    return fail('需要提供 portfolio_id 参数')
+                    return _fail('需要提供 portfolio_id 参数', source_chain=['portfolio_manager'])
 
                 async with db.acquire() as conn:
                     portfolio = await _load_portfolio(conn, portfolio_id, user_id)
                     if not portfolio:
-                        return fail('组合不存在')
+                        return _fail('组合不存在', source_chain=['portfolio_manager', 'db.portfolios'])
                     rows = await conn.fetch(
                         "SELECT * FROM holdings WHERE portfolio_id = $1 ORDER BY created_at",
                         portfolio_id
                     )
                     holdings = [dict(row) for row in rows]
-                return ok({'portfolio_id': portfolio_id, 'holdings': holdings, 'count': len(holdings)})
+                return _ok(
+                    {'portfolio_id': portfolio_id, 'holdings': holdings, 'count': len(holdings)},
+                    source_chain=['portfolio_manager', 'db.portfolios', 'db.holdings'],
+                )
 
             elif action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'list': '列出所有组合',
                         'create': '创建组合（需要 name，可附带 description/metadata）',
@@ -295,10 +332,21 @@ def register_portfolio_manager(mcp):
                         'get_holdings': '获取持仓列表（需要 portfolio_id）',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['portfolio_manager'])
 
             else:
-                return fail(f'Unknown action: {action}. Supported: list, create, get, update, delete, add_holding, remove_holding, get_holdings, help')
+                return _fail(
+                    'Unknown action: {action}. Supported: list, create, get, update, delete, add_holding, remove_holding, get_holdings, help'.format(
+                        action=action
+                    ),
+                    source_chain=['portfolio_manager'],
+                )
 
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='portfolio_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['portfolio_manager'],
+            )

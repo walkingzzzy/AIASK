@@ -1,4 +1,4 @@
-"""TDX 公式回退 Pure Python 实现 - 单元测试"""
+"""公式回退 Pure Python 实现 - 单元测试"""
 import sys, os, random
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'packages', 'akshare-mcp', 'src'))
 random.seed(42)
@@ -9,25 +9,25 @@ _BASE_HIGHS = [c * (1 + abs(random.gauss(0, 0.01))) for c in _BASE_CLOSES]
 _BASE_LOWS = [c * (1 - abs(random.gauss(0, 0.01))) for c in _BASE_CLOSES]
 _BASE_VOLUMES = [int(random.uniform(500000, 2000000)) for _ in range(100)]
 
-class TestTdxSma:
+class TestFormulaSma:
     def test_basic(self):
-        from akshare_mcp.services.technical_analysis import _tdx_sma
+        from akshare_mcp.services.technical_analysis import _formula_sma
         data = [1.0, 2.0, 3.0, 4.0, 5.0]
-        result = _tdx_sma(data, 3, 1)
+        result = _formula_sma(data, 3, 1)
         assert len(result) == 5
         assert result[0] == 1.0
         expected_1 = (1 * 2.0 + 2 * 1.0) / 3
         assert abs(result[1] - expected_1) < 1e-10
     def test_empty(self):
-        from akshare_mcp.services.technical_analysis import _tdx_sma
-        assert _tdx_sma([], 3) == []
+        from akshare_mcp.services.technical_analysis import _formula_sma
+        assert _formula_sma([], 3) == []
     def test_single(self):
-        from akshare_mcp.services.technical_analysis import _tdx_sma
-        assert _tdx_sma([5.0], 3) == [5.0]
+        from akshare_mcp.services.technical_analysis import _formula_sma
+        assert _formula_sma([5.0], 3) == [5.0]
     def test_m_equals_n(self):
-        from akshare_mcp.services.technical_analysis import _tdx_sma
+        from akshare_mcp.services.technical_analysis import _formula_sma
         data = [1.0, 2.0, 3.0, 4.0]
-        result = _tdx_sma(data, 3, 3)
+        result = _formula_sma(data, 3, 3)
         for i in range(len(data)):
             assert abs(result[i] - data[i]) < 1e-10
 

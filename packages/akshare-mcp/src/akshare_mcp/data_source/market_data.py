@@ -2,13 +2,13 @@
 数据源管理 - 市场数据方法
 
 包含 get_trading_dates、get_ipo_info、get_cb_info、get_gb_info 等。
-数据源优先级: TDX → Tushare Pro → AKShare
+数据源优先级: Tushare Pro → AKShare
 """
 
 import datetime
 import logging
 
-from ..utils import normalize_code, safe_float, safe_int, safe_stderr_print
+from ..utils import normalize_code, parse_numeric, safe_float, safe_int, safe_stderr_print
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ class MarketDataMixin:
             dict: {"success": bool, "data": list, "source": str, "message": str}
         """
         started_at = datetime.datetime.now()
-        backend_requested = "tdx"
+        backend_requested = "tushare_pro"
 
         def _valid_yyyymmdd(value: str) -> bool:
             if not value:
@@ -182,39 +182,15 @@ class MarketDataMixin:
                 started_at=started_at,
             )
 
-        # 1. 优先使用 TDX
-        if self.is_tdx_available():
-            try:
-                tq = self.get_tdxquant()
-                if tq:
-                    result = tq.get_trading_dates(
-                        market=market,
-                        start_time=start_time,
-                        end_time=end_time,
-                        count=count
-                    )
-                    if isinstance(result, list):
-                        dates = [str(d) for d in result if str(d)]
-                        dates = sorted(dates)
-                        if count > 0:
-                            dates = dates[-count:]
-                        return self._result_with_requested_backend(
-                            success=True,
-                            data=dates,
-                            source="tdx",
-                            message=f"获取到 {len(dates)} 个交易日",
-                            backend_requested=backend_requested,
-                            backend_used="tdx",
-                            started_at=started_at,
-                        )
-            except Exception as e:
-                safe_stderr_print(f"[DataSource] TDX get_trading_dates failed: {e}")
+        effective_end_time = end_time
+        if count > 0 and not effective_end_time:
+            effective_end_time = datetime.datetime.now().strftime("%Y%m%d")
 
-        # 2. 降级到 Tushare Pro
+        # 1. 优先使用 Tushare Pro
         if self.ts_pro:
             try:
                 start_date = start_time if start_time else None
-                end_date = end_time if end_time else None
+                end_date = effective_end_time if effective_end_time else None
 
                 df = self.ts_pro.trade_cal(
                     exchange='SSE',
@@ -224,6 +200,8 @@ class MarketDataMixin:
                 )
                 if df is not None and not df.empty:
                     dates = [str(d) for d in df['cal_date'].tolist() if d]
+                    if effective_end_time:
+                        dates = [d for d in dates if d <= effective_end_time]
                     dates = sorted(dates)
                     if count > 0:
                         dates = dates[-count:]
@@ -247,8 +225,8 @@ class MarketDataMixin:
                     dates = [d.strftime('%Y%m%d') for d in df['trade_date'].tolist()]
                     if start_time:
                         dates = [d for d in dates if d >= start_time]
-                    if end_time:
-                        dates = [d for d in dates if d <= end_time]
+                    if effective_end_time:
+                        dates = [d for d in dates if d <= effective_end_time]
                     dates = sorted(dates)
                     if count > 0:
                         dates = dates[-count:]
@@ -288,28 +266,9 @@ class MarketDataMixin:
             dict: {"success": bool, "data": list, "source": str, "message": str}
         """
         started_at = datetime.datetime.now()
-        backend_requested = "tdx"
+        backend_requested = "tushare_pro"
 
-        # 1. 优先使用 TDX
-        if self.is_tdx_available():
-            try:
-                tq = self.get_tdxquant()
-                if tq:
-                    result = tq.get_ipo_info(ipo_type=ipo_type, ipo_date=ipo_date)
-                    if isinstance(result, list):
-                        return self._result_with_requested_backend(
-                            success=True,
-                            data=result,
-                            source="tdx",
-                            message=f"获取到 {len(result)} 条申购信息",
-                            backend_requested=backend_requested,
-                            backend_used="tdx",
-                            started_at=started_at,
-                        )
-            except Exception as e:
-                safe_stderr_print(f"[DataSource] TDX get_ipo_info failed: {e}")
-
-        # 2. 降级到 Tushare Pro (新股)
+        # 1. 优先使用 Tushare Pro (新股)
         if self.ts_pro and ipo_type in (0, 2):
             try:
                 df = self.ts_pro.new_share(start_date='', end_date='')
@@ -407,7 +366,7 @@ class MarketDataMixin:
             dict: {"success": bool, "data": dict, "source": str, "message": str}
         """
         started_at = datetime.datetime.now()
-        backend_requested = "tdx"
+        backend_requested = "tushare_pro"
 
         if not stock_code:
             return self._failed_fallback_result(
@@ -418,42 +377,36 @@ class MarketDataMixin:
                 started_at=started_at,
             )
 
-        # 1. 优先使用 TDX
-        if self.is_tdx_available():
-            try:
-                tq = self.get_tdxquant()
-                if tq:
-                    tdx_code = self._convert_to_tdx_code(stock_code)
-                    result = tq.get_cb_info(stock_code=tdx_code)
-                    if isinstance(result, dict) and result.get("KZZCode"):
-                        return self._result_with_requested_backend(
-                            success=True,
-                            data=result,
-                            source="tdx",
-                            message="获取可转债信息成功",
-                            backend_requested=backend_requested,
-                            backend_used="tdx",
-                            started_at=started_at,
-                        )
-            except Exception as e:
-                safe_stderr_print(f"[DataSource] TDX get_cb_info failed: {e}")
-
-        # 2. 降级到 Tushare Pro
+        # 1. 优先使用 Tushare Pro
         if self.ts_pro:
             try:
-                code = stock_code.split('.')[0] if '.' in stock_code else stock_code
-                df = self.ts_pro.cb_basic(ts_code=f"{code}.SH") if code.startswith('11') else \
-                     self.ts_pro.cb_basic(ts_code=f"{code}.SZ")
+                code = normalize_code(stock_code)
+                suffix = ""
+                if "." in str(stock_code):
+                    suffix = str(stock_code).split(".")[-1].upper()
+                ts_candidates = []
+                if suffix in {"SH", "SZ"}:
+                    ts_candidates.append(f"{code}.{suffix}")
+                if code.startswith("11"):
+                    ts_candidates.extend([f"{code}.SH", f"{code}.SZ"])
+                else:
+                    ts_candidates.extend([f"{code}.SZ", f"{code}.SH"])
+                seen_candidates = set()
+                ts_candidates = [item for item in ts_candidates if not (item in seen_candidates or seen_candidates.add(item))]
 
-                if df is not None and not df.empty:
+                for ts_code in ts_candidates:
+                    df = self.ts_pro.cb_basic(ts_code=ts_code)
+                    if df is None or df.empty:
+                        continue
                     row = df.iloc[0]
                     data = {
                         "KZZCode": code,
-                        "HSCode": str(row.get("stk_code", "")),
-                        "ZGPrice": str(row.get("conv_price", "")),
-                        "ZGDate": str(row.get("conv_start_date", "")),
-                        "EndDate": str(row.get("maturity_date", "")),
-                        "RestScope": str(row.get("issue_size", ""))
+                        "HSCode": str(row.get("stk_code", "") or ""),
+                        "name": str(row.get("bond_short_name", "") or row.get("bond_nm", "") or ""),
+                        "ZGPrice": str(row.get("conv_price", "") or ""),
+                        "ZGDate": str(row.get("conv_start_date", "") or ""),
+                        "EndDate": str(row.get("maturity_date", "") or ""),
+                        "RestScope": str(row.get("remain_size", "") or row.get("issue_size", "") or ""),
                     }
                     return self._result_with_requested_backend(
                         success=True,
@@ -467,12 +420,50 @@ class MarketDataMixin:
             except Exception as e:
                 safe_stderr_print(f"[DataSource] Tushare Pro cb_basic failed: {e}")
 
-        # 3. 降级到 AKShare
+        # 2. 降级到 AKShare
         if ak is not None:
             try:
+                code = normalize_code(stock_code)
+                if hasattr(ak, "bond_zh_cov_info"):
+                    try:
+                        df = ak.bond_zh_cov_info(symbol=code)
+                        if df is not None and not df.empty:
+                            row = df.iloc[0]
+                            data = {
+                                "KZZCode": str(row.get("SECURITY_CODE", "") or code),
+                                "HSCode": str(row.get("CONVERT_STOCK_CODE", "") or ""),
+                                "name": str(row.get("SECURITY_NAME_ABBR", "") or row.get("SECURITY_NAME", "") or ""),
+                                "ZGPrice": str(
+                                    row.get("TRANSFER_PRICE", "")
+                                    or row.get("INITIAL_TRANSFER_PRICE", "")
+                                    or row.get("CONVERT_STOCK_PRICE", "")
+                                    or row.get("转股价", "")
+                                    or ""
+                                ),
+                                "ZGDate": str(row.get("TRANSFER_START_DATE", "") or row.get("转股开始日", "") or ""),
+                                "EndDate": str(row.get("EXPIRE_DATE", "") or row.get("到期日期", "") or ""),
+                                "RestScope": str(
+                                    row.get("CURRENT_BOND_AMT", "")
+                                    or row.get("CURRENT_ISSUE_AMT", "")
+                                    or row.get("ACTUAL_ISSUE_SCALE", "")
+                                    or row.get("剩余规模", "")
+                                    or ""
+                                ),
+                            }
+                            return self._result_with_requested_backend(
+                                success=True,
+                                data=data,
+                                source="akshare",
+                                message="获取可转债信息成功",
+                                backend_requested=backend_requested,
+                                backend_used="akshare",
+                                started_at=started_at,
+                            )
+                    except Exception as inner_e:
+                        safe_stderr_print(f"[DataSource] AKShare bond_zh_cov_info failed: {inner_e}")
+
                 df = ak.bond_cb_jsl()
                 if df is not None and not df.empty:
-                    code = stock_code.split('.')[0] if '.' in stock_code else stock_code
                     row = df[df['转债代码'] == code]
                     if not row.empty:
                         row = row.iloc[0]
@@ -481,7 +472,7 @@ class MarketDataMixin:
                             "HSCode": str(row.get("正股代码", "")),
                             "name": str(row.get("转债名称", "")),
                             "ZGPrice": str(row.get("转股价", "")),
-                            "RestScope": str(row.get("剩余规模", ""))
+                            "RestScope": str(row.get("剩余规模", "") or row.get("发行规模", "")),
                         }
                         return self._result_with_requested_backend(
                             success=True,
@@ -521,7 +512,7 @@ class MarketDataMixin:
             dict: {"success": bool, "data": list, "source": str, "message": str}
         """
         started_at = datetime.datetime.now()
-        backend_requested = "tdx"
+        backend_requested = "tushare_pro"
 
         if not stock_code:
             return self._failed_fallback_result(
@@ -534,31 +525,102 @@ class MarketDataMixin:
 
         date_list = date_list or []
 
-        # 1. 优先使用 TDX
-        if self.is_tdx_available() and date_list:
-            try:
-                tq = self.get_tdxquant()
-                if tq:
-                    tdx_code = self._convert_to_tdx_code(stock_code)
-                    result = tq.get_gb_info(
-                        stock_code=tdx_code,
-                        date_list=date_list,
-                        count=count
-                    )
-                    if isinstance(result, list):
-                        return self._result_with_requested_backend(
-                            success=True,
-                            data=result,
-                            source="tdx",
-                            message=f"获取到 {len(result)} 条股本数据",
-                            backend_requested=backend_requested,
-                            backend_used="tdx",
-                            started_at=started_at,
-                        )
-            except Exception as e:
-                safe_stderr_print(f"[DataSource] TDX get_gb_info failed: {e}")
+        def _normalize_query_date(value: str) -> str | None:
+            s = str(value or "").strip()
+            if not s:
+                return None
+            if len(s) >= 10 and "-" in s:
+                s = s[:10].replace("-", "")
+            elif len(s) >= 8:
+                s = s[:8]
+            return s if len(s) == 8 and s.isdigit() else None
 
-        # 2. 降级到 Tushare Pro
+        def _share_value_to_shares(value) -> float | None:
+            numeric = parse_numeric(value)
+            if numeric is None:
+                return None
+            return float(numeric * 10000) if numeric < 1e7 else float(numeric)
+
+        normalized_dates = [_normalize_query_date(d) for d in date_list]
+        normalized_dates = [d for d in normalized_dates if d]
+
+        def _frame_empty(frame) -> bool:
+            if frame is None:
+                return True
+            empty = getattr(frame, "empty", None)
+            if isinstance(empty, bool):
+                return empty
+            try:
+                return len(frame) == 0
+            except Exception:
+                return False
+
+        def _frame_columns(frame) -> set[str]:
+            raw = getattr(frame, "columns", None)
+            if raw is not None:
+                try:
+                    return {str(col) for col in raw}
+                except Exception:
+                    pass
+            keys = getattr(frame, "keys", None)
+            if callable(keys):
+                try:
+                    return {str(col) for col in keys()}
+                except Exception:
+                    pass
+            discovered: set[str] = set()
+            for candidate in ("item", "项目", "value", "值"):
+                try:
+                    frame[candidate]
+                    discovered.add(candidate)
+                except Exception:
+                    continue
+            return discovered
+
+        def _frame_to_info_dict(frame) -> dict[str, object]:
+            if frame is None or _frame_empty(frame):
+                return {}
+            columns = _frame_columns(frame)
+            item_col = 'item' if 'item' in columns else ('项目' if '项目' in columns else None)
+            value_col = 'value' if 'value' in columns else ('值' if '值' in columns else None)
+            if item_col is not None and value_col is not None:
+                try:
+                    return dict(zip(frame[item_col], frame[value_col]))
+                except Exception:
+                    return {}
+            try:
+                row = frame.iloc[0]
+                return {str(col): row.get(col) for col in columns}
+            except Exception:
+                return {}
+
+        def _build_akshare_snapshot(info_dict: dict[str, object], *, latest_date: str) -> list[dict] | None:
+            ltgb = (
+                parse_numeric(info_dict.get("流通股"))
+                or parse_numeric(info_dict.get("流通A股"))
+                or parse_numeric(info_dict.get("A股流通股"))
+                or parse_numeric(info_dict.get("流通股本"))
+                or parse_numeric(info_dict.get("流通股(股)"))
+                or parse_numeric(info_dict.get("float_share"))
+                or parse_numeric(info_dict.get("circulating_share"))
+            )
+            zgb = (
+                parse_numeric(info_dict.get("总股本"))
+                or parse_numeric(info_dict.get("总股本(股)"))
+                or parse_numeric(info_dict.get("总股本A股"))
+                or parse_numeric(info_dict.get("总股本(万股)"))
+                or parse_numeric(info_dict.get("total_share"))
+                or parse_numeric(info_dict.get("total_shares"))
+            )
+            if ltgb is None and zgb is None:
+                return None
+            return [{
+                "Date": int(latest_date),
+                "ltgb": float(ltgb or 0.0),
+                "zgb": float(zgb or 0.0),
+            }]
+
+        # 1. 优先使用 Tushare Pro
         if self.ts_pro:
             try:
                 code = normalize_code(stock_code)
@@ -567,45 +629,86 @@ class MarketDataMixin:
                 else:
                     ts_code = f"{code}.SZ"
 
-                df = self.ts_pro.daily_basic(ts_code=ts_code, fields='ts_code,trade_date,total_share,float_share')
+                today = datetime.datetime.now()
+                if normalized_dates:
+                    start_date = min(normalized_dates)
+                    end_date = max(normalized_dates)
+                else:
+                    start_date = (today - datetime.timedelta(days=365)).strftime("%Y%m%d")
+                    end_date = today.strftime("%Y%m%d")
+
+                df = self.ts_pro.daily_basic(
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                    fields='ts_code,trade_date,total_share,float_share'
+                )
                 if df is not None and not df.empty:
-                    results = []
-                    for _, row in df.head(count).iterrows():
-                        results.append({
-                            "Date": int(row['trade_date']),
-                            "ltgb": float(row['float_share']) * 10000 if row['float_share'] else 0,
-                            "zgb": float(row['total_share']) * 10000 if row['total_share'] else 0
+                    records = []
+                    for _, row in df.iterrows():
+                        trade_date = _normalize_query_date(row.get('trade_date'))
+                        if not trade_date:
+                            continue
+                        ltgb = _share_value_to_shares(row.get('float_share'))
+                        zgb = _share_value_to_shares(row.get('total_share'))
+                        records.append({
+                            "Date": int(trade_date),
+                            "ltgb": ltgb or 0.0,
+                            "zgb": zgb or 0.0,
                         })
-                    return self._result_with_requested_backend(
-                        success=True,
-                        data=results,
-                        source="tushare_pro",
-                        message=f"获取到 {len(results)} 条股本数据",
-                        backend_requested=backend_requested,
-                        backend_used="tushare_pro",
-                        started_at=started_at,
-                    )
+
+                    records.sort(key=lambda item: item["Date"], reverse=True)
+                    results = []
+                    if normalized_dates:
+                        for target in normalized_dates:
+                            target_int = int(target)
+                            matched = next((item for item in records if item["Date"] <= target_int), None)
+                            if matched is not None:
+                                results.append(dict(matched))
+                    else:
+                        results = records[:max(1, int(count or 1))]
+
+                    if results:
+                        return self._result_with_requested_backend(
+                            success=True,
+                            data=results,
+                            source="tushare_pro",
+                            message=f"获取到 {len(results)} 条股本数据",
+                            backend_requested=backend_requested,
+                            backend_used="tushare_pro",
+                            started_at=started_at,
+                        )
             except Exception as e:
                 safe_stderr_print(f"[DataSource] Tushare Pro daily_basic failed: {e}")
 
-        # 3. 降级到 AKShare
+        # 2. 降级到 AKShare
         if ak is not None:
             try:
                 code = normalize_code(stock_code)
+                today = datetime.datetime.now().strftime('%Y%m%d')
+
                 df = ak.stock_individual_info_em(symbol=code)
-                if df is not None and not df.empty:
-                    info_dict = dict(zip(df['item'], df['value']))
-                    today = datetime.datetime.now().strftime('%Y%m%d')
-                    data = [{
-                        "Date": int(today),
-                        "ltgb": safe_float(info_dict.get("流通股", 0)),
-                        "zgb": safe_float(info_dict.get("总股本", 0))
-                    }]
+                info_dict = _frame_to_info_dict(df)
+                data = _build_akshare_snapshot(info_dict, latest_date=today)
+                if data:
                     return self._result_with_requested_backend(
                         success=True,
                         data=data,
                         source="akshare",
                         message="获取到 1 条股本数据",
+                        backend_requested=backend_requested,
+                        backend_used="akshare",
+                        started_at=started_at,
+                    )
+                df_cninfo = ak.stock_profile_cninfo(symbol=code)
+                info_dict_cninfo = _frame_to_info_dict(df_cninfo)
+                data_cninfo = _build_akshare_snapshot(info_dict_cninfo, latest_date=today)
+                if data_cninfo:
+                    return self._result_with_requested_backend(
+                        success=True,
+                        data=data_cninfo,
+                        source="akshare",
+                        message="获取到 1 条股本数据（CNInfo 快照）",
                         backend_requested=backend_requested,
                         backend_used="akshare",
                         started_at=started_at,

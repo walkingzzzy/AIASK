@@ -2,13 +2,15 @@
 
 import uuid
 import json
+import time
 from datetime import date, datetime, timezone
 from ...storage import get_db
-from ...utils import ok, fail, normalize_code
+from ...utils import normalize_code, parse_date_input
 from ...data_source import data_source
 from ...services.cost_model import build_cost_model
 from ...services.artifact_registry import register_artifact
 from ...services.signal_dsl import build_signal_definition
+from ..manager_protocol import fail_with_meta, normalize_manager_code, normalize_manager_kwargs, ok_with_meta
 import logging
 
 logger = logging.getLogger(__name__)
@@ -91,22 +93,172 @@ def _build_strategy_artifact(
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
-    params = kwargs.get("params")
-    if isinstance(params, dict):
-        kwargs = {**kwargs, **params}
-    raw = kwargs.get("kwargs")
-    if isinstance(raw, dict):
-        kwargs = {**kwargs, **raw}
-    elif isinstance(raw, str):
+    return normalize_manager_kwargs(kwargs)
+
+
+def _dedupe_chain(values: list[str]) -> list[str]:
+    chain = []
+    seen = set()
+    for value in values:
+        label = str(value or "").strip()
+        if not label or label in seen:
+            continue
+        chain.append(label)
+        seen.add(label)
+    return chain
+
+
+def _normalize_date_arg(value) -> str | None:
+    if value in (None, ""):
+        return None
+    parsed = parse_date_input(str(value).strip())
+    return parsed.isoformat() if parsed else None
+
+
+def _normalize_klines(rows: list[dict] | None) -> list[dict]:
+    normalized: list[dict] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        raw_date = row.get("date") or row.get("trade_date") or row.get("time") or row.get("datetime")
+        parsed = None
+        if isinstance(raw_date, datetime):
+            parsed = raw_date.date()
+        elif isinstance(raw_date, date):
+            parsed = raw_date
+        elif raw_date:
+            parsed = parse_date_input(str(raw_date)[:10])
+        normalized.append(
+            {
+                **row,
+                "date": parsed.isoformat() if parsed else str(raw_date or "")[:10],
+            }
+        )
+    normalized.sort(key=lambda item: str(item.get("date") or ""))
+    return normalized
+
+
+def _filter_klines_by_window(
+    rows: list[dict] | None,
+    start_date: str | None,
+    end_date: str | None,
+) -> list[dict]:
+    normalized = _normalize_klines(rows)
+    if not start_date and not end_date:
+        return normalized
+
+    filtered: list[dict] = []
+    for row in normalized:
+        row_date = str(row.get("date") or "")[:10]
+        if not row_date:
+            continue
+        if start_date and row_date < start_date:
+            continue
+        if end_date and row_date > end_date:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def _estimate_limit_from_window(start_date: str | None, end_date: str | None, default: int = 250) -> int:
+    start = parse_date_input(start_date) if start_date else None
+    end = parse_date_input(end_date) if end_date else None
+    if start and end:
+        days = abs((end - start).days) + 1
+        return min(max(days + 30, 60), 1000)
+    return max(50, int(default or 250))
+
+
+async def _get_db_klines_compatible(
+    db,
+    code: str,
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    limit: int | None,
+) -> list[dict]:
+    try:
+        return await db.get_klines(code, start_date=start_date, end_date=end_date, limit=limit)
+    except TypeError:
+        if start_date or end_date:
+            try:
+                return await db.get_klines(code, start_date, end_date, limit)
+            except TypeError:
+                try:
+                    return await db.get_klines(code, limit=limit)
+                except TypeError:
+                    return await db.get_klines(code, limit)
         try:
-            extra = json.loads(raw or "{}")
-            if isinstance(extra, dict):
-                kwargs = {**kwargs, **extra}
-        except Exception:
-            pass
-    if "code" not in kwargs or not kwargs.get("code"):
-        kwargs["code"] = kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
-    return kwargs
+            return await db.get_klines(code, limit=limit)
+        except TypeError:
+            return await db.get_klines(code, limit)
+
+
+def _safe_float_metric(payload: dict, key: str, default: float = 0.0) -> float:
+    try:
+        value = payload.get(key, default)
+        if value is None:
+            return float(default)
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _safe_int_metric(payload: dict, key: str, default: int = 0) -> int:
+    try:
+        value = payload.get(key, default)
+        if value is None:
+            return int(default)
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _safe_date_value(value) -> date:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    parsed = _normalize_date_arg(value)
+    if parsed:
+        return datetime.strptime(parsed, "%Y-%m-%d").date()
+    return date.today()
+
+
+async def _insert_backtest_result(
+    conn,
+    *,
+    backtest_id: str,
+    code: str,
+    strategy: str,
+    params_payload: str,
+    start_dt: date,
+    end_dt: date,
+    initial_capital: float,
+    result: dict,
+) -> None:
+    await conn.execute(
+        """INSERT INTO backtest_results
+           (id, code, strategy, params, start_date, end_date, initial_capital, final_capital,
+            total_return, annual_return, max_drawdown, sharpe_ratio, sortino_ratio, win_rate,
+            trades_count, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())""",
+        backtest_id,
+        code,
+        strategy,
+        params_payload,
+        start_dt,
+        end_dt,
+        float(initial_capital),
+        _safe_float_metric(result, 'final_capital', initial_capital),
+        _safe_float_metric(result, 'total_return', 0.0),
+        _safe_float_metric(result, 'annual_return', 0.0),
+        _safe_float_metric(result, 'max_drawdown', 0.0),
+        _safe_float_metric(result, 'sharpe_ratio', 0.0),
+        _safe_float_metric(result, 'sortino_ratio', 0.0),
+        _safe_float_metric(result, 'win_rate', 0.0),
+        _safe_int_metric(result, 'trades_count', 0),
+    )
 
 
 def register_backtest_manager(mcp):
@@ -141,12 +293,34 @@ def register_backtest_manager(mcp):
             # 对比多个回测
             backtest_manager(action="compare", kwargs='{"backtest_ids":["abc123","def456"]}')
         """
+        start_time = time.perf_counter()
         try:
             db = get_db()
             kwargs = _normalize_kwargs(kwargs)
+            code, kwargs = normalize_manager_code(None, kwargs)
+            if code:
+                kwargs["code"] = code
+
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="backtest_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="backtest_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
             
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'run': '运行回测（需要 code, 可选 strategy/start_date/end_date；返回 artifact_id）',
                         'save': '保存回测结果',
@@ -155,33 +329,61 @@ def register_backtest_manager(mcp):
                         'compare': '对比回测（需要 backtest_ids）',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['backtest_manager'])
             
             elif action == 'run':
                 code = kwargs.get('code')
                 strategy = kwargs.get('strategy', 'ma_cross')
+                source_chain = ['backtest_manager']
                 
                 if not code:
-                    return fail('需要提供股票代码')
+                    return _fail('需要提供股票代码', source_chain=source_chain)
                 
                 code = normalize_code(code)
+                requested_start = kwargs.get('start_date')
+                requested_end = kwargs.get('end_date')
+                start_date = _normalize_date_arg(requested_start)
+                end_date = _normalize_date_arg(requested_end)
+                if requested_start and not start_date:
+                    return _fail('start_date 格式无效，支持 YYYY-MM-DD / YYYYMMDD / YYYY', source_chain=source_chain)
+                if requested_end and not end_date:
+                    return _fail('end_date 格式无效，支持 YYYY-MM-DD / YYYYMMDD / YYYY', source_chain=source_chain)
+                if start_date and end_date and start_date > end_date:
+                    start_date, end_date = end_date, start_date
                 
                 # 1. 获取K线数据
-                limit = kwargs.get('limit', 250)
-                klines = await db.get_klines(code, limit=limit)
+                limit = _estimate_limit_from_window(start_date, end_date, kwargs.get('limit', 250))
+                db_limit = None if (start_date or end_date) else limit
+                klines = await _get_db_klines_compatible(
+                    db,
+                    code,
+                    start_date=start_date,
+                    end_date=end_date,
+                    limit=db_limit,
+                )
+                if klines:
+                    source_chain.append('db.get_klines')
+                    klines = _filter_klines_by_window(klines, start_date, end_date)
                 
                 if not klines:
                     logger.info(f"[BacktestManager] Fetching klines for {code}")
                     klines = data_source.get_kline(code, 'daily', limit)
+                    if klines:
+                        source_chain.append('data_source.get_kline')
+                        klines = _filter_klines_by_window(klines, start_date, end_date)
                     
                     if klines:
                         try:
                             await db.save_klines(code, klines)
+                            source_chain.append('db.save_klines')
                         except Exception as e:
                             logger.warning(f"[BacktestManager] Failed to save klines: {e}")
                 
                 if not klines or len(klines) < 50:
-                    return fail(f'K线数据不足，无法回测（需要至少50天数据，当前{len(klines) if klines else 0}天）')
+                    return _fail(
+                        f'K线数据不足，无法回测（需要至少50天数据，当前{len(klines) if klines else 0}天）',
+                        source_chain=_dedupe_chain(source_chain),
+                    )
                 
                 # 2. 运行回测
                 from ...services.backtest import backtest_engine
@@ -194,17 +396,32 @@ def register_backtest_manager(mcp):
                 benchmark_klines = []
                 if benchmark_code:
                     benchmark_normalized = normalize_code(benchmark_code)
-                    benchmark_klines = await db.get_klines(benchmark_normalized, limit=limit)
+                    benchmark_klines = await _get_db_klines_compatible(
+                        db,
+                        benchmark_normalized,
+                        start_date=start_date,
+                        end_date=end_date,
+                        limit=db_limit,
+                    )
+                    if benchmark_klines:
+                        source_chain.append('db.get_klines')
+                        benchmark_klines = _filter_klines_by_window(benchmark_klines, start_date, end_date)
                     if not benchmark_klines:
                         try:
                             benchmark_klines = data_source.get_kline(benchmark_normalized, 'daily', limit)
+                            if benchmark_klines:
+                                source_chain.append('data_source.get_kline')
+                                benchmark_klines = _filter_klines_by_window(benchmark_klines, start_date, end_date)
                         except Exception as e:
                             logger.warning(f"[BacktestManager] Failed to fetch benchmark klines: {e}")
                             benchmark_klines = []
 
                 supported_strategies = ['ma_cross', 'buy_and_hold', 'momentum', 'rsi']
                 if strategy not in supported_strategies:
-                    return fail(f'不支持的策略: {strategy}，支持: {", ".join(supported_strategies)}')
+                    return _fail(
+                        f'不支持的策略: {strategy}，支持: {", ".join(supported_strategies)}',
+                        source_chain=_dedupe_chain(source_chain),
+                    )
 
                 params = {
                     'initial_capital': initial_capital,
@@ -241,6 +458,7 @@ def register_backtest_manager(mcp):
 
                 try:
                     register_artifact(artifact)
+                    source_chain.append('services.artifact_registry')
                 except Exception as e:
                     logger.warning(f"[BacktestManager] register_artifact failed: {e}")
 
@@ -250,9 +468,10 @@ def register_backtest_manager(mcp):
                     strategy=strategy,
                     params=params_with_artifact,
                 )
+                source_chain.append('services.backtest.backtest_engine')
                 
                 if not result.get('success'):
-                    return fail(result.get('error', '回测执行失败'))
+                    return _fail(result.get('error', '回测执行失败'), source_chain=_dedupe_chain(source_chain))
                 
                 result = result.get('data', result)
                 
@@ -260,40 +479,28 @@ def register_backtest_manager(mcp):
                 backtest_id = str(uuid.uuid4())[:8]
                 
                 # 解析日期，兼容 date 对象和字符串
-                def _safe_date(val):
-                    if isinstance(val, date):
-                        return val
-                    if isinstance(val, str):
-                        for fmt in ('%Y-%m-%d', '%Y%m%d', '%Y/%m/%d'):
-                            try:
-                                return datetime.strptime(val, fmt).date()
-                            except Exception:
-                                continue
-                    return date.today()
-                
-                start_dt = _safe_date(klines[0].get('date')) if klines else date.today()
-                end_dt = _safe_date(klines[-1].get('date')) if klines else date.today()
+                start_dt = _safe_date_value(klines[0].get('date')) if klines else date.today()
+                end_dt = _safe_date_value(klines[-1].get('date')) if klines else date.today()
                 
                 # 确保 start_date <= end_date（防止K线未排序导致日期反转）
                 if start_dt > end_dt:
                     start_dt, end_dt = end_dt, start_dt
                 
                 async with db.acquire() as conn:
-                    await conn.execute(
-                        """INSERT INTO backtest_results 
-                           (id, code, strategy, params, start_date, end_date, initial_capital, final_capital, 
-                            total_return, sharpe_ratio, max_drawdown, created_at)
-                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())""",
-                        backtest_id, code, strategy, _safe_json_dumps(params_with_artifact),
-                        start_dt, end_dt,
-                        initial_capital,
-                        result.get('final_capital', initial_capital),
-                        result.get('total_return', 0),
-                        result.get('sharpe_ratio', 0),
-                        result.get('max_drawdown', 0)
+                    await _insert_backtest_result(
+                        conn,
+                        backtest_id=backtest_id,
+                        code=code,
+                        strategy=strategy,
+                        params_payload=_safe_json_dumps(params_with_artifact),
+                        start_dt=start_dt,
+                        end_dt=end_dt,
+                        initial_capital=initial_capital,
+                        result=result,
                     )
+                source_chain.append('db.backtest_results')
                 
-                return ok({
+                return _ok({
                     'backtest_id': backtest_id,
                     'artifact_id': artifact_id,
                     'artifact': artifact,
@@ -302,32 +509,37 @@ def register_backtest_manager(mcp):
                     'cost_model': artifact.get('cost_model', {}),
                     'result': result,
                     'data_points': len(klines)
-                })
+                }, source_chain=_dedupe_chain(source_chain))
             
             elif action == 'save':
+                source_chain = ['backtest_manager', 'db.backtest_results']
                 code = kwargs.get('code')
                 strategy = kwargs.get('strategy')
                 params = kwargs.get('params', {})
                 result = kwargs.get('result', {})
                 
                 backtest_id = str(uuid.uuid4())[:8]
+                start_dt = _safe_date_value(result.get('start_date', date.today()))
+                end_dt = _safe_date_value(result.get('end_date', date.today()))
+                if start_dt > end_dt:
+                    start_dt, end_dt = end_dt, start_dt
                 
                 async with db.acquire() as conn:
-                    await conn.execute(
-                        """INSERT INTO backtest_results 
-                           (id, code, strategy, params, start_date, end_date, initial_capital, final_capital, 
-                            total_return, sharpe_ratio, max_drawdown, created_at)
-                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())""",
-                        backtest_id, code, strategy, str(params),
-                        result.get('start_date', date.today()), 
-                        result.get('end_date', date.today()),
-                        result.get('initial_capital', 100000),
-                        result.get('final_capital', 100000),
-                        result.get('total_return'), result.get('sharpe_ratio'), result.get('max_drawdown')
+                    await _insert_backtest_result(
+                        conn,
+                        backtest_id=backtest_id,
+                        code=code,
+                        strategy=strategy,
+                        params_payload=_safe_json_dumps(params),
+                        start_dt=start_dt,
+                        end_dt=end_dt,
+                        initial_capital=_safe_float_metric(result, 'initial_capital', 100000.0),
+                        result=result,
                     )
-                return ok({'backtest_id': backtest_id})
+                return _ok({'backtest_id': backtest_id}, source_chain=source_chain)
             
             elif action == 'list':
+                source_chain = ['backtest_manager', 'db.backtest_results']
                 code = kwargs.get('code')
                 limit = kwargs.get('limit', 20)
                 
@@ -358,9 +570,10 @@ def register_backtest_manager(mcp):
                             r['start_date'], r['end_date'] = ed, sd
                         results.append(r)
                 
-                return ok({'results': results, 'count': len(results)})
+                return _ok({'results': results, 'count': len(results)}, source_chain=source_chain)
             
             elif action == 'get':
+                source_chain = ['backtest_manager', 'db.backtest_results']
                 backtest_id = kwargs.get('backtest_id')
                 async with db.acquire() as conn:
                     row = await conn.fetchrow(
@@ -368,15 +581,21 @@ def register_backtest_manager(mcp):
                         backtest_id
                     )
                     if not row:
-                        return fail('回测结果不存在')
+                        return _fail('回测结果不存在', source_chain=source_chain)
                     result = dict(row)
                 
-                return ok(result)
+                return _ok(result, source_chain=source_chain)
             
             elif action == 'compare':
+                source_chain = ['backtest_manager', 'db.backtest_results']
                 backtest_ids = kwargs.get('backtest_ids', [])
+                if isinstance(backtest_ids, str):
+                    try:
+                        backtest_ids = json.loads(backtest_ids)
+                    except Exception:
+                        backtest_ids = [item.strip() for item in backtest_ids.split(',') if item.strip()]
                 if not backtest_ids:
-                    return fail('需要提供回测ID列表')
+                    return _fail('需要提供回测ID列表', source_chain=source_chain)
                 
                 comparison = []
                 async with db.acquire() as conn:
@@ -388,14 +607,23 @@ def register_backtest_manager(mcp):
                         if row:
                             comparison.append(dict(row))
                 
-                return ok({
+                return _ok({
                     'comparison': comparison,
                     'count': len(comparison)
-                })
+                }, source_chain=source_chain)
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, run, save, list, get, compare')
+                return _fail(
+                    f'Unknown action: {action}. Supported: help, run, save, list, get, compare',
+                    source_chain=['backtest_manager'],
+                )
         
         except Exception as e:
             logger.error(f"[BacktestManager] Error: {e}")
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='backtest_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['backtest_manager'],
+            )

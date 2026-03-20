@@ -2,7 +2,7 @@
 数据源管理 - 行情与K线方法
 
 包含 get_realtime_quote、get_kline、_get_stock_name 等多源降级逻辑。
-数据源优先级: TDX → Tushare Pro → Tushare legacy → eFinance/Baostock
+数据源优先级: Tushare Pro → Tushare legacy → eFinance/Baostock
 """
 
 import datetime
@@ -33,22 +33,13 @@ class QuotesMixin:
     # ---- 股票名称缓存 ----
 
     def _get_stock_name(self, code: str) -> str:
-        """获取股票名称（带缓存），优先 TDX → Tushare stock_basic"""
+        """获取股票名称（带缓存），优先 Tushare stock_basic"""
         if not hasattr(self, '_stock_name_cache'):
             self._stock_name_cache = {}
         code = normalize_code(code)
         if code in self._stock_name_cache:
             return self._stock_name_cache[code]
-        # 1. TDX
-        if self.is_tdx_available():
-            try:
-                info = self.get_stock_info_tdxquant(code)
-                if info and info.get('name'):
-                    self._stock_name_cache[code] = info['name']
-                    return info['name']
-            except Exception:
-                pass
-        # 2. Tushare stock_basic（批量缓存）
+        # 1. Tushare stock_basic（批量缓存）
         if self.ts_pro and not self._stock_name_cache:
             try:
                 df = self.ts_pro.stock_basic(fields='ts_code,name')
@@ -67,16 +58,8 @@ class QuotesMixin:
     # ---- 实时行情 ----
 
     def get_realtime_quote(self, code: str) -> dict:
-        """获取实时行情，数据源优先级: TDX → Tushare Pro → Tushare legacy → eFinance"""
+        """获取实时行情，数据源优先级: Tushare Pro → Tushare legacy → eFinance"""
         code = normalize_code(code)
-
-        # 0. TdxQuant
-        if self.is_tdx_available():
-            result = self._get_quote_tdxquant(code)
-            if result:
-                if not result.get('name'):
-                    result['name'] = self._get_stock_name(code)
-                return result
 
         # 1. Tushare Pro
         if self.ts_pro:
@@ -181,14 +164,8 @@ class QuotesMixin:
     # ---- K线数据 ----
 
     def get_kline(self, code: str, period: str = "daily", limit: int = 100) -> list[dict]:
-        """获取K线数据，数据源优先级: TDX → Tushare Pro → Tushare legacy → Baostock → eFinance"""
+        """获取K线数据，数据源优先级: Tushare Pro → Tushare legacy → Baostock → eFinance"""
         code = normalize_code(code)
-
-        # 0. TdxQuant
-        if self.is_tdx_available():
-            result = self._get_kline_tdxquant(code, period, limit)
-            if result:
-                return result
 
         # 1. Tushare Pro (仅日线)
         if self.ts_pro and period == 'daily':

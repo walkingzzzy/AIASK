@@ -295,11 +295,11 @@ class StrategyVectorPlatform:
         index_version: str = 'v1',
     ) -> Optional[dict]:
         try:
-            from .strategy_factory import _build_strategy_panels
+            from strategy_factory import build_strategy_panels
             started_at = time.perf_counter()
 
             resolved_vector_method = self.ensure_vector_method_available(vector_method)
-            panels = await _build_strategy_panels(
+            panels = await build_strategy_panels(
                 strategy.get('strategy_type') or '',
                 strategy.get('params') or {},
                 db,

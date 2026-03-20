@@ -3,10 +3,10 @@
 
 Phase 2 实现 - MCP 服务开发方案
 
-提供回测交易记录的管理和 TDX 可视化功能：
+提供回测交易记录的管理和可视化输出能力：
 - 交易记录存储和管理
-- 回测结果转换为 TDX 格式
-- 与 TDX 客户端的数据联动
+- 回测结果转换为客户端绘图格式
+- 供外部展示层消费的结构化数据
 """
 
 from typing import List, Dict, Any, Optional
@@ -127,9 +127,9 @@ class BacktestTradeManager:
             result.calculate_stats()
         return result
     
-    def to_tdx_format(self, code: str, strategy: str) -> Dict[str, Any]:
+    def to_visualization_format(self, code: str, strategy: str) -> Dict[str, Any]:
         """
-        转换为 TDX send_bt_data 格式
+        转换为通用可视化数据格式
         
         Returns:
             dict: {
@@ -169,4 +169,3 @@ class BacktestTradeManager:
 
 # 全局管理器实例
 trade_manager = BacktestTradeManager()
-

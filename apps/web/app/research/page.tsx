@@ -1,11 +1,12 @@
 'use client';
 
-import { FormEvent, ReactNode, useMemo, useState } from 'react';
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { PageContainer, SectionCard, TabBar, DataTable, StockCodeInput, KpiCard, KpiGrid } from '@/components/ui';
 import { BarChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
-import { ErrorState } from '@/components/status-state';
+import { EmptyState, ErrorState } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { fmt, cacheText, type CacheMeta } from '@/lib/api';
@@ -22,6 +23,17 @@ type ResearchData = {
   meta?: CacheMeta;
 };
 type Range = '7' | '30' | '90' | 'custom';
+type SavedResearchView = {
+  code: string;
+  range: Range;
+  startDate: string;
+  endDate: string;
+  keyword: string;
+  newsTab: NewsTab;
+  listPath: string | null;
+};
+
+const RESEARCH_VIEW_STORAGE_KEY = 'aiask.research.saved-view.v1';
 
 const NEWS_TABS = [
   { key: 'stock-news', label: '个股新闻' },
@@ -33,6 +45,25 @@ const NEWS_TABS = [
   { key: 'macro', label: '宏观数据' },
 ] as const;
 type NewsTab = typeof NEWS_TABS[number]['key'];
+
+function readSavedResearchView(): Partial<SavedResearchView> | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(RESEARCH_VIEW_STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as Partial<SavedResearchView>;
+  } catch {
+    return null;
+  }
+}
+
+function isValidRange(value: unknown): value is Range {
+  return value === '7' || value === '30' || value === '90' || value === 'custom';
+}
+
+function isValidNewsTab(value: unknown): value is NewsTab {
+  return typeof value === 'string' && NEWS_TABS.some((tab) => tab.key === value);
+}
 
 function highlight(text: string, kw: string): ReactNode {
   if (!kw.trim()) return text || '-';
@@ -46,20 +77,38 @@ function highlight(text: string, kw: string): ReactNode {
 
 export default function ResearchPage() {
   const mounted = useHydrated();
-  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode('600519');
-  const [range, setRange] = useState<Range>('30');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [keyword, setKeyword] = useState('');
+  const savedView = useMemo(() => readSavedResearchView(), []);
+  const savedCode = typeof savedView?.code === 'string' && savedView.code.trim() ? savedView.code.trim() : '600519';
+  const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode(savedCode);
+  const [range, setRange] = useState<Range>(() => (isValidRange(savedView?.range) ? savedView.range : '30'));
+  const [startDate, setStartDate] = useState(() => (typeof savedView?.startDate === 'string' ? savedView.startDate : ''));
+  const [endDate, setEndDate] = useState(() => (typeof savedView?.endDate === 'string' ? savedView.endDate : ''));
+  const [keyword, setKeyword] = useState(() => (typeof savedView?.keyword === 'string' ? savedView.keyword : ''));
   const [formError, setFormError] = useState<string | null>(null);
   const autoListPath = resolvedCode ? `/research/list?code=${encodeURIComponent(resolvedCode)}&days=30&limit=20&keyword=` : null;
-  const [listPath, setListPath] = useState<string | null>(null);
+  const [listPath, setListPath] = useState<string | null>(() =>
+    typeof savedView?.listPath === 'string' || savedView?.listPath === null ? savedView.listPath ?? null : null,
+  );
   const effectiveListPath = listPath ?? autoListPath;
 
   const listQ = useApiQuery<ResearchData>(effectiveListPath);
-  const [newsTab, setNewsTab] = useState<NewsTab>('stock-news');
+  const [newsTab, setNewsTab] = useState<NewsTab>(() => (isValidNewsTab(savedView?.newsTab) ? savedView.newsTab : 'stock-news'));
   const [newsPath, setNewsPath] = useState<string | null>(null);
   const newsQ = useApiQuery<unknown>(newsPath);
+
+  useEffect(() => {
+    if (!mounted || typeof window === 'undefined') return;
+    const payload: SavedResearchView = {
+      code,
+      range,
+      startDate,
+      endDate,
+      keyword,
+      newsTab,
+      listPath,
+    };
+    window.localStorage.setItem(RESEARCH_VIEW_STORAGE_KEY, JSON.stringify(payload));
+  }, [code, endDate, keyword, listPath, mounted, newsTab, range, startDate]);
 
   function submitListQuery(nextRange = range, nextStartDate = startDate, nextEndDate = endDate, nextKeyword = keyword) {
     if (!validate()) return;
@@ -120,6 +169,46 @@ export default function ResearchPage() {
           <WatchlistButton code={resolvedCode} name="" />
         </div>
       )}
+      <SectionCard className="p-4 mb-3">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h3 className="mt-0 mb-1 text-base">常用入口</h3>
+            <p className="m-0 text-sm text-text-secondary">如果默认结果较少，优先扩大时间范围或切到市场新闻，不用先手动重填一遍表单。</p>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => {
+                setRange('90');
+                submitListQuery('90', startDate, endDate, keyword);
+              }}
+              className="px-3 py-1.5 rounded border border-primary text-primary text-sm cursor-pointer hover:bg-primary/5"
+            >
+              查看近 90 天
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setRange('7');
+                submitListQuery('7', startDate, endDate, keyword);
+              }}
+              className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt"
+            >
+              查看近 7 天
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setNewsTab('market-news');
+                fetchNews('market-news');
+              }}
+              className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt"
+            >
+              查看市场新闻
+            </button>
+          </div>
+        </div>
+      </SectionCard>
       <form onSubmit={onSubmit} className="grid gap-3 md:grid-cols-2">
         <StockCodeInput id="research-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} placeholder="如 600519" />
         <label className="grid gap-1 text-xs text-text-secondary">
@@ -168,7 +257,7 @@ export default function ResearchPage() {
                   setRange('90');
                   submitListQuery('90', startDate, endDate, keyword);
                 }}
-                className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt"
+                className="px-3 py-1.5 rounded border border-primary text-primary text-sm cursor-pointer hover:bg-primary/5"
               >
                 查看近 90 天
               </button>
@@ -182,6 +271,9 @@ export default function ResearchPage() {
               >
                 查看市场新闻
               </button>
+              <Link href="/market" className="px-3 py-1.5 rounded border border-border text-sm no-underline text-inherit hover:bg-surface-alt">
+                回行情页换标的
+              </Link>
             </div>
           </SectionCard>
         ) : (
@@ -196,7 +288,36 @@ export default function ResearchPage() {
                     <div>{highlight(it.summary || '-', keyword)}</div>
                   </div>
                 ))}
-                {!reports.length ? <div>无匹配研报</div> : null}
+                {!reports.length ? (
+                  <EmptyState
+                    text="当前条件下没有匹配研报"
+                    hint="可以扩大到近 90 天，或者去资讯与分析区直接看机构预测和研报搜索。"
+                    action={
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRange('90');
+                            submitListQuery('90', startDate, endDate, keyword);
+                          }}
+                          className="px-3 py-1 rounded-full border border-primary text-xs text-primary cursor-pointer"
+                        >
+                          扩大到近 90 天
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewsTab('search-research');
+                            fetchNews('search-research');
+                          }}
+                          className="px-3 py-1 rounded-full border border-border text-xs text-text-secondary cursor-pointer"
+                        >
+                          去研报搜索
+                        </button>
+                      </>
+                    }
+                  />
+                ) : null}
               </div>
             </SectionCard>
             <SectionCard>
@@ -209,7 +330,29 @@ export default function ResearchPage() {
                     <div>{highlight(it.summary || '-', keyword)}</div>
                   </div>
                 ))}
-                {!notices.length ? <div>无匹配公告</div> : null}
+                {!notices.length ? (
+                  <EmptyState
+                    text="当前条件下没有匹配公告"
+                    hint="如果你只是想确认近期事件，直接切到市场新闻通常比继续缩小条件更有效。"
+                    action={
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewsTab('market-news');
+                            fetchNews('market-news');
+                          }}
+                          className="px-3 py-1 rounded-full border border-primary text-xs text-primary cursor-pointer"
+                        >
+                          去看市场新闻
+                        </button>
+                        <Link href="/alerts" className="px-3 py-1 rounded-full border border-border text-xs text-text-secondary no-underline">
+                          去告警中心设提醒
+                        </Link>
+                      </>
+                    }
+                  />
+                ) : null}
               </div>
             </SectionCard>
           </>
@@ -304,7 +447,49 @@ export default function ResearchPage() {
                 )}
                 {rows.length
                   ? <DataTable rows={rows} columns={cols?.length ? cols : undefined} maxHeight={400} onExport={() => exportCSV(rows, `research-${newsTab}`)} />
-                  : <p className="text-text-secondary text-sm mt-2">暂无数据</p>}
+                  : (
+                    <EmptyState
+                      text="当前资讯分组暂无数据"
+                      hint={
+                        newsTab === 'market-news'
+                          ? '可以先改看个股新闻或研报搜索，避免停在空分组里。'
+                          : newsTab === 'forecast'
+                            ? '如果当前标的缺少盈利预测，可先看研报列表或返回行情页换成覆盖度更高的龙头标的。'
+                            : '建议切换资讯分组，或回上方放宽时间范围后重新查询。'
+                      }
+                      action={
+                        <>
+                          {newsTab !== 'market-news' ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setNewsTab('market-news');
+                                fetchNews('market-news');
+                              }}
+                              className="px-3 py-1 rounded-full border border-primary text-xs text-primary cursor-pointer"
+                            >
+                              看市场新闻
+                            </button>
+                          ) : null}
+                          {newsTab !== 'reports' ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setNewsTab('reports');
+                                fetchNews('reports');
+                              }}
+                              className="px-3 py-1 rounded-full border border-border text-xs text-text-secondary cursor-pointer"
+                            >
+                              看研报列表
+                            </button>
+                          ) : null}
+                          <Link href="/market" className="px-3 py-1 rounded-full border border-border text-xs text-text-secondary no-underline">
+                            回行情页换标的
+                          </Link>
+                        </>
+                      }
+                    />
+                  )}
               </>
             );
           })() : null}

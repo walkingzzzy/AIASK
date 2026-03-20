@@ -11,6 +11,92 @@ import { exportCSV } from '@/lib/export';
 
 const DEFAULT_FACTOR_CODES = '600519,000858,300750,601318,000001,600036,601166,000333,600276,601899,002594,000651';
 
+function ResearchField({
+  id,
+  label,
+  value,
+  onChange,
+  placeholder,
+  className = '',
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  className?: string;
+}) {
+  return (
+    <label htmlFor={id} className={`grid gap-1 text-xs text-text-secondary ${className}`}>
+      <span>{label}</span>
+      <input
+        id={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded border border-border bg-surface px-3 py-2 text-sm text-text-primary"
+      />
+    </label>
+  );
+}
+
+function FactorRequestFields({
+  legend,
+  description,
+  nameId,
+  nameValue,
+  onNameChange,
+  codesId,
+  codesValue,
+  onCodesChange,
+  actionLabel,
+  actionLoadingLabel,
+  loading,
+  onSubmit,
+}: {
+  legend: string;
+  description: string;
+  nameId: string;
+  nameValue: string;
+  onNameChange: (value: string) => void;
+  codesId: string;
+  codesValue: string;
+  onCodesChange: (value: string) => void;
+  actionLabel: string;
+  actionLoadingLabel: string;
+  loading: boolean;
+  onSubmit: () => void;
+}) {
+  return (
+    <fieldset className="mb-4 rounded-xl border border-border bg-surface-alt/30 p-3">
+      <legend className="px-1 text-sm font-medium text-text-primary">{legend}</legend>
+      <p className="mt-1 mb-3 text-xs text-text-secondary">{description}</p>
+      <div className="grid gap-3 lg:grid-cols-[180px_minmax(0,1fr)_auto]">
+        <ResearchField
+          id={nameId}
+          label="因子名称"
+          value={nameValue}
+          onChange={onNameChange}
+          placeholder="例如 momentum"
+        />
+        <ResearchField
+          id={codesId}
+          label="股票池"
+          value={codesValue}
+          onChange={onCodesChange}
+          placeholder="多个 6 位代码用英文逗号分隔"
+        />
+        <div className="flex items-end">
+          <button type="button" disabled={loading} onClick={onSubmit} className="w-full lg:w-auto">
+            {loading ? actionLoadingLabel : actionLabel}
+          </button>
+        </div>
+      </div>
+      <p className="mt-2 mb-0 text-[11px] text-text-muted">默认样本已覆盖白酒、银行、新能源和消费龙头，适合直接做首轮验证。</p>
+    </fieldset>
+  );
+}
+
 export default function FactorPage() {
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -86,6 +172,7 @@ export default function FactorPage() {
   return (
     <PageContainer>
       <h1>因子研究</h1>
+      <p className="mt-2 text-sm text-text-secondary">建议按“因子库 → 因子计算 → IC/回测 → 样本外验证/稳健性检验”的顺序推进，避免跳过基础检查直接解读结果。</p>
       {anyLoading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} hint="请稍后重试" /> : null}
 
@@ -116,15 +203,24 @@ export default function FactorPage() {
 
       <SectionCard>
         <h3 className="mt-0">因子计算</h3>
-        <div className="flex gap-2 flex-wrap items-center">
-          <input value={calcName} onChange={(e) => setCalcName(e.target.value)} placeholder="因子名称" className="w-40" />
-          <input value={calcCodes} onChange={(e) => setCalcCodes(e.target.value)} placeholder="股票代码，逗号分隔" className="w-60" />
-          <button type="button" disabled={calcLoading} onClick={() => {
+        <FactorRequestFields
+          legend="计算样本"
+          description="先确认单期因子值是否合理，再继续看 IC 或回测。"
+          nameId="factor-calc-name"
+          nameValue={calcName}
+          onNameChange={setCalcName}
+          codesId="factor-calc-codes"
+          codesValue={calcCodes}
+          onCodesChange={setCalcCodes}
+          actionLabel="计算"
+          actionLoadingLabel="计算中..."
+          loading={calcLoading}
+          onSubmit={() => {
             setFormError(null);
             if (!validateCodes(calcCodes)) return;
             calcMut.trigger('/factor/calculate', { method: 'POST' }, { factor_name: calcName.trim(), stock_codes: splitCodes(calcCodes) });
-          }}>计算</button>
-        </div>
+          }}
+        />
         {calcMut.data && mcpError(calcMut.data) ? (
           <ErrorState text={mcpError(calcMut.data)!} />
         ) : calcMut.data ? (
@@ -145,15 +241,24 @@ export default function FactorPage() {
 
       <SectionCard>
         <h3 className="mt-0">IC 分析</h3>
-        <div className="flex gap-2 flex-wrap items-center">
-          <input value={icName} onChange={(e) => setIcName(e.target.value)} placeholder="因子名称" className="w-40" />
-          <input value={icCodes} onChange={(e) => setIcCodes(e.target.value)} placeholder="股票代码，逗号分隔" className="w-60" />
-          <button type="button" disabled={icLoading} onClick={() => {
+        <FactorRequestFields
+          legend="截面相关性"
+          description="IC 用来验证因子值与未来收益是否同向，股票样本尽量覆盖 10 只以上。"
+          nameId="factor-ic-name"
+          nameValue={icName}
+          onNameChange={setIcName}
+          codesId="factor-ic-codes"
+          codesValue={icCodes}
+          onCodesChange={setIcCodes}
+          actionLabel="分析"
+          actionLoadingLabel="分析中..."
+          loading={icLoading}
+          onSubmit={() => {
             setFormError(null);
             if (!validateCodes(icCodes)) return;
             icMut.trigger('/factor/ic', { method: 'POST' }, { factor_name: icName.trim(), stock_codes: splitCodes(icCodes) });
-          }}>分析</button>
-        </div>
+          }}
+        />
         {icMut.data && mcpError(icMut.data) ? (
           <ErrorState text={mcpError(icMut.data)!} hint="IC 分析通常需要 10 只以上股票" />
         ) : icMut.data && icObj ? (
@@ -177,15 +282,24 @@ export default function FactorPage() {
 
       <SectionCard>
         <h3 className="mt-0">因子回测</h3>
-        <div className="flex gap-2 flex-wrap items-center">
-          <input value={btName} onChange={(e) => setBtName(e.target.value)} placeholder="因子名称" className="w-40" />
-          <input value={btCodes} onChange={(e) => setBtCodes(e.target.value)} placeholder="股票代码，逗号分隔" className="w-60" />
-          <button type="button" disabled={btLoading} onClick={() => {
+        <FactorRequestFields
+          legend="收益验证"
+          description="回测用来验证因子排序是否能稳定带来分组收益和净值抬升。"
+          nameId="factor-backtest-name"
+          nameValue={btName}
+          onNameChange={setBtName}
+          codesId="factor-backtest-codes"
+          codesValue={btCodes}
+          onCodesChange={setBtCodes}
+          actionLabel="回测"
+          actionLoadingLabel="回测中..."
+          loading={btLoading}
+          onSubmit={() => {
             setFormError(null);
             if (!validateCodes(btCodes)) return;
             btMut.trigger('/factor/backtest', { method: 'POST' }, { factor_name: btName.trim(), stock_codes: splitCodes(btCodes) });
-          }}>回测</button>
-        </div>
+          }}
+        />
         {btMut.data && mcpError(btMut.data) ? (
           <ErrorState text={mcpError(btMut.data)!} hint="因子回测通常需要更多股票样本" />
         ) : btMut.data && btObj ? (
@@ -219,15 +333,24 @@ export default function FactorPage() {
 
       <SectionCard>
         <h3 className="mt-0">样本外验证</h3>
-        <div className="flex gap-2 flex-wrap items-center">
-          <input value={oosName} onChange={(e) => setOosName(e.target.value)} placeholder="因子名称" className="w-40" />
-          <input value={oosCodes} onChange={(e) => setOosCodes(e.target.value)} placeholder="股票代码，逗号分隔" className="w-60" />
-          <button type="button" disabled={oosLoading} onClick={() => {
+        <FactorRequestFields
+          legend="泛化能力"
+          description="样本外验证用于检查因子从样本内迁移到样本外时是否仍然有效。"
+          nameId="factor-oos-name"
+          nameValue={oosName}
+          onNameChange={setOosName}
+          codesId="factor-oos-codes"
+          codesValue={oosCodes}
+          onCodesChange={setOosCodes}
+          actionLabel="验证"
+          actionLoadingLabel="验证中..."
+          loading={oosLoading}
+          onSubmit={() => {
             setFormError(null);
             if (!validateCodes(oosCodes)) return;
             oosMut.trigger('/factor/validate-oos', { method: 'POST' }, { factor_name: oosName.trim(), stock_codes: splitCodes(oosCodes) });
-          }}>验证</button>
-        </div>
+          }}
+        />
         {oosMut.data && mcpError(oosMut.data) ? (
           <ErrorState text={mcpError(oosMut.data)!} />
         ) : oosMut.data && oosObj ? (
@@ -249,15 +372,24 @@ export default function FactorPage() {
 
       <SectionCard>
         <h3 className="mt-0">稳健性检验</h3>
-        <div className="flex gap-2 flex-wrap items-center">
-          <input value={robName} onChange={(e) => setRobName(e.target.value)} placeholder="因子名称" className="w-40" />
-          <input value={robCodes} onChange={(e) => setRobCodes(e.target.value)} placeholder="股票代码，逗号分隔" className="w-60" />
-          <button type="button" disabled={robLoading} onClick={() => {
+        <FactorRequestFields
+          legend="稳定性检查"
+          description="稳健性检验适合放在最后一步，确认结果不是由少数样本或偶然区间驱动。"
+          nameId="factor-robust-name"
+          nameValue={robName}
+          onNameChange={setRobName}
+          codesId="factor-robust-codes"
+          codesValue={robCodes}
+          onCodesChange={setRobCodes}
+          actionLabel="检验"
+          actionLoadingLabel="检验中..."
+          loading={robLoading}
+          onSubmit={() => {
             setFormError(null);
             if (!validateCodes(robCodes)) return;
             robMut.trigger('/factor/robustness-check', { method: 'POST' }, { factor_name: robName.trim(), stock_codes: splitCodes(robCodes) });
-          }}>检验</button>
-        </div>
+          }}
+        />
         {robMut.data && mcpError(robMut.data) ? (
           <ErrorState text={mcpError(robMut.data)!} />
         ) : robMut.data ? (

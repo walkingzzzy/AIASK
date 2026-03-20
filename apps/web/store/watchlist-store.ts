@@ -40,6 +40,13 @@ function defaultGroup(): WatchGroup {
 /* ── Server sync helpers ── */
 
 let _lastErrorTs = 0;
+let _syncPromise: Promise<void> | null = null;
+
+function isAbortLikeError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === 'AbortError') return true;
+  if (!(err instanceof Error)) return false;
+  return err.name === 'AbortError' || /aborted|aborterror|the user aborted a request/i.test(err.message);
+}
 
 function notifySyncError(detail: string) {
   // Debounce: show at most one error toast per 30s
@@ -68,6 +75,9 @@ async function fetchServer(path: string, options?: RequestInit): Promise<any> {
     const json = await res.json();
     return json?.data ?? null;
   } catch (err) {
+    if (isAbortLikeError(err)) {
+      return null;
+    }
     notifySyncError(err instanceof Error ? err.message : 'network error');
     return null;
   }
@@ -88,7 +98,7 @@ type WatchlistState = {
   /** Toggle stock in default group */
   toggle: (code: string, name?: string) => Promise<void>;
   /** Create a new group */
-  createGroup: (name: string, color?: string) => Promise<void>;
+  createGroup: (name: string, color?: string) => Promise<string | null>;
   /** Delete a group */
   deleteGroup: (groupId: string) => Promise<void>;
   /** Clear all items from default group */
@@ -106,6 +116,46 @@ function normalizeAddedAt(value: unknown): number {
     if (Number.isFinite(parsed)) return parsed;
   }
   return Date.now();
+}
+
+function mergeItems(localItems: WatchItem[], serverItems: WatchItem[]): WatchItem[] {
+  const merged = [...localItems, ...serverItems].filter(
+    (item, index, arr) => arr.findIndex((candidate) => candidate.code === item.code) === index,
+  );
+
+  return merged.sort((a, b) => b.addedAt - a.addedAt);
+}
+
+function mergeGroups(localGroups: WatchGroup[], serverGroups: WatchGroup[]): WatchGroup[] {
+  const merged = new Map<string, WatchGroup>();
+
+  for (const group of serverGroups) {
+    merged.set(group.id, { ...group, items: [...group.items] });
+  }
+
+  for (const group of localGroups) {
+    const existing = merged.get(group.id);
+    if (!existing) {
+      merged.set(group.id, { ...group, items: [...group.items] });
+      continue;
+    }
+
+    merged.set(group.id, {
+      ...existing,
+      name: existing.name || group.name,
+      color: existing.color || group.color,
+      items: mergeItems(group.items, existing.items),
+    });
+  }
+
+  const groups = Array.from(merged.values());
+  const defaultIndex = groups.findIndex((group) => group.id === 'default');
+  if (defaultIndex > 0) {
+    const [defaultWatchGroup] = groups.splice(defaultIndex, 1);
+    groups.unshift(defaultWatchGroup);
+  }
+
+  return groups.length > 0 ? groups : [defaultGroup()];
 }
 
 export const useWatchlistStore = create<WatchlistState>((set, get) => ({
@@ -200,14 +250,33 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
     if (created == null) {
       saveLocal(prev);
       set({ groups: prev });
+      return null;
     }
+    return id;
   },
 
   deleteGroup: async (groupId) => {
     const prev = get().groups;
     const group = prev.find((g) => g.id === groupId);
-    const next = prev.filter((g) => g.id !== groupId);
-    if (next.length === 0) next.push(defaultGroup());
+    const fallbackDefault = defaultGroup();
+    const defaultIndex = prev.findIndex((g) => g.id === 'default');
+    const next = prev
+      .filter((g) => g.id !== groupId)
+      .map((g, index) => {
+        const isDefaultGroup = g.id === 'default' || (defaultIndex === -1 && index === 0);
+        if (!group || group.items.length === 0 || !isDefaultGroup) return g;
+
+        const mergedItems = [...group.items, ...g.items].filter(
+          (item, itemIndex, arr) => arr.findIndex((candidate) => candidate.code === item.code) === itemIndex,
+        );
+
+        return { ...g, items: mergedItems };
+      });
+
+    if (next.length === 0) {
+      next.push(group && group.items.length > 0 ? { ...fallbackDefault, items: group.items } : fallbackDefault);
+    }
+
     saveLocal(next);
     set({ groups: next });
     if (group) {
@@ -228,32 +297,55 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
   },
 
   syncFromServer: async () => {
-    set({ syncing: true });
-    try {
-      const serverGroups = await fetchServer('/groups');
-      if (serverGroups && Array.isArray(serverGroups) && serverGroups.length > 0) {
-        const normalized: WatchGroup[] = serverGroups.map((g: any) => ({
-          id: String(g.id ?? g.name ?? 'default'),
-          name: String(g.name ?? '我的自选'),
-          color: String(g.color ?? '#6366f1'),
-          items: Array.isArray(g.items)
-            ? g.items.map((i: any) => ({
-              code: String(i.code ?? ''),
-              name: String(i.name ?? ''),
-              addedAt: normalizeAddedAt(i.addedAt),
-            }))
-            : [],
-        }));
-        saveLocal(normalized);
-        set({ groups: normalized, synced: true, syncing: false });
-      } else {
-        // Server has no data — push local to server
-        set({ synced: true, syncing: false });
-        get().pushToServer();
-      }
-    } catch {
-      set({ syncing: false });
+    if (_syncPromise) {
+      await _syncPromise;
+      return;
     }
+
+    const current = get();
+    if (current.syncing || current.synced) {
+      return;
+    }
+
+    set({ syncing: true });
+    _syncPromise = (async () => {
+      try {
+        const localGroups = get().groups;
+        const serverGroups = await fetchServer('/groups');
+        if (serverGroups && Array.isArray(serverGroups) && serverGroups.length > 0) {
+          const normalized: WatchGroup[] = serverGroups.map((g: any) => ({
+            id: String(g.id ?? g.name ?? 'default'),
+            name: String(g.name ?? '我的自选'),
+            color: String(g.color ?? '#6366f1'),
+            items: Array.isArray(g.items)
+              ? g.items.map((i: any) => ({
+                code: String(i.code ?? ''),
+                name: String(i.name ?? ''),
+                addedAt: normalizeAddedAt(i.addedAt),
+              }))
+              : [],
+          }));
+          const mergedGroups = mergeGroups(localGroups, normalized);
+          saveLocal(mergedGroups);
+          set({ groups: mergedGroups, synced: true, syncing: false });
+
+          const needsBackfill = JSON.stringify(mergedGroups) !== JSON.stringify(normalized);
+          if (needsBackfill) {
+            await get().pushToServer();
+          }
+        } else {
+          // Server has no data — push local to server
+          set({ synced: true, syncing: false });
+          await get().pushToServer();
+        }
+      } catch {
+        set({ syncing: false });
+      } finally {
+        _syncPromise = null;
+      }
+    })();
+
+    await _syncPromise;
   },
 
   pushToServer: async () => {

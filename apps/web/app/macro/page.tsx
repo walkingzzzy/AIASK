@@ -1,8 +1,9 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { PageContainer, SectionCard, DataTable } from '@/components/ui';
-import { ErrorState, LoadingState } from '@/components/status-state';
+import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { LineChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 
@@ -32,7 +33,7 @@ export default function MacroPage() {
         { value: 'm2', label: '货币供应量 (M2)' }
     ];
 
-    const { data: macroData, isPending: isLoading, error } = useApiQuery<MacroResponse | MacroRecord[]>(
+    const { data: macroData, isPending: isLoading, error, refetch } = useApiQuery<MacroResponse | MacroRecord[]>(
         `/v1/macro/indicator/${indicator}`,
         { staleTime: 5 * 60 * 1000 },
     );
@@ -66,17 +67,43 @@ export default function MacroPage() {
                 </div>
 
                 <div className="flex gap-2 w-full md:w-auto">
-                    <select
-                        value={indicator}
-                        onChange={(e) => setIndicator(e.target.value)}
-                        className="w-full md:w-[250px] bg-surface border border-glass-border px-3 py-2 rounded-md"
-                    >
-                        {indicators.map((ind) => (
-                            <option key={ind.value} value={ind.value}>{ind.label}</option>
-                        ))}
-                    </select>
+                    <label htmlFor="macro-indicator-select" className="grid gap-1 text-xs text-text-secondary w-full md:w-auto">
+                        <span>宏观指标</span>
+                        <select
+                            id="macro-indicator-select"
+                            value={indicator}
+                            onChange={(e) => setIndicator(e.target.value)}
+                            className="w-full md:w-[250px] bg-surface border border-glass-border px-3 py-2 rounded-md"
+                        >
+                            {indicators.map((ind) => (
+                                <option key={ind.value} value={ind.value}>{ind.label}</option>
+                            ))}
+                        </select>
+                    </label>
                 </div>
             </div>
+
+            <SectionCard className="mb-6 p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                        <h2 className="mt-0 mb-1 text-base font-semibold">常用宏观入口</h2>
+                        <p className="m-0 text-sm text-text-secondary">当某个指标暂时为空时，先切到 CPI、PMI 或 M2 确认是不是单一数据缺口，再决定是否去数据中心排查。</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        {['gdp', 'cpi', 'pmi', 'm2'].map((value) => (
+                            <button
+                                key={value}
+                                type="button"
+                                onClick={() => setIndicator(value)}
+                                className={`px-3 py-1.5 rounded-full border text-sm cursor-pointer ${indicator === value ? 'border-primary text-primary' : 'border-border text-text-secondary hover:bg-surface'}`}
+                            >
+                                {value.toUpperCase()}
+                            </button>
+                        ))}
+                        <Link href="/data" className="px-3 py-1.5 rounded-full border border-border text-sm no-underline text-inherit hover:bg-surface">去数据中心</Link>
+                    </div>
+                </div>
+            </SectionCard>
 
             {error ? (
                 <ErrorState text="数据获取失败" hint={error || '未知错误'} />
@@ -103,9 +130,27 @@ export default function MacroPage() {
                                     yAxisName="数值"
                                 />
                             ) : (
-                                <div className="h-64 flex items-center justify-center border border-glass-border rounded-md bg-surface-alt">
-                                    <p className="text-sm text-text-muted">暂无可用历史数据</p>
-                                </div>
+                                <EmptyState
+                                    className="h-64 border border-glass-border rounded-md bg-surface-alt"
+                                    text="当前指标暂无可用历史数据"
+                                    hint="可以先切换到其他指标确认是否为单一数据源缺口，也可以去数据中心查看其他结构化数据。"
+                                    action={
+                                        <>
+                                            {['cpi', 'pmi', 'm2'].map((value) => (
+                                                <button
+                                                    key={value}
+                                                    type="button"
+                                                    onClick={() => setIndicator(value)}
+                                                    className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface"
+                                                >
+                                                    切换到 {value.toUpperCase()}
+                                                </button>
+                                            ))}
+                                            <button type="button" onClick={() => void refetch()} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface">重新加载</button>
+                                            <Link href="/data" className="px-3 py-1.5 rounded border border-border text-sm no-underline text-inherit hover:bg-surface">去数据中心</Link>
+                                        </>
+                                    }
+                                />
                             )}
                         </div>
                     </SectionCard>
@@ -132,9 +177,26 @@ export default function MacroPage() {
                                     maxHeight={500}
                                 />
                             ) : (
-                                <div className="h-32 flex items-center justify-center text-text-muted">
-                                    暂无可用历史数据
-                                </div>
+                                <EmptyState
+                                    text="当前指标没有可展示的历史记录"
+                                    hint="如果图表和表格都为空，通常意味着这个指标最近还没有同步到前端接口。先切换到其他高频指标确认范围，再决定是否去数据中心排查。"
+                                    action={
+                                        <>
+                                            {['cpi', 'pmi', 'm2'].filter((value) => value !== indicator).map((value) => (
+                                                <button
+                                                    key={`table-${value}`}
+                                                    type="button"
+                                                    onClick={() => setIndicator(value)}
+                                                    className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface"
+                                                >
+                                                    改看 {value.toUpperCase()}
+                                                </button>
+                                            ))}
+                                            <button type="button" onClick={() => void refetch()} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface">重新加载</button>
+                                            <Link href="/research" className="px-3 py-1.5 rounded border border-border text-sm no-underline text-inherit hover:bg-surface">去研究页补充背景</Link>
+                                        </>
+                                    }
+                                />
                             )}
                         </div>
                     </SectionCard>

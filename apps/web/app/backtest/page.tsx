@@ -2,12 +2,12 @@
 
 import { FormEvent, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { PageContainer, SectionCard, KpiCard, KpiGrid, StockCodeInput, DataTable, Badge } from '@/components/ui';
+import { PageContainer, SectionCard, KpiCard, KpiGrid, StockCodeInput, DataTable, Badge, Skeleton, SkeletonCard, SkeletonTable } from '@/components/ui';
 import { LineChart, Chart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useStockCode } from '@/hooks/use-stock-code';
-import { ErrorState, LoadingState } from '@/components/status-state';
+import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { StockLink } from '@/components/stock-link';
@@ -82,7 +82,6 @@ export default function BacktestPage() {
   const [strategy, setStrategy] = useState('ma_cross');
   const [formError, setFormError] = useState<string | null>(null);
   const [runFailure, setRunFailure] = useState<BacktestFailureReason | null>(null);
-  const [tdxMessage, setTdxMessage] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const backtestApi = useApiMutation<BacktestRunResponse>();
   const [runResult, setRunResult] = useState<BacktestRunResponse | null>(null);
@@ -151,7 +150,6 @@ export default function BacktestPage() {
     e.preventDefault();
     setFormError(null);
     setRunFailure(null);
-    setTdxMessage(null);
     if (!validate()) return;
     try {
       const data = await backtestApi.triggerAsync('/backtest/run', { method: 'POST' }, buildRunRequestBody());
@@ -172,29 +170,6 @@ export default function BacktestPage() {
       const message = err instanceof Error ? err.message : '回测运行失败';
       setFormError(message);
       setRunFailure(describeBacktestFailure(message));
-    }
-  }
-
-  // P3-5: TDX push
-  const tdxApi = useApiMutation();
-  async function sendToTdx() {
-    setTdxMessage(null);
-    tdxApi.reset();
-    try {
-      const data = await tdxApi.triggerAsync('/backtest/send-to-tdx', { method: 'POST' }, { code: trimmedCode, strategy });
-      const nested = data && typeof data === 'object'
-        ? ((data as Record<string, unknown>).data ?? data) as Record<string, unknown>
-        : null;
-      const tdxStatus = nested && typeof nested === 'object'
-        ? (((nested.tdx_send_status ?? nested.tdx_send_result) as Record<string, unknown> | undefined) ?? null)
-        : null;
-      if (tdxStatus?.success === false) {
-        setTdxMessage(String(tdxStatus.message ?? '发送到 TDX 失败'));
-        return;
-      }
-      setTdxMessage('回测结果已发送到 TDX。');
-    } catch (err) {
-      setTdxMessage(err instanceof Error ? err.message : '发送到 TDX 失败');
     }
   }
 
@@ -300,6 +275,21 @@ export default function BacktestPage() {
     () => extractArray(historyQ.data, 'items', 'results', 'history', 'data') as BacktestHistoryItem[],
     [historyQ.data],
   );
+  const mergedHistoryRows = useMemo(() => {
+    const dbRows = historyRows.map((r) => ({
+      code: String(r.code ?? ''),
+      strategy: String(r.strategy ?? ''),
+      totalReturn: Number(r.total_return ?? 0),
+      sharpe: Number(r.sharpe_ratio ?? 0),
+      maxDrawdown: Number(r.max_drawdown ?? 0),
+      winRate: 0,
+      ts: new Date(String(r.created_at ?? '')).getTime() || 0,
+    }));
+    return [
+      ...history,
+      ...dbRows.filter((d) => !history.some((h) => h.code === d.code && h.strategy === d.strategy && Math.abs(h.ts - d.ts) < 60000)),
+    ].slice(0, 30);
+  }, [history, historyRows]);
 
   // P2-1: Buy/sell markers for NAV chart
   const tradeMarkers = useMemo(() => {
@@ -392,6 +382,13 @@ export default function BacktestPage() {
     setShowAdvanced(true);
   }
 
+  const hasAnyResultBlock = loading || Boolean(error) || Boolean(runFailure) || Boolean(m);
+
+  function scrollToSection(id: string) {
+    if (typeof document === 'undefined') return;
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   return (
     <PageContainer>
       <h1>回测分析</h1>
@@ -399,7 +396,7 @@ export default function BacktestPage() {
       <p className="text-sm text-text-secondary mt-1 mb-3">按“基础参数 → 策略参数 → 成本假设”的顺序完成配置，减少首屏参数墙带来的理解成本。</p>
       <form onSubmit={runBacktest} className="space-y-3">
         <SectionCard className="p-4">
-          <fieldset className="space-y-3">
+          <fieldset className="space-y-3 min-h-[148px]">
             <legend className="px-1 text-sm font-semibold">基础参数</legend>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5 xl:items-end">
               <StockCodeInput id="backtest-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} />
@@ -419,14 +416,13 @@ export default function BacktestPage() {
               </label>
               <div className="flex gap-2 flex-wrap xl:justify-end">
                 <button type="submit" disabled={loading} className="px-4 py-2 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{loading ? '运行中...' : '运行回测'}</button>
-                {m ? <button type="button" onClick={sendToTdx} disabled={tdxApi.isPending} className="px-3 py-2 border border-border rounded cursor-pointer disabled:opacity-50 text-sm">{tdxApi.isPending ? '发送中...' : '发送到 TDX'}</button> : null}
               </div>
             </div>
           </fieldset>
         </SectionCard>
 
         <SectionCard className="p-4">
-          <fieldset className="space-y-3">
+          <fieldset className="space-y-3 min-h-[148px]">
             <legend className="px-1 text-sm font-semibold">策略参数</legend>
             {strategy === 'ma_cross' ? (
               <div className="grid gap-3 sm:grid-cols-2 lg:max-w-[360px]">
@@ -473,7 +469,7 @@ export default function BacktestPage() {
         </SectionCard>
 
         <SectionCard className="p-4">
-          <fieldset className="space-y-3">
+          <fieldset className="space-y-3 min-h-[168px]">
             <legend className="px-1 text-sm font-semibold">成本假设</legend>
             <div className="flex gap-2 flex-wrap">
               {COST_PRESETS.map((preset) => (
@@ -510,8 +506,54 @@ export default function BacktestPage() {
             )}
           </fieldset>
         </SectionCard>
-        {tdxMessage ? <p className={`text-sm ${tdxApi.error ? 'text-danger' : 'text-success'}`}>{tdxMessage}</p> : null}
       </form>
+      <SectionCard className="mt-4 p-4">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h3 className="mt-0 mb-1">结果阅读顺序</h3>
+            <p className="m-0 text-sm text-text-secondary">移动端优先看摘要，再看净值曲线，最后按需展开交易明细、历史对比和批量结果，避免一进入就是长表格。</p>
+          </div>
+          <Badge variant={hasAnyResultBlock ? 'info' : 'neutral'}>{hasAnyResultBlock ? '已有结果' : '等待运行'}</Badge>
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <button type="button" onClick={() => scrollToSection('backtest-overview')} className="rounded-xl border border-border px-3 py-2 text-left text-sm cursor-pointer hover:bg-surface-alt">
+            <div className="font-medium">1. 先看结果总览</div>
+            <div className="mt-1 text-xs text-text-secondary">快速判断收益、回撤和胜率是否值得继续分析</div>
+          </button>
+          <button type="button" onClick={() => scrollToSection('backtest-chart')} className="rounded-xl border border-border px-3 py-2 text-left text-sm cursor-pointer hover:bg-surface-alt">
+            <div className="font-medium">2. 再看净值曲线</div>
+            <div className="mt-1 text-xs text-text-secondary">确认收益是否平滑、是否依赖单段行情</div>
+          </button>
+          <button type="button" onClick={() => scrollToSection('backtest-history')} className="rounded-xl border border-border px-3 py-2 text-left text-sm cursor-pointer hover:bg-surface-alt">
+            <div className="font-medium">3. 对比历史结果</div>
+            <div className="mt-1 text-xs text-text-secondary">横向比较策略与标的，避免只盯一次结果</div>
+          </button>
+          <button type="button" onClick={() => scrollToSection('backtest-batch')} className="rounded-xl border border-border px-3 py-2 text-left text-sm cursor-pointer hover:bg-surface-alt">
+            <div className="font-medium">4. 最后看批量回测</div>
+            <div className="mt-1 text-xs text-text-secondary">把同一策略放到多只股票上，检验可复制性</div>
+          </button>
+        </div>
+        {m ? (
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-xl bg-surface-alt/50 px-3 py-2 text-sm">
+              <div className="text-xs text-text-secondary">当前结论</div>
+              <div className="mt-1 font-medium">{String(code)} · {STRATEGIES.find((item) => item.value === strategy)?.label ?? strategy}</div>
+            </div>
+            <div className="rounded-xl bg-surface-alt/50 px-3 py-2 text-sm">
+              <div className="text-xs text-text-secondary">总收益</div>
+              <div className={Number(m.total_return ?? 0) >= 0 ? 'mt-1 font-medium text-danger' : 'mt-1 font-medium text-success'}>{fmtPct(m.total_return)}</div>
+            </div>
+            <div className="rounded-xl bg-surface-alt/50 px-3 py-2 text-sm">
+              <div className="text-xs text-text-secondary">最大回撤</div>
+              <div className="mt-1 font-medium">{fmtPct(m.max_drawdown)}</div>
+            </div>
+            <div className="rounded-xl bg-surface-alt/50 px-3 py-2 text-sm">
+              <div className="text-xs text-text-secondary">交易次数</div>
+              <div className="mt-1 font-medium">{m.trades_count ?? '-'}</div>
+            </div>
+          </div>
+        ) : null}
+      </SectionCard>
       {loading ? <LoadingState text="回测运行中..." /> : null}
       {error ? <ErrorState text={error} /> : null}
       {runFailure ? (
@@ -523,6 +565,74 @@ export default function BacktestPage() {
           </KpiGrid>
         </SectionCard>
       ) : null}
+
+      <div id="backtest-overview">
+        <SectionCard className="mt-4 p-4 min-h-[220px]">
+          <h3 className="mt-0">结果总览</h3>
+          {loading ? (
+            <div className="space-y-3" aria-hidden="true">
+              <KpiGrid cols={4}>
+                {Array.from({ length: 8 }).map((_, index) => <SkeletonCard key={index} />)}
+              </KpiGrid>
+            </div>
+          ) : m ? (
+            <KpiGrid cols={4}>
+              <KpiCard title="总收益" value={fmtPct(m.total_return)} change={m.total_return ?? undefined} />
+              <KpiCard title="夏普比率" value={fmtNum(m.sharpe_ratio, 2)} />
+              <KpiCard title="最大回撤" value={fmtPct(m.max_drawdown)} />
+              <KpiCard title="胜率" value={fmtPct(m.win_rate)} />
+              <KpiCard title="交易次数" value={m.trades_count ?? '-'} />
+              <KpiCard title="初始资金" value={fmtAmount(m.initial_capital)} />
+              <KpiCard title="最终资金" value={fmtAmount(m.final_capital)} />
+              <KpiCard title="盈亏比" value={fmtNum(m.profit_factor, 2)} />
+            </KpiGrid>
+          ) : (
+            <EmptyState
+              text="运行一次回测后，这里会先给出收益、回撤和胜率摘要。"
+              hint="首屏先看这组摘要，再继续看净值曲线和交易明细，会比直接进入长表格更容易判断结果是否值得继续分析。"
+            />
+          )}
+        </SectionCard>
+      </div>
+
+      <div id="backtest-chart">
+        <SectionCard className="mt-4 p-3 min-h-[360px]">
+          <h3 className="mt-0">净值曲线</h3>
+          {loading ? (
+            <div className="space-y-3" aria-hidden="true">
+              <Skeleton className="w-48" height={18} />
+              <Skeleton className="w-full" height={280} />
+            </div>
+          ) : equityCurve.length > 0 ? (
+            <Chart option={{
+            tooltip: { trigger: 'axis' },
+            legend: { data: ['策略净值', ...(benchmarkNav.length ? ['沪深300'] : [])] },
+            grid: { top: 40, right: 20, bottom: 30, left: 50 },
+            xAxis: { type: 'category', data: equityCategories },
+            yAxis: { type: 'value', name: '净值', scale: true },
+            series: [
+              {
+                name: '策略净值', type: 'line', data: navSeries, smooth: true,
+                itemStyle: { color: '#1a73e8' }, areaStyle: { opacity: 0.15 },
+                markPoint: {
+                  symbol: 'arrow', symbolSize: 10,
+                  data: [
+                    ...tradeMarkers.buy.map(([x, y]) => ({ coord: [x, y], itemStyle: { color: '#ef4444' }, symbolRotate: 0 })),
+                    ...tradeMarkers.sell.map(([x, y]) => ({ coord: [x, y], itemStyle: { color: '#22c55e' }, symbolRotate: 180 })),
+                  ],
+                },
+              },
+              ...(benchmarkNav.length ? [{ name: '沪深300', type: 'line' as const, data: benchmarkNav, smooth: true, itemStyle: { color: '#9ca3af' } }] : []),
+            ],
+            }} height={320} />
+          ) : (
+            <EmptyState
+              text="主图区域已预留完成。"
+              hint="运行回测后，这里会固定显示策略净值与基准线，避免结果返回时把下方内容整体推移。"
+            />
+          )}
+        </SectionCard>
+      </div>
 
       {m && (
         <>
@@ -560,44 +670,6 @@ export default function BacktestPage() {
             </SectionCard>
           ) : null}
 
-          <KpiGrid cols={4}>
-            <KpiCard title="总收益" value={fmtPct(m.total_return)} change={m.total_return ?? undefined} />
-            <KpiCard title="夏普比率" value={fmtNum(m.sharpe_ratio, 2)} />
-            <KpiCard title="最大回撤" value={fmtPct(m.max_drawdown)} />
-            <KpiCard title="胜率" value={fmtPct(m.win_rate)} />
-            <KpiCard title="交易次数" value={m.trades_count ?? '-'} />
-            <KpiCard title="初始资金" value={fmtAmount(m.initial_capital)} />
-            <KpiCard title="最终资金" value={fmtAmount(m.final_capital)} />
-            <KpiCard title="盈亏比" value={fmtNum(m.profit_factor, 2)} />
-          </KpiGrid>
-
-          {equityCurve.length > 0 && (
-            <SectionCard className="mt-4 p-3">
-              <h3 className="mt-0">净值曲线</h3>
-              <Chart option={{
-                tooltip: { trigger: 'axis' },
-                legend: { data: ['策略净值', ...(benchmarkNav.length ? ['沪深300'] : [])] },
-                grid: { top: 40, right: 20, bottom: 30, left: 50 },
-                xAxis: { type: 'category', data: equityCategories },
-                yAxis: { type: 'value', name: '净值', scale: true },
-                series: [
-                  {
-                    name: '策略净值', type: 'line', data: navSeries, smooth: true,
-                    itemStyle: { color: '#1a73e8' }, areaStyle: { opacity: 0.15 },
-                    markPoint: {
-                      symbol: 'arrow', symbolSize: 10,
-                      data: [
-                        ...tradeMarkers.buy.map(([x, y]) => ({ coord: [x, y], itemStyle: { color: '#ef4444' }, symbolRotate: 0 })),
-                        ...tradeMarkers.sell.map(([x, y]) => ({ coord: [x, y], itemStyle: { color: '#22c55e' }, symbolRotate: 180 })),
-                      ],
-                    },
-                  },
-                  ...(benchmarkNav.length ? [{ name: '沪深300', type: 'line' as const, data: benchmarkNav, smooth: true, itemStyle: { color: '#9ca3af' } }] : []),
-                ],
-              }} height={320} />
-            </SectionCard>
-          )}
-
           {drawdownSeries.length > 0 && (
             <SectionCard className="mt-4 p-3">
               <h3 className="mt-0">回撤曲线</h3>
@@ -627,7 +699,8 @@ export default function BacktestPage() {
           )}
 
           {trades.length > 0 && (
-            <SectionCard className="mt-4 p-3">
+            <div id="backtest-trades">
+              <SectionCard className="mt-4 p-3">
               <h3 className="mt-0">交易明细</h3>
               <DataTable rows={trades} columns={[
                 { key: 'date', label: '日期', render: (v: unknown, row: Record<string, unknown>) => String(v ?? row.entry_date ?? row.trade_date ?? '-').slice(0, 10) },
@@ -643,8 +716,30 @@ export default function BacktestPage() {
                   const n = Number(v ?? row.pnl ?? 0);
                   return <span className={n >= 0 ? 'text-danger' : 'text-success'}>{fmtNum(n, 2)}</span>;
                 }},
-              ]} pageSize={10} onExport={() => exportCSV(trades, 'backtest-trades')} />
-            </SectionCard>
+              ]} pageSize={10} onExport={() => exportCSV(trades, 'backtest-trades')} mobileCardRender={(row) => {
+                const rawDirection = String(row.type ?? row.direction ?? row.side ?? '');
+                const isBuy = /buy|买|long/i.test(rawDirection);
+                const profit = Number(row.profit ?? row.pnl ?? 0);
+                return (
+                  <div className="space-y-2 text-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-xs text-text-secondary">交易日期</div>
+                        <div className="font-medium">{String(row.date ?? row.entry_date ?? row.trade_date ?? '-').slice(0, 10)}</div>
+                      </div>
+                      <Badge variant={isBuy ? 'danger' : 'success'}>{rawDirection || '-'}</Badge>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>价格：{fmtNum((row.price ?? row.entry_price) as number, 2)}</div>
+                      <div>平仓价：{row.exit_price != null ? fmtNum(row.exit_price as number, 2) : '-'}</div>
+                      <div>数量：{fmtNum((row.shares ?? row.quantity ?? row.amount) as number, 0)}</div>
+                      <div>盈亏：<span className={profit >= 0 ? 'text-danger' : 'text-success'}>{fmtNum(profit, 2)}</span></div>
+                    </div>
+                  </div>
+                );
+              }} />
+              </SectionCard>
+            </div>
           )}
 
           {/* P2-3: Rolling Sharpe & Drawdown */}
@@ -695,48 +790,72 @@ export default function BacktestPage() {
         </>
       )}
 
-      {/* Strategy Comparison History (merged: session + DB) */}
-      {(() => {
-        const dbRows = historyRows.map((r) => ({
-          code: String(r.code ?? ''), strategy: String(r.strategy ?? ''),
-          totalReturn: Number(r.total_return ?? 0), sharpe: Number(r.sharpe_ratio ?? 0),
-          maxDrawdown: Number(r.max_drawdown ?? 0), winRate: 0,
-          ts: new Date(String(r.created_at ?? '')).getTime() || 0,
-        }));
-        const merged = [...history, ...dbRows.filter((d) => !history.some((h) => h.code === d.code && h.strategy === d.strategy && Math.abs(h.ts - d.ts) < 60000))].slice(0, 30);
-        return merged.length > 0 ? (
-          <SectionCard className="mt-4 p-3">
-            <h3 className="mt-0">回测历史对比 ({merged.length})</h3>
+      <div id="backtest-history">
+        <SectionCard className="mt-4 p-3 min-h-[240px]">
+          <h3 className="mt-0">回测历史对比 {mergedHistoryRows.length > 0 ? `(${mergedHistoryRows.length})` : ''}</h3>
+          {historyQ.isFetching ? (
+            <SkeletonTable rows={5} cols={7} />
+          ) : mergedHistoryRows.length > 0 ? (
             <DataTable
-              rows={merged}
-              columns={[
-                { key: 'code', label: '代码', render: (v: unknown) => <StockLink code={String(v)} /> },
-                { key: 'strategy', label: '策略' },
-                { key: 'totalReturn', label: '总收益', align: 'right' as const, render: (v: unknown) => <span className={(v as number) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(v as number)}</span> },
-                { key: 'sharpe', label: '夏普', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 2) },
-                { key: 'maxDrawdown', label: '最大回撤', align: 'right' as const, render: (v: unknown) => fmtPct(v as number) },
-                { key: 'winRate', label: '胜率', align: 'right' as const, render: (v: unknown) => fmtPct(v as number) },
-                { key: 'ts', label: '时间', render: (v: unknown) => { const t = v as number; return t > 0 ? new Date(t).toLocaleString('zh-CN') : '-'; } },
-              ]}
-              onExport={() => exportCSV(merged, 'backtest-history')}
+            rows={mergedHistoryRows}
+            columns={[
+              { key: 'code', label: '代码', render: (v: unknown) => <StockLink code={String(v)} /> },
+              { key: 'strategy', label: '策略' },
+              { key: 'totalReturn', label: '总收益', align: 'right' as const, render: (v: unknown) => <span className={(v as number) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(v as number)}</span> },
+              { key: 'sharpe', label: '夏普', align: 'right' as const, render: (v: unknown) => fmtNum(v as number, 2) },
+              { key: 'maxDrawdown', label: '最大回撤', align: 'right' as const, render: (v: unknown) => fmtPct(v as number) },
+              { key: 'winRate', label: '胜率', align: 'right' as const, render: (v: unknown) => fmtPct(v as number) },
+              { key: 'ts', label: '时间', render: (v: unknown) => { const t = v as number; return t > 0 ? new Date(t).toLocaleString('zh-CN') : '-'; } },
+            ]}
+            onExport={() => exportCSV(mergedHistoryRows, 'backtest-history')}
+            mobileCardRender={(row) => (
+              <div className="space-y-2 text-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs text-text-secondary">标的 / 策略</div>
+                    <div className="font-medium"><StockLink code={String(row.code)} /> · {String(row.strategy ?? '-')}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-xs text-text-secondary">总收益</div>
+                    <div className={Number(row.totalReturn ?? 0) >= 0 ? 'text-danger font-medium' : 'text-success font-medium'}>{fmtPct(Number(row.totalReturn ?? 0))}</div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>夏普：{fmtNum(Number(row.sharpe ?? 0), 2)}</div>
+                  <div>胜率：{fmtPct(Number(row.winRate ?? 0))}</div>
+                  <div>回撤：{fmtPct(Number(row.maxDrawdown ?? 0))}</div>
+                  <div>时间：{row.ts ? new Date(Number(row.ts)).toLocaleDateString('zh-CN') : '-'}</div>
+                </div>
+              </div>
+            )}
             />
-          </SectionCard>
-        ) : null;
-      })()}
+          ) : (
+            <EmptyState
+              text="还没有可对比的历史回测。"
+              hint="运行过的结果会自动进入这里，方便横向比较不同标的和策略。"
+            />
+          )}
+        </SectionCard>
+      </div>
 
       {/* P3-3: Batch Backtest */}
-      <SectionCard className="mt-4 p-3">
-        <h3 className="mt-0">批量回测对比</h3>
-        <div className="flex gap-2 items-end flex-wrap">
-          <div>
-            <label className={labelCls}>股票代码（逗号分隔）</label>
-            <input value={batchCodes} onChange={(e) => setBatchCodes(e.target.value)} placeholder="600519,000858,601318" className={`${inputCls} w-[280px]`} />
+      <div id="backtest-batch">
+        <SectionCard className="mt-4 p-3 min-h-[220px]">
+          <h3 className="mt-0">批量回测对比</h3>
+          <div className="flex gap-2 items-end flex-wrap">
+            <div className="grid gap-1">
+              <label htmlFor="backtest-batch-codes" className={labelCls}>股票代码（逗号分隔）</label>
+              <input id="backtest-batch-codes" value={batchCodes} onChange={(e) => setBatchCodes(e.target.value)} placeholder="600519,000858,601318" className={`${inputCls} w-[280px]`} />
+            </div>
+            <button type="button" onClick={runBatch} disabled={batchApi.isPending} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{batchApi.isPending ? '运行中...' : '批量回测'}</button>
           </div>
-          <button type="button" onClick={runBatch} disabled={batchApi.isPending} className="px-3 py-1 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{batchApi.isPending ? '运行中...' : '批量回测'}</button>
-        </div>
-        {batchApi.error ? <p className="text-danger text-sm mt-2">{batchApi.error}</p> : null}
-        {batchResults.length > 0 && (
-          <DataTable rows={batchResults} columns={[
+          {batchApi.error ? <p className="text-danger text-sm mt-2">{batchApi.error}</p> : null}
+          {batchApi.isPending ? (
+            <div className="mt-3">
+              <SkeletonTable rows={4} cols={6} />
+            </div>
+          ) : batchResults.length > 0 ? (
+            <DataTable rows={batchResults} columns={[
             { key: 'code', label: '代码', render: (v: unknown) => <StockLink code={String(v)} /> },
             {
               key: 'success',
@@ -753,9 +872,37 @@ export default function BacktestPage() {
             { key: 'trades_count', label: '交易次数', align: 'right' as const },
             { key: 'reasonCode', label: '失败代码' },
             { key: 'reason', label: '失败原因' },
-          ]} onExport={() => exportCSV(batchResults, 'batch-backtest')} />
-        )}
-      </SectionCard>
+          ]} onExport={() => exportCSV(batchResults, 'batch-backtest')} mobileCardRender={(row) => {
+            const success = row.success !== false;
+            return (
+              <div className="space-y-2 text-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs text-text-secondary">股票代码</div>
+                    <div className="font-medium"><StockLink code={String(row.code)} /></div>
+                  </div>
+                  <Badge variant={success ? 'success' : 'danger'}>{success ? '成功' : '失败'}</Badge>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>总收益：{row.total_return == null ? '-' : <span className={Number(row.total_return) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(Number(row.total_return))}</span>}</div>
+                  <div>夏普：{row.sharpe_ratio == null ? '-' : fmtNum(Number(row.sharpe_ratio), 2)}</div>
+                  <div>最大回撤：{row.max_drawdown == null ? '-' : fmtPct(Number(row.max_drawdown))}</div>
+                  <div>胜率：{row.win_rate == null ? '-' : fmtPct(Number(row.win_rate))}</div>
+                  <div>交易次数：{fmtNum((row.trades_count ?? 0) as number, 0)}</div>
+                  <div>失败代码：{String(row.reasonCode ?? '-')}</div>
+                </div>
+                {!success && row.reason ? <div className="text-xs text-text-secondary">失败原因：{String(row.reason)}</div> : null}
+              </div>
+            );
+            }} />
+          ) : (
+            <EmptyState
+              text="输入多只股票代码后，这里会显示批量回测对比表。"
+              hint="结果区已固定预留，批量运行完成后不会把页面其他模块整体挤开。"
+            />
+          )}
+        </SectionCard>
+      </div>
     </PageContainer>
   );
 }

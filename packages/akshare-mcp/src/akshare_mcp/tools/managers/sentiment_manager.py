@@ -1,29 +1,66 @@
 """情绪分析管理器（增强版）"""
 
-from ...utils import ok, fail, normalize_code
+import time
+
+from ...utils import normalize_code
 from ...storage import get_db
 from ...data_source import data_source
+from ..manager_protocol import (
+    fail_with_meta,
+    normalize_manager_code,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 import logging
-import json
 
 logger = logging.getLogger(__name__)
 
-def _normalize_kwargs(kwargs: dict) -> dict:
-    raw = kwargs.get("kwargs")
-    if isinstance(raw, dict):
-        kwargs = {**kwargs, **raw}
-    elif isinstance(raw, str):
-        try:
-            extra = json.loads(raw or "{}")
-            if isinstance(extra, dict):
-                kwargs = {**kwargs, **extra}
-        except Exception:
-            pass
-    if "code" not in kwargs:
-        kwargs["code"] = kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
-    if "sector" not in kwargs:
-        kwargs["sector"] = kwargs.get("Sector") or kwargs.get("industry") or kwargs.get("industry_name")
-    return kwargs
+_SECTOR_ALIAS_HINTS = {
+    "白酒": ["酿酒", "酒"],
+    "酿酒": ["白酒", "酒"],
+    "券商": ["证券", "金融"],
+    "银行": ["金融"],
+    "保险": ["金融"],
+}
+
+def _normalize_sector_key(text: str) -> str:
+    value = str(text or "").strip().lower()
+    for token in ("行业", "概念", "板块", "ⅰ", "ⅱ", "ⅲ", "ⅳ", "i", "ii", "iii", "iv"):
+        value = value.replace(token, "")
+    return value.strip()
+
+
+def _sector_match_score(query: str, candidate: str) -> int:
+    q = _normalize_sector_key(query)
+    c = _normalize_sector_key(candidate)
+    if not q or not c:
+        return 0
+    if q == c:
+        return 100
+    if q in c or c in q:
+        return 80
+
+    alias_terms = [q]
+    for key, values in _SECTOR_ALIAS_HINTS.items():
+        if key in q:
+            alias_terms.extend(values)
+    for term in alias_terms:
+        term = _normalize_sector_key(term)
+        if term and term in c:
+            return 60
+    return 0
+
+
+def _dedupe_chain(values: list[str]) -> list[str]:
+    chain = []
+    seen = set()
+    for value in values:
+        label = str(value or "").strip()
+        if not label or label in seen:
+            continue
+        chain.append(label)
+        seen.add(label)
+    return chain
 
 
 def register_sentiment_manager(mcp):
@@ -54,52 +91,86 @@ def register_sentiment_manager(mcp):
             # 板块情绪分析
             sentiment_manager(action="sector_sentiment", kwargs='{"sector":"白酒"}')
         """
+        start_time = time.perf_counter()
         try:
             db = get_db()
-            kwargs = _normalize_kwargs(kwargs)
+            kwargs = normalize_manager_kwargs(
+                kwargs,
+                field_aliases={
+                    "sector": ("Sector", "industry", "industry_name"),
+                },
+            )
+            _, kwargs = normalize_manager_code(None, kwargs)
+
+            def _ok(data: dict, source_chain=None):
+                return ok_with_meta(
+                    data,
+                    tool_name="sentiment_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
+
+            def _fail(message: str, source_chain=None):
+                return fail_with_meta(
+                    message,
+                    tool_name="sentiment_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain,
+                )
             
             if action == 'help':
-                return ok({
+                return _ok({
                     'supported_actions': {
                         'market_sentiment': '市场整体情绪分析',
                         'stock_sentiment': '个股情绪分析（需要 code）',
                         'sector_sentiment': '板块情绪分析（需要 sector）',
                         'help': '显示帮助信息',
                     }
-                })
+                }, source_chain=['sentiment_manager'])
             
             elif action == 'market_sentiment':
                 # 计算市场整体情绪
-                # 数据源优先级: DB → TDX → Tushare → AkShare
-                async with db.acquire() as conn:
-                    # 取每只股票最新一条行情
-                    up_count = await conn.fetchval(
-                        """
-                        WITH latest AS (
-                            SELECT DISTINCT ON (code) code, change_pct
-                            FROM stock_quotes
-                            ORDER BY code, time DESC
-                        )
-                        SELECT COUNT(*) FROM latest WHERE change_pct > 0
-                        """
-                    ) or 0
-                    down_count = await conn.fetchval(
-                        """
-                        WITH latest AS (
-                            SELECT DISTINCT ON (code) code, change_pct
-                            FROM stock_quotes
-                            ORDER BY code, time DESC
-                        )
-                        SELECT COUNT(*) FROM latest WHERE change_pct < 0
-                        """
-                    ) or 0
-                    total_count = int(up_count) + int(down_count)
-                
+                # 数据源优先级: DB → Tushare → AkShare
+                min_market_sample = 100
+                up_count = 0
+                down_count = 0
+                total_count = 0
                 data_source_info = '数据库'
+                source_chain = ['sentiment_manager']
+                try:
+                    async with db.acquire() as conn:
+                        # 取每只股票最新一条行情
+                        up_count = await conn.fetchval(
+                            """
+                            WITH latest AS (
+                                SELECT DISTINCT ON (code) code, change_pct
+                                FROM stock_quotes
+                                ORDER BY code, time DESC
+                            )
+                            SELECT COUNT(*) FROM latest WHERE change_pct > 0
+                            """
+                        ) or 0
+                        down_count = await conn.fetchval(
+                            """
+                            WITH latest AS (
+                                SELECT DISTINCT ON (code) code, change_pct
+                                FROM stock_quotes
+                                ORDER BY code, time DESC
+                            )
+                            SELECT COUNT(*) FROM latest WHERE change_pct < 0
+                            """
+                        ) or 0
+                        total_count = int(up_count) + int(down_count)
+                        source_chain.append('db.stock_quotes')
+                except Exception as e:
+                    logger.warning(f"[Sentiment] 数据库读取失败，切换数据源降级: {e}")
+                    data_source_info = f'数据库不可用: {e}'
                 
-                # 方案2: 如果数据库为空，从数据源获取（优先级: AkShare批量 → 逐只K线）
-                if total_count == 0:
-                    logger.info("[Sentiment] 数据库无数据，从数据源获取市场情绪")
+                # 方案2: 如果数据库样本过小，从数据源获取（优先级: Tushare → AkShare批量 → 逐只K线）
+                if total_count < min_market_sample:
+                    logger.info("[Sentiment] 数据库样本不足(%s)，从数据源获取市场情绪", total_count)
                     
                     # 优先尝试 Tushare daily 获取全市场涨跌
                     try:
@@ -116,6 +187,7 @@ def register_sentiment_manager(mcp):
                                         down_count = int((df['pct_chg'] < 0).sum())
                                         total_count = up_count + down_count
                                         data_source_info = f'Tushare daily ({check_date})'
+                                        source_chain.append('tushare.daily')
                                         logger.info(f"[Sentiment] Tushare: 涨{up_count} 跌{down_count}")
                                         break
                                 except Exception:
@@ -124,7 +196,7 @@ def register_sentiment_manager(mcp):
                         logger.warning(f"[Sentiment] Tushare批量行情失败: {e}")
                     
                     # 降级: AkShare 批量行情
-                    if total_count == 0:
+                    if total_count < min_market_sample:
                         try:
                             import akshare as ak
                             df = ak.stock_zh_a_spot_em()
@@ -135,6 +207,7 @@ def register_sentiment_manager(mcp):
                                     down_count = int(len(df[df[chg_col] < 0]))
                                     total_count = up_count + down_count
                                     data_source_info = 'AkShare实时行情'
+                                    source_chain.append('akshare.stock_zh_a_spot_em')
                                     logger.info(f"[Sentiment] AkShare批量行情: 涨{up_count} 跌{down_count}")
                         except Exception as e:
                             logger.warning(f"[Sentiment] AkShare批量行情失败: {e}")
@@ -163,6 +236,7 @@ def register_sentiment_manager(mcp):
                     
                     total_count = up_count + down_count
                     data_source_info = '实时数据源(样本)'
+                    source_chain.append('data_source.get_kline')
                 
                 # 计算情绪指标
                 if total_count > 0:
@@ -194,7 +268,7 @@ def register_sentiment_manager(mcp):
                     down_count = 0
                     up_ratio = 0.5
                 
-                return ok({
+                return _ok({
                     'sentiment': sentiment,
                     'score': float(sentiment_score),
                     'description': description,
@@ -205,27 +279,36 @@ def register_sentiment_manager(mcp):
                         'sample_size': total_count,
                         'data_source': data_source_info
                     }
-                })
+                }, source_chain=_dedupe_chain(source_chain))
             
             elif action == 'stock_sentiment':
                 code = kwargs.get('code')
                 if not code:
-                    return fail('需要提供股票代码')
+                    return _fail('需要提供股票代码', source_chain=['sentiment_manager'])
                 
                 code = normalize_code(code)
+                source_chain = ['sentiment_manager']
                 
                 # 获取K线数据分析情绪
-                klines = await db.get_klines(code, limit=20)
+                try:
+                    klines = await db.get_klines(code, limit=20)
+                    if klines:
+                        source_chain.append('db.get_klines')
+                except Exception as e:
+                    logger.warning(f"[Sentiment] DB获取 {code} K线失败，使用数据源降级: {e}")
+                    klines = []
                 if not klines:
                     klines = data_source.get_kline(code, 'daily', 20)
+                    if klines:
+                        source_chain.append('data_source.get_kline')
                 
                 if not klines or len(klines) < 5:
-                    return ok({
+                    return _ok({
                         'code': code,
                         'sentiment': 'neutral',
                         'score': 50,
                         'description': '数据不足'
-                    })
+                    }, source_chain=_dedupe_chain(source_chain))
                 
                 # 计算涨跌天数
                 up_days = sum(1 for k in klines if k.get('close', 0) > k.get('open', 0))
@@ -256,7 +339,7 @@ def register_sentiment_manager(mcp):
                     sentiment = 'bearish'
                     description = '个股情绪悲观'
                 
-                return ok({
+                return _ok({
                     'code': code,
                     'sentiment': sentiment,
                     'score': float(sentiment_score),
@@ -267,28 +350,66 @@ def register_sentiment_manager(mcp):
                         'volume_ratio': float(volume_ratio),
                         'volume_status': 'active' if volume_ratio > 1.2 else ('weak' if volume_ratio < 0.8 else 'normal')
                     }
-                })
+                }, source_chain=_dedupe_chain(source_chain))
             
             elif action == 'sector_sentiment':
                 sector = kwargs.get('sector')
                 if not sector:
-                    return fail('需要提供板块名称')
+                    return _fail('需要提供板块名称', source_chain=['sentiment_manager'])
+                source_chain = ['sentiment_manager']
                 
                 # 获取板块内股票的情绪
-                async with db.acquire() as conn:
-                    stocks = await conn.fetch(
-                        "SELECT code FROM stocks WHERE industry = $1 LIMIT 20",
-                        sector
-                    )
+                try:
+                    async with db.acquire() as conn:
+                        stocks = await conn.fetch(
+                            "SELECT code FROM stocks WHERE industry = $1 LIMIT 20",
+                            sector
+                        )
+                        if stocks:
+                            source_chain.append('db.stocks')
+                except Exception as e:
+                    logger.warning(f"[Sentiment] DB获取板块 {sector} 股票失败，尝试板块接口降级: {e}")
+                    stocks = []
+
+                if not stocks:
+                    try:
+                        from ..market_blocks import get_market_blocks, get_block_stocks
+
+                        matched_block_code = None
+                        matched_score = 0
+                        for block_type in ('industry', 'concept'):
+                            blocks_res = await get_market_blocks(block_type=block_type, limit=200)
+                            if not blocks_res.get('success'):
+                                continue
+                            source_chain.append('market_blocks.get_market_blocks')
+                            for block in blocks_res.get('data', {}).get('blocks', []):
+                                block_name = block.get('name') or block.get('blockName') or block.get('block_name')
+                                score = _sector_match_score(sector, str(block_name or ''))
+                                if score > matched_score:
+                                    matched_score = score
+                                    matched_block_code = block.get('code') or block.get('blockCode') or block.get('block_code')
+                            if matched_block_code:
+                                stocks_res = await get_block_stocks(matched_block_code)
+                                if stocks_res.get('success'):
+                                    source_chain.append('market_blocks.get_block_stocks')
+                                    stocks = [
+                                        {'code': item.get('code') or item.get('stock_code')}
+                                        for item in stocks_res.get('data', {}).get('stocks', [])[:20]
+                                        if item.get('code') or item.get('stock_code')
+                                    ]
+                                    break
+                    except Exception as e:
+                        logger.warning(f"[Sentiment] 板块接口降级失败: {e}")
                 
                 if not stocks:
-                    return fail(f'未找到板块 {sector} 的股票')
+                    return _fail(f'未找到板块 {sector} 的股票', source_chain=_dedupe_chain(source_chain))
                 
                 sentiment_scores = []
                 for stock in stocks:
                     result = await sentiment_manager('stock_sentiment', code=stock['code'])
                     if result.get('success'):
                         sentiment_scores.append(result['data']['score'])
+                        source_chain.extend(result.get('meta', {}).get('source_chain') or [])
                 
                 if sentiment_scores:
                     avg_score = sum(sentiment_scores) / len(sentiment_scores)
@@ -307,15 +428,24 @@ def register_sentiment_manager(mcp):
                     avg_score = 50
                     sentiment = 'neutral'
                 
-                return ok({
+                return _ok({
                     'sector': sector,
                     'sentiment': sentiment,
                     'score': float(avg_score),
                     'stock_count': len(stocks)
-                })
+                }, source_chain=_dedupe_chain(source_chain))
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, market_sentiment, stock_sentiment, sector_sentiment')
+                return _fail(
+                    f'Unknown action: {action}. Supported: help, market_sentiment, stock_sentiment, sector_sentiment',
+                    source_chain=['sentiment_manager'],
+                )
         except Exception as e:
             logger.error(f"[SentimentManager] Error: {e}")
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name='sentiment_manager',
+                action=action,
+                started_at=start_time,
+                source_chain=['sentiment_manager'],
+            )

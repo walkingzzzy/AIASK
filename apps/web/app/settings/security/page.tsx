@@ -65,6 +65,7 @@ export default function SecurityPage() {
     const prefs = extractPreferences(profileQ.data);
     return Boolean(prefs.totpEnabled);
   }, [profileQ.data, statusQ.data]);
+  const setupProgress = totpEnabled ? 3 : totpSetup ? 2 : 1;
 
   const loading = setupApi.isPending || verifyApi.isPending || disableApi.isPending;
 
@@ -150,6 +151,27 @@ export default function SecurityPage() {
           <Badge variant={totpEnabled ? 'success' : 'warning'}>
             {totpEnabled ? '已启用' : '未启用'}
           </Badge>
+        </div>
+
+        <div className="mt-4 grid gap-2 md:grid-cols-3">
+          {[
+            { step: 1, title: '开启 2FA', desc: '获取密钥并启动设置' },
+            { step: 2, title: '验证动态码', desc: '输入 6 位验证码确认绑定' },
+            { step: 3, title: '保存恢复码', desc: '留存备用恢复码以防设备丢失' },
+          ].map((item) => {
+            const active = setupProgress === item.step;
+            const completed = setupProgress > item.step;
+            return (
+              <div
+                key={item.step}
+                className={`rounded-lg border px-3 py-2 text-sm ${completed ? 'border-success/40 bg-success/10' : active ? 'border-primary/40 bg-primary/10' : 'border-glass-border bg-surface'}`}
+              >
+                <div className="text-xs text-text-secondary">步骤 {item.step}</div>
+                <div className="mt-1 font-medium">{item.title}</div>
+                <div className="mt-1 text-xs text-text-secondary">{item.desc}</div>
+              </div>
+            );
+          })}
         </div>
 
         {!totpEnabled && !totpSetup && (

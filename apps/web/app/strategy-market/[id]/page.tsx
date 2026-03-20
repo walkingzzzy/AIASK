@@ -4,13 +4,29 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge } from '@/components/ui';
 import { LineChart, BarChart } from '@/components/charts';
-import { ErrorState, LoadingState } from '@/components/status-state';
+import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
 import { useCartStore } from '@/store/cart-store';
 import { useAuthStore } from '@/store/auth-store';
 import { LiveTrackingPanel } from '../components/LiveTrackingPanel';
 import { FactoryReviewPanel } from '../components/FactoryReviewPanel';
 import { useStrategyDetailPage } from '../hooks/use-strategy-detail-page';
+
+function extractTraceId(text: string | null): string | null {
+  const source = String(text ?? '');
+  const match = source.match(/trace[_-]?[A-Za-z0-9]+/i) ?? source.match(/traceId:\s*([A-Za-z0-9_-]+)/i);
+  if (!match) return null;
+  return match[1] ?? match[0] ?? null;
+}
+
+function isMissingStrategyError(text: string | null): boolean {
+  const source = String(text ?? '').toLowerCase();
+  return source.includes('404')
+    || source.includes('not_found')
+    || source.includes('strategy not found')
+    || source.includes('不存在')
+    || source.includes('未找到');
+}
 
 export default function StrategyDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -56,8 +72,70 @@ export default function StrategyDetailPage() {
   } = overview;
 
   if (detailLoading) return <PageContainer><LoadingState text="加载策略详情..." /></PageContainer>;
-  if (detailError) return <PageContainer><ErrorState text={detailError} /></PageContainer>;
-  if (!strategy) return <PageContainer><p className="text-text-secondary">策略不存在</p></PageContainer>;
+
+  const traceId = extractTraceId(detailError);
+  const missingStrategy = !strategy || isMissingStrategyError(detailError);
+
+  if (detailError || !strategy) {
+    return (
+      <PageContainer narrow>
+        <SectionCard className="p-5">
+          <div className="mb-4">
+            <Link href="/strategy-market" className="text-sm text-text-secondary no-underline hover:text-primary">&larr; 返回策略超市</Link>
+          </div>
+          {missingStrategy ? (
+            <EmptyState
+              text="策略不存在或已下架"
+              hint={`你访问的策略 ID「${id ?? '-'}」目前不可用，可能是链接无效、策略已归档，或当前环境没有这条记录。`}
+              action={(
+                <>
+                  <Link href="/strategy-market" className="px-3 py-2 rounded border border-primary text-primary no-underline hover:bg-primary/10">
+                    返回策略列表
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => window.location.reload()}
+                    className="px-3 py-2 rounded border border-border bg-surface-alt cursor-pointer"
+                  >
+                    重新加载
+                  </button>
+                </>
+              )}
+            />
+          ) : (
+            <>
+              <ErrorState
+                text="策略详情暂时无法加载"
+                hint="可以先返回策略超市重新选择，或稍后再试；原始接口路径和技术细节已下沉到下方折叠区。"
+              />
+              <div className="mt-4 flex gap-2 flex-wrap">
+                <Link href="/strategy-market" className="px-3 py-2 rounded border border-primary text-primary no-underline hover:bg-primary/10">
+                  返回策略列表
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="px-3 py-2 rounded border border-border bg-surface-alt cursor-pointer"
+                >
+                  重新加载
+                </button>
+              </div>
+            </>
+          )}
+          {detailError ? (
+            <details className="mt-4">
+              <summary className="cursor-pointer text-xs text-text-muted">查看技术详情</summary>
+              <div className="mt-2 rounded-xl border border-border bg-surface-alt/40 p-3 text-xs text-text-secondary">
+                <div>策略 ID：{id ?? '-'}</div>
+                {traceId ? <div className="mt-1">Trace ID：{traceId}</div> : null}
+                <pre className="mt-2 overflow-auto whitespace-pre-wrap break-all text-xs">{detailError}</pre>
+              </div>
+            </details>
+          ) : null}
+        </SectionCard>
+      </PageContainer>
+    );
+  }
 
   const sampleStart = strategy.sample_start_date ?? paperNavRows[0]?.nav_date ?? null;
   const sampleEnd = strategy.sample_end_date ?? paperNavRows[paperNavRows.length - 1]?.nav_date ?? null;

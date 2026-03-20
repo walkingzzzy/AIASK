@@ -170,7 +170,7 @@ class MarketSyncMixin:
         return 0
 
     async def sync_market_blocks(self):
-        """同步行业/概念板块（TDX → Tushare Pro → AkShare）"""
+        """同步行业/概念板块（Tushare Pro → AkShare）"""
         self.log("\n[7/10] 同步板块数据...")
         count = 0
 

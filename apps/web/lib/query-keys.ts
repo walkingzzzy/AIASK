@@ -15,7 +15,6 @@ export const apiKeys = {
   risk:           (...a: unknown[]) => ['api', 'risk',            ...a] as const,
   research:       (...a: unknown[]) => ['api', 'research',        ...a] as const,
   factor:         (...a: unknown[]) => ['api', 'factor',          ...a] as const,
-  tdx:            (...a: unknown[]) => ['api', 'tdx',             ...a] as const,
   auth:           (...a: unknown[]) => ['api', 'auth',            ...a] as const,
   sentiment:      (...a: unknown[]) => ['api', 'sentiment',       ...a] as const,
   technical:      (...a: unknown[]) => ['api', 'technical',       ...a] as const,
