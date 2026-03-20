@@ -36,15 +36,16 @@ export class FundFlowService {
     ];
 
     const { payload } = await this.callWithArgs('get_stock_fund_flow', attempts);
-    const d = (payload as any)?.data ?? payload ?? {};
+    const root = this.unwrapPayload(payload);
+    const data = this.asRecord(root);
     // MCP returns a single flat object, not an array — wrap it
-    const flows = Array.isArray(d) ? this.normalizeFlows(payload) : [{
+    const flows = Array.isArray(root) ? this.normalizeFlows(payload) : [{
       date: new Date().toISOString().slice(0, 10),
-      name: String(d.name ?? ''),
-      netInflow: this.toNum(d.mainNetInflow ?? d.main_net_inflow ?? d.net_inflow),
-      mainInflow: this.toNum(d.mainNetInflow ?? d.main_net_inflow),
+      name: String(data.name ?? ''),
+      netInflow: this.toNum(data.mainNetInflow ?? data.main_net_inflow ?? data.net_inflow),
+      mainInflow: this.toNum(data.mainNetInflow ?? data.main_net_inflow),
       mainOutflow: null,
-      retailInflow: this.toNum(d.smallNetInflow ?? d.small_net_inflow),
+      retailInflow: this.toNum(data.smallNetInflow ?? data.small_net_inflow),
       retailOutflow: null,
     }];
     const result = { data: { flows }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
@@ -102,28 +103,60 @@ export class FundFlowService {
     if (date) args.date = date.trim();
     if (code) args.stock_code = code.trim();
     const payload = await this.mcp.callTool('get_dragon_tiger', args);
-    const root = (payload as any)?.data ?? payload ?? [];
-    const list = Array.isArray(root) ? root : [];
-    return { data: { items: list.map((x: any) => {
-      const reason = x.reason == null || String(x.reason) === 'nan' ? '' : String(x.reason);
-      return { code: String(x.code ?? ''), name: String(x.name ?? ''), closePrice: this.toNum(x.closePrice ?? x.close_price ?? x.price), changePercent: this.toNum(x.changePercent ?? x.change_percent), reason, buyAmount: this.toNum(x.buyAmount ?? x.buy_amount), sellAmount: this.toNum(x.sellAmount ?? x.sell_amount), netAmount: this.toNum(x.netAmount ?? x.net_amount) };
-    }) } };
+    const list = this.asRecordArray(this.unwrapPayload(payload));
+    return {
+      data: {
+        items: list.map((item) => {
+          const reason = item.reason == null || String(item.reason) === 'nan' ? '' : String(item.reason);
+          return {
+            code: String(item.code ?? ''),
+            name: String(item.name ?? ''),
+            closePrice: this.toNum(item.closePrice ?? item.close_price ?? item.price),
+            changePercent: this.toNum(item.changePercent ?? item.change_percent),
+            reason,
+            buyAmount: this.toNum(item.buyAmount ?? item.buy_amount),
+            sellAmount: this.toNum(item.sellAmount ?? item.sell_amount),
+            netAmount: this.toNum(item.netAmount ?? item.net_amount),
+          };
+        }),
+      },
+    };
   }
 
   async getMarginData(code?: string, days = 30) {
     const args: Record<string, unknown> = { days };
     if (code) args.stock_code = code.trim();
     const payload = await this.mcp.callTool('get_margin_data', args);
-    const root = (payload as any)?.data ?? payload ?? [];
-    const list = Array.isArray(root) ? root : [];
-    return { data: { items: list.map((x: any) => ({ date: String(x.date ?? ''), code: String(x.code ?? ''), name: String(x.name ?? ''), marginBalance: this.toNum(x.marginBalance ?? x.margin_balance), marginBuy: this.toNum(x.marginBuy ?? x.margin_buy), shortBalance: this.toNum(x.shortBalance ?? x.short_balance), totalBalance: this.toNum(x.totalBalance ?? x.total_balance) })) } };
+    const list = this.asRecordArray(this.unwrapPayload(payload));
+    return {
+      data: {
+        items: list.map((item) => ({
+          date: String(item.date ?? ''),
+          code: String(item.code ?? ''),
+          name: String(item.name ?? ''),
+          marginBalance: this.toNum(item.marginBalance ?? item.margin_balance),
+          marginBuy: this.toNum(item.marginBuy ?? item.margin_buy),
+          shortBalance: this.toNum(item.shortBalance ?? item.short_balance),
+          totalBalance: this.toNum(item.totalBalance ?? item.total_balance),
+        })),
+      },
+    };
   }
 
   async getMarginRanking(topN = 20, sortBy = 'balance') {
     const payload = await this.mcp.callTool('get_margin_ranking', { top_n: topN, sort_by: sortBy });
-    const root = (payload as any)?.data ?? payload ?? [];
-    const list = Array.isArray(root) ? root : [];
-    return { data: { items: list.map((x: any) => ({ code: String(x.code ?? ''), name: String(x.name ?? ''), marginBalance: this.toNum(x.marginBalance ?? x.margin_balance), marginBuy: this.toNum(x.marginBuy ?? x.margin_buy), totalBalance: this.toNum(x.totalBalance ?? x.total_balance) })) } };
+    const list = this.asRecordArray(this.unwrapPayload(payload));
+    return {
+      data: {
+        items: list.map((item) => ({
+          code: String(item.code ?? ''),
+          name: String(item.name ?? ''),
+          marginBalance: this.toNum(item.marginBalance ?? item.margin_balance),
+          marginBuy: this.toNum(item.marginBuy ?? item.margin_buy),
+          totalBalance: this.toNum(item.totalBalance ?? item.total_balance),
+        })),
+      },
+    };
   }
 
   async getBlockTrades(date?: string, code?: string, limit = 500) {
@@ -131,43 +164,86 @@ export class FundFlowService {
     if (date) args.date = date.trim();
     if (code) args.stock_code = code.trim();
     const payload = await this.mcp.callTool('get_block_trades', args);
-    const root = (payload as any)?.data ?? payload ?? [];
-    const list = Array.isArray(root) ? root : [];
-    return { data: { items: list.map((x: any) => ({ date: String(x.date ?? ''), code: String(x.code ?? ''), name: String(x.name ?? ''), price: this.toNum(x.price), volume: this.toNum(x.volume), amount: this.toNum(x.amount), premium: this.toNum(x.premium), buyer: String(x.buyer ?? ''), seller: String(x.seller ?? '') })) } };
+    const list = this.asRecordArray(this.unwrapPayload(payload));
+    return {
+      data: {
+        items: list.map((item) => ({
+          date: String(item.date ?? ''),
+          code: String(item.code ?? ''),
+          name: String(item.name ?? ''),
+          price: this.toNum(item.price),
+          volume: this.toNum(item.volume),
+          amount: this.toNum(item.amount),
+          premium: this.toNum(item.premium),
+          buyer: String(item.buyer ?? ''),
+          seller: String(item.seller ?? ''),
+        })),
+      },
+    };
   }
 
   async getNorthFundHolding(code: string) {
     const stockCode = code.trim();
     const attempts: Array<Record<string, unknown>> = [{ stock_code: stockCode }, { code: stockCode }];
     const { payload } = await this.callWithArgs('get_north_fund_holding', attempts);
-    const d = (payload as any)?.data ?? payload ?? {};
-    return { data: { code: stockCode, shares: this.toNum(d.shares), ratio: this.toNum(d.ratio), change: this.toNum(d.change) } };
+    const data = this.asRecord(this.unwrapPayload(payload));
+    return { data: { code: stockCode, shares: this.toNum(data.shares), ratio: this.toNum(data.ratio), change: this.toNum(data.change) } };
   }
 
   async getNorthFundTop(topN = 20) {
     const payload = await this.mcp.callTool('get_north_fund_top', { top_n: topN });
-    const root = (payload as any)?.data ?? payload ?? [];
-    const list = Array.isArray(root) ? root : [];
-    return { data: { items: list.map((x: any) => ({ code: String(x.code ?? ''), name: String(x.name ?? ''), shares: this.toNum(x.shares), ratio: this.toNum(x.ratio), marketCap: this.toNum(x.marketCap ?? x.market_cap) })) } };
+    const list = this.asRecordArray(this.unwrapPayload(payload));
+    return {
+      data: {
+        items: list.map((item) => ({
+          code: String(item.code ?? ''),
+          name: String(item.name ?? ''),
+          shares: this.toNum(item.shares),
+          ratio: this.toNum(item.ratio),
+          marketCap: this.toNum(item.marketCap ?? item.market_cap),
+        })),
+      },
+    };
   }
 
-  private normalizeFlows(payload: any): NormalizedFlowItem[] {
-    const root = payload?.data ?? payload ?? [];
-    const list = Array.isArray(root) ? root
-      : Array.isArray(root?.items) ? root.items
-      : Array.isArray(root?.flows) ? root.flows
-      : Array.isArray(root?.data) ? root.data
-      : Array.isArray(root?.records) ? root.records : [];
-    return list.map((x: any) => ({
-      date: String(x.date ?? x.trade_date ?? x.Date ?? ''),
-      name: String(x.name ?? x.sector_name ?? x.concept_name ?? ''),
-      changePercent: this.toNum(x.changePercent ?? x.change_percent),
-      netInflow: this.toNum(x.net_inflow ?? x.netInflow ?? x.mainNetInflow ?? x.net_amount ?? x.total ?? x.value),
-      mainInflow: this.toNum(x.main_inflow ?? x.mainInflow ?? x.mainNetInflow ?? x.main_net_inflow ?? x.superLargeNetInflow),
-      mainOutflow: this.toNum(x.main_outflow ?? x.mainOutflow),
-      retailInflow: this.toNum(x.retail_inflow ?? x.retailInflow ?? x.smallNetInflow ?? x.inflow),
-      retailOutflow: this.toNum(x.retail_outflow ?? x.retailOutflow ?? x.outflow),
+  private normalizeFlows(payload: unknown): NormalizedFlowItem[] {
+    const root = this.unwrapPayload(payload);
+    const list = Array.isArray(root)
+      ? this.asRecordArray(root)
+      : this.asRecordArray(
+          this.asRecord(root).items
+          ?? this.asRecord(root).flows
+          ?? this.asRecord(root).data
+          ?? this.asRecord(root).records,
+        );
+    return list.map((item) => ({
+      date: String(item.date ?? item.trade_date ?? item.Date ?? ''),
+      name: String(item.name ?? item.sector_name ?? item.concept_name ?? ''),
+      changePercent: this.toNum(item.changePercent ?? item.change_percent),
+      netInflow: this.toNum(item.net_inflow ?? item.netInflow ?? item.mainNetInflow ?? item.net_amount ?? item.total ?? item.value),
+      mainInflow: this.toNum(item.main_inflow ?? item.mainInflow ?? item.mainNetInflow ?? item.main_net_inflow ?? item.superLargeNetInflow),
+      mainOutflow: this.toNum(item.main_outflow ?? item.mainOutflow),
+      retailInflow: this.toNum(item.retail_inflow ?? item.retailInflow ?? item.smallNetInflow ?? item.inflow),
+      retailOutflow: this.toNum(item.retail_outflow ?? item.retailOutflow ?? item.outflow),
     }));
+  }
+
+  private unwrapPayload(payload: unknown): unknown {
+    const record = this.asRecord(payload);
+    return record.data !== undefined ? record.data : payload;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private asRecordArray(value: unknown): Record<string, unknown>[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
   }
 
   private toNum(v: unknown): number | null {

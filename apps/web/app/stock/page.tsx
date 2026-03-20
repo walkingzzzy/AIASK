@@ -220,7 +220,7 @@ export default function StockPage() {
       asks,
       timestamp: typeof ob.timestamp === 'string' ? ob.timestamp : null,
     };
-  }, [orderBookQ.data]);
+  }, [contextCode, orderBookQ.data]);
 
   const quickLinks = useMemo(() => {
     const c = contextCode;

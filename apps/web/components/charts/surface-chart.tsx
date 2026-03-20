@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react';
 import { Chart } from './chart';
 
+type SurfaceTooltipParam = { data?: [number, number, number] };
+
 /**
  * T-034: Options Greeks Surface Chart
  * 3D volatility surface (strike × expiry × IV) and Greeks sensitivity charts.
@@ -73,8 +75,8 @@ export function SurfaceChart({
 
         return {
             tooltip: {
-                formatter: (p: any) => {
-                    const [si, ei, v] = p.data;
+                formatter: (p: SurfaceTooltipParam) => {
+                    const [si, ei, v] = p.data ?? [0, 0, 0];
                     return `行权价: ${strikes[si]}<br/>到期: ${expiries[ei]}<br/>${title}: ${v}`;
                 },
             },

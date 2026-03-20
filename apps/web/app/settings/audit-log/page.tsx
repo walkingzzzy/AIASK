@@ -31,6 +31,13 @@ type RawAuditEntry = {
     duration_ms?: number;
 };
 
+function readRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return {};
+    }
+    return value as Record<string, unknown>;
+}
+
 function parseAuditError(raw: string) {
     const normalized = String(raw || '').trim();
     const traceId = normalized.match(/trace(?:[_\s-]?id)?[:=]\s*([A-Za-z0-9-]+)/i)?.[1] ?? null;
@@ -93,8 +100,9 @@ export default function AuditLogPage() {
     });
 
     const rawLogs: AuditEntry[] = useMemo(() => {
-        const data = logsQ.data as any;
-        const items = data?.items ?? data?.data?.items ?? data?.logs ?? [];
+        const data = readRecord(logsQ.data);
+        const nested = readRecord(data.data);
+        const items = data.items ?? nested.items ?? data.logs ?? [];
         return Array.isArray(items) ? items.map((item, index) => normalizeAuditEntry(item as RawAuditEntry, index)) : [];
     }, [logsQ.data]);
 

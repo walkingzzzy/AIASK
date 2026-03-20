@@ -5,6 +5,11 @@ import { Chart } from './chart';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { extractArray } from '@/lib/data-utils';
 
+type TreemapTooltipParam = {
+    name?: string;
+    data?: { changePct?: number };
+};
+
 /**
  * T-030: TreemapChart
  * Sector heatmap where area = market cap weight, color = change percent.
@@ -50,7 +55,7 @@ export function TreemapChart({
 
     const option = useMemo(() => ({
         tooltip: {
-            formatter: (info: any) => {
+            formatter: (info: TreemapTooltipParam) => {
                 const pct = info.data?.changePct ?? 0;
                 return `<b>${info.name}</b><br/>涨跌: ${pct >= 0 ? '+' : ''}${Number(pct).toFixed(2)}%`;
             },

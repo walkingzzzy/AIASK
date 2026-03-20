@@ -148,12 +148,18 @@ export default function FundamentalPage() {
 
   const overview = overviewQ.data;
   const history = historyQ.data;
-  const extraDataRoot = (extraQ.data as any)?.data ?? extraQ.data ?? {};
+  const extraDataEnvelope = extraQ.data && typeof extraQ.data === 'object' && !Array.isArray(extraQ.data)
+    ? extraQ.data as Record<string, unknown>
+    : {};
+  const extraDataRoot = extractObject(extraDataEnvelope.data ?? extraQ.data) as Record<string, unknown>;
+  const extraDataF10 = extractObject(extraDataRoot.f10) as Record<string, unknown>;
+  const extraDataSnapshot = extractObject(extraDataRoot.snapshot) as Record<string, unknown>;
+  const extraDataNested = extractObject(extraDataRoot.data) as Record<string, unknown>;
   const stockName = String(
-    (extraDataRoot as any)?.name
-    ?? (extraDataRoot as any)?.f10?.name
-    ?? (extraDataRoot as any)?.snapshot?.name
-    ?? (extraDataRoot as any)?.data?.name
+    extraDataRoot.name
+    ?? extraDataF10.name
+    ?? extraDataSnapshot.name
+    ?? extraDataNested.name
     ?? ''
   );
   const [resolvedStockName, setResolvedStockName] = useState('');

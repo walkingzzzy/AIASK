@@ -1,0 +1,84 @@
+name: Unified Decision Verification
+
+on:
+  pull_request:
+    paths:
+      - "apps/bff/src/assistant/**"
+      - "apps/bff/src/auth/**"
+      - "apps/bff/src/common/**"
+      - "apps/bff/src/db/**"
+      - "apps/bff/src/health/**"
+      - "apps/bff/src/mcp-gateway/**"
+      - "apps/bff/src/rbac/**"
+      - "apps/bff/src/app.module.ts"
+      - "apps/bff/test/**"
+      - "apps/bff/scripts/unified-decision-benchmark.mjs"
+      - "apps/bff/scripts/unified-decision-benchmark-harness.ts"
+      - "apps/web/app/decision/**"
+      - "apps/web/app/assistant/**"
+      - "apps/web/components/unified-decision*"
+      - "packages/akshare-mcp/src/akshare_mcp/services/decision_*"
+      - "packages/akshare-mcp/src/akshare_mcp/tools/decision.py"
+      - "scripts/unified-decision-benchmark-baseline.sh"
+      - "scripts/verify-unified-decision.sh"
+      - "package.json"
+      - "apps/bff/package.json"
+      - ".github/workflows/unified-decision-verification.yml"
+  push:
+    branches: ["master", "main"]
+    paths:
+      - "apps/bff/src/assistant/**"
+      - "apps/bff/src/auth/**"
+      - "apps/bff/src/common/**"
+      - "apps/bff/src/db/**"
+      - "apps/bff/src/health/**"
+      - "apps/bff/src/mcp-gateway/**"
+      - "apps/bff/src/rbac/**"
+      - "apps/bff/src/app.module.ts"
+      - "apps/bff/test/**"
+      - "apps/bff/scripts/unified-decision-benchmark.mjs"
+      - "apps/bff/scripts/unified-decision-benchmark-harness.ts"
+      - "apps/web/app/decision/**"
+      - "apps/web/app/assistant/**"
+      - "apps/web/components/unified-decision*"
+      - "packages/akshare-mcp/src/akshare_mcp/services/decision_*"
+      - "packages/akshare-mcp/src/akshare_mcp/tools/decision.py"
+      - "scripts/unified-decision-benchmark-baseline.sh"
+      - "scripts/verify-unified-decision.sh"
+      - "package.json"
+      - "apps/bff/package.json"
+      - ".github/workflows/unified-decision-verification.yml"
+
+jobs:
+  unified-decision-verification:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unified decision verification
+        env:
+          CI: "true"
+          UD_BENCH_RUNS: "3"
+        run: npm run verify:unified-decision
+
+      - name: Upload benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unified-decision-benchmark-reports
+          path: |
+            reports/performance/unified-decision-benchmark.json
+            reports/performance/unified-decision-benchmark.md
+            reports/performance/logs/unified-decision-bff.log
+          if-no-files-found: warn

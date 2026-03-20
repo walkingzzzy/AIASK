@@ -2,28 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from datetime import datetime, timezone
 from typing import Any
 
 from ..storage import get_db
+from ..tools.finance import get_stock_info
+from ..tools.fund_flow import get_north_fund_holding, get_stock_fund_flow
 from ..tools.investment_analysis import get_investment_analysis
+from ..tools.market.order_book import get_order_book
+from ..tools.market.quote import get_realtime_quote
 from ..tools.semantic.diagnosis import _build_evidence
-from ..utils import now_iso, resolve_security_code
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
-
-
-def _safe_float(value: Any) -> float | None:
-    try:
-        if value is None or value == "":
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+from ..tools.semantic.industry_chain import get_industry_chain
+from ..utils import resolve_security_code
+from .decision_pipeline_shared import build_context_meta, clamp, safe_float, safe_int, unique_texts
 
 
 def _normalize_preferences(raw: Any) -> dict[str, Any]:
@@ -48,39 +42,347 @@ def _risk_level_to_bucket(risk_level: str | None) -> str:
     return "moderate"
 
 
+def _is_successful_response(resp: Any) -> bool:
+    return isinstance(resp, dict) and bool(resp.get("success"))
+
+
+def _resp_data(resp: Any) -> dict[str, Any]:
+    if not _is_successful_response(resp) or not isinstance(resp.get("data"), dict):
+        return {}
+    return dict(resp.get("data") or {})
+
+
+def _append_issue(
+    *,
+    warnings: list[str],
+    fallback_reasons: list[str],
+    label: str,
+    response: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
+    message = str(error or (response or {}).get("error") or "").strip()
+    if message:
+        warnings.append(f"{label}:{message}")
+        fallback_reasons.append(f"{label}:{message}")
+    else:
+        warnings.append(label)
+
+
+async def _call_sync_tool(tool, *args) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(tool, *args)
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "data": None, "cached": False}
+
+
+def _estimate_liquidity_score(amount: float | None, bid_depth: int | None, ask_depth: int | None, spread_pct: float | None) -> float:
+    amount_score = 0.0
+    if amount is not None:
+        amount_score = clamp(math.log10(max(amount, 1.0)) / 10.0, 0.0, 1.0)
+    depth_score = 0.0
+    if bid_depth is not None and ask_depth is not None:
+        depth_score = clamp(math.log10(max(bid_depth + ask_depth, 1.0)) / 6.0, 0.0, 1.0)
+    spread_score = 1.0
+    if spread_pct is not None:
+        spread_score = clamp(1.0 - min(abs(spread_pct), 5.0) / 5.0, 0.0, 1.0)
+    return round(clamp(amount_score * 0.5 + depth_score * 0.25 + spread_score * 0.25, 0.0, 1.0), 4)
+
+
+def _build_market_snapshot(
+    quote_data: dict[str, Any],
+    order_book_data: dict[str, Any],
+    risk_context: dict[str, Any],
+) -> dict[str, Any]:
+    bids = list(order_book_data.get("bids") or [])
+    asks = list(order_book_data.get("asks") or [])
+    top_bid = safe_float((bids[0] or {}).get("price")) if bids else None
+    top_ask = safe_float((asks[0] or {}).get("price")) if asks else None
+    bid_depth = sum(int(item.get("volume") or 0) for item in bids[:5]) if bids else None
+    ask_depth = sum(int(item.get("volume") or 0) for item in asks[:5]) if asks else None
+    mid_price = None
+    if top_bid is not None and top_ask is not None:
+        mid_price = (top_bid + top_ask) / 2.0
+    spread_pct = None
+    if mid_price and mid_price > 0 and top_bid is not None and top_ask is not None:
+        spread_pct = round(((top_ask - top_bid) / mid_price) * 100.0, 4)
+
+    price = safe_float(quote_data.get("price"))
+    amount = safe_float(quote_data.get("amount"))
+    volume = safe_int(quote_data.get("volume"))
+    change_pct = safe_float(quote_data.get("changePercent"))
+    volatility_20d = safe_float(risk_context.get("volatility_20d"))
+    suspended = bool(price in (None, 0.0) and volume in (None, 0))
+    extreme_volatility = bool(
+        (change_pct is not None and abs(change_pct) >= 9.5)
+        or (volatility_20d is not None and volatility_20d >= 0.08)
+    )
+
+    return {
+        "price": price,
+        "change_pct": change_pct,
+        "volume": volume,
+        "amount": amount,
+        "open": safe_float(quote_data.get("open")),
+        "high": safe_float(quote_data.get("high")),
+        "low": safe_float(quote_data.get("low")),
+        "pre_close": safe_float(quote_data.get("preClose")),
+        "top_bid": top_bid,
+        "top_ask": top_ask,
+        "bid_depth": bid_depth,
+        "ask_depth": ask_depth,
+        "spread_pct": spread_pct,
+        "liquidity_score": _estimate_liquidity_score(amount, bid_depth, ask_depth, spread_pct),
+        "suspended": suspended,
+        "extreme_volatility": extreme_volatility,
+    }
+
+
+def _flow_bias(main_inflow: float | None, north_ratio: float | None) -> str:
+    if (main_inflow or 0.0) > 0 and (north_ratio or 0.0) > 0:
+        return "bullish"
+    if (main_inflow or 0.0) < 0 and (north_ratio or 0.0) <= 0:
+        return "bearish"
+    return "neutral"
+
+
+def _build_fund_flow_snapshot(
+    fund_flow_data: dict[str, Any],
+    north_holding_data: dict[str, Any],
+) -> dict[str, Any]:
+    main_inflow = safe_float(fund_flow_data.get("mainNetInflow"))
+    north_ratio = safe_float(north_holding_data.get("ratio"))
+    return {
+        "main_net_inflow": main_inflow,
+        "super_large_net_inflow": safe_float(fund_flow_data.get("superLargeNetInflow")),
+        "large_net_inflow": safe_float(fund_flow_data.get("largeNetInflow")),
+        "middle_net_inflow": safe_float(fund_flow_data.get("middleNetInflow")),
+        "small_net_inflow": safe_float(fund_flow_data.get("smallNetInflow")),
+        "north_hold_shares": safe_float(north_holding_data.get("shares")),
+        "north_hold_ratio": north_ratio,
+        "north_hold_change": safe_float(north_holding_data.get("change")),
+        "flow_bias": _flow_bias(main_inflow, north_ratio),
+    }
+
+
+def _pick_industry_snapshot(industry_resp: dict[str, Any], industry_keyword: str) -> dict[str, Any]:
+    chains = []
+    if _is_successful_response(industry_resp):
+        raw = industry_resp.get("data", {})
+        if isinstance(raw, dict):
+            chains = [dict(item) for item in (raw.get("chains") or []) if isinstance(item, dict)]
+    if not chains:
+        return {
+            "industry_keyword": industry_keyword,
+            "matched": False,
+            "chains": [],
+            "related_segments": [],
+        }
+    best = chains[0]
+    related_segments = unique_texts(best.get("upstream", []), best.get("midstream", []), best.get("downstream", []))
+    return {
+        "industry_keyword": industry_keyword,
+        "matched": True,
+        "chain_id": best.get("id"),
+        "chain_name": best.get("name"),
+        "chains": chains[:3],
+        "related_segments": related_segments[:12],
+    }
+
+
+def _build_fallback_stock_assessment(
+    *,
+    quote_data: dict[str, Any],
+    fund_flow_snapshot: dict[str, Any],
+    market_snapshot: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str], list[str], str, str]:
+    evidence: list[dict[str, Any]] = []
+    highlights: list[str] = []
+    risks: list[str] = []
+
+    change_pct = safe_float(quote_data.get("changePercent"))
+    if change_pct is not None:
+        text = f"实时涨跌幅 {change_pct:.2f}%"
+        evidence.append({"category": "market", "signal": "change_pct", "value": change_pct, "interpretation": text})
+        if change_pct >= 0:
+            highlights.append(text)
+        else:
+            risks.append(text)
+
+    main_inflow = safe_float(fund_flow_snapshot.get("main_net_inflow"))
+    if main_inflow is not None:
+        flow_text = f"主力资金净流入 {main_inflow:.0f} 元"
+        evidence.append({"category": "fund_flow", "signal": "main_net_inflow", "value": main_inflow, "interpretation": flow_text})
+        if main_inflow >= 0:
+            highlights.append(flow_text)
+        else:
+            risks.append(flow_text)
+
+    liquidity_score = safe_float(market_snapshot.get("liquidity_score"))
+    if liquidity_score is not None:
+        liquidity_text = f"流动性评分 {liquidity_score:.2f}"
+        evidence.append({"category": "market", "signal": "liquidity_score", "value": liquidity_score, "interpretation": liquidity_text})
+        if liquidity_score >= 0.45:
+            highlights.append(liquidity_text)
+        else:
+            risks.append("盘口深度偏弱，交易冲击成本可能抬升")
+
+    suspended = bool(market_snapshot.get("suspended"))
+    if suspended:
+        risks.append("行情快照显示近似停牌/无成交状态")
+
+    if len(highlights) >= 2 and not suspended:
+        recommendation = "hold"
+        recommendation_text = "基础行情和资金流偏稳，可跟踪等待更完整证据。"
+    elif risks and not highlights:
+        recommendation = "wait"
+        recommendation_text = "缺少完整基本面骨架且市场证据偏弱，建议继续等待。"
+    else:
+        recommendation = "wait"
+        recommendation_text = "已用降级数据构建骨架，建议结合更多证据后再决策。"
+
+    return evidence, unique_texts(highlights), unique_texts(risks), recommendation, recommendation_text
+
+
 async def build_stock_context(code: str) -> dict[str, Any]:
-    """Build structured stock context from the existing investment-analysis path."""
+    """Build structured stock context with graceful fallbacks and market snapshots."""
     normalized_code = resolve_security_code(code)
     if not normalized_code:
         raise ValueError("需要提供股票代码")
 
-    analysis_result = await get_investment_analysis(normalized_code)
     warnings: list[str] = []
-    if not analysis_result.get("success"):
-        raise RuntimeError(str(analysis_result.get("error") or "investment_analysis_failed"))
+    fallback_reasons: list[str] = []
+    source_chain = ["decision_context_builder"]
+    analysis_result: dict[str, Any] | None = None
+    analysis_context: dict[str, Any] = {}
 
-    analysis_context = analysis_result.get("data", {}) or {}
-    evidence, highlights, risks, recommendation, recommendation_text = _build_evidence(analysis_context)
-    base_scores = {"buy": 80.0, "hold": 62.0, "wait": 45.0, "sell": 22.0}
-    stock_score = base_scores.get(recommendation, 50.0)
-    stock_score += len(highlights) * 3.5
-    stock_score -= len(risks) * 3.0
-    stock_score = round(_clamp(stock_score, 0.0, 100.0), 2)
+    try:
+        analysis_result = await get_investment_analysis(normalized_code)
+        if _is_successful_response(analysis_result):
+            analysis_context = dict(analysis_result.get("data") or {})
+            source_chain.append("tools.investment_analysis")
+        else:
+            _append_issue(
+                warnings=warnings,
+                fallback_reasons=fallback_reasons,
+                label="investment_analysis",
+                response=analysis_result,
+            )
+    except Exception as exc:
+        _append_issue(
+            warnings=warnings,
+            fallback_reasons=fallback_reasons,
+            label="investment_analysis",
+            error=str(exc),
+        )
+
+    info_resp, quote_resp, fund_flow_resp, north_resp, order_book_resp = await asyncio.gather(
+        _call_sync_tool(get_stock_info, normalized_code),
+        _call_sync_tool(get_realtime_quote, normalized_code),
+        _call_sync_tool(get_stock_fund_flow, normalized_code),
+        _call_sync_tool(get_north_fund_holding, normalized_code),
+        _call_sync_tool(get_order_book, normalized_code),
+    )
+
+    for label, resp in (
+        ("stock_info", info_resp),
+        ("realtime_quote", quote_resp),
+        ("stock_fund_flow", fund_flow_resp),
+        ("north_fund_holding", north_resp),
+        ("order_book", order_book_resp),
+    ):
+        if _is_successful_response(resp):
+            source_chain.append(f"tools.{label}")
+        else:
+            _append_issue(warnings=warnings, fallback_reasons=fallback_reasons, label=label, response=resp)
 
     basic_info = analysis_context.get("basic_info", {}) if isinstance(analysis_context.get("basic_info"), dict) else {}
     price_context = analysis_context.get("price_context", {}) if isinstance(analysis_context.get("price_context"), dict) else {}
     valuation = analysis_context.get("valuation", {}) if isinstance(analysis_context.get("valuation"), dict) else {}
     risk = analysis_context.get("risk", {}) if isinstance(analysis_context.get("risk"), dict) else {}
+    info_data = _resp_data(info_resp)
+    quote_data = _resp_data(quote_resp)
+    fund_flow_data = _resp_data(fund_flow_resp)
+    north_data = _resp_data(north_resp)
+    order_book_data = _resp_data(order_book_resp)
 
+    name = str(basic_info.get("name") or info_data.get("name") or quote_data.get("name") or "")
+    industry = str(basic_info.get("industry") or info_data.get("industry") or "")
+    industry_resp = {"success": False, "error": "industry_keyword_missing", "data": None}
+    if industry:
+        industry_resp = await _call_sync_tool(get_industry_chain, industry, "")
+        if _is_successful_response(industry_resp):
+            source_chain.append("tools.industry_chain")
+        else:
+            _append_issue(
+                warnings=warnings,
+                fallback_reasons=fallback_reasons,
+                label="industry_chain",
+                response=industry_resp,
+            )
+
+    market_snapshot = _build_market_snapshot(quote_data, order_book_data, risk)
+    fund_flow_snapshot = _build_fund_flow_snapshot(fund_flow_data, north_data)
+    industry_chain_snapshot = _pick_industry_snapshot(industry_resp, industry)
+
+    if analysis_context:
+        evidence, highlights, risks, recommendation, recommendation_text = _build_evidence(analysis_context)
+    else:
+        evidence, highlights, risks, recommendation, recommendation_text = _build_fallback_stock_assessment(
+            quote_data=quote_data,
+            fund_flow_snapshot=fund_flow_snapshot,
+            market_snapshot=market_snapshot,
+        )
+
+    stock_score = {"buy": 80.0, "hold": 62.0, "wait": 45.0, "sell": 22.0}.get(recommendation, 50.0)
+    stock_score += len(highlights) * 3.5
+    stock_score -= len(risks) * 3.0
+    if fund_flow_snapshot.get("flow_bias") == "bullish":
+        stock_score += 4.0
+    elif fund_flow_snapshot.get("flow_bias") == "bearish":
+        stock_score -= 4.0
+    if market_snapshot.get("suspended"):
+        stock_score -= 15.0
+    stock_score = round(clamp(stock_score, 0.0, 100.0), 2)
+
+    security_status = {
+        "is_st": name.upper().startswith("ST") or name.upper().startswith("*ST"),
+        "suspended": bool(market_snapshot.get("suspended")),
+        "list_date": str(info_data.get("listDate") or ""),
+        "industry": industry,
+        "liquidity_score": market_snapshot.get("liquidity_score"),
+    }
+
+    missing_fields = []
+    if not analysis_context:
+        missing_fields.append("analysis_context")
+    if market_snapshot.get("price") is None:
+        missing_fields.append("market_snapshot.price")
+    if fund_flow_snapshot.get("main_net_inflow") is None:
+        missing_fields.append("fund_flow_snapshot.main_net_inflow")
+    if not industry_chain_snapshot.get("matched"):
+        missing_fields.append("industry_chain_snapshot")
     if not valuation:
         warnings.append("valuation_context_missing")
+        missing_fields.append("valuation")
     if not risk:
         warnings.append("risk_context_missing")
+        missing_fields.append("risk")
+
+    meta = build_context_meta(
+        source="stock_context",
+        source_chain=source_chain,
+        asof_value=price_context.get("analysis_date") or quote_data.get("data_timestamp") or (analysis_result or {}).get("timestamp"),
+        warnings=warnings,
+        fallback_reason=fallback_reasons,
+        missing_fields=missing_fields,
+        degraded=bool(fallback_reasons or missing_fields),
+        cached=bool((analysis_result or {}).get("cached") or quote_resp.get("cached")),
+    )
 
     return {
         "code": normalized_code,
-        "name": str(basic_info.get("name") or ""),
-        "analysis_date": str(price_context.get("analysis_date") or ""),
+        "name": name,
+        "analysis_date": str(price_context.get("analysis_date") or meta["updated_at"]),
         "analysis_context": analysis_context,
         "recommendation": recommendation,
         "recommendation_text": recommendation_text,
@@ -88,11 +390,13 @@ async def build_stock_context(code: str) -> dict[str, Any]:
         "evidence": evidence,
         "highlights": highlights,
         "risks": risks,
-        "current_price": _safe_float(price_context.get("current_price")),
-        "volatility_20d": _safe_float(risk.get("volatility_20d")),
-        "source_chain": ["decision_context_builder", "tools.investment_analysis"],
-        "warnings": warnings,
-        "timestamp": analysis_result.get("timestamp") or now_iso(),
+        "current_price": safe_float(price_context.get("current_price") or quote_data.get("price")),
+        "volatility_20d": safe_float(risk.get("volatility_20d")),
+        "market_snapshot": market_snapshot,
+        "fund_flow_snapshot": fund_flow_snapshot,
+        "industry_chain_snapshot": industry_chain_snapshot,
+        "security_status": security_status,
+        **meta,
     }
 
 
@@ -107,13 +411,25 @@ async def build_user_context(user_id: str | None) -> dict[str, Any]:
         "preferences": {},
         "weighted_profile": None,
         "profile_source": "anonymous",
-        "source_chain": [],
-        "warnings": [],
-        "timestamp": now_iso(),
     }
+    warnings: list[str] = []
+    source_chain = ["decision_context_builder"]
+
     if not normalized_user_id:
-        result["profile_source"] = "anonymous_fallback"
-        return result
+        meta = build_context_meta(
+            source="user_context",
+            source_chain=[*source_chain, "anonymous_fallback"],
+            asof_value=datetime.now().astimezone().isoformat(),
+            warnings=["anonymous_user"],
+            fallback_reason=["anonymous_fallback"],
+            degraded=True,
+            cached=False,
+        )
+        return {
+            **result,
+            "profile_source": "anonymous_fallback",
+            **meta,
+        }
 
     db = get_db()
     rows: list[Any] = []
@@ -136,9 +452,9 @@ async def build_user_context(user_id: str | None) -> dict[str, Any]:
                     result["preferences"] = prefs
                     result["kyc_level"] = prefs.get("kyc_level")
                     result["profile_source"] = "app_users"
-                    result["source_chain"].append("db.app_users")
+                    source_chain.append("db.app_users")
             except Exception as exc:
-                result["warnings"].append(f"app_users:{exc}")
+                warnings.append(f"app_users:{exc}")
 
             try:
                 row = await conn.fetchrow(
@@ -154,9 +470,9 @@ async def build_user_context(user_id: str | None) -> dict[str, Any]:
                         result["risk_level"] = str(settings.get("risk_level") or result["risk_level"] or "moderate")
                         result["risk_bucket"] = _risk_level_to_bucket(result["risk_level"])
                         result["profile_source"] = "users"
-                    result["source_chain"].append("db.users")
+                    source_chain.append("db.users")
             except Exception as exc:
-                result["warnings"].append(f"users:{exc}")
+                warnings.append(f"users:{exc}")
 
             try:
                 rows = await conn.fetch(
@@ -192,13 +508,26 @@ async def build_user_context(user_id: str | None) -> dict[str, Any]:
                             key: round(value / total_weight, 4)
                             for key, value in totals.items()
                         }
-                    result["source_chain"].append("db.user_profile_snapshots")
+                    source_chain.append("db.user_profile_snapshots")
             except Exception as exc:
-                result["warnings"].append(f"user_profile_snapshots:{exc}")
+                warnings.append(f"user_profile_snapshots:{exc}")
     except Exception as exc:
-        result["warnings"].append(f"db_acquire:{exc}")
+        warnings.append(f"db_acquire:{exc}")
 
     if not app_users_hit and not users_hit:
         result["profile_source"] = "fallback"
 
-    return result
+    meta = build_context_meta(
+        source="user_context",
+        source_chain=source_chain,
+        asof_value=datetime.now().astimezone().isoformat(),
+        warnings=warnings,
+        fallback_reason=["user_profile_fallback"] if not app_users_hit and not users_hit else None,
+        missing_fields=["weighted_profile"] if result.get("weighted_profile") is None else [],
+        degraded=bool(warnings or not app_users_hit and not users_hit),
+        cached=False,
+    )
+    return {
+        **result,
+        **meta,
+    }

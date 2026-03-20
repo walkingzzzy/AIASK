@@ -8,9 +8,11 @@ from functools import lru_cache
 from types import SimpleNamespace
 from typing import Any
 
+from ..infrastructure.mcp_services import get_backtest_engine_class
 from .legacy_bridge import load_legacy_module
 
 _local_factory_scheduler = None
+_LEGACY_PACKAGE = "akshare_mcp.services.strategy_factory"
 
 
 def _get_local_strategy_factory_scheduler():
@@ -24,33 +26,82 @@ def _get_local_strategy_factory_scheduler():
 
 @lru_cache(maxsize=1)
 def _build_local_runtime_view():
+    from ..domain.spawner import StrategySpawner
+    from .backtest_filter import BacktestFilter
+    from .collect import DataCollector
+    from .deduplicator import Deduplicator
+    from .elimination import EliminationChecker
+    from .event_engine import LocalEventDrivenResearchEngine, get_local_event_engine
     from .factor_research import FactorResearchBuilder
+    from .factory_scheduler import StrategyFactoryScheduler
     from .opportunity import MarketOpportunityScanner
     from .panels import _build_strategy_panels, _run_risk_report, _run_validation_report
-    from .quality_gates import build_legacy_gate_report
+    from .quality_gates import build_legacy_gate_report, finalize_gate_report, run_gated_filter, run_gated_submission_pipeline
     from .submission_gate import run_submission_quality_gate
+    from .submitter import StrategySubmitter
     from .utils import _extract_event_context
+
+    BacktestEngine = get_backtest_engine_class()
 
     return SimpleNamespace(
         asyncio=asyncio,
+        BacktestEngine=BacktestEngine,
+        DataCollector=DataCollector,
         MarketOpportunityScanner=MarketOpportunityScanner,
+        StrategySpawner=StrategySpawner,
+        BacktestFilter=BacktestFilter,
+        Deduplicator=Deduplicator,
+        StrategySubmitter=StrategySubmitter,
+        EliminationChecker=EliminationChecker,
+        LocalEventDrivenResearchEngine=LocalEventDrivenResearchEngine,
+        get_local_event_engine=get_local_event_engine,
         FactorResearchBuilder=FactorResearchBuilder,
+        StrategyFactoryScheduler=StrategyFactoryScheduler,
         _build_strategy_panels=_build_strategy_panels,
         _run_validation_report=_run_validation_report,
         _run_risk_report=_run_risk_report,
+        run_gated_filter=run_gated_filter,
+        run_gated_submission_pipeline=run_gated_submission_pipeline,
         build_legacy_gate_report=build_legacy_gate_report,
+        finalize_gate_report=finalize_gate_report,
         get_strategy_factory_scheduler=_get_local_strategy_factory_scheduler,
         run_submission_quality_gate=run_submission_quality_gate,
         _extract_event_context=_extract_event_context,
     )
 
 
+class _StrategyFactoryRuntimeProxy:
+    """细粒度运行时代理。
+
+    优先读取旧 ``akshare_mcp.services.strategy_factory`` 根包上的属性，
+    以保留 monkeypatch/patch surface；缺失时回退到新包本地实现。
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        legacy_package = load_legacy_module(_LEGACY_PACKAGE)
+        if legacy_package is not None and hasattr(legacy_package, name):
+            return getattr(legacy_package, name)
+        local_view = _build_local_runtime_view()
+        if hasattr(local_view, name):
+            return getattr(local_view, name)
+        raise AttributeError(name)
+
+    def __dir__(self) -> list[str]:
+        names = set(dir(_build_local_runtime_view()))
+        legacy_package = load_legacy_module(_LEGACY_PACKAGE)
+        if legacy_package is not None:
+            names.update(dir(legacy_package))
+        return sorted(names)
+
+
+@lru_cache(maxsize=1)
+def _get_runtime_proxy():
+    return _StrategyFactoryRuntimeProxy()
+
+
 def get_strategy_factory_package():
-    """返回策略工厂运行时视图，优先保留旧根包 patch surface。"""
-    package = load_legacy_module("akshare_mcp.services.strategy_factory")
-    if package is not None:
-        return package
-    return _build_local_runtime_view()
+    """返回策略工厂运行时代理，优先保留旧根包 patch surface。"""
+    return _get_runtime_proxy()
 
 
 async def _call_optional_async(target: Any, method_name: str, *args, default=None, **kwargs):

@@ -21,100 +21,67 @@ class FinancialHistoryDto {
   @IsString() date!: string;
 }
 
+type TraceRequest = {
+  traceId?: string;
+  headers?: Record<string, string | undefined>;
+};
+
 @Controller('fundamental')
 export class FundamentalController {
   constructor(private readonly fundamentalService: FundamentalService) {}
 
-  @Get('overview')
-  async getOverview(
-    @Query() query: FundamentalQueryDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
-  ) {
-    const data = await this.fundamentalService.getOverview(query.code);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+  private getTraceId(req: TraceRequest) {
+    return String(
+      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN',
+    );
+  }
 
-    return {
-      success: true,
-      data,
-      traceId: String(traceId),
-    };
+  @Get('overview')
+  async getOverview(@Query() query: FundamentalQueryDto, @Req() req: TraceRequest) {
+    const data = await this.fundamentalService.getOverview(query.code);
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('history')
-  async getHistory(
-    @Query() query: FundamentalHistoryQueryDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
-  ) {
+  async getHistory(@Query() query: FundamentalHistoryQueryDto, @Req() req: TraceRequest) {
     const days = query.days ? Number(query.days) : 90;
     const data = await this.fundamentalService.getHistory(query.code, days);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-
-    return {
-      success: true,
-      data,
-      traceId: String(traceId),
-    };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('capital')
-  async getCapital(
-    @Query() query: FundamentalQueryDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
-  ) {
+  async getCapital(@Query() query: FundamentalQueryDto, @Req() req: TraceRequest) {
     const data = await this.fundamentalService.getCapital(query.code);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-
-    return {
-      success: true,
-      data,
-      traceId: String(traceId),
-    };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('peers')
-  async getPeers(
-    @Query() query: FundamentalQueryDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
-  ) {
+  async getPeers(@Query() query: FundamentalQueryDto, @Req() req: TraceRequest) {
     const data = await this.fundamentalService.getPeers(query.code);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-
-    return {
-      success: true,
-      data,
-      traceId: String(traceId),
-    };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('stock-info')
-  async getStockInfo(@Query() query: FundamentalQueryDto, @Req() req: any) {
+  async getStockInfo(@Query() query: FundamentalQueryDto, @Req() req: TraceRequest) {
     const data = await this.fundamentalService.getStockInfo(query.code);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('financial-snapshot')
-  async getFinancialSnapshot(@Query() query: FundamentalQueryDto, @Req() req: any) {
+  async getFinancialSnapshot(@Query() query: FundamentalQueryDto, @Req() req: TraceRequest) {
     const data = await this.fundamentalService.getFinancialSnapshot(query.code);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Post('financial-history')
-  async getFinancialHistory(@Body() body: FinancialHistoryDto, @Req() req: any) {
+  async getFinancialHistory(@Body() body: FinancialHistoryDto, @Req() req: TraceRequest) {
     const data = await this.fundamentalService.getFinancialHistory(body.codes, body.fields, body.date);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('f10')
-  async getF10(@Query() query: FundamentalQueryDto, @Req() req: any) {
+  async getF10(@Query() query: FundamentalQueryDto, @Req() req: TraceRequest) {
     const data = await this.fundamentalService.getF10Info(query.code);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 }

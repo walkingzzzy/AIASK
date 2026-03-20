@@ -1250,6 +1250,95 @@ class TestStrategySubmitter:
         assert "walk_forward_ic_ir" in gate["statistical_checks_failed_names"]
 
     @pytest.mark.asyncio
+    async def test_shared_submission_gate_allows_technical_fallback_for_degenerate_validation_stats(self, monkeypatch):
+        from types import SimpleNamespace
+        from akshare_mcp.services.strategy_factory import submission_gate as submission_gate_mod
+
+        class _DummyStrategy:
+            def __init__(self):
+                self._params = {}
+
+            def set_parameters(self, params):
+                self._params = dict(params or {})
+
+            def generate_signals(self, closes):
+                lookback = float(self._params.get("lookback", 8) or 8)
+                threshold = float(self._params.get("threshold", 0.003) or 0.003)
+                base = np.diff(closes, prepend=closes[0]).astype(float)
+                phase = np.linspace(0.0, np.pi * max(lookback * threshold * 220.0, 1.0), len(closes))
+                return base + np.sin(phase)
+
+        class _WalkForwardValidator:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def validate(self, *_args, **_kwargs):
+                return SimpleNamespace(oos_ic_ir=0.0)
+
+        class _PurgedKFoldCV:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def validate(self, *_args, **_kwargs):
+                return SimpleNamespace(oos_ic_mean=0.0)
+
+        db = MagicMock()
+        db.get_klines = AsyncMock(return_value=_make_klines(n=160, base=10.0, trend=0.01, noise=0.001))
+
+        monkeypatch.setattr(
+            "akshare_mcp.services.backtest.strategy_registry.StrategyRegistry.get",
+            lambda *_args, **_kwargs: _DummyStrategy,
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.validation.WalkForwardValidator",
+            _WalkForwardValidator,
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.validation.PurgedKFoldCV",
+            _PurgedKFoldCV,
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.validation.bootstrap_ic_ci",
+            lambda *_args, **_kwargs: {"ci_lower": -0.03},
+        )
+
+        gate = await submission_gate_mod.run_submission_quality_gate(
+            db,
+            {
+                "id": "factory_gate_technical_fallback",
+                "strategy_type": "momentum",
+                "params": {"lookback": 8, "threshold": 0.002993},
+                "tags": ["factory", "auto_generated", "ai_generated", "llm_proxy_fallback"],
+            },
+            validation_report={
+                "rating": {
+                    "grade": "D",
+                    "total_score": 0.0,
+                    "scores": {
+                        "oos_ic": 0.0,
+                        "oos_ir": 0.0,
+                        "stability": 0.0,
+                        "ci_significance": 0.0,
+                        "positive_ratio": 0.0,
+                    },
+                },
+                "walk_forward": {"n_folds": 0, "oos_rank_ic_mean": 0.0, "oos_rank_ic_ir": 0.0},
+                "purged_kfold": {"n_folds": 0, "oos_rank_ic_mean": 0.0, "oos_rank_ic_ir": 0.0},
+                "bootstrap_ci": {"sample_size": 0, "ci_lower": 0.0, "ci_upper": 0.0},
+            },
+            risk_report={"var_percent": 1.1201, "cvar_percent": 1.5402, "stress_loss_percent": -20.0},
+            backtest_metrics={"sharpe_ratio": 0.6456, "max_drawdown": 0.1146, "trade_count": 18},
+        )
+
+        assert gate["passed"] is True
+        assert gate["passed_strict"] is False
+        assert gate["provisional_pass"] is True
+        assert "validation_report_degenerate" in gate["warning_codes"]
+        assert "provisional_path_technical_validation_fallback" in gate["warning_codes"]
+        assert gate["statistical_checks_passed"] < 2
+        assert "param_sensitivity" in gate["statistical_checks_failed_names"]
+
+    @pytest.mark.asyncio
     async def test_submitter_passes_review_context_to_shared_submission_gate(self, monkeypatch):
         submitter = StrategySubmitter()
         db = MagicMock()

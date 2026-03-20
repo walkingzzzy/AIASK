@@ -11,6 +11,8 @@
     "dev:bff": "npm run dev -w apps/bff",
     "dev:web": "npm run dev -w apps/web",
     "build": "npm run build -w apps/bff && npm run build -w apps/web",
+    "verify:unified-decision": "bash scripts/verify-unified-decision.sh",
+    "verify:unified-decision-benchmark": "bash scripts/unified-decision-benchmark-baseline.sh",
     "verify:ws-quote-chain": "npm run build -w apps/bff && npm run build -w apps/web && node scripts/ws-quote-chain-check.mjs",
     "verify:security-boundaries": "npm run build -w apps/bff && node scripts/security-boundary-check.mjs",
     "verify:mcp-arg-boundaries": "npm run build -w apps/bff && node scripts/mcp-arg-boundary-check.mjs",

@@ -83,136 +83,106 @@ class BatchQuotesDto {
   codes!: string[];
 }
 
+type TraceRequest = {
+  traceId?: string;
+  headers?: Record<string, string | undefined>;
+};
+
 @Controller('market')
 export class MarketController {
   constructor(private readonly marketService: MarketService) {}
 
-  @Get('quote')
-  async getQuote(
-    @Query() query: StockCodeQueryDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
-  ) {
-    const data = await this.marketService.getQuote(query.code);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+  private getTraceId(req: TraceRequest) {
+    return String(
+      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN',
+    );
+  }
 
-    return {
-      success: true,
-      data,
-      traceId: String(traceId),
-    };
+  @Get('quote')
+  async getQuote(@Query() query: StockCodeQueryDto, @Req() req: TraceRequest) {
+    const data = await this.marketService.getQuote(query.code);
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('kline')
-  async getKline(
-    @Query() query: KlineQueryDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
-  ) {
+  async getKline(@Query() query: KlineQueryDto, @Req() req: TraceRequest) {
     const data = await this.marketService.getKline(
       query.code,
       query.period ?? 'daily',
       query.limit ? Number(query.limit) : undefined,
     );
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-
-    return {
-      success: true,
-      data,
-      traceId: String(traceId),
-    };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('order-book')
-  async getOrderBook(
-    @Query() query: StockCodeQueryDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
-  ) {
+  async getOrderBook(@Query() query: StockCodeQueryDto, @Req() req: TraceRequest) {
     const data = await this.marketService.getOrderBook(query.code);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-
-    return {
-      success: true,
-      data,
-      traceId: String(traceId),
-    };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('stock-list')
-  async getStockList(@Req() req: any) {
+  async getStockList(@Req() req: TraceRequest) {
     const data = await this.marketService.getStockList();
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Post('batch-quotes')
-  async getBatchQuotes(@Body() body: BatchQuotesDto, @Req() req: any) {
+  async getBatchQuotes(@Body() body: BatchQuotesDto, @Req() req: TraceRequest) {
     const data = await this.marketService.getBatchQuotes(body.codes);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Post('index-batch-quotes')
-  async getIndexBatchQuotes(@Body() body: BatchQuotesDto, @Req() req: any) {
+  async getIndexBatchQuotes(@Body() body: BatchQuotesDto, @Req() req: TraceRequest) {
     const data = await this.marketService.getIndexBatchQuotes(body.codes);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('minute-kline')
-  async getMinuteKline(@Query() query: MinuteKlineQueryDto, @Req() req: any) {
+  async getMinuteKline(@Query() query: MinuteKlineQueryDto, @Req() req: TraceRequest) {
     const data = await this.marketService.getMinuteKline(query.code, query.period ?? '5m', query.limit ? Number(query.limit) : 300);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('index-quote')
-  async getIndexQuote(@Query() query: IndexCodeQueryDto, @Req() req: any) {
+  async getIndexQuote(@Query() query: IndexCodeQueryDto, @Req() req: TraceRequest) {
     const data = await this.marketService.getIndexQuote(query.indexCode);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('trade-details')
-  async getTradeDetails(@Query() query: TradeDetailsQueryDto, @Req() req: any) {
+  async getTradeDetails(@Query() query: TradeDetailsQueryDto, @Req() req: TraceRequest) {
     const data = await this.marketService.getTradeDetails(query.code, query.limit ? Number(query.limit) : 20);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('limit-up')
-  async getLimitUp(@Query() query: DateQueryDto, @Req() req: any) {
+  async getLimitUp(@Query() query: DateQueryDto, @Req() req: TraceRequest) {
     const data = await this.marketService.getLimitUpStocks(query.date);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('limit-up-stats')
-  async getLimitUpStats(@Query() query: DateQueryDto, @Req() req: any) {
+  async getLimitUpStats(@Query() query: DateQueryDto, @Req() req: TraceRequest) {
     const data = await this.marketService.getLimitUpStats(query.date);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('blocks')
-  async getBlocks(@Query() query: BlocksQueryDto, @Req() req: any) {
+  async getBlocks(@Query() query: BlocksQueryDto, @Req() req: TraceRequest) {
     const data = await this.marketService.getMarketBlocks(query.blockType ?? 'industry', query.limit ? Number(query.limit) : undefined);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('block-stocks')
-  async getBlockStocks(@Query() query: BlockCodeQueryDto, @Req() req: any) {
+  async getBlockStocks(@Query() query: BlockCodeQueryDto, @Req() req: TraceRequest) {
     const data = await this.marketService.getBlockStocks(query.blockCode);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('search')
-  async searchStocks(@Query() query: SearchQueryDto, @Req() req: any) {
+  async searchStocks(@Query() query: SearchQueryDto, @Req() req: TraceRequest) {
     const data = await this.marketService.searchStocks(query.keyword, query.limit ? Number(query.limit) : 20);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 }

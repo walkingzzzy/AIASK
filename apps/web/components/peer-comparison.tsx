@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { SectionCard, KpiGrid, KpiCard, Badge } from '@/components/ui';
+import { Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 

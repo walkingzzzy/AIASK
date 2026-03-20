@@ -14,6 +14,14 @@ from ..services.decision_contracts import (
     get_unified_decision_details_payload,
     get_unified_decision_summary_payload,
 )
+from ..services.decision_context_builder import (
+    build_stock_context as _build_stock_context,
+    build_user_context as _build_user_context,
+)
+from ..services.decision_quant_builder import build_quant_context as _build_quant_context
+from ..services.decision_event_builder import build_event_context as _build_event_context
+from ..services.decision_rule_gate import build_rule_gates as _build_rule_gates
+from ..services.decision_fusion import fuse_unified_decision as _fuse_unified_decision
 from ..services.factor_calculator import factor_calculator
 from ..utils import ok, fail, resolve_security_code
 import statistics
@@ -922,6 +930,141 @@ def register(mcp):
 
             return ok(payload)
 
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def build_stock_context(
+        code: str | None = None,
+        stock_code: str | None = None,
+        symbol: str | None = None,
+        ticker: str | None = None,
+    ):
+        """构建股票上下文：基础骨架 + 行情快照 + 资金流 + 产业链。"""
+        try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            return ok(await _build_stock_context(code))
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def build_quant_context(
+        code: str | None = None,
+        stock_code: str | None = None,
+        symbol: str | None = None,
+        ticker: str | None = None,
+    ):
+        """构建量化上下文：因子画像 + 条件收益 + 相似形态 + OOS 验证。"""
+        try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            return ok(await _build_quant_context(code))
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def build_event_context(
+        code: str | None = None,
+        stock_code: str | None = None,
+        symbol: str | None = None,
+        ticker: str | None = None,
+        news_limit: int = 12,
+        notice_days: int = 30,
+        report_limit: int = 6,
+    ):
+        """构建事件上下文：新闻/公告/研报聚合、事件分类与 veto 候选。"""
+        try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            return ok(
+                await _build_event_context(
+                    code,
+                    news_limit=news_limit,
+                    notice_days=notice_days,
+                    report_limit=report_limit,
+                )
+            )
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def run_decision_gate(
+        code: str | None = None,
+        investment_style: str = 'balanced',
+        user_id: str | None = None,
+        stock_context: dict | None = None,
+        quant_context: dict | None = None,
+        event_context: dict | None = None,
+        user_context: dict | None = None,
+        stock_code: str | None = None,
+        symbol: str | None = None,
+        ticker: str | None = None,
+    ):
+        """运行统一决策规则闸门，可传入现成上下文，也可按代码自动构建。"""
+        try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            built_stock = stock_context if isinstance(stock_context, dict) else await _build_stock_context(code)
+            built_quant = quant_context if isinstance(quant_context, dict) else await _build_quant_context(code)
+            built_event = event_context if isinstance(event_context, dict) else await _build_event_context(code)
+            built_user = user_context if isinstance(user_context, dict) else await _build_user_context(user_id)
+            gate = _build_rule_gates(
+                code=code,
+                investment_style=investment_style,
+                stock_context=built_stock,
+                quant_context=built_quant,
+                event_context=built_event,
+                user_context=built_user,
+            )
+            return ok(gate)
+        except Exception as e:
+            return fail(str(e))
+
+    @mcp.tool()
+    async def fuse_decision_payload(
+        code: str | None = None,
+        investment_style: str = 'balanced',
+        user_id: str | None = None,
+        stock_context: dict | None = None,
+        quant_context: dict | None = None,
+        event_context: dict | None = None,
+        user_context: dict | None = None,
+        gate: dict | None = None,
+        stock_code: str | None = None,
+        symbol: str | None = None,
+        ticker: str | None = None,
+    ):
+        """融合统一决策上下文，输出 action/summary/weights/raw_ai_output。"""
+        try:
+            code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
+            if not code:
+                return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
+            built_stock = stock_context if isinstance(stock_context, dict) else await _build_stock_context(code)
+            built_quant = quant_context if isinstance(quant_context, dict) else await _build_quant_context(code)
+            built_event = event_context if isinstance(event_context, dict) else await _build_event_context(code)
+            built_user = user_context if isinstance(user_context, dict) else await _build_user_context(user_id)
+            built_gate = gate if isinstance(gate, dict) else _build_rule_gates(
+                code=code,
+                investment_style=investment_style,
+                stock_context=built_stock,
+                quant_context=built_quant,
+                event_context=built_event,
+                user_context=built_user,
+            )
+            return ok(
+                _fuse_unified_decision(
+                    stock_context=built_stock,
+                    quant_context=built_quant,
+                    event_context=built_event,
+                    user_context=built_user,
+                    gate=built_gate,
+                )
+            )
         except Exception as e:
             return fail(str(e))
 

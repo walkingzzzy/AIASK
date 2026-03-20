@@ -56,20 +56,12 @@ export default function WatchlistPage() {
     useEffect(() => { syncFromServer(); }, [syncFromServer]);
 
     const visibleGroups = hydrated ? groups : [];
-    const activeGroup = visibleGroups.find((g) => g.id === activeGroupId) || visibleGroups[0];
+    const fallbackActiveGroup = visibleGroups.find((g) => g.items.length > 0) || visibleGroups[0] || null;
+    const effectiveActiveGroupId = activeGroupId != null && visibleGroups.some((g) => g.id === activeGroupId)
+        ? activeGroupId
+        : fallbackActiveGroup?.id ?? null;
+    const activeGroup = visibleGroups.find((g) => g.id === effectiveActiveGroupId) || fallbackActiveGroup;
     const allCodes = hydrated ? visibleGroups.flatMap((g) => g.items.map((i) => i.code)) : [];
-
-    useEffect(() => {
-        if (!hydrated || visibleGroups.length === 0) return;
-
-        const hasActiveGroup = activeGroupId != null && visibleGroups.some((g) => g.id === activeGroupId);
-        if (hasActiveGroup) return;
-
-        const preferredGroup = visibleGroups.find((g) => g.items.length > 0) || visibleGroups[0];
-        if (preferredGroup && preferredGroup.id !== activeGroupId) {
-            setActiveGroupId(preferredGroup.id);
-        }
-    }, [activeGroupId, hydrated, visibleGroups]);
 
     // Batch quote for all watchlist stocks
     const batchQ = useApiQuery<unknown>(

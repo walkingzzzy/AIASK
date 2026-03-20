@@ -1,5 +1,3 @@
-import type OpenAI from 'openai';
-
 export type UserContextForPrompt = {
   riskLevel?: string;
   recentEmotions?: string[];

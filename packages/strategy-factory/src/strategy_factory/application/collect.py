@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from ..domain.constants import FACTORY_RESEARCH_FACTORS
+from ..infrastructure.mcp_services import get_sentiment_analyzer
 from .utils import get_strategy_factory_package
 
 logger = logging.getLogger(__name__)
@@ -566,8 +567,7 @@ class DataCollector:
                     missing_fields.extend(fields)
 
         try:
-            from akshare_mcp.services.sentiment import sentiment_analyzer
-
+            sentiment_analyzer = get_sentiment_analyzer()
             index_klines = []
             try:
                 index_klines = await db.get_klines("000001", limit=60)

@@ -31,6 +31,8 @@ _FACADE_EXPORTS = {
     "StrategySubmitter",
     "EliminationChecker",
     "_call_optional_async",
+    "call_optional_async",
+    "auto_name",
     "get_local_event_engine",
     "get_strategy_factory_scheduler",
     "preferred_strategy_types_for_factor",

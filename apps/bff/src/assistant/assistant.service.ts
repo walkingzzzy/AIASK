@@ -51,92 +51,87 @@ export class AssistantService {
     return { card: this.normalizeCard(payload), raw: payload };
   }
 
+  async decisionManagerAnalyze(code: string) {
+    const stockCode = code.trim();
+    const attempts: Array<Record<string, unknown>> = [
+      { action: 'analyze', code: stockCode },
+      { action: 'analyze', kwargs: JSON.stringify({ code: stockCode }) },
+    ];
+    const { payload } = await this.callWithArgs('decision_manager', attempts);
+    return { card: this.normalizeCard(payload), raw: payload };
+  }
+
   async getIndustryChain(keyword?: string, chainId?: string) {
     const args: Record<string, unknown> = {};
     if (keyword) args.keyword = keyword.trim();
     if (chainId) args.chain_id = chainId.trim();
     const payload = await this.mcp.callTool('get_industry_chain', args);
-    const d = (payload as any)?.data ?? payload ?? {};
-    const chains = Array.isArray(d?.chains) ? d.chains : Array.isArray(d) ? d : [];
-    return { chains: chains.map((c: any) => ({ id: String(c.id ?? ''), name: String(c.name ?? ''), upstream: Array.isArray(c.upstream) ? c.upstream : [], midstream: Array.isArray(c.midstream) ? c.midstream : [], downstream: Array.isArray(c.downstream) ? c.downstream : [] })) };
+    const root = this.unwrapPayload(payload);
+    const data = this.asRecord(root);
+    const chains = this.asRecordArray(data.chains ?? root);
+    return {
+      chains: chains.map((chain) => ({
+        id: this.toText(chain.id),
+        name: this.toText(chain.name),
+        upstream: this.toTextArray(chain.upstream),
+        midstream: this.toTextArray(chain.midstream),
+        downstream: this.toTextArray(chain.downstream),
+      })),
+    };
   }
 
   async generateDailyReport(date?: string) {
     const args: Record<string, unknown> = {};
     if (date) args.date = date.trim();
     const payload = await this.mcp.callTool('generate_daily_report', args);
-    const d = (payload as any)?.data ?? payload ?? {};
-    return { date: String(d.date ?? ''), marketSummary: String(d.market_summary ?? d.marketSummary ?? ''), hotSectors: Array.isArray(d.hot_sectors ?? d.hotSectors) ? (d.hot_sectors ?? d.hotSectors) : [], sentiment: String(d.sentiment ?? ''), outlook: String(d.outlook ?? ''), generatedAt: String(d.generated_at ?? d.generatedAt ?? '') };
+    const data = this.asRecord(this.unwrapPayload(payload));
+    return {
+      date: this.toText(data.date),
+      marketSummary: this.toText(data.market_summary ?? data.marketSummary),
+      hotSectors: this.asRecordArray(data.hot_sectors ?? data.hotSectors),
+      sentiment: this.toText(data.sentiment),
+      outlook: this.toText(data.outlook),
+      generatedAt: this.toText(data.generated_at ?? data.generatedAt),
+    };
   }
 
-  private normalizeCard(payload: any): DecisionCardDto {
-    const d = payload?.data ?? payload ?? {};
-    const toText = (value: unknown): string => {
-      if (typeof value === 'string') return value.trim();
-      if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-      if (Array.isArray(value)) {
-        return value.map((item) => toText(item)).filter(Boolean).join('；');
-      }
-      if (value && typeof value === 'object') {
-        const record = value as Record<string, unknown>;
-        const preferred = [
-          'summary',
-          'analysis',
-          'conclusion',
-          'overview',
-          'description',
-          'reason',
-          'recommendation',
-          'signal',
-          'value',
-        ];
-        for (const key of preferred) {
-          const text = toText(record[key]);
-          if (text) return text;
-        }
-        return Object.entries(record)
-          .map(([key, item]) => {
-            const text = toText(item);
-            return text ? `${key}: ${text}` : '';
-          })
-          .filter(Boolean)
-          .join('；');
-      }
-      return '';
-    };
+  private normalizeCard(payload: unknown): DecisionCardDto {
+    const d = this.asRecord(this.unwrapPayload(payload));
     const toArr = (v: unknown): string[] => {
-      if (Array.isArray(v)) return v.map((item) => toText(item)).filter(Boolean);
+      if (Array.isArray(v)) return v.map((item) => this.toText(item)).filter(Boolean);
       if (typeof v === 'string') return v.split(/[;；\n]/).map((s: string) => s.trim()).filter(Boolean);
       if (v && typeof v === 'object') {
-        return Object.values(v as Record<string, unknown>).map((item) => toText(item)).filter(Boolean);
+        return Object.values(v as Record<string, unknown>).map((item) => this.toText(item)).filter(Boolean);
       }
       return [];
     };
     const provenance = (() => {
       const raw = d.data_provenance ?? d.dataProvenance ?? d.sources ?? d.data_sources;
       if (Array.isArray(raw)) {
-        return raw.map((item) => {
+        return raw
+          .map((item) => {
           if (item && typeof item === 'object') {
             const obj = item as Record<string, unknown>;
             return {
-              source: toText(obj.source ?? obj.name),
-              dataset: toText(obj.dataset ?? obj.table ?? obj.topic),
-              timestamp: toText(obj.timestamp ?? obj.updated_at ?? obj.updatedAt),
+              source: this.toText(obj.source ?? obj.name),
+              dataset: this.toText(obj.dataset ?? obj.table ?? obj.topic),
+              timestamp: this.toText(obj.timestamp ?? obj.updated_at ?? obj.updatedAt),
             };
           }
-          return toText(item);
-        }).filter((item) => {
-          if (typeof item === 'string') return item.length > 0;
-          return Boolean(item.source || item.dataset || item.timestamp);
-        });
+            return this.toText(item);
+          })
+          .filter((item) => {
+            if (typeof item === 'string') return item.length > 0;
+            return Boolean(item.source || item.dataset || item.timestamp);
+          });
       }
-      const text = toText(raw);
+      const text = this.toText(raw);
       return text ? [text] : [];
     })();
     const reasons = toArr(d.reasons ?? d.reason_list ?? d.factors);
     const executionPlan = toArr(d.execution_plan ?? d.executionPlan ?? d.plan ?? d.steps);
     const risks = toArr(d.risks ?? d.risk_factors ?? d.warnings);
-    const summary = toText(
+    const summary = this.toText(
       d.summary ??
       d.action_text ??
       d.actionText ??
@@ -161,6 +156,63 @@ export class AssistantService {
       dataProvenance: provenance,
       complianceNotice: String(d.compliance_notice ?? d.complianceNotice ?? d.disclaimer ?? '本分析结果仅供参考，不构成投资建议。'),
     };
+  }
+
+  private unwrapPayload(payload: unknown): unknown {
+    const record = this.asRecord(payload);
+    return record.data !== undefined ? record.data : payload;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private asRecordArray(value: unknown): Record<string, unknown>[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+  }
+
+  private toTextArray(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value.map((item) => this.toText(item)).filter(Boolean);
+  }
+
+  private toText(value: unknown): string {
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (Array.isArray(value)) {
+      return value.map((item) => this.toText(item)).filter(Boolean).join('；');
+    }
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      const preferred = [
+        'summary',
+        'analysis',
+        'conclusion',
+        'overview',
+        'description',
+        'reason',
+        'recommendation',
+        'signal',
+        'value',
+      ];
+      for (const key of preferred) {
+        const text = this.toText(record[key]);
+        if (text) return text;
+      }
+      return Object.entries(record)
+        .map(([key, item]) => {
+          const text = this.toText(item);
+          return text ? `${key}: ${text}` : '';
+        })
+        .filter(Boolean)
+        .join('；');
+    }
+    return '';
   }
 
   private async callWithArgs(primaryTool: string, attempts: Array<Record<string, unknown>>) {

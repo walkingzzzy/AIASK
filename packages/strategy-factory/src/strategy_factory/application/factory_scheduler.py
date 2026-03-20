@@ -6,7 +6,7 @@ import asyncio
 import inspect
 import logging
 from datetime import datetime, time, timedelta
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
 
 from .legacy_bridge import get_compat_symbol
@@ -26,9 +26,24 @@ from .runtime import (
     get_strategy_factory_package as _runtime_get_strategy_factory_package,
 )
 from .utils import _extract_event_context as _local_extract_event_context
-from akshare_mcp.services.strategy_autonomy_lifecycle import AUTONOMY_PHASE_ORDER, summarize_autonomy_lifecycle
+from ..infrastructure.mcp_services import get_autonomy_lifecycle_runtime
+
+if TYPE_CHECKING:
+    from ..api.contracts import (
+        AutonomyGateway,
+        FactorResearchGateway,
+        IncubationGateway,
+        RiskGateway,
+        ValidationGateway,
+        VectorSearchGateway,
+    )
+    from ..infrastructure.mcp_adapters import MCPRuntimeAdapters
 
 logger = logging.getLogger(__name__)
+
+_AUTONOMY_LIFECYCLE_RUNTIME = get_autonomy_lifecycle_runtime()
+AUTONOMY_PHASE_ORDER = _AUTONOMY_LIFECYCLE_RUNTIME.AUTONOMY_PHASE_ORDER
+summarize_autonomy_lifecycle = _AUTONOMY_LIFECYCLE_RUNTIME.summarize_autonomy_lifecycle
 
 _LEGACY_FACTORY_SCHEDULER_MODULE = "akshare_mcp.services.strategy_factory.factory_scheduler"
 _LEGACY_UTILS_MODULE = "akshare_mcp.services.strategy_factory.utils"
@@ -69,7 +84,18 @@ async def _call_optional_async(target: Any, method_name: str, *args, default=Non
 class StrategyFactoryScheduler:
     """策略工厂调度器，支持 continuous（24/7循环）和 daily（每日定时）两种模式。"""
 
-    def __init__(self, run_time: Optional[time] = None):
+    def __init__(
+        self,
+        run_time: Optional[time] = None,
+        *,
+        vector_gateway: Optional["VectorSearchGateway"] = None,
+        validation_gateway: Optional["ValidationGateway"] = None,
+        risk_gateway: Optional["RiskGateway"] = None,
+        incubation_gateway: Optional["IncubationGateway"] = None,
+        autonomy_gateway: Optional["AutonomyGateway"] = None,
+        factor_research_gateway: Optional["FactorResearchGateway"] = None,
+        runtime_adapters: Optional["MCPRuntimeAdapters"] = None,
+    ):
         self.schedule_mode: str = FACTORY_SCHEDULE_MODE if FACTORY_SCHEDULE_MODE in ("continuous", "daily") else "continuous"
         # daily 模式的运行时间
         if run_time is not None:
@@ -88,6 +114,20 @@ class StrategyFactoryScheduler:
         self._daily_run_count: int = 0
         self._daily_run_date: Optional[str] = None  # "YYYY-MM-DD"
         self._cycle_count: int = 0
+        self._runtime_adapters = runtime_adapters
+        self._vector_gateway = vector_gateway
+        self._validation_gateway = validation_gateway
+        self._risk_gateway = risk_gateway
+        self._incubation_gateway = incubation_gateway
+        self._autonomy_gateway = autonomy_gateway
+        self._factor_research_gateway = factor_research_gateway
+        if runtime_adapters is not None:
+            self._vector_gateway = self._vector_gateway or getattr(runtime_adapters, "vector_search", None)
+            self._validation_gateway = self._validation_gateway or getattr(runtime_adapters, "validation", None)
+            self._risk_gateway = self._risk_gateway or getattr(runtime_adapters, "risk", None)
+            self._incubation_gateway = self._incubation_gateway or getattr(runtime_adapters, "incubation", None)
+            self._autonomy_gateway = self._autonomy_gateway or getattr(runtime_adapters, "autonomy", None)
+            self._factor_research_gateway = self._factor_research_gateway or getattr(runtime_adapters, "factor_research", None)
 
     def start(self):
         if self._running:
@@ -201,6 +241,69 @@ class StrategyFactoryScheduler:
             "ok": ok,
             **data,
         }
+
+    @staticmethod
+    def _filter_supported_injection_kwargs(factory: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+        if not kwargs:
+            return {}
+        try:
+            signature = inspect.signature(factory)
+        except (TypeError, ValueError):
+            return dict(kwargs)
+        if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
+            return dict(kwargs)
+        allowed = {
+            name
+            for name, parameter in signature.parameters.items()
+            if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        }
+        return {key: value for key, value in kwargs.items() if key in allowed}
+
+    @staticmethod
+    def _call_factory_with_supported_kwargs(factory: Any, kwargs: dict[str, Any]):
+        filtered_kwargs = StrategyFactoryScheduler._filter_supported_injection_kwargs(factory, kwargs)
+        return factory(**filtered_kwargs) if filtered_kwargs else factory()
+
+    def _adapt_gateway_repository(self, db):
+        runtime_repo = getattr(self._runtime_adapters, "repository", None) if self._runtime_adapters is not None else None
+        if runtime_repo is not None and getattr(runtime_repo, "raw", None) is db:
+            return runtime_repo
+        return db
+
+    def _build_deduplicator(self, factory_pkg):
+        deduplicator_cls = factory_pkg.Deduplicator
+        kwargs = {}
+        if self._vector_gateway is not None:
+            kwargs["vector_gateway"] = self._vector_gateway
+        return self._call_factory_with_supported_kwargs(deduplicator_cls, kwargs)
+
+    def _build_submitter(self, factory_pkg):
+        submitter_cls = factory_pkg.StrategySubmitter
+        kwargs = {}
+        if self._validation_gateway is not None:
+            kwargs["validation_gateway"] = self._validation_gateway
+        if self._risk_gateway is not None:
+            kwargs["risk_gateway"] = self._risk_gateway
+        if self._incubation_gateway is not None:
+            kwargs["incubation_gateway"] = self._incubation_gateway
+        return self._call_factory_with_supported_kwargs(submitter_cls, kwargs)
+
+    def _get_autonomy_gateway(self) -> "AutonomyGateway":
+        if self._autonomy_gateway is None:
+            from ..infrastructure.mcp_adapters import MCPAutonomyGatewayImpl
+
+            self._autonomy_gateway = MCPAutonomyGatewayImpl()
+        return self._autonomy_gateway
+
+    def _get_factor_research_gateway(self) -> "FactorResearchGateway":
+        if self._factor_research_gateway is None:
+            from ..infrastructure.mcp_adapters import MCPFactorResearchGatewayImpl
+
+            factory_pkg = get_strategy_factory_package()
+            self._factor_research_gateway = MCPFactorResearchGatewayImpl(
+                builder=getattr(factory_pkg, "FactorResearchBuilder", None),
+            )
+        return self._factor_research_gateway
 
     @staticmethod
     def _aggregate_vector_submission_metrics(submission_result: Optional[dict]) -> dict:
@@ -391,19 +494,20 @@ class StrategyFactoryScheduler:
                 logger.error("StrategyFactory loop error: %s", exc, exc_info=True)
                 await asyncio.sleep(FACTORY_ERROR_BACKOFF_SEC)
 
-    async def _generate_for_research_task(self, autonomy_service, db, snapshot: dict, task: dict) -> dict:
+    async def _generate_for_research_task(self, autonomy_gateway, db, snapshot: dict, task: dict) -> dict:
         limit = max(1, min(int(task.get("generation_limit") or AUTONOMY_CANDIDATES_PER_TASK), 10))
         source = f"strategy_factory:{task.get('opportunity_type') or 'general'}"
+        gateway_db = self._adapt_gateway_repository(db)
         try:
-            return await autonomy_service.generate_factory_candidates(
-                db,
+            return await autonomy_gateway.generate_factory_candidates(
+                gateway_db,
                 snapshot,
                 limit=limit,
                 research_task=task,
                 source=source,
             )
         except TypeError:
-            return await autonomy_service.generate_factory_candidates(db, snapshot, limit=limit)
+            return await autonomy_gateway.generate_factory_candidates(gateway_db, snapshot, limit=limit)
 
     async def _persist_enriched_snapshot(self, db, snapshot: dict[str, Any]) -> None:
         try:
@@ -416,8 +520,9 @@ class StrategyFactoryScheduler:
         except Exception as exc:
             logger.warning("StrategyFactory: enriched snapshot persistence failed: %s", exc)
 
-    async def _prepare_shared_generation_context(self, autonomy_service, db, snapshot: dict[str, Any]) -> bool:
-        generation_service = getattr(autonomy_service, "generation_service", None)
+    async def _prepare_shared_generation_context(self, autonomy_gateway, db, snapshot: dict[str, Any]) -> bool:
+        autonomy_target = getattr(autonomy_gateway, "raw", autonomy_gateway)
+        generation_service = getattr(autonomy_target, "generation_service", None)
         builder = getattr(generation_service, "build_shared_generation_context", None)
         if not callable(builder):
             return False
@@ -435,8 +540,6 @@ class StrategyFactoryScheduler:
             return False
 
     async def _run_autonomy_batches(self, db, snapshot: dict) -> dict:
-        from akshare_mcp.services.strategy_autonomy import get_strategy_autonomy_service
-
         factory_pkg = get_strategy_factory_package()
         scanner = factory_pkg.MarketOpportunityScanner()
         scan_report = await scanner.scan(db, snapshot)
@@ -444,7 +547,7 @@ class StrategyFactoryScheduler:
         scan_summary = dict(scan_report.get("summary") or {})
         task_source_counts = dict(scan_summary.get("task_sources") or self._build_task_source_counts(tasks))
         event_task_count = int(scan_summary.get("event_task_count") or task_source_counts.get("event_driven", 0))
-        autonomy_service = get_strategy_autonomy_service()
+        autonomy_gateway = self._get_autonomy_gateway()
         generated_candidates: List[dict] = []
         all_experiments: List[dict] = []
         task_results: List[dict] = []
@@ -456,7 +559,7 @@ class StrategyFactoryScheduler:
         last_error = None
         elapsed_seconds = 0.0
         _agg_lock = asyncio.Lock()
-        shared_generation_context_preloaded = await self._prepare_shared_generation_context(autonomy_service, db, snapshot)
+        shared_generation_context_preloaded = await self._prepare_shared_generation_context(autonomy_gateway, db, snapshot)
 
         sem = asyncio.Semaphore(RESEARCH_TASK_CONCURRENCY)
 
@@ -510,7 +613,7 @@ class StrategyFactoryScheduler:
                         ],
                     }
                     failed_phase = "generating"
-                    cycle = await self._generate_for_research_task(autonomy_service, db, snapshot, enriched_task)
+                    cycle = await self._generate_for_research_task(autonomy_gateway, db, snapshot, enriched_task)
                     llm_generation = self._extract_cycle_llm_generation(cycle)
                     lifecycle = self._extract_cycle_lifecycle(cycle)
                     lifecycle_summary = summarize_autonomy_lifecycle(lifecycle)
@@ -696,9 +799,11 @@ class StrategyFactoryScheduler:
 
             factor_research = {}
             try:
-                factor_builder_cls = getattr(factory_pkg, "FactorResearchBuilder", None)
-                if factor_builder_cls is not None:
-                    factor_research = await factor_builder_cls.build(db, snapshot)
+                factor_gateway = self._get_factor_research_gateway()
+                factor_research = await factor_gateway.build_artifact(
+                    self._adapt_gateway_repository(db),
+                    snapshot,
+                )
                 snapshot["factor_research"] = dict(factor_research or {})
                 factor_summary = dict((snapshot.get("factor_research") or {}).get("summary") or {})
                 results["stages"]["factor_research"] = self._with_stage_meta("factor_research", trace_id, {
@@ -776,8 +881,8 @@ class StrategyFactoryScheduler:
                 and hasattr(factory_pkg, "run_gated_filter")
                 and inspect.iscoroutinefunction(getattr(db, "get_klines", None))
             )
-            deduplicator = factory_pkg.Deduplicator()
-            submitter = factory_pkg.StrategySubmitter()
+            deduplicator = self._build_deduplicator(factory_pkg)
+            submitter = self._build_submitter(factory_pkg)
             supports_unified_submission_runner = bool(
                 supports_unified_gate_runner
                 and hasattr(factory_pkg, "run_gated_submission_pipeline")

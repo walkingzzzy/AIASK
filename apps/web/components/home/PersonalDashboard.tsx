@@ -1,7 +1,7 @@
 'use client';
 
 import { SectionCard, KpiCard, KpiGrid, Skeleton, QuickAction, QuickActionGrid } from '@/components/ui';
-import { ErrorState, EmptyState } from '@/components/status-state';
+import { EmptyState } from '@/components/status-state';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';

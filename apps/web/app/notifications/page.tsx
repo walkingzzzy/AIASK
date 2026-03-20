@@ -58,6 +58,13 @@ const TEMPLATE_CARDS = [
     },
 ] as const;
 
+function readRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return {};
+    }
+    return value as Record<string, unknown>;
+}
+
 export default function NotificationsPage() {
     const [activeType, setActiveType] = useState<string>('all');
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -79,8 +86,10 @@ export default function NotificationsPage() {
     });
 
     const rawItems: NotificationItem[] = useMemo(() => {
-        const data = listQ.data as any;
-        return data?.items ?? data?.data?.items ?? [];
+        const data = readRecord(listQ.data);
+        const nested = readRecord(data.data);
+        const items = data.items ?? nested.items ?? [];
+        return Array.isArray(items) ? (items as NotificationItem[]) : [];
     }, [listQ.data]);
 
     const items = useMemo(() => {

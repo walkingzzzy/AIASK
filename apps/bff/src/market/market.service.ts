@@ -159,15 +159,16 @@ export class MarketService {
     const cached = await this.cacheService.getWithMeta(cacheKey);
     if (cached.value) {
       return {
-        ...(cached.value as any),
+        ...(cached.value as Record<string, unknown>),
         meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } },
       };
     }
     const payload = await this.callTool('get_stock_list', {});
-    const root = (payload as any)?.data ?? payload ?? {};
-    const stocks = Array.isArray(root?.stocks) ? root.stocks : Array.isArray(root) ? root : [];
+    const root = this.unwrapPayload(payload);
+    const data = this.asRecord(root);
+    const stocks = this.asRecordArray(data.stocks ?? root);
     const result = {
-      stocks: stocks.map((s: any) => ({ code: String(s.code ?? ''), name: String(s.name ?? '') })),
+      stocks: stocks.map((stock) => ({ code: String(stock.code ?? ''), name: String(stock.name ?? '') })),
       count: stocks.length,
       meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
     };
@@ -178,30 +179,33 @@ export class MarketService {
   // 000001 在个股场景通常指平安银行；指数场景请走显式的 getIndexQuote / index 订阅路径。
   private static readonly INDEX_CODES = new Set(['399001', '399006', '000688', '000300', '000016', '000905']);
 
+  private static readonly INDEX_QUOTE_SOURCE = 'get_index_quote' as const;
+
   async getBatchQuotes(codes: string[]) {
     const indexCodes = codes.filter(c => MarketService.INDEX_CODES.has(c));
     const stockCodes = codes.filter(c => !MarketService.INDEX_CODES.has(c));
 
-    const [indexResults, stockResult] = await Promise.all([
+    const [indexResults, stockResult]: [Array<NormalizedQuote | null>, Record<string, unknown>[]] = await Promise.all([
       Promise.all(indexCodes.map(c => this.getIndexQuote(c).then(r => r.quote).catch(() => null))),
       stockCodes.length > 0
-        ? this.callTool('get_batch_quotes', { stock_codes: stockCodes }).then(p => {
-            const root = (p as any)?.data ?? (p as any)?.quotes ?? p ?? [];
-            return Array.isArray(root) ? root : [];
+        ? this.callTool('get_batch_quotes', { stock_codes: stockCodes }).then((payload) => {
+            const root = this.unwrapPayload(payload);
+            const data = this.asRecord(root);
+            return this.asRecordArray(data.quotes ?? root);
           })
         : Promise.resolve([]),
     ]);
 
     const list = [
       ...indexResults.filter(Boolean),
-      ...stockResult.map((q: any) => this.normalizeQuote(q)),
+      ...stockResult.map((quote) => this.normalizeQuote(quote)),
     ];
     return { quotes: list, count: list.length };
   }
 
   async getIndexBatchQuotes(codes: string[]) {
     const normalizedCodes = codes.map((code) => code.trim()).filter(Boolean);
-    const quotes = await Promise.all(
+    const quotes: Array<NormalizedQuote | null> = await Promise.all(
       normalizedCodes.map((code) => this.getIndexQuote(code).then((result) => result.quote).catch(() => null)),
     );
     const list = quotes.filter((quote): quote is NormalizedQuote => Boolean(quote));
@@ -215,7 +219,7 @@ export class MarketService {
     const cached = await this.cacheService.getWithMeta(cacheKey);
     if (cached.value) {
       return {
-        ...(cached.value as any),
+        ...(cached.value as Record<string, unknown>),
         meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } },
       };
     }
@@ -233,14 +237,23 @@ export class MarketService {
     return result;
   }
 
-  async getIndexQuote(indexCode: string) {
+  async getIndexQuote(indexCode: string): Promise<{
+    quote: NormalizedQuote;
+    sourceTool: typeof MarketService.INDEX_QUOTE_SOURCE;
+    meta: { fetchedAt: string; cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number } };
+  }> {
     const code = indexCode.trim();
     const cacheKey = `market:index-quote:${code}`;
     const ttlSeconds = this.cacheService.resolveTtl('market.index_quote', 30);
-    const cached = await this.cacheService.getWithMeta(cacheKey);
+    const cached = await this.cacheService.getWithMeta<{
+      quote: NormalizedQuote;
+      sourceTool: typeof MarketService.INDEX_QUOTE_SOURCE;
+      meta: { fetchedAt: string; cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number } };
+    }>(cacheKey);
     if (cached.value) {
       return {
-        ...(cached.value as any),
+        ...cached.value,
+        sourceTool: MarketService.INDEX_QUOTE_SOURCE,
         meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } },
       };
     }
@@ -248,6 +261,7 @@ export class MarketService {
     const { payload } = await this.callWithArgs('get_index_quote', attempts);
     const result = {
       quote: this.normalizeQuote(payload, code),
+      sourceTool: MarketService.INDEX_QUOTE_SOURCE,
       meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
     };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
@@ -261,14 +275,13 @@ export class MarketService {
       { code: stockCode, limit },
     ];
     const { payload } = await this.callWithArgs('get_trade_details', attempts);
-    const root = (payload as any)?.data ?? payload ?? [];
-    const list = Array.isArray(root) ? root : [];
+    const list = this.asRecordArray(this.unwrapPayload(payload));
     return {
-      trades: list.map((t: any) => ({
-        time: String(t.time ?? ''),
-        price: this.toNum(t.price),
-        volume: this.toNum(t.volume),
-        direction: String(t.direction ?? ''),
+      trades: list.map((trade) => ({
+        time: String(trade.time ?? ''),
+        price: this.toNum(trade.price),
+        volume: this.toNum(trade.volume),
+        direction: String(trade.direction ?? ''),
       })),
       count: list.length,
     };
@@ -278,16 +291,15 @@ export class MarketService {
     const args: Record<string, unknown> = {};
     if (date) args.date = date.trim();
     const payload = await this.callTool('get_limit_up_stocks', args);
-    const root = (payload as any)?.data ?? payload ?? [];
-    const list = Array.isArray(root) ? root : [];
+    const list = this.asRecordArray(this.unwrapPayload(payload));
     return {
-      stocks: list.map((s: any) => ({
-        code: String(s.code ?? ''),
-        name: String(s.name ?? ''),
-        price: this.toNum(s.price),
-        changePercent: this.toNum(s.changePercent ?? s.change_percent ?? s.pct_chg),
-        continuousDays: this.toNum(s.continuousDays ?? s.continuous_days),
-        industry: String(s.industry ?? ''),
+      stocks: list.map((stock) => ({
+        code: String(stock.code ?? ''),
+        name: String(stock.name ?? ''),
+        price: this.toNum(stock.price),
+        changePercent: this.toNum(stock.changePercent ?? stock.change_percent ?? stock.pct_chg),
+        continuousDays: this.toNum(stock.continuousDays ?? stock.continuous_days),
+        industry: String(stock.industry ?? ''),
       })),
       count: list.length,
     };
@@ -297,15 +309,15 @@ export class MarketService {
     const args: Record<string, unknown> = {};
     if (date) args.date = date.trim();
     const payload = await this.callTool('get_limit_up_statistics', args);
-    const d = (payload as any)?.data ?? payload ?? {};
+    const data = this.asRecord(this.unwrapPayload(payload));
     return {
-      totalLimitUp: this.toNum(d.totalLimitUp ?? d.total_limit_up),
-      firstBoard: this.toNum(d.firstBoard ?? d.first_board),
-      secondBoard: this.toNum(d.secondBoard ?? d.second_board),
-      failedBoard: this.toNum(d.failedBoard ?? d.failed_board),
-      limitDown: this.toNum(d.limitDown ?? d.limit_down),
-      successRate: this.toNum(d.successRate ?? d.success_rate),
-      date: String(d.date ?? ''),
+      totalLimitUp: this.toNum(data.totalLimitUp ?? data.total_limit_up),
+      firstBoard: this.toNum(data.firstBoard ?? data.first_board),
+      secondBoard: this.toNum(data.secondBoard ?? data.second_board),
+      failedBoard: this.toNum(data.failedBoard ?? data.failed_board),
+      limitDown: this.toNum(data.limitDown ?? data.limit_down),
+      successRate: this.toNum(data.successRate ?? data.success_rate),
+      date: String(data.date ?? ''),
     };
   }
 
@@ -315,23 +327,24 @@ export class MarketService {
     const cached = await this.cacheService.getWithMeta(cacheKey);
     if (cached.value) {
       return {
-        ...(cached.value as any),
+        ...(cached.value as Record<string, unknown>),
         meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } },
       };
     }
     const args: Record<string, unknown> = { block_type: blockType };
     if (limit) args.limit = limit;
     const payload = await this.callTool('get_market_blocks', args);
-    const root = (payload as any)?.data ?? payload ?? {};
-    const blocks = Array.isArray(root?.blocks) ? root.blocks : Array.isArray(root) ? root : [];
+    const root = this.unwrapPayload(payload);
+    const data = this.asRecord(root);
+    const blocks = this.asRecordArray(data.blocks ?? root);
     const result = {
-      blocks: blocks.map((b: any) => ({
-        code: String(b.block_code ?? b.code ?? ''),
-        name: String(b.block_name ?? b.name ?? ''),
-        stockCount: this.toNum(b.stock_count ?? b.stockCount),
-        avgChange: this.toNum(b.avg_change_pct ?? b.avgChange),
-        leaderCode: String(b.leader_code ?? ''),
-        leaderName: String(b.leader_name ?? ''),
+      blocks: blocks.map((block) => ({
+        code: String(block.block_code ?? block.code ?? ''),
+        name: String(block.block_name ?? block.name ?? ''),
+        stockCount: this.toNum(block.stock_count ?? block.stockCount),
+        avgChange: this.toNum(block.avg_change_pct ?? block.avgChange),
+        leaderCode: String(block.leader_code ?? ''),
+        leaderName: String(block.leader_name ?? ''),
       })),
       count: blocks.length,
       blockType,
@@ -345,15 +358,16 @@ export class MarketService {
 
   async getBlockStocks(blockCode: string) {
     const payload = await this.callTool('get_block_stocks', { block_code: blockCode.trim() });
-    const root = (payload as any)?.data ?? payload ?? {};
-    const stocks = Array.isArray(root?.stocks) ? root.stocks : Array.isArray(root) ? root : [];
+    const root = this.unwrapPayload(payload);
+    const data = this.asRecord(root);
+    const stocks = this.asRecordArray(data.stocks ?? root);
     return {
       blockCode: blockCode.trim(),
-      stocks: stocks.map((s: any) => ({
-        code: String(s.stock_code ?? s.code ?? ''),
-        name: String(s.stock_name ?? s.name ?? ''),
-        price: this.toNum(s.price),
-        changePercent: this.toNum(s.change_pct ?? s.changePercent),
+      stocks: stocks.map((stock) => ({
+        code: String(stock.stock_code ?? stock.code ?? ''),
+        name: String(stock.stock_name ?? stock.name ?? ''),
+        price: this.toNum(stock.price),
+        changePercent: this.toNum(stock.change_pct ?? stock.changePercent),
       })),
       count: stocks.length,
     };
@@ -361,14 +375,15 @@ export class MarketService {
 
   async searchStocks(keyword: string, limit = 20) {
     const payload = await this.callTool('search_stocks', { keyword: keyword.trim(), limit });
-    const root = (payload as any)?.data ?? payload ?? {};
-    const results = Array.isArray(root?.results) ? root.results : Array.isArray(root) ? root : [];
+    const root = this.unwrapPayload(payload);
+    const data = this.asRecord(root);
+    const results = this.asRecordArray(data.results ?? root);
     return {
       keyword: keyword.trim(),
-      results: results.map((s: any) => ({
-        code: String(s.code ?? ''),
-        name: String(s.name ?? ''),
-        industry: String(s.industry ?? ''),
+      results: results.map((stock) => ({
+        code: String(stock.code ?? ''),
+        name: String(stock.name ?? ''),
+        industry: String(stock.industry ?? ''),
       })),
       count: results.length,
     };
@@ -379,62 +394,86 @@ export class MarketService {
     return Number.isFinite(n) ? n : null;
   }
 
-  private normalizeQuote(payload: any, fallbackCode?: string): NormalizedQuote {
-    const d = payload?.data ?? payload ?? {};
-    const code = String(d.code ?? d.stock_code ?? d.index_code ?? d.symbol ?? fallbackCode ?? '');
-    const price = this.toNum(d.price ?? d.current ?? d.close ?? d.Close);
-    const changePercent = this.toNum(d.changePercent ?? d.change_percent ?? d.pct_change ?? d.pct_chg);
-    const amount = this.toNum(d.amount ?? d.turnover ?? d.Amount);
+  private normalizeQuote(payload: unknown, fallbackCode?: string): NormalizedQuote {
+    const data = this.asRecord(this.unwrapPayload(payload));
+    const code = String(data.code ?? data.stock_code ?? data.index_code ?? data.symbol ?? fallbackCode ?? '');
+    const price = this.toNum(data.price ?? data.current ?? data.close ?? data.Close);
+    const changePercent = this.toNum(data.changePercent ?? data.change_percent ?? data.pct_change ?? data.pct_chg);
+    const amount = this.toNum(data.amount ?? data.turnover ?? data.Amount);
     return {
       symbol: code,
       code,
-      name: String(d.name ?? d.stock_name ?? d.index_name ?? ''),
+      name: String(data.name ?? data.stock_name ?? data.index_name ?? ''),
       last: price,
       price,
-      change: this.toNum(d.change ?? d.price_change),
+      change: this.toNum(data.change ?? data.price_change),
       pct_change: changePercent,
       changePercent,
       change_pct: changePercent,
-      volume: this.toNum(d.volume ?? d.vol ?? d.Volume),
+      volume: this.toNum(data.volume ?? data.vol ?? data.Volume),
       turnover: amount,
       amount,
-      high: this.toNum(d.high ?? d.High),
-      low: this.toNum(d.low ?? d.Low),
-      open: this.toNum(d.open ?? d.Open),
-      close: this.toNum(d.close ?? d.Close ?? d.current ?? d.price),
-      prevClose: this.toNum(d.prevClose ?? d.preClose ?? d.prev_close ?? d.pre_close),
-      timestamp: d.timestamp ? String(d.timestamp) : d.date ? String(d.date) : null,
+      high: this.toNum(data.high ?? data.High),
+      low: this.toNum(data.low ?? data.Low),
+      open: this.toNum(data.open ?? data.Open),
+      close: this.toNum(data.close ?? data.Close ?? data.current ?? data.price),
+      prevClose: this.toNum(data.prevClose ?? data.preClose ?? data.prev_close ?? data.pre_close),
+      timestamp: data.timestamp ? String(data.timestamp) : data.date ? String(data.date) : null,
     };
   }
 
-  private normalizeKline(payload: any): NormalizedKlinePoint[] {
-    const root = payload?.data ?? payload ?? [];
-    const list = Array.isArray(root) ? root : Array.isArray(root?.data) ? root.data : Array.isArray(root?.records) ? root.records : [];
-    return list.map((x: any) => ({
-      timestamp: x.timestamp ? String(x.timestamp) : x.date ? String(x.date) : null,
-      date: String(x.date ?? x.Date ?? x.trade_date ?? ''),
-      open: Number(x.open ?? x.Open ?? 0),
-      close: Number(x.close ?? x.Close ?? 0),
-      low: Number(x.low ?? x.Low ?? 0),
-      high: Number(x.high ?? x.High ?? 0),
-      volume: Number(x.volume ?? x.vol ?? x.Volume ?? 0),
-      turnover: this.toNum(x.turnover ?? x.amount ?? x.Amount),
+  private normalizeKline(payload: unknown): NormalizedKlinePoint[] {
+    const root = this.unwrapPayload(payload);
+    const list = Array.isArray(root)
+      ? this.asRecordArray(root)
+      : this.asRecordArray(this.asRecord(root).data ?? this.asRecord(root).records ?? this.asRecord(root).items);
+    return list.map((point) => ({
+      timestamp: point.timestamp ? String(point.timestamp) : point.date ? String(point.date) : null,
+      date: String(point.date ?? point.Date ?? point.trade_date ?? ''),
+      open: Number(point.open ?? point.Open ?? 0),
+      close: Number(point.close ?? point.Close ?? 0),
+      low: Number(point.low ?? point.Low ?? 0),
+      high: Number(point.high ?? point.High ?? 0),
+      volume: Number(point.volume ?? point.vol ?? point.Volume ?? 0),
+      turnover: this.toNum(point.turnover ?? point.amount ?? point.Amount),
     }));
   }
 
-  private normalizeOrderBook(payload: any, fallbackCode?: string): NormalizedOrderBook {
-    const d = payload?.data ?? payload ?? {};
-    const mkEntries = (a: any): Array<{ price: number; volume: number }> =>
-      (Array.isArray(a) ? a.slice(0, 5) : []).map((x: any) => ({
-        price: Number(x.price ?? x[0] ?? 0),
-        volume: Number(x.volume ?? x[1] ?? 0),
-      }));
+  private normalizeOrderBook(payload: unknown, fallbackCode?: string): NormalizedOrderBook {
+    const data = this.asRecord(this.unwrapPayload(payload));
+    const mkEntries = (value: unknown): Array<{ price: number; volume: number }> =>
+      (Array.isArray(value) ? value.slice(0, 5) : []).map((entry) => {
+        const record = this.asRecord(entry);
+        const tuple = Array.isArray(entry) ? entry : [];
+        return {
+          price: Number(record.price ?? tuple[0] ?? 0),
+          volume: Number(record.volume ?? tuple[1] ?? 0),
+        };
+      });
     return {
-      symbol: String(d.code ?? d.stock_code ?? d.symbol ?? fallbackCode ?? ''),
-      bids: mkEntries(d.bids ?? d.bid),
-      asks: mkEntries(d.asks ?? d.ask),
-      timestamp: d.timestamp != null ? String(d.timestamp) : d.date != null ? String(d.date) : null,
+      symbol: String(data.code ?? data.stock_code ?? data.symbol ?? fallbackCode ?? ''),
+      bids: mkEntries(data.bids ?? data.bid),
+      asks: mkEntries(data.asks ?? data.ask),
+      timestamp: data.timestamp != null ? String(data.timestamp) : data.date != null ? String(data.date) : null,
     };
+  }
+
+  private unwrapPayload(payload: unknown): unknown {
+    const record = this.asRecord(payload);
+    return record.data !== undefined ? record.data : payload;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private asRecordArray(value: unknown): Record<string, unknown>[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
   }
 
   private async callWithArgs(

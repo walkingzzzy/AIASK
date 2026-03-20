@@ -61,7 +61,7 @@ function notifySyncError(detail: string) {
   }
 }
 
-async function fetchServer(path: string, options?: RequestInit): Promise<any> {
+async function fetchServer(path: string, options?: RequestInit): Promise<unknown> {
   try {
     const res = await fetch(`${BFF_BASE}/watchlist${path}`, {
       credentials: 'include',
@@ -72,8 +72,9 @@ async function fetchServer(path: string, options?: RequestInit): Promise<any> {
       notifySyncError(`HTTP ${res.status}`);
       return null;
     }
-    const json = await res.json();
-    return json?.data ?? null;
+        const json = await res.json();
+        const payload = json && typeof json === 'object' ? json as Record<string, unknown> : {};
+        return payload.data ?? null;
   } catch (err) {
     if (isAbortLikeError(err)) {
       return null;
@@ -156,6 +157,13 @@ function mergeGroups(localGroups: WatchGroup[], serverGroups: WatchGroup[]): Wat
   }
 
   return groups.length > 0 ? groups : [defaultGroup()];
+}
+
+function readWatchlistRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  return value as Record<string, unknown>;
 }
 
 export const useWatchlistStore = create<WatchlistState>((set, get) => ({
@@ -313,18 +321,24 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
         const localGroups = get().groups;
         const serverGroups = await fetchServer('/groups');
         if (serverGroups && Array.isArray(serverGroups) && serverGroups.length > 0) {
-          const normalized: WatchGroup[] = serverGroups.map((g: any) => ({
-            id: String(g.id ?? g.name ?? 'default'),
-            name: String(g.name ?? '我的自选'),
-            color: String(g.color ?? '#6366f1'),
-            items: Array.isArray(g.items)
-              ? g.items.map((i: any) => ({
-                code: String(i.code ?? ''),
-                name: String(i.name ?? ''),
-                addedAt: normalizeAddedAt(i.addedAt),
-              }))
-              : [],
-          }));
+          const normalized: WatchGroup[] = serverGroups.map((group) => {
+            const record = readWatchlistRecord(group);
+            return {
+              id: String(record.id ?? record.name ?? 'default'),
+              name: String(record.name ?? '我的自选'),
+              color: String(record.color ?? '#6366f1'),
+              items: Array.isArray(record.items)
+                ? record.items.map((item) => {
+                  const watchItem = readWatchlistRecord(item);
+                  return {
+                    code: String(watchItem.code ?? ''),
+                    name: String(watchItem.name ?? ''),
+                    addedAt: normalizeAddedAt(watchItem.addedAt),
+                  };
+                })
+                : [],
+            };
+          });
           const mergedGroups = mergeGroups(localGroups, normalized);
           saveLocal(mergedGroups);
           set({ groups: mergedGroups, synced: true, syncing: false });

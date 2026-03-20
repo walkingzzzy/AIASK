@@ -1,6 +1,10 @@
 import { BadGatewayException, Injectable } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
-import type { DecisionCardDto } from './assistant.service';
+import { AssistantService, type DecisionCardDto } from './assistant.service';
+import {
+  AssistantUnifiedAuditStore,
+  type UnifiedDecisionDiffAuditQuery,
+} from './assistant-unified-audit.store';
 
 export type UnifiedGateFlagDto = {
   name: string;
@@ -19,26 +23,60 @@ export type UnifiedPositionSignalDto = {
   userRiskLevel?: string | null;
 };
 
+export type UnifiedLegacyResultDto = {
+  source: string;
+  action: string;
+  confidence: number | null;
+  summary: string;
+  reasons: string[];
+  risks: string[];
+};
+
+export type UnifiedLegacyComparisonDto = {
+  enabled: boolean;
+  comparedAt: string;
+  actionAlignment: 'aligned' | 'mixed' | 'divergent';
+  disagreements: string[];
+  diffSummary: string;
+  legacyResults: UnifiedLegacyResultDto[];
+  auditId?: number | null;
+  auditLogged?: boolean;
+  traceId?: string | null;
+  investmentStyle?: 'aggressive' | 'balanced' | 'conservative';
+};
+
 export type UnifiedDecisionCardDto = DecisionCardDto & {
   finalScore: number | null;
   gateFlags: UnifiedGateFlagDto[];
   vetoReason: string | null;
   positionSignal: UnifiedPositionSignalDto | null;
+  rawAiAction?: string | null;
+  recommendedHorizon?: string | null;
+  updatedAt?: string | null;
+  dataQuality?: Record<string, unknown> | null;
+  fallbackReason?: string[];
 };
 
 type UnifiedDecisionRequest = {
   code: string;
   investmentStyle: 'aggressive' | 'balanced' | 'conservative';
+  legacyMode: boolean;
 };
 
 @Injectable()
 export class AssistantUnifiedService {
-  constructor(private readonly mcp: McpGatewayService) {}
+  constructor(
+    private readonly mcp: McpGatewayService,
+    private readonly assistantService: AssistantService,
+    private readonly auditStore: AssistantUnifiedAuditStore,
+  ) {}
 
   async getUnifiedDecisionSummary(
     code: string,
     investmentStyle: 'aggressive' | 'balanced' | 'conservative' = 'balanced',
     userId?: string,
+    legacyMode = false,
+    traceId?: string,
   ) {
     const payload = await this.callTool('get_unified_decision_summary', {
       code: code.trim(),
@@ -46,11 +84,23 @@ export class AssistantUnifiedService {
       ...(userId ? { user_id: userId } : {}),
     });
 
+    const card = this.normalizeUnifiedCard(payload);
     return {
-      card: this.normalizeUnifiedCard(payload),
+      card,
       raw: payload,
       detailsAvailable: Boolean(this.unwrapData(payload).details_available ?? true),
-      request: { code: code.trim(), investmentStyle } satisfies UnifiedDecisionRequest,
+      request: { code: code.trim(), investmentStyle, legacyMode } satisfies UnifiedDecisionRequest,
+      ...(legacyMode
+        ? {
+            legacyComparison: await this.buildLegacyComparison({
+              code,
+              unifiedCard: card,
+              investmentStyle,
+              userId,
+              traceId,
+            }),
+          }
+        : {}),
     };
   }
 
@@ -58,6 +108,8 @@ export class AssistantUnifiedService {
     code: string,
     investmentStyle: 'aggressive' | 'balanced' | 'conservative' = 'balanced',
     userId?: string,
+    legacyMode = false,
+    traceId?: string,
   ) {
     const payload = await this.callTool('get_unified_decision_details', {
       code: code.trim(),
@@ -66,11 +118,52 @@ export class AssistantUnifiedService {
     });
 
     const data = this.unwrapData(payload);
+    const card = this.normalizeUnifiedCard(payload);
     return {
-      card: this.normalizeUnifiedCard(payload),
+      card,
       details: data.details ?? data,
       raw: payload,
-      request: { code: code.trim(), investmentStyle } satisfies UnifiedDecisionRequest,
+      request: { code: code.trim(), investmentStyle, legacyMode } satisfies UnifiedDecisionRequest,
+      ...(legacyMode
+        ? {
+            legacyComparison: await this.buildLegacyComparison({
+              code,
+              unifiedCard: card,
+              investmentStyle,
+              userId,
+              traceId,
+            }),
+          }
+        : {}),
+    };
+  }
+
+  async getUnifiedDecisionDiffLogs(
+    userId: string,
+    query: UnifiedDecisionDiffAuditQuery = {},
+  ) {
+    const normalizedUserId = String(userId ?? '').trim();
+    if (!normalizedUserId) {
+      return {
+        items: [],
+        total: 0,
+        filters: {
+          limit: Math.max(1, Math.min(100, Number(query.limit) || 20)),
+          stockCode: String(query.stockCode ?? '').trim() || null,
+          actionAlignment: String(query.actionAlignment ?? '').trim() || null,
+        },
+      };
+    }
+
+    const logs = await this.auditStore.listByUser(normalizedUserId, query);
+    return {
+      items: logs,
+      total: logs.length,
+      filters: {
+        limit: Math.max(1, Math.min(100, Number(query.limit) || 20)),
+        stockCode: String(query.stockCode ?? '').trim() || null,
+        actionAlignment: String(query.actionAlignment ?? '').trim() || null,
+      },
     };
   }
 
@@ -112,7 +205,7 @@ export class AssistantUnifiedService {
     const rawProvenance = data.data_provenance ?? data.dataProvenance;
     const dataProvenance = Array.isArray(rawProvenance)
       ? rawProvenance.map((item) => {
-          if (typeof item === "string") return item;
+          if (typeof item === 'string') return item;
           if (item && typeof item === 'object') {
             const row = item as Record<string, unknown>;
             return {
@@ -161,6 +254,10 @@ export class AssistantUnifiedService {
       return numeric > 1 ? numeric / 100 : numeric;
     })();
 
+    const fallbackReason = Array.isArray(data.fallback_reason)
+      ? data.fallback_reason.map((item) => toText(item)).filter(Boolean)
+      : [];
+
     return {
       action: toText(data.action),
       confidence,
@@ -175,6 +272,127 @@ export class AssistantUnifiedService {
       gateFlags,
       vetoReason: toText(data.veto_reason ?? data.vetoReason) || null,
       positionSignal,
+      rawAiAction: toText(data.raw_ai_action ?? data.rawAiAction) || null,
+      recommendedHorizon: toText(data.recommended_horizon ?? data.recommendedHorizon) || null,
+      updatedAt: toText(data.updated_at ?? data.updatedAt) || null,
+      dataQuality: data.data_quality && typeof data.data_quality === 'object'
+        ? (data.data_quality as Record<string, unknown>)
+        : null,
+      fallbackReason,
+    };
+  }
+
+  private normalizeLegacyAction(action: string): string {
+    const value = String(action || '').trim().toLowerCase();
+    if (value.includes('buy')) return 'buy';
+    if (value.includes('sell') || value.includes('avoid')) return 'sell';
+    if (value.includes('reduce') || value.includes('consider_sell')) return 'reduce';
+    if (value.includes('hold')) return 'hold';
+    if (value.includes('wait') || value.includes('watch')) return 'watch';
+    return value || 'unknown';
+  }
+
+  private async buildLegacyComparison({
+    code,
+    unifiedCard,
+    investmentStyle,
+    userId,
+    traceId,
+  }: {
+    code: string;
+    unifiedCard: UnifiedDecisionCardDto;
+    investmentStyle: 'aggressive' | 'balanced' | 'conservative';
+    userId?: string;
+    traceId?: string;
+  }): Promise<UnifiedLegacyComparisonDto> {
+    const stockCode = code.trim();
+    const comparedAt = new Date().toISOString();
+    const settled = await Promise.allSettled([
+      this.assistantService.shouldBuy(stockCode),
+      this.assistantService.diagnosis(stockCode),
+      this.assistantService.decisionManagerAnalyze(stockCode),
+    ]);
+
+    const legacyResults: UnifiedLegacyResultDto[] = settled.flatMap((result, index) => {
+      const source = ['should_i_buy', 'smart_stock_diagnosis', 'decision_manager.analyze'][index];
+      if (result.status !== 'fulfilled') {
+        return [];
+      }
+      const card = result.value.card;
+      return [{
+        source,
+        action: this.normalizeLegacyAction(card.action),
+        confidence: card.confidence,
+        summary: card.summary,
+        reasons: card.reasons,
+        risks: card.risks,
+      }];
+    });
+
+    const unifiedAction = this.normalizeLegacyAction(unifiedCard.action);
+    const disagreements = legacyResults.flatMap((item) => {
+      const rows: string[] = [];
+      if (item.action !== unifiedAction) {
+        rows.push(`${item.source} 与统一决策动作不一致（${item.action} vs ${unifiedAction}）`);
+      }
+      if (item.confidence != null && unifiedCard.confidence != null && Math.abs(item.confidence - unifiedCard.confidence) >= 0.2) {
+        rows.push(`${item.source} 与统一决策置信度差异较大`);
+      }
+      return rows;
+    });
+
+    const alignedCount = legacyResults.filter((item) => item.action === unifiedAction).length;
+    const actionAlignment: 'aligned' | 'mixed' | 'divergent' = alignedCount === legacyResults.length
+      ? 'aligned'
+      : alignedCount === 0
+        ? 'divergent'
+        : 'mixed';
+
+    let diffSummary = '已启用旧入口对照。';
+    if (!legacyResults.length) {
+      diffSummary = '已启用旧入口对照，但旧入口结果暂不可用。';
+    } else if (actionAlignment === 'aligned') {
+      diffSummary = '统一决策与旧入口整体方向一致，可用作灰度收敛参考。';
+    } else if (actionAlignment === 'divergent') {
+      diffSummary = '统一决策与旧入口方向明显分歧，建议重点审查事件闸门和量化证据。';
+    } else {
+      diffSummary = '统一决策与旧入口部分一致、部分分歧，建议结合详情层逐项复核。';
+    }
+
+    const auditId = await this.auditStore.append({
+      traceId: traceId ?? null,
+      userId: userId ?? null,
+      stockCode,
+      investmentStyle,
+      unifiedAction,
+      actionAlignment,
+      legacyActions: legacyResults.map((item) => ({ source: item.source, action: item.action })),
+      disagreements,
+      diffSummary,
+      details: {
+        unified: {
+          action: unifiedAction,
+          confidence: unifiedCard.confidence,
+          summary: unifiedCard.summary,
+          vetoReason: unifiedCard.vetoReason,
+          finalScore: unifiedCard.finalScore,
+        },
+        legacyResults,
+      },
+      createdAt: comparedAt,
+    });
+
+    return {
+      enabled: true,
+      comparedAt,
+      actionAlignment,
+      disagreements,
+      diffSummary,
+      legacyResults,
+      auditId,
+      auditLogged: auditId != null,
+      traceId: traceId ?? null,
+      investmentStyle,
     };
   }
 

@@ -5,6 +5,8 @@ import { Chart } from './chart';
 import { COLORS } from './chart-colors';
 
 type WaterfallItem = { name: string; value: number };
+type WaterfallTooltipParam = { dataIndex: number; seriesIndex: number };
+type WaterfallLabelParam = { dataIndex: number };
 
 /**
  * T-033: WaterfallChart
@@ -39,7 +41,7 @@ export function WaterfallChart({
 
         return {
             tooltip: {
-                formatter: (p: any) => {
+                formatter: (p: WaterfallTooltipParam) => {
                     const idx = p.dataIndex;
                     if (p.seriesIndex === 0) return '';
                     const v = data[idx].value;
@@ -70,7 +72,7 @@ export function WaterfallChart({
                         show: true,
                         position: 'top',
                         fontSize: 10,
-                        formatter: (p: any) => {
+                        formatter: (p: WaterfallLabelParam) => {
                             const orig = data[p.dataIndex].value;
                             return `${orig >= 0 ? '+' : ''}${orig.toFixed(2)}%`;
                         },

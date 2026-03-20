@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time as _time
 from collections import Counter
-from typing import List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 from uuid import uuid4
 
 from .legacy_bridge import call_compat_async, get_compat_symbol, get_compat_value
@@ -20,6 +20,10 @@ from .utils import (
     get_strategy_factory_package as _local_get_strategy_factory_package,
 )
 from ..domain.constants import SUBMIT_CONCURRENCY
+from ..infrastructure.mcp_services import build_strategy_vector_profile
+
+if TYPE_CHECKING:
+    from ..api.contracts import IncubationGateway, RiskGateway, ValidationGateway
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +65,52 @@ async def _update_strategy_status(*args, **kwargs):
     )
 
 
+class _CompatValidationGateway:
+    """Resolve validation runner through the legacy patch-point at call time."""
+
+    async def run_validation_report(self, strategy_type: str, params: dict[str, Any], db) -> Optional[dict]:
+        factory_pkg = get_strategy_factory_package()
+        return await factory_pkg._run_validation_report(strategy_type, dict(params or {}), db)
+
+
+class _CompatRiskGateway:
+    """Resolve risk runner through the legacy patch-point at call time."""
+
+    async def run_risk_report(self, strategy_type: str, params: dict[str, Any], db) -> Optional[dict]:
+        factory_pkg = get_strategy_factory_package()
+        return await factory_pkg._run_risk_report(strategy_type, dict(params or {}), db)
+
+
 class StrategySubmitter:
     """创建策略记录并提交质检。"""
+
+    def __init__(
+        self,
+        *,
+        validation_gateway: Optional["ValidationGateway"] = None,
+        risk_gateway: Optional["RiskGateway"] = None,
+        incubation_gateway: Optional["IncubationGateway"] = None,
+    ):
+        self._validation_gateway = validation_gateway
+        self._risk_gateway = risk_gateway
+        self._incubation_gateway = incubation_gateway
+
+    def _get_validation_gateway(self) -> "ValidationGateway":
+        if self._validation_gateway is None:
+            self._validation_gateway = _CompatValidationGateway()
+        return self._validation_gateway
+
+    def _get_risk_gateway(self) -> "RiskGateway":
+        if self._risk_gateway is None:
+            self._risk_gateway = _CompatRiskGateway()
+        return self._risk_gateway
+
+    def _get_incubation_gateway(self) -> "IncubationGateway":
+        if self._incubation_gateway is None:
+            from ..infrastructure.mcp_adapters import MCPIncubationGatewayImpl
+
+            self._incubation_gateway = MCPIncubationGatewayImpl()
+        return self._incubation_gateway
 
     @staticmethod
     def _build_quality_report(
@@ -334,11 +382,8 @@ class StrategySubmitter:
             ),
         }
 
-    @staticmethod
-    async def _save_metrics(strategy_id: str, candidate: dict, metrics: dict, db) -> tuple:
+    async def _save_metrics(self, strategy_id: str, candidate: dict, metrics: dict, db) -> tuple:
         """保存回测/验证/风险指标，每步独立容错。返回 (validation_report, risk_report)。"""
-        factory_pkg = get_strategy_factory_package()
-
         if metrics:
             try:
                 await db.save_strategy_metrics(
@@ -357,7 +402,7 @@ class StrategySubmitter:
 
         validation_report = None
         try:
-            validation_report = await factory_pkg._run_validation_report(
+            validation_report = await self._get_validation_gateway().run_validation_report(
                 candidate["strategy_type"],
                 candidate.get("params", {}),
                 db,
@@ -379,7 +424,7 @@ class StrategySubmitter:
 
         risk_report = None
         try:
-            risk_report = await factory_pkg._run_risk_report(
+            risk_report = await self._get_risk_gateway().run_risk_report(
                 candidate["strategy_type"],
                 candidate.get("params", {}),
                 db,
@@ -443,6 +488,7 @@ class StrategySubmitter:
         vector_audit: dict = {}
 
         if gate.get("passed"):
+            incubation_gateway = self._get_incubation_gateway()
             await _update_strategy_status(
                 db,
                 strategy_id,
@@ -453,9 +499,7 @@ class StrategySubmitter:
             )
             enriched_data = {**data, "id": strategy_id, "name": name}
             try:
-                from akshare_mcp.services.incubation import get_strategy_incubation_service
-
-                incubation_binding = await get_strategy_incubation_service().ensure_account(
+                incubation_binding = await incubation_gateway.ensure_account(
                     db,
                     enriched_data,
                     source_run_id=snapshot.get("date"),
@@ -463,9 +507,7 @@ class StrategySubmitter:
             except Exception as exc:
                 logger.warning("StrategyFactory: ensure incubation account failed for %s: %s", strategy_id, exc)
             try:
-                from akshare_mcp.services.incubation_pipeline import get_strategy_incubation_pipeline_service
-
-                incubation_pipeline = await get_strategy_incubation_pipeline_service().run_strategy(
+                incubation_pipeline = await incubation_gateway.run_pipeline(
                     db,
                     {**enriched_data, "status": "incubating"},
                     source="strategy_factory_submit",
@@ -474,9 +516,7 @@ class StrategySubmitter:
             except Exception as exc:
                 logger.warning("StrategyFactory: initial incubation pipeline failed for %s: %s", strategy_id, exc)
             try:
-                from akshare_mcp.services.vector_platform import get_strategy_vector_platform
-
-                vector_profile = await get_strategy_vector_platform().build_strategy_profile(db, enriched_data)
+                vector_profile = await build_strategy_vector_profile(db, enriched_data)
                 vector_audit = dict((vector_profile or {}).get("metadata") or {}).get("audit") or {}
             except Exception as exc:
                 logger.warning("StrategyFactory: build vector profile failed for %s: %s", strategy_id, exc)

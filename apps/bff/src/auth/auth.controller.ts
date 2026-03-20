@@ -174,12 +174,10 @@ export class AuthController {
   async disable2fa(@Req() req: { user?: { id?: string; sub?: string } }) {
     const userId = this.currentUserId(req);
     const prefs = await this.preferencesService.getUserPreferences(userId);
-    const { totpSecret, totpEnabled, totpBackupCodes, ...rest } = prefs as {
-      totpSecret?: string;
-      totpEnabled?: boolean;
-      totpBackupCodes?: string[];
-      [key: string]: unknown;
-    };
+    const rest = { ...(prefs as Record<string, unknown>) };
+    delete rest.totpSecret;
+    delete rest.totpEnabled;
+    delete rest.totpBackupCodes;
     await this.preferencesService.setUserPreferences(userId, rest);
     return { success: true };
   }

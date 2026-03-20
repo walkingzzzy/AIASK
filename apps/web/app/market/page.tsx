@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { PageContainer, TabBar, SectionCard, KpiCard, KpiGrid, DataTable, Badge, StockCodeInput } from '@/components/ui';
 import { CandlestickChart } from '@/components/charts';
@@ -34,6 +34,8 @@ type SavedMarketView = {
   minutePeriod: string;
   blockCode: string;
 };
+
+type InitialMarketViewState = SavedMarketView;
 
 const DEFAULT_MARKET_CODE = '600519';
 const MARKET_STARTER_CODES = [
@@ -79,6 +81,78 @@ function formatStableDateTime(value: string | number | null | undefined) {
   return `${year}/${month}/${day} ${hours}:${minutes}:${seconds} UTC`;
 }
 
+function isPeriod(value: unknown): value is Period {
+  return value === 'daily' || value === 'weekly' || value === 'monthly';
+}
+
+function resolveInitialMarketViewState({
+  initialTab,
+  initialIndexCode,
+  initialBlock,
+  task,
+  from,
+}: {
+  initialTab: MarketTab;
+  initialIndexCode: string;
+  initialBlock: string;
+  task: string | null;
+  from: string | null;
+}): InitialMarketViewState {
+  const base: InitialMarketViewState = {
+    activeTab: initialTab,
+    code: DEFAULT_MARKET_CODE,
+    submittedCode: null,
+    period: 'daily',
+    submittedPeriod: 'daily',
+    indexCode: initialIndexCode,
+    searchKeyword: '',
+    minutePeriod: '5m',
+    blockCode: initialBlock,
+  };
+
+  if (typeof window === 'undefined') {
+    return base;
+  }
+
+  const hasExplicitContext = Boolean(
+    task || from || initialBlock || initialTab !== 'main' || initialIndexCode !== '000001',
+  );
+  if (hasExplicitContext) {
+    return base;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(MARKET_VIEW_STORAGE_KEY);
+    if (!raw) {
+      return {
+        ...base,
+        submittedCode: DEFAULT_MARKET_CODE,
+      };
+    }
+
+    const saved = JSON.parse(raw) as Partial<SavedMarketView>;
+    return {
+      activeTab: saved.activeTab && isMarketTab(saved.activeTab) ? saved.activeTab : base.activeTab,
+      code: typeof saved.code === 'string' ? saved.code : base.code,
+      submittedCode:
+        typeof saved.submittedCode === 'string' || saved.submittedCode === null
+          ? (saved.submittedCode ?? null)
+          : base.submittedCode,
+      period: isPeriod(saved.period) ? saved.period : base.period,
+      submittedPeriod: isPeriod(saved.submittedPeriod) ? saved.submittedPeriod : base.submittedPeriod,
+      indexCode: typeof saved.indexCode === 'string' && saved.indexCode ? saved.indexCode : base.indexCode,
+      searchKeyword: typeof saved.searchKeyword === 'string' ? saved.searchKeyword : base.searchKeyword,
+      minutePeriod: typeof saved.minutePeriod === 'string' && saved.minutePeriod ? saved.minutePeriod : base.minutePeriod,
+      blockCode: typeof saved.blockCode === 'string' ? saved.blockCode : base.blockCode,
+    };
+  } catch {
+    return {
+      ...base,
+      submittedCode: DEFAULT_MARKET_CODE,
+    };
+  }
+}
+
 export default function MarketPage() {
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get('tab');
@@ -114,12 +188,21 @@ function MarketPageInner({
   task: string | null;
   from: string | null;
 }) {
+  const [initialView] = useState<InitialMarketViewState>(() =>
+    resolveInitialMarketViewState({
+      initialTab,
+      initialIndexCode,
+      initialBlock,
+      task,
+      from,
+    }),
+  );
   const { toast } = useToast();
-  const { code, setCode, codeError, validate, resolvedCode } = useStockCode(DEFAULT_MARKET_CODE);
-  const [period, setPeriod] = useState<Period>('daily');
-  const [activeTab, setActiveTab] = useState<MarketTab>(initialTab);
-  const [submittedCode, setSubmittedCode] = useState<string | null>(null);
-  const [submittedPeriod, setSubmittedPeriod] = useState<Period>('daily');
+  const { code, setCode, codeError, validate, resolvedCode } = useStockCode(initialView.code);
+  const [period, setPeriod] = useState<Period>(initialView.period);
+  const [activeTab, setActiveTab] = useState<MarketTab>(initialView.activeTab);
+  const [submittedCode, setSubmittedCode] = useState<string | null>(initialView.submittedCode);
+  const [submittedPeriod, setSubmittedPeriod] = useState<Period>(initialView.submittedPeriod);
   const activeCode = submittedCode ?? resolvedCode ?? null;
 
   const quoteQ = useApiQuery<QuoteData>(
@@ -169,12 +252,11 @@ function MarketPageInner({
   const [searchPath, setSearchPath] = useState<string | null>(null);
   const [stockListPath, setStockListPath] = useState<string | null>(null);
   const [blockStocksPath, setBlockStocksPath] = useState<string | null>(null);
-  const [indexCode, setIndexCode] = useState(initialIndexCode);
-  const [searchKeyword, setSearchKeyword] = useState('');
-  const [minutePeriod, setMinutePeriod] = useState('5m');
-  const [blockCode, setBlockCode] = useState(initialBlock);
+  const [indexCode, setIndexCode] = useState(initialView.indexCode);
+  const [searchKeyword, setSearchKeyword] = useState(initialView.searchKeyword);
+  const [minutePeriod, setMinutePeriod] = useState(initialView.minutePeriod);
+  const [blockCode, setBlockCode] = useState(initialView.blockCode);
   const [batchCodes, setBatchCodes] = useState('');
-  const savedViewReadyRef = useRef(false);
   const effectiveLimitUpPath = activeTab === 'limitup' ? (limitUpPath ?? '/market/limit-up') : null;
   const effectiveLimitUpStatsPath = activeTab === 'limitup' ? (limitUpStatsPath ?? '/market/limit-up-stats') : null;
   const effectiveBlocksPath = activeTab === 'blocks' ? (blocksPath ?? '/market/blocks?blockType=industry') : null;
@@ -192,37 +274,7 @@ function MarketPageInner({
     : null;
 
   useEffect(() => {
-    if (typeof window === 'undefined' || savedViewReadyRef.current) return;
-    savedViewReadyRef.current = true;
-    const hasExplicitContext = Boolean(task || from || initialBlock || initialTab !== 'main' || initialIndexCode !== '000001');
-    if (hasExplicitContext) return;
-    try {
-      const raw = window.localStorage.getItem(MARKET_VIEW_STORAGE_KEY);
-      if (!raw) {
-        setCode(DEFAULT_MARKET_CODE);
-        setSubmittedCode(DEFAULT_MARKET_CODE);
-        setSubmittedPeriod('daily');
-        return;
-      }
-      const saved = JSON.parse(raw) as Partial<SavedMarketView>;
-      if (saved.activeTab && isMarketTab(saved.activeTab)) setActiveTab(saved.activeTab);
-      if (typeof saved.code === 'string') setCode(saved.code);
-      if (typeof saved.submittedCode === 'string' || saved.submittedCode === null) setSubmittedCode(saved.submittedCode ?? null);
-      if (saved.period === 'daily' || saved.period === 'weekly' || saved.period === 'monthly') setPeriod(saved.period);
-      if (saved.submittedPeriod === 'daily' || saved.submittedPeriod === 'weekly' || saved.submittedPeriod === 'monthly') setSubmittedPeriod(saved.submittedPeriod);
-      if (typeof saved.indexCode === 'string') setIndexCode(saved.indexCode || '000001');
-      if (typeof saved.searchKeyword === 'string') setSearchKeyword(saved.searchKeyword);
-      if (typeof saved.minutePeriod === 'string') setMinutePeriod(saved.minutePeriod);
-      if (typeof saved.blockCode === 'string') setBlockCode(saved.blockCode);
-    } catch {
-      setCode(DEFAULT_MARKET_CODE);
-      setSubmittedCode(DEFAULT_MARKET_CODE);
-      setSubmittedPeriod('daily');
-    }
-  }, [from, initialBlock, initialIndexCode, initialTab, setCode, task]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !savedViewReadyRef.current) return;
+    if (typeof window === 'undefined') return;
     const payload: SavedMarketView = {
       activeTab,
       code,

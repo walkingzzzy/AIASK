@@ -160,13 +160,14 @@ export class AlertsService {
     }
   }
 
-  private normalizeAlertItem(raw: any): NormalizedAlertItem {
+  private normalizeAlertItem(raw: unknown): NormalizedAlertItem {
+    const record = this.asRecord(raw);
     return {
-      id: String(raw.alertId ?? raw.alert_id ?? raw.id ?? ''),
-      code: String(raw.code ?? raw.stock_code ?? ''),
-      indicator: String(raw.indicator ?? ''),
-      condition: String(raw.condition ?? ''),
-      value: this.toNum(raw.value ?? raw.threshold),
+      id: String(record.alertId ?? record.alert_id ?? record.id ?? ''),
+      code: String(record.code ?? record.stock_code ?? ''),
+      indicator: String(record.indicator ?? ''),
+      condition: String(record.condition ?? ''),
+      value: this.toNum(record.value ?? record.threshold),
     };
   }
 
@@ -175,7 +176,7 @@ export class AlertsService {
     return Number.isFinite(n) ? n : null;
   }
 
-  private pickArray(payload: any, paths: string[]): unknown[] {
+  private pickArray(payload: unknown, paths: string[]): unknown[] {
     for (const p of paths) {
       const v = this.readPath(payload, p);
       if (Array.isArray(v)) return v;
@@ -183,7 +184,7 @@ export class AlertsService {
     return [];
   }
 
-  private pickString(payload: any, paths: string[]): string | null {
+  private pickString(payload: unknown, paths: string[]): string | null {
     for (const p of paths) {
       const v = this.readPath(payload, p);
       if (typeof v === 'string' && v.trim()) return v.trim();
@@ -191,8 +192,20 @@ export class AlertsService {
     return null;
   }
 
-  private readPath(obj: any, path: string): unknown {
-    return path.split('.').reduce((acc: any, key: string) => (acc == null ? undefined : acc[key]), obj);
+  private asRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private readPath(obj: unknown, path: string): unknown {
+    return path.split('.').reduce<unknown>((acc, key) => {
+      if (!acc || typeof acc !== 'object' || Array.isArray(acc)) {
+        return undefined;
+      }
+      return (acc as Record<string, unknown>)[key];
+    }, obj);
   }
 
   private listCacheKey(userId: string, status: string) {

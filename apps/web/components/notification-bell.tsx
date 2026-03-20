@@ -26,11 +26,12 @@ const TYPE_ICONS: Record<string, string> = {
     news: '📰',
 };
 
-const LEVEL_COLORS: Record<string, string> = {
-    error: 'text-red-400 bg-red-500/10 border-red-500/20',
-    warn: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
-    info: 'text-blue-400 bg-blue-500/10 border-blue-500/20',
-};
+function readRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return {};
+    }
+    return value as Record<string, unknown>;
+}
 
 export function NotificationBell() {
     const [open, setOpen] = useState(false);
@@ -70,7 +71,9 @@ export function NotificationBell() {
         successToast: false,
     });
 
-    const serverUnread = Number((unreadQ.data as any)?.count ?? (unreadQ.data as any)?.data?.count ?? 0);
+    const unreadRoot = readRecord(unreadQ.data);
+    const unreadData = readRecord(unreadRoot.data);
+    const serverUnread = Number(unreadRoot.count ?? unreadData.count ?? 0);
     const snapshotAt = unreadQ.dataUpdatedAt ?? 0;
     const unreadSinceSnapshot = pendingUnreadEvents.filter((ts) => ts > snapshotAt && (!markAllReadAt || ts > markAllReadAt)).length;
     const unread = markAllReadAt && markAllReadAt > snapshotAt
@@ -86,10 +89,25 @@ export function NotificationBell() {
     });
 
     const items = useMemo(() => {
-        const data = (recentQ.data as any)?.items ?? (recentQ.data as any)?.data?.items ?? [];
+        const root = readRecord(recentQ.data);
+        const dataRecord = readRecord(root.data);
+        const data = Array.isArray(root.items) ? root.items : Array.isArray(dataRecord.items) ? dataRecord.items : [];
         if (!Array.isArray(data)) return [] as NotificationItem[];
         return data.map((item) => {
-            const normalized = item as NotificationItem;
+            const record = readRecord(item);
+            const normalized: NotificationItem = {
+                id: String(record.id ?? ''),
+                type: ['alert', 'signal', 'trade', 'system', 'news'].includes(String(record.type))
+                    ? (String(record.type) as NotificationItem['type'])
+                    : 'system',
+                level: ['info', 'warn', 'error'].includes(String(record.level))
+                    ? (String(record.level) as NotificationItem['level'])
+                    : 'info',
+                title: String(record.title ?? ''),
+                body: String(record.body ?? ''),
+                read: record.read === true,
+                createdAt: String(record.createdAt ?? ''),
+            };
             if (!markAllReadAt) return normalized;
             const createdAt = Date.parse(String(normalized.createdAt ?? ''));
             if (Number.isNaN(createdAt) || createdAt <= markAllReadAt) {

@@ -15,6 +15,15 @@ from ..domain.constants import PROVISIONAL_PASS_THRESHOLDS, QUALITY_GATE_THRESHO
 
 logger = logging.getLogger(__name__)
 
+PROVISIONAL_TECHNICAL_STRATEGY_TYPES = frozenset({
+    "momentum",
+    "ma_cross",
+    "rsi",
+    "macro_timing",
+})
+
+_DEGENERATE_STAT_EPSILON = 1e-9
+
 
 def quality_gate_reason_code(reason: str) -> str:
     text = str(reason or "").strip()
@@ -68,6 +77,12 @@ def is_factory_ai_prototype_strategy(strategy: Optional[dict]) -> bool:
     return strategy_type == "dsl_rule"
 
 
+def is_provisional_technical_strategy(strategy: Optional[dict]) -> bool:
+    payload = dict(strategy or {})
+    strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+    return strategy_type in PROVISIONAL_TECHNICAL_STRATEGY_TYPES
+
+
 def has_only_statistical_gate_failures(gate_result: Optional[dict]) -> bool:
     gate = normalize_quality_gate_result(gate_result)
     codes = list(gate.get("reason_codes") or [])
@@ -92,6 +107,51 @@ def safe_metric_value(payload: Optional[dict], *keys: str) -> float:
             except Exception:
                 return 0.0
     return 0.0
+
+
+def _is_near_zero(value: object, *, eps: float = _DEGENERATE_STAT_EPSILON) -> bool:
+    try:
+        return abs(float(value)) <= eps
+    except Exception:
+        return False
+
+
+def has_degenerate_validation_statistics(validation_report: Optional[dict]) -> bool:
+    validation = dict(validation_report or {})
+    rating = dict(validation.get("rating") or {})
+    walk_forward = dict(validation.get("walk_forward") or {})
+    purged_kfold = dict(validation.get("purged_kfold") or {})
+    bootstrap_ci = dict(validation.get("bootstrap_ci") or {})
+
+    wf_n_folds = int(safe_metric_value(walk_forward, "n_folds"))
+    pkf_n_folds = int(safe_metric_value(purged_kfold, "n_folds"))
+    total_score = safe_metric_value(rating, "total_score")
+
+    score_values: list[float] = []
+    for value in dict(rating.get("scores") or {}).values():
+        try:
+            score_values.append(float(value or 0.0))
+        except Exception:
+            continue
+    zero_score_map = bool(score_values) and all(_is_near_zero(value) for value in score_values)
+
+    stat_surface = (
+        safe_metric_value(walk_forward, "oos_rank_ic_mean", "oos_ic_mean"),
+        safe_metric_value(walk_forward, "oos_rank_ic_ir", "oos_ic_ir"),
+        safe_metric_value(purged_kfold, "oos_rank_ic_mean", "oos_ic_mean"),
+        safe_metric_value(purged_kfold, "oos_rank_ic_ir", "oos_ic_ir"),
+        safe_metric_value(bootstrap_ci, "ci_lower"),
+        safe_metric_value(bootstrap_ci, "ci_upper"),
+        safe_metric_value(bootstrap_ci, "sample_size"),
+    )
+    zero_stat_surface = all(_is_near_zero(value) for value in stat_surface)
+    no_fold_evidence = wf_n_folds <= 0 and pkf_n_folds <= 0
+
+    return no_fold_evidence or (
+        total_score <= 0
+        and zero_stat_surface
+        and (not score_values or zero_score_map)
+    )
 
 
 def _count_statistical_checks_passed(gate: dict) -> tuple[int, list[str], list[str]]:
@@ -160,7 +220,12 @@ def maybe_grant_provisional_incubation(
         return gate
 
     checks_passed, passed_names, failed_names = _count_statistical_checks_passed(gate)
-    if checks_passed < PROVISIONAL_MIN_STATISTICAL_CHECKS_PASSED:
+    technical_validation_fallback = (
+        checks_passed < PROVISIONAL_MIN_STATISTICAL_CHECKS_PASSED
+        and is_provisional_technical_strategy(strategy)
+        and has_degenerate_validation_statistics(validation_report)
+    )
+    if checks_passed < PROVISIONAL_MIN_STATISTICAL_CHECKS_PASSED and not technical_validation_fallback:
         logger.info(
             "Provisional incubation denied: only %d/%d statistical checks passed (%s failed)",
             checks_passed,
@@ -198,6 +263,13 @@ def maybe_grant_provisional_incubation(
     warnings = list(gate.get("reasons") or [])
     if validation_grade == "D" and "validation_grade_d" not in warnings:
         warnings.append("validation_grade_d")
+    if technical_validation_fallback:
+        for extra_warning in (
+            "validation_report_degenerate",
+            "provisional_path:technical_validation_fallback",
+        ):
+            if extra_warning not in warnings:
+                warnings.append(extra_warning)
     for failed_name in failed_names:
         tag = f"provisional_skip:{failed_name}"
         if tag not in warnings:

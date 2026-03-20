@@ -23,6 +23,7 @@ from ..domain.constants import (
     GATE1_SHARPE_MIN,
     REPRESENTATIVE_STOCKS,
 )
+from ..infrastructure.mcp_services import get_strategy_dsl_compiler
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
 
 logger = logging.getLogger(__name__)
@@ -147,7 +148,7 @@ def gate_0_structural(candidate: dict) -> GateResult:
             reasons.append("dsl_rule_missing_dsl_payload")
         else:
             try:
-                from ..strategy_dsl_compiler import compile_strategy_blueprint
+                compile_strategy_blueprint = get_strategy_dsl_compiler()
                 compile_strategy_blueprint(candidate, tune_for_factory=True)
             except Exception as exc:
                 reasons.append(f"dsl_compile_failed:{type(exc).__name__}")
@@ -187,9 +188,11 @@ async def gate_1_fast_screen(
                 continue
 
             BacktestEngine = factory_pkg.BacktestEngine
-            engine = BacktestEngine(strategy_type, params, klines)
-            result = engine.run()
-            sharpe = float(result.get("sharpe_ratio") or result.get("sharpe") or 0.0)
+            result = BacktestEngine.run_backtest(code, klines, strategy_type, params)
+            payload = dict(result.get("data") or {}) if isinstance(result, dict) else {}
+            if not result.get("success"):
+                raise ValueError(result.get("error") or "backtest_failed")
+            sharpe = float(payload.get("sharpe_ratio") or payload.get("sharpe") or 0.0)
             sharpe_values.append(sharpe)
         except Exception as exc:
             errors.append(f"{code}:{type(exc).__name__}")

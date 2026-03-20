@@ -55,16 +55,19 @@ function normalizeDiagnosisPayload(payload: unknown): DiagnosisResult {
     const rawFactors = Array.isArray(rawData?.evidence) ? rawData.evidence : Array.isArray(rawData?.factors) ? rawData.factors : [];
     const factors = rawFactors
         .slice(0, 6)
-        .map((factor: any): DiagnosisResult['factors'][number] => {
-            const signal = String(factor.signal ?? '').toLowerCase();
+        .map((factor): DiagnosisResult['factors'][number] => {
+            const record = factor && typeof factor === 'object' && !Array.isArray(factor)
+                ? factor as Record<string, unknown>
+                : {};
+            const signal = String(record.signal ?? '').toLowerCase();
             return {
-                name: String(factor.name ?? factor.factor ?? factor.category ?? factor.signal ?? '因子'),
+                name: String(record.name ?? record.factor ?? record.category ?? record.signal ?? '因子'),
                 signal: signal.includes('bull') || signal.includes('buy')
                     ? 'bullish'
                     : signal.includes('bear') || signal.includes('sell')
                         ? 'bearish'
                         : 'neutral',
-                detail: String(factor.detail ?? factor.interpretation ?? factor.reason ?? factor.description ?? factor.value ?? ''),
+                detail: String(record.detail ?? record.interpretation ?? record.reason ?? record.description ?? record.value ?? ''),
             };
         })
         .filter((factor) => factor.detail);

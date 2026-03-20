@@ -15,6 +15,14 @@ type CardData = {
   gate_flags?: Array<{ name?: string; status?: string; severity?: string; blocking?: boolean; message?: string; source?: string }>;
   vetoReason?: string | null;
   veto_reason?: string | null;
+  rawAiAction?: string | null;
+  raw_ai_action?: string | null;
+  recommendedHorizon?: string | null;
+  recommended_horizon?: string | null;
+  updatedAt?: string | null;
+  updated_at?: string | null;
+  fallbackReason?: string[];
+  fallback_reason?: string[];
   positionSignal?: {
     label?: string;
     suggestedPositionPct?: number | null;
@@ -54,6 +62,10 @@ export default function DecisionCard({ data }: { data: CardData }) {
   const complianceNotice = data.complianceNotice ?? data.compliance_notice;
   const gateFlags = data.gateFlags ?? data.gate_flags;
   const vetoReason = data.vetoReason ?? data.veto_reason;
+  const rawAiAction = data.rawAiAction ?? data.raw_ai_action;
+  const recommendedHorizon = data.recommendedHorizon ?? data.recommended_horizon;
+  const updatedAt = data.updatedAt ?? data.updated_at;
+  const fallbackReason = data.fallbackReason ?? data.fallback_reason;
   const positionSignal = data.positionSignal
     ?? (data.position_signal
       ? {
@@ -79,6 +91,12 @@ export default function DecisionCard({ data }: { data: CardData }) {
         {finalScore != null ? <span className="text-text-muted">综合分 {finalScore.toFixed(1)}</span> : null}
       </div>
       {data.summary ? <p className="my-2 font-medium">{data.summary}</p> : null}
+      {rawAiAction || recommendedHorizon ? (
+        <div className="my-2 flex flex-wrap gap-2 text-xs text-text-muted">
+          {rawAiAction ? <span className="rounded-md bg-glass px-2 py-1">原始 AI 判断: {rawAiAction}</span> : null}
+          {recommendedHorizon ? <span className="rounded-md bg-glass px-2 py-1">建议观察周期: {recommendedHorizon}</span> : null}
+        </div>
+      ) : null}
       {vetoReason ? (
         <div className="my-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
           当前触发统一闸门：{vetoReason}
@@ -159,6 +177,19 @@ export default function DecisionCard({ data }: { data: CardData }) {
             })}
           </div>
         </details>
+      ) : null}
+
+      {fallbackReason?.length ? (
+        <details className="my-2 text-xs text-text-muted">
+          <summary className="cursor-pointer">降级记录</summary>
+          <div className="mt-1 glass rounded-lg p-2 space-y-1">
+            {fallbackReason.map((item, index) => <div key={`${item}-${index}`}>{item}</div>)}
+          </div>
+        </details>
+      ) : null}
+
+      {updatedAt ? (
+        <div className="mt-2 text-xs text-text-muted">数据更新时间：{updatedAt}</div>
       ) : null}
 
       {complianceNotice ? (

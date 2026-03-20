@@ -1,0 +1,167 @@
+{
+  "data": {
+    "card": {
+      "action": "buy",
+      "complianceNotice": "本分析结果仅供参考，不构成投资建议。",
+      "confidence": 0.72,
+      "dataProvenance": [
+        {
+          "dataset": "unified_decision",
+          "source": "mcp",
+          "timestamp": "2026-03-20T08:00:00.000Z"
+        }
+      ],
+      "dataQuality": {
+        "completeness": 0.92,
+        "degraded": false
+      },
+      "executionPlan": [
+        "建议仓位：轻仓试探"
+      ],
+      "fallbackReason": [
+        "event_context partial fallback"
+      ],
+      "finalScore": 81,
+      "gateFlags": [
+        {
+          "blocking": false,
+          "message": "未触发市场风险闸门",
+          "name": "market_gate",
+          "severity": "low",
+          "status": "pass"
+        }
+      ],
+      "positionSignal": {
+        "label": "轻仓试探",
+        "positionCapPct": 0.3,
+        "requestedStyle": "balanced",
+        "suggestedPositionPct": 0.18,
+        "userRiskLevel": "balanced"
+      },
+      "rawAiAction": "buy",
+      "reasons": [
+        "基本面改善",
+        "量化胜率回升"
+      ],
+      "recommendedHorizon": "5-20d",
+      "risks": [
+        "短线波动放大"
+      ],
+      "summary": "统一决策偏多，适合继续跟踪。",
+      "updatedAt": "2026-03-20T08:00:00.000Z",
+      "vetoReason": null
+    },
+    "detailsAvailable": true,
+    "legacyComparison": {
+      "actionAlignment": "mixed",
+      "auditId": "<id>",
+      "auditLogged": true,
+      "comparedAt": "<timestamp>",
+      "diffSummary": "统一决策与旧入口部分一致、部分分歧，建议结合详情层逐项复核。",
+      "disagreements": [
+        "smart_stock_diagnosis 与统一决策动作不一致（hold vs buy）",
+        "smart_stock_diagnosis 与统一决策置信度差异较大",
+        "decision_manager.analyze 与统一决策动作不一致（watch vs buy）",
+        "decision_manager.analyze 与统一决策置信度差异较大"
+      ],
+      "enabled": true,
+      "investmentStyle": "balanced",
+      "legacyResults": [
+        {
+          "action": "buy",
+          "confidence": 0.76,
+          "reasons": [
+            "旧入口基本面信号偏多"
+          ],
+          "risks": [
+            "旧入口提示波动风险"
+          ],
+          "source": "should_i_buy",
+          "summary": "旧入口买入结论"
+        },
+        {
+          "action": "hold",
+          "confidence": 0.44,
+          "reasons": [
+            "估值与成长性需要继续确认"
+          ],
+          "risks": [
+            "高波动"
+          ],
+          "source": "smart_stock_diagnosis",
+          "summary": "旧入口体检偏中性"
+        },
+        {
+          "action": "watch",
+          "confidence": 0.41,
+          "reasons": [
+            "事件影响尚未完全消化"
+          ],
+          "risks": [
+            "短期交易拥挤"
+          ],
+          "source": "decision_manager.analyze",
+          "summary": "旧入口决策建议继续观察"
+        }
+      ],
+      "traceId": "e2e-summary"
+    },
+    "raw": {
+      "data": {
+        "action": "buy",
+        "compliance_notice": "本分析结果仅供参考，不构成投资建议。",
+        "confidence": 0.72,
+        "data_provenance": [
+          {
+            "dataset": "unified_decision",
+            "source": "mcp",
+            "timestamp": "2026-03-20T08:00:00.000Z"
+          }
+        ],
+        "data_quality": {
+          "completeness": 0.92,
+          "degraded": false
+        },
+        "details_available": true,
+        "fallback_reason": [
+          "event_context partial fallback"
+        ],
+        "final_score": 81,
+        "gate_flags": [
+          {
+            "blocking": false,
+            "message": "未触发市场风险闸门",
+            "name": "market_gate",
+            "severity": "low",
+            "status": "pass"
+          }
+        ],
+        "position_signal": {
+          "label": "轻仓试探",
+          "position_cap_pct": 0.3,
+          "requested_style": "balanced",
+          "suggested_position_pct": 0.18,
+          "user_risk_level": "balanced"
+        },
+        "raw_ai_action": "buy",
+        "reasons": [
+          "基本面改善",
+          "量化胜率回升"
+        ],
+        "recommended_horizon": "5-20d",
+        "risks": [
+          "短线波动放大"
+        ],
+        "summary": "统一决策偏多，适合继续跟踪。",
+        "updated_at": "2026-03-20T08:00:00.000Z"
+      }
+    },
+    "request": {
+      "code": "600519",
+      "investmentStyle": "balanced",
+      "legacyMode": true
+    }
+  },
+  "success": true,
+  "traceId": "e2e-summary"
+}

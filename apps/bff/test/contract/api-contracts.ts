@@ -258,6 +258,65 @@ const unifiedDecisionDetailsSchema = envelope({
   required: ['card', 'details', 'raw', 'request'],
 });
 
+const unifiedDecisionDiffLogSchema = envelope({
+  type: 'object',
+  properties: {
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'number' },
+          traceId: { type: ['string', 'null'] },
+          userId: { type: ['string', 'null'] },
+          stockCode: { type: 'string' },
+          investmentStyle: { type: 'string' },
+          unifiedAction: { type: 'string' },
+          actionAlignment: { type: 'string' },
+          legacyActions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                source: { type: 'string' },
+                action: { type: 'string' },
+              },
+              required: ['source', 'action'],
+            },
+          },
+          disagreements: { type: 'array', items: { type: 'string' } },
+          diffSummary: { type: 'string' },
+          details: { type: 'object' },
+          createdAt: { type: 'string' },
+        },
+        required: [
+          'id',
+          'stockCode',
+          'investmentStyle',
+          'unifiedAction',
+          'actionAlignment',
+          'legacyActions',
+          'disagreements',
+          'diffSummary',
+          'details',
+          'createdAt',
+        ],
+      },
+    },
+    total: { type: 'number' },
+    filters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number' },
+        stockCode: { type: ['string', 'null'] },
+        actionAlignment: { type: ['string', 'null'] },
+      },
+      required: ['limit', 'stockCode', 'actionAlignment'],
+    },
+  },
+  required: ['items', 'total', 'filters'],
+});
+
 export const CONTRACTS = {
   'GET /market/quote': {
     name: 'Quote Envelope',
@@ -290,6 +349,10 @@ export const CONTRACTS = {
   'POST /assistant/unified-decision/details': {
     name: 'Unified Decision Details Envelope',
     responseSchema: unifiedDecisionDetailsSchema,
+  },
+  'GET /assistant/unified-decision/diff-logs': {
+    name: 'Unified Decision Diff Logs Envelope',
+    responseSchema: unifiedDecisionDiffLogSchema,
   },
 } as const;
 

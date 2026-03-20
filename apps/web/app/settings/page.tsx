@@ -12,6 +12,13 @@ type TabKey = 'account' | 'security' | 'sessions';
 const TABS = [{ key: 'account', label: '账户信息' }, { key: 'security', label: '安全日志' }, { key: 'sessions', label: '活跃会话' }] as const;
 const RISK_OPTIONS = ['保守', '稳健', '激进'] as const;
 
+function readRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  return value as Record<string, unknown>;
+}
+
 export default function SettingsPage() {
   const { toast } = useToast();
   const setUser = useAuthStore((s) => s.setUser);
@@ -37,18 +44,41 @@ export default function SettingsPage() {
   const nicknameValue = nickname ?? String(profileQ.data?.nickname ?? '');
   const avatarUrlValue = avatarUrl ?? String(profileQ.data?.avatarUrl ?? '');
 
-  const logRows = useMemo(() => (((logsQ.data?.data as any)?.items ?? (logsQ.data as any)?.items ?? []) as Record<string, unknown>[]).map((item) => ({
-    time: new Date(String(item.ts ?? '')).toLocaleString('zh-CN'),
-    action: `${String(item.method ?? '-')} ${String(item.path ?? '-')}`,
-    status: Number(item.status ?? 0),
-    duration: `${Number(item.duration_ms ?? 0)}ms`,
-  })), [logsQ.data]);
-  const sessionRows = useMemo(() => (((sessionsQ.data?.data as any)?.items ?? (sessionsQ.data as any)?.items ?? []) as Record<string, unknown>[]), [sessionsQ.data]);
+  const logRows = useMemo(() => {
+    const root = readRecord(logsQ.data);
+    const data = readRecord(root.data);
+    const items = Array.isArray(data.items) ? data.items : Array.isArray(root.items) ? root.items : [];
+    return items
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+      .map((item) => ({
+        time: new Date(String(item.ts ?? '')).toLocaleString('zh-CN'),
+        action: `${String(item.method ?? '-')} ${String(item.path ?? '-')}`,
+        status: Number(item.status ?? 0),
+        duration: `${Number(item.duration_ms ?? 0)}ms`,
+      }));
+  }, [logsQ.data]);
+  const sessionRows = useMemo(() => {
+    const root = readRecord(sessionsQ.data);
+    const data = readRecord(root.data);
+    const items = Array.isArray(data.items) ? data.items : Array.isArray(root.items) ? root.items : [];
+    return items.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+  }, [sessionsQ.data]);
   const activeSessionCount = sessionRows.length;
 
   async function saveProfile() {
     const data = await profileApi.triggerAsync('/auth/profile', { method: 'POST' }, { riskLevel: riskLevelValue, nickname: nicknameValue, avatarUrl: avatarUrlValue });
-    setUser(data as any);
+    const profile = readRecord(data);
+    const existing = readRecord(profileQ.data);
+    const roleValue = profile.role ?? existing.role;
+    setUser({
+      id: String(profile.id ?? existing.id ?? ''),
+      username: String(profile.username ?? existing.username ?? ''),
+      role: roleValue === 'admin' ? 'admin' : 'user',
+      riskLevel: String(profile.riskLevel ?? existing.riskLevel ?? riskLevelValue),
+      nickname: String(profile.nickname ?? existing.nickname ?? nicknameValue),
+      avatarUrl: String(profile.avatarUrl ?? existing.avatarUrl ?? avatarUrlValue),
+      preferences: readRecord(profile.preferences ?? existing.preferences),
+    });
     profileQ.refetch();
   }
 
@@ -98,7 +128,7 @@ export default function SettingsPage() {
 
   async function generateReport() {
     const data = await reportApi.triggerAsync('/export/report?period=monthly');
-    setReportText(String((data as any).report ?? ''));
+    setReportText(String(readRecord(data).report ?? ''));
     toast('投资报告已生成', 'success');
   }
 

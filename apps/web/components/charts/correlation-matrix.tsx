@@ -3,7 +3,6 @@
 import { useMemo, useState } from 'react';
 import { Chart } from './chart';
 import { useApiQuery } from '@/hooks/use-api-query';
-import { extractArray } from '@/lib/data-utils';
 
 /**
  * T-032: CorrelationMatrix
@@ -19,6 +18,7 @@ export function CorrelationMatrix({
     className?: string;
 }) {
     const [window, setWindow] = useState(60);
+    type HeatmapTooltipParam = { data?: [number, number, number] };
 
     const corrQ = useApiQuery<unknown>(
         codes.length >= 2 ? `/portfolio/correlation?codes=${codes.join(',')}&window=${window}` : null,
@@ -45,8 +45,8 @@ export function CorrelationMatrix({
 
     const option = useMemo(() => ({
         tooltip: {
-            formatter: (p: any) => {
-                const [x, y, v] = p.data;
+            formatter: (p: HeatmapTooltipParam) => {
+                const [x, y, v] = p.data ?? [0, 0, 0];
                 return `${labels[x]} × ${labels[y]}<br/>相关系数: <b>${v}</b>`;
             },
         },

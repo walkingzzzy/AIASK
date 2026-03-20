@@ -1,9 +1,9 @@
 'use client';
 
 import { useMemo } from 'react';
-import { SectionCard, KpiGrid, KpiCard } from '@/components/ui';
+import { KpiGrid, KpiCard } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
-import { extractObject, extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
+import { extractObject, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { PieChart } from '@/components/charts';
 
 /**

@@ -155,10 +155,16 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   }, [detailQ.data]);
 
   const strategy = detail?.strategy ?? null;
-  const metrics = detail?.metrics ?? strategy?.metrics ?? [];
+  const metrics = useMemo(
+    () => detail?.metrics ?? strategy?.metrics ?? [],
+    [detail?.metrics, strategy?.metrics],
+  );
   const reviews = detail?.reviews ?? strategy?.reviews ?? [];
   const detailViewModel = detail?.view_model ?? null;
-  const navSeries = detail?.nav_series ?? [];
+  const navSeries = useMemo(
+    () => detail?.nav_series ?? [],
+    [detail?.nav_series],
+  );
   const latestQualityReport = detailViewModel?.quality?.latest_report ?? detail?.latest_quality_report ?? null;
   const incubationAccount = detailViewModel?.incubation?.account ?? detail?.incubation_account ?? null;
   const latestIncubationMetric = detailViewModel?.incubation?.latest_metric ?? detail?.latest_incubation_metric ?? null;

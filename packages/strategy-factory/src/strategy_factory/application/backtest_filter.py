@@ -17,6 +17,7 @@ from ..domain.constants import (
     REPRESENTATIVE_STOCKS,
 )
 from ..domain.targets import _extract_target_codes_from_payload
+from ..infrastructure.mcp_services import get_backtest_engine_class
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
 
 
@@ -187,8 +188,7 @@ class BacktestFilter:
         }
 
     async def filter(self, candidates: List[dict], db) -> List[dict]:
-        from akshare_mcp.services.backtest.engine import BacktestEngine
-
+        BacktestEngine = get_backtest_engine_class()
         passed: List[dict] = []
         failed: List[dict] = []
         candidate_concurrency = int(_compat_setting("BACKTEST_CONCURRENCY", BACKTEST_CONCURRENCY) or BACKTEST_CONCURRENCY)

@@ -198,7 +198,7 @@ export class PortfolioService {
     return Number.isFinite(n) ? n : null;
   }
 
-  private normalizeOptimization(payload: any): NormalizedOptimization {
+  private normalizeOptimization(payload: unknown): NormalizedOptimization {
     const d = this.extractDataRecord(payload);
     const w = d.weights ?? d.allocation ?? {};
     return {
@@ -209,7 +209,7 @@ export class PortfolioService {
     };
   }
 
-  private normalizeRiskAnalysis(payload: any, riskContribution: Record<string, number> = {}): NormalizedRiskAnalysis {
+  private normalizeRiskAnalysis(payload: unknown, riskContribution: Record<string, number> = {}): NormalizedRiskAnalysis {
     const d = this.extractDataRecord(payload);
     const varBlock = this.readPath(d, 'var') as Record<string, unknown> | undefined;
     const riskBlock = this.readPath(d, 'risk') as Record<string, unknown> | undefined;
@@ -223,7 +223,7 @@ export class PortfolioService {
     };
   }
 
-  private normalizeStressTest(payload: any): NormalizedStressTest {
+  private normalizeStressTest(payload: unknown): NormalizedStressTest {
     const d = this.extractDataRecord(payload);
     const stressTests = (this.readPath(d, 'stress_tests') as Record<string, unknown> | undefined) ?? {};
     const list: Record<string, unknown>[] = Array.isArray(d)
@@ -234,10 +234,10 @@ export class PortfolioService {
           ? ((d as Record<string, unknown>).results as Record<string, unknown>[])
           : Object.entries(stressTests).map(([name, value]) => ({ name, ...(value as Record<string, unknown>) }));
     return {
-      scenarios: list.map((s: any) => ({
-        name: String(s.name ?? s.scenario ?? ''),
-        impact: this.toNum(s.impact ?? s.loss ?? s.pnl ?? s.total_loss_pct ?? s.portfolio_impact_pct),
-        description: String(s.description ?? s.desc ?? s.summary ?? ''),
+      scenarios: list.map((scenario) => ({
+        name: String(scenario.name ?? scenario.scenario ?? ''),
+        impact: this.toNum(scenario.impact ?? scenario.loss ?? scenario.pnl ?? scenario.total_loss_pct ?? scenario.portfolio_impact_pct),
+        description: String(scenario.description ?? scenario.desc ?? scenario.summary ?? ''),
       })),
     };
   }
@@ -539,7 +539,12 @@ export class PortfolioService {
   }
 
   private readPath(obj: unknown, path: string): unknown {
-    return path.split('.').reduce((acc: any, key: string) => (acc == null ? undefined : acc[key]), obj as any);
+    return path.split('.').reduce<unknown>((acc, key) => {
+      if (!acc || typeof acc !== 'object' || Array.isArray(acc)) {
+        return undefined;
+      }
+      return (acc as Record<string, unknown>)[key];
+    }, obj);
   }
 
   private pickArray(payload: unknown, paths: string[]): Record<string, unknown>[] {

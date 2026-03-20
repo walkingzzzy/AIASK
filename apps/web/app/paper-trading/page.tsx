@@ -30,7 +30,6 @@ import type {
   PaperTradingRouteExecutionInput,
   PaperTradingStatusProbe,
   PaperTradingSummary,
-  PaperTradingTrade,
 } from '@aiask/shared-types';
 
 type PendingOrderRequest = {
@@ -136,8 +135,8 @@ export default function PaperTradingPage() {
   const cancelApi = useApiMutation<Record<string, unknown>>({ invalidates: [[...apiKeys.paper()]] });
 
   const accounts = useMemo(() => extractArray(accountsQ.data, 'accounts', 'items', 'data') as PaperTradingAccount[], [accountsQ.data]);
-  const matchStatus = matchStatusQ.data ?? {};
-  const navStatus = navStatusQ.data ?? {};
+  const matchStatus = useMemo(() => matchStatusQ.data ?? {}, [matchStatusQ.data]);
+  const navStatus = useMemo(() => navStatusQ.data ?? {}, [navStatusQ.data]);
   const matchOk = matchStatus.status === 'running' || matchStatus.running === true || matchStatus.ok === true;
   const navOk = navStatus.status === 'running' || navStatus.running === true || navStatus.ok === true;
 
@@ -151,8 +150,14 @@ export default function PaperTradingPage() {
   const positions = positionsQ.data?.positions ?? [];
   const trades = ordersQ.data?.orders ?? [];
   const pending = pendingQ.data?.orders ?? [];
-  const navData = (navQ.data?.nav ?? []) as Array<{ nav_date?: string; total_value?: number; daily_return?: number }>;
-  const performanceData = performanceQ.data?.dailyReturns ?? [];
+  const navData = useMemo(
+    () => (navQ.data?.nav ?? []) as Array<{ nav_date?: string; total_value?: number; daily_return?: number }>,
+    [navQ.data?.nav],
+  );
+  const performanceData = useMemo(
+    () => performanceQ.data?.dailyReturns ?? [],
+    [performanceQ.data?.dailyReturns],
+  );
   const performanceMetrics = performanceQ.data?.metrics ?? {};
   const confirmPrefs = useMemo(() => resolveTradeConfirmations(profileQ.data), [profileQ.data]);
   const showAccountBootstrap = positions.length === 0 && pending.length === 0 && trades.length === 0 && navData.length === 0;
@@ -206,7 +211,6 @@ export default function PaperTradingPage() {
   const perfCategories = useMemo(() => performanceData.map((item) => item.date?.slice(5) ?? ''), [performanceData]);
   const perfReturns = useMemo(() => performanceData.map((item) => Number(item.dailyReturn ?? 0) * 100), [performanceData]);
 
-  const loading = summaryQ.isPending || refreshPricesApi.isPending;
   const error = summaryQ.error || positionsQ.error || refreshPricesApi.error;
   const accountIdRef = useRef(accountId);
   const autoRefreshBusyRef = useRef(false);

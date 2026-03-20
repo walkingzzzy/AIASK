@@ -10,6 +10,42 @@ export type RiskSummaryInput = {
 };
 
 type SafeCall = { ok: true; data: unknown } | { ok: false; error: string };
+type RiskSummaryContext =
+  | { mode: 'portfolio'; portfolioId: number }
+  | { mode: 'paper-trading'; accountId: string; codes: string[]; weights: number[]; portfolioValue: number }
+  | { mode: 'empty'; reason: string };
+
+type RiskSummaryResult = {
+  portfolioId: number | null;
+  lookbackDays: number;
+  injectedFail: RiskSummaryInput['injectFail'] | null;
+  sourceContext: RiskSummaryContext;
+  sourceTools: {
+    var: 'risk_manager';
+    stress: 'risk_manager';
+    exposure: 'risk_manager';
+  };
+  argsMatched: {
+    var: { action: string; params: Record<string, unknown> } | null;
+    stress: { action: string; params: Record<string, unknown> } | null;
+    exposure: { action: string; params: Record<string, unknown> } | null;
+  };
+  varResult: unknown | null;
+  stressResult: unknown | null;
+  exposureResult: unknown | null;
+  moduleStatus: {
+    var: { ok: boolean; reason: string | null };
+    stress: { ok: boolean; reason: string | null };
+    exposure: { ok: boolean; reason: string | null };
+  };
+  degraded: boolean;
+  empty: boolean;
+  degradeReasons: string[];
+  meta: {
+    fetchedAt: string;
+    cache: { hit: boolean; backend: 'redis' | 'memory' | 'none'; key: string; ttlSeconds: number };
+  };
+};
 
 @Injectable()
 export class RiskService {
@@ -20,7 +56,7 @@ export class RiskService {
     private readonly cacheService: CommonCacheService,
   ) {}
 
-  async getSummary(input: RiskSummaryInput) {
+  async getSummary(input: RiskSummaryInput): Promise<RiskSummaryResult> {
     const userId = String(input.userId ?? 'default');
     const portfolioId = Number.isFinite(input.portfolioId) ? input.portfolioId : undefined;
     const lookbackDays = Number.isFinite(input.lookbackDays)
@@ -30,7 +66,7 @@ export class RiskService {
 
     const cacheKey = `risk:summary:${userId}:${portfolioId ?? 'auto'}:${lookbackDays}:${injectFail ?? 'none'}`;
     const ttlSeconds = this.cacheService.resolveTtl('risk.summary', RiskService.SUMMARY_TTL_SECONDS);
-    const cached = await this.cacheService.getWithMeta<any>(cacheKey);
+    const cached = await this.cacheService.getWithMeta<RiskSummaryResult>(cacheKey);
     if (cached.value) {
       return {
         ...cached.value,

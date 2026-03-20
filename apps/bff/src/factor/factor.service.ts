@@ -76,14 +76,17 @@ export class FactorService {
 
   async decay(params: { factor_name: string; period?: string; limit?: number }) {
     const historyResp = await this.icHistory(params);
-    const root = (historyResp?.data as any)?.data ?? historyResp?.data ?? {};
-    const raw = Array.isArray(root?.history) ? root.history : [];
-    const list = raw.map((r: any) => ({
-      date: String(r.date ?? ''),
-      ic_value: this.toNum(r.ic_value),
-      rank_ic: this.toNum(r.rank_ic),
-      stock_count: this.toNum(r.stock_count) ?? 0,
-    })) as IcHistoryItem[];
+    const root = this.flattenMcpResult(historyResp?.data);
+    const raw = Array.isArray(root.history) ? root.history : [];
+    const list = raw.map((row) => {
+      const record = this.asRecord(row);
+      return {
+        date: String(record.date ?? ''),
+        ic_value: this.toNum(record.ic_value),
+        rank_ic: this.toNum(record.rank_ic),
+        stock_count: this.toNum(record.stock_count) ?? 0,
+      };
+    }) as IcHistoryItem[];
     const sorted = list.filter((r) => r.date).sort((a, b) => a.date.localeCompare(b.date));
     const absIc = sorted.map((r) => Math.abs(this.toNum(r.ic_value) ?? 0));
     const base = absIc.length ? (absIc[0] || 1e-9) : 1e-9;
@@ -119,16 +122,17 @@ export class FactorService {
     return { data: payload };
   }
 
-  private normalizeLibrary(payload: any): { factors: NormalizedFactorItem[] } {
-    const root = payload?.data ?? payload ?? {};
-    const list = Array.isArray(root) ? root : Array.isArray(root?.factors) ? root.factors : Array.isArray(root?.data) ? root.data : [];
+  private normalizeLibrary(payload: unknown): { factors: NormalizedFactorItem[] } {
+    const root = this.unwrapPayload(payload);
+    const data = this.asRecord(root);
+    const list = this.asRecordArray(data.factors ?? data.data ?? root);
     return {
-      factors: list.map((f: any) => ({
-        name: String(f.name ?? f.factor_name ?? ''),
-        description: String(f.description ?? f.desc ?? ''),
-        category: String(f.category ?? f.group ?? ''),
-        default_period: this.toNum(f.default_period) ?? 20,
-        data_dependency: Array.isArray(f.data_dependency) ? f.data_dependency.map((x: any) => String(x)) : ['kline'],
+      factors: list.map((factor) => ({
+        name: String(factor.name ?? factor.factor_name ?? ''),
+        description: String(factor.description ?? factor.desc ?? ''),
+        category: String(factor.category ?? factor.group ?? ''),
+        default_period: this.toNum(factor.default_period) ?? 20,
+        data_dependency: Array.isArray(factor.data_dependency) ? factor.data_dependency.map((item) => String(item)) : ['kline'],
       })),
     };
   }
@@ -147,5 +151,24 @@ export class FactorService {
       return { ...rest, ...(inner as Record<string, unknown>) };
     }
     return obj;
+  }
+
+  private unwrapPayload(payload: unknown): unknown {
+    const record = this.asRecord(payload);
+    return record.data !== undefined ? record.data : payload;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private asRecordArray(value: unknown): Record<string, unknown>[] {
+    if (!Array.isArray(value)) return [];
+    return value.filter(
+      (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item),
+    );
   }
 }

@@ -40,6 +40,13 @@ const TYPE_ICONS: Record<string, string> = {
     command: '⚡',
 };
 
+function readRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return {};
+    }
+    return value as Record<string, unknown>;
+}
+
 export function Spotlight() {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState('');
@@ -108,14 +115,17 @@ export function Spotlight() {
                 });
                 if (res.ok) {
                     const json = await res.json();
-                    const stocks = json?.data?.items ?? json?.items ?? json?.data ?? [];
+                    const data = readRecord(json);
+                    const nested = readRecord(data.data);
+                    const stocks = data.items ?? nested.items ?? data.data ?? [];
                     if (Array.isArray(stocks)) {
-                        stocks.forEach((s: any) => {
+                        stocks.forEach((stock) => {
+                            const record = readRecord(stock);
                             matched.push({
                                 type: 'stock',
-                                label: `${s.name ?? s.stock_name ?? ''} ${s.code ?? s.stock_code ?? ''}`,
-                                sublabel: String(s.industry ?? s.sector ?? '个股'),
-                                href: `/stock?code=${s.code ?? s.stock_code ?? ''}`,
+                                label: `${record.name ?? record.stock_name ?? ''} ${record.code ?? record.stock_code ?? ''}`,
+                                sublabel: String(record.industry ?? record.sector ?? '个股'),
+                                href: `/stock?code=${record.code ?? record.stock_code ?? ''}`,
                             });
                         });
                     }

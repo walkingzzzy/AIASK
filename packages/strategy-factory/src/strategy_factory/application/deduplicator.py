@@ -5,17 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from .legacy_bridge import get_compat_symbol, get_compat_value
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
 from .utils import _extract_event_context as _local_extract_event_context
-from akshare_mcp.services.vector_search import VectorSearchEngine
-
 from ..domain.constants import DEDUP_CONCURRENCY
 from ..domain.targets import _extract_target_codes_from_payload
+
+if TYPE_CHECKING:
+    from ..api.contracts import VectorSearchGateway
 
 
 _LEGACY_DEDUPLICATOR_MODULE = "akshare_mcp.services.strategy_factory.deduplicator"
@@ -53,7 +54,7 @@ class Deduplicator:
     VECTOR_THRESHOLD = 0.93
     MAX_VECTOR_CANDIDATES = 8
 
-    def __init__(self):
+    def __init__(self, *, vector_gateway: Optional["VectorSearchGateway"] = None):
         self.last_report: dict = {
             "summary": {
                 "input_count": 0,
@@ -73,7 +74,16 @@ class Deduplicator:
             "dropped": [],
         }
         self._behavior_cache: Dict[str, Optional[List[dict]]] = {}
-        self._vector_engine = VectorSearchEngine(backend="index", allow_fallback=True)
+        self._vector_gateway = vector_gateway
+        self._vector_engine = getattr(vector_gateway, "raw", vector_gateway) if vector_gateway is not None else None
+
+    def _get_vector_gateway(self) -> "VectorSearchGateway":
+        if self._vector_gateway is None:
+            from ..infrastructure.mcp_adapters import MCPVectorSearchGatewayImpl
+
+            self._vector_gateway = MCPVectorSearchGatewayImpl()
+            self._vector_engine = getattr(self._vector_gateway, "raw", self._vector_gateway)
+        return self._vector_gateway
 
     @staticmethod
     def _normalize_strategy_type(value: object) -> str:
@@ -562,7 +572,8 @@ class Deduplicator:
         if not candidate_klines_dict:
             return None
 
-        results = self._vector_engine.find_similar_patterns(
+        gateway = self._get_vector_gateway()
+        results = gateway.find_similar_patterns(
             query_klines=query_klines,
             candidate_klines_dict=candidate_klines_dict,
             top_k=1,
@@ -577,7 +588,7 @@ class Deduplicator:
         meta = match_meta.get(str(top.get("code")), {})
         return {
             "similarity": float(top.get("similarity") or 0.0),
-            "backend": self._vector_engine.last_backend_used,
+            "backend": str(getattr(gateway, "last_backend_used", "") or ""),
             **meta,
         }
 

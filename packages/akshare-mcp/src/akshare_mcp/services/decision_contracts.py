@@ -8,6 +8,7 @@ from ..utils import now_iso, resolve_security_code
 from .decision_context_builder import build_stock_context, build_user_context
 from .decision_event_builder import build_event_context
 from .decision_fusion import fuse_unified_decision
+from .decision_pipeline_shared import merge_context_meta, unique_texts
 from .decision_quant_builder import build_quant_context
 from .decision_rule_gate import build_rule_gates
 
@@ -30,16 +31,7 @@ def _provenance_entry(source: str, dataset: str, timestamp: str | None = None) -
 
 
 def _merge_warnings(*sections: dict[str, Any]) -> list[str]:
-    warnings: list[str] = []
-    seen: set[str] = set()
-    for section in sections:
-        for item in section.get("warnings", []) or []:
-            label = str(item or "").strip()
-            if not label or label in seen:
-                continue
-            warnings.append(label)
-            seen.add(label)
-    return warnings
+    return unique_texts(*(section.get("warnings", []) for section in sections))
 
 
 def _build_summary_payload(
@@ -54,6 +46,7 @@ def _build_summary_payload(
     gate: dict[str, Any],
     fusion: dict[str, Any],
 ) -> dict[str, Any]:
+    pipeline_meta = merge_context_meta(stock_context, quant_context, event_context, user_context)
     timestamp = now_iso()
     return {
         "version": UNIFIED_DECISION_VERSION,
@@ -70,10 +63,10 @@ def _build_summary_payload(
         "veto_reason": fusion.get("veto_reason"),
         "position_signal": fusion.get("position_signal"),
         "data_provenance": [
-            _provenance_entry("decision_context_builder", "investment_analysis", stock_context.get("timestamp")),
-            _provenance_entry("decision_quant_builder", "factor_profile+signal_hit_rate", quant_context.get("timestamp")),
-            _provenance_entry("decision_event_builder", "stock_text_signals", event_context.get("timestamp")),
-            _provenance_entry("decision_context_builder", "user_context", user_context.get("timestamp")),
+            _provenance_entry("decision_context_builder", "investment_analysis+market_snapshot", stock_context.get("updated_at")),
+            _provenance_entry("decision_quant_builder", "factor_profile+conditional_returns+oos", quant_context.get("updated_at")),
+            _provenance_entry("decision_event_builder", "stock_text_signals+event_gate", event_context.get("updated_at")),
+            _provenance_entry("decision_context_builder", "user_context", user_context.get("updated_at")),
         ],
         "compliance_notice": "本结果仅供研究与辅助决策，不构成投资建议。",
         "details_available": True,
@@ -86,7 +79,15 @@ def _build_summary_payload(
             },
         },
         "diagnostics": fusion.get("score_breakdown", {}),
+        "weights": fusion.get("weights", {}),
+        "raw_ai_action": fusion.get("raw_ai_action"),
+        "raw_ai_output": fusion.get("raw_ai_output"),
+        "recommended_horizon": fusion.get("recommended_horizon"),
         "warnings": _merge_warnings(stock_context, quant_context, event_context, user_context),
+        "fallback_reason": pipeline_meta.get("fallback_reason"),
+        "cached": pipeline_meta.get("cached", False),
+        "updated_at": pipeline_meta.get("updated_at"),
+        "data_quality": pipeline_meta.get("data_quality"),
         "timestamp": timestamp,
     }
 
@@ -138,11 +139,17 @@ async def _build_pipeline_payload(
             "investment_style": style,
             "user_id": user_id,
         },
+        "meta": {
+            "updated_at": summary.get("updated_at"),
+            "cached": summary.get("cached"),
+            "fallback_reason": summary.get("fallback_reason"),
+            "data_quality": summary.get("data_quality"),
+        },
         "stock_context": stock_context,
         "quant_context": quant_context,
         "event_context": event_context,
         "user_context": user_context,
-        "gate": gate,
+        "gate_result": gate,
         "fusion": fusion,
     }
     return summary, details

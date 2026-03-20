@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Post, Req, Res } from '@nestjs/common';
 import { IsArray, IsString, IsIn, ValidateNested, IsOptional } from 'class-validator';
 import { Type } from 'class-transformer';
+import type { Request, Response } from 'express';
 import { ChatService } from './chat.service';
 import { PreferencesService } from '../auth/preferences.service';
 
@@ -47,6 +48,10 @@ const MODEL_PRESETS = [
   { provider: 'Yi', baseUrl: 'https://api.lingyiwanwu.com/v1', models: ['yi-lightning', 'yi-large', 'yi-medium'] },
 ];
 
+type ChatRequest = Request & {
+  user?: { sub?: string; id?: string };
+};
+
 @Controller('chat')
 export class ChatController {
   constructor(
@@ -55,14 +60,14 @@ export class ChatController {
   ) {}
 
   @Get('config')
-  async getConfig(@Req() req: { user?: any }) {
+  async getConfig(@Req() req: ChatRequest) {
     const userId = req.user?.sub ?? req.user?.id ?? '';
     const config = await this.preferencesService.getMaskedLlmConfig(String(userId));
     return { success: true, data: config };
   }
 
   @Post('config')
-  async saveConfig(@Req() req: { user?: any }, @Body() body: SaveLlmConfigDto) {
+  async saveConfig(@Req() req: ChatRequest, @Body() body: SaveLlmConfigDto) {
     const userId = req.user?.sub ?? req.user?.id ?? '';
     await this.preferencesService.setLlmConfig(String(userId), {
       apiKey: body.apiKey,
@@ -78,7 +83,7 @@ export class ChatController {
   }
 
   @Get('conversations')
-  async getConversations(@Req() req: { user?: any }) {
+  async getConversations(@Req() req: ChatRequest) {
     const userId = String(req.user?.sub ?? req.user?.id ?? '');
     const prefs = await this.preferencesService.getUserPreferences(userId);
     const chatHistory = ((prefs.chatHistory ?? {}) as Record<string, unknown>).conversations;
@@ -86,7 +91,7 @@ export class ChatController {
   }
 
   @Post('conversations/sync')
-  async syncConversations(@Req() req: { user?: any }, @Body() body: SyncChatConversationsDto) {
+  async syncConversations(@Req() req: ChatRequest, @Body() body: SyncChatConversationsDto) {
     const userId = String(req.user?.sub ?? req.user?.id ?? '');
     const prefs = await this.preferencesService.getUserPreferences(userId);
     await this.preferencesService.setUserPreferences(userId, {
@@ -100,7 +105,7 @@ export class ChatController {
   }
 
   @Post('completions')
-  async completions(@Req() req: any, @Res() res: any, @Body() body: ChatCompletionsDto) {
+  async completions(@Req() req: ChatRequest, @Res() res: Response, @Body() body: ChatCompletionsDto) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');

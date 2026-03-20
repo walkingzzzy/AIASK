@@ -5,9 +5,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, List, Optional, Tuple
 
-from akshare_mcp.services.factor_scheduler import get_factor_scheduler
-
 from ..domain.constants import FACTORY_RESEARCH_FACTORS, preferred_strategy_types_for_factor
+from ..infrastructure.mcp_services import get_factor_scheduler_singleton
 from .runtime import _call_optional_async
 
 
@@ -152,7 +151,7 @@ class FactorResearchBuilder:
             for name in names
             if name in factor_ic or name in factor_trend or bool(history_meta.get(str(name)))
         ]
-        scheduler_status = dict(get_factor_scheduler().status() or {})
+        scheduler_status = dict(get_factor_scheduler_singleton().status() or {})
         scheduler_quality_flags = list(scheduler_status.get("quality_flags") or [])
         factor_ic_source = dict((snapshot.get("sources") or {}).get("factor_ic") or {})
 

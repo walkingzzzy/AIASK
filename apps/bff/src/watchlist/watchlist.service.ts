@@ -122,14 +122,14 @@ export class WatchlistService {
         }
     }
 
-    private extractGroups(payload: any): WatchlistGroup[] {
+    private extractGroups(payload: unknown): WatchlistGroup[] {
         const data = this.readPath(payload, 'data') ?? payload;
         const groupsPayload = this.readPath(data, 'groups');
         if (Array.isArray(groupsPayload)) {
-            return groupsPayload.map((g: any) => this.normalizeGroup(g));
+            return groupsPayload.map((group) => this.normalizeGroup(group));
         }
         if (Array.isArray(data)) {
-            return data.map((g: any) => this.normalizeGroup(g));
+            return data.map((group) => this.normalizeGroup(group));
         }
         // Single group or items
         const items = this.readPath(data, 'items') ?? this.readPath(data, 'stocks') ?? [];
@@ -138,36 +138,51 @@ export class WatchlistService {
                 id: 'default',
                 name: '我的自选',
                 color: '#6366f1',
-                items: items.map((item: any) => this.normalizeItem(item)),
+                items: items.map((item) => this.normalizeItem(item)),
                 createdAt: new Date().toISOString(),
             }];
         }
         return [];
     }
 
-    private normalizeGroup(raw: any): WatchlistGroup {
+    private normalizeGroup(raw: unknown): WatchlistGroup {
+        const record = this.asRecord(raw);
+        const items = record.items ?? record.stocks;
         return {
-            id: String(raw.id ?? raw.name ?? 'default'),
-            name: String(raw.name ?? raw.watchlist_name ?? '我的自选'),
-            color: String(raw.color ?? '#6366f1'),
-            items: Array.isArray(raw.items ?? raw.stocks)
-                ? (raw.items ?? raw.stocks).map((i: any) => this.normalizeItem(i))
+            id: String(record.id ?? record.name ?? 'default'),
+            name: String(record.name ?? record.watchlist_name ?? '我的自选'),
+            color: String(record.color ?? '#6366f1'),
+            items: Array.isArray(items)
+                ? items.map((item) => this.normalizeItem(item))
                 : [],
-            createdAt: String(raw.createdAt ?? raw.created_at ?? new Date().toISOString()),
+            createdAt: String(record.createdAt ?? record.created_at ?? new Date().toISOString()),
         };
     }
 
-    private normalizeItem(raw: any): WatchlistItem {
+    private normalizeItem(raw: unknown): WatchlistItem {
+        const record = this.asRecord(raw);
         return {
-            code: String(raw.code ?? raw.stock_code ?? ''),
-            name: String(raw.name ?? raw.stock_name ?? ''),
-            group: String(raw.group ?? raw.group_id ?? raw.watchlist_name ?? 'default'),
-            addedAt: String(raw.addedAt ?? raw.added_at ?? new Date().toISOString()),
-            sortOrder: Number(raw.sortOrder ?? raw.sort_order ?? 0),
+            code: String(record.code ?? record.stock_code ?? ''),
+            name: String(record.name ?? record.stock_name ?? ''),
+            group: String(record.group ?? record.group_id ?? record.watchlist_name ?? 'default'),
+            addedAt: String(record.addedAt ?? record.added_at ?? new Date().toISOString()),
+            sortOrder: Number(record.sortOrder ?? record.sort_order ?? 0),
         };
     }
 
-    private readPath(obj: any, path: string): unknown {
-        return path.split('.').reduce((acc: any, key: string) => (acc == null ? undefined : acc[key]), obj);
+    private asRecord(value: unknown): Record<string, unknown> {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            return {};
+        }
+        return value as Record<string, unknown>;
+    }
+
+    private readPath(obj: unknown, path: string): unknown {
+        return path.split('.').reduce<unknown>((acc, key) => {
+            if (!acc || typeof acc !== 'object' || Array.isArray(acc)) {
+                return undefined;
+            }
+            return (acc as Record<string, unknown>)[key];
+        }, obj);
     }
 }

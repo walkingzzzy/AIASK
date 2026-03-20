@@ -8,6 +8,8 @@ import { EmptyState, ErrorState, LoadingState } from '@/components/status-state'
 import { extractArray } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import DecisionCard from '@/components/decision-card';
+import UnifiedDecisionPanel from '@/components/unified-decision-panel';
+import UnifiedDecisionDiffLogList from '@/components/unified-decision-diff-log-list';
 
 const PRIMARY_ACTIONS = [
   {
@@ -73,6 +75,7 @@ export default function AssistantPage() {
   const [industryKeyword, setIndustryKeyword] = useState('');
   const [dailyReportDate, setDailyReportDate] = useState('');
   const [investmentStyle, setInvestmentStyle] = useState<'aggressive' | 'balanced' | 'conservative'>('balanced');
+  const [legacyMode, setLegacyMode] = useState(false);
   const [lastEndpoint, setLastEndpoint] = useState('');
   const [lastRequestBody, setLastRequestBody] = useState<Record<string, unknown> | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -85,6 +88,7 @@ export default function AssistantPage() {
   const unifiedDetails = detailsEnvelope != null
     ? (detailsEnvelope.details ?? detailsEnvelope.raw ?? detailsEnvelope)
     : null;
+  const unifiedLegacyComparison = detailsEnvelope?.legacyComparison ?? resultEnvelope?.legacyComparison ?? null;
   const shouldShowUnifiedDetailsLoader =
     lastEndpoint === '/assistant/unified-decision' && Boolean(resultEnvelope?.detailsAvailable);
 
@@ -108,6 +112,7 @@ export default function AssistantPage() {
 
     if (endpoint === '/assistant/unified-decision') {
       body.investmentStyle = investmentStyle;
+      body.legacyMode = legacyMode;
     }
 
     if (endpoint === '/assistant/should-sell') {
@@ -232,6 +237,14 @@ export default function AssistantPage() {
                 </select>
               </label>
               <div className="text-xs text-text-muted">仅“统一决策”会读取该风格参数，并结合你的登录画像动态调仓位。</div>
+              <label className="mt-1 flex items-center gap-2 text-xs text-text-secondary">
+                <input
+                  type="checkbox"
+                  checked={legacyMode}
+                  onChange={(e) => setLegacyMode(e.target.checked)}
+                />
+                <span>同时拉取旧入口结果并生成差异对比</span>
+              </label>
             </div>
             <div className="mb-2 text-xs font-medium text-text-muted uppercase tracking-wider">扩展任务</div>
             <div className="grid gap-3 md:grid-cols-2">
@@ -273,45 +286,34 @@ export default function AssistantPage() {
 
       {result ? (
         <>
-          <DecisionCard data={result as Record<string, unknown>} />
-          {shouldShowUnifiedDetailsLoader ? (
-            <div className="mt-3 rounded-xl border border-glass-border bg-surface-alt/20 p-3">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <div className="text-sm font-medium text-text-primary">统一决策详情</div>
-                  <div className="text-xs text-text-muted">摘要已返回，原始上下文与融合细节按需加载。</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={loadUnifiedDetails}
-                  disabled={isDetailsPending || !lastRequestBody}
-                  className="rounded-md border border-glass-border bg-surface px-3 py-2 text-sm text-text-primary transition hover:bg-surface-alt disabled:opacity-50"
-                >
-                  {isDetailsPending ? '详情加载中...' : unifiedDetails ? '重新加载详情' : '加载决策详情'}
-                </button>
-              </div>
-              {unifiedDetails ? (
-                <details className="mt-3" open>
-                  <summary className="cursor-pointer text-text-muted">查看统一决策明细</summary>
-                  {(() => {
-                    const rows = extractArray(unifiedDetails);
-                    return rows.length
-                      ? <DataTable rows={rows} maxHeight={300} onExport={() => exportCSV(rows, 'assistant-unified-decision-details')} />
-                      : <pre className="mt-2 text-xs bg-surface-alt p-2 rounded overflow-auto max-h-[320px]">{JSON.stringify(unifiedDetails, null, 2)}</pre>;
-                  })()}
-                </details>
-              ) : null}
-            </div>
+          {lastEndpoint === '/assistant/unified-decision' ? (
+            <>
+              <UnifiedDecisionPanel
+                card={result as Record<string, unknown>}
+                details={unifiedDetails}
+                detailsPending={isDetailsPending}
+                canLoadDetails={shouldShowUnifiedDetailsLoader}
+                onLoadDetails={loadUnifiedDetails}
+                legacyComparison={unifiedLegacyComparison}
+              />
+              <UnifiedDecisionDiffLogList
+                enabled={legacyMode}
+                code={String(lastRequestBody?.code ?? trimmedCode ?? '')}
+              />
+            </>
           ) : (
-            <details className="mt-3">
-              <summary className="cursor-pointer text-text-muted">查看详细数据</summary>
-              {(() => {
-                const rows = extractArray(result);
-                return rows.length
-                  ? <DataTable rows={rows} maxHeight={300} onExport={() => exportCSV(rows, 'assistant-result')} />
-                  : <pre className="mt-2 text-xs bg-surface-alt p-2 rounded overflow-auto max-h-[300px]">{JSON.stringify(result, null, 2)}</pre>;
-              })()}
-            </details>
+            <>
+              <DecisionCard data={result as Record<string, unknown>} />
+              <details className="mt-3">
+                <summary className="cursor-pointer text-text-muted">查看详细数据</summary>
+                {(() => {
+                  const rows = extractArray(result);
+                  return rows.length
+                    ? <DataTable rows={rows} maxHeight={300} onExport={() => exportCSV(rows, 'assistant-result')} />
+                    : <pre className="mt-2 text-xs bg-surface-alt p-2 rounded overflow-auto max-h-[300px]">{JSON.stringify(result, null, 2)}</pre>;
+                })()}
+              </details>
+            </>
           )}
         </>
       ) : null}

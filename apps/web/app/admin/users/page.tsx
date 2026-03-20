@@ -5,6 +5,13 @@ import { PageContainer, SectionCard, KpiGrid, KpiCard, Badge } from '@/component
 import { useApiQuery } from '@/hooks/use-api-query';
 import { ErrorState } from '@/components/status-state';
 
+function readRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return {};
+    }
+    return value as Record<string, unknown>;
+}
+
 /**
  * T-052: User Management Panel
  */
@@ -17,8 +24,9 @@ export default function UsersPage() {
     });
 
     const users = useMemo(() => {
-        const raw = usersQ.data as any;
-        const items = raw?.items ?? raw?.data?.items ?? raw?.users ?? [];
+        const raw = readRecord(usersQ.data);
+        const data = readRecord(raw.data);
+        const items = raw.items ?? data.items ?? raw.users ?? [];
         return Array.isArray(items) ? items.map((u: Record<string, unknown>) => ({
             id: String(u.id ?? ''),
             username: String(u.username ?? u.name ?? ''),

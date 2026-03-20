@@ -6,16 +6,19 @@ from typing import List
 
 import numpy as np
 
-from akshare_mcp.services.backtest.strategy_registry import StrategyRegistry
-from akshare_mcp.services.data_pipeline import normalize_klines
-from akshare_mcp.services.risk_model import RiskModel
-from akshare_mcp.services.validation import FactorValidationPipeline
-
 from ..domain.targets import _resolve_strategy_sample_codes
+from ..infrastructure.mcp_services import (
+    get_normalize_klines,
+    get_risk_model_class,
+    get_strategy_registry,
+    get_validation_runtime,
+)
 
 
 async def _build_strategy_panels(strategy_type: str, params: dict, db, sample_size: int = 6) -> dict:
-    klass = StrategyRegistry.get(strategy_type)
+    strategy_registry = get_strategy_registry()
+    normalize_klines = get_normalize_klines()
+    klass = strategy_registry.get(strategy_type)
     if klass is None:
         return {}
     factor_columns: List[np.ndarray] = []
@@ -69,12 +72,13 @@ async def _build_strategy_panels(strategy_type: str, params: dict, db, sample_si
 
 
 async def _run_validation_report(strategy_type: str, params: dict, db) -> dict | None:
+    validation_runtime = get_validation_runtime()
     panels = await _build_strategy_panels(strategy_type, params, db)
     factor_panel = panels.get("factor_panel")
     return_panel = panels.get("return_panel")
     if factor_panel is None or return_panel is None:
         return None
-    pipeline = FactorValidationPipeline(validation_parallel=False)
+    pipeline = validation_runtime.FactorValidationPipeline(validation_parallel=False)
     return pipeline.run(
         factor_panel,
         return_panel,
@@ -84,13 +88,14 @@ async def _run_validation_report(strategy_type: str, params: dict, db) -> dict |
 
 
 async def _run_risk_report(strategy_type: str, params: dict, db) -> dict | None:
+    risk_model = get_risk_model_class()
     panels = await _build_strategy_panels(strategy_type, params, db)
     strategy_returns = panels.get("strategy_returns")
     holdings = panels.get("holdings")
     if strategy_returns is None or holdings is None or len(strategy_returns) == 0:
         return None
-    var_report = RiskModel.calculate_var(strategy_returns.tolist(), confidence=0.95, portfolio_value=1000000)
-    stress_report = RiskModel.stress_test(holdings, scenario="market_crash")
+    var_report = risk_model.calculate_var(strategy_returns.tolist(), confidence=0.95, portfolio_value=1000000)
+    stress_report = risk_model.stress_test(holdings, scenario="market_crash")
     return {
         "var_percent": round(float(var_report.get("var_percent", 0.0)), 4),
         "cvar_percent": round(float(var_report.get("cvar_percent", 0.0)), 4),

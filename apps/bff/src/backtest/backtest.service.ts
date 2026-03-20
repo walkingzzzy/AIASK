@@ -66,7 +66,7 @@ export class BacktestService {
     if (input.slippage != null) normalized.slippage = input.slippage;
 
     const args = { action: 'run', kwargs: JSON.stringify(normalized) };
-    const payload: any = await this.callTool('backtest_manager', args);
+    const payload = await this.callTool('backtest_manager', args);
     const artifactId =
       this.pickString(payload, ['data.artifact_id', 'data.artifactId', 'artifact_id', 'artifactId']) ||
       requestedArtifactId ||
@@ -173,11 +173,9 @@ export class BacktestService {
     }
   }
 
-  private normalizeMetrics(payload: any): BacktestMetricSnapshot {
-    const d =
-      this.pickObject(payload, ['data.metrics', 'metrics', 'result', 'data', 'payload']) ??
-      payload ??
-      {};
+  private normalizeMetrics(payload: unknown): BacktestMetricSnapshot {
+    const d = this.pickObject(payload, ['data.metrics', 'metrics', 'result', 'data', 'payload'])
+      ?? this.asRecord(payload);
     return {
       totalReturn: this.toPercent(d.total_return ?? d.totalReturn ?? d.cumulative_return),
       sharpe: this.toNum(d.sharpe_ratio ?? d.sharpe ?? d.sharpeRatio),
@@ -255,7 +253,7 @@ export class BacktestService {
     return null;
   }
 
-  private pickString(payload: any, paths: string[]): string | null {
+  private pickString(payload: unknown, paths: string[]): string | null {
     for (const p of paths) {
       const v = this.readPath(payload, p);
       if (typeof v === 'string' && v.trim()) return v.trim();
@@ -264,7 +262,7 @@ export class BacktestService {
     return null;
   }
 
-  private pickArray(payload: any, paths: string[]): unknown[] {
+  private pickArray(payload: unknown, paths: string[]): unknown[] {
     for (const p of paths) {
       const v = this.readPath(payload, p);
       if (Array.isArray(v)) return v;
@@ -272,7 +270,7 @@ export class BacktestService {
     return [];
   }
 
-  private pickObject(payload: any, paths: string[]): Record<string, unknown> | null {
+  private pickObject(payload: unknown, paths: string[]): Record<string, unknown> | null {
     for (const p of paths) {
       const v = this.readPath(payload, p);
       if (v && typeof v === 'object' && !Array.isArray(v)) {
@@ -282,7 +280,19 @@ export class BacktestService {
     return null;
   }
 
-  private readPath(obj: any, path: string): unknown {
-    return path.split('.').reduce((acc: any, key: string) => (acc == null ? undefined : acc[key]), obj);
+  private asRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private readPath(obj: unknown, path: string): unknown {
+    return path.split('.').reduce<unknown>((acc, key) => {
+      if (!acc || typeof acc !== 'object' || Array.isArray(acc)) {
+        return undefined;
+      }
+      return (acc as Record<string, unknown>)[key];
+    }, obj);
   }
 }

@@ -8,8 +8,11 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+import numpy as np
+
 from ..domain.constants import QUALITY_GATE_THRESHOLDS
 from ..domain.targets import _extract_target_codes_from_payload
+from ..infrastructure.mcp_services import get_strategy_registry, get_validation_runtime
 from .quality_reporting import maybe_grant_provisional_incubation, normalize_quality_gate_result
 
 
@@ -23,16 +26,10 @@ async def run_submission_quality_gate(
 ) -> Dict[str, Any]:
     """Run the submission-stage quality gate and return the final authority result."""
     try:
-        from akshare_mcp.services.backtest.strategy_registry import StrategyRegistry
-        from akshare_mcp.services.validation import (
-            PurgedKFoldCV,
-            WalkForwardValidator,
-            bootstrap_ic_ci,
-        )
-        import numpy as np
-
+        strategy_registry = get_strategy_registry()
+        validation_runtime = get_validation_runtime()
         strategy_type = strategy.get("strategy_type", "")
-        klass = StrategyRegistry.get(strategy_type)
+        klass = strategy_registry.get(strategy_type)
         if klass is None:
             return {"passed": False, "reason": f"Strategy type not in registry: {strategy_type}"}
 
@@ -71,7 +68,7 @@ async def run_submission_quality_gate(
         # 1. Walk-Forward OOS IC IR
         _wf_min = QUALITY_GATE_THRESHOLDS["walk_forward_ic_ir_min"]
         try:
-            wf = WalkForwardValidator(train_window=60, test_window=20, step=20)
+            wf = validation_runtime.WalkForwardValidator(train_window=60, test_window=20, step=20)
             wf_summary = wf.validate(factor_panel, return_panel)
             wf_sharpe = wf_summary.oos_ic_ir
             if wf_sharpe < _wf_min:
@@ -83,7 +80,7 @@ async def run_submission_quality_gate(
         # 2. Purged K-Fold IC
         _pkf_min = QUALITY_GATE_THRESHOLDS["purged_kfold_ic_min"]
         try:
-            pkf = PurgedKFoldCV(n_folds=5, purge_gap=5)
+            pkf = validation_runtime.PurgedKFoldCV(n_folds=5, purge_gap=5)
             pkf_summary = pkf.validate(factor_panel, return_panel)
             pkf_ic = pkf_summary.oos_ic_mean
             if pkf_ic < _pkf_min:
@@ -95,7 +92,7 @@ async def run_submission_quality_gate(
         # 3. Bootstrap CI lower bound
         _bs_min = QUALITY_GATE_THRESHOLDS["bootstrap_ci_lower_min"]
         try:
-            bs = bootstrap_ic_ci(flat_factors, flat_returns)
+            bs = validation_runtime.bootstrap_ic_ci(flat_factors, flat_returns)
             ci_lower = bs.get("ci_lower", 0)
             if ci_lower < _bs_min:
                 reasons.append(f"Bootstrap CI lower {ci_lower:.4f} < {_bs_min}")

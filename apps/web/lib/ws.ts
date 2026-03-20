@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useCallback, useState, useMemo, createContext, useContext } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo, useSyncExternalStore } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { getBffOrigin } from './bff-base';
 
@@ -120,10 +120,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   }, [options]);
 
   useEffect(() => {
-    if (!enabled) {
-      setConnected(false);
-      return;
-    }
+    if (!enabled) return;
 
     const socket = acquireSocket();
     socketRef.current = socket;
@@ -157,27 +154,30 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       socketRef.current = null;
       releaseSocket();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
   const emit = useCallback((event: string, data: unknown) => {
     socketRef.current?.emit(event, data);
   }, []);
 
-  return { connected, emit };
+  return { connected: enabled ? connected : false, emit };
 }
 
 // ── 连接状态 Hook ────────────────────────────────────────────
 
 /** 获取全局 WebSocket 连接状态 */
 export function useWsStatus(): WsConnectionStatus {
-  const [status, setStatus] = useState<WsConnectionStatus>(_status);
-  useEffect(() => {
-    setStatus(_status);
-    _statusListeners.add(setStatus);
-    return () => { _statusListeners.delete(setStatus); };
-  }, []);
-  return status;
+  return useSyncExternalStore(
+    (onStoreChange) => {
+      const listener = () => onStoreChange();
+      _statusListeners.add(listener);
+      return () => {
+        _statusListeners.delete(listener);
+      };
+    },
+    () => _status,
+    () => 'disconnected',
+  );
 }
 
 // ── 行情订阅 Hook ────────────────────────────────────────────

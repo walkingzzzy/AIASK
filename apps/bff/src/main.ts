@@ -28,9 +28,7 @@ async function bootstrap() {
   app.useGlobalFilters(new SentryGlobalFilter(), new GlobalHttpExceptionFilter());
 
   await app.listen(port);
-  // eslint-disable-next-line no-console
   console.log(`[bff] listening on http://127.0.0.1:${port}/api`);
 }
 
 void bootstrap();
-

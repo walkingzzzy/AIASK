@@ -57,7 +57,7 @@ export class OptionsService {
     try {
       const payload = await this.mcp.callTool('options_manager', {
         action: 'calculate_greeks',
-        kwargs: JSON.stringify({ underlying: symbol }),
+        params: { underlying: symbol },
       });
       if (this.hasToolError(payload)) {
         throw new Error(this.extractToolError(payload) ?? 'calculate_greeks 返回异常');
@@ -81,7 +81,7 @@ export class OptionsService {
     try {
       const payload = await this.mcp.callTool('options_manager', {
         action: 'volatility_smirk',
-        kwargs: JSON.stringify({ underlying: symbol }),
+        params: { underlying: symbol },
       });
       if (this.hasToolError(payload)) {
         throw new Error(this.extractToolError(payload) ?? 'volatility_smirk 返回异常');

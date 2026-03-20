@@ -82,7 +82,10 @@ export default function StrategyMarketPage() {
     const raw = factoryStatusQ.data;
     return raw?.last_summary ?? {};
   }, [factoryStatusQ.data]);
-  const factoryCapabilities = capabilitiesQ.data ?? {};
+  const factoryCapabilities = useMemo(
+    () => capabilitiesQ.data ?? {},
+    [capabilitiesQ.data],
+  );
   const latestSnapshot = dailySnapshotQ.data ?? null;
   const snapshotCompletionRatio = factorySummary.snapshot_completion_ratio ?? latestSnapshot?.completeness?.completion_ratio;
   const snapshotFailureCount = factorySummary.snapshot_failure_reason_count ?? latestSnapshot?.failure_reasons?.length ?? 0;

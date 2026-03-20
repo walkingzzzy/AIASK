@@ -143,7 +143,9 @@ async def test_unified_decision_summary_payload_contract(monkeypatch):
     assert payload["action"] == "buy"
     assert payload["details_available"] is True
     assert payload["position_signal"]["label"] == "小仓试探"
-    assert payload["data_provenance"][0]["dataset"] == "investment_analysis"
+    assert payload["data_provenance"][0]["dataset"] == "investment_analysis+market_snapshot"
+    assert "data_quality" in payload
+    assert "updated_at" in payload
 
 
 @pytest.mark.asyncio
@@ -186,6 +188,11 @@ async def test_decision_registers_unified_decision_tools(monkeypatch):
     summary_result = await mcp.get_unified_decision_summary(code="600519")
     details_result = await mcp.get_unified_decision_details(code="600519")
     wrapper_result = await mcp.get_unified_decision(code="600519", detail_level="details")
+    assert hasattr(mcp, "build_stock_context")
+    assert hasattr(mcp, "build_quant_context")
+    assert hasattr(mcp, "build_event_context")
+    assert hasattr(mcp, "run_decision_gate")
+    assert hasattr(mcp, "fuse_decision_payload")
 
     assert summary_result["success"] is True
     assert summary_result["data"]["scene"] == "unified_decision"

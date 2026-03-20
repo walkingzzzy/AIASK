@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
 import { IsInt, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { Throttle } from '@nestjs/throttler';

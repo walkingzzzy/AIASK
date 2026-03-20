@@ -20,6 +20,15 @@ def test_facade_uses_local_scheduler_singleton_when_legacy_package_missing(monke
     assert first is second
 
 
+def test_facade_passes_supported_scheduler_kwargs_to_local_scheduler(monkeypatch):
+    monkeypatch.setattr(facade, "_runtime_get_strategy_factory_package", lambda: object())
+
+    scheduler = facade.get_strategy_factory_scheduler(runtime_adapters=object())
+
+    assert isinstance(scheduler, StrategyFactoryScheduler)
+    assert scheduler._runtime_adapters is not None
+
+
 def test_facade_uses_local_extract_event_context_when_legacy_utils_missing(monkeypatch):
     monkeypatch.setattr(facade, "_runtime_get_strategy_factory_package", lambda: object())
 

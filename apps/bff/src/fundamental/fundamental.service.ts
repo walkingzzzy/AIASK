@@ -320,13 +320,16 @@ export class FundamentalService {
       { code: normalized },
     ];
     const { payload, argsMatched } = await this.callWithArgs('relative_valuation', attempts);
-    const root = this.unwrapRoot(payload);
-    let rawPeers = Array.isArray(root.peers)
-      ? root.peers
-      : Array.isArray(root.items)
-        ? root.items
-        : Array.isArray(root.results)
-          ? root.results
+    const rootValue = this.unwrapRoot(payload);
+    const root = this.readRecord(rootValue);
+    let rawPeers = Array.isArray(rootValue)
+      ? this.readRecordArray(rootValue)
+      : Array.isArray(root.peers)
+        ? this.readRecordArray(root.peers)
+        : Array.isArray(root.items)
+          ? this.readRecordArray(root.items)
+          : Array.isArray(root.results)
+            ? this.readRecordArray(root.results)
           : [];
     let targetMetrics = this.normalizePeerMetrics(root.target_metrics ?? root.targetMetrics);
     let normalizedPeers = rawPeers
@@ -419,8 +422,17 @@ export class FundamentalService {
   async getStockInfo(code: string) {
     const attempts: Array<Record<string, unknown>> = [{ stock_code: code.trim() }, { code: code.trim() }];
     const { payload } = await this.callWithArgs('get_stock_info', attempts);
-    const d = (payload as any)?.data ?? payload ?? {};
-    return { code: code.trim(), name: String(d.name ?? ''), industry: String(d.industry ?? ''), listDate: String(d.listDate ?? d.list_date ?? ''), totalShares: this.toNum(d.totalShares ?? d.total_shares), floatShares: this.toNum(d.floatShares ?? d.float_shares), totalMarketCap: this.toNum(d.totalMarketCap ?? d.total_market_cap), floatMarketCap: this.toNum(d.floatMarketCap ?? d.float_market_cap) };
+    const data = this.readRecord(this.unwrapRoot(payload));
+    return {
+      code: code.trim(),
+      name: String(data.name ?? ''),
+      industry: String(data.industry ?? ''),
+      listDate: String(data.listDate ?? data.list_date ?? ''),
+      totalShares: this.toNum(data.totalShares ?? data.total_shares),
+      floatShares: this.toNum(data.floatShares ?? data.float_shares),
+      totalMarketCap: this.toNum(data.totalMarketCap ?? data.total_market_cap),
+      floatMarketCap: this.toNum(data.floatMarketCap ?? data.float_market_cap),
+    };
   }
 
   async getFinancialSnapshot(code: string) {
@@ -466,12 +478,6 @@ export class FundamentalService {
       return typeof message === 'string' ? message.trim() : '';
     };
 
-    const hasMeaningfulF10Field = (value: Record<string, unknown>) => Object.entries(value).some(([key, fieldValue]) => (
-      !['code', 'source', 'degraded', 'fallbackHint', 'fallback_reason', 'source_chain', 'raw'].includes(key)
-      && fieldValue != null
-      && fieldValue !== ''
-    ));
-
     const buildAggregatedProfile = async () => {
       const fallbackReasons: string[] = [];
       const sourceChain = ['bff.getF10Info'];
@@ -500,7 +506,7 @@ export class FundamentalService {
       try {
         const { payload } = await this.callWithArgs('get_financials', attempts);
         const financials = this.normalizeFinancials(payload);
-        const financialRoot = this.unwrapRoot(payload);
+        const financialRoot = this.readRecord(this.unwrapRoot(payload));
         const reportDate = financialRoot?.reportDate ?? financialRoot?.report_date;
         const financialPatch: Record<string, unknown> = {};
         if (reportDate != null && String(reportDate).trim()) financialPatch.reportDate = String(reportDate).trim();
@@ -547,9 +553,12 @@ export class FundamentalService {
           { stock_code: normalized },
           { code: normalized },
         ]);
-        const root = (payload as any)?.data ?? payload ?? {};
-        const items = Array.isArray(root?.items) ? root.items : Array.isArray(root) ? root : [];
-        const latestForecast = items.find((item: any) => item && typeof item === 'object');
+        const root = this.unwrapRoot(payload);
+        const rootRecord = this.readRecord(root);
+        const items = Array.isArray(root)
+          ? this.readRecordArray(root)
+          : this.readRecordArray(rootRecord.items);
+        const latestForecast = items.find((item) => Object.keys(item).length > 0);
         if (latestForecast) {
           const forecastPatch: Record<string, unknown> = {};
           const institution = String(latestForecast.institution ?? '').trim();
@@ -621,11 +630,11 @@ export class FundamentalService {
       { stock_code: code, period: 'daily', limit: days },
     ];
     const { payload: klinePayload } = await this.callWithArgs('get_kline_data', klineAttempts, 'get_kline');
-    const klineRoot = (klinePayload as any)?.data ?? klinePayload ?? [];
-    const klineList: any[] = Array.isArray(klineRoot)
-      ? klineRoot
-      : Array.isArray(klineRoot?.klines) ? klineRoot.klines
-        : Array.isArray(klineRoot?.data) ? klineRoot.data : [];
+    const klineRoot = this.unwrapRoot(klinePayload);
+    const klineRecord = this.readRecord(klineRoot);
+    const klineList = Array.isArray(klineRoot)
+      ? this.readRecordArray(klineRoot)
+      : this.readRecordArray(klineRecord.klines ?? klineRecord.data);
     if (klineList.length === 0) return [];
 
     // Get current valuation
@@ -655,11 +664,11 @@ export class FundamentalService {
     );
     if (latestClose == null || latestClose === 0) return [];
 
-    return klineList.map((it: any) => {
-      const close = this.toNum(it.close ?? it.Close ?? it.price);
+    return klineList.map((item) => {
+      const close = this.toNum(item.close ?? item.Close ?? item.price);
       const ratio = close != null && close > 0 ? close / latestClose : null;
       return {
-        date: String(it.date ?? it.trade_date ?? it.Date ?? ''),
+        date: String(item.date ?? item.trade_date ?? item.Date ?? ''),
         pe: curPe != null && ratio != null ? Math.round(curPe * ratio * 100) / 100 : null,
         pb: curPb != null && ratio != null ? Math.round(curPb * ratio * 100) / 100 : null,
         ps: null,
@@ -686,7 +695,7 @@ export class FundamentalService {
 
     try {
       const { payload } = await this.callWithArgs('get_financials', attempts);
-      const root = this.unwrapRoot(payload);
+      const root = this.readRecord(this.unwrapRoot(payload));
       const fin = this.normalizeFinancials(payload);
       const reportDate = root.reportDate ?? root.report_date;
       const eps = this.toNum(root.eps ?? root.basic_eps ?? root.EPS ?? root.eps_ttm);
@@ -754,8 +763,8 @@ export class FundamentalService {
     }
   }
 
-  private normalizeValuation(payload: any): NormalizedValuation {
-    const d = payload?.data ?? payload ?? {};
+  private normalizeValuation(payload: unknown): NormalizedValuation {
+    const d = this.readRecord(this.unwrapRoot(payload));
     return {
       pe: this.toNum(d.pe_ratio ?? d.pe ?? d.PE),
       pb: this.toNum(d.pb_ratio ?? d.pb ?? d.PB),
@@ -764,8 +773,8 @@ export class FundamentalService {
     };
   }
 
-  private normalizeFinancials(payload: any): NormalizedFinancials {
-    const d = this.unwrapRoot(payload);
+  private normalizeFinancials(payload: unknown): NormalizedFinancials {
+    const d = this.readRecord(this.unwrapRoot(payload));
     return {
       roe: this.toNum(d.roe ?? d.ROE),
       netProfit: this.toNum(d.net_profit ?? d.profit ?? d.netProfit),
@@ -777,45 +786,37 @@ export class FundamentalService {
     };
   }
 
-  private normalizeHistory(payload: any) {
-    const root = payload?.data ?? payload ?? [];
+  private normalizeHistory(payload: unknown) {
+    const root = this.unwrapRoot(payload);
+    const rootRecord = this.readRecord(root);
     const list = Array.isArray(root)
-      ? root
-      : Array.isArray(root?.records)
-        ? root.records
-        : Array.isArray(root?.data)
-          ? root.data
-          : [];
+      ? this.readRecordArray(root)
+      : this.readRecordArray(rootRecord.records ?? rootRecord.data);
 
-    return list.map((it: any) => ({
-      date: String(it.date ?? it.trade_date ?? it.Date ?? ''),
-      pe: this.toNum(it.pe_ratio ?? it.pe ?? it.PE),
-      pb: this.toNum(it.pb_ratio ?? it.pb ?? it.PB),
-      ps: this.toNum(it.ps_ratio ?? it.ps ?? it.PS),
-      close: this.toNum(it.close ?? it.price ?? it.Close),
+    return list.map((item) => ({
+      date: String(item.date ?? item.trade_date ?? item.Date ?? ''),
+      pe: this.toNum(item.pe_ratio ?? item.pe ?? item.PE),
+      pb: this.toNum(item.pb_ratio ?? item.pb ?? item.PB),
+      ps: this.toNum(item.ps_ratio ?? item.ps ?? item.PS),
+      close: this.toNum(item.close ?? item.price ?? item.Close),
     }));
   }
 
-  private normalizeCapitalData(payload: any) {
+  private normalizeCapitalData(payload: unknown) {
     const root = this.unwrapRoot(payload);
-    const list = Array.isArray(root.capital_data)
-      ? root.capital_data
-      : Array.isArray(root.capitalData)
-        ? root.capitalData
-        : Array.isArray(root.data)
-          ? root.data
-          : Array.isArray(root)
-            ? root
-            : [];
+    const rootRecord = this.readRecord(root);
+    const list = Array.isArray(root)
+      ? this.readRecordArray(root)
+      : this.readRecordArray(rootRecord.capital_data ?? rootRecord.capitalData ?? rootRecord.data);
 
-    return list.map((it: any) => {
-      const totalShares = this.toNum(it.zgb ?? it.total_shares ?? it.totalShares);
-      const floatShares = this.toNum(it.ltgb ?? it.float_shares ?? it.floatShares);
+    return list.map((item) => {
+      const totalShares = this.toNum(item.zgb ?? item.total_shares ?? item.totalShares);
+      const floatShares = this.toNum(item.ltgb ?? item.float_shares ?? item.floatShares);
       const restrictedShares =
         totalShares != null && floatShares != null ? Math.max(0, totalShares - floatShares) : null;
 
       return {
-        date: String(it.Date ?? it.date ?? it.report_date ?? ''),
+        date: String(item.Date ?? item.date ?? item.report_date ?? ''),
         totalShares,
         total_shares: totalShares,
         floatShares,
@@ -1120,14 +1121,16 @@ export class FundamentalService {
     return comparison;
   }
 
-  private unwrapRoot(payload: any): any {
+  private unwrapRoot(payload: unknown): unknown {
     if (payload == null) return {};
+    if (Array.isArray(payload)) return payload;
     if (payload && typeof payload === 'object') {
-      if (payload.data != null) {
-        return this.unwrapRoot(payload.data);
+      const record = payload as Record<string, unknown>;
+      if (record.data != null) {
+        return this.unwrapRoot(record.data);
       }
-      if (payload.result != null && typeof payload.result === 'object') {
-        return this.unwrapRoot(payload.result);
+      if (record.result != null) {
+        return this.unwrapRoot(record.result);
       }
     }
     return payload;
@@ -1137,6 +1140,14 @@ export class FundamentalService {
     return value && typeof value === 'object' && !Array.isArray(value)
       ? value as Record<string, unknown>
       : {};
+  }
+
+  private readRecordArray(value: unknown): Record<string, unknown>[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
   }
 
   private toNum(v: unknown): number | null {

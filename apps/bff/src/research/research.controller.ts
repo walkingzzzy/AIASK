@@ -61,15 +61,23 @@ class ProfitForecastDto {
   @IsString() @Matches(/^\d{6}$/, { message: 'code 必须为 6 位数字' }) code!: string;
 }
 
+type TraceRequest = {
+  traceId?: string;
+  headers?: Record<string, string | undefined>;
+};
+
 @Controller('research')
 export class ResearchController {
   constructor(private readonly researchService: ResearchService) {}
 
+  private getTraceId(req: TraceRequest) {
+    return String(
+      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN',
+    );
+  }
+
   @Get('list')
-  async getList(
-    @Query() query: ResearchQueryDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
-  ) {
+  async getList(@Query() query: ResearchQueryDto, @Req() req: TraceRequest) {
     const data = await this.researchService.getList(query.code, {
       days: query.days ? Number(query.days) : undefined,
       startDate: query.startDate,
@@ -77,67 +85,51 @@ export class ResearchController {
       keyword: query.keyword,
       limit: query.limit ? Number(query.limit) : undefined,
     });
-
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-
-    return {
-      success: true,
-      data,
-      traceId: String(traceId),
-    };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('stock-news')
-  async getStockNews(@Query() query: NewsQueryDto, @Req() req: any) {
+  async getStockNews(@Query() query: NewsQueryDto, @Req() req: TraceRequest) {
     const data = await this.researchService.getStockNews(query.code, query.limit ? Number(query.limit) : 20);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('market-news')
-  async getMarketNews(@Query() query: MarketNewsQueryDto, @Req() req: any) {
+  async getMarketNews(@Query() query: MarketNewsQueryDto, @Req() req: TraceRequest) {
     const data = await this.researchService.getMarketNews(query.limit ? Number(query.limit) : 20);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('search')
-  async searchResearch(@Query() query: SearchResearchDto, @Req() req: any) {
+  async searchResearch(@Query() query: SearchResearchDto, @Req() req: TraceRequest) {
     const data = await this.researchService.searchResearch(query.keyword, query.code, query.days ? Number(query.days) : 30);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('analyst-ranking')
-  async getAnalystRanking(@Query() query: AnalystRankingDto, @Req() req: any) {
+  async getAnalystRanking(@Query() query: AnalystRankingDto, @Req() req: TraceRequest) {
     const data = await this.researchService.getAnalystRanking(query.year);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('reports')
-  async getReports(@Query() query: ReportsQueryDto, @Req() req: any) {
+  async getReports(@Query() query: ReportsQueryDto, @Req() req: TraceRequest) {
     const data = await this.researchService.getResearchReports(query.code, query.limit ? Number(query.limit) : 10);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('macro')
   async macro(
     @Query() query: MacroIndicatorDto,
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+    @Req() req: TraceRequest,
   ) {
     const data = await this.researchService.getMacroIndicator(query.indicator);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Get('profit-forecast')
-  async getProfitForecast(@Query() query: ProfitForecastDto, @Req() req: any) {
+  async getProfitForecast(@Query() query: ProfitForecastDto, @Req() req: TraceRequest) {
     const data = await this.researchService.getProfitForecast(query.code);
-    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
-    return { success: true, data, traceId: String(traceId) };
+    return { success: true, data, traceId: this.getTraceId(req) };
   }
 }
-

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from ..application.backtest_filter import BacktestFilter
@@ -16,6 +17,7 @@ from ..application.runtime import _call_optional_async, get_strategy_factory_pac
 from ..application.submission_gate import run_submission_quality_gate as _local_run_submission_quality_gate
 from ..application.submitter import StrategySubmitter
 from ..application.utils import _extract_event_context as _local_extract_event_context
+from ..domain.naming import _auto_name as _local_auto_name
 from ..domain.spawner import StrategySpawner
 from ..domain.constants import (
     AUTONOMY_CANDIDATES_PER_TASK,
@@ -48,18 +50,41 @@ from ..domain.constants import (
 from ..application.opportunity import MarketOpportunityScanner
 
 
-def get_strategy_factory_scheduler():
+def _filter_supported_kwargs(factory: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    if not kwargs:
+        return {}
+    try:
+        signature = inspect.signature(factory)
+    except (TypeError, ValueError):
+        return dict(kwargs)
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
+        return dict(kwargs)
+    allowed = {
+        name
+        for name, parameter in signature.parameters.items()
+        if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    return {key: value for key, value in kwargs.items() if key in allowed}
+
+
+def get_strategy_factory_scheduler(**kwargs):
     package = _runtime_get_strategy_factory_package()
     target = getattr(package, "get_strategy_factory_scheduler", None)
     if callable(target):
-        return target()
-    return StrategyFactoryScheduler()
+        filtered_kwargs = _filter_supported_kwargs(target, kwargs)
+        return target(**filtered_kwargs) if filtered_kwargs else target()
+    filtered_kwargs = _filter_supported_kwargs(StrategyFactoryScheduler, kwargs)
+    return StrategyFactoryScheduler(**filtered_kwargs)
 
 
 async def run_submission_quality_gate(*args, **kwargs):
     package = _runtime_get_strategy_factory_package()
     target = getattr(package, "run_submission_quality_gate", _local_run_submission_quality_gate)
     return await target(*args, **kwargs)
+
+
+async def call_optional_async(*args, **kwargs):
+    return await _call_optional_async(*args, **kwargs)
 
 
 def build_strategy_panels(*args, **kwargs):
@@ -74,6 +99,14 @@ def extract_event_context(*args, **kwargs):
     if callable(target):
         return target(*args, **kwargs)
     return _local_extract_event_context(*args, **kwargs)
+
+
+def auto_name(*args, **kwargs):
+    package = _runtime_get_strategy_factory_package()
+    target = getattr(package, "_auto_name", None)
+    if callable(target):
+        return target(*args, **kwargs)
+    return _local_auto_name(*args, **kwargs)
 
 
 def get_factory_constants() -> dict[str, Any]:
@@ -129,6 +162,8 @@ __all__ = [
     "StrategySubmitter",
     "EliminationChecker",
     "_call_optional_async",
+    "call_optional_async",
+    "auto_name",
     "get_local_event_engine",
     "get_strategy_factory_scheduler",
     "preferred_strategy_types_for_factor",

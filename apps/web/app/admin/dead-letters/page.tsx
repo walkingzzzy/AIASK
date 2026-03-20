@@ -19,6 +19,13 @@ type DeadLetterItem = {
     priority: 'urgent' | 'warning' | 'info';
 };
 
+function readRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return {};
+    }
+    return value as Record<string, unknown>;
+}
+
 function getPriorityMeta(item: DeadLetterItem) {
     if (item.retries >= 3) {
         return {
@@ -65,8 +72,9 @@ export default function DeadLettersPage() {
     });
 
     const letters = useMemo<DeadLetterItem[]>(() => {
-        const raw = dlQ.data as any;
-        const items = Array.isArray(raw) ? raw : raw?.items ?? raw?.data ?? [];
+        const raw = readRecord(dlQ.data);
+        const data = readRecord(raw.data);
+        const items = Array.isArray(dlQ.data) ? dlQ.data : Array.isArray(raw.items) ? raw.items : Array.isArray(data.items) ? data.items : raw.data ?? [];
         return Array.isArray(items) ? items.map((l: Record<string, unknown>, index: number) => {
             const timestamp = String(l.timestamp ?? l.createdAt ?? '');
             const timestampMs = timestamp ? Date.parse(timestamp) : Number.NaN;

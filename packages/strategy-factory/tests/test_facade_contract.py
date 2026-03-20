@@ -23,7 +23,9 @@ from strategy_factory import (
     StrategySpawner,
     StrategySubmitter,
     _call_optional_async,
+    auto_name,
     build_strategy_panels,
+    call_optional_async,
     extract_event_context,
     get_factory_constants,
     get_local_event_engine,
@@ -53,6 +55,8 @@ def test_public_facade_exports_expected_symbols():
     assert callable(build_strategy_panels)
     assert callable(extract_event_context)
     assert callable(_call_optional_async)
+    assert callable(call_optional_async)
+    assert callable(auto_name)
     assert callable(preferred_strategy_types_for_factor)
 
 
@@ -83,3 +87,7 @@ def test_get_factory_constants_returns_existing_thresholds():
     constants = get_factory_constants()
     assert "BACKTEST_DEFAULT_THRESHOLDS" in constants
     assert "FACTORY_SCHEDULE_MODE" in constants
+
+
+def test_auto_name_uses_public_facade_helper():
+    assert auto_name("ma_cross", {"short_period": 8, "long_period": 21}) == "均线交叉·快8慢21"

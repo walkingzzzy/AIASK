@@ -1,9 +1,9 @@
-import { Body, Controller, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
 import { Type } from 'class-transformer';
 import { IsNumber, IsOptional, IsString, Matches, Min } from 'class-validator';
 import { AssistantUnifiedService } from './assistant-unified.service';
 import { AssistantService } from './assistant.service';
-import { UnifiedDecisionBodyDto } from './dto/unified-decision.dto';
+import { UnifiedDecisionBodyDto, UnifiedDecisionDiffQueryDto } from './dto/unified-decision.dto';
 
 class StockCodeBodyDto {
   @IsString()
@@ -89,6 +89,8 @@ export class AssistantController {
       body.code,
       body.investmentStyle ?? 'balanced',
       userId || undefined,
+      Boolean(body.legacyMode),
+      this.getTraceId(req),
     );
     return { success: true, data, traceId: this.getTraceId(req) };
   }
@@ -107,18 +109,44 @@ export class AssistantController {
       body.code,
       body.investmentStyle ?? 'balanced',
       userId || undefined,
+      Boolean(body.legacyMode),
+      this.getTraceId(req),
     );
     return { success: true, data, traceId: this.getTraceId(req) };
   }
 
+  @Get('unified-decision/diff-logs')
+  async unifiedDecisionDiffLogs(
+    @Query() query: UnifiedDecisionDiffQueryDto,
+    @Req() req: {
+      user?: { sub?: string; id?: string };
+      traceId?: string;
+      headers?: Record<string, string | undefined>;
+    },
+  ) {
+    const userId = this.getUserId(req);
+    const data = await this.assistantUnifiedService.getUnifiedDecisionDiffLogs(userId, {
+      limit: query.limit,
+      stockCode: query.code,
+      actionAlignment: query.actionAlignment,
+    });
+    return { success: true, data, traceId: this.getTraceId(req) };
+  }
+
   @Post('industry-chain')
-  async getIndustryChain(@Body() body: IndustryChainDto, @Req() req: any) {
+  async getIndustryChain(
+    @Body() body: IndustryChainDto,
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+  ) {
     const data = await this.assistantService.getIndustryChain(body.keyword, body.chainId);
     return { success: true, data, traceId: this.getTraceId(req) };
   }
 
   @Post('daily-report')
-  async generateDailyReport(@Body() body: DailyReportDto, @Req() req: any) {
+  async generateDailyReport(
+    @Body() body: DailyReportDto,
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+  ) {
     const data = await this.assistantService.generateDailyReport(body.date);
     return { success: true, data, traceId: this.getTraceId(req) };
   }

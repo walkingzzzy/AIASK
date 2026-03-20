@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, StockCodeInput } from '@/components/ui';
-import { PieChart, BarChart, LineChart } from '@/components/charts';
+import { PieChart, BarChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { apiKeys } from '@/lib/query-keys';
