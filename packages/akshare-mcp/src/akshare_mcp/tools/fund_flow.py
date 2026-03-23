@@ -9,10 +9,16 @@ All heavy data-fetching logic lives in the sub-modules:
   - fund_flow_market   : dragon-tiger / margin / block trades
 """
 
+from datetime import date, timedelta
+
 import requests
 
-from ..utils import fail, normalize_code, ok, parse_numeric
 from ..core.rate_limiter import get_limiter
+from ..data_source import data_source
+from ..services.db_first_market_context import load_db_first_stock_fund_flow
+from ..storage import get_db
+from ..utils import fail, normalize_code, ok, parse_numeric
+from .fund_flow_common import _run_storage_call_sync
 
 # -- Re-export public functions from sub-modules so existing
 #    ``from ...fund_flow import get_north_fund`` style imports keep working.
@@ -38,13 +44,76 @@ from .fund_flow_market import (                     # noqa: F401
 # Individual stock fund flow (kept here)
 # =====================
 
-def get_stock_fund_flow(stock_code: str) -> dict:
+
+def _format_trade_date(value) -> str:
+    raw = str(value or "").strip()
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if len(digits) >= 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return raw[:10] if raw else ""
+
+
+def _get_stock_fund_flow_from_tushare(code: str) -> dict | None:
+    try:
+        pro = data_source.get_tushare_pro()
+        if not pro:
+            return None
+        ts_code = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
+        end_date = date.today()
+        start_date = end_date - timedelta(days=30)
+        df = pro.moneyflow(
+            ts_code=ts_code,
+            start_date=start_date.strftime("%Y%m%d"),
+            end_date=end_date.strftime("%Y%m%d"),
+        )
+        if df is None or df.empty:
+            return None
+        row = df.sort_values("trade_date", ascending=False).iloc[0].to_dict()
+        small_inflow = (parse_numeric(row.get("buy_sm_amount")) or 0.0) - (parse_numeric(row.get("sell_sm_amount")) or 0.0)
+        middle_inflow = (parse_numeric(row.get("buy_md_amount")) or 0.0) - (parse_numeric(row.get("sell_md_amount")) or 0.0)
+        large_inflow = (parse_numeric(row.get("buy_lg_amount")) or 0.0) - (parse_numeric(row.get("sell_lg_amount")) or 0.0)
+        super_large_inflow = (parse_numeric(row.get("buy_elg_amount")) or 0.0) - (parse_numeric(row.get("sell_elg_amount")) or 0.0)
+        main_inflow = large_inflow + super_large_inflow
+        denominator = sum(abs(value) for value in (small_inflow, middle_inflow, large_inflow, super_large_inflow))
+        main_ratio = round(main_inflow / denominator * 100.0, 4) if denominator > 0 else None
+        return {
+            "code": code,
+            "name": "",
+            "mainNetInflow": main_inflow,
+            "mainInflowPercent": main_ratio,
+            "superLargeNetInflow": super_large_inflow,
+            "largeNetInflow": large_inflow,
+            "middleNetInflow": middle_inflow,
+            "smallNetInflow": small_inflow,
+            "tradeDate": _format_trade_date(row.get("trade_date")),
+            "source": "tushare.moneyflow",
+        }
+    except Exception:
+        return None
+
+def get_stock_fund_flow(stock_code: str, *, prefer_db: bool = True) -> dict:
     """获取个股资金流向（主力/大单/中单/小单）"""
     try:
         limiter = get_limiter("fund_flow", max_calls=3, period=1.0)
         limiter.acquire()
 
         code = normalize_code(stock_code)
+
+        if prefer_db:
+            try:
+                db_payload, _ = _run_storage_call_sync(
+                    lambda: load_db_first_stock_fund_flow(get_db(), code),
+                    timeout=8.0,
+                )
+                if db_payload:
+                    return ok(db_payload)
+            except Exception:
+                pass
+
+        tushare_payload = _get_stock_fund_flow_from_tushare(code)
+        if tushare_payload:
+            return ok(tushare_payload)
+
         market = "1" if code.startswith("6") else "0"
         secid = f"{market}.{code}"
         url = "https://push2.eastmoney.com/api/qt/stock/fflow/kline/get"
@@ -81,6 +150,7 @@ def get_stock_fund_flow(stock_code: str) -> dict:
                 "largeNetInflow": large_inflow,
                 "middleNetInflow": middle_inflow,
                 "smallNetInflow": small_inflow,
+                "source": "eastmoney.push2.fflow",
             }
         )
     except Exception as e:

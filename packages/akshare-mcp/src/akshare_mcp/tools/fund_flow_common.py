@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import time
+import asyncio
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Optional
 
@@ -96,6 +97,29 @@ def _run_with_timeout(fn, timeout: float):
         except FuturesTimeoutError:
             future.cancel()
             raise TimeoutError(f"AKShare sector fund flow timeout >{timeout}s")
+
+
+def _run_storage_call_sync(coro_factory, timeout: float = 20.0):
+    """在同步工具函数中安全执行异步数据库调用。"""
+    from ..storage import run_with_db_cleanup
+
+    def _runner():
+        return run_with_db_cleanup(coro_factory())
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_runner)
+            try:
+                return future.result(timeout=timeout)
+            except FuturesTimeoutError:
+                future.cancel()
+                raise TimeoutError(f"storage query timeout >{timeout}s")
+    return _runner()
 
 
 def _get_env_proxy() -> dict[str, str]:

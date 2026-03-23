@@ -10,6 +10,7 @@ from strategy_factory.api import (
     VectorSearchGateway,
 )
 from strategy_factory.infrastructure import (
+    MCPAutonomyGatewayImpl,
     MCPRuntimeAdapters,
     MCPStrategyFactoryRepositoryAdapter,
     MCPVectorSearchGatewayImpl,
@@ -23,6 +24,11 @@ class _FakeDB:
 
     def __init__(self):
         self.calls = []
+        self.acquire_calls = 0
+
+    def acquire(self):
+        self.acquire_calls += 1
+        return f"acquire_ctx_{self.acquire_calls}"
 
     async def get_klines(self, code: str, limit: int = 500):
         self.calls.append(("get_klines", code, limit))
@@ -98,6 +104,12 @@ class _FakeDB:
     async def save_strategy_factory_run(self, results):
         return {"results": results}
 
+    async def get_strategy_incubation_account(self, strategy_id: str):
+        return {"strategy_id": strategy_id, "account_id": f"acct_{strategy_id}"}
+
+    async def save_strategy_incubation_account(self, strategy_id: str, account_id: str, **kwargs):
+        return {"strategy_id": strategy_id, "account_id": account_id, "kwargs": kwargs}
+
 
 class _FakeVectorEngine:
     def __init__(self):
@@ -124,6 +136,9 @@ class _FakeAutonomyService:
 class _FakeFactorScheduler:
     def status(self):
         return {"running": False, "last_run": None}
+
+    async def run_once(self):
+        return {"computed": 3, "errors": 0, "quality_flags": []}
 
 
 class _FakeFactorResearchBuilder:
@@ -166,7 +181,8 @@ async def test_repository_adapter_wraps_db_surface():
     assert isinstance(repo, MCPStrategyFactoryRepositoryAdapter)
     assert isinstance(repo, StrategyFactoryRepository)
     assert repo.raw is db
-    assert repo.extra_value == "ok"
+    with pytest.raises(AttributeError):
+        _ = repo.extra_value
 
     klines = await repo.get_klines("600519", limit=3)
     saved = await repo.save_strategy({"id": "s1"})
@@ -174,6 +190,30 @@ async def test_repository_adapter_wraps_db_surface():
     assert klines == [{"code": "600519", "limit": 3}]
     assert saved == {"saved": {"id": "s1"}}
     assert db.calls[:2] == [("get_klines", "600519", 3), ("save_strategy", {"id": "s1"})]
+
+
+def test_repository_adapter_proxies_acquire():
+    db = _FakeDB()
+    repo = adapt_repository(db)
+
+    handle = repo.acquire()
+
+    assert handle == "acquire_ctx_1"
+    assert db.acquire_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_repository_adapter_proxies_incubation_account_methods():
+    db = _FakeDB()
+    repo = adapt_repository(db)
+
+    existing = await repo.get_strategy_incubation_account("sid_1")
+    saved = await repo.save_strategy_incubation_account("sid_1", "acct_sid_1", stage="warmup")
+
+    assert existing["account_id"] == "acct_sid_1"
+    assert saved["strategy_id"] == "sid_1"
+    assert saved["account_id"] == "acct_sid_1"
+    assert saved["kwargs"]["stage"] == "warmup"
 
 
 def test_vector_gateway_delegates_to_engine():
@@ -234,6 +274,7 @@ async def test_runtime_adapter_bundle_exposes_mcp_gateways():
         auto_apply_review=False,
     )
     factor_research_result = await bundle.factor_research.build_artifact(bundle.repository, {"date": "2026-03-20"})
+    factor_refresh_result = await bundle.factor_research.refresh()
     validation_result = await bundle.validation.run_validation_report("momentum", {"lookback": 20}, bundle.repository)
     risk_result = await bundle.risk.run_risk_report("momentum", {"lookback": 20}, bundle.repository)
 
@@ -242,7 +283,49 @@ async def test_runtime_adapter_bundle_exposes_mcp_gateways():
     assert bundle.factor_research.status()["running"] is False
     assert factor_research_result["summary"]["active_factor_count"] == 1
     assert factor_research_result["snapshot_date"] == "2026-03-20"
+    assert factor_refresh_result["computed"] == 3
     assert incubation_result["binding"]["binding"]["strategy_id"] == "sid_1"
     assert incubation_result["pipeline"]["snapshot"]["source"] == "strategy_factory_submit"
     assert validation_result["strategy_type"] == "momentum"
     assert risk_result["params"]["lookback"] == 20
+
+
+class _NarrowAutonomyService:
+    async def generate_factory_candidates(self, db, snapshot, *, limit=4):
+        return {
+            "db_type": type(db).__name__,
+            "snapshot": dict(snapshot),
+            "limit": limit,
+        }
+
+
+class _BuggyAutonomyService:
+    async def generate_factory_candidates(self, db, snapshot, *, limit=4):
+        raise TypeError("internal autonomy failure")
+
+
+@pytest.mark.asyncio
+async def test_autonomy_gateway_filters_unsupported_kwargs_without_typeerror_retries():
+    db = _FakeDB()
+    gateway = MCPAutonomyGatewayImpl(_NarrowAutonomyService())
+
+    result = await gateway.generate_factory_candidates(
+        db,
+        {"date": "2026-03-20"},
+        limit=7,
+        research_task={"task_id": "t1"},
+        source="strategy_factory:test",
+    )
+
+    assert result["db_type"] == "MCPStrategyFactoryRepositoryAdapter"
+    assert result["limit"] == 7
+    assert result["snapshot"]["date"] == "2026-03-20"
+
+
+@pytest.mark.asyncio
+async def test_autonomy_gateway_preserves_internal_typeerrors():
+    db = _FakeDB()
+    gateway = MCPAutonomyGatewayImpl(_BuggyAutonomyService())
+
+    with pytest.raises(TypeError, match="internal autonomy failure"):
+        await gateway.generate_factory_candidates(db, {"date": "2026-03-20"})

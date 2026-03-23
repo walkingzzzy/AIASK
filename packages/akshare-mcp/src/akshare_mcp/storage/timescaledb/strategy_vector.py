@@ -284,51 +284,93 @@ class StrategyVectorMixin:
         return result
 
     async def replace_strategy_vector_index_items(self, index_name: str, index_version: str, items: List[dict]) -> dict:
+        resolved_index_name = str(index_name or 'strategy_behavior')
+        resolved_index_version = str(index_version or 'v1')
+        payloads = [dict(item or {}) for item in items or []]
         async with self.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM strategy_vector_index_items WHERE index_name = $1 AND index_version = $2",
-                str(index_name or 'strategy_behavior'),
-                str(index_version or 'v1'),
-            )
-            inserted = 0
-            for item in items or []:
-                payload = dict(item or {})
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO strategy_vector_index_items
-                        (index_name, index_version, profile_id, strategy_id, profile_type, vector_method, metric,
-                         vector_dim, bucket_id, coarse_score, embedding, metadata, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, NOW())
-                    ON CONFLICT (index_name, index_version, profile_id) DO UPDATE SET
-                        strategy_id = EXCLUDED.strategy_id,
-                        profile_type = EXCLUDED.profile_type,
-                        vector_method = EXCLUDED.vector_method,
-                        metric = EXCLUDED.metric,
-                        vector_dim = EXCLUDED.vector_dim,
-                        bucket_id = EXCLUDED.bucket_id,
-                        coarse_score = EXCLUDED.coarse_score,
-                        embedding = EXCLUDED.embedding,
-                        metadata = EXCLUDED.metadata
-                    RETURNING id
-                    """,
-                    str(index_name or 'strategy_behavior'),
-                    str(index_version or 'v1'),
-                    payload.get("profile_id"),
-                    payload.get("strategy_id"),
-                    payload.get("profile_type"),
-                    payload.get("vector_method"),
-                    str(payload.get("metric") or 'cosine'),
-                    int(payload.get("vector_dim") or len(payload.get("embedding") or [])),
-                    payload.get("bucket_id"),
-                    float(payload.get("coarse_score") or 0.0),
-                    json.dumps(payload.get("embedding") or [], ensure_ascii=False, default=str),
-                    json.dumps(payload.get("metadata") or {}, ensure_ascii=False, default=str),
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM strategy_vector_index_items WHERE index_name = $1 AND index_version = $2",
+                    resolved_index_name,
+                    resolved_index_version,
                 )
-                if getattr(self, 'supports_pgvector', lambda: False)():
-                    vector_literal = self._encode_pgvector(payload.get('embedding') or [])
-                    row_id = dict(row).get('id') if row else None
-                    if vector_literal and row_id is not None:
-                        await conn.execute(
+                item_rows = []
+                for payload in payloads:
+                    item_rows.append((
+                        resolved_index_name,
+                        resolved_index_version,
+                        payload.get("profile_id"),
+                        payload.get("strategy_id"),
+                        payload.get("profile_type"),
+                        payload.get("vector_method"),
+                        str(payload.get("metric") or 'cosine'),
+                        int(payload.get("vector_dim") or len(payload.get("embedding") or [])),
+                        payload.get("bucket_id"),
+                        float(payload.get("coarse_score") or 0.0),
+                        json.dumps(payload.get("embedding") or [], ensure_ascii=False, default=str),
+                        json.dumps(payload.get("metadata") or {}, ensure_ascii=False, default=str),
+                    ))
+                if item_rows:
+                    await conn.executemany(
+                        """
+                        INSERT INTO strategy_vector_index_items
+                            (index_name, index_version, profile_id, strategy_id, profile_type, vector_method, metric,
+                             vector_dim, bucket_id, coarse_score, embedding, metadata, created_at)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, NOW())
+                        ON CONFLICT (index_name, index_version, profile_id) DO UPDATE SET
+                            strategy_id = EXCLUDED.strategy_id,
+                            profile_type = EXCLUDED.profile_type,
+                            vector_method = EXCLUDED.vector_method,
+                            metric = EXCLUDED.metric,
+                            vector_dim = EXCLUDED.vector_dim,
+                            bucket_id = EXCLUDED.bucket_id,
+                            coarse_score = EXCLUDED.coarse_score,
+                            embedding = EXCLUDED.embedding,
+                            metadata = EXCLUDED.metadata
+                        """,
+                        item_rows,
+                    )
+                if getattr(self, 'supports_pgvector', lambda: False)() and payloads:
+                    profile_ids = [str(payload.get('profile_id')) for payload in payloads if payload.get('profile_id') is not None]
+                    row_ids = {}
+                    if profile_ids:
+                        mapping_rows = await conn.fetch(
+                            """
+                            SELECT id, profile_id
+                            FROM strategy_vector_index_items
+                            WHERE index_name = $1
+                              AND index_version = $2
+                              AND profile_id = ANY($3::text[])
+                            """,
+                            resolved_index_name,
+                            resolved_index_version,
+                            profile_ids,
+                        )
+                        row_ids = {
+                            str(dict(row).get('profile_id')): dict(row).get('id')
+                            for row in mapping_rows
+                        }
+                    store_rows = []
+                    for payload in payloads:
+                        vector_literal = self._encode_pgvector(payload.get('embedding') or [])
+                        row_id = row_ids.get(str(payload.get('profile_id')))
+                        if not vector_literal or row_id is None:
+                            continue
+                        store_rows.append((
+                            row_id,
+                            resolved_index_name,
+                            resolved_index_version,
+                            payload.get('strategy_id'),
+                            payload.get('profile_id'),
+                            payload.get('profile_type'),
+                            payload.get('vector_method'),
+                            str(payload.get('metric') or 'cosine'),
+                            int(payload.get('vector_dim') or len(payload.get('embedding') or [])),
+                            vector_literal,
+                            json.dumps(payload.get('metadata') or {}, ensure_ascii=False, default=str),
+                        ))
+                    if store_rows:
+                        await conn.executemany(
                             """
                             INSERT INTO strategy_vector_index_item_store
                                 (item_id, index_name, index_version, strategy_id, profile_id, profile_type, vector_method,
@@ -347,20 +389,9 @@ class StrategyVectorMixin:
                                 metadata = EXCLUDED.metadata,
                                 updated_at = NOW()
                             """,
-                            row_id,
-                            str(index_name or 'strategy_behavior'),
-                            str(index_version or 'v1'),
-                            payload.get('strategy_id'),
-                            payload.get('profile_id'),
-                            payload.get('profile_type'),
-                            payload.get('vector_method'),
-                            str(payload.get('metric') or 'cosine'),
-                            int(payload.get('vector_dim') or len(payload.get('embedding') or [])),
-                            vector_literal,
-                            json.dumps(payload.get('metadata') or {}, ensure_ascii=False, default=str),
+                            store_rows,
                         )
-                inserted += 1
-        return {"index_name": str(index_name or 'strategy_behavior'), "index_version": str(index_version or 'v1'), "count": inserted}
+        return {"index_name": resolved_index_name, "index_version": resolved_index_version, "count": len(item_rows)}
 
     async def list_strategy_vector_index_items(
         self,
@@ -423,10 +454,10 @@ class StrategyVectorMixin:
                        {similarity_sql} AS similarity
                 FROM strategy_vector_profile_store pv
                 JOIN strategy_vector_profiles p ON p.id = pv.profile_id
-                WHERE pv.vector_dim = {int(dim)}
+                WHERE pv.vector_dim = $2
             """
-            params: list = [vector_literal]
-            idx = 2
+            params: list = [vector_literal, int(dim)]
+            idx = 3
             if index_name:
                 sql += f" AND pv.index_name = ${idx}"
                 params.append(index_name)
@@ -472,10 +503,10 @@ class StrategyVectorMixin:
                        {similarity_sql} AS similarity
                 FROM strategy_vector_index_item_store iv
                 JOIN strategy_vector_index_items i ON i.id = iv.item_id
-                WHERE iv.index_name = $2 AND iv.index_version = $3 AND iv.vector_dim = {int(dim)}
+                WHERE iv.index_name = $2 AND iv.index_version = $3 AND iv.vector_dim = $4
             """
-            params: list = [vector_literal, str(index_name or 'strategy_behavior'), str(index_version or 'v1')]
-            idx = 4
+            params: list = [vector_literal, str(index_name or 'strategy_behavior'), str(index_version or 'v1'), int(dim)]
+            idx = 5
             if profile_type:
                 sql += f" AND iv.profile_type = ${idx}"
                 params.append(profile_type)
@@ -507,15 +538,21 @@ class StrategyVectorMixin:
             return None
         opclass = self._pgvector_opclass(metric)
         idx_name = self._pgvector_partial_index_name('idx_svi_pg_hnsw', index_name, index_version, resolved_dim, metric)
-        sql = f"""
-            CREATE INDEX IF NOT EXISTS {idx_name}
-            ON strategy_vector_index_item_store
-            USING hnsw ((embedding::vector({resolved_dim})) {opclass})
-            WHERE index_name = {self._sql_quote(index_name)}
-              AND index_version = {self._sql_quote(index_version)}
-              AND vector_dim = {resolved_dim}
-        """
         async with self.acquire() as conn:
+            sql = await conn.fetchval(
+                """
+                SELECT format(
+                    'CREATE INDEX IF NOT EXISTS %I ON strategy_vector_index_item_store USING hnsw ((embedding::vector(%s)) %s) WHERE index_name = %L AND index_version = %L AND vector_dim = %s',
+                    $1, $2, $3, $4, $5, $6
+                )
+                """,
+                idx_name,
+                resolved_dim,
+                opclass,
+                str(index_name or ''),
+                str(index_version or ''),
+                resolved_dim,
+            )
             await conn.execute(sql)
         return idx_name
 
@@ -541,20 +578,28 @@ class StrategyVectorMixin:
             profile_type or 'all',
             metric,
         )
-        where_clauses = [
-            f"index_name = {self._sql_quote(index_name)}",
-            f"index_version = {self._sql_quote(index_version)}",
-            f"vector_dim = {resolved_dim}",
-        ]
-        if profile_type:
-            where_clauses.append(f"profile_type = {self._sql_quote(profile_type)}")
-        sql = f"""
-            CREATE INDEX IF NOT EXISTS {idx_name}
-            ON strategy_vector_profile_store
-            USING hnsw ((embedding::vector({resolved_dim})) {opclass})
-            WHERE {' AND '.join(where_clauses)}
-        """
         async with self.acquire() as conn:
+            where_sql = "index_name = %L AND index_version = %L AND vector_dim = %s"
+            format_args: list = [
+                idx_name,
+                resolved_dim,
+                opclass,
+                str(index_name or ''),
+                str(index_version or ''),
+                resolved_dim,
+            ]
+            if profile_type:
+                where_sql += " AND profile_type = %L"
+                format_args.append(str(profile_type))
+            sql = await conn.fetchval(
+                f"""
+                SELECT format(
+                    'CREATE INDEX IF NOT EXISTS %I ON strategy_vector_profile_store USING hnsw ((embedding::vector(%s)) %s) WHERE {where_sql}',
+                    {', '.join(f'${idx}' for idx in range(1, len(format_args) + 1))}
+                )
+                """,
+                *format_args,
+            )
             await conn.execute(sql)
         return idx_name
 

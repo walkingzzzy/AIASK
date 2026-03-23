@@ -63,13 +63,35 @@ class SchemaBase:
         if old_pool is None or old_loop is current_loop:
             return
 
-        terminate = getattr(old_pool, 'terminate', None)
-        if callable(terminate):
-            try:
-                terminate()
-                logger.info("Terminated stale connection pool after event loop change")
-            except Exception as exc:
-                logger.warning("Failed to terminate stale connection pool: %s", exc)
+        if self._force_terminate_pool(old_pool, reason="event loop changed"):
+            logger.info("Terminated stale connection pool after event loop change")
+
+    def _force_terminate_pool(self, pool=None, *, reason: Optional[str] = None) -> bool:
+        """同步强制终止连接池，用于 loop 已关闭或关闭超时的兜底路径。"""
+        target_pool = pool or self.pool
+        if target_pool is None:
+            return False
+
+        terminate = getattr(target_pool, 'terminate', None)
+        if not callable(terminate):
+            return False
+
+        try:
+            terminate()
+            if reason:
+                logger.info("Force terminated connection pool: %s", reason)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to terminate stale connection pool: %s", exc)
+            return False
+
+    async def _flush_close_callbacks(self) -> None:
+        """给事件循环一次排空关闭回调的机会，减少 asyncpg transport 泄漏告警。"""
+        try:
+            await asyncio.sleep(0)
+            await asyncio.sleep(0.01)
+        except RuntimeError:
+            return
 
     @staticmethod
     def _read_int_env(name: str, default: int, minimum: int) -> int:
@@ -200,16 +222,13 @@ class SchemaBase:
         pool = self.pool
         if pool:
             try:
-                await pool.close()
-            except Exception:
-                terminate = getattr(pool, 'terminate', None)
-                if callable(terminate):
-                    try:
-                        terminate()
-                    except Exception:
-                        pass
-            self._reset_pool_state()
-            logger.info("Connection closed")
+                await asyncio.wait_for(pool.close(), timeout=2.0)
+            except Exception as exc:
+                self._force_terminate_pool(pool, reason=str(exc))
+            finally:
+                self._reset_pool_state()
+                await self._flush_close_callbacks()
+                logger.info("Connection closed")
 
     @asynccontextmanager
     async def acquire(self):

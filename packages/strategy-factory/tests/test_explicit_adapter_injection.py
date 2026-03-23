@@ -407,3 +407,12 @@ def test_scheduler_accepts_runtime_adapter_bundle_for_all_gateway_slots():
     assert scheduler._incubation_gateway is bundle.incubation
     assert scheduler._autonomy_gateway is bundle.autonomy
     assert scheduler._factor_research_gateway is bundle.factor_research
+
+
+def test_scheduler_uses_market_timezone_aware_clock():
+    scheduler = StrategyFactoryScheduler()
+
+    now = scheduler._now()
+
+    assert now.tzinfo is not None
+    assert now.utcoffset() is not None

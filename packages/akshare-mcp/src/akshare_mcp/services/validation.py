@@ -10,9 +10,11 @@ Author: AKShare MCP Server
 Version: 2.0
 """
 
+import math
 import os
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -236,6 +238,513 @@ def _bootstrap_mean_vectorized(
         pos += size
 
     return out
+
+
+def _coerce_return_series(values: Any) -> np.ndarray:
+    arr = np.asarray(values if values is not None else [], dtype=np.float64).reshape(-1)
+    arr = arr[np.isfinite(arr)]
+    return arr
+
+
+def _coerce_return_matrix(values: Any) -> np.ndarray:
+    arr = np.asarray(values if values is not None else [], dtype=np.float64)
+    if arr.ndim == 1:
+        arr = arr.reshape(-1, 1)
+    if arr.ndim != 2:
+        raise ValueError("returns must be 1D or 2D")
+    mask = np.all(np.isfinite(arr), axis=1)
+    arr = arr[mask]
+    return arr
+
+
+def _safe_sharpe_ratio(returns: np.ndarray, *, periods_per_year: float = 252.0) -> float:
+    arr = _coerce_return_series(returns)
+    if arr.size < 3:
+        return 0.0
+    std = float(np.std(arr, ddof=1))
+    if std <= 1e-12:
+        return 0.0
+    annualizer = math.sqrt(max(float(periods_per_year or 1.0), 1.0))
+    return float(np.mean(arr) / std * annualizer)
+
+
+def _sample_moments(returns: np.ndarray) -> tuple[float, float]:
+    arr = _coerce_return_series(returns)
+    if arr.size < 8:
+        return 0.0, 3.0
+    skewness = float(stats.skew(arr, bias=False))
+    kurtosis = float(stats.kurtosis(arr, fisher=False, bias=False))
+    if not np.isfinite(skewness):
+        skewness = 0.0
+    if not np.isfinite(kurtosis) or kurtosis <= 0:
+        kurtosis = 3.0
+    return skewness, kurtosis
+
+
+def _estimated_sharpe_std(
+    observed_sharpe: float,
+    sample_size: int,
+    *,
+    skewness: float,
+    kurtosis: float,
+) -> float:
+    if sample_size <= 1:
+        return 0.0
+    variance = (
+        1.0
+        - float(skewness) * float(observed_sharpe)
+        + ((float(kurtosis) - 1.0) / 4.0) * float(observed_sharpe) ** 2
+    ) / max(sample_size - 1, 1)
+    return float(math.sqrt(max(variance, 1e-12)))
+
+
+def _average_off_diagonal_correlation(correlation_matrix: np.ndarray) -> Optional[float]:
+    arr = np.asarray(correlation_matrix if correlation_matrix is not None else [], dtype=np.float64)
+    if arr.ndim != 2 or arr.shape[0] != arr.shape[1] or arr.shape[0] < 2:
+        return None
+    mask = ~np.eye(arr.shape[0], dtype=bool)
+    values = arr[mask]
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return None
+    return float(np.mean(values))
+
+
+def _effective_independent_trials(
+    n_trials: Optional[int],
+    *,
+    sharpe_trials: Optional[np.ndarray] = None,
+    correlation_matrix: Optional[np.ndarray] = None,
+    average_correlation: Optional[float] = None,
+) -> float:
+    trial_count = int(n_trials or 0)
+    if trial_count <= 0 and sharpe_trials is not None:
+        trial_count = int(np.asarray(sharpe_trials).size)
+    trial_count = max(1, trial_count)
+
+    rho = average_correlation
+    if rho is None and correlation_matrix is not None:
+        rho = _average_off_diagonal_correlation(correlation_matrix)
+    if rho is None or not np.isfinite(rho):
+        return float(trial_count)
+
+    rho = float(min(1.0, max(-0.99, rho)))
+    # Bailey & Lopez de Prado (2014): \hat N = \hat\rho + (1-\hat\rho) M
+    effective = rho + (1.0 - rho) * float(trial_count)
+    return float(max(1.0, min(float(trial_count), effective)))
+
+
+def _expected_max_sharpe(mu: float, sigma: float, num_trials: float) -> float:
+    sigma = max(float(sigma or 0.0), 0.0)
+    num_trials = max(float(num_trials or 1.0), 1.0)
+    if sigma <= 0.0 or num_trials <= 1.0:
+        return float(mu)
+    emc = 0.5772156649  # Euler-Mascheroni constant
+    z1 = stats.norm.ppf(1.0 - 1.0 / num_trials)
+    z2 = stats.norm.ppf(1.0 - 1.0 / (num_trials * math.e))
+    return float(mu + sigma * ((1.0 - emc) * z1 + emc * z2))
+
+
+def _stationary_bootstrap_indices(
+    n_obs: int,
+    *,
+    restart_probability: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    if n_obs <= 0:
+        return np.zeros(0, dtype=int)
+    q = float(min(1.0, max(1e-6, restart_probability)))
+    indices = np.empty(n_obs, dtype=int)
+    indices[0] = int(rng.integers(0, n_obs))
+    for i in range(1, n_obs):
+        if float(rng.random()) < q:
+            indices[i] = int(rng.integers(0, n_obs))
+        else:
+            indices[i] = (indices[i - 1] + 1) % n_obs
+    return indices
+
+
+def _autocovariance(series: np.ndarray, lag: int) -> float:
+    arr = _coerce_return_series(series)
+    n = arr.size
+    if lag < 0 or lag >= n:
+        return 0.0
+    centered = arr - float(np.mean(arr))
+    if lag == 0:
+        return float(np.dot(centered, centered) / n)
+    return float(np.dot(centered[lag:], centered[:-lag]) / n)
+
+
+def _hac_long_run_variance(series: np.ndarray, max_lag: Optional[int] = None) -> float:
+    arr = _coerce_return_series(series)
+    n = arr.size
+    if n < 3:
+        return max(float(np.var(arr)) if n else 0.0, 1e-12)
+    lag = int(max_lag) if max_lag is not None else int(math.floor(1.5 * n ** (1.0 / 3.0)))
+    lag = max(1, min(lag, n - 1))
+    gamma0 = _autocovariance(arr, 0)
+    variance = gamma0
+    for k in range(1, lag + 1):
+        weight = 1.0 - k / float(lag + 1)
+        gamma = _autocovariance(arr, k)
+        variance += 2.0 * weight * gamma
+    return float(max(variance, 1e-12))
+
+
+def _performance_metric(
+    returns: np.ndarray,
+    *,
+    metric: str,
+    periods_per_year: float,
+) -> float:
+    arr = _coerce_return_series(returns)
+    if arr.size < 3:
+        return 0.0
+    metric_name = str(metric or "sharpe").strip().lower()
+    if metric_name == "mean":
+        return float(np.mean(arr))
+    if metric_name in {"sum", "cumulative"}:
+        return float(np.sum(arr))
+    return _safe_sharpe_ratio(arr, periods_per_year=periods_per_year)
+
+
+def deflated_sharpe_ratio(
+    returns: Optional[np.ndarray] = None,
+    *,
+    observed_sharpe: Optional[float] = None,
+    n_trials: Optional[int] = None,
+    sharpe_trials: Optional[np.ndarray] = None,
+    correlation_matrix: Optional[np.ndarray] = None,
+    average_correlation: Optional[float] = None,
+    benchmark_sharpe: float = 0.0,
+    sample_size: Optional[int] = None,
+    skewness: Optional[float] = None,
+    kurtosis: Optional[float] = None,
+    periods_per_year: float = 252.0,
+) -> Dict[str, Any]:
+    """Compute Bailey & Lopez de Prado's Deflated Sharpe Ratio."""
+    arr = _coerce_return_series(returns)
+    n_obs = int(sample_size or arr.size)
+    if observed_sharpe is None:
+        observed_sharpe = _safe_sharpe_ratio(arr, periods_per_year=periods_per_year)
+    observed_sharpe = float(observed_sharpe or 0.0)
+    if skewness is None or kurtosis is None:
+        est_skew, est_kurt = _sample_moments(arr)
+        skewness = est_skew if skewness is None else float(skewness)
+        kurtosis = est_kurt if kurtosis is None else float(kurtosis)
+    else:
+        skewness = float(skewness)
+        kurtosis = float(kurtosis)
+
+    sharpe_arr = np.asarray(sharpe_trials if sharpe_trials is not None else [], dtype=np.float64).reshape(-1)
+    sharpe_arr = sharpe_arr[np.isfinite(sharpe_arr)]
+    effective_trials = _effective_independent_trials(
+        n_trials,
+        sharpe_trials=sharpe_arr if sharpe_arr.size else None,
+        correlation_matrix=correlation_matrix,
+        average_correlation=average_correlation,
+    )
+    if sharpe_arr.size >= 2:
+        mu_trials = float(np.mean(sharpe_arr))
+        sigma_trials = float(np.std(sharpe_arr, ddof=1))
+        reference_mode = "family_sharpes"
+    else:
+        mu_trials = float(benchmark_sharpe or 0.0)
+        sigma_trials = _estimated_sharpe_std(
+            observed_sharpe,
+            n_obs,
+            skewness=float(skewness),
+            kurtosis=float(kurtosis),
+        )
+        reference_mode = "estimated_standard_error"
+
+    sr_ref = _expected_max_sharpe(mu_trials, sigma_trials, effective_trials)
+    denominator = math.sqrt(
+        max(
+            1e-12,
+            1.0
+            - float(skewness) * observed_sharpe
+            + ((float(kurtosis) - 1.0) / 4.0) * observed_sharpe ** 2,
+        )
+    )
+    z_score = ((observed_sharpe - sr_ref) * math.sqrt(max(n_obs - 1, 1))) / denominator
+    dsr = float(stats.norm.cdf(z_score))
+    return {
+        "available": bool(n_obs >= 3),
+        "sample_size": int(n_obs),
+        "observed_sharpe": float(observed_sharpe),
+        "benchmark_sharpe": float(benchmark_sharpe or 0.0),
+        "reference_sharpe": float(sr_ref),
+        "reference_mean": float(mu_trials),
+        "reference_std": float(sigma_trials),
+        "effective_trials": float(effective_trials),
+        "skewness": float(skewness),
+        "kurtosis": float(kurtosis),
+        "z_score": float(z_score),
+        "dsr": dsr,
+        "psr_vs_benchmark": float(
+            stats.norm.cdf(((observed_sharpe - float(benchmark_sharpe or 0.0)) * math.sqrt(max(n_obs - 1, 1))) / denominator)
+        ),
+        "reference_mode": reference_mode,
+    }
+
+
+def probability_of_backtest_overfitting(
+    family_returns: np.ndarray,
+    *,
+    n_splits: int = 8,
+    metric: str = "sharpe",
+    periods_per_year: float = 252.0,
+    max_combinations: int = 4096,
+    seed: Optional[int] = 42,
+) -> Dict[str, Any]:
+    """Estimate PBO using CSCV (Bailey et al., 2014)."""
+    matrix = _coerce_return_matrix(family_returns)
+    n_obs, n_models = matrix.shape
+    if n_obs < 12 or n_models < 2:
+        return {
+            "available": False,
+            "reason": "insufficient_family_returns",
+            "sample_size": int(n_obs),
+            "model_count": int(n_models),
+        }
+
+    splits = int(n_splits)
+    if splits % 2 != 0:
+        splits -= 1
+    splits = max(2, min(splits, n_obs))
+    while splits > 2 and (splits % 2 != 0 or n_obs // splits < 2):
+        splits -= 2
+    if splits < 2:
+        return {
+            "available": False,
+            "reason": "insufficient_split_blocks",
+            "sample_size": int(n_obs),
+            "model_count": int(n_models),
+        }
+
+    block_indices = [np.asarray(idx, dtype=int) for idx in np.array_split(np.arange(n_obs), splits) if len(idx) > 0]
+    if len(block_indices) % 2 != 0:
+        block_indices = block_indices[:-1]
+    splits = len(block_indices)
+    if splits < 2:
+        return {
+            "available": False,
+            "reason": "insufficient_nonempty_blocks",
+            "sample_size": int(n_obs),
+            "model_count": int(n_models),
+        }
+
+    half = splits // 2
+    combos = list(combinations(range(splits), half))
+    sampled = False
+    if len(combos) > max_combinations:
+        rng = np.random.default_rng(seed)
+        selected = rng.choice(len(combos), size=int(max_combinations), replace=False)
+        combos = [combos[i] for i in sorted(selected.tolist())]
+        sampled = True
+
+    lambda_values: list[float] = []
+    winner_indices: list[int] = []
+    relative_ranks: list[float] = []
+
+    all_blocks = set(range(splits))
+    for train_combo in combos:
+        train_set = set(train_combo)
+        test_combo = sorted(all_blocks - train_set)
+        if not test_combo:
+            continue
+        train_idx = np.concatenate([block_indices[i] for i in sorted(train_set)])
+        test_idx = np.concatenate([block_indices[i] for i in test_combo])
+        if train_idx.size < 3 or test_idx.size < 3:
+            continue
+        is_scores = np.asarray(
+            [
+                _performance_metric(matrix[train_idx, j], metric=metric, periods_per_year=periods_per_year)
+                for j in range(n_models)
+            ],
+            dtype=np.float64,
+        )
+        oos_scores = np.asarray(
+            [
+                _performance_metric(matrix[test_idx, j], metric=metric, periods_per_year=periods_per_year)
+                for j in range(n_models)
+            ],
+            dtype=np.float64,
+        )
+        if not np.any(np.isfinite(is_scores)) or not np.any(np.isfinite(oos_scores)):
+            continue
+        winner = int(np.nanargmax(is_scores))
+        ranks = stats.rankdata(oos_scores, method="average")
+        relative_rank = float(ranks[winner] / (n_models + 1.0))
+        relative_rank = float(min(1.0 - 1e-8, max(1e-8, relative_rank)))
+        lambda_values.append(float(math.log(relative_rank / (1.0 - relative_rank))))
+        winner_indices.append(winner)
+        relative_ranks.append(relative_rank)
+
+    lambda_arr = np.asarray(lambda_values, dtype=np.float64)
+    if lambda_arr.size == 0:
+        return {
+            "available": False,
+            "reason": "no_valid_cscv_partitions",
+            "sample_size": int(n_obs),
+            "model_count": int(n_models),
+        }
+
+    return {
+        "available": True,
+        "sample_size": int(n_obs),
+        "model_count": int(n_models),
+        "n_splits": int(splits),
+        "partition_count": int(lambda_arr.size),
+        "sampled_partitions": bool(sampled),
+        "metric": str(metric),
+        "pbo": float(np.mean(lambda_arr <= 0.0)),
+        "lambda_mean": float(np.mean(lambda_arr)),
+        "lambda_median": float(np.median(lambda_arr)),
+        "relative_rank_mean": float(np.mean(relative_ranks)),
+        "relative_rank_median": float(np.median(relative_ranks)),
+        "winner_index_mode": int(np.bincount(np.asarray(winner_indices, dtype=int)).argmax()) if winner_indices else None,
+    }
+
+
+def _prepare_relative_performance_matrix(
+    family_returns: np.ndarray,
+    benchmark_returns: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    matrix = _coerce_return_matrix(family_returns)
+    if benchmark_returns is None:
+        return matrix
+    benchmark = _coerce_return_series(benchmark_returns)
+    if benchmark.size != matrix.shape[0]:
+        raise ValueError("benchmark_returns must have the same number of periods as family_returns")
+    return matrix - benchmark.reshape(-1, 1)
+
+
+def white_reality_check(
+    family_returns: np.ndarray,
+    *,
+    benchmark_returns: Optional[np.ndarray] = None,
+    n_bootstrap: int = 1000,
+    stationary_bootstrap_p: float = 0.1,
+    seed: Optional[int] = 42,
+) -> Dict[str, Any]:
+    """White's Reality Check with stationary bootstrap."""
+    differential = _prepare_relative_performance_matrix(family_returns, benchmark_returns)
+    n_obs, n_models = differential.shape
+    if n_obs < 12 or n_models < 1:
+        return {
+            "available": False,
+            "reason": "insufficient_family_returns",
+            "sample_size": int(n_obs),
+            "model_count": int(n_models),
+        }
+
+    observed_means = np.mean(differential, axis=0)
+    observed_stat = float(np.max(np.sqrt(n_obs) * observed_means))
+    centered = differential - observed_means.reshape(1, -1)
+
+    rng = np.random.default_rng(seed)
+    draws = max(100, int(n_bootstrap or 0))
+    bootstrap_stats = np.empty(draws, dtype=np.float64)
+    for i in range(draws):
+        idx = _stationary_bootstrap_indices(
+            n_obs,
+            restart_probability=stationary_bootstrap_p,
+            rng=rng,
+        )
+        sample = centered[idx, :]
+        bootstrap_stats[i] = float(np.max(np.sqrt(n_obs) * np.mean(sample, axis=0)))
+
+    best_index = int(np.argmax(observed_means))
+    return {
+        "available": True,
+        "sample_size": int(n_obs),
+        "model_count": int(n_models),
+        "observed_stat": observed_stat,
+        "p_value": float(np.mean(bootstrap_stats >= observed_stat)),
+        "critical_value_95": float(np.percentile(bootstrap_stats, 95)),
+        "best_model_index": best_index,
+        "best_model_mean": float(observed_means[best_index]),
+        "bootstrap_mean": float(np.mean(bootstrap_stats)),
+        "bootstrap_std": float(np.std(bootstrap_stats, ddof=1)),
+        "bootstrap_draws": int(draws),
+        "stationary_bootstrap_p": float(stationary_bootstrap_p),
+    }
+
+
+def hansen_spa_test(
+    family_returns: np.ndarray,
+    *,
+    benchmark_returns: Optional[np.ndarray] = None,
+    n_bootstrap: int = 1000,
+    stationary_bootstrap_p: float = 0.1,
+    seed: Optional[int] = 42,
+    center: str = "consistent",
+    hac_lags: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Hansen's Superior Predictive Ability test with stationary bootstrap."""
+    differential = _prepare_relative_performance_matrix(family_returns, benchmark_returns)
+    n_obs, n_models = differential.shape
+    if n_obs < 12 or n_models < 1:
+        return {
+            "available": False,
+            "reason": "insufficient_family_returns",
+            "sample_size": int(n_obs),
+            "model_count": int(n_models),
+        }
+
+    center_mode = str(center or "consistent").strip().lower()
+    if center_mode not in {"lower", "consistent", "upper"}:
+        center_mode = "consistent"
+
+    means = np.mean(differential, axis=0)
+    omega = np.asarray([math.sqrt(_hac_long_run_variance(differential[:, j], max_lag=hac_lags)) for j in range(n_models)])
+    omega = np.where(np.isfinite(omega) & (omega > 1e-9), omega, 1e-9)
+    observed_z = np.sqrt(n_obs) * means / omega
+    observed_stat = float(max(0.0, np.max(observed_z)))
+
+    if center_mode == "upper":
+        mu_hat = means
+    elif center_mode == "lower":
+        mu_hat = np.maximum(means, 0.0)
+    else:
+        loglog_n = math.log(max(math.log(max(n_obs, 3)), 1.0000001))
+        threshold = -np.sqrt((omega ** 2 / max(n_obs, 1)) * 2.0 * loglog_n)
+        mu_hat = means * (means >= threshold)
+
+    centered = differential - mu_hat.reshape(1, -1)
+    rng = np.random.default_rng(seed)
+    draws = max(100, int(n_bootstrap or 0))
+    bootstrap_stats = np.empty(draws, dtype=np.float64)
+    for i in range(draws):
+        idx = _stationary_bootstrap_indices(
+            n_obs,
+            restart_probability=stationary_bootstrap_p,
+            rng=rng,
+        )
+        sample = centered[idx, :]
+        sample_means = np.mean(sample, axis=0)
+        bootstrap_stats[i] = float(max(0.0, np.max(np.sqrt(n_obs) * sample_means / omega)))
+
+    best_index = int(np.argmax(means))
+    return {
+        "available": True,
+        "sample_size": int(n_obs),
+        "model_count": int(n_models),
+        "center": center_mode,
+        "observed_stat": observed_stat,
+        "p_value": float(np.mean(bootstrap_stats >= observed_stat)),
+        "critical_value_95": float(np.percentile(bootstrap_stats, 95)),
+        "best_model_index": best_index,
+        "best_model_mean": float(means[best_index]),
+        "best_model_zscore": float(observed_z[best_index]),
+        "bootstrap_mean": float(np.mean(bootstrap_stats)),
+        "bootstrap_std": float(np.std(bootstrap_stats, ddof=1)),
+        "bootstrap_draws": int(draws),
+        "stationary_bootstrap_p": float(stationary_bootstrap_p),
+        "hac_lags": int(hac_lags) if hac_lags is not None else None,
+    }
 
 
 def _calc_ic_pair(
@@ -741,6 +1250,10 @@ class FactorValidationPipeline:
         validation_parallel: bool = True,
         max_workers: int = _VALIDATION_MAX_WORKERS_DEFAULT,
         bootstrap_mode: Optional[str] = None,
+        strategy_returns: Optional[np.ndarray] = None,
+        family_returns: Optional[np.ndarray] = None,
+        benchmark_returns: Optional[np.ndarray] = None,
+        multiple_testing_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         执行完整验证流水线。
@@ -842,6 +1355,81 @@ class FactorValidationPipeline:
 
         # 4. 综合评级
         rating = self._compute_rating(wf_summary, kf_summary, boot_ci)
+        if strategy_returns is not None:
+            strategy_returns_input = strategy_returns
+        else:
+            implied_returns = np.asarray(factor_panel * return_panel, dtype=np.float64)
+            valid_counts = np.isfinite(implied_returns).sum(axis=1)
+            row_sums = np.nansum(implied_returns, axis=1)
+            strategy_returns_input = np.divide(
+                row_sums,
+                valid_counts,
+                out=np.full(implied_returns.shape[0], np.nan, dtype=np.float64),
+                where=valid_counts > 0,
+            )
+        strategy_returns_arr = _coerce_return_series(strategy_returns_input)
+        family_returns_arr = None
+        if family_returns is not None:
+            try:
+                family_returns_arr = _coerce_return_matrix(family_returns)
+            except Exception:
+                family_returns_arr = None
+        mt_cfg = dict(multiple_testing_config or {})
+        sharpe_trials = mt_cfg.get("trial_sharpes")
+        if sharpe_trials is None and family_returns_arr is not None and family_returns_arr.shape[1] >= 1:
+            sharpe_trials = np.asarray(
+                [
+                    _safe_sharpe_ratio(
+                        family_returns_arr[:, j],
+                        periods_per_year=float(mt_cfg.get("periods_per_year", 252.0) or 252.0),
+                    )
+                    for j in range(family_returns_arr.shape[1])
+                ],
+                dtype=np.float64,
+            )
+
+        multiple_testing = {
+            "available": False,
+            "reason": "family_returns_not_provided",
+            "deflated_sharpe": deflated_sharpe_ratio(
+                strategy_returns_arr,
+                n_trials=int(mt_cfg.get("n_trials") or (family_returns_arr.shape[1] if family_returns_arr is not None else 1)),
+                sharpe_trials=sharpe_trials,
+                correlation_matrix=mt_cfg.get("trial_correlation_matrix"),
+                average_correlation=mt_cfg.get("average_correlation"),
+                benchmark_sharpe=float(mt_cfg.get("benchmark_sharpe", 0.0) or 0.0),
+                periods_per_year=float(mt_cfg.get("periods_per_year", 252.0) or 252.0),
+            ),
+        }
+        if family_returns_arr is not None and family_returns_arr.shape[1] >= 2:
+            multiple_testing = {
+                "available": True,
+                "deflated_sharpe": multiple_testing["deflated_sharpe"],
+                "pbo": probability_of_backtest_overfitting(
+                    family_returns_arr,
+                    n_splits=int(mt_cfg.get("pbo_n_splits", 8) or 8),
+                    metric=str(mt_cfg.get("pbo_metric", "sharpe") or "sharpe"),
+                    periods_per_year=float(mt_cfg.get("periods_per_year", 252.0) or 252.0),
+                    max_combinations=int(mt_cfg.get("pbo_max_combinations", 4096) or 4096),
+                    seed=mt_cfg.get("seed", 42),
+                ),
+                "white_reality_check": white_reality_check(
+                    family_returns_arr,
+                    benchmark_returns=benchmark_returns,
+                    n_bootstrap=int(mt_cfg.get("n_bootstrap", self.bootstrap_n or 500) or (self.bootstrap_n or 500)),
+                    stationary_bootstrap_p=float(mt_cfg.get("stationary_bootstrap_p", 0.1) or 0.1),
+                    seed=mt_cfg.get("seed", 42),
+                ),
+                "hansen_spa": hansen_spa_test(
+                    family_returns_arr,
+                    benchmark_returns=benchmark_returns,
+                    n_bootstrap=int(mt_cfg.get("n_bootstrap", self.bootstrap_n or 500) or (self.bootstrap_n or 500)),
+                    stationary_bootstrap_p=float(mt_cfg.get("stationary_bootstrap_p", 0.1) or 0.1),
+                    seed=mt_cfg.get("seed", 42),
+                    center=str(mt_cfg.get("spa_center", "consistent") or "consistent"),
+                    hac_lags=mt_cfg.get("spa_hac_lags"),
+                ),
+            }
 
         return {
             "factor_name": factor_name,
@@ -850,6 +1438,7 @@ class FactorValidationPipeline:
             "walk_forward": self._summary_to_dict(wf_summary),
             "purged_kfold": self._summary_to_dict(kf_summary),
             "bootstrap_ci": boot_ci,
+            "multiple_testing": multiple_testing,
             "rating": rating,
             "validation_execution": {
                 "mode": execution_mode,

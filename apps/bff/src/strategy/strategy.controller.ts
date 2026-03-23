@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { StrategyMarketService } from './strategy.service';
+import { Roles } from '../rbac/roles.decorator';
 import {
   ListDto,
   RankDto,
@@ -47,6 +48,7 @@ export class StrategyMarketController {
   }
 
   @Post('ranking/refresh')
+  @Roles('admin')
   async refreshRanking(@Body() body: RefreshRankingDto, @Req() req: Req_) {
     const data = await this.svc.refreshRankingCaches({
       strategy_types: body.strategy_types,
@@ -122,18 +124,21 @@ export class StrategyMarketController {
   }
 
   @Post(':id/publish')
+  @Roles('admin')
   async publish(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.publish(id);
     return { success: true, data, traceId: tid(req) };
   }
 
   @Post(':id/archive')
+  @Roles('admin')
   async archive(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.archive(id);
     return { success: true, data, traceId: tid(req) };
   }
 
   @Post(':id/update-metrics')
+  @Roles('admin')
   async updateMetrics(@Param('id') id: string, @Body() body: UpdateMetricsDto, @Req() req: Req_) {
     const data = await this.svc.updateMetrics(id, body);
     return { success: true, data, traceId: tid(req) };
@@ -158,6 +163,7 @@ export class StrategyMarketController {
   }
 
   @Post(':id/submit')
+  @Roles('admin')
   async submit(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.submit(id);
     return { success: true, data, traceId: tid(req) };
@@ -183,6 +189,7 @@ export class StrategyMarketController {
   }
 
   @Post('lifecycle-scan')
+  @Roles('admin')
   async lifecycleScan(@Req() req: Req_) {
     const data = await this.svc.lifecycleScan();
     return { success: true, data, traceId: tid(req) };

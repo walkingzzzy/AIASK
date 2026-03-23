@@ -10,17 +10,73 @@ import time
 from typing import Any, Optional
 
 import pandas as pd
-from strategy_factory import (
-    CATEGORY_MINIMUMS,
-    LLM_FAN_OUT_COUNT,
-    PIPELINE_MODE,
-    extract_event_context as _extract_event_context,
-    preferred_strategy_types_for_factor,
-)
+def _get_strategy_factory_imports():
+    from strategy_factory import (
+        CATEGORY_MINIMUMS,
+        LLM_FAN_OUT_COUNT,
+        PIPELINE_MODE,
+        PIPELINE_STAGE_TIMEOUTS,
+        PIPELINE_STAGE_TIMEOUT_SEC,
+        extract_event_context as _extract_event_context,
+        preferred_strategy_types_for_factor,
+    )
+    from strategy_factory.domain.targets import _apply_target_symbol_policy, _normalize_research_task_contract
+    return {
+        "CATEGORY_MINIMUMS": CATEGORY_MINIMUMS,
+        "LLM_FAN_OUT_COUNT": LLM_FAN_OUT_COUNT,
+        "PIPELINE_MODE": PIPELINE_MODE,
+        "PIPELINE_STAGE_TIMEOUTS": PIPELINE_STAGE_TIMEOUTS,
+        "PIPELINE_STAGE_TIMEOUT_SEC": PIPELINE_STAGE_TIMEOUT_SEC,
+        "extract_event_context": _extract_event_context,
+        "preferred_strategy_types_for_factor": preferred_strategy_types_for_factor,
+        "apply_target_symbol_policy": _apply_target_symbol_policy,
+        "normalize_research_task_contract": _normalize_research_task_contract,
+    }
+
+
+import functools as _functools
+
+
+@_functools.lru_cache(maxsize=1)
+def _sf():
+    return _get_strategy_factory_imports()
+
+
+class _LazyProxy:
+    """Module-level proxy to defer strategy_factory imports until first access."""
+    def __getattr__(self, name):
+        return _sf()[name]
+
+_lazy = _LazyProxy()
+
+
+def __getattr__(name):
+    _map = {
+        "CATEGORY_MINIMUMS": "CATEGORY_MINIMUMS",
+        "LLM_FAN_OUT_COUNT": "LLM_FAN_OUT_COUNT",
+        "PIPELINE_MODE": "PIPELINE_MODE",
+        "_extract_event_context": "extract_event_context",
+        "preferred_strategy_types_for_factor": "preferred_strategy_types_for_factor",
+        "_apply_target_symbol_policy": "apply_target_symbol_policy",
+        "_normalize_research_task_contract": "normalize_research_task_contract",
+    }
+    if name in _map:
+        return _sf()[_map[name]]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+CATEGORY_MINIMUMS = _sf()["CATEGORY_MINIMUMS"]
+LLM_FAN_OUT_COUNT = _sf()["LLM_FAN_OUT_COUNT"]
+PIPELINE_MODE = _sf()["PIPELINE_MODE"]
+_extract_event_context = _sf()["extract_event_context"]
+preferred_strategy_types_for_factor = _sf()["preferred_strategy_types_for_factor"]
+_apply_target_symbol_policy = _sf()["apply_target_symbol_policy"]
+_normalize_research_task_contract = _sf()["normalize_research_task_contract"]
 
 from .llm_alpha import LLMAlphaMiner
+from .data_pipeline import normalize_klines
 from .strategy_dsl import compile_strategy_blueprint
-from .strategy_llm_provider import get_strategy_llm_provider
+from .strategy_llm_provider import StrategyLLMProvider, get_strategy_llm_provider
 from .strategy_pipeline import get_strategy_pipeline
 from .strategy_spec import (
     DEFAULT_CODES,
@@ -123,28 +179,40 @@ class RuleStrategyGenerator:
             },
         )
 
-    def generate(self, snapshot: dict, limit: int = 2) -> list[StrategySpec]:
+    def generate(
+        self,
+        snapshot: dict,
+        limit: int = 2,
+        *,
+        preferred_types: Optional[list[str]] = None,
+    ) -> list[StrategySpec]:
         fg = int(snapshot.get('fear_greed_index') or 50)
         regime = 'greed' if fg >= 60 else ('fear' if fg < 45 else 'neutral')
         factor_summary = self._factor_research_summary(snapshot)
-        preferred_types = [
+        factor_preferred_types = [
             item for item in factor_summary.get('preferred_strategy_types') or []
             if item in CATEGORY_MINIMUMS
         ]
-        if not preferred_types:
+        requested_types = [
+            str(item).strip()
+            for item in list(preferred_types or [])
+            if str(item).strip() in CATEGORY_MINIMUMS
+        ]
+        if not factor_preferred_types:
             for factor_name in list(factor_summary.get('top_factor_names') or []):
                 for strategy_type in preferred_strategy_types_for_factor(factor_name):
-                    if strategy_type in CATEGORY_MINIMUMS and strategy_type not in preferred_types:
-                        preferred_types.append(strategy_type)
+                    if strategy_type in CATEGORY_MINIMUMS and strategy_type not in factor_preferred_types:
+                        factor_preferred_types.append(strategy_type)
         regime_defaults = (
             ['momentum', 'ma_cross', 'quality_factor']
             if regime == 'greed'
-            else ['rsi', 'value_factor', 'quality_factor']
+            else ['value_factor', 'quality_factor', 'rsi']
         )
-        strategy_order = list(dict.fromkeys([*preferred_types, *regime_defaults]))
+        preferred_anchor = requested_types or factor_preferred_types
+        strategy_order = list(dict.fromkeys([*requested_types, *factor_preferred_types, *regime_defaults]))
         specs: list[StrategySpec] = []
         for index, strategy_type in enumerate(strategy_order):
-            source = 'factor_research' if index < len(preferred_types) and preferred_types else 'fear_greed'
+            source = 'factor_research' if index < len(preferred_anchor) and preferred_anchor else 'fear_greed'
             spec = self._build_rule_spec(
                 strategy_type,
                 fg=fg,
@@ -180,6 +248,37 @@ class LLMProxyStrategyGenerator:
             seen.add(key)
             unique.append(spec)
         return unique
+
+    @staticmethod
+    def _pipeline_run_timeout_sec() -> float:
+        configured = os.getenv('STRATEGY_LLM_PIPELINE_RUN_TIMEOUT_SEC')
+        if configured is not None:
+            try:
+                value = float(configured or 20)
+            except Exception:
+                value = 20.0
+            return max(5.0, min(value, 600.0))
+
+        stage_default = 10.0
+        stage_timeouts: dict[str, Any] = {}
+        try:
+            stage_default = float(_sf().get('PIPELINE_STAGE_TIMEOUT_SEC') or 10.0)
+            stage_timeouts = dict(_sf().get('PIPELINE_STAGE_TIMEOUTS') or {})
+        except Exception:
+            stage_default = 10.0
+            stage_timeouts = {}
+
+        total_stage_budget = 0.0
+        for timeout in stage_timeouts.values():
+            try:
+                total_stage_budget += max(1.0, float(timeout or 0.0))
+            except Exception:
+                total_stage_budget += max(1.0, stage_default)
+        if total_stage_budget <= 0.0:
+            total_stage_budget = max(5.0, stage_default * 5.0)
+
+        buffer_sec = max(5.0, min(60.0, total_stage_budget * 0.2))
+        return max(5.0, min(total_stage_budget + buffer_sec, 600.0))
 
     async def _run_external_provider_request(
         self,
@@ -291,7 +390,7 @@ class LLMProxyStrategyGenerator:
                 klines = []
             if not klines:
                 continue
-            frame = pd.DataFrame(klines)
+            frame = pd.DataFrame(normalize_klines(klines))
             if not frame.empty and 'close' in frame.columns:
                 return frame.tail(120).copy()
         return None
@@ -1066,10 +1165,10 @@ class LLMProxyStrategyGenerator:
 
     @staticmethod
     def _local_category_rank(category: str, research_task: Optional[dict[str, Any]] = None) -> tuple[int, int]:
-        task = dict(research_task or {})
+        task = _normalize_research_task_contract(research_task)
         opportunity_type = str(task.get('opportunity_type') or '').strip().lower()
         task_source = str(task.get('task_source') or '').strip().lower()
-        strategy_preferences = [str(item).strip().lower() for item in list(task.get('strategy_preferences') or []) if str(item).strip()]
+        strategy_preferences = [str(item).strip().lower() for item in list(task.get('preferred_strategy_types') or task.get('strategy_preferences') or []) if str(item).strip()]
 
         category_to_types = {
             'momentum': ('momentum',),
@@ -1125,18 +1224,28 @@ class LLMProxyStrategyGenerator:
         target = mapping.get(category)
         if not target:
             return None
-        task = dict(research_task or {})
+        task = _normalize_research_task_contract(research_task)
         event_context = _extract_event_context(task)
         task_source = str(task.get('task_source') or '').strip().lower()
-        target_symbols = cls._normalize_code_list([
+        target_resolution = _apply_target_symbol_policy([
             candidate.get('target_symbols'),
             candidate.get('stock_pool'),
-            task.get('target_symbols'),
-            task.get('stock_pool'),
-        ])
+        ], task, fallback_symbols=[task.get('target_symbols'), task.get('stock_pool')], limit=8)
+        target_symbols = list(target_resolution.get('target_symbols') or [])
         stock_pool = cls._normalize_stock_pool(candidate.get('stock_pool'), target_symbols)
         strategy_type, params = target
         params, fallback_profile = cls._adapt_local_fallback_params(strategy_type, params, task, candidate, target_symbols)
+        validation_profile = {
+            'profile': 'event_trade_validation' if task.get('validation_focus') == 'event_target_only' else 'trade_rule_validation',
+            'validation_focus': task.get('validation_focus'),
+            'primary_validation_layer': 'target' if task.get('validation_focus') == 'event_target_only' else 'combined',
+        }
+        holding_horizon = dict(task.get('holding_window') or {})
+        risk_rules = {
+            'stop_loss_pct': 0.08 if task_source == 'event_driven' else 0.1,
+            'take_profit_pct': 0.18 if task_source == 'event_driven' else 0.2,
+            'max_holding_days': int(holding_horizon.get('max_days') or 20),
+        }
         tags = ['local_rule_v1', 'llm_proxy_fallback', category]
         if target_symbols:
             tags.append('targeted_universe')
@@ -1165,6 +1274,36 @@ class LLMProxyStrategyGenerator:
                 'research_scope': dict(task.get('analysis_scope') or {}),
                 'research_task': task,
                 'event_context': event_context,
+                'hypothesis': str(candidate.get('rationale') or candidate.get('description') or task.get('rationale') or ''),
+                'holding_horizon': holding_horizon,
+                'trade_plan': {
+                    'entry_bias': 'event_follow_through' if task_source == 'event_driven' else 'signal_confirmed',
+                    'exit_bias': 'time_stop_or_signal_reversal',
+                },
+                'risk_rules': risk_rules,
+                'position_sizing': {
+                    'mode': 'equal_weight' if len(target_symbols) > 1 else 'single_name',
+                    'position_assumption': 'equal_weight_proxy' if len(target_symbols) > 1 else 'single_name_full_notional',
+                },
+                'execution_notes': 'use liquid names and respect tradability filter',
+                'rebalance_rule': {'mode': 'event_driven_hold' if task_source == 'event_driven' else 'signal_rebalance'},
+                'portfolio_spec': {
+                    'position_assumption': 'equal_weight_proxy' if len(target_symbols) > 1 else 'single_name_full_notional',
+                    'target_weight_scheme': 'equal_weight' if len(target_symbols) > 1 else 'single_name',
+                },
+                'execution_assumptions': {
+                    'commission_rate': 0.00025,
+                    'slippage_bps': 8 if task_source == 'event_driven' else 5,
+                    'tradability_filter': True,
+                    'slippage_model': 'fixed',
+                },
+                'validation_profile': validation_profile,
+                'targeting_policy': {
+                    'target_symbol_policy': task.get('target_symbol_policy'),
+                    'universe_expansion_policy': task.get('universe_expansion_policy'),
+                    'validation_focus': task.get('validation_focus'),
+                },
+                'constraint_check': dict(target_resolution.get('constraint_check') or {}),
                 'fallback_profile': fallback_profile,
                 'source_candidate': candidate,
             },
@@ -1189,6 +1328,16 @@ class LLMProxyStrategyGenerator:
 
     @classmethod
     def _external_candidate_to_spec(cls, candidate: dict, provider_payload: dict, market_frame: Optional[pd.DataFrame] = None) -> Optional[StrategySpec]:
+        normalized_candidate = StrategyLLMProvider._normalize_candidate_payload(
+            candidate,
+            research_task=provider_payload.get('research_task') or {},
+        )
+        if normalized_candidate:
+            candidate = {
+                **candidate,
+                **normalized_candidate,
+                'dsl': normalized_candidate.get('dsl') or candidate.get('dsl'),
+            }
         try:
             compiled = compile_strategy_blueprint(candidate, market_frame=market_frame, tune_for_factory=True)
         except Exception:
@@ -1197,12 +1346,17 @@ class LLMProxyStrategyGenerator:
         activity = dict(compiled_meta.get('dsl_activity') or {})
         analysis = dict(provider_payload.get('analysis') or {})
         research_context = dict(provider_payload.get('research_context') or {})
-        target_symbols = cls._normalize_code_list([
+        research_task = _normalize_research_task_contract(provider_payload.get('research_task') or {})
+        target_resolution = _apply_target_symbol_policy([
             candidate.get('target_symbols'),
             candidate.get('stock_pool'),
             ((candidate.get('dsl') or {}).get('metadata') or {}).get('target_symbols'),
             ((candidate.get('dsl') or {}).get('metadata') or {}).get('stock_pool'),
-        ])
+        ], research_task, fallback_symbols=[
+            ((provider_payload.get('research_context') or {}).get('candidate_universe_symbols') if isinstance(provider_payload.get('research_context'), dict) else None),
+            research_task.get('target_symbols'),
+        ], limit=8)
+        target_symbols = list(target_resolution.get('target_symbols') or [])
         stock_pool = cls._normalize_stock_pool(candidate.get('stock_pool'), target_symbols)
         selection_logic = candidate.get('selection_logic') or analysis.get('selection_notes') or []
         if isinstance(selection_logic, str):
@@ -1220,12 +1374,41 @@ class LLMProxyStrategyGenerator:
         metadata = {
             **compiled_meta,
             'generator_type': 'external_llm',
+            'hypothesis': str(candidate.get('hypothesis') or candidate.get('rationale') or candidate.get('description') or ''),
+            'holding_horizon': dict(candidate.get('holding_horizon') or research_task.get('holding_window') or {}),
+            'trade_plan': dict(candidate.get('trade_plan') or {}),
+            'risk_rules': dict(candidate.get('risk_rules') or ((params.get('dsl') or {}).get('risk_rules') or {})),
+            'position_sizing': dict(candidate.get('position_sizing') or {}),
+            'execution_notes': candidate.get('execution_notes'),
+            'rebalance_rule': dict(candidate.get('rebalance_rule') or {'mode': 'event_driven_hold' if research_task.get('task_source') == 'event_driven' else 'signal_rebalance'}),
+            'portfolio_spec': dict(candidate.get('portfolio_spec') or {
+                'position_assumption': 'equal_weight_proxy' if len(target_symbols) > 1 else 'single_name_full_notional',
+                'target_weight_scheme': 'equal_weight' if len(target_symbols) > 1 else 'single_name',
+            }),
+            'execution_assumptions': dict(candidate.get('execution_assumptions') or {
+                'commission_rate': 0.00025,
+                'slippage_bps': 8 if research_task.get('task_source') == 'event_driven' else 5,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+            }),
+            'validation_profile': dict(candidate.get('validation_profile') or {
+                'profile': 'event_trade_validation' if research_task.get('validation_focus') == 'event_target_only' else 'trade_rule_validation',
+                'validation_focus': research_task.get('validation_focus'),
+                'primary_validation_layer': 'target' if research_task.get('validation_focus') == 'event_target_only' else 'combined',
+            }),
+            'targeting_policy': dict(candidate.get('targeting_policy') or {
+                'target_symbol_policy': research_task.get('target_symbol_policy'),
+                'universe_expansion_policy': research_task.get('universe_expansion_policy'),
+                'validation_focus': research_task.get('validation_focus'),
+            }),
+            'constraint_check': dict(candidate.get('constraint_check') or target_resolution.get('constraint_check') or {}),
             'generation_reason': {
                 'provider': provider_payload.get('provider'),
                 'model': provider_payload.get('model'),
                 'rationale': candidate.get('rationale'),
                 'analysis': analysis,
                 'research_context': research_context,
+                'constraint_check': dict(candidate.get('constraint_check') or target_resolution.get('constraint_check') or {}),
                 'target_symbols': list(target_symbols),
                 'stock_pool': stock_pool,
                 'selection_logic': list(selection_logic),
@@ -1250,7 +1433,7 @@ class LLMProxyStrategyGenerator:
             'stock_pool': stock_pool,
             'selection_logic': list(selection_logic),
             'research_scope': dict(research_context.get('analysis_scope') or {}),
-            'research_task': dict(provider_payload.get('research_task') or {}),
+            'research_task': research_task,
             'source_candidate': candidate,
         }
         tags = ['external_llm', *(compiled.get('tags') or []), *(candidate.get('tags') or [])]
@@ -1314,13 +1497,18 @@ class LLMProxyStrategyGenerator:
         limit: int = 3,
         snapshot: Optional[dict] = None,
         research_task: Optional[dict[str, Any]] = None,
+        timeout_sec: Optional[float] = None,
     ) -> list[StrategySpec]:
         """使用多阶段 Pipeline 生成策略候选。"""
         pipeline = get_strategy_pipeline()
-        pipeline_result = await pipeline.run_pipeline(
-            db=db,
-            snapshot=snapshot or {},
-            research_task=research_task,
+        pipeline_timeout_sec = float(timeout_sec or self._pipeline_run_timeout_sec())
+        pipeline_result = await asyncio.wait_for(
+            pipeline.run_pipeline(
+                db=db,
+                snapshot=snapshot or {},
+                research_task=research_task,
+            ),
+            timeout=pipeline_timeout_sec,
         )
 
         specs: list[StrategySpec] = []
@@ -1336,9 +1524,13 @@ class LLMProxyStrategyGenerator:
         last_error = None
         last_error_type = None
         for stage_id, stage_result in pipeline_result.stages.items():
-            if stage_result.error and last_error is None:
-                last_error = stage_result.error
-                last_error_type = stage_result.error.split(":", 1)[0] if ":" in stage_result.error else stage_result.error
+            stage_error = getattr(stage_result, "llm_error", None) or stage_result.error
+            stage_error_type = getattr(stage_result, "llm_error_type", None)
+            if stage_error and last_error is None:
+                last_error = stage_error
+                last_error_type = stage_error_type or (
+                    stage_error.split(":", 1)[0] if ":" in stage_error else stage_error
+                )
             if not getattr(stage_result, "llm_attempted", False):
                 continue
             llm_attempt_count += 1
@@ -1353,7 +1545,8 @@ class LLMProxyStrategyGenerator:
                     "elapsed_seconds": round(float(stage_result.elapsed_sec or 0.0), 4),
                     "prompt_chars": int(stage_result.prompt_chars or 0),
                     "response_chars": int(stage_result.response_chars or 0),
-                    "error": stage_result.error,
+                    "error": stage_error,
+                    "error_type": stage_error_type,
                 }
             )
 
@@ -1424,6 +1617,7 @@ class LLMProxyStrategyGenerator:
             compiled_meta = {}
 
         target_symbols = cls._normalize_code_list(candidate.get('target_symbols'))
+        validation_focus = str(((candidate.get('research_task') or {}).get('validation_focus') or 'target_plus_representative')).strip().lower()
 
         if target_symbols and strategy_type == 'dsl_rule':
             dsl_params = dict(params.get('dsl') or {})
@@ -1439,7 +1633,32 @@ class LLMProxyStrategyGenerator:
         metadata = {
             **compiled_meta,
             'generator_type': 'pipeline_staged',
+            'hypothesis': str(candidate.get('hypothesis') or candidate.get('description') or ''),
+            'holding_horizon': dict(candidate.get('holding_horizon') or {}),
+            'trade_plan': dict(candidate.get('trade_plan') or {}),
+            'risk_rules': dict(candidate.get('risk_rules') or ((params.get('dsl') or {}).get('risk_rules') or {})),
+            'position_sizing': dict(candidate.get('position_sizing') or {}),
+            'execution_notes': candidate.get('execution_notes'),
+            'rebalance_rule': dict(candidate.get('rebalance_rule') or {'mode': 'signal_rebalance'}),
+            'portfolio_spec': dict(candidate.get('portfolio_spec') or {
+                'position_assumption': 'equal_weight_proxy' if len(target_symbols) > 1 else 'single_name_full_notional',
+                'target_weight_scheme': 'equal_weight' if len(target_symbols) > 1 else 'single_name',
+            }),
+            'execution_assumptions': dict(candidate.get('execution_assumptions') or {
+                'commission_rate': 0.00025,
+                'slippage_bps': 5,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+            }),
+            'validation_profile': dict(candidate.get('validation_profile') or {
+                'profile': 'event_trade_validation' if validation_focus == 'event_target_only' else 'trade_rule_validation',
+                'validation_focus': validation_focus,
+                'primary_validation_layer': 'target' if validation_focus == 'event_target_only' else 'combined',
+            }),
+            'targeting_policy': dict(candidate.get('targeting_policy') or {}),
+            'constraint_check': dict(candidate.get('constraint_check') or {}),
             'target_symbols': list(target_symbols),
+            'research_task': dict(candidate.get('research_task') or {}),
             'pipeline_provenance': provenance,
             'source_candidate': candidate,
         }
@@ -1464,15 +1683,30 @@ class LLMProxyStrategyGenerator:
             parent_strategies = [dict(item or {}) for item in list(shared_generation_context.get('parent_strategies') or [])]
         # 多阶段 pipeline 路径
         _pipeline_fallback_reason: Optional[str] = None
+        skip_monolithic_external_provider = False
+        pipeline_run_timeout_sec: Optional[float] = None
         if PIPELINE_MODE == 'staged' and self.external_provider.is_enabled():
+            pipeline_run_timeout_sec = self._pipeline_run_timeout_sec()
             try:
                 staged_specs = await self._generate_via_pipeline(
-                    db=db, limit=limit, snapshot=snapshot, research_task=research_task,
+                    db=db,
+                    limit=limit,
+                    snapshot=snapshot,
+                    research_task=research_task,
+                    timeout_sec=pipeline_run_timeout_sec,
                 )
                 if staged_specs:
                     return staged_specs
                 _pipeline_fallback_reason = 'returned_empty'
                 logger.info('Pipeline staged mode returned no specs, falling back to monolithic')
+            except asyncio.TimeoutError as exc:
+                _pipeline_fallback_reason = 'pipeline_timeout'
+                skip_monolithic_external_provider = True
+                logger.warning(
+                    'Pipeline staged mode timed out after %.1fs, falling back to local-only path: %s',
+                    float(pipeline_run_timeout_sec or 0.0),
+                    exc,
+                )
             except Exception as exc:
                 _pipeline_fallback_reason = f'{type(exc).__name__}: {exc}'
                 logger.warning('Pipeline staged mode failed: %s, falling back to monolithic', exc)
@@ -1527,10 +1761,15 @@ class LLMProxyStrategyGenerator:
             'selected_count': 0,
             'selected_generators': {},
             'research_task': dict(research_task or {}),
+            'pipeline_run_timeout_sec': round(float(pipeline_run_timeout_sec or 0.0), 4) if pipeline_run_timeout_sec is not None else None,
         }
         external_specs: list[StrategySpec] = []
         fallback_external_specs: list[StrategySpec] = []
-        if frame is not None and not frame.empty and self.external_provider.is_enabled():
+        if skip_monolithic_external_provider:
+            report['external_provider']['status'] = 'skipped_after_pipeline_timeout'
+            report['external_provider']['last_error_type'] = 'PipelineTimeout'
+            report['external_provider']['last_error'] = 'staged pipeline timed out; monolithic external provider skipped for this task'
+        elif frame is not None and not frame.empty and self.external_provider.is_enabled():
             base_request_limit = max(2, min(int(limit or 3), 3))
             request_limits = [base_request_limit for _ in range(max(1, min(int(LLM_FAN_OUT_COUNT or 1), 4)))]
             report['external_provider']['request_limits'] = list(request_limits)

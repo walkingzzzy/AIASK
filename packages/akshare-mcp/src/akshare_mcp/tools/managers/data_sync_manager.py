@@ -1,8 +1,13 @@
 """数据同步管理器 - 任务调度、状态跟踪、即时执行"""
 
+import argparse
+import contextlib
+import importlib.util
 import json
 import logging
-from datetime import datetime
+from io import StringIO
+from pathlib import Path
+from datetime import datetime, timedelta
 from ...storage import get_db
 from ...utils import ok, fail
 
@@ -21,6 +26,528 @@ def _normalize_kwargs(kwargs: dict) -> dict:
         except Exception:
             pass
     return kwargs
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[6]
+
+
+def _core_market_script_path() -> Path:
+    return _repo_root() / "scripts" / "audit_sync_core_market_data.py"
+
+
+def _factor_context_script_path() -> Path:
+    return _repo_root() / "scripts" / "audit_sync_factor_context_data.py"
+
+
+def _now_local() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _normalize_codes(raw) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        items = raw
+    else:
+        items = str(raw).replace(";", ",").split(",")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        token = str(item).strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    return normalized
+
+
+def _decode_json_obj(value) -> dict:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value or "{}")
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _as_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _compute_next_run(schedule: str, now: datetime | None = None) -> datetime:
+    current = (now or _now_local()).astimezone()
+    normalized = str(schedule or "daily").strip().lower()
+    delta_map = {
+        "hourly": timedelta(hours=1),
+        "daily": timedelta(days=1),
+        "weekly": timedelta(days=7),
+        "monthly": timedelta(days=30),
+    }
+    if normalized not in delta_map:
+        raise ValueError(f"不支持的schedule: {schedule}")
+    return (current + delta_map[normalized]).replace(microsecond=0)
+
+
+def _build_schedule_params(task_type: str, kwargs: dict, codes: list[str]) -> dict:
+    params: dict = {}
+    if kwargs.get("priority"):
+        params["priority"] = str(kwargs.get("priority"))
+
+    if task_type == "core_market":
+        params["years"] = max(int(kwargs.get("years", 1) or 1), 1)
+        params["north_days"] = max(int(kwargs.get("north_days", 365) or 365), 1)
+        params["margin_days"] = max(int(kwargs.get("margin_days", 90) or 90), 1)
+        params["calendar_year"] = int(kwargs.get("calendar_year") or _now_local().year)
+        stock_codes = _normalize_codes(kwargs.get("stock_codes"))
+        if stock_codes:
+            params["stock_codes"] = stock_codes
+        elif codes:
+            params["stock_codes"] = list(codes)
+    elif task_type == "factor_context":
+        params["news_days"] = max(int(kwargs.get("news_days", 30) or 30), 1)
+        params["notice_days"] = max(int(kwargs.get("notice_days", 30) or 30), 1)
+        params["item_limit"] = max(int(kwargs.get("item_limit", 10) or 10), 1)
+        params["active_pool_limit"] = max(int(kwargs.get("active_pool_limit", 12) or 12), 1)
+        params["task_run_limit"] = max(int(kwargs.get("task_run_limit", 50) or 50), 1)
+        params["scope_sources"] = str(
+            kwargs.get("scope_sources") or "explicit,representative,active_pool,factory_targets"
+        ).strip()
+    else:
+        period = kwargs.get("period")
+        if period:
+            params["period"] = str(period)
+
+    return params
+
+
+def _build_task_payload(task_type: str, codes: list[str], payload: dict | None = None) -> dict:
+    merged = dict(payload or {})
+    if codes:
+        merged["codes"] = list(codes)
+    if task_type == "core_market":
+        stock_codes = _normalize_codes(merged.get("stock_codes"))
+        if not stock_codes and codes:
+            stock_codes = list(codes)
+        if stock_codes:
+            merged["stock_codes"] = stock_codes
+    elif task_type == "factor_context":
+        merged["codes"] = list(codes)
+    return merged
+
+
+async def _update_schedule_runtime(db, schedule_id: str, *, last_run: datetime, next_run: datetime) -> None:
+    async with db.acquire() as conn:
+        try:
+            await conn.execute(
+                """
+                UPDATE sync_schedules
+                SET last_run = $2, next_run = $3, updated_at = NOW()
+                WHERE schedule_id = $1
+                """,
+                schedule_id,
+                last_run,
+                next_run,
+            )
+        except Exception:
+            await conn.execute(
+                """
+                UPDATE sync_schedules
+                SET last_run = $2, next_run = $3
+                WHERE schedule_id = $1
+                """,
+                schedule_id,
+                last_run,
+                next_run,
+            )
+
+
+async def _execute_sync_task(
+    db,
+    *,
+    task_type: str,
+    codes: list[str],
+    priority: str,
+    payload: dict | None = None,
+    trigger: str = "manual",
+    schedule_id: str | None = None,
+) -> dict:
+    task_id = f"sync_{task_type}_{int(datetime.now().timestamp())}"
+    results = {"success": 0, "failed": 0, "errors": []}
+    final_status = "completed"
+    effective_codes = _normalize_codes(codes)
+    effective_payload = _build_task_payload(task_type, effective_codes, payload)
+
+    if task_type not in {"core_market", "factor_context"} and not effective_codes:
+        raise ValueError("需要提供codes参数")
+
+    try:
+        async with db.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO sync_tasks (task_id, task_type, codes, priority, status, created_at)
+                   VALUES ($1, $2, $3, $4, 'running', NOW())""",
+                task_id,
+                task_type,
+                effective_codes,
+                priority,
+            )
+    except Exception as e:
+        logger.warning(f"[DataSyncManager] 写入任务记录失败: {e}")
+
+    try:
+        if task_type == "kline":
+            results = await _sync_klines_now(effective_codes)
+        elif task_type == "financial":
+            results = await _sync_financials_check(effective_codes)
+        elif task_type == "core_market":
+            results = await _sync_core_market_now(effective_payload)
+        elif task_type == "factor_context":
+            results = await _sync_factor_context_now(effective_payload)
+        else:
+            results = await _sync_klines_now(effective_codes)
+
+        if results.get("failed", 0) > 0 and results.get("success", 0) == 0:
+            final_status = "failed"
+    except Exception as e:
+        final_status = "failed"
+        results["errors"].append(str(e))
+        logger.warning(f"[DataSyncManager] 同步执行异常: {e}")
+
+    try:
+        async with db.acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    UPDATE sync_tasks
+                    SET status = $1, error_message = $2, updated_at = NOW(), completed_at = NOW()
+                    WHERE task_id = $3
+                    """,
+                    final_status,
+                    "; ".join(results.get("errors") or [])[:2000] or None,
+                    task_id,
+                )
+            except Exception:
+                await conn.execute(
+                    "UPDATE sync_tasks SET status = $1 WHERE task_id = $2",
+                    final_status,
+                    task_id,
+                )
+    except Exception:
+        pass
+
+    return {
+        "task_id": task_id,
+        "task_type": task_type,
+        "codes_count": len(effective_codes),
+        "priority": priority,
+        "status": final_status,
+        "results": results,
+        "trigger": trigger,
+        "schedule_id": schedule_id,
+        "message": f'同步完成: 成功 {results.get("success", 0)}, 失败 {results.get("failed", 0)}',
+    }
+
+
+async def _run_due_schedules(
+    db,
+    *,
+    force: bool = False,
+    limit: int = 20,
+    schedule_id: str | None = None,
+    task_type: str | None = None,
+) -> dict:
+    now = _now_local()
+    async with db.acquire() as conn:
+        if force:
+            if schedule_id:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM sync_schedules
+                    WHERE enabled = true AND schedule_id = $1
+                    ORDER BY COALESCE(next_run, created_at) ASC
+                    LIMIT $2
+                    """,
+                    schedule_id,
+                    limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM sync_schedules
+                    WHERE enabled = true
+                    ORDER BY COALESCE(next_run, created_at) ASC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+        else:
+            if schedule_id:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM sync_schedules
+                    WHERE enabled = true
+                      AND schedule_id = $1
+                      AND (next_run IS NULL OR next_run <= $2)
+                    ORDER BY COALESCE(next_run, created_at) ASC
+                    LIMIT $3
+                    """,
+                    schedule_id,
+                    now,
+                    limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM sync_schedules
+                    WHERE enabled = true
+                      AND (next_run IS NULL OR next_run <= $1)
+                    ORDER BY COALESCE(next_run, created_at) ASC
+                    LIMIT $2
+                    """,
+                    now,
+                    limit,
+                )
+
+    if task_type:
+        normalized_task_type = str(task_type).strip().lower()
+        rows = [
+            row for row in rows
+            if str(dict(row).get("task_type") or "").strip().lower() == normalized_task_type
+        ]
+    rows = list(rows)[: max(1, int(limit or 20))]
+
+    executions = []
+    for row in rows:
+        schedule = dict(row)
+        schedule["params"] = _decode_json_obj(schedule.get("params"))
+        task_type = str(schedule.get("task_type") or "kline")
+        codes = _normalize_codes(schedule.get("codes"))
+        params = dict(schedule.get("params") or {})
+        priority = str(params.get("priority") or "normal")
+        payload = _build_task_payload(task_type, codes, params)
+        run_started_at = _now_local()
+        result = await _execute_sync_task(
+            db,
+            task_type=task_type,
+            codes=codes,
+            priority=priority,
+            payload=payload,
+            trigger="schedule",
+            schedule_id=str(schedule.get("schedule_id")),
+        )
+        next_run = _compute_next_run(str(schedule.get("schedule") or "daily"), run_started_at)
+        await _update_schedule_runtime(
+            db,
+            str(schedule.get("schedule_id")),
+            last_run=run_started_at,
+            next_run=next_run,
+        )
+        executions.append(
+            {
+                "schedule_id": schedule.get("schedule_id"),
+                "task_type": task_type,
+                "schedule": schedule.get("schedule"),
+                "last_run": run_started_at.isoformat(),
+                "next_run": next_run.isoformat(),
+                "task": result,
+            }
+        )
+
+    return {
+        "matched": len(rows),
+        "executed": len(executions),
+        "force": force,
+        "schedules": executions,
+    }
+
+
+async def _count_enabled_schedules(db, *, task_type: str) -> int:
+    async with db.acquire() as conn:
+        try:
+            value = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM sync_schedules
+                WHERE enabled = true AND task_type = $1
+                """,
+                str(task_type or "").strip().lower(),
+            )
+            return int(value or 0)
+        except Exception:
+            return 0
+
+
+async def _ensure_runtime_warmup_schedule(db, *, task_type: str) -> dict:
+    normalized_task_type = str(task_type or "core_market").strip().lower() or "core_market"
+    schedule_id = f"schedule_runtime_{normalized_task_type}"
+    params = _build_schedule_params(normalized_task_type, {}, [])
+    next_run = _now_local().replace(microsecond=0)
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO sync_schedules (schedule_id, task_type, codes, schedule, params, enabled, next_run, created_at)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, NOW())
+            ON CONFLICT (schedule_id) DO UPDATE SET
+                task_type = EXCLUDED.task_type,
+                codes = EXCLUDED.codes,
+                schedule = EXCLUDED.schedule,
+                params = EXCLUDED.params,
+                enabled = EXCLUDED.enabled,
+                next_run = EXCLUDED.next_run
+            """,
+            schedule_id,
+            normalized_task_type,
+            [],
+            "daily",
+            json.dumps(params, ensure_ascii=False, default=str),
+            True,
+            next_run,
+        )
+    return {
+        "schedule_id": schedule_id,
+        "task_type": normalized_task_type,
+        "schedule": "daily",
+        "enabled": True,
+        "params": params,
+        "next_run": next_run.isoformat(),
+    }
+
+
+async def run_runtime_data_warmup(
+    *,
+    task_type: str = "core_market",
+    force: bool = False,
+    limit: int = 4,
+    schedule_id: str | None = None,
+    source: str = "runtime",
+    bootstrap_missing: bool = True,
+) -> dict:
+    db = get_db()
+    raw_task_type = str(task_type or "core_market").strip().lower() or "core_market"
+    task_types = [item for item in _normalize_codes(raw_task_type) if item]
+    if not task_types:
+        task_types = ["core_market"]
+
+    schedule_results = []
+    schedules = []
+    bootstrapped_task_types: list[str] = []
+    bootstrapped_schedules: list[dict] = []
+    for one_task_type in task_types:
+        result = await _run_due_schedules(
+            db,
+            force=force,
+            limit=max(1, int(limit or 4)),
+            schedule_id=schedule_id,
+            task_type=one_task_type,
+        )
+        if bootstrap_missing and result.get("matched", 0) <= 0:
+            existing_schedule_count = await _count_enabled_schedules(db, task_type=one_task_type)
+            if existing_schedule_count <= 0:
+                bootstrapped = await _ensure_runtime_warmup_schedule(db, task_type=one_task_type)
+                bootstrapped_task_types.append(one_task_type)
+                bootstrapped_schedules.append(bootstrapped)
+                result = await _run_due_schedules(
+                    db,
+                    force=force,
+                    limit=max(1, int(limit or 4)),
+                    schedule_id=None,
+                    task_type=one_task_type,
+                )
+                result["bootstrapped"] = True
+                result["bootstrap_schedule"] = bootstrapped
+            else:
+                result["bootstrapped"] = False
+        else:
+            result["bootstrapped"] = False
+        schedule_results.append({"task_type": one_task_type, **result})
+        schedules.extend(list(result.get("schedules") or []))
+
+    failed_items = [
+        item for item in schedules
+        if str(((item.get("task") or {}).get("status") or "")).strip().lower() not in {"completed", "success"}
+    ]
+    status = "completed"
+    ok = True
+    matched_total = sum(int(item.get("matched") or 0) for item in schedule_results)
+    executed_total = sum(int(item.get("executed") or 0) for item in schedule_results)
+    if matched_total <= 0:
+        status = "skipped"
+    elif failed_items and len(failed_items) == len(schedules):
+        status = "failed"
+        ok = False
+    elif failed_items:
+        status = "partial"
+
+    return {
+        "ok": ok,
+        "status": status,
+        "source": source,
+        "task_type": raw_task_type,
+        "task_types": task_types,
+        "force": bool(force),
+        "bootstrap_missing": bool(bootstrap_missing),
+        "bootstrapped_task_types": bootstrapped_task_types,
+        "bootstrapped_schedules": bootstrapped_schedules,
+        "schedule_id": schedule_id,
+        "matched": matched_total,
+        "executed": executed_total,
+        "failed": len(failed_items),
+        "executed_task_ids": [
+            (item.get("task") or {}).get("task_id")
+            for item in schedules
+            if (item.get("task") or {}).get("task_id")
+        ],
+        "failed_schedule_ids": [
+            item.get("schedule_id")
+            for item in failed_items
+            if item.get("schedule_id")
+        ],
+        "results_by_task_type": schedule_results,
+        "schedules": schedules,
+    }
+
+
+async def _load_market_aux_status(db) -> dict:
+    async with db.acquire() as conn:
+        async def _fetch_meta(table: str, date_col: str = "trade_date") -> dict:
+            try:
+                row = await conn.fetchrow(
+                    f"SELECT COUNT(*) AS cnt, MIN({date_col}) AS min_d, MAX({date_col}) AS max_d FROM {table}"
+                )
+            except Exception:
+                row = None
+            if not row:
+                return {"count": 0, "min_date": None, "max_date": None}
+            return {
+                "count": int(row.get("cnt") or 0),
+                "min_date": row.get("min_d").isoformat() if row.get("min_d") else None,
+                "max_date": row.get("max_d").isoformat() if row.get("max_d") else None,
+            }
+
+        return {
+            "north_fund_flow": await _fetch_meta("north_fund_flow"),
+            "margin_market_flow": await _fetch_meta("margin_market_flow"),
+            "margin_detail": await _fetch_meta("margin_detail"),
+            "vector_documents": await conn.fetchval("SELECT COUNT(*) FROM vector_documents") or 0,
+            "vector_documents_news": await conn.fetchval("SELECT COUNT(*) FROM vector_documents WHERE doc_type = 'news'") or 0,
+            "vector_documents_notice": await conn.fetchval("SELECT COUNT(*) FROM vector_documents WHERE doc_type = 'notice'") or 0,
+            "vector_documents_research": await conn.fetchval("SELECT COUNT(*) FROM vector_documents WHERE doc_type = 'research'") or 0,
+            "research_reports": await _fetch_meta("research_reports", date_col="publish_date"),
+            "stock_fund_flow": await _fetch_meta("stock_fund_flow"),
+        }
 
 
 def register_data_sync_manager(mcp):
@@ -65,11 +592,13 @@ def register_data_sync_manager(mcp):
                 return ok({
                     'supported_actions': {
                         'status': '数据同步状态',
-                        'sync': '执行数据同步（需要 codes）',
+                        'sync': '执行数据同步（K线/财务/因子上下文需 codes；core_market 可直接运行）',
                         'get_task': '获取任务详情（需要 task_id）',
                         'list_tasks': '列出同步任务',
                         'cancel_task': '取消任务（需要 task_id）',
-                        'schedule': '调度管理',
+                        'schedule': '创建调度任务',
+                        'list_schedules': '列出已登记调度',
+                        'run_due_schedules': '执行到期调度（force=true 可强制执行）',
                         'help': '显示帮助信息',
                     }
                 })
@@ -92,6 +621,21 @@ def register_data_sync_manager(mcp):
                     running_tasks = await conn.fetchval(
                         "SELECT COUNT(*) FROM sync_tasks WHERE status = 'running'"
                     ) or 0
+                    due_schedule_count = await conn.fetchval(
+                        """
+                        SELECT COUNT(*)
+                        FROM sync_schedules
+                        WHERE enabled = true
+                          AND (next_run IS NULL OR next_run <= NOW())
+                        """
+                    ) or 0
+                    next_schedule_run = await conn.fetchval(
+                        """
+                        SELECT MIN(next_run)
+                        FROM sync_schedules
+                        WHERE enabled = true AND next_run IS NOT NULL
+                        """
+                    )
                 def _ts_iso(ts):
                     if ts is None:
                         return None
@@ -102,70 +646,30 @@ def register_data_sync_manager(mcp):
                         'quote': _ts_iso(quote_sync),
                         'financial': _ts_iso(financial_sync),
                     },
+                    'market_aux': await _load_market_aux_status(db),
                     'status': 'running' if running_tasks > 0 else 'idle',
                     'pending_tasks': int(pending_tasks),
                     'running_tasks': int(running_tasks),
+                    'due_schedule_count': int(due_schedule_count),
+                    'next_schedule_run': _ts_iso(next_schedule_run),
                 })
             
             elif action == 'sync':
                 task_type = kwargs.get('type', 'kline')
-                codes = kwargs.get('codes', [])
+                codes = _normalize_codes(kwargs.get('codes') or kwargs.get('stock_codes'))
                 priority = kwargs.get('priority', 'normal')
 
-                if not codes:
+                if task_type not in {'core_market', 'factor_context'} and not codes:
                     return fail('需要提供codes参数')
-
-                task_id = f'sync_{task_type}_{int(datetime.now().timestamp())}'
-
-                # 写入任务记录
-                try:
-                    async with db.acquire() as conn:
-                        await conn.execute(
-                            """INSERT INTO sync_tasks (task_id, task_type, codes, priority, status, created_at)
-                               VALUES ($1, $2, $3, $4, 'running', NOW())""",
-                            task_id, task_type, codes, priority
-                        )
-                except Exception as e:
-                    logger.warning(f"[DataSyncManager] 写入任务记录失败: {e}")
-
-                # 立即执行同步（而非等待不存在的worker）
-                results = {'success': 0, 'failed': 0, 'errors': []}
-                final_status = 'completed'
-                try:
-                    if task_type == 'kline':
-                        results = await _sync_klines_now(codes)
-                    elif task_type == 'financial':
-                        results = await _sync_financials_check(codes)
-                    else:
-                        # 其他类型默认走K线同步
-                        results = await _sync_klines_now(codes)
-
-                    if results.get('failed', 0) > 0 and results.get('success', 0) == 0:
-                        final_status = 'failed'
-                except Exception as e:
-                    final_status = 'failed'
-                    results['errors'].append(str(e))
-                    logger.warning(f"[DataSyncManager] 同步执行异常: {e}")
-
-                # 更新任务状态
-                try:
-                    async with db.acquire() as conn:
-                        await conn.execute(
-                            "UPDATE sync_tasks SET status = $1 WHERE task_id = $2",
-                            final_status, task_id
-                        )
-                except Exception:
-                    pass
-
-                return ok({
-                    'task_id': task_id,
-                    'task_type': task_type,
-                    'codes_count': len(codes),
-                    'priority': priority,
-                    'status': final_status,
-                    'results': results,
-                    'message': f'同步完成: 成功 {results.get("success", 0)}, 失败 {results.get("failed", 0)}',
-                })
+                payload = _build_task_payload(task_type, codes, kwargs)
+                result = await _execute_sync_task(
+                    db,
+                    task_type=task_type,
+                    codes=codes,
+                    priority=str(priority),
+                    payload=payload,
+                )
+                return ok(result)
             
             elif action == 'get_task':
                 task_id = kwargs.get('task_id')
@@ -236,19 +740,30 @@ def register_data_sync_manager(mcp):
             
             elif action == 'schedule':
                 task_type = kwargs.get('type', 'kline')
-                codes = kwargs.get('codes', [])
-                schedule = kwargs.get('schedule', 'daily')
+                codes = _normalize_codes(kwargs.get('codes') or kwargs.get('stock_codes'))
+                schedule = str(kwargs.get('schedule', 'daily')).strip().lower()
+                enabled = _as_bool(kwargs.get('enabled', True), True)
                 
-                if not codes:
+                if task_type not in {'core_market', 'factor_context'} and not codes:
                     return fail('需要提供codes参数')
                 
                 schedule_id = f'schedule_{task_type}_{int(datetime.now().timestamp())}'
+                next_run = _compute_next_run(schedule)
+                params = _build_schedule_params(task_type, kwargs, codes)
                 
                 async with db.acquire() as conn:
                     await conn.execute(
-                        """INSERT INTO sync_schedules (schedule_id, task_type, codes, schedule, enabled, created_at)
-                           VALUES ($1, $2, $3, $4, true, NOW())""",
-                        schedule_id, task_type, codes, schedule
+                        """
+                        INSERT INTO sync_schedules (schedule_id, task_type, codes, schedule, params, enabled, next_run, created_at)
+                        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, NOW())
+                        """,
+                        schedule_id,
+                        task_type,
+                        codes,
+                        schedule,
+                        json.dumps(params, ensure_ascii=False, default=str),
+                        enabled,
+                        next_run,
                     )
                 
                 return ok({
@@ -256,11 +771,69 @@ def register_data_sync_manager(mcp):
                     'task_type': task_type,
                     'schedule': schedule,
                     'codes_count': len(codes),
-                    'enabled': True,
+                    'enabled': enabled,
+                    'params': params,
+                    'next_run': next_run.isoformat(),
                 })
+
+            elif action == 'list_schedules':
+                enabled = kwargs.get('enabled')
+                schedule_id = kwargs.get('schedule_id')
+                limit = int(kwargs.get('limit', 20) or 20)
+
+                async with db.acquire() as conn:
+                    if schedule_id and enabled is None:
+                        rows = await conn.fetch(
+                            "SELECT * FROM sync_schedules WHERE schedule_id = $1 ORDER BY created_at DESC LIMIT $2",
+                            str(schedule_id),
+                            limit,
+                        )
+                    elif schedule_id and enabled is not None:
+                        rows = await conn.fetch(
+                            "SELECT * FROM sync_schedules WHERE schedule_id = $1 AND enabled = $2 ORDER BY created_at DESC LIMIT $3",
+                            str(schedule_id),
+                            _as_bool(enabled),
+                            limit,
+                        )
+                    elif enabled is None:
+                        rows = await conn.fetch(
+                            "SELECT * FROM sync_schedules ORDER BY created_at DESC LIMIT $1",
+                            limit,
+                        )
+                    else:
+                        rows = await conn.fetch(
+                            "SELECT * FROM sync_schedules WHERE enabled = $1 ORDER BY created_at DESC LIMIT $2",
+                            _as_bool(enabled),
+                            limit,
+                        )
+
+                schedules = []
+                for row in rows:
+                    item = dict(row)
+                    item['params'] = _decode_json_obj(item.get('params'))
+                    schedules.append(item)
+
+                return ok({
+                    'schedules': schedules,
+                    'count': len(schedules),
+                })
+
+            elif action == 'run_due_schedules':
+                force = _as_bool(kwargs.get('force', False), False)
+                schedule_id = kwargs.get('schedule_id')
+                task_type = kwargs.get('task_type')
+                limit = int(kwargs.get('limit', 20) or 20)
+                result = await _run_due_schedules(
+                    db,
+                    force=force,
+                    limit=limit,
+                    schedule_id=str(schedule_id).strip() if schedule_id else None,
+                    task_type=str(task_type).strip() if task_type else None,
+                )
+                return ok(result)
             
             else:
-                return fail(f'Unknown action: {action}. Supported: help, status, sync, get_task, list_tasks, cancel_task, schedule')
+                return fail(f'Unknown action: {action}. Supported: help, status, sync, get_task, list_tasks, cancel_task, schedule, list_schedules, run_due_schedules')
         except Exception as e:
             return fail(str(e))
 
@@ -327,3 +900,105 @@ async def _sync_financials_check(codes: list) -> dict:
         )
 
     return results
+
+
+async def _sync_core_market_now(kwargs: dict) -> dict:
+    """调用核心市场审查补数脚本，补齐指数/北向/融资融券数据。"""
+    script_path = _core_market_script_path()
+    if not script_path.exists():
+        return {'success': 0, 'failed': 1, 'errors': [f'脚本不存在: {script_path}']}
+
+    spec = importlib.util.spec_from_file_location("audit_sync_core_market_data_runtime", script_path)
+    if spec is None or spec.loader is None:
+        return {'success': 0, 'failed': 1, 'errors': [f'无法加载脚本: {script_path}']}
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    args = argparse.Namespace(
+        years=max(int(kwargs.get('years', 1) or 1), 1),
+        stock_codes=",".join([str(item).strip() for item in list(kwargs.get('codes') or kwargs.get('stock_codes') or []) if str(item).strip()])
+        if isinstance(kwargs.get('codes') or kwargs.get('stock_codes'), list)
+        else str(kwargs.get('stock_codes') or kwargs.get('codes') or ",".join(getattr(module, 'DEFAULT_STOCK_CODES', []))),
+        calendar_year=int(kwargs.get('calendar_year') or datetime.now().year),
+        north_days=max(int(kwargs.get('north_days', 365) or 365), 1),
+        margin_days=max(int(kwargs.get('margin_days', 90) or 90), 1),
+    )
+
+    capture = StringIO()
+    exit_code = 1
+    with contextlib.redirect_stdout(capture):
+        exit_code = await module._main(args)
+
+    db = get_db()
+    market_aux = await _load_market_aux_status(db)
+    output_lines = [line for line in capture.getvalue().splitlines() if line.strip()]
+    tail_lines = output_lines[-40:]
+    result = {
+        'success': 1 if exit_code == 0 else 0,
+        'failed': 0 if exit_code == 0 else 1,
+        'errors': [] if exit_code == 0 else [f'core_market_sync exit_code={exit_code}'],
+        'exit_code': int(exit_code),
+        'args': {
+            'years': args.years,
+            'stock_codes': args.stock_codes,
+            'calendar_year': args.calendar_year,
+            'north_days': args.north_days,
+            'margin_days': args.margin_days,
+        },
+        'market_aux': market_aux,
+        'stdout_tail': tail_lines,
+    }
+    return result
+
+
+async def _sync_factor_context_now(kwargs: dict) -> dict:
+    """调用因子上下文补数脚本，补齐新闻/公告/研报/个股资金流。"""
+    script_path = _factor_context_script_path()
+    if not script_path.exists():
+        return {'success': 0, 'failed': 1, 'errors': [f'脚本不存在: {script_path}']}
+
+    spec = importlib.util.spec_from_file_location("audit_sync_factor_context_runtime", script_path)
+    if spec is None or spec.loader is None:
+        return {'success': 0, 'failed': 1, 'errors': [f'无法加载脚本: {script_path}']}
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    raw_codes = kwargs.get('codes') or kwargs.get('stock_codes')
+    args = argparse.Namespace(
+        codes=",".join([str(item).strip() for item in list(raw_codes) if str(item).strip()]) if isinstance(raw_codes, list) else str(raw_codes or ""),
+        scope_sources=str(kwargs.get('scope_sources') or "explicit,representative,active_pool,factory_targets"),
+        active_pool_limit=max(int(kwargs.get('active_pool_limit', 12) or 12), 1),
+        task_run_limit=max(int(kwargs.get('task_run_limit', 50) or 50), 1),
+        news_days=max(int(kwargs.get('news_days', 30) or 30), 1),
+        notice_days=max(int(kwargs.get('notice_days', 30) or 30), 1),
+        item_limit=max(int(kwargs.get('item_limit', 10) or 10), 1),
+    )
+
+    capture = StringIO()
+    exit_code = 1
+    with contextlib.redirect_stdout(capture):
+        exit_code = await module._main(args)
+
+    db = get_db()
+    market_aux = await _load_market_aux_status(db)
+    output_lines = [line for line in capture.getvalue().splitlines() if line.strip()]
+    tail_lines = output_lines[-40:]
+    return {
+        'success': 1 if exit_code == 0 else 0,
+        'failed': 0 if exit_code == 0 else 1,
+        'errors': [] if exit_code == 0 else [f'factor_context_sync exit_code={exit_code}'],
+        'exit_code': int(exit_code),
+        'args': {
+            'codes': args.codes,
+            'scope_sources': args.scope_sources,
+            'active_pool_limit': args.active_pool_limit,
+            'task_run_limit': args.task_run_limit,
+            'news_days': args.news_days,
+            'notice_days': args.notice_days,
+            'item_limit': args.item_limit,
+        },
+        'market_aux': market_aux,
+        'stdout_tail': tail_lines,
+    }

@@ -36,19 +36,25 @@ class TestConcurrencyConstants:
             "STRATEGY_FACTORY_MAX_RESEARCH_TASKS",
             "STRATEGY_FACTORY_CANDIDATES_PER_TASK",
             "STRATEGY_PIPELINE_STAGE_TIMEOUT_SEC",
+            "STRATEGY_PIPELINE_STAGE_EVENT_RECOGNITION_TIMEOUT_SEC",
+            "STRATEGY_PIPELINE_STAGE_THEME_PROPAGATION_TIMEOUT_SEC",
+            "STRATEGY_PIPELINE_STAGE_EXPOSURE_MAPPING_TIMEOUT_SEC",
+            "STRATEGY_PIPELINE_STAGE_MARKET_CONFIRMATION_TIMEOUT_SEC",
+            "STRATEGY_PIPELINE_STAGE_STRATEGY_GENERATION_TIMEOUT_SEC",
         ]
         with mock.patch.dict(os.environ, {}, clear=False):
             for key in keys_to_clear:
                 os.environ.pop(key, None)
-            from akshare_mcp.services.strategy_factory import constants as C
-            C = importlib.reload(C)
+            with mock.patch("akshare_mcp.env_loader.load_mcp_env", return_value=None):
+                from strategy_factory.domain import constants as C
+                C = importlib.reload(C)
 
-            assert C.RESEARCH_TASK_CONCURRENCY == 5
-            assert C.BACKTEST_CONCURRENCY == 4
-            assert C.SUBMIT_CONCURRENCY == 3
-            assert C.AUTONOMY_MAX_RESEARCH_TASKS == 8
-            assert C.AUTONOMY_CANDIDATES_PER_TASK == 4
-            assert C.PIPELINE_STAGE_TIMEOUT_SEC == 10.0
+                assert C.RESEARCH_TASK_CONCURRENCY == 5
+                assert C.BACKTEST_CONCURRENCY == 4
+                assert C.SUBMIT_CONCURRENCY == 3
+                assert C.AUTONOMY_MAX_RESEARCH_TASKS == 12
+                assert C.AUTONOMY_CANDIDATES_PER_TASK == 4
+                assert C.PIPELINE_STAGE_TIMEOUT_SEC == 10.0
 
     def test_pipeline_stage_timeouts_dict(self):
         from akshare_mcp.services.strategy_factory.constants import PIPELINE_STAGE_TIMEOUTS
@@ -58,6 +64,52 @@ class TestConcurrencyConstants:
         assert "strategy_generation" in PIPELINE_STAGE_TIMEOUTS
         # strategy_generation 应该是最长的
         assert PIPELINE_STAGE_TIMEOUTS["strategy_generation"] >= PIPELINE_STAGE_TIMEOUTS["theme_propagation"]
+        assert PIPELINE_STAGE_TIMEOUTS["event_recognition"] >= 1.0
+
+    def test_global_pipeline_timeout_applies_to_all_stages_when_configured(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "STRATEGY_PIPELINE_STAGE_TIMEOUT_SEC": "20",
+            },
+            clear=False,
+        ):
+            for key in (
+                "STRATEGY_PIPELINE_STAGE_EVENT_RECOGNITION_TIMEOUT_SEC",
+                "STRATEGY_PIPELINE_STAGE_THEME_PROPAGATION_TIMEOUT_SEC",
+                "STRATEGY_PIPELINE_STAGE_EXPOSURE_MAPPING_TIMEOUT_SEC",
+                "STRATEGY_PIPELINE_STAGE_MARKET_CONFIRMATION_TIMEOUT_SEC",
+                "STRATEGY_PIPELINE_STAGE_STRATEGY_GENERATION_TIMEOUT_SEC",
+            ):
+                os.environ.pop(key, None)
+            from strategy_factory.domain import constants as C
+
+            C = importlib.reload(C)
+            assert C.PIPELINE_STAGE_TIMEOUT_SEC == 20.0
+            assert C.PIPELINE_STAGE_TIMEOUTS["event_recognition"] == 20.0
+            assert C.PIPELINE_STAGE_TIMEOUTS["strategy_generation"] == 20.0
+
+    def test_stage_specific_timeout_can_override_global_timeout(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "STRATEGY_PIPELINE_STAGE_TIMEOUT_SEC": "20",
+                "STRATEGY_PIPELINE_STAGE_EVENT_RECOGNITION_TIMEOUT_SEC": "35",
+            },
+            clear=False,
+        ):
+            for key in (
+                "STRATEGY_PIPELINE_STAGE_THEME_PROPAGATION_TIMEOUT_SEC",
+                "STRATEGY_PIPELINE_STAGE_EXPOSURE_MAPPING_TIMEOUT_SEC",
+                "STRATEGY_PIPELINE_STAGE_MARKET_CONFIRMATION_TIMEOUT_SEC",
+                "STRATEGY_PIPELINE_STAGE_STRATEGY_GENERATION_TIMEOUT_SEC",
+            ):
+                os.environ.pop(key, None)
+            from strategy_factory.domain import constants as C
+
+            C = importlib.reload(C)
+            assert C.PIPELINE_STAGE_TIMEOUTS["event_recognition"] == 35.0
+            assert C.PIPELINE_STAGE_TIMEOUTS["theme_propagation"] == 20.0
 
     def test_env_override_research_concurrency(self):
         with mock.patch.dict(os.environ, {"STRATEGY_FACTORY_RESEARCH_TASK_CONCURRENCY": "8"}):
@@ -83,6 +135,21 @@ class TestConcurrencyConstants:
 
 class TestSchedulerConcurrency:
     """验证 _run_autonomy_batches 使用了 asyncio.Semaphore 做有界并发。"""
+
+    def test_research_task_concurrency_is_capped_by_external_provider(self):
+        from akshare_mcp.services.strategy_factory.factory_scheduler import StrategyFactoryScheduler
+
+        enabled_provider = types.SimpleNamespace(
+            is_enabled=lambda: True,
+            config=types.SimpleNamespace(max_concurrency=3),
+        )
+        autonomy_gateway = types.SimpleNamespace(
+            generation_service=types.SimpleNamespace(
+                llm_generator=types.SimpleNamespace(external_provider=enabled_provider)
+            )
+        )
+
+        assert StrategyFactoryScheduler._resolve_research_task_concurrency(autonomy_gateway) == 3
 
     @pytest.mark.asyncio
     async def test_tasks_run_concurrently(self):
@@ -285,15 +352,33 @@ class TestConnectionPoolReuse:
 class TestPipelineStageTimeout:
     def test_stage_specific_timeout_is_used(self):
         """_call_llm_stage 应使用每阶段独立超时。"""
-        from akshare_mcp.services.strategy_pipeline import MultiStageStrategyPipeline
-        from akshare_mcp.services.strategy_factory.constants import PIPELINE_STAGE_TIMEOUTS
+        with mock.patch.dict(
+            os.environ,
+            {
+                "STRATEGY_PIPELINE_STAGE_TIMEOUT_SEC": "18",
+                "STRATEGY_PIPELINE_STAGE_EVENT_RECOGNITION_TIMEOUT_SEC": "24",
+            },
+            clear=False,
+        ):
+            for key in (
+                "STRATEGY_PIPELINE_STAGE_THEME_PROPAGATION_TIMEOUT_SEC",
+                "STRATEGY_PIPELINE_STAGE_EXPOSURE_MAPPING_TIMEOUT_SEC",
+                "STRATEGY_PIPELINE_STAGE_MARKET_CONFIRMATION_TIMEOUT_SEC",
+                "STRATEGY_PIPELINE_STAGE_STRATEGY_GENERATION_TIMEOUT_SEC",
+            ):
+                os.environ.pop(key, None)
+            from strategy_factory.domain import constants as C
 
-        pipeline = MultiStageStrategyPipeline()
+            C = importlib.reload(C)
+            from akshare_mcp.services import strategy_pipeline as pipeline_mod
 
-        # 验证 strategy_generation 的超时 == PIPELINE_STAGE_TIMEOUTS["strategy_generation"]
-        expected = PIPELINE_STAGE_TIMEOUTS["strategy_generation"]
-        assert expected == 12.0
+            pipeline_mod = importlib.reload(pipeline_mod)
+            pipeline = pipeline_mod.MultiStageStrategyPipeline()
 
-        expected_event = PIPELINE_STAGE_TIMEOUTS["event_recognition"]
-        assert expected_event == 8.0
+            assert pipeline is not None
 
+            expected = C.PIPELINE_STAGE_TIMEOUTS["strategy_generation"]
+            assert expected == 18.0
+
+            expected_event = C.PIPELINE_STAGE_TIMEOUTS["event_recognition"]
+            assert expected_event == 24.0

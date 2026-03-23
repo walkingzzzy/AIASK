@@ -13,9 +13,10 @@ from ..utils import fail, normalize_code, ok, parse_numeric, safe_float
 from ..core.rate_limiter import get_limiter
 from ..date_utils import get_latest_trading_date, format_date_dash
 from ..data_source import data_source
+from ..storage import get_db
 from .market.helpers import get_name_map as _get_cached_name_map
 
-from .fund_flow_common import _fetch_eastmoney_datacenter
+from .fund_flow_common import _fetch_eastmoney_datacenter, _run_storage_call_sync
 
 
 # =====================
@@ -121,6 +122,99 @@ def get_dragon_tiger(date: str = "", stock_code: str = "") -> dict:
 # Margin data
 # =====================
 
+
+def _stock_ts_code(code: str) -> str:
+    normalized = normalize_code(code)
+    if normalized.startswith(("5", "6", "9")):
+        return f"{normalized}.SH"
+    return f"{normalized}.SZ"
+
+
+def _margin_rows_from_db(stock_code: str = "", days: int = 30) -> list[dict]:
+    try:
+        db = get_db()
+        limit = min(max(int(days or 30), 1), 200)
+        code = normalize_code(stock_code) if stock_code else ""
+        if code:
+            rows = _run_storage_call_sync(
+                lambda: db.get_margin_detail_latest(limit=limit, ts_code=_stock_ts_code(code)),
+                timeout=20.0,
+            )
+            if not isinstance(rows, list) or not rows:
+                return []
+            name_map = _get_cached_name_map() or {}
+            return [
+                {
+                    "date": str(row.get("trade_date") or ""),
+                    "code": normalize_code(row.get("code") or code),
+                    "name": str(name_map.get(normalize_code(row.get("code") or code), "")),
+                    "marginBalance": parse_numeric(row.get("marginBalance")),
+                    "marginBuy": parse_numeric(row.get("marginBuy")),
+                    "marginRepay": parse_numeric(row.get("marginRepay")),
+                    "shortBalance": parse_numeric(row.get("shortBalance")),
+                    "shortSell": parse_numeric(row.get("shortSell")),
+                    "shortRepay": parse_numeric(row.get("shortRepay")),
+                    "totalBalance": parse_numeric(row.get("totalBalance")),
+                    "source": row.get("source") or "margin_detail",
+                }
+                for row in rows
+                if row.get("trade_date")
+            ]
+
+        rows = _run_storage_call_sync(
+            lambda: db.get_margin_market_history(days=limit),
+            timeout=20.0,
+        )
+        if not isinstance(rows, list) or not rows:
+            return []
+        return [
+            {
+                "date": str(row.get("trade_date") or ""),
+                "code": "",
+                "name": "",
+                "marginBalance": parse_numeric(row.get("marginBalance")),
+                "marginBuy": parse_numeric(row.get("marginBuy")),
+                "marginRepay": parse_numeric(row.get("marginRepay")),
+                "shortBalance": parse_numeric(row.get("shortBalance")),
+                "shortSell": parse_numeric(row.get("shortSell")),
+                "shortRepay": None,
+                "totalBalance": parse_numeric(row.get("totalBalance")),
+                "source": row.get("source") or "margin_market_flow",
+            }
+            for row in rows
+            if row.get("trade_date")
+        ]
+    except Exception:
+        return []
+
+
+def _margin_ranking_from_db(top_n: int = 20, sort_by: str = "balance") -> list[dict]:
+    try:
+        db = get_db()
+        rows = _run_storage_call_sync(
+            lambda: db.get_margin_ranking(top_n=top_n, sort_by=sort_by),
+            timeout=20.0,
+        )
+        if not isinstance(rows, list) or not rows:
+            return []
+        name_map = _get_cached_name_map() or {}
+        return [
+            {
+                "date": str(row.get("trade_date") or ""),
+                "code": normalize_code(row.get("code") or ""),
+                "name": str(name_map.get(normalize_code(row.get("code") or ""), "")),
+                "marginBalance": parse_numeric(row.get("marginBalance")),
+                "marginBuy": parse_numeric(row.get("marginBuy")),
+                "shortSell": parse_numeric(row.get("shortSell")),
+                "totalBalance": parse_numeric(row.get("totalBalance")),
+                "source": row.get("source") or "margin_detail_ranking",
+            }
+            for row in rows
+            if row.get("trade_date")
+        ]
+    except Exception:
+        return []
+
 def get_margin_data(stock_code: str = "", days: int = 30) -> dict:
     """获取融资融券明细数据（支持单只股票或市场摘要）"""
     try:
@@ -128,6 +222,9 @@ def get_margin_data(stock_code: str = "", days: int = 30) -> dict:
         limiter.acquire()
 
         days = int(days) if int(days or 0) > 0 else 30
+        db_rows = _margin_rows_from_db(stock_code=stock_code, days=days)
+        if db_rows:
+            return ok(db_rows)
         params: dict[str, Any] = {
             "sortColumns": "DATE",
             "sortTypes": -1,
@@ -216,6 +313,9 @@ def get_margin_ranking(top_n: int = 20, sort_by: str = "balance") -> dict:
         limiter.acquire()
 
         top_n = int(top_n) if int(top_n or 0) > 0 else 20
+        db_rows = _margin_ranking_from_db(top_n=top_n, sort_by=sort_by)
+        if db_rows:
+            return ok(db_rows)
         sort_map = {"balance": "RZRQYE", "buy": "RZMRE", "sell": "RQMCL"}
         sort_column = sort_map.get(sort_by, "RZRQYE")
 

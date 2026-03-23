@@ -445,6 +445,8 @@ class TestStrategySpawner:
         assert all(candidate.get("quota_fill") for candidate in candidates)
 
     def test_spawn_returns_nonempty(self):
+        from akshare_mcp.services.strategy_factory.constants import SPAWNER_FILL_BUDGET_MAX
+
         spawner = StrategySpawner()
         snapshot = {
             "fear_greed_index": 50, "fg_level": "neutral",
@@ -465,7 +467,7 @@ class TestStrategySpawner:
             assert "trigger_thresholds" in c
         report = spawner.get_last_report()
         assert report["summary"]["candidate_count"] == len(candidates)
-        assert 0 < report["summary"]["quota_fill_count"] <= 4
+        assert 0 < report["summary"]["quota_fill_count"] <= SPAWNER_FILL_BUDGET_MAX
         assert report["summary"]["signal_trigger_count"] > 0
         assert report["summary"]["threshold_hit_count"] >= len(candidates)
         assert report["summary"]["source_counts"]["quota_fill"] > 0
@@ -774,6 +776,37 @@ class TestDeduplicator:
         assert dedup.get_last_report()["summary"]["refreshed_existing_count"] == 1
         assert dedup.get_last_report()["summary"]["dropped_count"] == 1
         assert dedup.get_last_report()["dropped"][0]["dedup_result"]["duplicate_level"] == "refresh_existing_conflict"
+
+    @pytest.mark.asyncio
+    async def test_refreshes_same_parent_bandit_candidate_without_event_context(self):
+        dedup = Deduplicator()
+        candidates = [
+            {
+                "strategy_type": "momentum",
+                "params": {"lookback": 8, "threshold": 0.0076},
+                "target_symbols": ["601398", "601288", "600036"],
+                "stock_pool": {"selection_mode": "explicit", "symbols": ["601398", "601288", "600036"]},
+                "parent_strategy_id": "sid_parent",
+                "generator_type": "rl_bandit",
+            },
+        ]
+        existing = [{
+            "id": "sid_parent",
+            "name": "银行动量母策略",
+            "status": "incubating",
+            "strategy_type": "momentum",
+            "params": {"lookback": 8, "threshold": 0.008},
+            "target_symbols": ["601398", "601288", "600036"],
+        }]
+        db = MagicMock()
+        db.list_strategies = AsyncMock(return_value=existing)
+
+        unique = await dedup.deduplicate(candidates, db)
+
+        assert len(unique) == 1
+        assert unique[0]["dedup_result"]["duplicate"] is False
+        assert unique[0]["dedup_result"]["refresh_existing"] is True
+        assert unique[0]["dedup_result"]["matched_strategy_id"] == "sid_parent"
 
     def test_param_sim_identical(self):
         sim = Deduplicator._param_sim({"a": 10, "b": 20}, {"a": 10, "b": 20})
@@ -1106,9 +1139,10 @@ class TestStrategySubmitter:
 
         result = await submitter.submit([
             {
+                "name": "高股息防御切换",
                 "strategy_type": "dsl_rule",
                 "params": {"dsl": {"version": "1.0", "timeframe": "daily", "entry": {"any": [{"op": "gt", "left": {"field": "close"}, "right": {"indicator": "sma", "field": "close", "window": 20}}]}, "exit": {"any": [{"op": "lt", "left": {"field": "close"}, "right": {"indicator": "sma", "field": "close", "window": 20}}]}}},
-                "backtest_metrics": {"sharpe_ratio": 0.22, "total_return": 0.08, "max_drawdown": 0.12, "win_rate": 0.51, "trades_count": 2},
+                "backtest_metrics": {"sharpe_ratio": 0.22, "total_return": 0.08, "max_drawdown": 0.12, "win_rate": 0.51, "trades_count": 6},
                 "spawn_reason": "外部 AI 原型提交",
                 "tags": ["factory", "external_llm", "ai_generated"],
                 "llm_prompt": {"system": "s", "user": "u"},
@@ -1170,19 +1204,31 @@ class TestStrategySubmitter:
         assert result["gate_3_passed"] == 0
         assert result["gate_3_failed"] == 1
         assert result["gate_3_provisional_passed"] == 0
-        assert result["gate_3_failure_reason_topn"] == [{"reason_code": "insufficient_kline_data", "count": 1}]
+        assert result["gate_3_failure_reason_topn"] == [
+            {"reason_code": "insufficient_kline_data", "count": 1},
+            {"reason_code": "factory_policy_backtest_trade_count_3_4", "count": 1},
+        ]
         assert result["gate_report"]["final_decision"]["stage"] == "gate_3"
-        assert result["strategies"][0]["gate_3"]["reason_codes"] == ["insufficient_kline_data"]
+        assert result["strategies"][0]["gate_3"]["reason_codes"] == [
+            "insufficient_kline_data",
+            "factory_policy_backtest_trade_count_3_4",
+        ]
         assert result["strategies"][0]["status"] == "rejected"
         assert result["strategies"][0]["passed"] is False
         assert result["strategies"][0]["provisional_pass"] is False
-        assert result["strategies"][0]["reason_codes"] == ["insufficient_kline_data"]
+        assert result["strategies"][0]["reason_codes"] == [
+            "insufficient_kline_data",
+            "factory_policy_backtest_trade_count_3_4",
+        ]
         assert result["strategies"][0]["warning_codes"] == []
         db.update_strategy_status.assert_awaited()
         status_call = db.update_strategy_status.await_args_list[-1]
         assert status_call.args[1] == "rejected"
         assert status_call.kwargs["reason"] == "quality_gate_failed"
-        assert status_call.kwargs["metadata"]["quality_gate"]["reason_codes"] == ["insufficient_kline_data"]
+        assert status_call.kwargs["metadata"]["quality_gate"]["reason_codes"] == [
+            "insufficient_kline_data",
+            "factory_policy_backtest_trade_count_3_4",
+        ]
 
     @pytest.mark.asyncio
     async def test_shared_submission_gate_grants_provisional_incubation_for_factory_ai_strategy(self, monkeypatch):
@@ -1339,6 +1385,90 @@ class TestStrategySubmitter:
         assert "param_sensitivity" in gate["statistical_checks_failed_names"]
 
     @pytest.mark.asyncio
+    async def test_shared_submission_gate_allows_factory_technical_fallback_without_ai_tags(self, monkeypatch):
+        from types import SimpleNamespace
+        from akshare_mcp.services.strategy_factory import submission_gate as submission_gate_mod
+
+        class _DummyStrategy:
+            def __init__(self):
+                self._params = {}
+
+            def set_parameters(self, params):
+                self._params = dict(params or {})
+
+            def generate_signals(self, closes):
+                period = float(self._params.get("rsi_period", 6) or 6)
+                base = np.diff(closes, prepend=closes[0]).astype(float)
+                phase = np.linspace(0.0, np.pi * max(period / 4.0, 1.0), len(closes))
+                return base + np.cos(phase)
+
+        class _WalkForwardValidator:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def validate(self, *_args, **_kwargs):
+                return SimpleNamespace(oos_ic_ir=0.0)
+
+        class _PurgedKFoldCV:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def validate(self, *_args, **_kwargs):
+                return SimpleNamespace(oos_ic_mean=0.0)
+
+        db = MagicMock()
+        db.get_klines = AsyncMock(return_value=_make_klines(n=160, base=10.0, trend=0.01, noise=0.001))
+
+        monkeypatch.setattr(
+            "akshare_mcp.services.backtest.strategy_registry.StrategyRegistry.get",
+            lambda *_args, **_kwargs: _DummyStrategy,
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.validation.WalkForwardValidator",
+            _WalkForwardValidator,
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.validation.PurgedKFoldCV",
+            _PurgedKFoldCV,
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.validation.bootstrap_ic_ci",
+            lambda *_args, **_kwargs: {"ci_lower": -0.02},
+        )
+
+        gate = await submission_gate_mod.run_submission_quality_gate(
+            db,
+            {
+                "id": "factory_gate_rsi_fallback",
+                "strategy_type": "rsi",
+                "params": {"rsi_period": 6, "oversold": 30, "overbought": 70},
+                "tags": ["factory", "auto_generated", "rsi"],
+            },
+            validation_report={
+                "rating": {
+                    "grade": "D",
+                    "total_score": 0.0,
+                    "scores": {
+                        "oos_ic": 0.0,
+                        "oos_ir": 0.0,
+                        "stability": 0.0,
+                        "ci_significance": 0.0,
+                        "positive_ratio": 0.0,
+                    },
+                },
+                "walk_forward": {"n_folds": 0, "oos_rank_ic_mean": 0.0, "oos_rank_ic_ir": 0.0},
+                "purged_kfold": {"n_folds": 0, "oos_rank_ic_mean": 0.0, "oos_rank_ic_ir": 0.0},
+                "bootstrap_ci": {"sample_size": 0, "ci_lower": 0.0, "ci_upper": 0.0},
+            },
+            risk_report={"var_percent": 1.1201, "cvar_percent": 1.5402, "stress_loss_percent": -20.0},
+            backtest_metrics={"sharpe_ratio": 0.22, "max_drawdown": 0.14, "trade_count": 16},
+        )
+
+        assert gate["passed"] is True
+        assert gate["provisional_pass"] is True
+        assert "validation_report_degenerate" in gate["warning_codes"]
+
+    @pytest.mark.asyncio
     async def test_submitter_passes_review_context_to_shared_submission_gate(self, monkeypatch):
         submitter = StrategySubmitter()
         db = MagicMock()
@@ -1410,7 +1540,7 @@ class TestStrategySubmitter:
         )
         monkeypatch.setattr(
             "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
-            AsyncMock(return_value={"passed": True}),
+            AsyncMock(return_value={"passed": True, "passed_strict": True}),
         )
 
         result = await submitter.submit([
@@ -1437,6 +1567,155 @@ class TestStrategySubmitter:
         db.save_strategy_lineage.assert_not_awaited()
         assert result["strategies"][0]["strategy_id"] == "sid_existing_1"
         assert result["strategies"][0]["refreshed_existing"] is True
+
+    @pytest.mark.asyncio
+    async def test_submitter_rejects_generic_ai_name_and_low_trade_count(self, monkeypatch):
+        submitter = StrategySubmitter()
+        db = MagicMock()
+        db.save_strategy = AsyncMock()
+        db.save_strategy_metrics = AsyncMock()
+        db.update_strategy_status = AsyncMock()
+        db.save_strategy_lineage = AsyncMock()
+        db.save_strategy_quality_report = AsyncMock()
+
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory._run_validation_report",
+            AsyncMock(return_value={"rating": {"grade": "D", "total_score": 18.0}}),
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory._run_risk_report",
+            AsyncMock(return_value={"var_percent": 1.8, "cvar_percent": 2.6, "stress_loss_percent": -18.0}),
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
+            AsyncMock(return_value={"passed": True, "passed_strict": False, "provisional_pass": True, "reasons": [], "warnings": []}),
+        )
+
+        result = await submitter.submit([
+            {
+                "name": "dsl_rule策略",
+                "strategy_type": "dsl_rule",
+                "params": {
+                    "dsl": {
+                        "version": "1.0",
+                        "timeframe": "daily",
+                        "entry": {"all": [{"op": "cross_above", "left": {"indicator": "ema", "field": "close", "window": 10}, "right": {"indicator": "ema", "field": "close", "window": 30}}]},
+                        "exit": {"any": [{"op": "cross_below", "left": {"indicator": "ema", "field": "close", "window": 10}, "right": {"indicator": "ema", "field": "close", "window": 30}}]},
+                    }
+                },
+                "backtest_metrics": {"sharpe_ratio": 0.42, "total_return": 0.09, "max_drawdown": 0.10, "win_rate": 0.5, "trades_count": 2},
+                "spawn_reason": "generic_name_and_low_trade",
+                "tags": ["factory", "external_llm", "ai_generated", "daily_dsl"],
+            }
+        ], {"fg_level": "neutral"}, db)
+
+        assert result["passed_quality_gate"] == 0
+        assert result["strategies"][0]["passed"] is False
+        assert result["strategies"][0]["provisional_pass"] is False
+        reasons = result["strategies"][0]["gate_3"]["reasons"]
+        assert any("trade_count 2 < 4" in reason for reason in reasons)
+        assert any("too generic" in reason for reason in reasons)
+
+    @pytest.mark.asyncio
+    async def test_submitter_rejects_event_candidate_on_preference_mismatch_and_target_drift(self, monkeypatch):
+        submitter = StrategySubmitter()
+        db = MagicMock()
+        db.save_strategy = AsyncMock()
+        db.save_strategy_metrics = AsyncMock()
+        db.update_strategy_status = AsyncMock()
+        db.save_strategy_lineage = AsyncMock()
+        db.save_strategy_quality_report = AsyncMock()
+
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory._run_validation_report",
+            AsyncMock(return_value={"rating": {"grade": "B", "total_score": 66.0}}),
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory._run_risk_report",
+            AsyncMock(return_value={"var_percent": 1.2, "cvar_percent": 1.8, "stress_loss_percent": -12.0}),
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
+            AsyncMock(return_value={"passed": True, "passed_strict": True, "reasons": [], "warnings": []}),
+        )
+
+        result = await submitter.submit([
+            {
+                "name": "高股息银行动量漂移",
+                "strategy_type": "momentum",
+                "params": {"lookback": 8, "threshold": 0.01},
+                "target_symbols": ["601398", "601288", "600036", "601857", "600941", "601939", "601166", "600000"],
+                "stock_pool": {"selection_mode": "explicit", "symbols": ["601398", "601288", "600036", "601857", "600941", "601939", "601166", "600000"]},
+                "research_task": {
+                    "task_id": "task_evt_bank",
+                    "task_source": "event_driven",
+                    "theme_code": "high_dividend_banks",
+                    "opportunity_type": "sector_breakout",
+                    "strategy_preferences": ["quality_factor", "value_factor", "ma_cross"],
+                    "target_symbols": ["601398", "601288", "600036", "601166", "600000"],
+                },
+                "backtest_metrics": {"sharpe_ratio": 0.71, "total_return": 0.13, "max_drawdown": 0.08, "win_rate": 0.56, "trades_count": 9},
+                "spawn_reason": "event_target_drift",
+                "tags": ["factory", "ai_generated", "event_driven"],
+            }
+        ], {"fg_level": "neutral"}, db)
+
+        assert result["passed_quality_gate"] == 0
+        reasons = result["strategies"][0]["gate_3"]["reasons"]
+        assert any("does not align with task preferences" in reason for reason in reasons)
+        assert any("candidate universe drifted" in reason for reason in reasons)
+
+    @pytest.mark.asyncio
+    async def test_submitter_rejects_refresh_existing_without_strict_pass(self, monkeypatch):
+        submitter = StrategySubmitter()
+        db = MagicMock()
+        db.get_strategy = AsyncMock(return_value={
+            "id": "sid_existing_2",
+            "name": "高股息银行均线",
+            "author_id": "strategy_factory",
+            "strategy_type": "ma_cross",
+            "status": "incubating",
+            "params": {"short_period": 10, "long_period": 30, "target_symbols": ["601398", "601288", "600036"]},
+            "factor_weights": {},
+            "tags": ["factory", "ma_cross"],
+        })
+        db.save_strategy = AsyncMock()
+        db.save_strategy_metrics = AsyncMock()
+        db.update_strategy_status = AsyncMock()
+        db.save_strategy_lineage = AsyncMock()
+        db.save_strategy_quality_report = AsyncMock()
+        db.save_strategy_generation_experiment = AsyncMock()
+
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory._run_validation_report",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory._run_risk_report",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
+            AsyncMock(return_value={"passed": True, "passed_strict": False, "provisional_pass": True, "reasons": [], "warnings": []}),
+        )
+
+        result = await submitter.submit([
+            {
+                "name": "高股息银行均线增强",
+                "strategy_type": "ma_cross",
+                "params": {"short_period": 10, "long_period": 30},
+                "target_symbols": ["601398", "601288", "600036"],
+                "stock_pool": {"selection_mode": "explicit", "symbols": ["601398", "601288", "600036"]},
+                "backtest_metrics": {"sharpe_ratio": 0.86, "total_return": 0.11, "max_drawdown": 0.07, "win_rate": 0.58, "trades_count": 14},
+                "dedup_result": {"refresh_existing": True, "matched_strategy_id": "sid_existing_2", "matched_status": "incubating"},
+                "spawn_reason": "refresh_without_strict_pass",
+            }
+        ], {"date": "2026-03-08", "fg_level": "neutral", "fear_greed_index": 55}, db)
+
+        assert result["refreshed"] == 1
+        assert result["passed_quality_gate"] == 0
+        assert result["strategies"][0]["passed"] is False
+        assert any("requires strict quality gate pass" in reason for reason in result["strategies"][0]["gate_3"]["reasons"])
 
     @pytest.mark.asyncio
     async def test_submitter_runs_initial_incubation_pipeline(self, monkeypatch):
@@ -4326,6 +4605,7 @@ class TestAutonomyEnhancements:
 
         thresholds = flt._get_thresholds('dsl_rule', {'generator_type': 'external_llm', 'tags': ['external_llm']})
         fallback_thresholds = flt._get_thresholds('momentum', {'generator_type': 'local_rule_v1', 'tags': ['llm_proxy_fallback']})
+        bandit_thresholds = flt._get_thresholds('momentum', {'generator_type': 'rl_bandit', 'parent_strategy_id': 'sid_parent'})
 
         assert thresholds['sharpe_min'] == 0.10
         assert thresholds['mdd_max'] == 0.45
@@ -4333,6 +4613,9 @@ class TestAutonomyEnhancements:
         assert fallback_thresholds['sharpe_min'] == 0.10
         assert fallback_thresholds['mdd_max'] == 0.45
         assert fallback_thresholds['trades_min'] == 1
+        assert bandit_thresholds['sharpe_min'] == 0.10
+        assert bandit_thresholds['mdd_max'] == 0.45
+        assert bandit_thresholds['trades_min'] == 1
 
     def test_strategy_llm_prompt_profiles_shrink_context_and_contract(self):
         from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
@@ -5655,6 +5938,25 @@ class TestStrategyFactoryScheduler:
         assert calls[0] == '688981'
 
     @pytest.mark.asyncio
+    async def test_market_frame_normalizes_descending_db_klines(self):
+        from akshare_mcp.services.strategy_autonomy import LLMProxyStrategyGenerator
+
+        generator = LLMProxyStrategyGenerator()
+        ascending = _make_klines(150, base=10.0, trend=0.01, noise=0.0)
+        descending = list(reversed([
+            {**row, 'date': row.get('time')}
+            for row in ascending
+        ]))
+
+        db = MagicMock()
+        db.get_klines = AsyncMock(return_value=descending)
+
+        frame = await generator._frame_from_codes(db, ['688981'], limit=180)
+
+        assert frame is not None
+        assert float(frame['close'].iloc[0]) < float(frame['close'].iloc[-1])
+
+    @pytest.mark.asyncio
     async def test_generate_uses_research_context_frame_cache_when_primary_frame_missing(self):
         import pandas as pd
         from akshare_mcp.services.strategy_autonomy import LLMProxyStrategyGenerator
@@ -6337,6 +6639,63 @@ class TestStrategyFactoryScheduler:
         assert snapshot_tasks
         assert {task["opportunity_type"] for task in snapshot_tasks} <= {"trend_expansion", "factor_acceleration", "industry_leadership", "rotation_balanced", "mean_reversion"}
         assert all(task["opportunity_type"] != "sector_breakout" for task in snapshot_tasks)
+
+    @pytest.mark.asyncio
+    async def test_market_opportunity_scanner_keeps_non_overlapping_sector_breakout_snapshot_tasks(self):
+        scanner = MarketOpportunityScanner()
+        db = MagicMock()
+        db.list_stock_universe = AsyncMock(return_value=[
+            {"code": "600028", "name": "中国石化", "industry": "炼化", "sector": "石油石化", "market": "SH", "market_cap": 720_000_000_000},
+            {"code": "601857", "name": "中国石油", "industry": "油气开采", "sector": "石油石化", "market": "SH", "market_cap": 1_550_000_000_000},
+            {"code": "600938", "name": "中国海油", "industry": "油气开采", "sector": "石油石化", "market": "SH", "market_cap": 1_200_000_000_000},
+            {"code": "688981", "name": "中芯国际", "industry": "芯片", "sector": "半导体", "market": "SH", "market_cap": 700_000_000_000},
+            {"code": "002371", "name": "北方华创", "industry": "芯片", "sector": "设备", "market": "SZ", "market_cap": 400_000_000_000},
+            {"code": "300750", "name": "宁德时代", "industry": "新能源", "sector": "电池", "market": "SZ", "market_cap": 1_100_000_000_000},
+        ])
+
+        report = await scanner.scan(db, {
+            "date": "2026-03-09",
+            "fear_greed_index": 68,
+            "fg_level": "greed",
+            "hot_sectors": ["芯片", "新能源", "石油石化"],
+            "factor_ic_trend": {"quality": "rising"},
+            "event_driven": {
+                "enabled": True,
+                "event_count": 1,
+                "tasks_ready_count": 1,
+                "events": [{
+                    "event_id": "evt_oil_1",
+                    "event_type": "geopolitics",
+                    "event_name": "中东战事升级",
+                    "summary": "中东局势升级提升原油供给扰动预期。",
+                    "direction": "positive",
+                    "confidence": 0.92,
+                    "intensity": 0.88,
+                    "horizon": "swing_5_20d",
+                    "themes": [{
+                        "theme_code": "upstream_oil_gas",
+                        "theme_name": "上游油气",
+                        "direction": "positive",
+                        "signal_count": 3,
+                        "target_symbols": ["601857", "600938", "600028"],
+                        "score_summary": {
+                            "avg_final_score": 0.87,
+                            "max_final_score": 0.93,
+                            "top_symbols": ["601857", "600938", "600028"],
+                        },
+                    }],
+                }],
+            },
+        })
+
+        snapshot_breakouts = [
+            task for task in report["tasks"]
+            if task.get("task_source") == "snapshot" and task.get("opportunity_type") == "sector_breakout"
+        ]
+
+        assert snapshot_breakouts
+        assert any(set(task.get("focus_industries") or []) & {"芯片", "新能源"} for task in snapshot_breakouts)
+        assert all(not (set(task.get("focus_industries") or []) & {"石油石化"}) for task in snapshot_breakouts)
 
     @pytest.mark.asyncio
     async def test_market_opportunity_scanner_uses_factor_research_active_factors(self):
@@ -7894,6 +8253,9 @@ class TestFactorSchedulerAndBatchFactors:
             "akshare_mcp.services.sentiment.sentiment_analyzer.calculate_fear_greed_index",
             return_value={"index": 67, "level": "greed", "components": {"breadth": 74}},
         ), patch(
+            "strategy_factory.application.collect.resolve_event_runtime_mode",
+            return_value="refresh",
+        ), patch(
             "akshare_mcp.services.strategy_factory.asyncio.to_thread",
             side_effect=AssertionError("external thread should not be called"),
         ):
@@ -7935,6 +8297,9 @@ class TestFactorSchedulerAndBatchFactors:
             "akshare_mcp.services.sentiment.sentiment_analyzer.calculate_fear_greed_index",
             return_value={"index": 64, "level": "greed", "components": {"breadth": 72}},
         ), patch(
+            "strategy_factory.application.collect.resolve_event_runtime_mode",
+            return_value="refresh",
+        ), patch(
             "akshare_mcp.services.strategy_factory.asyncio.to_thread",
             side_effect=AssertionError("external thread should not be called"),
         ):
@@ -7972,6 +8337,9 @@ class TestFactorSchedulerAndBatchFactors:
             "akshare_mcp.services.sentiment.sentiment_analyzer.calculate_fear_greed_index",
             return_value={"index": 64, "level": "greed", "components": {"breadth": 72}},
         ), patch(
+            "strategy_factory.application.collect.resolve_event_runtime_mode",
+            return_value="refresh",
+        ), patch(
             "akshare_mcp.services.strategy_factory.asyncio.to_thread",
             side_effect=AssertionError("external thread should not be called"),
         ):
@@ -8008,6 +8376,9 @@ class TestFactorSchedulerAndBatchFactors:
         with patch(
             "akshare_mcp.services.sentiment.sentiment_analyzer.calculate_fear_greed_index",
             return_value={"index": 67, "level": "greed", "components": {"breadth": 74}},
+        ), patch(
+            "strategy_factory.application.collect.resolve_event_runtime_mode",
+            return_value="refresh",
         ), patch(
             "akshare_mcp.services.strategy_factory.asyncio.to_thread",
             side_effect=[

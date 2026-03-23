@@ -3,7 +3,13 @@
  * Defines the 4-level role hierarchy and permission matrix.
  */
 
-/** Application roles (ordered by privilege level) */
+/**
+ * Application roles (ordered by privilege level).
+ *
+ * NOTE: The runtime auth system currently only assigns 'admin' | 'user'
+ * (see roles.decorator.ts). The expanded roles below are aspirational and
+ * will be enforced once the user management module supports role assignment.
+ */
 export type AppRole = 'admin' | 'trader' | 'analyst' | 'viewer';
 
 export const ROLE_HIERARCHY: Record<AppRole, number> = {

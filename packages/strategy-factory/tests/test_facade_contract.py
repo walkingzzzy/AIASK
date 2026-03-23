@@ -87,6 +87,8 @@ def test_get_factory_constants_returns_existing_thresholds():
     constants = get_factory_constants()
     assert "BACKTEST_DEFAULT_THRESHOLDS" in constants
     assert "FACTORY_SCHEDULE_MODE" in constants
+    assert constants["LLM_FAN_OUT_COUNT"] == LLM_FAN_OUT_COUNT
+    assert constants["PIPELINE_STAGE_TIMEOUTS"] == PIPELINE_STAGE_TIMEOUTS
 
 
 def test_auto_name_uses_public_facade_helper():

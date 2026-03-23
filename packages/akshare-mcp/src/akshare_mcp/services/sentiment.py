@@ -1,7 +1,9 @@
 """情绪分析服务 — 三分量复合评分"""
 import math
-import numpy as np
+from datetime import date, datetime
 from typing import List, Dict, Any, Optional
+
+import numpy as np
 
 # ── 新闻情绪关键词库 ──
 _BULLISH_KEYWORDS = [
@@ -17,16 +19,56 @@ _BEARISH_KEYWORDS = [
 
 
 class SentimentAnalyzer:
+    @staticmethod
+    def _parse_kline_date(value: Any) -> date | None:
+        if value is None:
+            return None
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return value
+        if isinstance(value, datetime):
+            return value.date()
+        text = str(value or "").strip()
+        if not text:
+            return None
+        for parser in (
+            lambda item: date.fromisoformat(item[:10]),
+            lambda item: datetime.fromisoformat(item.replace("Z", "+00:00")).date(),
+        ):
+            try:
+                return parser(text)
+            except Exception:
+                continue
+        digits = "".join(ch for ch in text if ch.isdigit())
+        if len(digits) >= 8:
+            try:
+                return date.fromisoformat(f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}")
+            except Exception:
+                return None
+        return None
+
+    @classmethod
+    def _sort_klines(cls, klines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return sorted(
+            [dict(item) for item in list(klines or []) if isinstance(item, dict)],
+            key=lambda item: (
+                cls._parse_kline_date(item.get("date")) or date.min,
+                str(item.get("date") or ""),
+            ),
+        )
 
     # ── 分量 1: 价量动量（40%权重） ──
-    @staticmethod
-    def _price_momentum_score(klines: List[Dict[str, Any]]) -> float:
+    @classmethod
+    def _price_momentum_score(cls, klines: List[Dict[str, Any]]) -> float:
         """基于价格变化和量比计算动量得分 0~100"""
-        if not klines or len(klines) < 20:
+        ordered_klines = cls._sort_klines(klines)
+        if not ordered_klines or len(ordered_klines) < 20:
             return 50.0
-        closes = [k['close'] for k in klines]
-        volumes = [k['volume'] for k in klines]
-        price_change = (closes[-1] - closes[-20]) / closes[-20]
+        closes = [k['close'] for k in ordered_klines]
+        volumes = [k['volume'] for k in ordered_klines]
+        base_close = float(closes[-20] or 0.0)
+        if abs(base_close) < 1e-9:
+            return 50.0
+        price_change = (closes[-1] - base_close) / base_close
         volume_ratio = np.mean(volumes[-5:]) / max(np.mean(volumes[-20:-5]), 1e-9)
         score = 50 + price_change * 100 + (volume_ratio - 1) * 20
         return max(0.0, min(100.0, score))
@@ -61,7 +103,23 @@ class SentimentAnalyzer:
             return 50.0
         score = 50.0
         # 北向资金净买入（正为流入）
-        north_net = float(fund_flow_data.get('north_net_buy', 0) or 0)
+        north_net_raw = float(fund_flow_data.get('north_net_buy', 0) or 0)
+        north_unit = str(
+            fund_flow_data.get('north_net_buy_unit')
+            or fund_flow_data.get('north_net_unit')
+            or 'yuan'
+        ).strip().lower()
+        unit_multiplier = {
+            'yuan': 1.0,
+            'cny': 1.0,
+            'rmb': 1.0,
+            'ten_thousand_cny': 1e4,
+            'wanyuan': 1e4,
+            '万元': 1e4,
+            'yi': 1e8,
+            '亿元': 1e8,
+        }.get(north_unit, 1.0)
+        north_net = north_net_raw * unit_multiplier
         if north_net != 0:
             # 归一化：假设 ±10亿 为满分偏移
             score += max(-25.0, min(25.0, north_net / 1e9 * 25.0))
@@ -121,9 +179,10 @@ class SentimentAnalyzer:
         }
 
         # 1) 指数K线驱动：动量、波动、成交量
-        if index_klines and len(index_klines) >= 5:
-            closes = [float(k.get('close', 0) or 0) for k in index_klines if isinstance(k, dict)]
-            volumes = [float(k.get('volume', 0) or 0) for k in index_klines if isinstance(k, dict)]
+        ordered_klines = SentimentAnalyzer._sort_klines(index_klines or [])
+        if ordered_klines and len(ordered_klines) >= 5:
+            closes = [float(k.get('close', 0) or 0) for k in ordered_klines]
+            volumes = [float(k.get('volume', 0) or 0) for k in ordered_klines]
 
             if len(closes) >= 5 and closes[-5] > 0:
                 momentum_pct = (closes[-1] - closes[-5]) / closes[-5] * 100.0

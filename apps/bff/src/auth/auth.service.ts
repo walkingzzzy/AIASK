@@ -1,10 +1,15 @@
-import { ConflictException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { DbService } from '../db/db.service';
 import { PreferencesService } from './preferences.service';
 import type { AppUser, Role } from './auth.types';
-import { hash } from './jwt.service';
+import {
+  hashPassword,
+  hashPasswordSync,
+  isLegacyPasswordHash,
+  verifyPassword,
+} from './jwt.service';
 import {
   SessionStore,
   createSession,
@@ -17,11 +22,18 @@ import {
 } from './session.service';
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit {
+  private static readonly DEFAULT_JWT_SECRET = 'dev-secret-change-me';
+  private static readonly DEFAULT_ADMIN_PASSWORD = 'admin';
+  private static readonly DEFAULT_DEMO_PASSWORD = 'demo123';
+
   private readonly logger = new Logger(AuthService.name);
   private readonly accessTtlSec: number;
   private readonly refreshTtlSec: number;
   private readonly jwtSecret: string;
+  private readonly adminPassword: string;
+  private readonly demoPassword: string;
+  private readonly demoUserEnabled: boolean;
 
   private readonly users: AppUser[];
   private readonly store = new SessionStore();
@@ -33,17 +45,46 @@ export class AuthService {
   ) {
     this.accessTtlSec = Math.max(60, Number(this.configService.get('APP_ACCESS_TOKEN_TTL_SECONDS', 7200)));
     this.refreshTtlSec = Math.max(300, Number(this.configService.get('APP_REFRESH_TOKEN_TTL_SECONDS', 604800)));
-    this.jwtSecret = this.configService.get<string>('APP_JWT_SECRET', 'dev-secret-change-me');
+    this.jwtSecret = this.configService.get<string>('APP_JWT_SECRET', AuthService.DEFAULT_JWT_SECRET);
 
-    if (this.jwtSecret === 'dev-secret-change-me') {
-      this.logger.warn('APP_JWT_SECRET 使用默认值，请在生产环境中设置强随机密钥');
+    this.adminPassword = this.configService.get<string>('APP_ADMIN_PASSWORD', AuthService.DEFAULT_ADMIN_PASSWORD);
+    this.demoPassword = this.configService.get<string>('APP_DEMO_PASSWORD', AuthService.DEFAULT_DEMO_PASSWORD);
+    const isProduction = this.isProductionEnv();
+    this.demoUserEnabled = this.readBooleanConfig('APP_ENABLE_DEMO_USER', !isProduction);
+
+    if (this.isWeakJwtSecret(this.jwtSecret)) {
+      if (isProduction) {
+        throw new Error('APP_JWT_SECRET 不能在生产环境中使用默认值或弱密钥');
+      }
+      this.logger.warn('APP_JWT_SECRET 使用默认值或弱密钥，仅适合本地开发环境');
     }
 
-    const adminPassword = this.configService.get<string>('APP_ADMIN_PASSWORD', 'admin');
-    this.users = [
-      { id: 'u_admin', username: 'admin', passwordHash: hash(adminPassword), role: 'admin' },
-      { id: 'u_demo', username: 'demo', passwordHash: hash('demo123'), role: 'user' },
+    if (isProduction && this.isWeakAdminPassword(this.adminPassword)) {
+      throw new Error('APP_ADMIN_PASSWORD 不能在生产环境中使用默认值或弱密码');
+    }
+    if (isProduction && this.demoUserEnabled) {
+      throw new Error('生产环境默认禁用 demo 用户，请设置 APP_ENABLE_DEMO_USER=false');
+    }
+
+    const users: AppUser[] = [
+      { id: 'u_admin', username: 'admin', passwordHash: hashPasswordSync(this.adminPassword), role: 'admin' },
     ];
+    if (this.demoUserEnabled) {
+      users.push({
+        id: 'u_demo',
+        username: 'demo',
+        passwordHash: hashPasswordSync(this.demoPassword),
+        role: 'user',
+      });
+    }
+    this.users = users;
+  }
+
+  async onModuleInit(): Promise<void> {
+    if (!this.dbService.enabled) {
+      return;
+    }
+    await this.hardenSeedUsers();
   }
 
   async login(username: string, password: string) {
@@ -73,7 +114,7 @@ export class AuthService {
         throw new ConflictException('用户名已存在');
       }
       const userId = `u_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
-      const passwordHash = hash(password);
+      const passwordHash = await hashPassword(password);
       await this.dbService.query(
         `INSERT INTO app_users (id, username, password_hash, active) VALUES ($1, $2, $3, TRUE)`,
         [userId, normalized, passwordHash],
@@ -85,7 +126,7 @@ export class AuthService {
       this.users.push({
         id: userId,
         username: normalized,
-        passwordHash: hash(password),
+        passwordHash: await hashPassword(password),
         role: 'user',
       });
     }
@@ -157,10 +198,10 @@ export class AuthService {
 
   async changePassword(userId: string, oldPassword: string, newPassword: string) {
     const user = await this.findUserById(userId, true);
-    if (user.passwordHash !== hash(oldPassword)) {
+    if (!(await verifyPassword(oldPassword, user.passwordHash))) {
       throw new UnauthorizedException('旧密码错误');
     }
-    const passwordHash = hash(newPassword);
+    const passwordHash = await hashPassword(newPassword);
 
     if (this.dbService.enabled) {
       await this.dbService.query('UPDATE app_users SET password_hash = $2 WHERE id = $1', [userId, passwordHash]);
@@ -222,7 +263,6 @@ export class AuthService {
 
   private async verifyCredential(username: string, password: string): Promise<{ id: string; username: string; role: Role }> {
     const normalized = username.trim();
-    const passwordHash = hash(password);
 
     if (this.dbService.enabled) {
       const found = await this.dbService.query<{ id: string; username: string; password_hash: string; role: string }>(
@@ -236,15 +276,20 @@ export class AuthService {
         [normalized],
       );
       const row = found.rows[0];
-      if (!row || row.password_hash !== passwordHash) {
-        this.logger.debug(`Login debug for ${username}. found_id: ${row?.id}, db_hash: ${row?.password_hash}, input_hash: ${passwordHash}, matched: ${row?.password_hash === passwordHash}`);
+      if (!row || !(await verifyPassword(password, row.password_hash))) {
         throw new UnauthorizedException('用户名或密码错误');
       }
+      await this.upgradeLegacyPasswordHashIfNeeded(row.id, row.password_hash, password);
       return { id: row.id, username: row.username, role: (row.role === 'admin' ? 'admin' : 'user') as Role };
     }
 
-    const found = this.users.find((u) => u.username === normalized && u.passwordHash === passwordHash);
-    if (!found) throw new UnauthorizedException('用户名或密码错误');
+    const found = this.users.find((u) => u.username === normalized);
+    if (!found || !(await verifyPassword(password, found.passwordHash))) {
+      throw new UnauthorizedException('用户名或密码错误');
+    }
+    if (isLegacyPasswordHash(found.passwordHash)) {
+      found.passwordHash = await hashPassword(password);
+    }
     return { id: found.id, username: found.username, role: found.role };
   }
 
@@ -295,5 +340,76 @@ export class AuthService {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
+  }
+
+  private isProductionEnv(): boolean {
+    return String(this.configService.get<string>('NODE_ENV', process.env.NODE_ENV ?? 'development')).trim().toLowerCase() === 'production';
+  }
+
+  private readBooleanConfig(key: string, fallback: boolean): boolean {
+    const raw = String(this.configService.get<string>(key, fallback ? 'true' : 'false')).trim().toLowerCase();
+    if (['1', 'true', 'yes', 'y', 'on'].includes(raw)) return true;
+    if (['0', 'false', 'no', 'n', 'off'].includes(raw)) return false;
+    return fallback;
+  }
+
+  private isWeakJwtSecret(secret: string): boolean {
+    const normalized = String(secret || '').trim();
+    return !normalized || normalized === AuthService.DEFAULT_JWT_SECRET || normalized.length < 32;
+  }
+
+  private isWeakAdminPassword(password: string): boolean {
+    const normalized = String(password || '').trim();
+    return !normalized || normalized === AuthService.DEFAULT_ADMIN_PASSWORD || normalized.length < 12;
+  }
+
+  private async upgradeLegacyPasswordHashIfNeeded(userId: string, currentHash: string, password: string): Promise<void> {
+    if (!isLegacyPasswordHash(currentHash)) {
+      return;
+    }
+
+    try {
+      const upgradedHash = await hashPassword(password);
+      await this.dbService.query('UPDATE app_users SET password_hash = $2 WHERE id = $1', [userId, upgradedHash]);
+      this.logger.log(`已将用户 ${userId} 的旧版密码哈希升级为 scrypt`);
+    } catch (error) {
+      this.logger.warn(`升级用户 ${userId} 的旧版密码哈希失败: ${String(error)}`);
+    }
+  }
+
+  private async hardenSeedUsers(): Promise<void> {
+    try {
+      const result = await this.dbService.query<{
+        id: string;
+        username: string;
+        password_hash: string;
+        active: boolean;
+      }>(
+        `SELECT id, username, password_hash, active
+           FROM app_users
+          WHERE username = ANY($1::text[])`,
+        [['admin', 'demo']],
+      );
+
+      for (const row of result.rows) {
+        if (row.username === 'admin') {
+          const usesDefaultAdminPassword = await verifyPassword(AuthService.DEFAULT_ADMIN_PASSWORD, row.password_hash);
+          if (usesDefaultAdminPassword && this.adminPassword !== AuthService.DEFAULT_ADMIN_PASSWORD) {
+            await this.dbService.query(
+              'UPDATE app_users SET password_hash = $2 WHERE id = $1',
+              [row.id, await hashPassword(this.adminPassword)],
+            );
+            this.logger.warn('检测到数据库中的 admin 账户仍使用默认密码，已按 APP_ADMIN_PASSWORD 自动升级');
+          }
+        }
+
+        if (row.username === 'demo' && row.active && !this.demoUserEnabled) {
+          await this.dbService.query('UPDATE app_users SET active = FALSE WHERE id = $1', [row.id]);
+          this.logger.warn('已自动停用数据库中的 demo 账户');
+        }
+      }
+    } catch (error) {
+      this.logger.warn(`启动时检查默认账户失败: ${String(error)}`);
+    }
   }
 }

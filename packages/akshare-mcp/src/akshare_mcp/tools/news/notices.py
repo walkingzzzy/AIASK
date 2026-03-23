@@ -12,9 +12,12 @@ try:
 except ImportError:
     ak = None
 
+from ...services.db_first_market_context import load_db_first_document_context
+from ...storage import get_db
 from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...utils import fail, format_period, normalize_code, ok, parse_date_input
+from ..fund_flow_common import _run_storage_call_sync
 from .helpers import _RETRY_SLEEP_SECONDS, _try_tushare_anns
 
 
@@ -140,6 +143,8 @@ def get_stock_notices(
     end_date: str,
     types: Optional[list[str]] = None,
     stock_code: str = "",
+    *,
+    prefer_db: bool = True,
 ) -> dict:
     """
     获取公告事件日历（东方财富公告）
@@ -201,6 +206,33 @@ def get_stock_notices(
         max_items = int(os.getenv("AKSHARE_NOTICE_MAX_ITEMS", "500"))
         start_ts = time.monotonic()
         partial = False
+
+        if prefer_db and code_filter and normalized_types == ["全部"]:
+            try:
+                db_context, _ = _run_storage_call_sync(
+                    lambda: load_db_first_document_context(
+                        get_db(),
+                        code_filter,
+                        start_date=start,
+                        end_date=end,
+                        notice_limit=max_items,
+                    ),
+                    timeout=min(max(float(max_seconds or 0), 1.0), 8.0),
+                )
+                db_events = list((db_context or {}).get("notices") or [])
+                if db_events:
+                    return ok(
+                        {
+                            "startDate": start.isoformat(),
+                            "endDate": end.isoformat(),
+                            "types": normalized_types,
+                            "events": db_events[:max_items],
+                            "truncated": len(db_events) > max_items,
+                            "partial": False,
+                        }
+                    )
+            except Exception:
+                pass
 
         # 0. Try Tushare Pro announcements first
         try:

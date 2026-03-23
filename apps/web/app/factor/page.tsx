@@ -8,6 +8,7 @@ import { useApiQuery } from '@/hooks/use-api-query';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { FactorMiningWorkbench } from './components/factor-mining-workbench';
 
 const DEFAULT_FACTOR_CODES = '600519,000858,300750,601318,000001,600036,601166,000333,600276,601899,002594,000651';
 
@@ -172,7 +173,10 @@ export default function FactorPage() {
   return (
     <PageContainer>
       <h1>因子研究</h1>
-      <p className="mt-2 text-sm text-text-secondary">建议按“因子库 → 因子计算 → IC/回测 → 样本外验证/稳健性检验”的顺序推进，避免跳过基础检查直接解读结果。</p>
+      <p className="mt-2 text-sm text-text-secondary">
+        当前页面同时承载两条链路：上半部分是普通因子研究，下半部分是 AI 因子挖掘工作台。
+        建议先按“因子库 → 因子计算 → IC/回测 → 样本外验证/稳健性检验”确认基础认知，再进入候选生成、验证和治理闭环。
+      </p>
       {anyLoading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} hint="请稍后重试" /> : null}
 
@@ -417,6 +421,8 @@ export default function FactorPage() {
           </>
         ) : null}
       </SectionCard>
+
+      <FactorMiningWorkbench />
     </PageContainer>
   );
 }

@@ -745,7 +745,7 @@ async def get_index_kline(index_code: str, period: str = "daily", limit: int = 6
 
     适用场景: 指数趋势分析、大盘走势回顾
 
-    数据源优先级: AkShare (stock_zh_index_daily_em) → Tushare
+    数据源优先级: TimescaleDB → Tushare → AkShare (stock_zh_index_daily_em)
     时效性: 日线 T+0~T+1
 
     Args:
@@ -781,34 +781,7 @@ async def get_index_kline(index_code: str, period: str = "daily", limit: int = 6
         except Exception as e_db:
             safe_stderr_print(f"TimescaleDB index K-line query failed for {ak_symbol}: {e_db}")
 
-    # 1. AkShare：使用指数专用 API
-    if ak is not None:
-        try:
-            df = _run_with_retry(
-                lambda: ak.stock_zh_index_daily_em(symbol=ak_symbol),
-                _KLINE_TIMEOUTS,
-            )
-            if df is not None and not df.empty:
-                df = df.tail(int(limit))
-                results = []
-                for _, row in df.iterrows():
-                    date_val = row.get("date") or row.get("日期") or ""
-                    results.append({
-                        "date": str(date_val)[:10],
-                        "open": safe_float(row.get("open") or row.get("开盘")),
-                        "close": safe_float(row.get("close") or row.get("收盘")),
-                        "high": safe_float(row.get("high") or row.get("最高")),
-                        "low": safe_float(row.get("low") or row.get("最低")),
-                        "volume": safe_int(row.get("volume") or row.get("成交量")),
-                        "amount": safe_float(row.get("amount") or row.get("成交额")),
-                        "source": "akshare_index",
-                    })
-                if results:
-                    return ok(results)
-        except Exception as e:
-            safe_stderr_print(f"AkShare index kline failed for {code}: {e}")
-
-    # 3. Tushare 降级
+    # 1. Tushare：优先使用付费/授权数据源，避免公开源代理波动影响主流程
     ts_pro = data_source.get_tushare_pro()
     if ts_pro is not None and period == "daily":
         try:
@@ -839,5 +812,32 @@ async def get_index_kline(index_code: str, period: str = "daily", limit: int = 6
                     return ok(results)
         except Exception as e:
             safe_stderr_print(f"Tushare index kline failed for {code}: {e}")
+
+    # 2. AkShare：指数专用公开源，作为最后降级
+    if ak is not None:
+        try:
+            df = _run_with_retry(
+                lambda: ak.stock_zh_index_daily_em(symbol=ak_symbol),
+                _KLINE_TIMEOUTS,
+            )
+            if df is not None and not df.empty:
+                df = df.tail(int(limit))
+                results = []
+                for _, row in df.iterrows():
+                    date_val = row.get("date") or row.get("日期") or ""
+                    results.append({
+                        "date": str(date_val)[:10],
+                        "open": safe_float(row.get("open") or row.get("开盘")),
+                        "close": safe_float(row.get("close") or row.get("收盘")),
+                        "high": safe_float(row.get("high") or row.get("最高")),
+                        "low": safe_float(row.get("low") or row.get("最低")),
+                        "volume": safe_int(row.get("volume") or row.get("成交量")),
+                        "amount": safe_float(row.get("amount") or row.get("成交额")),
+                        "source": "akshare_index",
+                    })
+                if results:
+                    return ok(results)
+        except Exception as e:
+            safe_stderr_print(f"AkShare index kline failed for {code}: {e}")
 
     return fail(f"所有数据源均无法获取指数 {code} 的K线数据")

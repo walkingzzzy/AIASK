@@ -118,6 +118,19 @@ class StrategySpawner:
             factor_trend[name] = str((item or {}).get("trend") or "flat").strip().lower() or "flat"
         if factor_ic or factor_trend:
             return factor_ic, factor_trend
+        active_candidate_pool = dict(artifact.get("active_candidate_pool") or {})
+        top_candidates = list(active_candidate_pool.get("top_candidates") or [])
+        for item in top_candidates:
+            family = str((item or {}).get("family") or "").strip().lower()
+            if not family:
+                continue
+            factor_ic[family] = max(
+                factor_ic.get(family, 0.0),
+                cls._safe_float((item or {}).get("total_score")) / 100.0,
+            )
+            factor_trend[family] = "rising"
+        if factor_ic or factor_trend:
+            return factor_ic, factor_trend
         return dict(snapshot.get("factor_ic") or {}), dict(snapshot.get("factor_ic_trend") or {})
 
     @classmethod

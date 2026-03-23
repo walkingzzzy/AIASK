@@ -14,6 +14,165 @@ from .strategies import (
 
 
 _SLIPPAGE_NOTE = "JIT路径使用均值化滑点估算，实际交易成本可能偏高"
+_ARRIVAL_PRICE_POLICY_BPS = {
+    "close_proxy": 1.0,
+    "close": 1.0,
+    "same_close_proxy": 1.2,
+    "twap_proxy": 1.2,
+    "twap": 1.2,
+    "vwap_proxy": 0.8,
+    "vwap": 0.8,
+    "next_open_proxy": 2.0,
+    "next_open": 2.0,
+    "event_open_proxy": 2.5,
+}
+_CAPACITY_BUCKET_BPS = {
+    "mega": -2.0,
+    "large": 0.0,
+    "mid": 2.0,
+    "small": 5.0,
+    "micro": 8.0,
+}
+_POSITION_ASSUMPTION_PCT = {
+    "single_name_full_notional": 1.0,
+    "single_name": 1.0,
+    "equal_weight_proxy": 0.2,
+    "equal_weight": 0.2,
+    "half_notional": 0.5,
+}
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return float(result) if np.isfinite(result) else float(default)
+
+
+def _resolve_position_pct(args: Dict[str, Any]) -> float:
+    explicit_max_position = _safe_float(args.get("max_position_pct"), 0.0)
+    if explicit_max_position > 0:
+        return max(0.01, min(explicit_max_position, 1.0))
+
+    position_assumption = str(args.get("position_assumption") or "").strip().lower()
+    target_weight_scheme = str(args.get("target_weight_scheme") or "").strip().lower()
+    if position_assumption in _POSITION_ASSUMPTION_PCT:
+        return _POSITION_ASSUMPTION_PCT[position_assumption]
+    if target_weight_scheme in _POSITION_ASSUMPTION_PCT:
+        return _POSITION_ASSUMPTION_PCT[target_weight_scheme]
+    if target_weight_scheme == "equal_weight":
+        return 0.2
+    return 1.0
+
+
+def _estimate_implementation_shortfall(
+    payload: Dict[str, Any],
+    args: Dict[str, Any],
+    *,
+    closes: Optional[np.ndarray] = None,
+    volumes: Optional[np.ndarray] = None,
+    explicit_slippage_rate: float = 0.0,
+    model_slippage_rate: float = 0.0,
+    market_impact_bps: float = 0.0,
+) -> tuple[float, str, Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    price_arr = np.asarray(closes if closes is not None else [], dtype=float)
+    volume_arr = np.asarray(volumes if volumes is not None else [], dtype=float)
+    positive_prices = price_arr[np.isfinite(price_arr) & (price_arr > 0)]
+    positive_volumes = volume_arr[np.isfinite(volume_arr) & (volume_arr > 0)]
+
+    average_price = float(np.mean(positive_prices)) if positive_prices.size else 0.0
+    average_volume_20 = float(np.mean(positive_volumes[-20:])) if positive_volumes.size else 0.0
+    initial_capital = _safe_float(args.get("initial_capital"), 100000.0)
+    position_pct = _resolve_position_pct(args)
+    estimated_order_notional = max(0.0, initial_capital * position_pct)
+    estimated_order_shares = estimated_order_notional / average_price if average_price > 0 else 0.0
+
+    estimated_participation_rate = (
+        estimated_order_shares / average_volume_20
+        if average_volume_20 > 0
+        else 0.0
+    )
+    configured_participation_rate = _safe_float(args.get("capacity_participation_rate"), 0.0)
+    effective_participation_rate = max(estimated_participation_rate, configured_participation_rate)
+    adv_ratio_limit = _safe_float(args.get("adv_ratio_limit"), 0.0)
+    adv_utilization = (effective_participation_rate / adv_ratio_limit) if adv_ratio_limit > 0 else None
+
+    arrival_policy = str(args.get("arrival_price_policy") or "next_open_proxy").strip().lower()
+    arrival_bps = _ARRIVAL_PRICE_POLICY_BPS.get(arrival_policy)
+    if arrival_bps is None:
+        arrival_bps = 2.0 if "open" in arrival_policy else 1.0
+
+    effective_slippage_bps = max(0.0, explicit_slippage_rate if explicit_slippage_rate > 0 else model_slippage_rate) * 10000.0
+    tradability_filter = bool(args.get("tradability_filter", False) or payload.get("tradability_filter"))
+    total_days = int(payload.get("total_days") or len(price_arr) or 0)
+    if total_days and payload.get("tradable_days") is not None:
+        tradable_days = int(payload.get("tradable_days") or 0)
+    elif total_days:
+        tradable_days = int(np.sum(volume_arr > 0)) if volume_arr.size else total_days
+    else:
+        tradable_days = 0
+    tradable_ratio = (tradable_days / total_days) if total_days else 1.0
+
+    tradability_bps = 0.0
+    if tradability_filter:
+        tradability_bps += max(0.0, (0.98 - tradable_ratio) * 150.0)
+    elif tradable_ratio < 0.95:
+        tradability_bps += max(0.0, (0.95 - tradable_ratio) * 60.0)
+    if average_volume_20 <= 0:
+        tradability_bps = max(tradability_bps, 12.0)
+
+    capacity_bps = 0.0
+    if effective_participation_rate > 0:
+        capacity_bps += min(45.0, effective_participation_rate * 2500.0)
+    if adv_utilization is not None and adv_utilization > 1.0:
+        capacity_bps += min(60.0, (adv_utilization - 1.0) * 25.0)
+    capacity_bucket = str(args.get("capacity_bucket") or "").strip().lower()
+    if capacity_bucket:
+        capacity_bps += _CAPACITY_BUCKET_BPS.get(capacity_bucket, 0.0)
+    capacity_bps = max(0.0, capacity_bps)
+
+    estimated_total_bps = effective_slippage_bps + max(0.0, market_impact_bps) + arrival_bps + tradability_bps + capacity_bps
+    explicit_override = _safe_float(args.get("implementation_shortfall_proxy"), 0.0)
+    if explicit_override > 0:
+        source = "explicit_input"
+        final_total_bps = explicit_override
+    else:
+        source = "estimated"
+        final_total_bps = estimated_total_bps
+
+    components = {
+        "override_input_bps": round(explicit_override, 4) if explicit_override > 0 else None,
+        "estimated_total_bps": round(estimated_total_bps, 4),
+        "effective_total_bps": round(final_total_bps, 4),
+        "effective_slippage_bps": round(effective_slippage_bps, 4),
+        "market_impact_bps": round(max(0.0, market_impact_bps), 4),
+        "arrival_bps": round(arrival_bps, 4),
+        "tradability_bps": round(tradability_bps, 4),
+        "capacity_bps": round(capacity_bps, 4),
+        "arrival_price_policy": arrival_policy,
+    }
+    tradability_summary = {
+        "tradability_filter": tradability_filter,
+        "tradable_days": tradable_days if total_days else None,
+        "total_days": total_days or None,
+        "tradable_ratio": round(tradable_ratio, 4) if total_days else None,
+        "tradability_penalty_bps": round(tradability_bps, 4),
+    }
+    capacity_summary = {
+        "capacity_participation_rate": round(configured_participation_rate, 6) if configured_participation_rate else None,
+        "adv_ratio_limit": round(adv_ratio_limit, 6) if adv_ratio_limit else None,
+        "average_volume_20": round(average_volume_20, 4) if average_volume_20 > 0 else None,
+        "capacity_bucket": capacity_bucket or None,
+        "estimated_position_pct": round(position_pct, 4),
+        "estimated_order_notional": round(estimated_order_notional, 4),
+        "estimated_order_shares": round(estimated_order_shares, 4) if estimated_order_shares > 0 else None,
+        "estimated_participation_rate": round(estimated_participation_rate, 6) if estimated_participation_rate > 0 else 0.0,
+        "effective_participation_rate": round(effective_participation_rate, 6) if effective_participation_rate > 0 else 0.0,
+        "adv_utilization": round(adv_utilization, 4) if adv_utilization is not None else None,
+        "capacity_penalty_bps": round(capacity_bps, 4),
+    }
+    return round(final_total_bps, 4), source, components, tradability_summary, capacity_summary
 
 
 def _attach_equity_curve(payload: Dict[str, Any], equity: np.ndarray) -> None:
@@ -114,9 +273,74 @@ def _attach_advanced_metrics(payload: Dict[str, Any], equity: np.ndarray, params
         payload['information_ratio'] = None
 
 
-def _finalize_backtest_payload(payload: Dict[str, Any], equity: np.ndarray, params: Optional[Dict[str, Any]] = None) -> None:
+def _attach_execution_audit(
+    payload: Dict[str, Any],
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    closes: Optional[np.ndarray] = None,
+    volumes: Optional[np.ndarray] = None,
+) -> None:
+    args = dict(params or {})
+    explicit_commission = _safe_float(args.get("commission", 0.0003), 0.0)
+    explicit_slippage = _safe_float(args.get("slippage", 0.0), 0.0)
+    model_slippage = _compute_slippage_rate(
+        np.asarray(closes if closes is not None else [], dtype=float),
+        np.asarray(volumes if volumes is not None else [], dtype=float),
+        args,
+        0.0,
+    ) if closes is not None and volumes is not None else 0.0
+    market_impact_bps = _safe_float(args.get("market_impact_bps", 0.0), 0.0)
+    implementation_shortfall_proxy, implementation_source, shortfall_components, tradability_summary, capacity_summary = _estimate_implementation_shortfall(
+        payload,
+        args,
+        closes=closes,
+        volumes=volumes,
+        explicit_slippage_rate=explicit_slippage,
+        model_slippage_rate=model_slippage,
+        market_impact_bps=market_impact_bps,
+    )
+    position_assumption = str(
+        args.get("position_assumption")
+        or ("equal_weight_proxy" if str(args.get("target_weight_scheme") or "").strip().lower() == "equal_weight" else "single_name_full_notional")
+    ).strip() or "single_name_full_notional"
+
+    payload["cost_assumptions"] = {
+        "commission_rate": round(explicit_commission, 8),
+        "slippage_rate": round(explicit_slippage if explicit_slippage > 0 else model_slippage, 8),
+        "slippage_model": args.get("slippage_model"),
+        "arrival_price_policy": str(args.get("arrival_price_policy") or "next_open_proxy"),
+        "market_impact_bps": round(market_impact_bps, 4),
+        "implementation_shortfall_proxy": round(implementation_shortfall_proxy, 4),
+        "implementation_shortfall_model_source": implementation_source,
+    }
+    payload["explicit_cost_breakdown"] = {
+        "commission_rate": round(explicit_commission, 8),
+    }
+    payload["implicit_cost_breakdown"] = {
+        "slippage_rate": round(explicit_slippage if explicit_slippage > 0 else model_slippage, 8),
+        "market_impact_bps": round(market_impact_bps, 4),
+        "implementation_shortfall_proxy": round(implementation_shortfall_proxy, 4),
+        "implementation_shortfall_model_source": implementation_source,
+    }
+    payload["implementation_shortfall_proxy"] = round(implementation_shortfall_proxy, 4)
+    payload["implementation_shortfall_model_source"] = implementation_source
+    payload["implementation_shortfall_components"] = shortfall_components
+    payload["tradability_summary"] = tradability_summary
+    payload["capacity_summary"] = capacity_summary
+    payload["position_assumption"] = position_assumption
+
+
+def _finalize_backtest_payload(
+    payload: Dict[str, Any],
+    equity: np.ndarray,
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    closes: Optional[np.ndarray] = None,
+    volumes: Optional[np.ndarray] = None,
+) -> None:
     _attach_equity_curve(payload, equity)
     _attach_advanced_metrics(payload, equity, params=params)
+    _attach_execution_audit(payload, params=params, closes=closes, volumes=volumes)
 
 
 def _get_limit_ratio(code: str) -> float:
@@ -271,10 +495,13 @@ def _simulate_trades_from_masks(
     cash = float(initial_capital)
     shares = 0
     buy_price = 0.0
+    buy_index = -1
     trades = 0
     wins = 0
     equity = np.full(n, float(initial_capital), dtype=np.float64)
     trades_detail: List[Dict[str, Any]] = []
+    total_traded_notional = 0.0
+    holding_periods: List[int] = []
 
     for i in range(n - 1):
         tradable = True if tradability_mask is None else bool(tradability_mask[i])
@@ -302,6 +529,8 @@ def _simulate_trades_from_masks(
                 shares = max_shares
                 cash -= shares * buy_price
                 trades += 1
+                buy_index = int(i + 1)
+                total_traded_notional += float(shares * buy_price)
                 if return_trades:
                     trade_time = ""
                     if klines is not None and i + 1 < len(klines):
@@ -336,6 +565,9 @@ def _simulate_trades_from_masks(
                 wins += 1
             cash += revenue
             trades += 1
+            total_traded_notional += float(revenue)
+            if buy_index >= 0:
+                holding_periods.append(max(1, int(i + 1 - buy_index)))
             if return_trades:
                 trade_time = ""
                 if klines is not None and i + 1 < len(klines):
@@ -349,9 +581,11 @@ def _simulate_trades_from_masks(
                         "signal": -1,
                         "shares": int(shares),
                         "profit": float(profit),
+                        "holding_days": max(1, int(i + 1 - buy_index)) if buy_index >= 0 else 0,
                     }
                 )
             shares = 0
+            buy_index = -1
 
         equity[i] = cash + shares * closes[i]
     equity[n - 1] = cash + shares * float(closes[n - 1])
@@ -374,6 +608,9 @@ def _simulate_trades_from_masks(
             wins += 1
         cash += revenue
         trades += 1
+        total_traded_notional += float(revenue)
+        if buy_index >= 0:
+            holding_periods.append(max(1, int(i - buy_index)))
         if return_trades:
             trade_time = ""
             if klines is not None and i < len(klines):
@@ -387,9 +624,11 @@ def _simulate_trades_from_masks(
                     "signal": -1,
                     "shares": int(shares),
                     "profit": float(profit),
+                    "holding_days": max(1, int(i - buy_index)) if buy_index >= 0 else 0,
                 }
             )
         shares = 0
+        buy_index = -1
 
     final_capital = float(cash)
     total_return = (final_capital - initial_capital) / initial_capital if initial_capital > 0 else 0.0
@@ -420,6 +659,8 @@ def _simulate_trades_from_masks(
                     sharpe = float((annual_ret - risk_free_rate) / annual_std)
 
     win_rate = wins / max(1, trades // 2) if trades > 0 else 0.0  # round-trip = trades//2
+    avg_holding_days = float(np.mean(holding_periods)) if holding_periods else 0.0
+    turnover_proxy = (total_traded_notional / initial_capital) if initial_capital > 0 else 0.0
     return {
         "final_capital": final_capital,
         "total_return": float(total_return),
@@ -427,6 +668,8 @@ def _simulate_trades_from_masks(
         "sharpe_ratio": float(sharpe),
         "trades_count": int(trades),
         "win_rate": float(win_rate),
+        "avg_holding_days": float(avg_holding_days),
+        "turnover_proxy": float(turnover_proxy),
         "equity": equity,
         "trades": trades_detail if return_trades else None,
     }
@@ -513,6 +756,8 @@ class BacktestEngine:
                     'sharpe_ratio': float(sim['sharpe_ratio']),
                     'trades_count': int(sim['trades_count']),
                     'win_rate': float(sim['win_rate']),
+                    'avg_holding_days': float(sim.get('avg_holding_days') or 0.0),
+                    'turnover_proxy': float(sim.get('turnover_proxy') or 0.0),
                     'params': params,
                 }
                 if return_trades:
@@ -523,7 +768,7 @@ class BacktestEngine:
                     payload['tradability_filter'] = True
                     payload['tradable_days'] = int(np.sum(tradability_mask))
                     payload['total_days'] = int(len(tradability_mask))
-                _finalize_backtest_payload(payload, sim['equity'], params=params)
+                _finalize_backtest_payload(payload, sim['equity'], params=params, closes=closes, volumes=volumes)
                 return {'success': True, 'data': payload}
 
             if return_trades:
@@ -557,7 +802,7 @@ class BacktestEngine:
                     'params': params,
                     'trades': trades_detail
                 }
-                _finalize_backtest_payload(data, equity, params=params)
+                _finalize_backtest_payload(data, equity, params=params, closes=closes, volumes=volumes)
                 return {'success': True, 'data': data}
 
             result = _backtest_ma_cross_jit(
@@ -576,7 +821,7 @@ class BacktestEngine:
                 'win_rate': float(win_rate),
                 'params': params,
             }
-            _finalize_backtest_payload(data, equity, params=params)
+            _finalize_backtest_payload(data, equity, params=params, closes=closes, volumes=volumes)
             return {'success': True, 'data': data}
 
         elif strategy == 'buy_and_hold':
@@ -626,6 +871,8 @@ class BacktestEngine:
                 'sharpe_ratio': 0.0,
                 'trades_count': 1,
                 'win_rate': 1.0 if total_return > 0 else 0.0,
+                'avg_holding_days': float(max(1, exit_idx - entry_idx)),
+                'turnover_proxy': float(((shares * buy_price) + (shares * exit_price)) / initial_capital) if initial_capital > 0 else 0.0,
             }
             if tradability_mask is not None:
                 data['tradability_filter'] = True
@@ -633,7 +880,7 @@ class BacktestEngine:
                 data['exit_index'] = exit_idx
             if slippage_calc is not None:
                 data['slippage_model'] = str(slippage_model_raw).strip().lower()
-            _finalize_backtest_payload(data, equity, params=params)
+            _finalize_backtest_payload(data, equity, params=params, closes=closes, volumes=volumes)
             return {
                 'success': True,
                 'data': data
@@ -668,6 +915,8 @@ class BacktestEngine:
                     'sharpe_ratio': float(sim['sharpe_ratio']),
                     'trades_count': int(sim['trades_count']),
                     'win_rate': float(sim['win_rate']),
+                    'avg_holding_days': float(sim.get('avg_holding_days') or 0.0),
+                    'turnover_proxy': float(sim.get('turnover_proxy') or 0.0),
                     'params': params,
                 }
                 if return_trades:
@@ -678,7 +927,7 @@ class BacktestEngine:
                     payload['tradability_filter'] = True
                     payload['tradable_days'] = int(np.sum(tradability_mask))
                     payload['total_days'] = int(len(tradability_mask))
-                _finalize_backtest_payload(payload, sim['equity'], params=params)
+                _finalize_backtest_payload(payload, sim['equity'], params=params, closes=closes, volumes=volumes)
                 return {'success': True, 'data': payload}
 
             result = _backtest_momentum_jit(
@@ -697,7 +946,7 @@ class BacktestEngine:
                 'win_rate': float(win_rate),
                 'params': params,
             }
-            _finalize_backtest_payload(data, equity, params=params)
+            _finalize_backtest_payload(data, equity, params=params, closes=closes, volumes=volumes)
             return {'success': True, 'data': data}
 
         elif strategy == 'rsi':
@@ -730,6 +979,8 @@ class BacktestEngine:
                     'sharpe_ratio': float(sim['sharpe_ratio']),
                     'trades_count': int(sim['trades_count']),
                     'win_rate': float(sim['win_rate']),
+                    'avg_holding_days': float(sim.get('avg_holding_days') or 0.0),
+                    'turnover_proxy': float(sim.get('turnover_proxy') or 0.0),
                     'params': params,
                 }
                 if return_trades:
@@ -740,7 +991,7 @@ class BacktestEngine:
                     payload['tradability_filter'] = True
                     payload['tradable_days'] = int(np.sum(tradability_mask))
                     payload['total_days'] = int(len(tradability_mask))
-                _finalize_backtest_payload(payload, sim['equity'], params=params)
+                _finalize_backtest_payload(payload, sim['equity'], params=params, closes=closes, volumes=volumes)
                 return {'success': True, 'data': payload}
 
             result = _backtest_rsi_jit(
@@ -759,7 +1010,7 @@ class BacktestEngine:
                 'win_rate': float(win_rate),
                 'params': params,
             }
-            _finalize_backtest_payload(data, equity, params=params)
+            _finalize_backtest_payload(data, equity, params=params, closes=closes, volumes=volumes)
             return {'success': True, 'data': data}
 
         # Generic registry fallback for custom/factory strategies
@@ -793,11 +1044,13 @@ class BacktestEngine:
                     'sharpe_ratio': float(_sim['sharpe_ratio']),
                     'trades_count': int(_sim['trades_count']),
                     'win_rate': float(_sim['win_rate']),
+                    'avg_holding_days': float(_sim.get('avg_holding_days') or 0.0),
+                    'turnover_proxy': float(_sim.get('turnover_proxy') or 0.0),
                     'params': params,
                 }
                 if return_trades:
                     _payload['trades'] = _sim.get('trades') or []
-                _finalize_backtest_payload(_payload, _sim['equity'], params=params)
+                _finalize_backtest_payload(_payload, _sim['equity'], params=params, closes=closes, volumes=volumes)
                 return {'success': True, 'data': _payload}
 
         return {'success': False, 'error': f'Unknown strategy: {strategy}'}

@@ -23,6 +23,7 @@ from ..data_source import data_source
 from ..core.cache_manager import cached
 from ..core.rate_limiter import get_limiter
 from ..date_utils import get_latest_trading_date
+from ..storage import get_db
 
 from .fund_flow_common import (
     _NORTH_FUND_STALE_DAYS,
@@ -30,6 +31,7 @@ from .fund_flow_common import (
     _NORTH_FUND_FAST_MODE,
     _HKEX_DAILY_STAT_URL,
     _fetch_eastmoney_datacenter,
+    _run_storage_call_sync,
     logger,
 )
 
@@ -198,6 +200,37 @@ def _get_anchor_date() -> date:
     except Exception:
         pass
     return date.today()
+
+
+def _north_fund_from_db(days: int) -> list[dict]:
+    try:
+        db = get_db()
+        rows = _run_storage_call_sync(
+            lambda: db.get_north_fund_history(days=max(int(days or 1), 1), end_date=date.today()),
+            timeout=20.0,
+        )
+        if not isinstance(rows, list) or not rows:
+            return []
+        normalized = []
+        for row in rows:
+            trade_date = _parse_date(row.get("trade_date"))
+            if trade_date is None:
+                continue
+            normalized.append(
+                {
+                    "date": _format_date(trade_date),
+                    "shConnect": parse_numeric(row.get("hgt")),
+                    "szConnect": parse_numeric(row.get("sgt")),
+                    "total": parse_numeric(row.get("north_money") or row.get("net_amount")),
+                    "shCumulative": None,
+                    "szCumulative": None,
+                    "cumulative": None,
+                }
+            )
+        return _normalize_north_fund_results(normalized, days)
+    except Exception as exc:
+        logger.warning("_north_fund_from_db failed: %s", exc)
+        return []
 
 
 # =====================
@@ -591,11 +624,13 @@ def get_north_fund(days: int = 30) -> dict:
 
         if _NORTH_FUND_FAST_MODE:
             source_chain = [
+                ("north_fund_flow", _north_fund_from_db),
                 ("akshare_em", _north_fund_from_akshare),
                 ("em_summary", _north_fund_from_em_summary),
             ]
         else:
             source_chain = [
+                ("north_fund_flow", _north_fund_from_db),
                 ("tushare", _north_fund_from_tushare),
                 ("hkex", _north_fund_from_hkex),
                 ("akshare_em", _north_fund_from_akshare),

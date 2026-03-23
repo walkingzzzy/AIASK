@@ -37,11 +37,11 @@ export default defineConfig({
         },
     ],
 
-    webServer: process.env.CI ? undefined : [
+    webServer: [
         {
             command: 'npm run dev',
             cwd: '../bff',
-            url: `${BFF_BASE_URL}/health`,
+            url: `${BFF_BASE_URL}/health/ready`,
             reuseExistingServer: false,
             timeout: 120_000,
             env: {

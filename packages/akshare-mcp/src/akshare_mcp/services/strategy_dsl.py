@@ -18,6 +18,112 @@ SUPPORTED_COMPARE_OPS = {"gt", "gte", "lt", "lte", "eq", "ne", "cross_above", "c
 SUPPORTED_BINARY_OPS = {"add", "sub", "mul", "div", "max", "min"}
 
 
+def _normalize_code_list(values: Any, limit: int = 12) -> list[str]:
+    codes: list[str] = []
+    seen: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, dict):
+            for key in ("code", "symbol", "stock_code"):
+                if value.get(key) is not None:
+                    visit(value.get(key))
+            for key in ("codes", "symbols", "stock_codes", "target_symbols"):
+                if value.get(key) is not None:
+                    visit(value.get(key))
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                visit(item)
+            return
+        raw = str(value or "").strip()
+        if not raw:
+            return
+        if any(sep in raw for sep in [",", ";", "|", "\n", "\t", " "]):
+            normalized = raw.replace(";", ",").replace("|", ",").replace("\n", ",").replace("\t", ",").replace(" ", ",")
+            for part in normalized.split(","):
+                visit(part)
+            return
+        code = raw.split(".")[0].strip()
+        if not code or code in seen:
+            return
+        seen.add(code)
+        codes.append(code)
+
+    visit(values)
+    return codes[: max(1, min(int(limit or 12), 40))]
+
+
+def _structured_payload(value: Any, *, field: str = "summary") -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if value in (None, "", [], {}):
+        return {}
+    return {field: str(value)}
+
+
+def _factory_contract_required(payload: dict[str, Any]) -> bool:
+    return any(
+        payload.get(key) not in (None, "", [], {})
+        for key in ("research_task", "target_symbols", "stock_pool", "hypothesis", "holding_horizon", "tags", "rationale")
+    )
+
+
+def _is_event_blueprint(payload: dict[str, Any]) -> bool:
+    research_task = dict(payload.get("research_task") or {})
+    event_context = dict(payload.get("event_context") or {})
+    return bool(
+        str(research_task.get("task_source") or "").strip().lower() == "event_driven"
+        or research_task.get("event_id")
+        or research_task.get("theme_code")
+        or event_context.get("event_id")
+        or event_context.get("theme_code")
+    )
+
+
+def _requires_stock_pool_rationale(payload: dict[str, Any]) -> bool:
+    research_task = dict(payload.get("research_task") or {})
+    research_symbols = set(
+        _normalize_code_list(
+            [
+                research_task.get("target_symbols"),
+                research_task.get("stock_pool"),
+                (research_task.get("event_context") or {}).get("target_symbols"),
+            ],
+            limit=16,
+        )
+    )
+    if not research_symbols:
+        return False
+    candidate_symbols = set(
+        _normalize_code_list(
+            [
+                payload.get("target_symbols"),
+                payload.get("stock_pool"),
+                ((payload.get("dsl") or {}).get("metadata") or {}).get("target_symbols"),
+                ((payload.get("dsl") or {}).get("metadata") or {}).get("stock_pool"),
+            ],
+            limit=16,
+        )
+    )
+    return bool(candidate_symbols and not candidate_symbols.issubset(research_symbols))
+
+
+def _validate_factory_blueprint_contract(payload: dict[str, Any], normalized_dsl: Optional[dict[str, Any]] = None) -> None:
+    if not _factory_contract_required(payload):
+        return
+    risk_rules = dict(payload.get("risk_rules") or (normalized_dsl or {}).get("risk_rules") or {})
+    if not risk_rules:
+        raise ValueError("factory blueprint requires dsl risk_rules")
+    if _is_event_blueprint(payload) and not dict(payload.get("holding_horizon") or {}):
+        raise ValueError("event factory blueprint requires holding_horizon")
+    if _requires_stock_pool_rationale(payload):
+        stock_pool = dict(payload.get("stock_pool") or {})
+        if not str(stock_pool.get("rationale") or "").strip():
+            raise ValueError("expanded factory stock_pool requires rationale")
+
+
 def build_ohlcv_frame(klines: list[dict[str, Any]]) -> pd.DataFrame:
     frame = pd.DataFrame(list(klines or []))
     if frame.empty:
@@ -101,6 +207,8 @@ def compile_strategy_blueprint(
             "risk_rules": payload.get("risk_rules") or {},
         }
         normalized = normalize_strategy_dsl(dsl)
+        if tune_for_factory:
+            _validate_factory_blueprint_contract(payload, normalized)
         tuning = {
             "applied": False,
             "selected_variant": "original",
@@ -110,17 +218,26 @@ def compile_strategy_blueprint(
         }
         if tune_for_factory and market_frame is not None and not market_frame.empty:
             normalized, tuning = tune_strategy_dsl(normalized, market_frame)
+        risk_rules = dict(payload.get("risk_rules") or normalized.get("risk_rules") or {})
         return {
             "strategy_type": "dsl_rule",
             "params": {
                 "dsl": normalized,
-                "risk_rules": dict(payload.get("risk_rules") or normalized.get("risk_rules") or {}),
+                "risk_rules": risk_rules,
             },
             "name": str(payload.get("name") or "外部 AI DSL 策略"),
             "description": str(payload.get("description") or payload.get("rationale") or "外部 AI 生成的 DSL 策略"),
             "tags": list(dict.fromkeys(list(payload.get("tags") or []) + ["dsl_rule"])),
             "metadata": {
                 "rationale": payload.get("rationale"),
+                "hypothesis": payload.get("hypothesis"),
+                "holding_horizon": dict(payload.get("holding_horizon") or {}),
+                "trade_plan": _structured_payload(payload.get("trade_plan")),
+                "risk_rules": risk_rules,
+                "position_sizing": _structured_payload(payload.get("position_sizing")),
+                "execution_notes": payload.get("execution_notes"),
+                "stock_pool": dict(payload.get("stock_pool") or {}),
+                "target_symbols": list(_normalize_code_list(payload.get("target_symbols"), limit=12)),
                 "dsl": normalized,
                 "dsl_tuning": tuning,
                 "dsl_activity": tuning.get("after") or summarize_dsl_activity(market_frame, normalized),
@@ -131,6 +248,8 @@ def compile_strategy_blueprint(
     params = dict(payload.get("params") or {})
     if not strategy_type or not params:
         raise ValueError("strategy blueprint must contain dsl or strategy_type+params")
+    if tune_for_factory:
+        _validate_factory_blueprint_contract(payload)
     return {
         "strategy_type": strategy_type,
         "params": params,
@@ -139,6 +258,14 @@ def compile_strategy_blueprint(
         "tags": list(payload.get("tags") or []),
         "metadata": {
             "rationale": payload.get("rationale"),
+            "hypothesis": payload.get("hypothesis"),
+            "holding_horizon": dict(payload.get("holding_horizon") or {}),
+            "trade_plan": _structured_payload(payload.get("trade_plan")),
+            "risk_rules": dict(payload.get("risk_rules") or {}),
+            "position_sizing": _structured_payload(payload.get("position_sizing")),
+            "execution_notes": payload.get("execution_notes"),
+            "stock_pool": dict(payload.get("stock_pool") or {}),
+            "target_symbols": list(_normalize_code_list(payload.get("target_symbols"), limit=12)),
         },
     }
 

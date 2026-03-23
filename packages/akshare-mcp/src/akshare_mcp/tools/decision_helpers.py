@@ -107,14 +107,14 @@ def _compute_rsi_from_window(window_prices: list[float]) -> float:
 
 
 def _build_threshold_backtest(
-    closes_desc: list[float],
+    closes: list[float],
     thresholds: list[int],
     horizon: int = 10,
 ) -> list[dict]:
-    if not closes_desc or len(closes_desc) < 80:
+    if not closes or len(closes) < 80:
         return []
 
-    closes = list(reversed([float(c) for c in closes_desc]))  # oldest -> newest
+    closes = [float(c) for c in closes]
     points: list[tuple[float, float]] = []
     start_idx = 30
     end_idx = len(closes) - int(horizon) - 1

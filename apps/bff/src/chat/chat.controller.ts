@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Req, Res } from '@nestjs/common';
-import { IsArray, IsString, IsIn, ValidateNested, IsOptional } from 'class-validator';
+import { IsArray, IsString, IsIn, ValidateNested, IsOptional, MaxLength, ArrayMaxSize } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Request, Response } from 'express';
 import { ChatService } from './chat.service';
@@ -13,11 +13,12 @@ class SaveLlmConfigDto {
 
 class ChatMessageDto {
   @IsIn(['user', 'assistant', 'system']) role!: 'user' | 'assistant' | 'system';
-  @IsString() content!: string;
+  @IsString() @MaxLength(32000) content!: string;
 }
 
 class ChatCompletionsDto {
   @IsArray()
+  @ArrayMaxSize(100)
   @ValidateNested({ each: true })
   @Type(() => ChatMessageDto)
   messages!: ChatMessageDto[];
@@ -113,16 +114,33 @@ export class ChatController {
     res.flushHeaders();
 
     const userId = String(req.user?.sub ?? req.user?.id ?? '');
+    let clientDisconnected = false;
+    const markDisconnected = () => {
+      clientDisconnected = true;
+    };
+
+    req.on('close', markDisconnected);
+    res.on('close', markDisconnected);
 
     try {
       for await (const event of this.chatService.streamChat(userId, body.messages)) {
+        if (clientDisconnected || res.writableEnded || res.destroyed) {
+          break;
+        }
         res.write(`data: ${JSON.stringify(event)}\n\n`);
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.write(`data: ${JSON.stringify({ type: 'error', message })}\n\n`);
+      if (!clientDisconnected && !res.writableEnded && !res.destroyed) {
+        const message = err instanceof Error ? err.message : String(err);
+        res.write(`data: ${JSON.stringify({ type: 'error', message })}\n\n`);
+      }
+    } finally {
+      req.off('close', markDisconnected);
+      res.off('close', markDisconnected);
     }
 
-    res.end();
+    if (!res.writableEnded && !res.destroyed) {
+      res.end();
+    }
   }
 }

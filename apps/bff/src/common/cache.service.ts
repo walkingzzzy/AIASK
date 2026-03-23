@@ -38,12 +38,14 @@ export class CommonCacheService implements OnModuleDestroy {
   };
   private readonly ttlDefaultSeconds: number;
   private readonly ttlOverrides: Record<string, number>;
+  private readonly memoryMaxEntries: number;
   private redis: Redis | null = null;
   private redisReady = false;
 
   constructor(private readonly configService: ConfigService) {
     this.ttlDefaultSeconds = this.readDefaultTtl();
     this.ttlOverrides = this.readTtlOverrides();
+    this.memoryMaxEntries = Math.max(100, Number(this.configService.get('CACHE_MEMORY_MAX_ENTRIES', '5000')) || 5000);
     this.initRedis();
   }
 
@@ -122,10 +124,31 @@ export class CommonCacheService implements OnModuleDestroy {
     }
 
     this.stats.memorySets += 1;
+    if (this.memory.size >= this.memoryMaxEntries) {
+      this.evictExpiredOrOldest();
+    }
     this.memory.set(normalizedKey, {
       payload,
       expiresAt: Date.now() + safeTtl * 1000,
     });
+  }
+
+  private evictExpiredOrOldest(): void {
+    const now = Date.now();
+    for (const [k, v] of this.memory) {
+      if (v.expiresAt <= now) {
+        this.memory.delete(k);
+      }
+    }
+    if (this.memory.size >= this.memoryMaxEntries) {
+      const toRemove = Math.max(1, Math.floor(this.memoryMaxEntries * 0.1));
+      const iter = this.memory.keys();
+      for (let i = 0; i < toRemove; i++) {
+        const next = iter.next();
+        if (next.done) break;
+        this.memory.delete(next.value);
+      }
+    }
   }
 
   async del(key: string): Promise<void> {
@@ -139,6 +162,43 @@ export class CommonCacheService implements OnModuleDestroy {
       }
     }
     this.memory.delete(normalizedKey);
+  }
+
+  async increment(key: string, ttlSeconds: number): Promise<number> {
+    const normalizedKey = this.normalizeKey(key);
+    const safeTtl = Math.max(1, Math.floor(ttlSeconds));
+
+    if (this.redisReady && this.redis) {
+      try {
+        const pipeline = this.redis.multi();
+        pipeline.incr(normalizedKey);
+        pipeline.expire(normalizedKey, safeTtl);
+        const results = await pipeline.exec();
+        const count = Number(results?.[0]?.[1] ?? 0);
+        if (Number.isFinite(count) && count > 0) {
+          return count;
+        }
+      } catch (error) {
+        this.stats.errors += 1;
+        this.logger.warn(`Redis 计数失败，降级内存缓存: ${this.errMsg(error)}`);
+      }
+    }
+
+    const existing = this.memory.get(normalizedKey);
+    let base = 0;
+    if (existing && Date.now() <= existing.expiresAt) {
+      try {
+        base = Number(JSON.parse(existing.payload) ?? 0);
+      } catch {
+        base = 0;
+      }
+    }
+    const next = Math.max(0, base) + 1;
+    this.memory.set(normalizedKey, {
+      payload: JSON.stringify(next),
+      expiresAt: Date.now() + safeTtl * 1000,
+    });
+    return next;
   }
 
   resolveTtl(scope: string, fallbackSeconds: number): number {
@@ -175,10 +235,14 @@ export class CommonCacheService implements OnModuleDestroy {
     if (this.redisReady && this.redis) {
       try {
         const pattern = prefix ? `${fullPrefix}*` : `${this.keyPrefix}*`;
-        const keys = await this.redis.keys(pattern);
+        const keys = await this.scanKeys(pattern);
         if (keys.length > 0) {
-          await this.redis.del(...keys);
-          cleared += keys.length;
+          const chunkSize = 500;
+          for (let index = 0; index < keys.length; index += chunkSize) {
+            const chunk = keys.slice(index, index + chunkSize);
+            await this.redis.del(...chunk);
+            cleared += chunk.length;
+          }
         }
       } catch (error) {
         this.stats.errors += 1;
@@ -238,6 +302,20 @@ export class CommonCacheService implements OnModuleDestroy {
     return `${this.keyPrefix}${key.trim()}`;
   }
 
+  private async scanKeys(pattern: string): Promise<string[]> {
+    if (!this.redisReady || !this.redis) return [];
+    const keys: string[] = [];
+    let cursor = '0';
+    do {
+      const [nextCursor, batch] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 200);
+      cursor = nextCursor;
+      if (Array.isArray(batch) && batch.length > 0) {
+        keys.push(...batch);
+      }
+    } while (cursor !== '0');
+    return keys;
+  }
+
   private readDefaultTtl(): number {
     const value = Number(this.configService.get<string>('CACHE_TTL_DEFAULT_SECONDS', '0'));
     return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
@@ -264,4 +342,3 @@ export class CommonCacheService implements OnModuleDestroy {
     return error instanceof Error ? error.message : String(error);
   }
 }
-

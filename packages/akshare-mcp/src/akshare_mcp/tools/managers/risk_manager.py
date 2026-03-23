@@ -424,7 +424,7 @@ def register_risk_manager(mcp):
                         stock_info, one_info_chain = await _get_stock_info_with_fallback(db, code)
                         source_chain.extend(one_info_chain)
                         sector = stock_info.get("industry", "unknown") if stock_info else "unknown"
-                        current_price = float(klines[0]["close"])
+                        current_price = float(klines[-1]["close"])
                         holdings_values.append({"code": code, "value": float(shares * current_price), "sector": sector})
                 else:
                     codes, weights, parse_error = _parse_codes_weights(kwargs)
@@ -619,7 +619,7 @@ def register_risk_manager(mcp):
                         except Exception:
                             financial_row = None
 
-                        current_price = float(klines[0]["close"])
+                        current_price = float(klines[-1]["close"])
                         current_value = shares * current_price
                         sector = stock_info.get("industry", "unknown") if stock_info else "unknown"
                         market_cap = _first_float(
@@ -634,16 +634,18 @@ def register_risk_manager(mcp):
                         roe = _first_float(["roe", "roe_ttm"], financial_row, stock_info)
                         debt_ratio = _first_float(["debt_ratio", "debt_to_asset"], financial_row, stock_info)
 
+                        recent_klines = klines[-lookback_days:]
                         amount_samples = []
-                        for row in klines[:lookback_days]:
+                        for row in recent_klines:
                             close_px = _safe_float(row.get("close"), 0.0) or 0.0
                             volume = _safe_float(row.get("volume"), 0.0) or 0.0
                             amount = _safe_float(row.get("amount"), None)
                             amount_samples.append(amount if amount is not None and amount > 0 else close_px * volume)
                         avg_daily_amount = float(np.mean(amount_samples)) if amount_samples else 0.0
 
+                        monitor_klines = klines[-monitor_points:]
                         price_series = []
-                        for row in klines[:monitor_points]:
+                        for row in monitor_klines:
                             close_px = _safe_float(row.get("close"), 0.0) or 0.0
                             if close_px <= 0:
                                 continue
@@ -695,7 +697,7 @@ def register_risk_manager(mcp):
                         except Exception:
                             financial_row = None
 
-                        current_price = float(klines[0]["close"])
+                        current_price = float(klines[-1]["close"])
                         current_value = float(weight * portfolio_value)
                         shares_proxy = (current_value / current_price) if current_price > 0 else 0.0
                         sector = stock_info.get("industry", "unknown") if stock_info else "unknown"
@@ -711,16 +713,18 @@ def register_risk_manager(mcp):
                         roe = _first_float(["roe", "roe_ttm"], financial_row, stock_info)
                         debt_ratio = _first_float(["debt_ratio", "debt_to_asset"], financial_row, stock_info)
 
+                        recent_klines = klines[-lookback_days:]
                         amount_samples = []
-                        for row in klines[:lookback_days]:
+                        for row in recent_klines:
                             close_px = _safe_float(row.get("close"), 0.0) or 0.0
                             volume = _safe_float(row.get("volume"), 0.0) or 0.0
                             amount = _safe_float(row.get("amount"), None)
                             amount_samples.append(amount if amount is not None and amount > 0 else close_px * volume)
                         avg_daily_amount = float(np.mean(amount_samples)) if amount_samples else 0.0
 
+                        monitor_klines = klines[-monitor_points:]
                         price_series = []
-                        for row in klines[:monitor_points]:
+                        for row in monitor_klines:
                             close_px = _safe_float(row.get("close"), 0.0) or 0.0
                             if close_px <= 0:
                                 continue

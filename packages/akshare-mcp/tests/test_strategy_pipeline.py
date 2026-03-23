@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -356,7 +357,9 @@ class TestPipelineEndToEnd:
     async def test_full_pipeline_fallback_produces_candidates(self, db, pipeline):
         result = await pipeline.run_pipeline(db=db, snapshot=MOCK_SNAPSHOT)
 
-        assert isinstance(result, PipelineResult)
+        assert type(result).__name__ == "PipelineResult"
+        assert hasattr(result, "stages")
+        assert hasattr(result, "candidates")
         assert result.error is None, f"Pipeline error: {result.error}"
         assert result.elapsed_sec > 0
 
@@ -433,6 +436,8 @@ class TestProvenance:
             assert sp["used_fallback"] is True
             assert sp["elapsed_sec"] >= 0
             assert sp["error"] is None
+            assert "llm_error" in sp
+            assert "llm_error_type" in sp
 
     @pytest.mark.asyncio
     async def test_provenance_is_json_serializable(self, db, pipeline):
@@ -545,6 +550,67 @@ class TestPipelineModeRouting:
             assert specs[0].metadata.get("generator_type") == "pipeline_staged"
 
     @pytest.mark.asyncio
+    async def test_staged_mode_preserves_llm_error_when_fallback_succeeds(self, db):
+        """staged pipeline fallback 成功时，仍应保留原始 LLM 错误。"""
+        from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+        gen = LLMProxyStrategyGenerator()
+
+        mock_pipeline_result = PipelineResult(
+            candidates=[{
+                "name": "test_pipeline_strategy",
+                "strategy_type": "ma_cross",
+                "target_symbols": ["600519"],
+                "dsl": {
+                    "version": "1.0",
+                    "timeframe": "daily",
+                    "entry": {"any": [{"op": "cross_above",
+                                       "left": {"indicator": "sma", "field": "close", "window": 5},
+                                       "right": {"indicator": "sma", "field": "close", "window": 20}}]},
+                    "exit": {"any": [{"op": "cross_below",
+                                      "left": {"indicator": "sma", "field": "close", "window": 5},
+                                      "right": {"indicator": "sma", "field": "close", "window": 20}}]},
+                    "metadata": {"target_symbols": ["600519"]},
+                },
+                "tags": ["ai_staged"],
+            }],
+            elapsed_sec=0.5,
+        )
+        mock_pipeline_result.stages = {
+            "event_recognition": StageResult(
+                stage_id="event_recognition",
+                output={"events": [{"theme_code": "chip_domestic", "event_type": "policy"}]},
+                used_fallback=True,
+                llm_attempted=True,
+                prompt_chars=120,
+                elapsed_sec=8.2,
+                llm_error="call_stage(event_recognition) failed after 1 attempts: ReadTimeout",
+                llm_error_type="ReadTimeout",
+                llm_error_metrics={"last_error_type": "ReadTimeout"},
+            ),
+        }
+
+        with patch("akshare_mcp.services.strategy_generators.PIPELINE_MODE", "staged"), \
+             patch("akshare_mcp.services.strategy_generators.get_strategy_pipeline") as mock_get_pipe:
+            mock_pipe = AsyncMock()
+            mock_pipe.run_pipeline.return_value = mock_pipeline_result
+            mock_get_pipe.return_value = mock_pipe
+
+            gen.external_provider = MagicMock()
+            gen.external_provider.is_enabled.return_value = True
+            gen.external_provider.config = MagicMock(provider="openai_compatible", model="test-model")
+
+            specs = await gen.generate(db, limit=1, snapshot=MOCK_SNAPSHOT)
+            report = gen.get_last_report()
+
+            assert len(specs) == 1
+            assert report["external_provider"]["status"] == "fallback_only"
+            assert report["external_provider"]["last_error_type"] == "ReadTimeout"
+            assert "ReadTimeout" in report["external_provider"]["last_error"]
+            assert report["external_provider"]["requests"][0]["error_type"] == "ReadTimeout"
+            assert "ReadTimeout" in report["pipeline_provenance"]["stages"]["event_recognition"]["llm_error"]
+
+    @pytest.mark.asyncio
     async def test_monolithic_mode_skips_pipeline(self, db):
         """PIPELINE_MODE=monolithic 不应走 pipeline 路径。"""
         from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
@@ -569,6 +635,79 @@ class TestPipelineModeRouting:
 
             # pipeline 不应被调用
             mock_pipe.run_pipeline.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pipeline_timeout_skips_monolithic_external_provider(self, db):
+        """staged pipeline 超时后，本轮不应继续触发 monolithic 外部 LLM。"""
+        from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+        gen = LLMProxyStrategyGenerator()
+
+        async def _slow_pipeline(*args, **kwargs):
+            await asyncio.sleep(0.05)
+            return PipelineResult(candidates=[], elapsed_sec=0.05)
+
+        with patch("akshare_mcp.services.strategy_generators.PIPELINE_MODE", "staged"), \
+             patch("akshare_mcp.services.strategy_generators.get_strategy_pipeline") as mock_get_pipe, \
+             patch.object(LLMProxyStrategyGenerator, "_pipeline_run_timeout_sec", return_value=0.01):
+            mock_pipe = AsyncMock()
+            mock_pipe.run_pipeline.side_effect = _slow_pipeline
+            mock_get_pipe.return_value = mock_pipe
+
+            gen.external_provider = MagicMock()
+            gen.external_provider.is_enabled.return_value = True
+            gen.external_provider.config = MagicMock(strict=False, provider="openai_compatible", model="test-model")
+            gen.external_provider.generate_candidates = AsyncMock(return_value={"candidates": [], "analysis": {}, "request_metrics": {}})
+
+            with patch.object(gen, "_build_market_frame", new_callable=AsyncMock, return_value=None):
+                specs = await gen.generate(db, limit=1, snapshot=MOCK_SNAPSHOT)
+
+            assert len(specs) >= 1
+            gen.external_provider.generate_candidates.assert_not_awaited()
+            report = gen.get_last_report()
+            assert report["external_provider"]["status"] == "skipped_after_pipeline_timeout"
+            assert report["pipeline_staged_fallback_reason"] == "pipeline_timeout"
+
+    def test_pipeline_run_timeout_defaults_to_stage_budget(self):
+        """未显式配置总预算时，应按 stage timeout 汇总并附加缓冲。"""
+        from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("STRATEGY_LLM_PIPELINE_RUN_TIMEOUT_SEC", None)
+            with patch("akshare_mcp.services.strategy_generators._sf", return_value={
+                "PIPELINE_STAGE_TIMEOUT_SEC": 10.0,
+                "PIPELINE_STAGE_TIMEOUTS": {
+                    "event_recognition": 8.0,
+                    "theme_propagation": 10.0,
+                    "exposure_mapping": 10.0,
+                    "market_confirmation": 10.0,
+                    "strategy_generation": 12.0,
+                },
+            }):
+                assert LLMProxyStrategyGenerator._pipeline_run_timeout_sec() == pytest.approx(60.0)
+
+    def test_pipeline_run_timeout_prefers_explicit_env(self, monkeypatch):
+        from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+        monkeypatch.setenv("STRATEGY_LLM_PIPELINE_RUN_TIMEOUT_SEC", "33")
+        assert LLMProxyStrategyGenerator._pipeline_run_timeout_sec() == pytest.approx(33.0)
+
+    def test_pipeline_run_timeout_scales_with_large_stage_budget(self):
+        from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("STRATEGY_LLM_PIPELINE_RUN_TIMEOUT_SEC", None)
+            with patch("akshare_mcp.services.strategy_generators._sf", return_value={
+                "PIPELINE_STAGE_TIMEOUT_SEC": 60.0,
+                "PIPELINE_STAGE_TIMEOUTS": {
+                    "event_recognition": 60.0,
+                    "theme_propagation": 60.0,
+                    "exposure_mapping": 60.0,
+                    "market_confirmation": 60.0,
+                    "strategy_generation": 60.0,
+                },
+            }):
+                assert LLMProxyStrategyGenerator._pipeline_run_timeout_sec() == pytest.approx(360.0)
 
 
 # ===========================================================================
@@ -628,7 +767,12 @@ class TestSingleStageLLMPath:
 
         mock_provider = MagicMock()
         mock_provider.is_enabled.return_value = True
-        mock_provider.call_stage = AsyncMock(side_effect=StrategyLLMRequestError("timeout"))
+        mock_provider.call_stage = AsyncMock(
+            side_effect=StrategyLLMRequestError(
+                "timeout",
+                metrics={"last_error_type": "ReadTimeout", "elapsed_seconds": 8.0},
+            )
+        )
 
         pipeline = MultiStageStrategyPipeline(provider=mock_provider)
         stage_result = await pipeline.run_stage(
@@ -639,6 +783,41 @@ class TestSingleStageLLMPath:
         )
 
         assert stage_result.used_fallback is True
+        assert stage_result.llm_error == "timeout"
+        assert stage_result.llm_error_type == "ReadTimeout"
+        assert stage_result.prompt_chars > 0
+        assert stage_result.llm_error_metrics["elapsed_seconds"] == 8.0
+
+    @pytest.mark.asyncio
+    async def test_stage_skips_external_llm_during_recent_timeout_cooldown(self, db):
+        """最近超时处于冷却窗口时，应直接 fallback 而不是再次发起外部请求。"""
+        from akshare_mcp.services.strategy_llm_provider import StrategyLLMConfig, StrategyLLMProvider
+
+        provider = StrategyLLMProvider(
+            StrategyLLMConfig(
+                enabled=True,
+                base_url="https://example.com/v1",
+                api_key="test-key",
+                model="test-model",
+            )
+        )
+        provider._recent_timeout_streak = 1
+        provider._recent_timeout_cooldown_until = time.monotonic() + 60.0
+        provider._client.post = AsyncMock(side_effect=AssertionError("external request should be skipped during cooldown"))
+
+        pipeline = MultiStageStrategyPipeline(provider=provider)
+        stage_result = await pipeline.run_stage(
+            db=db,
+            stage_id="event_recognition",
+            input_data={"market_snapshot": {}, "theme_library": []},
+            snapshot=MOCK_SNAPSHOT,
+        )
+
+        assert stage_result.used_fallback is True
+        assert stage_result.llm_error_type == "RecentTimeoutCooldown"
+        assert stage_result.llm_error_metrics["status"] == "cooldown_skip"
+        provider._client.post.assert_not_awaited()
+        await provider.close()
 
 
 # ===========================================================================

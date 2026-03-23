@@ -37,13 +37,14 @@ async def get_investment_analysis(code: str) -> dict:
         highs = [float(k.get('high', 0)) for k in klines]
         lows = [float(k.get('low', 0)) for k in klines]
         volumes = [float(k.get('volume', 0)) for k in klines]
-        current_price = closes[0] if closes else 0
+        current_price = closes[-1] if closes else 0
 
         def _pct_change(data, days):
             if len(data) <= days:
                 return None
-            old = float(data[days])
-            return round((float(data[0]) - old) / old * 100, 2) if old > 0 else None
+            old = float(data[-(days + 1)])
+            latest = float(data[-1])
+            return round((latest - old) / old * 100, 2) if old > 0 else None
 
         high_52w = max(highs[:min(250, len(highs))]) if highs else 0
         low_52w = min(lows[:min(250, len(lows))]) if lows else 0
@@ -60,7 +61,7 @@ async def get_investment_analysis(code: str) -> dict:
             "high_52w": high_52w,
             "low_52w": low_52w,
             "position_in_52w_range_pct": position_52w,
-            "analysis_date": klines[0].get('date', '') if klines else '',
+            "analysis_date": klines[-1].get('date', '') if klines else '',
         }
 
         # ── 2. 估值数据 ──
@@ -172,7 +173,7 @@ async def get_investment_analysis(code: str) -> dict:
         for period in [5, 10, 20, 60, 120]:
             if len(closes) >= period:
                 import numpy as np
-                ma_data[f"ma{period}"] = round(float(np.mean(closes[:period])), 2)
+                ma_data[f"ma{period}"] = round(float(np.mean(closes[-period:])), 2)
         technical["moving_averages"] = ma_data
         if ma_data.get("ma20") and ma_data.get("ma60"):
             if current_price > ma_data["ma20"] > ma_data["ma60"]:
@@ -184,8 +185,8 @@ async def get_investment_analysis(code: str) -> dict:
 
         # 支撑/阻力（近 60 日高低点）
         if len(highs) >= 60 and len(lows) >= 60:
-            technical["resistance_60d"] = max(highs[:60])
-            technical["support_60d"] = min(lows[:60])
+            technical["resistance_60d"] = max(highs[-60:])
+            technical["support_60d"] = min(lows[-60:])
 
         result["technical"] = technical
 
@@ -227,15 +228,14 @@ async def get_investment_analysis(code: str) -> dict:
         # 最大回撤（近 250 日）
         if len(closes) >= 20:
             import numpy as np
-            cum_prices = np.array(closes[:min(250, len(closes))])
-            # 注意：klines 是倒序（最近在前），需要反转
-            cum_prices = cum_prices[::-1]
+            cum_prices = np.array(closes[-min(250, len(closes)):])
             peak = np.maximum.accumulate(cum_prices)
             dd = (peak - cum_prices) / peak
             risk["max_drawdown_250d"] = round(float(np.max(dd)), 4)
         if len(closes) >= 21:
             import numpy as np
-            rets = np.diff(np.array(closes[:21][::-1])) / np.maximum(np.array(closes[:21][::-1])[:-1], 1e-12)
+            recent_prices = np.array(closes[-21:])
+            rets = np.diff(recent_prices) / np.maximum(recent_prices[:-1], 1e-12)
             neg_rets = rets[rets < 0]
             if len(neg_rets) > 0:
                 risk["downside_volatility_20d"] = round(float(np.std(neg_rets)), 4)

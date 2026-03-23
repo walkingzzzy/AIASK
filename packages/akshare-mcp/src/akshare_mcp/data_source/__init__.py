@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import tushare as ts
 
+from ..env_loader import load_mcp_env
 from ..tushare_whitelist import load_tushare_whitelist
 from ..utils import safe_stderr_print
 from .quotes import QuotesMixin
@@ -38,31 +39,46 @@ class DataSourceManager(QuotesMixin, MarketDataMixin):
         return cls._instance
 
     def _init(self):
-        # Tushare 初始化
-        self.tushare_token = os.getenv("TUSHARE_TOKEN", "").strip()
-        self.tushare_http_url = os.getenv("TUSHARE_HTTP_URL", "").strip()
+        # Tushare 初始化采用懒加载，确保脚本入口未显式加载 .env 时也可用。
+        self.tushare_token = ""
+        self.tushare_http_url = ""
         self.ts_pro = None
-        if self.tushare_token:
+        self._ensure_tushare_ready(force_reload_env=True)
+
+    def _ensure_tushare_ready(self, *, force_reload_env: bool = False):
+        if force_reload_env or not str(self.tushare_token or "").strip():
             try:
-                ts.set_token(self.tushare_token)
-                self.ts_pro = ts.pro_api(self.tushare_token)
-                if self.tushare_http_url:
-                    try:
-                        self.ts_pro._DataApi__token = self.tushare_token
-                        self.ts_pro._DataApi__http_url = self.tushare_http_url.rstrip("/")
-                    except Exception:
-                        pass
-            except Exception as e:
-                safe_stderr_print(f"[DataSource] Tushare init failed: {e}")
+                load_mcp_env(override=False, only_prefixes=("TUSHARE_",))
+            except Exception:
+                pass
+            self.tushare_token = os.getenv("TUSHARE_TOKEN", "").strip()
+            self.tushare_http_url = os.getenv("TUSHARE_HTTP_URL", "").strip()
+        if self.ts_pro is not None or not self.tushare_token:
+            return self.ts_pro
+        try:
+            ts.set_token(self.tushare_token)
+            self.ts_pro = ts.pro_api(self.tushare_token)
+            if self.tushare_http_url:
+                try:
+                    self.ts_pro._DataApi__token = self.tushare_token
+                    self.ts_pro._DataApi__http_url = self.tushare_http_url.rstrip("/")
+                except Exception:
+                    pass
+        except Exception as e:
+            safe_stderr_print(f"[DataSource] Tushare init failed: {e}")
+            self.ts_pro = None
+        return self.ts_pro
 
     # ---- Tushare 辅助方法 ----
 
     def get_tushare_pro(self):
         """获取 Tushare Pro API 实例"""
-        return self.ts_pro
+        return self._ensure_tushare_ready(force_reload_env=not bool(self.ts_pro))
 
     def get_tushare_http_url(self) -> str:
         """获取 Tushare HTTP URL"""
+        if not self.tushare_http_url:
+            self._ensure_tushare_ready(force_reload_env=True)
         return self.tushare_http_url
 
     def get_tushare_whitelist(self) -> set:

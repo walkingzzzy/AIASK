@@ -34,9 +34,69 @@ class DslRuleStrategy(IStrategy):
         self.dsl = normalize_strategy_dsl(payload.get("dsl") or self.dsl)
         self.risk_rules = dict(payload.get("risk_rules") or self.risk_rules or {})
 
+    def _apply_risk_rules(
+        self,
+        frame,
+        entry_mask: np.ndarray,
+        exit_mask: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        closes = np.asarray(frame["close"].to_numpy(dtype=float), dtype=float)
+        if len(closes) <= 0:
+            return entry_mask, exit_mask
+
+        stop_loss_pct = float(self.risk_rules.get("stop_loss_pct") or self.risk_rules.get("stop_loss") or 0.0)
+        take_profit_pct = float(self.risk_rules.get("take_profit_pct") or self.risk_rules.get("take_profit") or 0.0)
+        max_holding_days = int(self.risk_rules.get("max_holding_days") or 0)
+        cooldown_days = int(self.risk_rules.get("cooldown_days") or 0)
+        if stop_loss_pct <= 0 and take_profit_pct <= 0 and max_holding_days <= 0 and cooldown_days <= 0:
+            return entry_mask, exit_mask
+
+        adjusted_entry = np.asarray(entry_mask, dtype=bool).copy()
+        adjusted_exit = np.asarray(exit_mask, dtype=bool).copy()
+        in_position = False
+        entry_price = 0.0
+        holding_days = 0
+        cooldown_left = 0
+
+        for idx in range(len(closes)):
+            if cooldown_left > 0 and not in_position:
+                adjusted_entry[idx] = False
+                cooldown_left -= 1
+            price = float(closes[idx] or 0.0)
+            if not in_position:
+                if adjusted_entry[idx] and price > 0:
+                    in_position = True
+                    entry_price = price
+                    holding_days = 0
+                continue
+
+            holding_days += 1
+            forced_exit = False
+            if stop_loss_pct > 0 and entry_price > 0:
+                forced_exit = forced_exit or (price / entry_price - 1.0) <= -abs(stop_loss_pct)
+            if take_profit_pct > 0 and entry_price > 0:
+                forced_exit = forced_exit or (price / entry_price - 1.0) >= abs(take_profit_pct)
+            if max_holding_days > 0 and holding_days >= max_holding_days:
+                forced_exit = True
+            if forced_exit:
+                adjusted_exit[idx] = True
+
+            if adjusted_exit[idx]:
+                in_position = False
+                entry_price = 0.0
+                holding_days = 0
+                cooldown_left = max(cooldown_left, cooldown_days)
+                adjusted_entry[idx] = False
+
+        overlap = adjusted_entry & adjusted_exit
+        adjusted_entry[overlap] = False
+        adjusted_exit[overlap] = False
+        return adjusted_entry, adjusted_exit
+
     def generate_signals(self, closes: np.ndarray, volumes: Optional[np.ndarray] = None) -> np.ndarray:
         frame = build_close_volume_frame(closes, volumes)
         entry_mask, exit_mask = evaluate_dsl_masks(frame, self.dsl)
+        entry_mask, exit_mask = self._apply_risk_rules(frame, entry_mask, exit_mask)
         signals = np.zeros(len(frame), dtype=np.int8)
         signals[entry_mask] = 1
         signals[exit_mask] = -1
@@ -46,4 +106,5 @@ class DslRuleStrategy(IStrategy):
 
     def generate_entry_exit_masks_from_klines(self, klines: list[dict]) -> tuple[np.ndarray, np.ndarray]:
         frame = build_ohlcv_frame(list(klines or []))
-        return evaluate_dsl_masks(frame, self.dsl)
+        entry_mask, exit_mask = evaluate_dsl_masks(frame, self.dsl)
+        return self._apply_risk_rules(frame, entry_mask, exit_mask)

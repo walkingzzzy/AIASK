@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from datetime import datetime, time, timedelta
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+import os
+from datetime import datetime, time, timedelta, timezone
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from .legacy_bridge import get_compat_symbol
 from ..domain.constants import (
@@ -15,18 +18,34 @@ from ..domain.constants import (
     AUTONOMY_STARTUP_DELAY_SEC,
     FACTORY_DAILY_RUN_TIME,
     FACTORY_ERROR_BACKOFF_SEC,
+    FACTORY_EVENT_RUNTIME_MODE,
+    FACTORY_FACTOR_AUTO_REFRESH,
+    FACTORY_FACTOR_REFRESH_TIMEOUT_SEC,
     FACTORY_MARKET_HOURS_INTERVAL_SEC,
     FACTORY_MAX_DAILY_RUNS,
     FACTORY_OFF_HOURS_INTERVAL_SEC,
+    FACTORY_READINESS_HARD_BLOCK,
+    FACTORY_READINESS_MIN_COMPLETION_RATIO,
+    FACTORY_READINESS_MIN_SCORE,
+    FACTORY_RUNTIME_ENABLED,
     FACTORY_SCHEDULE_MODE,
+    FACTORY_STARTUP_WARMUP_ENABLED,
+    FACTORY_STARTUP_WARMUP_FORCE,
+    FACTORY_STARTUP_WARMUP_LIMIT,
+    FACTORY_STARTUP_WARMUP_TASK_TYPE,
     RESEARCH_TASK_CONCURRENCY,
+    is_factory_factor_auto_refresh_enabled,
+    is_factory_readiness_hard_block_enabled,
+    is_factory_runtime_enabled,
+    resolve_event_runtime_mode,
 )
 from .runtime import (
     _call_optional_async as _runtime_call_optional_async,
     get_strategy_factory_package as _runtime_get_strategy_factory_package,
 )
 from .utils import _extract_event_context as _local_extract_event_context
-from ..infrastructure.mcp_services import get_autonomy_lifecycle_runtime
+from ..domain.targets import _extract_target_codes_from_payload, _normalize_target_codes
+from ..infrastructure.mcp_services import get_autonomy_lifecycle_runtime, get_runtime_warmup_runner
 
 if TYPE_CHECKING:
     from ..api.contracts import (
@@ -41,7 +60,47 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_AUTONOMY_LIFECYCLE_RUNTIME = get_autonomy_lifecycle_runtime()
+_MARKET_TIMEZONE_NAME = str(os.getenv("STRATEGY_MARKET_TIMEZONE") or "Asia/Shanghai").strip() or "Asia/Shanghai"
+try:
+    _MARKET_TIMEZONE = ZoneInfo(_MARKET_TIMEZONE_NAME)
+except Exception:
+    _MARKET_TIMEZONE = timezone(timedelta(hours=8))
+
+_FALLBACK_AUTONOMY_PHASE_ORDER = (
+    "prepared",
+    "generating",
+    "reviewing",
+    "recording",
+    "submitting",
+    "completed",
+)
+
+
+def _summarize_autonomy_lifecycle_fallback(lifecycle: Optional[dict[str, Any]]) -> dict[str, Any]:
+    payload = dict(lifecycle or {})
+    return {
+        "state": payload.get("state"),
+        "current_phase": payload.get("current_phase"),
+        "failed_phase": payload.get("failed_phase"),
+        "terminal_phase": payload.get("terminal_phase"),
+        "phase_status_counts": dict(payload.get("phase_status_counts") or {}),
+        "completed_phase_count": int(payload.get("completed_phase_count") or 0),
+        "event_count": int(payload.get("event_count") or len(payload.get("events") or [])),
+        "phase_order": list(payload.get("phase_order") or _FALLBACK_AUTONOMY_PHASE_ORDER),
+    }
+
+
+def _load_autonomy_lifecycle_runtime():
+    try:
+        return get_autonomy_lifecycle_runtime()
+    except Exception:
+        return SimpleNamespace(
+            AUTONOMY_PHASE_ORDER=_FALLBACK_AUTONOMY_PHASE_ORDER,
+            summarize_autonomy_lifecycle=_summarize_autonomy_lifecycle_fallback,
+        )
+
+
+_AUTONOMY_LIFECYCLE_RUNTIME = _load_autonomy_lifecycle_runtime()
 AUTONOMY_PHASE_ORDER = _AUTONOMY_LIFECYCLE_RUNTIME.AUTONOMY_PHASE_ORDER
 summarize_autonomy_lifecycle = _AUTONOMY_LIFECYCLE_RUNTIME.summarize_autonomy_lifecycle
 
@@ -88,6 +147,7 @@ class StrategyFactoryScheduler:
         self,
         run_time: Optional[time] = None,
         *,
+        db_provider: Optional[Callable[[], Any]] = None,
         vector_gateway: Optional["VectorSearchGateway"] = None,
         validation_gateway: Optional["ValidationGateway"] = None,
         risk_gateway: Optional["RiskGateway"] = None,
@@ -97,6 +157,7 @@ class StrategyFactoryScheduler:
         runtime_adapters: Optional["MCPRuntimeAdapters"] = None,
     ):
         self.schedule_mode: str = FACTORY_SCHEDULE_MODE if FACTORY_SCHEDULE_MODE in ("continuous", "daily") else "continuous"
+        self._market_timezone = _MARKET_TIMEZONE
         # daily 模式的运行时间
         if run_time is not None:
             self.run_time = run_time
@@ -114,6 +175,7 @@ class StrategyFactoryScheduler:
         self._daily_run_count: int = 0
         self._daily_run_date: Optional[str] = None  # "YYYY-MM-DD"
         self._cycle_count: int = 0
+        self._db_provider = db_provider
         self._runtime_adapters = runtime_adapters
         self._vector_gateway = vector_gateway
         self._validation_gateway = validation_gateway
@@ -128,6 +190,9 @@ class StrategyFactoryScheduler:
             self._incubation_gateway = self._incubation_gateway or getattr(runtime_adapters, "incubation", None)
             self._autonomy_gateway = self._autonomy_gateway or getattr(runtime_adapters, "autonomy", None)
             self._factor_research_gateway = self._factor_research_gateway or getattr(runtime_adapters, "factor_research", None)
+
+    def _now(self) -> datetime:
+        return datetime.now(self._market_timezone)
 
     def start(self):
         if self._running:
@@ -165,6 +230,68 @@ class StrategyFactoryScheduler:
         if isinstance(candidates, list):
             return list(candidates)
         return list((cycle or {}).get("candidates") or [])
+
+    @staticmethod
+    def _merge_explicit_stock_pool(base: Optional[dict], target_symbols: list[str]) -> dict:
+        pool = dict(base or {})
+        normalized = _normalize_target_codes(target_symbols, limit=12)
+        if not normalized:
+            return pool
+        pool["selection_mode"] = pool.get("selection_mode") or "explicit"
+        pool["symbols"] = normalized
+        return pool
+
+    @classmethod
+    def _enrich_candidate_targeting(cls, candidate: Optional[dict], task: Optional[dict] = None) -> dict:
+        item = dict(candidate or {})
+        if not item:
+            return {}
+
+        base_task = dict(task or {})
+        current_task = dict(item.get("research_task") or {})
+        merged_task = {**base_task, **current_task}
+        merged_task_event_context = {
+            **dict(base_task.get("event_context") or {}),
+            **dict(current_task.get("event_context") or {}),
+        }
+        if merged_task_event_context:
+            merged_task["event_context"] = merged_task_event_context
+        if merged_task:
+            item["research_task"] = merged_task
+
+        merged_event_context = {
+            **merged_task_event_context,
+            **dict(item.get("event_context") or {}),
+        }
+        if merged_event_context:
+            item["event_context"] = merged_event_context
+
+        target_symbols = _extract_target_codes_from_payload(item, limit=12)
+        if not target_symbols:
+            return item
+
+        item["target_symbols"] = list(target_symbols)
+        item["stock_pool"] = cls._merge_explicit_stock_pool(item.get("stock_pool"), target_symbols)
+
+        params = dict(item.get("params") or {})
+        if params:
+            params["target_symbols"] = list(target_symbols)
+            params["stock_pool"] = cls._merge_explicit_stock_pool(params.get("stock_pool"), target_symbols)
+            if merged_task and not params.get("research_task"):
+                params["research_task"] = dict(merged_task)
+            dsl = dict(params.get("dsl") or {})
+            if dsl:
+                metadata = dict(dsl.get("metadata") or {})
+                metadata["target_symbols"] = list(target_symbols)
+                metadata["stock_pool"] = cls._merge_explicit_stock_pool(metadata.get("stock_pool"), target_symbols)
+                dsl["metadata"] = metadata
+                params["dsl"] = dsl
+            item["params"] = params
+
+        tags = list(item.get("tags") or [])
+        if "targeted_universe" not in tags:
+            item["tags"] = [*tags, "targeted_universe"]
+        return item
 
     @staticmethod
     def _extract_cycle_experiments(cycle: dict) -> list[dict]:
@@ -205,6 +332,101 @@ class StrategyFactoryScheduler:
         return dict(lifecycle) if isinstance(lifecycle, dict) else {}
 
     @staticmethod
+    def _compact_active_candidate_pool(
+        factor_research: Optional[dict[str, Any]],
+        *,
+        candidate_limit: int = 5,
+        summary_limit: int = 5,
+    ) -> dict[str, Any]:
+        artifact = dict(factor_research or {})
+        active_pool = dict(artifact.get("active_candidate_pool") or {})
+
+        def _normalize_list(value: Any) -> list[str]:
+            if isinstance(value, (list, tuple, set)):
+                return [str(item).strip() for item in value if str(item).strip()]
+            token = str(value or "").strip()
+            return [token] if token else []
+
+        top_candidates: list[dict[str, Any]] = []
+        for item in list(active_pool.get("top_candidates") or [])[: max(1, int(candidate_limit or 5))]:
+            if not isinstance(item, dict):
+                continue
+            top_candidates.append(
+                {
+                    "artifact_id": str(item.get("artifact_id") or "").strip() or None,
+                    "name": str(item.get("name") or "").strip() or None,
+                    "family": str(item.get("family") or "").strip() or None,
+                    "expected_regime": _normalize_list(item.get("expected_regime")),
+                    "grade": str(item.get("grade") or "").strip() or None,
+                    "recommendation": str(item.get("recommendation") or "").strip() or None,
+                    "total_score": item.get("total_score"),
+                }
+            )
+
+        family_summary = [
+            {
+                "family": str(item.get("family") or "").strip() or None,
+                "count": int(item.get("count") or 0),
+                "promote_count": int(item.get("promote_count") or 0),
+                "review_count": int(item.get("review_count") or 0),
+                "avg_total_score": item.get("avg_total_score"),
+                "max_total_score": item.get("max_total_score"),
+            }
+            for item in list(active_pool.get("family_summary") or [])[: max(1, int(summary_limit or 5))]
+            if isinstance(item, dict)
+        ]
+        regime_summary = [
+            {
+                "regime": str(item.get("regime") or "").strip() or None,
+                "count": int(item.get("count") or 0),
+            }
+            for item in list(active_pool.get("regime_summary") or [])[: max(1, int(summary_limit or 5))]
+            if isinstance(item, dict)
+        ]
+
+        return {
+            "count": int(active_pool.get("count") or 0),
+            "top_candidates": top_candidates,
+            "family_summary": family_summary,
+            "regime_summary": regime_summary,
+        }
+
+    @classmethod
+    def _compact_factor_research_snapshot(
+        cls,
+        factor_research: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        artifact = dict(factor_research or {})
+        summary = dict(artifact.get("summary") or {})
+        freshness_repair = dict(artifact.get("freshness_repair") or {})
+        return {
+            "summary": {
+                "active_factor_count": int(summary.get("active_factor_count") or 0),
+                "active_candidate_count": int(summary.get("active_candidate_count") or 0),
+                "ranked_factor_count": int(summary.get("ranked_factor_count") or 0),
+                "top_factor_names": list(summary.get("top_factor_names") or []),
+                "top_candidate_names": list(summary.get("top_candidate_names") or []),
+                "active_family_names": list(summary.get("active_family_names") or []),
+                "active_regime_names": list(summary.get("active_regime_names") or []),
+                "preferred_strategy_types": list(summary.get("preferred_strategy_types") or []),
+                "factor_source_mode": summary.get("factor_source_mode"),
+                "degraded": bool(summary.get("degraded")),
+                "freshness_days": summary.get("freshness_days"),
+                "latest_factor_date": summary.get("latest_factor_date"),
+                "stale": bool(summary.get("stale")),
+                "quality_flags": list(summary.get("quality_flags") or []),
+            },
+            "active_candidate_pool": cls._compact_active_candidate_pool(artifact),
+            "degraded": bool(artifact.get("degraded")),
+            "source_chain": list(artifact.get("source_chain") or []),
+            "freshness_repair": {
+                "refresh_attempted": bool(freshness_repair.get("refresh_attempted")),
+                "refresh_status": freshness_repair.get("refresh_status"),
+                "refresh_trigger": freshness_repair.get("refresh_trigger"),
+            },
+        }
+
+    @staticmethod
     def _aggregate_task_lifecycle_metrics(task_results: List[dict]) -> dict:
         lifecycle_state_counts: dict[str, int] = {}
         phase_status_counts: dict[str, int] = {}
@@ -243,6 +465,310 @@ class StrategyFactoryScheduler:
         }
 
     @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value or default)
+        except Exception:
+            return float(default)
+
+    @classmethod
+    def _summarize_refresh_result(cls, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {"result_type": type(payload).__name__}
+        summary: dict[str, Any] = {}
+        for key in ("computed", "errors", "elapsed_seconds", "universe_size", "source", "asof_time"):
+            if payload.get(key) is not None:
+                summary[key] = payload.get(key)
+        flags = list(payload.get("quality_flags") or [])
+        if flags:
+            summary["quality_flags"] = flags
+        return summary
+
+    @staticmethod
+    def _aggregate_backtest_audit_metrics(backtest_report: Optional[dict]) -> dict[str, Any]:
+        report = dict(backtest_report or {})
+        entries = list(report.get("passed") or []) + list(report.get("failed") or [])
+        contamination_warning_count = 0
+        cost_audit_missing_count = 0
+        for entry in entries:
+            backtest_result = dict((entry or {}).get("backtest_result") or {})
+            contamination = dict(backtest_result.get("contamination_summary") or {})
+            validation_focus = str(backtest_result.get("validation_focus") or "").strip().lower()
+            if validation_focus == "event_target_only" and (
+                bool(contamination.get("representative_included")) or bool(contamination.get("mixed_layer_used"))
+            ):
+                contamination_warning_count += 1
+            if not backtest_result.get("cost_assumptions") or not backtest_result.get("position_assumption"):
+                cost_audit_missing_count += 1
+        return {
+            "event_window_contamination_warning_count": contamination_warning_count,
+            "cost_audit_missing_count": cost_audit_missing_count,
+        }
+
+    @classmethod
+    def _aggregate_submission_audit_metrics(cls, submit_result: Optional[dict]) -> dict[str, Any]:
+        payload = dict(submit_result or {})
+        strategies = list(payload.get("strategies") or [])
+        attempt_adjusted_gate_failed = 0
+        attempt_penalties: list[float] = []
+        refresh_metrics_only_count = 0
+        spawn_revision_from_existing_count = 0
+        constraint_violation_count = 0
+        intersection_ratios: list[float] = []
+        universe_expansion_count = 0
+        preference_mismatch_warning_count = 0
+        deflated_sharpe_values: list[float] = []
+        formal_deflated_sharpe_values: list[float] = []
+        high_pbo_proxy_count = 0
+        high_pbo_count = 0
+        formal_multiple_testing_count = 0
+        weak_white_reality_check_count = 0
+        weak_hansen_spa_count = 0
+
+        for item in strategies:
+            summary = dict(item or {})
+            gate = dict(summary.get("gate_3") or {})
+            attempt_adjustment = dict(gate.get("attempt_adjustment") or {})
+            penalty = cls._safe_float(attempt_adjustment.get("penalty"))
+            if penalty > 0:
+                attempt_penalties.append(penalty)
+                if not gate.get("passed"):
+                    attempt_adjusted_gate_failed += 1
+            deflated_proxy = gate.get("deflated_sharpe_proxy")
+            if deflated_proxy is not None:
+                deflated_sharpe_values.append(cls._safe_float(deflated_proxy))
+            deflated_formal = gate.get("deflated_sharpe_ratio")
+            if deflated_formal is not None:
+                formal_deflated_sharpe_values.append(cls._safe_float(deflated_formal))
+            if cls._safe_float(gate.get("pbo_proxy")) > 0.55:
+                high_pbo_proxy_count += 1
+            if str(gate.get("multiple_testing_mode") or "").strip().lower() == "formal_runtime":
+                formal_multiple_testing_count += 1
+            pbo_effective = gate.get("pbo")
+            if pbo_effective is None:
+                pbo_effective = gate.get("pbo_proxy")
+            if cls._safe_float(pbo_effective) > 0.55:
+                high_pbo_count += 1
+            white_effective = gate.get("white_reality_check_pvalue")
+            if white_effective is None:
+                white_effective = gate.get("reality_check_pvalue_proxy")
+            if cls._safe_float(white_effective) > 0.2:
+                weak_white_reality_check_count += 1
+            spa_effective = gate.get("hansen_spa_pvalue")
+            if spa_effective is None:
+                spa_effective = gate.get("spa_pvalue_proxy")
+            if cls._safe_float(spa_effective) > 0.2:
+                weak_hansen_spa_count += 1
+
+            constraint_check = dict(summary.get("constraint_check") or {})
+            if constraint_check.get("constraint_violation"):
+                constraint_violation_count += 1
+            if constraint_check.get("expansion_applied"):
+                universe_expansion_count += 1
+            intersection_ratio = constraint_check.get("intersection_ratio")
+            if intersection_ratio is not None:
+                intersection_ratios.append(cls._safe_float(intersection_ratio))
+            if any("preference" in str(code or "").lower() for code in list(summary.get("warning_codes") or [])):
+                preference_mismatch_warning_count += 1
+
+            refresh_mode = str(
+                summary.get("refresh_mode")
+                or dict(summary.get("dedup_result") or {}).get("refresh_mode")
+                or ""
+            ).strip().lower()
+            if refresh_mode == "refresh_metrics_only":
+                refresh_metrics_only_count += 1
+            elif refresh_mode == "spawn_revision_from_existing":
+                spawn_revision_from_existing_count += 1
+
+        return {
+            "constraint_violation_count": constraint_violation_count,
+            "target_symbol_intersection_ratio_avg": round(sum(intersection_ratios) / len(intersection_ratios), 4)
+            if intersection_ratios
+            else 0.0,
+            "universe_expansion_count": universe_expansion_count,
+            "preference_mismatch_warning_count": preference_mismatch_warning_count,
+            "attempt_adjusted_gate_failed": attempt_adjusted_gate_failed,
+            "attempt_adjusted_score_avg": round(sum(attempt_penalties) / len(attempt_penalties), 4)
+            if attempt_penalties
+            else 0.0,
+            "deflated_sharpe_proxy_avg": round(sum(deflated_sharpe_values) / len(deflated_sharpe_values), 4)
+            if deflated_sharpe_values
+            else 0.0,
+            "deflated_sharpe_ratio_avg": round(sum(formal_deflated_sharpe_values) / len(formal_deflated_sharpe_values), 4)
+            if formal_deflated_sharpe_values
+            else 0.0,
+            "high_pbo_proxy_count": high_pbo_proxy_count,
+            "high_pbo_count": high_pbo_count,
+            "formal_multiple_testing_count": formal_multiple_testing_count,
+            "weak_white_reality_check_count": weak_white_reality_check_count,
+            "weak_hansen_spa_count": weak_hansen_spa_count,
+            "refresh_metrics_only_count": refresh_metrics_only_count,
+            "spawn_revision_from_existing_count": spawn_revision_from_existing_count,
+        }
+
+    @classmethod
+    def _inject_factor_refresh_meta(cls, artifact: Optional[dict], refresh_meta: dict[str, Any]) -> dict[str, Any]:
+        data = dict(artifact or {})
+        summary = dict(data.get("summary") or {})
+        scheduler_status = dict(data.get("scheduler_status") or {})
+        normalized_meta = dict(refresh_meta or {})
+        summary.update(
+            {
+                "auto_refresh_enabled": bool(normalized_meta.get("auto_refresh_enabled")),
+                "refresh_attempted": bool(normalized_meta.get("refresh_attempted")),
+                "refresh_status": normalized_meta.get("refresh_status"),
+                "refresh_trigger": normalized_meta.get("refresh_trigger"),
+                "refresh_error": normalized_meta.get("refresh_error"),
+                "refreshed_before_build": bool(normalized_meta.get("refreshed_before_build")),
+            }
+        )
+        scheduler_status.update(
+            {
+                "refresh_attempted": bool(normalized_meta.get("refresh_attempted")),
+                "refresh_status": normalized_meta.get("refresh_status"),
+                "refresh_error": normalized_meta.get("refresh_error"),
+            }
+        )
+        data["freshness_repair"] = normalized_meta
+        data["summary"] = summary
+        data["scheduler_status"] = scheduler_status
+        return data
+
+    async def _build_factor_research_artifact(self, factor_gateway, db, snapshot: dict[str, Any]) -> dict[str, Any]:
+        gateway_db = self._adapt_gateway_repository(db)
+        auto_refresh_enabled = is_factory_factor_auto_refresh_enabled()
+        refresh_meta: dict[str, Any] = {
+            "auto_refresh_enabled": auto_refresh_enabled,
+            "refresh_attempted": False,
+            "refresh_status": "not_needed",
+            "refresh_trigger": None,
+            "refresh_error": None,
+            "refreshed_before_build": False,
+            "refresh_result": {},
+            "refresh_timeout_sec": FACTORY_FACTOR_REFRESH_TIMEOUT_SEC,
+        }
+        artifact = dict(await factor_gateway.build_artifact(gateway_db, snapshot) or {})
+        summary = dict(artifact.get("summary") or {})
+        should_refresh = bool(auto_refresh_enabled and summary.get("stale"))
+        refresh = getattr(factor_gateway, "refresh", None)
+        if should_refresh:
+            refresh_meta["refresh_attempted"] = True
+            refresh_meta["refresh_trigger"] = "stale_artifact"
+            if callable(refresh):
+                try:
+                    refresh_result = refresh()
+                    if inspect.isawaitable(refresh_result):
+                        refresh_result = await asyncio.wait_for(
+                            refresh_result,
+                            timeout=FACTORY_FACTOR_REFRESH_TIMEOUT_SEC,
+                        )
+                    refresh_meta["refresh_status"] = "success"
+                    refresh_meta["refresh_result"] = self._summarize_refresh_result(refresh_result)
+                    refresh_meta["refreshed_before_build"] = True
+                    artifact = dict(await factor_gateway.build_artifact(gateway_db, snapshot) or {})
+                except asyncio.TimeoutError:
+                    refresh_meta["refresh_status"] = "timeout"
+                    refresh_meta["refresh_error"] = (
+                        f"factor refresh exceeded {FACTORY_FACTOR_REFRESH_TIMEOUT_SEC}s"
+                    )
+                except Exception as exc:
+                    refresh_meta["refresh_status"] = "failed"
+                    refresh_meta["refresh_error"] = str(exc)
+            else:
+                refresh_meta["refresh_status"] = "unsupported"
+                refresh_meta["refresh_error"] = "factor gateway does not expose refresh()"
+        elif not auto_refresh_enabled:
+            refresh_meta["refresh_status"] = "disabled"
+        return self._inject_factor_refresh_meta(artifact, refresh_meta)
+
+    def _build_factory_readiness(
+        self,
+        snapshot: dict[str, Any],
+        factor_research: Optional[dict],
+    ) -> dict[str, Any]:
+        factor_artifact = dict(factor_research or {})
+        factor_summary = dict(factor_artifact.get("summary") or {})
+        factor_refresh = dict(factor_artifact.get("freshness_repair") or {})
+        factor_source_mode = str(factor_summary.get("factor_source_mode") or "").strip().lower()
+        active_candidate_count = int(factor_summary.get("active_candidate_count") or 0)
+        governed_candidate_pool_active = bool(
+            factor_source_mode == "governed_candidate_pool" or active_candidate_count > 0
+        )
+        sources = dict(snapshot.get("sources") or {})
+        event_source = dict(sources.get("event_driven") or {})
+        event_state = dict(snapshot.get("event_driven") or {})
+        completion = dict(snapshot.get("completeness") or {})
+        completion_ratio = self._safe_float(completion.get("completion_ratio"), default=1.0)
+        warnings: list[str] = []
+        blockers: list[str] = []
+        score = 1.0
+
+        if bool(snapshot.get("degraded")):
+            warnings.append("snapshot_degraded")
+            score -= 0.12
+        if completion_ratio < FACTORY_READINESS_MIN_COMPLETION_RATIO:
+            blockers.append("snapshot_completion_too_low")
+            score -= 0.28
+        elif completion_ratio < 0.9:
+            warnings.append("snapshot_completion_low")
+            score -= 0.08
+
+        event_status = str(event_source.get("status") or "unknown").strip().lower() or "unknown"
+        if event_status != "success":
+            warnings.append(f"event_driven_{event_status}")
+            score -= 0.08 if event_status == "partial" else 0.14
+        if event_status == "success" and int(event_state.get("tasks_ready_count") or 0) <= 0:
+            warnings.append("event_driven_no_ready_tasks")
+            score -= 0.03
+
+        if bool(factor_summary.get("degraded")):
+            warnings.append("factor_research_degraded")
+            score -= 0.14
+        if bool(factor_summary.get("stale")):
+            if governed_candidate_pool_active:
+                warnings.append("factor_research_history_stale_governed_pool_active")
+                score -= 0.06
+            else:
+                blockers.append("factor_research_stale")
+                score -= 0.32
+        refresh_status = str(factor_refresh.get("refresh_status") or "").strip().lower()
+        if bool(factor_refresh.get("refresh_attempted")) and refresh_status not in {"success", "not_needed"}:
+            warnings.append(f"factor_refresh_{refresh_status or 'unknown'}")
+            score -= 0.08
+
+        score = max(min(round(score, 4), 1.0), 0.0)
+        hard_block = is_factory_readiness_hard_block_enabled()
+        can_proceed = not hard_block or (score >= FACTORY_READINESS_MIN_SCORE and not blockers)
+        return {
+            "runtime_enabled": is_factory_runtime_enabled(),
+            "event_runtime_mode": resolve_event_runtime_mode(),
+            "auto_refresh_enabled": bool(factor_refresh.get("auto_refresh_enabled")),
+            "hard_block_enabled": hard_block,
+            "min_score": FACTORY_READINESS_MIN_SCORE,
+            "min_completion_ratio": FACTORY_READINESS_MIN_COMPLETION_RATIO,
+            "readiness_score": score,
+            "can_proceed": can_proceed,
+            "warnings": warnings,
+            "warning_count": len(warnings),
+            "blockers": blockers,
+            "blocker_count": len(blockers),
+            "snapshot_completion_ratio": completion_ratio,
+            "snapshot_degraded": bool(snapshot.get("degraded")),
+            "event_status": event_status,
+            "event_task_ready_count": int(event_state.get("tasks_ready_count") or 0),
+            "factor_research_stale": bool(factor_summary.get("stale")),
+            "factor_research_degraded": bool(factor_summary.get("degraded")),
+            "factor_source_mode": factor_summary.get("factor_source_mode"),
+            "governed_candidate_pool_active": governed_candidate_pool_active,
+            "active_candidate_count": active_candidate_count,
+            "active_family_count": len(list(factor_summary.get("active_family_names") or [])),
+            "active_regime_count": len(list(factor_summary.get("active_regime_names") or [])),
+            "factor_refresh_attempted": bool(factor_refresh.get("refresh_attempted")),
+            "factor_refresh_status": factor_refresh.get("refresh_status"),
+        }
+
+    @staticmethod
     def _filter_supported_injection_kwargs(factory: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
         if not kwargs:
             return {}
@@ -263,6 +789,13 @@ class StrategyFactoryScheduler:
     def _call_factory_with_supported_kwargs(factory: Any, kwargs: dict[str, Any]):
         filtered_kwargs = StrategyFactoryScheduler._filter_supported_injection_kwargs(factory, kwargs)
         return factory(**filtered_kwargs) if filtered_kwargs else factory()
+
+    def _load_db(self):
+        if callable(self._db_provider):
+            return self._db_provider()
+        from ..infrastructure.mcp_services import get_db_provider
+
+        return get_db_provider()()
 
     def _adapt_gateway_repository(self, db):
         runtime_repo = getattr(self._runtime_adapters, "repository", None) if self._runtime_adapters is not None else None
@@ -304,6 +837,44 @@ class StrategyFactoryScheduler:
                 builder=getattr(factory_pkg, "FactorResearchBuilder", None),
             )
         return self._factor_research_gateway
+
+    async def _run_startup_warmup(self) -> dict[str, Any]:
+        if not FACTORY_STARTUP_WARMUP_ENABLED:
+            return {
+                "ok": True,
+                "status": "disabled",
+                "task_type": FACTORY_STARTUP_WARMUP_TASK_TYPE,
+                "force": FACTORY_STARTUP_WARMUP_FORCE,
+                "matched": 0,
+                "executed": 0,
+                "failed": 0,
+                "executed_task_ids": [],
+                "failed_schedule_ids": [],
+                "schedules": [],
+            }
+
+        runner = get_runtime_warmup_runner()
+        try:
+            return await runner(
+                task_type=FACTORY_STARTUP_WARMUP_TASK_TYPE,
+                force=FACTORY_STARTUP_WARMUP_FORCE,
+                limit=FACTORY_STARTUP_WARMUP_LIMIT,
+                source="strategy_factory",
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "failed",
+                "task_type": FACTORY_STARTUP_WARMUP_TASK_TYPE,
+                "force": FACTORY_STARTUP_WARMUP_FORCE,
+                "matched": 0,
+                "executed": 0,
+                "failed": 0,
+                "executed_task_ids": [],
+                "failed_schedule_ids": [],
+                "schedules": [],
+                "error": str(exc),
+            }
 
     @staticmethod
     def _aggregate_vector_submission_metrics(submission_result: Optional[dict]) -> dict:
@@ -441,7 +1012,7 @@ class StrategyFactoryScheduler:
             return float(AUTONOMY_STARTUP_DELAY_SEC)
 
         if self.schedule_mode == "daily":
-            target = datetime.combine(now.date(), self.run_time)
+            target = datetime.combine(now.date(), self.run_time, tzinfo=self._market_timezone)
             if target <= now:
                 target += timedelta(days=1)
             return (target - now).total_seconds()
@@ -457,7 +1028,7 @@ class StrategyFactoryScheduler:
     async def _loop(self):
         while self._running:
             try:
-                now = datetime.now()
+                now = self._now()
                 today_str = now.strftime("%Y-%m-%d")
 
                 # 日期变更 → 重置每日计数
@@ -467,7 +1038,7 @@ class StrategyFactoryScheduler:
 
                 # 达到每日上限 → 睡到午夜
                 if self._daily_run_count >= self.max_daily_runs:
-                    tomorrow = datetime.combine(now.date() + timedelta(days=1), time(0, 0))
+                    tomorrow = datetime.combine(now.date() + timedelta(days=1), time(0, 0), tzinfo=self._market_timezone)
                     sleep_sec = (tomorrow - now).total_seconds() + 1
                     logger.info(
                         "StrategyFactory: daily limit reached (%d/%d), sleeping %.0fs until midnight",
@@ -498,23 +1069,20 @@ class StrategyFactoryScheduler:
         limit = max(1, min(int(task.get("generation_limit") or AUTONOMY_CANDIDATES_PER_TASK), 10))
         source = f"strategy_factory:{task.get('opportunity_type') or 'general'}"
         gateway_db = self._adapt_gateway_repository(db)
-        try:
-            return await autonomy_gateway.generate_factory_candidates(
-                gateway_db,
-                snapshot,
-                limit=limit,
-                research_task=task,
-                source=source,
-            )
-        except TypeError:
-            return await autonomy_gateway.generate_factory_candidates(gateway_db, snapshot, limit=limit)
+        return await autonomy_gateway.generate_factory_candidates(
+            gateway_db,
+            snapshot,
+            limit=limit,
+            research_task=task,
+            source=source,
+        )
 
     async def _persist_enriched_snapshot(self, db, snapshot: dict[str, Any]) -> None:
         try:
             await _call_optional_async(
                 db,
                 "save_daily_snapshot",
-                snapshot.get("date") or datetime.now().date(),
+                snapshot.get("date") or self._now().date(),
                 snapshot,
             )
         except Exception as exc:
@@ -539,6 +1107,33 @@ class StrategyFactoryScheduler:
             logger.warning("StrategyFactory: shared generation context preload failed: %s", exc)
             return False
 
+    @staticmethod
+    def _resolve_external_llm_concurrency_limit(autonomy_gateway) -> Optional[int]:
+        autonomy_target = getattr(autonomy_gateway, "raw", autonomy_gateway)
+        generation_service = getattr(autonomy_target, "generation_service", None)
+        llm_generator = getattr(generation_service, "llm_generator", None) or getattr(autonomy_target, "llm_generator", None)
+        external_provider = getattr(llm_generator, "external_provider", None)
+        if external_provider is None:
+            return None
+        try:
+            if callable(getattr(external_provider, "is_enabled", None)) and not external_provider.is_enabled():
+                return None
+        except Exception:
+            return None
+        try:
+            limit = int(getattr(getattr(external_provider, "config", None), "max_concurrency", 0) or 0)
+        except Exception:
+            return None
+        return max(1, limit) if limit > 0 else None
+
+    @classmethod
+    def _resolve_research_task_concurrency(cls, autonomy_gateway) -> int:
+        effective = RESEARCH_TASK_CONCURRENCY
+        provider_limit = cls._resolve_external_llm_concurrency_limit(autonomy_gateway)
+        if provider_limit is not None:
+            effective = min(effective, provider_limit)
+        return max(1, effective)
+
     async def _run_autonomy_batches(self, db, snapshot: dict) -> dict:
         factory_pkg = get_strategy_factory_package()
         scanner = factory_pkg.MarketOpportunityScanner()
@@ -560,8 +1155,9 @@ class StrategyFactoryScheduler:
         elapsed_seconds = 0.0
         _agg_lock = asyncio.Lock()
         shared_generation_context_preloaded = await self._prepare_shared_generation_context(autonomy_gateway, db, snapshot)
+        effective_research_concurrency = self._resolve_research_task_concurrency(autonomy_gateway)
 
-        sem = asyncio.Semaphore(RESEARCH_TASK_CONCURRENCY)
+        sem = asyncio.Semaphore(effective_research_concurrency)
 
         async def _run_one_task(task: dict) -> None:
             nonlocal total_attempt_count, total_selected_count, total_evidence_count
@@ -634,12 +1230,20 @@ class StrategyFactoryScheduler:
                         "lifecycle": lifecycle,
                         "lifecycle_summary": lifecycle_summary,
                     }
+                    task_level_attempt = len(external_provider.get("requests") or [])
+                    task_level_selected = int(external_provider.get("selected_count") or 0)
                     async with _agg_lock:
-                        generated_candidates.extend(self._extract_cycle_candidates(cycle))
+                        for candidate in self._extract_cycle_candidates(cycle):
+                            enriched = self._enrich_candidate_targeting(candidate, enriched_task)
+                            params = dict(enriched.get("params") or {})
+                            params["task_attempt_count"] = task_level_attempt
+                            params["task_selected_count"] = task_level_selected
+                            enriched["params"] = params
+                            generated_candidates.append(enriched)
                         all_experiments.extend(self._extract_cycle_experiments(cycle))
                         external_status_counts[status] = external_status_counts.get(status, 0) + 1
-                        total_attempt_count += len(external_provider.get("requests") or [])
-                        total_selected_count += int(external_provider.get("selected_count") or 0)
+                        total_attempt_count += task_level_attempt
+                        total_selected_count += task_level_selected
                         total_evidence_count += len(evidence_rows)
                         if external_provider.get("last_error_type"):
                             last_error_type = external_provider.get("last_error_type")
@@ -708,7 +1312,7 @@ class StrategyFactoryScheduler:
         if tasks:
             logger.info(
                 "StrategyFactory: running %d research tasks with concurrency=%d",
-                len(tasks), RESEARCH_TASK_CONCURRENCY,
+                len(tasks), effective_research_concurrency,
             )
             await asyncio.gather(*[_run_one_task(t) for t in tasks])
 
@@ -751,20 +1355,19 @@ class StrategyFactoryScheduler:
             "external_llm_last_error_type": last_error_type,
             "external_llm_last_error": last_error,
             "external_llm_elapsed_seconds": round(elapsed_seconds, 4),
-            "research_task_concurrency": RESEARCH_TASK_CONCURRENCY,
+            "research_task_concurrency": effective_research_concurrency,
+            "configured_research_task_concurrency": RESEARCH_TASK_CONCURRENCY,
             "shared_generation_context_preloaded": shared_generation_context_preloaded,
             **lifecycle_metrics,
         }
         return {"stage": stage, "candidates": generated_candidates, "experiments": all_experiments}
 
 
-    async def run_once(self) -> dict:
+    async def run_once(self, db=None) -> dict:
         """执行一次完整的策略工厂流程。"""
-        from akshare_mcp.storage import get_db
-
         factory_pkg = get_strategy_factory_package()
-        db = get_db()
-        start = datetime.now()
+        db = self._load_db() if db is None else db
+        start = self._now()
         trace_id = f"strategy_factory:{uuid4().hex[:12]}"
         results: Dict[str, Any] = {
             "run_id": f"factory_run_{int(start.timestamp())}_{uuid4().hex[:8]}",
@@ -777,7 +1380,63 @@ class StrategyFactoryScheduler:
 
         logger.info("StrategyFactory: starting daily cycle")
 
+        if not is_factory_runtime_enabled():
+            results["status"] = "skipped"
+            results["completed_at"] = self._now().isoformat()
+            results["elapsed_seconds"] = 0.0
+            results["stages"]["readiness"] = self._with_stage_meta(
+                "readiness",
+                trace_id,
+                {
+                    "status": "skipped",
+                    "ok": False,
+                    "runtime_enabled": False,
+                    "event_runtime_mode": resolve_event_runtime_mode(),
+                    "hard_block_enabled": is_factory_readiness_hard_block_enabled(),
+                    "readiness_score": 0.0,
+                    "can_proceed": False,
+                    "warnings": [],
+                    "warning_count": 0,
+                    "blockers": ["runtime_disabled"],
+                    "blocker_count": 1,
+                },
+                default_ok=False,
+            )
+            results["summary"] = {
+                "trace_id": trace_id,
+                "runtime_enabled": False,
+                "event_runtime_mode": resolve_event_runtime_mode(),
+                "factory_readiness_score": 0.0,
+                "factory_readiness_can_proceed": False,
+                "factory_readiness_blocker_count": 1,
+                "factory_readiness_warning_count": 0,
+                "skip_reason": "runtime_disabled",
+                "elapsed_seconds": 0.0,
+            }
+            results["pipeline"] = {
+                "trace_id": trace_id,
+                "status": results.get("status"),
+                "stage_order": list(results.get("stages", {}).keys()),
+                "total_stage_count": len(results.get("stages", {})),
+            }
+            self.last_run = self._now()
+            self.last_result = results
+            if hasattr(db, "save_strategy_factory_run"):
+                try:
+                    await db.save_strategy_factory_run(results)
+                except Exception as exc:
+                    logger.warning("StrategyFactory: failed to persist skipped run %s: %s", results.get("run_id"), exc)
+            return results
+
         try:
+            warmup_result = await self._run_startup_warmup()
+            results["stages"]["warmup"] = self._with_stage_meta(
+                "warmup",
+                trace_id,
+                warmup_result,
+                default_ok=bool(warmup_result.get("ok", True)),
+            )
+
             collector = factory_pkg.DataCollector()
             snapshot = await collector.collect(db)
             results["snapshot_summary"] = {
@@ -800,21 +1459,35 @@ class StrategyFactoryScheduler:
             factor_research = {}
             try:
                 factor_gateway = self._get_factor_research_gateway()
-                factor_research = await factor_gateway.build_artifact(
-                    self._adapt_gateway_repository(db),
+                factor_research = await self._build_factor_research_artifact(
+                    factor_gateway,
+                    db,
                     snapshot,
                 )
                 snapshot["factor_research"] = dict(factor_research or {})
                 factor_summary = dict((snapshot.get("factor_research") or {}).get("summary") or {})
+                compact_factor_research = self._compact_factor_research_snapshot(snapshot.get("factor_research"))
                 results["stages"]["factor_research"] = self._with_stage_meta("factor_research", trace_id, {
                     "active_factor_count": int(factor_summary.get("active_factor_count") or 0),
+                    "active_candidate_count": int(factor_summary.get("active_candidate_count") or 0),
+                    "active_family_count": len(list(factor_summary.get("active_family_names") or [])),
+                    "active_regime_count": len(list(factor_summary.get("active_regime_names") or [])),
                     "ranked_factor_count": int(factor_summary.get("ranked_factor_count") or 0),
                     "top_factor_names": list(factor_summary.get("top_factor_names") or []),
+                    "top_candidate_names": list(factor_summary.get("top_candidate_names") or []),
+                    "active_family_names": list(factor_summary.get("active_family_names") or []),
+                    "active_regime_names": list(factor_summary.get("active_regime_names") or []),
                     "preferred_strategy_types": list(factor_summary.get("preferred_strategy_types") or []),
+                    "factor_source_mode": factor_summary.get("factor_source_mode"),
                     "degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
                     "freshness_days": factor_summary.get("freshness_days"),
                     "latest_factor_date": factor_summary.get("latest_factor_date"),
                     "quality_flags": list(factor_summary.get("quality_flags") or []),
+                    "refresh_attempted": bool(factor_summary.get("refresh_attempted")),
+                    "refresh_status": factor_summary.get("refresh_status"),
+                    "refresh_trigger": factor_summary.get("refresh_trigger"),
+                    "refresh_error": factor_summary.get("refresh_error"),
+                    "active_candidate_pool": compact_factor_research.get("active_candidate_pool") or {},
                     "source_chain": list((snapshot.get("factor_research") or {}).get("source_chain") or []),
                 })
             except Exception as exc:
@@ -824,29 +1497,92 @@ class StrategyFactoryScheduler:
                     "ranked_factors": [],
                     "positive_rising_factors": [],
                     "preferred_strategy_types": [],
+                    "governed_candidates": [],
+                    "active_candidate_pool": {},
+                    "active_family_summary": [],
+                    "active_regime_summary": [],
                     "research_rationale": [str(exc)],
                     "source_chain": ["factor_research_error"],
                     "degraded": True,
                     "summary": {
                         "active_factor_count": 0,
+                        "active_candidate_count": 0,
                         "ranked_factor_count": 0,
                         "top_factor_names": [],
+                        "top_candidate_names": [],
+                        "active_family_names": [],
+                        "active_regime_names": [],
                         "preferred_strategy_types": [],
+                        "factor_source_mode": "error_fallback",
                         "degraded": True,
                         "quality_flags": ["failed"],
                     },
                 }
                 results["stages"]["factor_research"] = self._with_stage_meta("factor_research", trace_id, {
                     "active_factor_count": 0,
+                    "active_candidate_count": 0,
+                    "active_family_count": 0,
+                    "active_regime_count": 0,
                     "ranked_factor_count": 0,
                     "top_factor_names": [],
+                    "top_candidate_names": [],
+                    "active_family_names": [],
+                    "active_regime_names": [],
                     "preferred_strategy_types": [],
+                    "factor_source_mode": "error_fallback",
                     "degraded": True,
                     "quality_flags": ["failed"],
                     "error": str(exc),
                 }, default_ok=False)
 
+            results["snapshot_summary"] = {
+                **dict(results.get("snapshot_summary") or {}),
+                "factor_research": self._compact_factor_research_snapshot(snapshot.get("factor_research")),
+            }
+
+            readiness = self._build_factory_readiness(snapshot, snapshot.get("factor_research"))
+            snapshot["factory_readiness"] = readiness
+            results["stages"]["readiness"] = self._with_stage_meta("readiness", trace_id, readiness, default_ok=bool(readiness.get("can_proceed")))
             await self._persist_enriched_snapshot(db, snapshot)
+
+            if not bool(readiness.get("can_proceed")):
+                elapsed = (self._now() - start).total_seconds()
+                results["status"] = "skipped"
+                results["completed_at"] = self._now().isoformat()
+                results["elapsed_seconds"] = round(elapsed, 1)
+                results["summary"] = {
+                    "trace_id": trace_id,
+                    "runtime_enabled": bool(readiness.get("runtime_enabled")),
+                    "event_runtime_mode": readiness.get("event_runtime_mode"),
+                    "factory_readiness_score": readiness.get("readiness_score"),
+                    "factory_readiness_can_proceed": False,
+                    "factory_readiness_blocker_count": readiness.get("blocker_count", 0),
+                    "factory_readiness_warning_count": readiness.get("warning_count", 0),
+                    "factor_source_mode": readiness.get("factor_source_mode"),
+                    "governed_candidate_pool_active": bool(readiness.get("governed_candidate_pool_active")),
+                    "active_candidate_count": int(readiness.get("active_candidate_count") or 0),
+                    "skip_reason": "readiness_blocked",
+                    "elapsed_seconds": round(elapsed, 1),
+                }
+                results["pipeline"] = {
+                    "trace_id": trace_id,
+                    "status": results.get("status"),
+                    "stage_order": list(results.get("stages", {}).keys()),
+                    "total_stage_count": len(results.get("stages", {})),
+                }
+                logger.warning(
+                    "StrategyFactory: run %s blocked by readiness controls: %s",
+                    results.get("run_id"),
+                    readiness.get("blockers"),
+                )
+                self.last_run = self._now()
+                self.last_result = results
+                if hasattr(db, "save_strategy_factory_run"):
+                    try:
+                        await db.save_strategy_factory_run(results)
+                    except Exception as exc:
+                        logger.warning("StrategyFactory: failed to persist blocked run %s: %s", results.get("run_id"), exc)
+                return results
 
             spawner = factory_pkg.StrategySpawner()
             candidates = spawner.spawn(snapshot)
@@ -861,6 +1597,14 @@ class StrategyFactoryScheduler:
             try:
                 autonomy_batch = await self._run_autonomy_batches(db, snapshot)
                 ai_candidates = autonomy_batch.get("candidates") or []
+                autonomy_stage = autonomy_batch.get("stage") or {}
+                factory_attempt_count = int(autonomy_stage.get("external_llm_attempt_count") or 0)
+                factory_selected_count = int(autonomy_stage.get("external_llm_selected_count") or 0)
+                for ai_candidate in ai_candidates:
+                    params = dict(ai_candidate.get("params") or {})
+                    params["factory_attempt_count"] = factory_attempt_count
+                    params["factory_selected_count"] = factory_selected_count
+                    ai_candidate["params"] = params
                 candidates = [*candidates, *ai_candidates]
                 results["stages"]["autonomy"] = self._with_stage_meta("autonomy", trace_id, autonomy_batch.get("stage") or {
                     "ok": True,
@@ -960,9 +1704,9 @@ class StrategyFactoryScheduler:
             eliminated = await eliminator.check(db, snapshot.get("fg_level", "neutral"))
             results["stages"]["elimination"] = self._with_stage_meta("elimination", trace_id, {"count": len(eliminated), "items": eliminated})
 
-            elapsed = (datetime.now() - start).total_seconds()
+            elapsed = (self._now() - start).total_seconds()
             results["status"] = "success"
-            results["completed_at"] = datetime.now().isoformat()
+            results["completed_at"] = self._now().isoformat()
             results["elapsed_seconds"] = round(elapsed, 1)
             autonomy_summary = results.get("stages", {}).get("autonomy") or {}
             vector_summary = self._aggregate_vector_submission_metrics(submit_result)
@@ -981,22 +1725,41 @@ class StrategyFactoryScheduler:
                     "task_id": (item.get("task") or {}).get("task_id"),
                     "task_source": (item.get("task") or {}).get("task_source"),
                     "opportunity_type": (item.get("task") or {}).get("opportunity_type"),
+                    "candidate_family": (item.get("task") or {}).get("candidate_family"),
+                    "source_candidate_artifact_id": (item.get("task") or {}).get("source_candidate_artifact_id"),
+                    "factor_name": (item.get("task") or {}).get("factor_name"),
                     "generation_limit": (item.get("task") or {}).get("generation_limit"),
                     "generated_count": item.get("generated_count", 0),
                 }
                 for item in list(autonomy_summary.get("task_results") or [])
             ]
             factor_research_summary = dict((snapshot.get("factor_research") or {}).get("summary") or {})
+            factor_refresh_summary = dict((snapshot.get("factor_research") or {}).get("freshness_repair") or {})
             gate_0_summary = dict(quality_gate_report.get("gate_0") or {})
             gate_1_summary = dict(quality_gate_report.get("gate_1") or {})
             gate_2_summary = dict(quality_gate_report.get("gate_2") or {})
+            readiness_summary = dict(results.get("stages", {}).get("readiness") or {})
+            warmup_summary = dict(results.get("stages", {}).get("warmup") or {})
+            backtest_audit_summary = self._aggregate_backtest_audit_metrics(backtest_report)
+            submission_audit_summary = self._aggregate_submission_audit_metrics(submit_result)
             results["summary"] = {
                 "trace_id": trace_id,
+                "runtime_enabled": bool(readiness_summary.get("runtime_enabled", True)),
+                "event_runtime_mode": readiness_summary.get("event_runtime_mode"),
+                "factory_readiness_score": readiness_summary.get("readiness_score"),
+                "factory_readiness_can_proceed": readiness_summary.get("can_proceed"),
+                "factory_readiness_blocker_count": readiness_summary.get("blocker_count", 0),
+                "factory_readiness_warning_count": readiness_summary.get("warning_count", 0),
                 "fear_greed": snapshot.get("fear_greed_index"),
                 "listed_count": snapshot.get("listed_count", 0),
                 "snapshot_degraded": bool(snapshot.get("degraded")),
                 "snapshot_completion_ratio": (snapshot.get("completeness") or {}).get("completion_ratio", 1.0),
                 "snapshot_failure_reason_count": len(snapshot.get("failure_reasons") or []),
+                "warmup_status": warmup_summary.get("status"),
+                "warmup_task_type": warmup_summary.get("task_type"),
+                "warmup_matched": int(warmup_summary.get("matched") or 0),
+                "warmup_executed": int(warmup_summary.get("executed") or 0),
+                "warmup_failed": int(warmup_summary.get("failed") or 0),
                 "candidates_spawned": len(candidates),
                 "autonomy_generated": autonomy_summary.get("generated_count", 0),
                 "autonomy_task_count": autonomy_summary.get("task_count", 0),
@@ -1011,10 +1774,24 @@ class StrategyFactoryScheduler:
                 ),
                 "factor_research_used": bool(snapshot.get("factor_research")),
                 "active_factor_count": int(factor_research_summary.get("active_factor_count") or 0),
+                "active_candidate_count": int(factor_research_summary.get("active_candidate_count") or 0),
+                "active_family_count": len(list(factor_research_summary.get("active_family_names") or [])),
+                "active_regime_count": len(list(factor_research_summary.get("active_regime_names") or [])),
                 "top_factor_names": list(factor_research_summary.get("top_factor_names") or []),
+                "top_candidate_names": list(factor_research_summary.get("top_candidate_names") or []),
+                "active_family_names": list(factor_research_summary.get("active_family_names") or []),
+                "active_regime_names": list(factor_research_summary.get("active_regime_names") or []),
+                "factor_source_mode": factor_research_summary.get("factor_source_mode"),
+                "governed_candidate_pool_active": bool(
+                    str(factor_research_summary.get("factor_source_mode") or "").strip().lower()
+                    == "governed_candidate_pool"
+                ),
                 "factor_research_degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
                 "factor_research_stale": bool(factor_research_summary.get("stale")),
                 "factor_research_freshness_days": factor_research_summary.get("freshness_days"),
+                "factor_research_refresh_attempted": bool(factor_refresh_summary.get("refresh_attempted")),
+                "factor_research_refresh_status": factor_refresh_summary.get("refresh_status"),
+                "factor_research_refresh_trigger": factor_refresh_summary.get("refresh_trigger"),
                 "shared_generation_context_preloaded": bool(autonomy_summary.get("shared_generation_context_preloaded")),
                 "autonomy_task_briefs": autonomy_task_briefs,
                 "event_evidence_count": autonomy_summary.get("event_evidence_count", 0),
@@ -1047,6 +1824,8 @@ class StrategyFactoryScheduler:
                 ),
                 "gate_3_provisional_passed": submit_result.get("gate_3_provisional_passed", 0),
                 "gate_3_failure_reason_topn": list(submit_result.get("gate_3_failure_reason_topn") or []),
+                **submission_audit_summary,
+                **backtest_audit_summary,
                 **vector_summary,
                 "eliminated": len(eliminated),
                 "external_llm_status": autonomy_summary.get("external_llm_status"),
@@ -1068,10 +1847,10 @@ class StrategyFactoryScheduler:
                 len(eliminated),
             )
         except Exception as exc:
-            elapsed = (datetime.now() - start).total_seconds()
+            elapsed = (self._now() - start).total_seconds()
             logger.error("StrategyFactory: run_once failed: %s", exc, exc_info=True)
             results["status"] = "failed"
-            results["completed_at"] = datetime.now().isoformat()
+            results["completed_at"] = self._now().isoformat()
             results["elapsed_seconds"] = round(elapsed, 1)
             results["error"] = str(exc)
             results["summary"] = {"trace_id": trace_id, "elapsed_seconds": round(elapsed, 1), "error": str(exc)}
@@ -1083,7 +1862,7 @@ class StrategyFactoryScheduler:
             "total_stage_count": len(results.get("stages", {})),
         }
 
-        self.last_run = datetime.now()
+        self.last_run = self._now()
         self.last_result = results
         if hasattr(db, "save_strategy_factory_run"):
             try:
@@ -1097,6 +1876,13 @@ class StrategyFactoryScheduler:
             "running": self._running,
             "schedule_mode": self.schedule_mode,
             "run_time": str(self.run_time),
+            "runtime_enabled": is_factory_runtime_enabled(),
+            "event_runtime_mode": resolve_event_runtime_mode(),
+            "factor_auto_refresh_enabled": is_factory_factor_auto_refresh_enabled(),
+            "factor_refresh_timeout_sec": FACTORY_FACTOR_REFRESH_TIMEOUT_SEC,
+            "readiness_hard_block_enabled": is_factory_readiness_hard_block_enabled(),
+            "readiness_min_score": FACTORY_READINESS_MIN_SCORE,
+            "readiness_min_completion_ratio": FACTORY_READINESS_MIN_COMPLETION_RATIO,
             "last_run": str(self.last_run) if self.last_run else None,
             "last_result": self.last_result,
             "last_summary": (self.last_result or {}).get("summary") if self.last_result else None,

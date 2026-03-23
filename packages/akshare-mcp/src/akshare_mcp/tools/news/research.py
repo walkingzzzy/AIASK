@@ -7,10 +7,13 @@ try:
 except ImportError:
     ak = None
 
+from ...services.db_first_market_context import load_db_first_document_context
+from ...storage import get_db
 from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...data_source import data_source
 from ...utils import fail, format_period, normalize_code, ok, pick_value, safe_float
+from ..fund_flow_common import _run_storage_call_sync
 from .helpers import _dedup_reports, _fetch_eastmoney_research
 
 
@@ -398,7 +401,7 @@ def get_analyst_ranking(year: str = "") -> dict:
 
 
 @cached(ttl=3600.0)
-def get_research_reports(symbol: str = "", stock_code: str = "", limit: int = 10) -> dict:
+def get_research_reports(symbol: str = "", stock_code: str = "", limit: int = 10, *, prefer_db: bool = True) -> dict:
     """
     获取个股研报
 
@@ -417,6 +420,29 @@ def get_research_reports(symbol: str = "", stock_code: str = "", limit: int = 10
         raw = symbol or stock_code
         code = normalize_code(raw) if raw else ""
         limit = int(limit)
+
+        if prefer_db and code:
+            try:
+                db_context, db_source_chain = _run_storage_call_sync(
+                    lambda: load_db_first_document_context(
+                        get_db(),
+                        code,
+                        research_limit=max(limit, 1),
+                    ),
+                    timeout=8.0,
+                )
+                db_reports = list((db_context or {}).get("research") or [])
+                if db_reports:
+                    return ok(
+                        {
+                            "stockCode": code,
+                            "reports": _dedup_reports(db_reports)[:limit],
+                            "total": min(len(db_reports), limit),
+                            "source": ",".join(db_source_chain or ["db.research_reports"]),
+                        }
+                    )
+            except Exception:
+                pass
 
         # 1. AkShare 东财研报（支持 per-stock 过滤，字段完整）
         if ak is not None and code:

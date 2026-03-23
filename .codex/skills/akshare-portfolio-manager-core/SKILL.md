@@ -6,6 +6,8 @@ description: 顶级基金经理核心流程：目标与约束、组合构建、�
 > 校准说明：本 skill 用于定义组合构建、风险评估、合规检查与执行计划的推荐流程，不代表文中任一步骤在当前环境都已自动打通，亦不代表输出可被直接视为可执行交易指令。
 >
 > 实际可用能力应以当次运行时工具注册结果、风险模型返回、合规检查结果与执行链路状态为准；若缺少风控、合规或执行证据，应明确标注为“分析建议/待确认”，不得默认视为已满足全部门禁。
+>
+> 当前 BFF/Web 主要覆盖组合、风险、告警、策略市场、纸面交易等分域入口；`user_manager`、`event_manager`、`execution_manager`、`live_trading_manager`、`data_sync_manager` 没有对应的一体化前端总控页，部分能力仅能通过 MCP 直连或纸面交易包装入口间接触达。
 
 
 # 目标
@@ -33,7 +35,7 @@ description: 顶级基金经理核心流程：目标与约束、组合构建、�
 - 阶段 5（落地与监控）：
   - 用 `portfolio_manager(action=create)` 创建组合。
   - 用 `portfolio_manager(action=add_holding)` 记录持仓。
-  - 用 `watchlist_manager(action=add)` 与 `live_trading_manager(action=monitor)` 建立盘中跟踪。
+  - 用 `watchlist_manager(action=add_stocks)` 与 `live_trading_manager(action=monitor)` 建立盘中跟踪。
   - 用 `alerts_manager(action=create)` 建立风控告警。
 - 阶段 6（复盘闭环）：
   - 用 `risk_manager(action=calculate_var|stress_test)` 做事后风险复盘。
@@ -49,6 +51,7 @@ description: 顶级基金经理核心流程：目标与约束、组合构建、�
 - 执行引擎不可用：`execution_manager` 失败时降级为分批手工执行，并缩小单笔规模。
 - 实盘监控不可用：`live_trading_manager` 失败时改用 `watchlist_manager` + `alerts_manager` 维持最小监控。
 - 数据链路异常：`data_sync_manager` 失败时用 `data_warmup` 或 `sync_kline_data` 补齐关键数据。
+- 若走前后端页面链路：优先拆到 `/portfolio`、`/risk`、`/alerts`、`/watchlist`、`/paper-trading`、`/strategy-market` 分域页面，不要假定存在单一“组合经理总控台”。
 
 # 参考
 - 管理器工具：`user_manager`、`research_manager`、`event_manager`、`portfolio_manager`、`compliance_manager`、`execution_manager`、`watchlist_manager`、`live_trading_manager`、`alerts_manager`、`risk_manager`、`performance_manager`、`benchmark_manager`、`data_sync_manager`。

@@ -49,6 +49,9 @@ class StageResult:
     response_chars: int = 0
     elapsed_sec: float = 0.0
     error: Optional[str] = None
+    llm_error: Optional[str] = None
+    llm_error_type: Optional[str] = None
+    llm_error_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

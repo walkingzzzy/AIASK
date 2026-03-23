@@ -336,8 +336,13 @@ def get_index_spot_indexed() -> tuple[pd.DataFrame, bool]:
 # 股票列表 — Tushare stock_basic (主) → AkShare (降级)
 # ============================================================
 
-def _fetch_stock_list_tushare() -> Optional[list[dict]]:
-    """Tushare HTTP 代理获取全A股列表（一次返回全部代码+名称，无 N+1 问题）"""
+def _fetch_tushare_basic_list(
+    api_name: str,
+    *,
+    params: Optional[dict[str, Any]] = None,
+    fields: str = "ts_code,name",
+) -> Optional[list[dict]]:
+    """通过 Tushare HTTP 代理获取证券基础列表。"""
     try:
         from ...data_source import data_source
         http_url = data_source.get_tushare_http_url()
@@ -345,10 +350,10 @@ def _fetch_stock_list_tushare() -> Optional[list[dict]]:
         if not http_url or not token:
             return None
         payload = {
-            "api_name": "stock_basic",
+            "api_name": api_name,
             "token": token,
-            "params": {"list_status": "L"},
-            "fields": "ts_code,name",
+            "params": params or {},
+            "fields": fields,
         }
         resp = requests.post(http_url, json=payload, timeout=15)
         result = resp.json()
@@ -371,8 +376,33 @@ def _fetch_stock_list_tushare() -> Optional[list[dict]]:
                 records.append({"code": code, "name": name})
         return records if records else None
     except Exception as e:
-        safe_stderr_print(f"[helpers] Tushare stock_basic 失败: {e}")
+        safe_stderr_print(f"[helpers] Tushare {api_name} 失败: {e}")
         return None
+
+
+def _fetch_stock_list_tushare() -> Optional[list[dict]]:
+    """Tushare HTTP 代理获取全A股列表（一次返回全部代码+名称，无 N+1 问题）"""
+    return _fetch_tushare_basic_list(
+        "stock_basic",
+        params={"list_status": "L"},
+        fields="ts_code,name",
+    )
+
+
+def _fetch_fund_list_tushare() -> Optional[list[dict]]:
+    """Tushare HTTP 代理获取场内基金/ETF 基础列表。"""
+    records = _fetch_tushare_basic_list(
+        "fund_basic",
+        params={"market": "E"},
+        fields="ts_code,name",
+    )
+    if records:
+        return records
+    return _fetch_tushare_basic_list(
+        "fund_basic",
+        params={},
+        fields="ts_code,name",
+    )
 
 
 def get_stock_list_cached() -> tuple[list[dict], bool]:
@@ -390,8 +420,17 @@ def get_stock_list_cached() -> tuple[list[dict], bool]:
 
         records = None
 
-        # 1. 主路径: Tushare stock_basic（一次返回全部代码+名称）
-        records = _fetch_stock_list_tushare()
+        # 1. 主路径: Tushare stock_basic + fund_basic（股票 + 场内基金/ETF）
+        stock_records = _fetch_stock_list_tushare() or []
+        fund_records = _fetch_fund_list_tushare() or []
+        merged: dict[str, dict[str, str]] = {}
+        for row in stock_records + fund_records:
+            code = normalize_code(row.get("code") or row.get("代码") or "")
+            name = str(row.get("name") or row.get("名称") or "").strip()
+            if code and name:
+                merged[code] = {"code": code, "name": name}
+        if merged:
+            records = list(merged.values())
 
         # 2. 降级: AkShare (如可用)
         if not records and ak is not None:

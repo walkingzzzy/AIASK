@@ -67,9 +67,10 @@ export class FactorService {
   }
 
   async icHistory(params: { factor_name: string; period?: string; limit?: number }) {
-    const payload = await this.mcp.callTool('quant_manager', {
-      action: 'factor_ic_history',
-      params: { factor_name: params.factor_name, period: params.period ?? '20', limit: params.limit ?? 60 },
+    const payload = await this.callQuantManager('factor_ic_history', {
+      factor_name: params.factor_name,
+      period: params.period ?? '20',
+      limit: params.limit ?? 60,
     });
     return { data: payload };
   }
@@ -109,17 +110,172 @@ export class FactorService {
   }
 
   async batchCompute(params: { codes: string[]; factors?: string[]; persist?: boolean; compute_ic?: boolean; period?: number }) {
-    const payload = await this.mcp.callTool('quant_manager', {
-      action: 'batch_compute_factors',
-      params: {
-        codes: params.codes,
-        factors: params.factors ?? ['momentum', 'value', 'quality'],
-        persist: params.persist ?? true,
-        compute_ic: params.compute_ic ?? true,
-        period: params.period ?? 20,
-      },
+    const payload = await this.callQuantManager('batch_compute_factors', {
+      codes: params.codes,
+      factors: params.factors ?? ['momentum', 'value', 'quality'],
+      persist: params.persist ?? true,
+      compute_ic: params.compute_ic ?? true,
+      period: params.period ?? 20,
     });
     return { data: payload };
+  }
+
+  async llmFactorMining(body: {
+    stock_codes: string[];
+    candidate_count?: number;
+    lookback_bars?: number;
+    alternative_lookback_days?: number;
+    allow_fallback?: boolean;
+    persist_artifact?: boolean;
+    artifact_id?: string;
+    dedup_mode?: string;
+    dedup_high_similarity_threshold?: number;
+    dedup_failure_similarity_threshold?: number;
+    startup_warmup?: boolean;
+    startup_warmup_force?: boolean;
+    startup_warmup_limit?: number;
+    startup_warmup_task_type?: string;
+  }) {
+    const payload = await this.callQuantManager('llm_factor_mining', {
+      codes: body.stock_codes,
+      candidate_count: body.candidate_count,
+      lookback_bars: body.lookback_bars,
+      alternative_lookback_days: body.alternative_lookback_days,
+      allow_fallback: body.allow_fallback,
+      persist_artifact: body.persist_artifact,
+      artifact_id: body.artifact_id,
+      dedup_mode: body.dedup_mode,
+      dedup_high_similarity_threshold: body.dedup_high_similarity_threshold,
+      dedup_failure_similarity_threshold: body.dedup_failure_similarity_threshold,
+      startup_warmup: body.startup_warmup,
+      startup_warmup_force: body.startup_warmup_force,
+      startup_warmup_limit: body.startup_warmup_limit,
+      startup_warmup_task_type: body.startup_warmup_task_type,
+    });
+    return { data: this.flattenMcpResult(payload) };
+  }
+
+  async validateCandidate(body: {
+    artifact_id?: string;
+    candidate_index?: number;
+    candidate?: Record<string, unknown>;
+    stock_codes?: string[];
+    lookback_bars?: number;
+    horizon_days?: number;
+    max_dates?: number;
+    persist_artifact?: boolean;
+    write_memory?: boolean;
+    output_artifact_id?: string;
+  }) {
+    const payload = await this.callQuantManager('validate_factor_candidate', {
+      artifact_id: body.artifact_id,
+      candidate_index: body.candidate_index,
+      candidate: body.candidate,
+      codes: body.stock_codes,
+      lookback_bars: body.lookback_bars,
+      horizon_days: body.horizon_days,
+      max_dates: body.max_dates,
+      persist_artifact: body.persist_artifact,
+      write_memory: body.write_memory,
+      output_artifact_id: body.output_artifact_id,
+    });
+    return { data: this.flattenMcpResult(payload) };
+  }
+
+  async factorResearchMemory(body: {
+    op?: string;
+    artifact_id?: string;
+    candidate?: Record<string, unknown>;
+    query_text?: string;
+    stock_codes?: string[];
+    status?: string;
+    family?: string;
+    limit?: number;
+  }) {
+    const payload = await this.callQuantManager('factor_research_memory', {
+      op: body.op ?? 'list',
+      artifact_id: body.artifact_id,
+      candidate: body.candidate,
+      query_text: body.query_text,
+      codes: body.stock_codes,
+      status: body.status,
+      family: body.family,
+      limit: body.limit,
+    });
+    return { data: this.flattenMcpResult(payload) };
+  }
+
+  async factorCandidateRegistry(body: {
+    op?: string;
+    artifact_id?: string;
+    stock_codes?: string[];
+    family?: string;
+    grade?: string;
+    recommendation?: string;
+    min_score?: number;
+    only_active?: boolean;
+    limit?: number;
+  }) {
+    const payload = await this.callQuantManager('factor_candidate_registry', {
+      op: body.op ?? 'list',
+      artifact_id: body.artifact_id,
+      codes: body.stock_codes,
+      family: body.family,
+      grade: body.grade,
+      recommendation: body.recommendation,
+      min_score: body.min_score,
+      only_active: body.only_active,
+      limit: body.limit,
+    });
+    return { data: this.flattenMcpResult(payload) };
+  }
+
+  async replayFactorEpisode(body: {
+    op?: string;
+    artifact_id?: string;
+    source_artifact_id?: string;
+    stock_codes?: string[];
+    candidate_limit?: number;
+    lookback_bars?: number;
+    horizon_days?: number;
+    max_dates?: number;
+    write_memory?: boolean;
+    persist_artifact?: boolean;
+    output_artifact_id?: string;
+    limit?: number;
+  }) {
+    const payload = await this.callQuantManager('replay_factor_episode', {
+      op: body.op ?? 'run',
+      artifact_id: body.artifact_id,
+      source_artifact_id: body.source_artifact_id,
+      codes: body.stock_codes,
+      candidate_limit: body.candidate_limit,
+      lookback_bars: body.lookback_bars,
+      horizon_days: body.horizon_days,
+      max_dates: body.max_dates,
+      write_memory: body.write_memory,
+      persist_artifact: body.persist_artifact,
+      output_artifact_id: body.output_artifact_id,
+      limit: body.limit,
+    });
+    return { data: this.flattenMcpResult(payload) };
+  }
+
+  async schedulerStatus() {
+    const payload = await this.callQuantManager('scheduler_status');
+    return { data: this.flattenMcpResult(payload) };
+  }
+
+  async schedulerRunNow() {
+    const payload = await this.callQuantManager('scheduler_run_now');
+    return { data: this.flattenMcpResult(payload) };
+  }
+
+  private async callQuantManager(action: string, params: Record<string, unknown> = {}) {
+    return this.mcp.callTool('quant_manager', {
+      action,
+      params,
+    });
   }
 
   private normalizeLibrary(payload: unknown): { factors: NormalizedFactorItem[] } {

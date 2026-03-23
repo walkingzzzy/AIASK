@@ -5,7 +5,11 @@ description: 顶级基金经理专业流程：投研、组合、执行、风控�
 
 > 校准说明：本 skill 用于定义推荐编排流程与门禁顺序，不代表其中引用的所有工具、模板与外部依赖在任意运行环境下都已自动可用。
 >
-> 实际可用能力应以当次 `available_tools`、`search_skills`、`skill_tool_coverage_runtime.json` 以及运行时探测结果为准；其中 skill 文档引用覆盖不等于内建执行器覆盖，涉及外部依赖时必须现场预检。
+> 实际可用能力应以当次 `available_tools`、`search_skills`、运行时探测结果，以及 repo 根目录已生成的 `skill_tool_coverage_runtime.json` 为准；若该覆盖文件不存在，应先用 `scripts/skill_coverage_audit.py` 现场重建。
+>
+> 当前仓库已具备多个分域 BFF/Web 入口，但没有“一键跑完整基金经理闭环”的独立前端页面；凡涉及跨域编排、执行闸门与监控联动，都应按分域页面或 MCP 工具拆步执行，不能默认存在单页总控台。
+>
+> 与“策略工厂”相关的真实实现目前主要落在 `strategy_manager`、`apps/bff/src/strategy/` 与 `apps/web/app/strategy-market/`，它是项目中的分布式产品能力，不是独立 repo-local skill。
 
 
 # 目标
@@ -33,6 +37,8 @@ description: 顶级基金经理专业流程：投研、组合、执行、风控�
   - 用 `search_stocks` / `semantic_stock_search` 做代码归一。
   - 用 `screener_manager` 做条件筛选，用 `get_stock_capital` 过滤股本结构风险。
 - 阶段 4（深度研究与决策）：
+  - 需要统一决策捷径时，优先用 `get_unified_decision_summary`、`get_unified_decision_details`；兼容包装入口为 `get_unified_decision`。
+  - 需要拆解内部证据链时，用 `build_stock_context`、`build_quant_context`、`build_event_context` 构建上下文，再用 `run_decision_gate` 与 `fuse_decision_payload` 做规则闸门和融合输出。
   - 用 `comprehensive_manager`、`decision_manager` 输出多维结论。
   - 需要策略生命周期扫描、淘汰或批量治理时，用 `strategy_manager`。
   - 用 `fundamental_analysis_manager`、`technical_analysis_manager` 做交叉验证。
@@ -63,6 +69,7 @@ description: 顶级基金经理专业流程：投研、组合、执行、风控�
 - 研究管理器失败：`comprehensive_manager` 或 `decision_manager` 失败时，回退到基本面 + 技术面双轨分析。
 - 执行管理器失败：`execution_manager` 失败时只输出下单计划，不执行，并保留告警监控。
 - 监控链路失败：`live_trading_manager` 失败时回退到 `watchlist_manager` + `alerts_manager`。
+- 统一决策链路失败：`get_unified_decision_summary` / `get_unified_decision_details` 不可用时，回退到 `build_stock_context` + `build_quant_context` + `build_event_context` 手工拼装证据，再走 `decision_manager` / `comprehensive_manager`。
 
 # 参考
 - 报告规则：`references/reporting_rules.md`

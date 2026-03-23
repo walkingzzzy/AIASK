@@ -5,11 +5,14 @@
   "scripts": {
     "build": "nest build",
     "dev": "nest start --watch",
+    "lint": "eslint src test scripts --ext .ts",
     "migrate": "node scripts/migrate.mjs",
     "benchmark:unified-decision": "node scripts/unified-decision-benchmark.mjs",
+    "test": "npm run test:assistant",
     "test:assistant:e2e": "node --test -r ts-node/register test/assistant/*.e2e.test.ts",
     "test:assistant": "node --test -r ts-node/register test/assistant/*.test.ts",
     "test:assistant:update-snapshots": "UPDATE_SNAPSHOTS=1 node --test -r ts-node/register test/assistant/unified-decision.e2e.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "node dist/main.js",
     "start:prod": "node dist/main.js"
   },

@@ -13,7 +13,7 @@ from .legacy_bridge import get_compat_symbol, get_compat_value
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
 from .utils import _extract_event_context as _local_extract_event_context
 from ..domain.constants import DEDUP_CONCURRENCY
-from ..domain.targets import _extract_target_codes_from_payload
+from ..domain.targets import _build_task_signature, _extract_target_codes_from_payload, _normalize_research_task_contract
 
 if TYPE_CHECKING:
     from ..api.contracts import VectorSearchGateway
@@ -118,6 +118,26 @@ class Deduplicator:
             return 0.0
         return round(len(left & right) / len(union), 4)
 
+    @staticmethod
+    def _has_explicit_universe(payload: Optional[dict]) -> bool:
+        return bool(_extract_target_codes_from_payload(payload or {}, limit=20))
+
+    @classmethod
+    def _has_material_target_divergence(
+        cls,
+        candidate: Optional[dict],
+        existing_item: Optional[dict],
+        target_overlap: Optional[float],
+    ) -> bool:
+        if target_overlap is None or target_overlap >= 0.8:
+            return False
+        if not cls._has_explicit_universe(candidate) or not cls._has_explicit_universe(existing_item):
+            return False
+        existing_id = str((existing_item or {}).get("id") or "").strip()
+        if existing_id and existing_id in cls._extract_parent_strategy_ids(candidate):
+            return False
+        return True
+
     def _select_vector_candidates(self, suspicious: List[dict]) -> List[Tuple[dict, float]]:
         ranked = sorted(
             list(suspicious or []),
@@ -137,6 +157,24 @@ class Deduplicator:
         return selected
 
     @staticmethod
+    def _extract_parent_strategy_ids(candidate: Optional[dict]) -> set[str]:
+        item = dict(candidate or {})
+        metadata = dict(item.get("metadata") or {})
+        generation_reason = dict(item.get("generation_reason") or {})
+        research_task = dict(item.get("research_task") or {})
+        parent_ids = {
+            str(value or "").strip()
+            for value in (
+                item.get("parent_strategy_id"),
+                metadata.get("parent_strategy_id"),
+                generation_reason.get("parent_strategy_id"),
+                research_task.get("parent_strategy_id"),
+            )
+            if str(value or "").strip()
+        }
+        return parent_ids
+
+    @staticmethod
     def _candidate_refresh_rank(candidate: Optional[dict]) -> tuple[float, float, float]:
         item = dict(candidate or {})
         metrics = dict(item.get('backtest_metrics') or (item.get('backtest_result') or {}).get('metrics') or {})
@@ -153,7 +191,7 @@ class Deduplicator:
 
         for candidate in unique:
             detail = dict(candidate.get('dedup_result') or {})
-            if not detail.get('refresh_existing'):
+            if not detail.get('refresh_existing') or str(detail.get('refresh_mode') or '').strip().lower() != 'refresh_metrics_only':
                 collapsed.append(candidate)
                 continue
             matched_strategy_id = str(detail.get('matched_strategy_id') or '').strip()
@@ -352,16 +390,64 @@ class Deduplicator:
         return unique
 
     @staticmethod
-    def _should_refresh_existing(candidate: Optional[dict], match: Optional[dict]) -> bool:
+    def _candidate_task_signature(candidate: Optional[dict]) -> str:
+        payload = dict(candidate or {})
+        research_task = _normalize_research_task_contract(payload.get("research_task") or {})
+        event_context = dict(payload.get("event_context") or {}) or _extract_event_context(research_task)
+        return _build_task_signature({**research_task, **event_context})
+
+    @staticmethod
+    def _existing_task_signature(existing_item: Optional[dict]) -> str:
+        payload = dict(existing_item or {})
+        params = dict(payload.get("params") or {})
+        explicit_signature = str(params.get("task_signature") or payload.get("task_signature") or "").strip()
+        if explicit_signature:
+            return explicit_signature
+
+        raw_research_task = params.get("research_task") or payload.get("research_task") or {}
+        raw_event_context = params.get("event_context") or payload.get("event_context") or {}
+        if not raw_research_task and not raw_event_context:
+            return ""
+
+        research_task = _normalize_research_task_contract(raw_research_task)
+        event_context = dict(raw_event_context or {}) or _extract_event_context(research_task)
+        signature = _build_task_signature({**research_task, **event_context})
+        if not any(
+            [
+                research_task.get("task_source"),
+                research_task.get("task_id"),
+                research_task.get("event_id"),
+                research_task.get("theme_code"),
+                event_context.get("event_id"),
+                event_context.get("theme_code"),
+            ]
+        ):
+            return ""
+        return str(signature).strip()
+
+    @classmethod
+    def _should_refresh_existing(
+        cls,
+        candidate: Optional[dict],
+        match: Optional[dict],
+        existing_item: Optional[dict] = None,
+    ) -> bool:
         candidate = dict(candidate or {})
         match = dict(match or {})
         matched_status = str(match.get("matched_status") or "").strip().lower()
         if matched_status not in {"incubating", "listed", "published"}:
             return False
-        if not str(match.get("matched_strategy_id") or "").strip():
+        matched_strategy_id = str(match.get("matched_strategy_id") or "").strip()
+        if not matched_strategy_id:
             return False
-        research_task = dict(candidate.get("research_task") or {})
+        if matched_strategy_id in cls._extract_parent_strategy_ids(candidate):
+            return True
+        research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
         event_context = dict(candidate.get("event_context") or {}) or _extract_event_context(research_task)
+        candidate_signature = cls._candidate_task_signature(candidate)
+        existing_signature = cls._existing_task_signature(existing_item) if existing_item is not None else ""
+        if existing_item is not None and candidate_signature and existing_signature:
+            return candidate_signature == existing_signature
         has_event_context = bool(
             event_context.get("event_id")
             or event_context.get("theme_code")
@@ -369,7 +455,28 @@ class Deduplicator:
             or str(candidate.get("source") or "").startswith("strategy_factory:")
         )
         has_explicit_universe = bool(_extract_target_codes_from_payload(candidate, limit=20))
-        return bool(has_event_context and has_explicit_universe)
+        if existing_item is None:
+            return bool(has_event_context and has_explicit_universe)
+        return bool(has_event_context and has_explicit_universe and float(match.get("target_overlap") or 0.0) >= 0.8)
+
+    @classmethod
+    def _should_spawn_revision_from_existing(
+        cls,
+        candidate: Optional[dict],
+        match: Optional[dict],
+        existing_item: Optional[dict],
+    ) -> bool:
+        candidate_signature = cls._candidate_task_signature(candidate)
+        existing_signature = cls._existing_task_signature(existing_item)
+        matched_strategy_id = str((match or {}).get("matched_strategy_id") or "").strip()
+        if not matched_strategy_id:
+            return False
+        if matched_strategy_id in cls._extract_parent_strategy_ids(candidate):
+            return False
+        if not candidate_signature or not existing_signature or candidate_signature == existing_signature:
+            return False
+        target_overlap = float((match or {}).get("target_overlap") or 0.0)
+        return target_overlap >= 0.8
 
     async def _find_duplicate(self, candidate: dict, existing: list, db) -> tuple[dict, dict]:
         best_match: Optional[dict] = None
@@ -388,6 +495,7 @@ class Deduplicator:
             existing_params = self._normalize_params(existing_item.get("params"))
             param_similarity = self._param_sim(candidate_params, existing_params)
             target_overlap = self._target_overlap(candidate, existing_item)
+            material_target_divergence = self._has_material_target_divergence(candidate, existing_item, target_overlap)
             tag_overlap = self._tag_overlap(candidate, existing_item)
             if tag_overlap > 0:
                 metrics["coarse_tag_hit_count"] += 1
@@ -404,28 +512,47 @@ class Deduplicator:
             }
             if best_match is None or effective_similarity > best_match.get("effective_similarity", 0):
                 best_match = match
-            if effective_similarity >= self.THRESHOLD:
+            if effective_similarity >= self.THRESHOLD and not material_target_divergence:
                 overlap_text = f", 目标池重合度 {target_overlap:.4f}" if target_overlap is not None else ""
-                if self._should_refresh_existing(candidate, match):
+                if self._should_refresh_existing(candidate, match, existing_item):
                     return {
                         "duplicate": False,
                         "refresh_existing": True,
                         "duplicate_level": "refresh_existing",
                         "match_type": "parameter",
+                        "refresh_mode": "refresh_metrics_only",
                         "reason": f"综合相似度 {effective_similarity:.4f} ≥ 阈值 {self.THRESHOLD:.2f}（参数 {param_similarity:.4f}{overlap_text}），命中已有策略并转为刷新复用",
                         "threshold": self.THRESHOLD,
                         "vector_threshold": self.VECTOR_THRESHOLD,
                         "vector_checked": False,
+                        "task_signature": self._candidate_task_signature(candidate),
+                        **match,
+                    }, metrics
+                if self._should_spawn_revision_from_existing(candidate, match, existing_item):
+                    return {
+                        "duplicate": False,
+                        "refresh_existing": False,
+                        "duplicate_level": "spawn_revision_from_existing",
+                        "match_type": "parameter",
+                        "refresh_mode": "spawn_revision_from_existing",
+                        "parent_strategy_id": existing_item.get("id"),
+                        "reason": f"综合相似度 {effective_similarity:.4f} ≥ 阈值 {self.THRESHOLD:.2f}，但任务签名变化，转为基于已有策略派生新实验",
+                        "threshold": self.THRESHOLD,
+                        "vector_threshold": self.VECTOR_THRESHOLD,
+                        "vector_checked": False,
+                        "task_signature": self._candidate_task_signature(candidate),
                         **match,
                     }, metrics
                 return {
                     "duplicate": True,
                     "duplicate_level": "parameter",
                     "match_type": "parameter",
+                    "refresh_mode": None,
                     "reason": f"综合相似度 {effective_similarity:.4f} ≥ 阈值 {self.THRESHOLD:.2f}（参数 {param_similarity:.4f}{overlap_text}）",
                     "threshold": self.THRESHOLD,
                     "vector_threshold": self.VECTOR_THRESHOLD,
                     "vector_checked": False,
+                    "task_signature": self._candidate_task_signature(candidate),
                     **match,
                 }, metrics
             if effective_similarity >= self.VECTOR_TRIGGER_THRESHOLD:
@@ -449,6 +576,29 @@ class Deduplicator:
             param_similarity = float(vector_detail.get("param_similarity") or 0.0)
             target_overlap = vector_detail.get("target_overlap")
             has_candidate_universe = bool(_extract_target_codes_from_payload(candidate, limit=20))
+            if has_candidate_universe and target_overlap is not None and target_overlap < 0.8:
+                vector_keep_reason = (
+                    f"目标池重合度 {target_overlap:.4f} < 0.80，保留为独立候选"
+                )
+                return {
+                    "duplicate": False,
+                    "refresh_existing": False,
+                    "duplicate_level": "unique",
+                    "match_type": None,
+                    "refresh_mode": None,
+                    "reason": vector_keep_reason,
+                    "threshold": self.THRESHOLD,
+                    "vector_threshold": self.VECTOR_THRESHOLD,
+                    "vector_checked": True,
+                    "param_similarity": round(param_similarity, 4),
+                    "target_overlap": target_overlap,
+                    "effective_similarity": round(vector_detail.get("effective_similarity", 0.0), 4),
+                    "vector_similarity": round(vector_similarity, 4),
+                    "vector_backend": vector_detail.get("backend"),
+                    "matched_strategy_id": vector_detail.get("matched_strategy_id"),
+                    "matched_name": vector_detail.get("matched_name"),
+                    "matched_status": vector_detail.get("matched_status"),
+                }, metrics
             require_param_confirmation = False
             if has_candidate_universe and target_overlap is None:
                 resolved_vector_threshold = max(self.VECTOR_THRESHOLD, 0.98)
@@ -468,6 +618,7 @@ class Deduplicator:
                     "duplicate": True,
                     "duplicate_level": "vector",
                     "match_type": "vector",
+                    "refresh_mode": None,
                     "reason": reason,
                     "threshold": self.THRESHOLD,
                     "vector_threshold": resolved_vector_threshold,
@@ -491,6 +642,7 @@ class Deduplicator:
             "refresh_existing": False,
             "duplicate_level": "unique",
             "match_type": None,
+            "refresh_mode": None,
             "reason": vector_keep_reason or "未命中重复策略",
             "threshold": self.THRESHOLD,
             "vector_threshold": resolved_vector_threshold,
@@ -643,11 +795,14 @@ class Deduplicator:
 
     @staticmethod
     def _param_sim(left: dict, right: dict) -> float:
-        keys = set(left.keys()) & set(right.keys())
+        keys = set(left.keys()) | set(right.keys())
         if not keys:
             return 0.0
         sims: List[float] = []
         for key in keys:
+            if key not in left or key not in right:
+                sims.append(0.0)
+                continue
             left_value = left[key]
             right_value = right[key]
             if isinstance(left_value, (int, float)) and isinstance(right_value, (int, float)):
@@ -655,4 +810,6 @@ class Deduplicator:
                 sims.append(1.0 - abs(left_value - right_value) / denom)
             elif left_value == right_value:
                 sims.append(1.0)
+            else:
+                sims.append(0.0)
         return float(np.mean(sims)) if sims else 0.0

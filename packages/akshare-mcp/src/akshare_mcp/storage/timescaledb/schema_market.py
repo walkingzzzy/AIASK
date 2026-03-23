@@ -11,6 +11,93 @@ The function is idempotent (CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXIST
 import logging
 
 logger = logging.getLogger(__name__)
+_MARKET_SCHEMA_MIGRATION_TABLE = "market_schema_migrations"
+
+
+async def _create_hypertable_if_supported(conn, table_name: str, time_column: str = "time") -> None:
+    """Best-effort Timescale hypertable promotion."""
+    try:
+        enabled = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_extension
+                WHERE extname = 'timescaledb'
+            )
+            """
+        )
+        if not enabled:
+            return
+        await conn.execute(
+            f"""
+            SELECT create_hypertable(
+                '{table_name}',
+                '{time_column}',
+                if_not_exists => TRUE,
+                migrate_data => TRUE
+            );
+            """
+        )
+    except Exception as exc:
+        logger.warning("create_hypertable skipped for %s: %s", table_name, exc)
+
+
+async def _ensure_foreign_key(
+    conn,
+    *,
+    table_name: str,
+    constraint_name: str,
+    definition: str,
+) -> None:
+    """Install NOT VALID foreign keys without breaking historical dirty data."""
+    await conn.execute(
+        f"""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = '{constraint_name}'
+            ) THEN
+                ALTER TABLE {table_name}
+                ADD CONSTRAINT {constraint_name}
+                {definition}
+                NOT VALID;
+            END IF;
+        END $$;
+        """
+    )
+
+
+async def _ensure_market_schema_migration_table(conn) -> None:
+    await conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {_MARKET_SCHEMA_MIGRATION_TABLE} (
+            migration_key TEXT PRIMARY KEY,
+            applied_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        """
+    )
+
+
+async def _run_market_migration_once(conn, migration_key: str, statement: str) -> bool:
+    await _ensure_market_schema_migration_table(conn)
+    already_applied = await conn.fetchval(
+        f"SELECT 1 FROM {_MARKET_SCHEMA_MIGRATION_TABLE} WHERE migration_key = $1",
+        migration_key,
+    )
+    if already_applied:
+        return False
+    await conn.execute(statement)
+    await conn.execute(
+        f"""
+        INSERT INTO {_MARKET_SCHEMA_MIGRATION_TABLE} (migration_key, applied_at)
+        VALUES ($1, NOW())
+        ON CONFLICT (migration_key) DO NOTHING
+        """,
+        migration_key,
+    )
+    return True
 
 
 async def init_market_tables(conn) -> None:
@@ -43,6 +130,7 @@ async def init_market_tables(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_kline_1d_code_updated_desc
         ON kline_1d (code, updated_at DESC);
     """)
+    await _create_hypertable_if_supported(conn, "kline_1d", "time")
 
     # 2. 财务数据表
     await conn.execute("""
@@ -112,6 +200,111 @@ async def init_market_tables(conn) -> None:
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_quotes_time_code
         ON stock_quotes (time, code);
+
+        CREATE INDEX IF NOT EXISTS idx_stock_quotes_code_time_desc
+        ON stock_quotes (code, time DESC);
+    """)
+    await _create_hypertable_if_supported(conn, "stock_quotes", "time")
+    await _ensure_market_schema_migration_table(conn)
+
+    # 4.1 北向资金日汇总
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS north_fund_flow (
+            trade_date DATE PRIMARY KEY,
+            north_money DOUBLE PRECISION,
+            south_money DOUBLE PRECISION,
+            net_amount DOUBLE PRECISION,
+            ggt_ss DOUBLE PRECISION,
+            ggt_sz DOUBLE PRECISION,
+            hgt DOUBLE PRECISION,
+            sgt DOUBLE PRECISION,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_north_fund_flow_trade_date_desc
+        ON north_fund_flow (trade_date DESC);
+    """)
+    await conn.execute("""
+        ALTER TABLE north_fund_flow
+        ADD COLUMN IF NOT EXISTS ggt_ss DOUBLE PRECISION;
+    """)
+    await conn.execute("""
+        ALTER TABLE north_fund_flow
+        ADD COLUMN IF NOT EXISTS ggt_sz DOUBLE PRECISION;
+    """)
+    await conn.execute("""
+        ALTER TABLE north_fund_flow
+        ADD COLUMN IF NOT EXISTS hgt DOUBLE PRECISION;
+    """)
+    await conn.execute("""
+        ALTER TABLE north_fund_flow
+        ADD COLUMN IF NOT EXISTS sgt DOUBLE PRECISION;
+    """)
+    await conn.execute("""
+        ALTER TABLE north_fund_flow
+        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+    """)
+
+    # 4.1.1 个股资金流快照
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS stock_fund_flow (
+            code TEXT NOT NULL,
+            trade_date DATE NOT NULL,
+            name TEXT,
+            main_net_inflow DOUBLE PRECISION,
+            main_inflow_percent DOUBLE PRECISION,
+            super_large_net_inflow DOUBLE PRECISION,
+            large_net_inflow DOUBLE PRECISION,
+            middle_net_inflow DOUBLE PRECISION,
+            small_net_inflow DOUBLE PRECISION,
+            source TEXT,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (code, trade_date)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_stock_fund_flow_code_trade_date_desc
+        ON stock_fund_flow (code, trade_date DESC);
+    """)
+
+    # 4.2 融资融券市场汇总
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS margin_market_flow (
+            trade_date DATE NOT NULL,
+            exchange_id TEXT NOT NULL DEFAULT 'SSE',
+            rzye DOUBLE PRECISION,
+            rzmre DOUBLE PRECISION,
+            rzche DOUBLE PRECISION,
+            rqye DOUBLE PRECISION,
+            rqmcl DOUBLE PRECISION,
+            rqyl DOUBLE PRECISION,
+            rzrqye DOUBLE PRECISION,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (trade_date, exchange_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_margin_market_flow_trade_date_desc
+        ON margin_market_flow (trade_date DESC, exchange_id);
+    """)
+
+    # 4.3 融资融券个股明细
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS margin_detail (
+            trade_date DATE NOT NULL,
+            ts_code TEXT NOT NULL,
+            rzye DOUBLE PRECISION,
+            rqye DOUBLE PRECISION,
+            rzmre DOUBLE PRECISION,
+            rqyl DOUBLE PRECISION,
+            rzche DOUBLE PRECISION,
+            rqchl DOUBLE PRECISION,
+            rqmcl DOUBLE PRECISION,
+            rzrqye DOUBLE PRECISION,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (trade_date, ts_code)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_margin_detail_ts_code_trade_date_desc
+        ON margin_detail (ts_code, trade_date DESC);
     """)
 
     # 4.1 兼容旧库：补齐 stock_quotes 历史缺失列
@@ -144,10 +337,13 @@ async def init_market_tables(conn) -> None:
     await conn.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_quotes_time_code
         ON stock_quotes (time, code);
+
+        CREATE INDEX IF NOT EXISTS idx_stock_quotes_code_time_desc
+        ON stock_quotes (code, time DESC);
     """)
 
     # 4.3 兼容旧库：将 change 列历史数据回填到标准列 change_amt
-    await conn.execute("""
+    await _run_market_migration_once(conn, "stock_quotes_backfill_change_amt", """
         DO $$
         BEGIN
             IF EXISTS (
@@ -163,7 +359,7 @@ async def init_market_tables(conn) -> None:
     """)
 
     # 4.4 兼容旧库：将 pre_close/market_cap 历史数据回填到标准列
-    await conn.execute("""
+    await _run_market_migration_once(conn, "stock_quotes_backfill_prev_close_mkt_cap", """
         DO $$
         BEGIN
             IF EXISTS (
@@ -192,14 +388,14 @@ async def init_market_tables(conn) -> None:
         ALTER TABLE stock_quotes
         ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
     """)
-    await conn.execute("""
+    await _run_market_migration_once(conn, "stock_quotes_backfill_updated_at", """
         UPDATE stock_quotes
         SET updated_at = COALESCE(updated_at, NOW())
         WHERE updated_at IS NULL;
     """)
 
     # 4.6 兼容旧库：幂等列重命名
-    await conn.execute("""
+    await _run_market_migration_once(conn, "stock_quotes_rename_legacy_columns", """
         DO $$
         BEGIN
             IF EXISTS (
@@ -284,6 +480,12 @@ async def init_market_tables(conn) -> None:
         ALTER TABLE portfolios
         ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
     """)
+    await _ensure_foreign_key(
+        conn,
+        table_name="holdings",
+        constraint_name="fk_holdings_portfolio_id",
+        definition="FOREIGN KEY (portfolio_id) REFERENCES portfolios(id) ON DELETE CASCADE",
+    )
 
     # 6. 模拟交易表
     await conn.execute("""
@@ -400,6 +602,18 @@ async def init_market_tables(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_backtest_equity_id
         ON backtest_equity(backtest_id, date);
     """)
+    await _ensure_foreign_key(
+        conn,
+        table_name="backtest_trades",
+        constraint_name="fk_backtest_trades_backtest_id",
+        definition="FOREIGN KEY (backtest_id) REFERENCES backtest_results(id) ON DELETE CASCADE",
+    )
+    await _ensure_foreign_key(
+        conn,
+        table_name="backtest_equity",
+        constraint_name="fk_backtest_equity_backtest_id",
+        definition="FOREIGN KEY (backtest_id) REFERENCES backtest_results(id) ON DELETE CASCADE",
+    )
 
     # 8. 告警表
     await conn.execute("""
@@ -628,6 +842,7 @@ async def init_market_tables(conn) -> None:
             task_type TEXT NOT NULL,
             codes TEXT[],
             schedule TEXT NOT NULL,
+            params JSONB DEFAULT '{}'::jsonb,
             enabled BOOLEAN DEFAULT true,
             last_run TIMESTAMPTZ,
             next_run TIMESTAMPTZ,
@@ -637,6 +852,10 @@ async def init_market_tables(conn) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_sync_schedules_enabled ON sync_schedules(enabled);
         CREATE INDEX IF NOT EXISTS idx_sync_schedules_next_run ON sync_schedules(next_run);
+    """)
+    await conn.execute("""
+        ALTER TABLE sync_schedules
+        ADD COLUMN IF NOT EXISTS params JSONB DEFAULT '{}'::jsonb
     """)
 
     # 16. 事件表
@@ -799,6 +1018,24 @@ async def init_market_tables(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_paper_orders_strategy ON paper_orders(strategy_id, status, created_at);
         CREATE INDEX IF NOT EXISTS idx_paper_trades_strategy ON paper_trades(strategy_id, created_at DESC);
     """)
+    await _ensure_foreign_key(
+        conn,
+        table_name="paper_positions",
+        constraint_name="fk_paper_positions_account_id",
+        definition="FOREIGN KEY (account_id) REFERENCES paper_accounts(id) ON DELETE CASCADE",
+    )
+    await _ensure_foreign_key(
+        conn,
+        table_name="paper_trades",
+        constraint_name="fk_paper_trades_account_id",
+        definition="FOREIGN KEY (account_id) REFERENCES paper_accounts(id) ON DELETE CASCADE",
+    )
+    await _ensure_foreign_key(
+        conn,
+        table_name="paper_orders",
+        constraint_name="fk_paper_orders_account_id",
+        definition="FOREIGN KEY (account_id) REFERENCES paper_accounts(id) ON DELETE CASCADE",
+    )
 
     # 22.3 模拟交易 NAV 快照表
     await conn.execute("""
@@ -815,6 +1052,12 @@ async def init_market_tables(conn) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_paper_nav_account ON paper_nav(account_id, nav_date);
     """)
+    await _ensure_foreign_key(
+        conn,
+        table_name="paper_nav",
+        constraint_name="fk_paper_nav_account_id",
+        definition="FOREIGN KEY (account_id) REFERENCES paper_accounts(id) ON DELETE CASCADE",
+    )
 
     # 23. 策略工件表
     await conn.execute("""

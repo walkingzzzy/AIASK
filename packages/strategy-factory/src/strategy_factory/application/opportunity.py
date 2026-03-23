@@ -12,6 +12,7 @@ from ..domain.constants import (
     EVENT_TASK_GENERATION_LIMIT_MAX,
     preferred_strategy_types_for_factor,
 )
+from ..domain.targets import _normalize_research_task_contract
 
 
 class MarketOpportunityScanner:
@@ -43,46 +44,9 @@ class MarketOpportunityScanner:
 
     @staticmethod
     def _normalize_codes(values: Any, limit: int = 5) -> List[str]:
-        codes: List[str] = []
-        seen: set[str] = set()
+        from ..domain.targets import _normalize_target_codes
 
-        def visit(value: Any) -> None:
-            if value is None:
-                return
-            if isinstance(value, dict):
-                for key in ("symbol", "code", "stock_code"):
-                    if value.get(key) is not None:
-                        visit(value.get(key))
-                for key in ("symbols", "codes", "stock_codes", "target_symbols"):
-                    if value.get(key) is not None:
-                        visit(value.get(key))
-                return
-            if isinstance(value, (list, tuple, set)):
-                for item in value:
-                    visit(item)
-                return
-            raw = str(value or "").strip()
-            if not raw:
-                return
-            if any(sep in raw for sep in [",", ";", "|", "\n", "\t", " "]):
-                normalized = (
-                    raw.replace(";", ",")
-                    .replace("|", ",")
-                    .replace("\n", ",")
-                    .replace("\t", ",")
-                    .replace(" ", ",")
-                )
-                for part in normalized.split(","):
-                    visit(part)
-                return
-            code = raw.split(".")[0].strip()
-            if not code or code in seen:
-                return
-            seen.add(code)
-            codes.append(code)
-
-        visit(values)
-        return codes[: max(1, min(int(limit or 5), 12))]
+        return _normalize_target_codes(values, limit=limit)
 
     @classmethod
     def _summarize_symbol(cls, row: dict[str, Any]) -> dict[str, Any]:
@@ -117,6 +81,44 @@ class MarketOpportunityScanner:
             counts[source] = counts.get(source, 0) + 1
         return counts
 
+    @classmethod
+    def _task_target_overlap(cls, left: dict, right: dict) -> float:
+        left_codes = set(cls._normalize_codes(left.get("target_symbols"), limit=8))
+        right_codes = set(cls._normalize_codes(right.get("target_symbols"), limit=8))
+        if not left_codes or not right_codes:
+            return 0.0
+        base = min(len(left_codes), len(right_codes))
+        if base <= 0:
+            return 0.0
+        return round(len(left_codes & right_codes) / base, 4)
+
+    @staticmethod
+    def _task_industries(task: dict) -> set[str]:
+        return {
+            str(item or "").strip()
+            for item in list(task.get("focus_industries") or [])
+            if str(item or "").strip()
+        }
+
+    @classmethod
+    def _tasks_are_redundant_for_mix(cls, left: dict, right: dict) -> bool:
+        if str(left.get("opportunity_type") or "").strip() != str(right.get("opportunity_type") or "").strip():
+            return False
+        if cls._task_target_overlap(left, right) >= 0.6:
+            return True
+        return bool(cls._task_industries(left) & cls._task_industries(right))
+
+    @staticmethod
+    def _snapshot_generation_limit(base_limit: Any, *, priority: int = 0) -> int:
+        resolved = max(2, int(base_limit or AUTONOMY_CANDIDATES_PER_TASK))
+        upper_bound = max(resolved, min(EVENT_TASK_GENERATION_LIMIT_MAX, AUTONOMY_CANDIDATES_PER_TASK + 2))
+        bonus = 0
+        if priority >= 85:
+            bonus += 1
+        if priority >= 100:
+            bonus += 1
+        return min(upper_bound, resolved + bonus)
+
     @staticmethod
     def _task_sort_key(item: dict) -> tuple[int, int, int]:
         source = str(item.get("task_source") or "").strip()
@@ -125,6 +127,13 @@ class MarketOpportunityScanner:
             int(item.get("priority") or 0),
             int(item.get("generation_limit") or 0),
         )
+
+    @staticmethod
+    def _finalize_task(task: dict[str, Any]) -> dict[str, Any]:
+        normalized = _normalize_research_task_contract(task)
+        if normalized.get("target_symbols") and not normalized.get("stock_pool"):
+            normalized["stock_pool"] = {"selection_mode": "explicit", "symbols": list(normalized.get("target_symbols") or [])}
+        return normalized
 
     @classmethod
     def _select_snapshot_tasks_for_event_mix(
@@ -143,24 +152,18 @@ class MarketOpportunityScanner:
             for item in list(event_tasks or [])
             if str(item.get("theme") or "").strip()
         }
-        blocked_opportunity_types = {
-            str(item.get("opportunity_type") or "").strip()
-            for item in list(event_tasks or [])
-            if str(item.get("opportunity_type") or "").strip()
-        }
+        reference_tasks = list(event_tasks or [])
 
         for task in sorted(cls._deduplicate_tasks(snapshot_tasks), key=cls._task_sort_key, reverse=True):
             theme = str(task.get("theme") or "").strip()
-            opportunity_type = str(task.get("opportunity_type") or "").strip()
             if theme and theme in seen_themes:
                 continue
-            if opportunity_type and opportunity_type in blocked_opportunity_types:
+            if any(cls._tasks_are_redundant_for_mix(task, existing) for existing in reference_tasks):
                 continue
             selected.append(task)
             if theme:
                 seen_themes.add(theme)
-            if opportunity_type:
-                blocked_opportunity_types.add(opportunity_type)
+            reference_tasks.append(task)
             if len(selected) >= snapshot_limit:
                 break
         return selected
@@ -213,7 +216,60 @@ class MarketOpportunityScanner:
         text = str(value or "").strip()
         if len(text) <= limit:
             return text
-        return text[: max(0, limit - 1)] + "..."
+        return text[: max(0, limit - 3)] + "..."
+
+    @classmethod
+    def _focus_rows_for_family(
+        cls,
+        rows: List[dict],
+        *,
+        family_name: str,
+        hot_sectors: List[str],
+        cold_sectors: List[str],
+    ) -> List[dict]:
+        lowered = str(family_name or "").strip().lower()
+        keywords: List[str] = []
+        if any(
+            token in lowered
+            for token in ["momentum", "growth", "sentiment", "capital_flow", "event", "liquidity"]
+        ):
+            keywords = list(hot_sectors[:2])
+        elif any(token in lowered for token in ["value", "quality", "reversal", "volatility"]):
+            keywords = list(cold_sectors[:2] or hot_sectors[:1])
+        elif hot_sectors:
+            keywords = list(hot_sectors[:1])
+        matched = cls._match_rows(rows, keywords)
+        return matched or list(rows or [])
+
+    @classmethod
+    def _focus_industries_from_rows(cls, rows: List[dict], limit: int = 3) -> List[str]:
+        items: List[str] = []
+        for row in list(rows or []):
+            industry = str((row or {}).get("industry") or (row or {}).get("sector") or "").strip()
+            if industry and industry not in items:
+                items.append(industry)
+            if len(items) >= limit:
+                break
+        return items
+
+    @classmethod
+    def _governed_regime_preferences(cls, regime_name: str, *, fear_greed: float) -> List[str]:
+        lowered = str(regime_name or "").strip().lower()
+        if any(token in lowered for token in ["trend", "breakout", "momentum", "risk_on"]):
+            return ["momentum", "ma_cross", "growth_factor"]
+        if any(token in lowered for token in ["mean_reversion", "reversal", "oversold", "risk_off", "defensive"]):
+            return ["rsi", "value_factor", "quality_factor"]
+        if any(token in lowered for token in ["event", "news", "announcement"]):
+            return ["macro_timing", "momentum", "multi_factor"]
+        if any(token in lowered for token in ["volatility", "shock"]):
+            return ["macro_timing", "rsi", "value_factor"]
+        if any(token in lowered for token in ["rotation", "range", "sideways", "neutral"]):
+            return ["ma_cross", "quality_factor", "multi_factor"]
+        if fear_greed >= 60:
+            return ["momentum", "ma_cross", "growth_factor"]
+        if fear_greed <= 40:
+            return ["rsi", "value_factor", "quality_factor"]
+        return ["ma_cross", "quality_factor", "growth_factor"]
 
     @classmethod
     def _event_strategy_preferences(
@@ -226,7 +282,7 @@ class MarketOpportunityScanner:
         lowered = str(theme_name or "").lower()
         direction = str(direction or "neutral").strip().lower() or "neutral"
         if direction in {"negative", "bearish", "cost_up"}:
-            return ["rsi", "quality_factor", "value_factor"]
+            return ["quality_factor", "value_factor", "rsi"]
         if any(
             token in lowered
             for token in ["quality", "roe", "dividend", "cashflow", "防御", "高股息"]
@@ -240,7 +296,7 @@ class MarketOpportunityScanner:
         if opportunity_type == "factor_acceleration":
             return ["growth_factor", "momentum", "ma_cross"]
         if opportunity_type == "oversold_repair":
-            return ["rsi", "value_factor", "quality_factor"]
+            return ["value_factor", "quality_factor", "rsi"]
         return ["ma_cross", "momentum", "quality_factor"]
 
     @classmethod
@@ -402,30 +458,39 @@ class MarketOpportunityScanner:
                     priority=priority,
                 )
                 tasks.append(
-                    {
-                        "task_id": f"event_{event_id}_{theme_code}",
-                        "task_key": f"event_theme:{snapshot.get('date')}:{event_id}:{theme_code}",
-                        "task_source": "event_driven",
-                        "event_id": event_id,
-                        "event_type": event.get("event_type"),
-                        "theme_code": theme_code,
-                        "theme": f"event_theme_{theme_code}",
-                        "title": title,
-                        "opportunity_type": opportunity_type,
-                        "direction": direction,
-                        "horizon": horizon,
-                        "rationale": rationale,
-                        "event_summary": event_summary,
-                        "strategy_preferences": strategy_preferences,
-                        "target_symbols": target_symbols,
-                        "stock_pool": {"selection_mode": "explicit", "symbols": target_symbols},
-                        "focus_industries": focus_industries,
-                        "focus_markets": [],
-                        "priority": priority,
-                        "generation_limit": generation_limit,
-                        "evidence_bundle": evidence_bundle,
-                        "selection_logic": list(theme.get("selection_logic") or [])[:3],
-                    }
+                    cls._finalize_task(
+                        {
+                            "task_id": f"event_{event_id}_{theme_code}",
+                            "task_key": f"event_theme:{snapshot.get('date')}:{event_id}:{theme_code}",
+                            "task_source": "event_driven",
+                            "event_id": event_id,
+                            "event_type": event.get("event_type"),
+                            "theme_code": theme_code,
+                            "theme": f"event_theme_{theme_code}",
+                            "title": title,
+                            "opportunity_type": opportunity_type,
+                            "direction": direction,
+                            "horizon": horizon,
+                            "rationale": rationale,
+                            "event_summary": event_summary,
+                            "preferred_strategy_types": strategy_preferences,
+                            "strategy_preferences": strategy_preferences,
+                            "allowed_strategy_types": [],
+                            "target_symbol_policy": "strict_intersection",
+                            "universe_expansion_policy": "allow_same_theme_only",
+                            "preference_strength": "medium",
+                            "preference_reason": f"event_evidence:{event_summary[:64]}",
+                            "validation_focus": "event_target_only",
+                            "target_symbols": target_symbols,
+                            "stock_pool": {"selection_mode": "explicit", "symbols": target_symbols},
+                            "focus_industries": focus_industries,
+                            "focus_markets": [],
+                            "priority": priority,
+                            "generation_limit": generation_limit,
+                            "evidence_bundle": evidence_bundle,
+                            "selection_logic": list(theme.get("selection_logic") or [])[:3],
+                        }
+                    )
                 )
         return tasks
 
@@ -434,6 +499,34 @@ class MarketOpportunityScanner:
         tasks: List[dict] = []
         fg = float(snapshot.get("fear_greed_index") or 50.0)
         factor_research = dict(snapshot.get("factor_research") or {})
+        active_candidate_pool = dict(factor_research.get("active_candidate_pool") or {})
+        governed_family_summary = [
+            dict(item or {})
+            for item in list(
+                factor_research.get("active_family_summary")
+                or active_candidate_pool.get("family_summary")
+                or []
+            )
+            if isinstance(item, dict)
+        ]
+        governed_regime_summary = [
+            dict(item or {})
+            for item in list(
+                factor_research.get("active_regime_summary")
+                or active_candidate_pool.get("regime_summary")
+                or []
+            )
+            if isinstance(item, dict)
+        ]
+        governed_top_candidates = [
+            dict(item or {})
+            for item in list(
+                factor_research.get("governed_candidates")
+                or active_candidate_pool.get("top_candidates")
+                or []
+            )
+            if isinstance(item, dict)
+        ]
         hot_sectors = [str(item).strip() for item in list(snapshot.get("hot_sectors") or []) if str(item).strip()]
         cold_sectors = [str(item).strip() for item in list(snapshot.get("cold_sectors") or []) if str(item).strip()]
 
@@ -447,93 +540,299 @@ class MarketOpportunityScanner:
             )
         )
         regime_type = "trend_expansion" if fg >= 60 else ("mean_reversion" if fg <= 40 else "rotation_balanced")
+        primary_governed_regime = dict(governed_regime_summary[0] or {}) if governed_regime_summary else {}
+        primary_governed_regime_name = str(primary_governed_regime.get("regime") or "").strip()
+        if primary_governed_regime_name:
+            regime_preferences = list(
+                dict.fromkeys(
+                    [
+                        *cls._governed_regime_preferences(primary_governed_regime_name, fear_greed=fg),
+                        *regime_preferences,
+                    ]
+                )
+            )[:4]
+        regime_rationale = f"恐贪指数 {fg:.1f} 对应 {regime_type}，自动寻找适配交易结构。"
+        if primary_governed_regime_name:
+            regime_rationale = (
+                f"{regime_rationale[:-1]}，治理后候选池主导 regime="
+                f"{primary_governed_regime_name} (count={int(primary_governed_regime.get('count') or 0)})。"
+            )
         tasks.append(
-            {
-                "task_id": f"regime_{snapshot.get('date')}_{int(fg)}",
-                "task_key": f"regime:{snapshot.get('date')}:{regime_type}",
-                "task_source": "snapshot",
-                "theme": f"market_regime_{regime_type}",
-                "title": f"市场状态任务·{regime_type}",
-                "opportunity_type": regime_type,
-                "rationale": f"恐贪指数 {fg:.1f} 对应 {regime_type}，自动寻找适配交易结构。",
-                "strategy_preferences": regime_preferences,
-                "target_symbols": cls._top_codes(rows, limit=5),
-                "focus_industries": hot_sectors[:2] if hot_sectors else [],
-                "focus_markets": [],
-                "priority": 100,
-                "generation_limit": max(2, AUTONOMY_CANDIDATES_PER_TASK),
-                "source_snapshot": {"fear_greed_index": fg, "fg_level": snapshot.get("fg_level")},
-            }
-        )
-
-        for idx, sector in enumerate(hot_sectors[:2], 1):
-            matched = cls._match_rows(rows, [sector])
-            tasks.append(
+            cls._finalize_task(
                 {
-                    "task_id": f"hot_{idx}_{sector}",
-                    "task_key": f"hot_sector:{snapshot.get('date')}:{sector}",
+                    "task_id": f"regime_{snapshot.get('date')}_{int(fg)}",
+                    "task_key": f"regime:{snapshot.get('date')}:{regime_type}",
                     "task_source": "snapshot",
-                    "theme": f"hot_sector_{sector}",
-                    "title": f"热点行业任务·{sector}",
-                    "opportunity_type": "sector_breakout",
-                    "rationale": f"热点行业 {sector} 在快照中活跃，自动生成行业内趋势/回踩/龙头轮动策略。",
-                    "strategy_preferences": ["momentum", "ma_cross", "growth_factor"],
-                    "focus_industries": [sector],
-                    "target_symbols": cls._top_codes(matched or rows, limit=5),
+                    "theme": f"market_regime_{regime_type}",
+                    "title": f"市场状态任务·{regime_type}",
+                    "opportunity_type": regime_type,
+                    "rationale": regime_rationale,
+                    "preferred_strategy_types": regime_preferences,
+                    "strategy_preferences": regime_preferences,
+                    "target_symbol_policy": "prefer_intersection",
+                    "universe_expansion_policy": "allow_market_fallback",
+                    "preference_strength": "soft",
+                    "preference_reason": (
+                        f"snapshot_regime:fear_greed={fg:.1f};regime={regime_type}"
+                        + (
+                            f";governed={primary_governed_regime_name}"
+                            if primary_governed_regime_name
+                            else ""
+                        )
+                    ),
+                    "validation_focus": "target_plus_representative",
+                    "target_symbols": cls._top_codes(rows, limit=5),
+                    "focus_industries": hot_sectors[:2] if hot_sectors else [],
                     "focus_markets": [],
-                    "priority": 90 - idx,
-                    "generation_limit": AUTONOMY_CANDIDATES_PER_TASK,
+                    "priority": 100,
+                    "generation_limit": cls._snapshot_generation_limit(AUTONOMY_CANDIDATES_PER_TASK, priority=100),
+                    "source_snapshot": {
+                        "fear_greed_index": fg,
+                        "fg_level": snapshot.get("fg_level"),
+                        "governed_regime": primary_governed_regime_name or None,
+                        "governed_regime_count": int(primary_governed_regime.get("count") or 0),
+                    },
                 }
             )
+        )
 
-        for idx, sector in enumerate(cold_sectors[:1], 1):
+        for idx, sector in enumerate(hot_sectors[:3], 1):
             matched = cls._match_rows(rows, [sector])
+            priority = 90 - idx
             tasks.append(
-                {
-                    "task_id": f"cold_{idx}_{sector}",
-                    "task_key": f"cold_sector:{snapshot.get('date')}:{sector}",
-                    "task_source": "snapshot",
-                    "theme": f"cold_sector_{sector}",
-                    "title": f"冷门修复任务·{sector}",
-                    "opportunity_type": "oversold_repair",
-                    "rationale": f"冷门行业 {sector} 进入观察名单，自动寻找超跌修复与估值修复机会。",
-                    "strategy_preferences": ["rsi", "value_factor", "quality_factor"],
-                    "focus_industries": [sector],
-                    "target_symbols": cls._top_codes(matched or rows, limit=5),
-                    "focus_markets": [],
-                    "priority": 72 - idx,
-                    "generation_limit": AUTONOMY_CANDIDATES_PER_TASK,
-                }
+                cls._finalize_task(
+                    {
+                        "task_id": f"hot_{idx}_{sector}",
+                        "task_key": f"hot_sector:{snapshot.get('date')}:{sector}",
+                        "task_source": "snapshot",
+                        "theme": f"hot_sector_{sector}",
+                        "title": f"热点行业任务·{sector}",
+                        "opportunity_type": "sector_breakout",
+                        "rationale": f"热点行业 {sector} 在快照中活跃，自动生成行业内趋势/回踩/龙头轮动策略。",
+                        "preferred_strategy_types": ["momentum", "ma_cross", "growth_factor"],
+                        "strategy_preferences": ["momentum", "ma_cross", "growth_factor"],
+                        "target_symbol_policy": "prefer_intersection",
+                        "universe_expansion_policy": "allow_market_fallback",
+                        "preference_strength": "soft",
+                        "preference_reason": f"sector_heat:hot={','.join(hot_sectors[:2]) or 'none'}",
+                        "validation_focus": "target_plus_representative",
+                        "focus_industries": [sector],
+                        "target_symbols": cls._top_codes(matched or rows, limit=5),
+                        "focus_markets": [],
+                        "priority": priority,
+                        "generation_limit": cls._snapshot_generation_limit(AUTONOMY_CANDIDATES_PER_TASK, priority=priority),
+                    }
+                )
+            )
+
+        for idx, sector in enumerate(cold_sectors[:2], 1):
+            matched = cls._match_rows(rows, [sector])
+            priority = 72 - idx
+            tasks.append(
+                cls._finalize_task(
+                    {
+                        "task_id": f"cold_{idx}_{sector}",
+                        "task_key": f"cold_sector:{snapshot.get('date')}:{sector}",
+                        "task_source": "snapshot",
+                        "theme": f"cold_sector_{sector}",
+                        "title": f"冷门修复任务·{sector}",
+                        "opportunity_type": "oversold_repair",
+                        "rationale": f"冷门行业 {sector} 进入观察名单，自动寻找超跌修复与估值修复机会。",
+                        "preferred_strategy_types": ["value_factor", "quality_factor", "rsi"],
+                        "strategy_preferences": ["value_factor", "quality_factor", "rsi"],
+                        "target_symbol_policy": "prefer_intersection",
+                        "universe_expansion_policy": "allow_market_fallback",
+                        "preference_strength": "soft",
+                        "preference_reason": f"sector_cold:cold={','.join(cold_sectors[:2]) or 'none'}",
+                        "validation_focus": "target_plus_representative",
+                        "focus_industries": [sector],
+                        "target_symbols": cls._top_codes(matched or rows, limit=5),
+                        "focus_markets": [],
+                        "priority": priority,
+                        "generation_limit": cls._snapshot_generation_limit(AUTONOMY_CANDIDATES_PER_TASK, priority=priority),
+                    }
+                )
+            )
+
+        for idx, family_item in enumerate(governed_family_summary[:2], 1):
+            family_name = str(family_item.get("family") or "").strip()
+            if not family_name:
+                continue
+            family_preferences = preferred_strategy_types_for_factor(
+                family_name,
+                default=regime_preferences or ["ma_cross", "momentum"],
+            )
+            family_rows = cls._focus_rows_for_family(
+                rows,
+                family_name=family_name,
+                hot_sectors=hot_sectors,
+                cold_sectors=cold_sectors,
+            )
+            focus_industries = cls._focus_industries_from_rows(family_rows) or hot_sectors[:1]
+            avg_total_score = cls._safe_float(family_item.get("avg_total_score"))
+            count = int(family_item.get("count") or 0)
+            priority = min(
+                98,
+                max(
+                    81,
+                    int(round(78 + avg_total_score * 0.14 + min(count, 5) * 1.5)) - idx,
+                ),
+            )
+            tasks.append(
+                cls._finalize_task(
+                    {
+                        "task_id": f"governed_family_{idx}_{family_name}",
+                        "task_key": f"governed_family:{snapshot.get('date')}:{family_name}",
+                        "task_source": "snapshot",
+                        "theme": f"factor_family_{family_name}",
+                        "title": f"候选因子族任务·{family_name}",
+                        "opportunity_type": "candidate_family_activation",
+                        "rationale": (
+                            f"治理后候选池显示 family={family_name} 活跃，"
+                            f"count={count}，avg_score={avg_total_score:.1f}，"
+                            "优先围绕该 family 组织策略生成。"
+                        ),
+                        "preferred_strategy_types": family_preferences,
+                        "strategy_preferences": family_preferences,
+                        "target_symbol_policy": "prefer_intersection",
+                        "universe_expansion_policy": "allow_market_fallback",
+                        "preference_strength": "medium",
+                        "preference_reason": (
+                            f"governed_family:{family_name};avg_score={avg_total_score:.1f};count={count}"
+                        ),
+                        "validation_focus": "candidate_target_only",
+                        "focus_industries": focus_industries,
+                        "target_symbols": cls._top_codes(family_rows, limit=5),
+                        "focus_markets": [],
+                        "priority": priority,
+                        "generation_limit": cls._snapshot_generation_limit(
+                            AUTONOMY_CANDIDATES_PER_TASK,
+                            priority=priority,
+                        ),
+                        "factor_name": family_name,
+                        "candidate_family": family_name,
+                        "validation_score": round(avg_total_score, 4),
+                        "expected_regime": [
+                            str(item.get("regime") or "").strip()
+                            for item in governed_regime_summary[:2]
+                            if str(item.get("regime") or "").strip()
+                        ],
+                        "evidence_bundle": {
+                            "governed_family": family_name,
+                            "family_summary": family_item,
+                            "candidate_pool_count": int(active_candidate_pool.get("count") or 0),
+                        },
+                    }
+                )
+            )
+
+        for idx, candidate in enumerate(governed_top_candidates[:2], 1):
+            artifact_id = str(candidate.get("artifact_id") or "").strip()
+            candidate_name = str(candidate.get("name") or artifact_id or f"candidate_{idx}").strip()
+            family_name = str(candidate.get("family") or "").strip()
+            expected_regime = [
+                str(item).strip()
+                for item in list(candidate.get("expected_regime") or [])
+                if str(item).strip()
+            ]
+            candidate_preferences = preferred_strategy_types_for_factor(
+                family_name or candidate_name,
+                default=regime_preferences or ["ma_cross", "momentum"],
+            )
+            family_rows = cls._focus_rows_for_family(
+                rows,
+                family_name=family_name or candidate_name,
+                hot_sectors=hot_sectors,
+                cold_sectors=cold_sectors,
+            )
+            focus_industries = cls._focus_industries_from_rows(family_rows) or hot_sectors[:1]
+            score = cls._safe_float(candidate.get("total_score"))
+            priority = min(99, max(84, int(round(84 + score * 0.12)) - idx))
+            tasks.append(
+                cls._finalize_task(
+                    {
+                        "task_id": f"governed_candidate_{idx}_{artifact_id or family_name or idx}",
+                        "task_key": f"governed_candidate:{snapshot.get('date')}:{artifact_id or candidate_name}",
+                        "task_source": "snapshot",
+                        "theme": f"factor_candidate_{artifact_id or family_name or idx}",
+                        "title": f"候选因子任务·{candidate_name}",
+                        "opportunity_type": "candidate_factor_activation",
+                        "rationale": (
+                            f"治理后候选因子 {candidate_name} 已进入 active pool，"
+                            f"family={family_name or 'unknown'}，score={score:.1f}，"
+                            f"expected_regime={','.join(expected_regime) or 'n/a'}。"
+                        ),
+                        "preferred_strategy_types": candidate_preferences,
+                        "strategy_preferences": candidate_preferences,
+                        "target_symbol_policy": "prefer_intersection",
+                        "universe_expansion_policy": "allow_market_fallback",
+                        "preference_strength": "medium",
+                        "preference_reason": (
+                            f"governed_candidate:{artifact_id or candidate_name};"
+                            f"family={family_name or 'unknown'};score={score:.1f}"
+                        ),
+                        "validation_focus": "candidate_target_only",
+                        "focus_industries": focus_industries,
+                        "target_symbols": cls._top_codes(family_rows, limit=5),
+                        "focus_markets": [],
+                        "priority": priority,
+                        "generation_limit": cls._snapshot_generation_limit(
+                            AUTONOMY_CANDIDATES_PER_TASK,
+                            priority=priority,
+                        ),
+                        "factor_name": family_name or candidate_name,
+                        "candidate_family": family_name,
+                        "source_candidate_artifact_id": artifact_id or None,
+                        "candidate_name": candidate_name,
+                        "candidate_grade": candidate.get("grade"),
+                        "validation_score": round(score, 4),
+                        "expected_regime": expected_regime,
+                        "evidence_bundle": {
+                            "governed_candidate": candidate,
+                            "candidate_pool_count": int(active_candidate_pool.get("count") or 0),
+                        },
+                    }
+                )
             )
 
         rising_factors = [
             str(item).strip()
             for item in list(
-                factor_research.get("active_factors")
+                [item.get("family") for item in governed_family_summary]
+                or factor_research.get("active_factors")
                 or factor_research.get("positive_rising_factors")
                 or [name for name, trend in dict(snapshot.get("factor_ic_trend") or {}).items() if str(trend) == "rising"]
             )
             if str(item).strip()
         ]
-        for idx, factor_name in enumerate(rising_factors[:2], 1):
+        for idx, factor_name in enumerate(rising_factors[:3], 1):
             preferences = preferred_strategy_types_for_factor(str(factor_name), default=["ma_cross", "momentum"])
+            priority = 80 - idx
             tasks.append(
-                {
-                    "task_id": f"factor_{idx}_{factor_name}",
-                    "task_key": f"factor:{snapshot.get('date')}:{factor_name}",
-                    "task_source": "snapshot",
-                    "theme": f"factor_rotation_{factor_name}",
-                    "title": f"因子加速任务·{factor_name}",
-                    "opportunity_type": "factor_acceleration",
-                    "rationale": f"因子 {factor_name} 在快照中呈上升趋势，自动生成围绕该因子的选股与择时策略。",
-                    "strategy_preferences": preferences,
-                    "focus_industries": hot_sectors[:1],
-                    "target_symbols": cls._top_codes(rows, limit=5),
-                    "focus_markets": [],
-                    "priority": 80 - idx,
-                    "generation_limit": AUTONOMY_CANDIDATES_PER_TASK,
-                    "factor_name": factor_name,
-                }
+                cls._finalize_task(
+                    {
+                        "task_id": f"factor_{idx}_{factor_name}",
+                        "task_key": f"factor:{snapshot.get('date')}:{factor_name}",
+                        "task_source": "snapshot",
+                        "theme": f"factor_rotation_{factor_name}",
+                        "title": f"因子加速任务·{factor_name}",
+                        "opportunity_type": "factor_acceleration",
+                        "rationale": f"因子 {factor_name} 在快照中呈上升趋势，自动生成围绕该因子的选股与择时策略。",
+                        "preferred_strategy_types": preferences,
+                        "strategy_preferences": preferences,
+                        "target_symbol_policy": "prefer_intersection",
+                        "universe_expansion_policy": "allow_market_fallback",
+                        "preference_strength": "soft",
+                        "preference_reason": f"factor_research:{factor_name}",
+                        "validation_focus": "target_plus_representative",
+                        "focus_industries": hot_sectors[:1],
+                        "target_symbols": cls._top_codes(rows, limit=5),
+                        "focus_markets": [],
+                        "priority": priority,
+                        "generation_limit": cls._snapshot_generation_limit(AUTONOMY_CANDIDATES_PER_TASK, priority=priority),
+                        "factor_name": factor_name,
+                    }
+                )
             )
 
         if rows:
@@ -541,25 +840,34 @@ class MarketOpportunityScanner:
             for row in rows:
                 industry = str((row or {}).get("industry") or (row or {}).get("sector") or "未分类").strip() or "未分类"
                 top_industries[industry] = top_industries.get(industry, 0) + 1
-            best_industry = sorted(top_industries.items(), key=lambda item: item[1], reverse=True)[0][0] if top_industries else None
-            if best_industry:
+            ranked_industries = [item[0] for item in sorted(top_industries.items(), key=lambda item: item[1], reverse=True)]
+            for idx, best_industry in enumerate(ranked_industries[:2], 1):
                 matched = cls._match_rows(rows, [best_industry])
+                priority = 68 - idx
                 tasks.append(
-                    {
-                        "task_id": f"industry_{best_industry}",
-                        "task_key": f"industry:{snapshot.get('date')}:{best_industry}",
-                        "task_source": "snapshot",
-                        "theme": f"industry_leadership_{best_industry}",
-                        "title": f"行业龙头任务·{best_industry}",
-                        "opportunity_type": "industry_leadership",
-                        "rationale": f"股票池中 {best_industry} 权重较高，自动生成龙头趋势与轮动策略。",
-                        "strategy_preferences": ["ma_cross", "momentum", "quality_factor"],
-                        "focus_industries": [best_industry],
-                        "target_symbols": cls._top_codes(matched or rows, limit=5),
-                        "focus_markets": [],
-                        "priority": 68,
-                        "generation_limit": AUTONOMY_CANDIDATES_PER_TASK,
-                    }
+                    cls._finalize_task(
+                        {
+                            "task_id": f"industry_{idx}_{best_industry}",
+                            "task_key": f"industry:{snapshot.get('date')}:{best_industry}",
+                            "task_source": "snapshot",
+                            "theme": f"industry_leadership_{best_industry}",
+                            "title": f"行业龙头任务·{best_industry}",
+                            "opportunity_type": "industry_leadership",
+                            "rationale": f"股票池中 {best_industry} 权重较高，自动生成龙头趋势与轮动策略。",
+                            "preferred_strategy_types": ["ma_cross", "momentum", "quality_factor"],
+                            "strategy_preferences": ["ma_cross", "momentum", "quality_factor"],
+                            "target_symbol_policy": "prefer_intersection",
+                            "universe_expansion_policy": "allow_market_fallback",
+                            "preference_strength": "soft",
+                            "preference_reason": "breadth_rotation_mix",
+                            "validation_focus": "target_plus_representative",
+                            "focus_industries": [best_industry],
+                            "target_symbols": cls._top_codes(matched or rows, limit=5),
+                            "focus_markets": [],
+                            "priority": priority,
+                            "generation_limit": cls._snapshot_generation_limit(AUTONOMY_CANDIDATES_PER_TASK, priority=priority),
+                        }
+                    )
                 )
         return tasks
 

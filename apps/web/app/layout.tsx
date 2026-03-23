@@ -50,9 +50,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="zh-CN">
       <head>
-        {process.env.NEXT_PUBLIC_BFF_BASE_URL ? (
-          <link rel="preconnect" href={new URL(process.env.NEXT_PUBLIC_BFF_BASE_URL).origin} />
-        ) : null}
+        {(() => {
+          try {
+            return process.env.NEXT_PUBLIC_BFF_BASE_URL ? (
+              <link rel="preconnect" href={new URL(process.env.NEXT_PUBLIC_BFF_BASE_URL).origin} />
+            ) : null;
+          } catch {
+            return null;
+          }
+        })()}
       </head>
       <body>
         <QueryProvider>

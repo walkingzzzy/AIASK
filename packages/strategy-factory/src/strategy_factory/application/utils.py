@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Optional
 
 from ..domain.naming import _auto_name
@@ -11,8 +12,14 @@ from ..domain.targets import (
     _resolve_strategy_sample_codes,
     _update_strategy_status,
 )
-from .panels import _build_strategy_panels, _run_risk_report, _run_validation_report
 from .runtime import _call_optional_async, get_strategy_factory_package
+
+
+_LAZY_EXPORT_MAP = {
+    "_build_strategy_panels": (".panels", "_build_strategy_panels"),
+    "_run_validation_report": (".panels", "_run_validation_report"),
+    "_run_risk_report": (".panels", "_run_risk_report"),
+}
 
 
 def _extract_event_context(payload: Optional[dict], limit: int = 5) -> dict:
@@ -81,3 +88,16 @@ __all__ = [
     "_run_validation_report",
     "_run_risk_report",
 ]
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attr_name = _LAZY_EXPORT_MAP[name]
+    except KeyError as exc:
+        raise AttributeError(name) from exc
+    module = import_module(module_name, __package__)
+    return getattr(module, attr_name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

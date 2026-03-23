@@ -139,6 +139,36 @@ _SKILL_CONTRACTS.update(
             },
             "output_schema": _ORCHESTRATED_SKILL_OUTPUT_SCHEMA,
         },
+        "akshare-factor-mining": {
+            "supported_tasks": ["candidate_pipeline", "candidate_generation", "candidate_registry", "scheduler_check", "smoke_test"],
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "enum": ["candidate_pipeline", "candidate_generation", "candidate_registry", "scheduler_check", "smoke_test"],
+                    },
+                    "code": {"type": "string"},
+                    "codes": {"type": "array", "items": {"type": "string"}},
+                    "stock_codes": {"type": "array", "items": {"type": "string"}},
+                    "artifact_id": {"type": "string"},
+                    "candidate_index": {"type": "integer", "minimum": 0},
+                    "candidate_count": {"type": "integer", "minimum": 1},
+                    "lookback_bars": {"type": "integer", "minimum": 120},
+                    "horizon_days": {"type": "integer", "minimum": 3},
+                    "max_dates": {"type": "integer", "minimum": 20},
+                    "limit": {"type": "integer", "minimum": 1},
+                    "candidate": {"type": "object"},
+                    "op": {"type": "string"},
+                    "memory_op": {"type": "string"},
+                    "run_scheduler_now": {"type": "boolean"},
+                    "persist_artifact": {"type": "boolean"},
+                    "write_memory": {"type": "boolean"},
+                },
+                "additionalProperties": True,
+            },
+            "output_schema": _ORCHESTRATED_SKILL_OUTPUT_SCHEMA,
+        },
         "akshare-fund-news": {
             "supported_tasks": ["news_digest", "research_digest", "smoke_test"],
             "input_schema": {
@@ -345,6 +375,27 @@ _SKILL_CONTRACTS.update(
             },
             "output_schema": _ORCHESTRATED_SKILL_OUTPUT_SCHEMA,
         },
+        "akshare-strategy-factory": {
+            "supported_tasks": ["factory_cycle", "strategy_review", "runtime_governance", "smoke_test"],
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "enum": ["factory_cycle", "strategy_review", "runtime_governance", "smoke_test"],
+                    },
+                    "strategy_id": {"type": "string"},
+                    "id": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1},
+                    "index_name": {"type": "string"},
+                    "trigger_factory_run": {"type": "boolean"},
+                    "trigger_runtime_cycle": {"type": "boolean"},
+                    "runtime_alert_limit": {"type": "integer", "minimum": 1},
+                },
+                "additionalProperties": True,
+            },
+            "output_schema": _ORCHESTRATED_SKILL_OUTPUT_SCHEMA,
+        },
     }
 )
 
@@ -379,6 +430,18 @@ def _list_skill_roots() -> List[Path]:
         roots.append(home_root)
 
     return roots
+
+
+def _filter_visible_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    visible: List[Dict[str, Any]] = []
+    for item in list(skills or []):
+        if not isinstance(item, dict):
+            continue
+        skill_id = str(item.get("id") or "").strip()
+        if not skill_id:
+            continue
+        visible.append(dict(item))
+    return visible
 
 
 def _parse_bool_flag(value: Any) -> Optional[bool]:
@@ -853,6 +916,13 @@ def _normalize_rebalance_threshold(value: Any, default: float = 0.08) -> float:
 
 def _static_step(step: str, output: Dict[str, Any]) -> Dict[str, Any]:
     return _step_result(step, output=output)
+
+
+def _response_data_dict(response: Any) -> Dict[str, Any]:
+    if not isinstance(response, dict):
+        return {}
+    data = response.get("data")
+    return dict(data) if isinstance(data, dict) else {}
 
 
 async def _exec_market(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -1521,6 +1591,245 @@ async def _exec_fee_costs(params: Dict[str, Any]) -> Dict[str, Any]:
     return _finalize_skill_result(task, steps)
 
 
+async def _exec_factor_mining(params: Dict[str, Any]) -> Dict[str, Any]:
+    from .managers.quant_manager import quant_manager as runtime_quant_manager
+
+    task = str(params.get("task") or "candidate_pipeline").strip().lower()
+    supported_tasks = ["candidate_pipeline", "candidate_generation", "candidate_registry", "scheduler_check", "smoke_test"]
+    if task not in supported_tasks:
+        return _unsupported_task_result(task, supported_tasks)
+
+    codes = _normalize_codes_input(
+        params.get("stock_codes") or params.get("codes") or params.get("code"),
+        ["600519", "000001", "000858"],
+    )
+    candidate_count = max(1, min(_safe_int(params.get("candidate_count"), 6), 16))
+    lookback_bars = max(120, min(_safe_int(params.get("lookback_bars"), 220), 500))
+    horizon_days = max(3, min(_safe_int(params.get("horizon_days"), 10), 30))
+    max_dates = max(20, min(_safe_int(params.get("max_dates"), 60), 120))
+    limit = max(1, min(_safe_int(params.get("limit"), 20), 500))
+    candidate_index = max(0, _safe_int(params.get("candidate_index"), 0))
+    run_scheduler_now = bool(_parse_bool_flag(params.get("run_scheduler_now")))
+
+    generation_kwargs = {
+        "codes": codes,
+        "artifact_id": params.get("artifact_id"),
+        "candidate_count": candidate_count,
+        "lookback_bars": lookback_bars,
+        "alternative_lookback_days": max(7, min(_safe_int(params.get("alternative_lookback_days"), 30), 90)),
+        "allow_fallback": True if params.get("allow_fallback") is None else bool(params.get("allow_fallback")),
+        "persist_artifact": True if params.get("persist_artifact") is None else bool(params.get("persist_artifact")),
+        "dedup_mode": str(params.get("dedup_mode") or "penalty"),
+        "dedup_high_similarity_threshold": _safe_float(params.get("dedup_high_similarity_threshold"), 0.98),
+        "dedup_failure_similarity_threshold": _safe_float(params.get("dedup_failure_similarity_threshold"), 0.93),
+        "startup_warmup": bool(_parse_bool_flag(params.get("startup_warmup"))) if params.get("startup_warmup") is not None else None,
+        "startup_warmup_force": bool(_parse_bool_flag(params.get("startup_warmup_force"))) if params.get("startup_warmup_force") is not None else None,
+        "startup_warmup_limit": max(1, min(_safe_int(params.get("startup_warmup_limit"), 4), 20)),
+        "startup_warmup_task_type": str(params.get("startup_warmup_task_type") or "core_market,factor_context"),
+    }
+    validation_kwargs = {
+        "artifact_id": params.get("artifact_id"),
+        "candidate_index": candidate_index,
+        "candidate": params.get("candidate"),
+        "codes": codes,
+        "lookback_bars": lookback_bars,
+        "horizon_days": horizon_days,
+        "max_dates": max_dates,
+        "persist_artifact": True if params.get("persist_artifact") is None else bool(params.get("persist_artifact")),
+        "write_memory": True if params.get("write_memory") is None else bool(params.get("write_memory")),
+        "output_artifact_id": params.get("output_artifact_id"),
+    }
+    registry_op = str(params.get("op") or "active_pool").strip().lower() or "active_pool"
+    memory_op = str(params.get("memory_op") or "stats").strip().lower() or "stats"
+    registry_kwargs = {
+        "op": registry_op,
+        "artifact_id": params.get("artifact_id"),
+        "codes": codes,
+        "family": params.get("family"),
+        "grade": params.get("grade"),
+        "recommendation": params.get("recommendation"),
+        "min_score": params.get("min_score"),
+        "only_active": True if params.get("only_active") is None and registry_op == "active_pool" else bool(params.get("only_active", False)),
+        "limit": limit,
+    }
+    memory_kwargs = {
+        "op": memory_op,
+        "artifact_id": params.get("artifact_id"),
+        "candidate": params.get("candidate"),
+        "query_text": params.get("query_text"),
+        "codes": codes,
+        "status": params.get("status"),
+        "family": params.get("family"),
+        "limit": limit,
+    }
+
+    steps: List[Dict[str, Any]] = []
+
+    if task == "candidate_generation":
+        generation_resp = await runtime_quant_manager(action="llm_factor_mining", kwargs=generation_kwargs)
+        steps.append(_step_result("quant_manager.llm_factor_mining", output=generation_resp))
+        result = _finalize_skill_result(task, steps)
+        result["summary"]["codes"] = codes
+        result["summary"]["candidate_count"] = candidate_count
+        result["summary"]["artifact_id"] = _response_data_dict(generation_resp).get("artifact_id")
+        return result
+
+    if task == "candidate_registry":
+        registry_resp = await runtime_quant_manager(action="factor_candidate_registry", kwargs=registry_kwargs)
+        steps.append(_step_result("quant_manager.factor_candidate_registry", output=registry_resp))
+        memory_resp = await runtime_quant_manager(action="factor_research_memory", kwargs=memory_kwargs)
+        steps.append(_step_result("quant_manager.factor_research_memory", output=memory_resp))
+        result = _finalize_skill_result(task, steps)
+        result["summary"]["codes"] = codes
+        result["summary"]["registry_op"] = registry_op
+        result["summary"]["memory_op"] = memory_op
+        return result
+
+    if task == "scheduler_check":
+        scheduler_status = await runtime_quant_manager(action="scheduler_status", kwargs={})
+        steps.append(_step_result("quant_manager.scheduler_status", output=scheduler_status))
+        if run_scheduler_now:
+            scheduler_run = await runtime_quant_manager(action="scheduler_run_now", kwargs={})
+            steps.append(_step_result("quant_manager.scheduler_run_now", output=scheduler_run))
+        result = _finalize_skill_result(task, steps)
+        result["summary"]["run_scheduler_now"] = run_scheduler_now
+        return result
+
+    generation_resp = await runtime_quant_manager(action="llm_factor_mining", kwargs=generation_kwargs)
+    steps.append(_step_result("quant_manager.llm_factor_mining", output=generation_resp))
+    generation_data = _response_data_dict(generation_resp)
+    resolved_artifact_id = str(params.get("artifact_id") or generation_data.get("artifact_id") or "").strip()
+
+    if resolved_artifact_id or isinstance(params.get("candidate"), dict):
+        validation_kwargs["artifact_id"] = resolved_artifact_id or validation_kwargs.get("artifact_id")
+        validation_resp = await runtime_quant_manager(action="validate_factor_candidate", kwargs=validation_kwargs)
+        steps.append(_step_result("quant_manager.validate_factor_candidate", output=validation_resp))
+    else:
+        steps.append(
+            _static_step(
+                "quant_manager.validate_factor_candidate.skipped",
+                {"reason": "artifact_id_or_inline_candidate_required"},
+            )
+        )
+
+    registry_resp = await runtime_quant_manager(action="factor_candidate_registry", kwargs=registry_kwargs)
+    steps.append(_step_result("quant_manager.factor_candidate_registry", output=registry_resp))
+    memory_resp = await runtime_quant_manager(action="factor_research_memory", kwargs=memory_kwargs)
+    steps.append(_step_result("quant_manager.factor_research_memory", output=memory_resp))
+    scheduler_status = await runtime_quant_manager(action="scheduler_status", kwargs={})
+    steps.append(_step_result("quant_manager.scheduler_status", output=scheduler_status))
+    if task == "candidate_pipeline" and run_scheduler_now:
+        scheduler_run = await runtime_quant_manager(action="scheduler_run_now", kwargs={})
+        steps.append(_step_result("quant_manager.scheduler_run_now", output=scheduler_run))
+
+    result = _finalize_skill_result(task, steps)
+    result["summary"].update(
+        {
+            "codes": codes,
+            "candidate_count": candidate_count,
+            "artifact_id": resolved_artifact_id or None,
+            "registry_op": registry_op,
+            "memory_op": memory_op,
+            "run_scheduler_now": run_scheduler_now,
+        }
+    )
+    return result
+
+
+async def _exec_strategy_factory(params: Dict[str, Any]) -> Dict[str, Any]:
+    from .managers.strategy_manager import strategy_manager as runtime_strategy_manager
+
+    task = str(params.get("task") or "factory_cycle").strip().lower()
+    supported_tasks = ["factory_cycle", "strategy_review", "runtime_governance", "smoke_test"]
+    if task not in supported_tasks:
+        return _unsupported_task_result(task, supported_tasks)
+
+    strategy_id = str(params.get("strategy_id") or params.get("id") or "").strip()
+    limit = max(1, min(_safe_int(params.get("limit"), 5), 100))
+    runtime_alert_limit = max(1, min(_safe_int(params.get("runtime_alert_limit"), 20), 100))
+    trigger_factory_run = bool(_parse_bool_flag(params.get("trigger_factory_run")))
+    trigger_runtime_cycle = bool(_parse_bool_flag(params.get("trigger_runtime_cycle")))
+    index_name = str(params.get("index_name") or "strategy_behavior").strip() or "strategy_behavior"
+
+    steps: List[Dict[str, Any]] = []
+
+    if task in {"factory_cycle", "smoke_test"}:
+        status_resp = await runtime_strategy_manager(action="factory_status", params={})
+        steps.append(_step_result("strategy_manager.factory_status", output=status_resp))
+        capabilities_resp = await runtime_strategy_manager(action="capabilities", params={})
+        steps.append(_step_result("strategy_manager.capabilities", output=capabilities_resp))
+        if task != "smoke_test" and trigger_factory_run:
+            run_resp = await runtime_strategy_manager(action="factory_run_once", params={})
+            steps.append(_step_result("strategy_manager.factory_run_once", output=run_resp))
+        runs_resp = await runtime_strategy_manager(action="factory_runs", params={"limit": limit})
+        steps.append(_step_result("strategy_manager.factory_runs", output=runs_resp))
+        if strategy_id:
+            task_runs_resp = await runtime_strategy_manager(
+                action="task_runs",
+                params={"strategy_id": strategy_id, "limit": limit},
+            )
+            steps.append(_step_result("strategy_manager.task_runs", output=task_runs_resp))
+        result = _finalize_skill_result(task, steps)
+        result["summary"]["strategy_id"] = strategy_id or None
+        result["summary"]["trigger_factory_run"] = trigger_factory_run if task != "smoke_test" else False
+        return result
+
+    if task == "strategy_review":
+        rank_resp = await runtime_strategy_manager(action="rank", params={"status": "listed", "limit": limit})
+        steps.append(_step_result("strategy_manager.rank", output=rank_resp))
+        if strategy_id:
+            detail_resp = await runtime_strategy_manager(action="detail", params={"strategy_id": strategy_id})
+            steps.append(_step_result("strategy_manager.detail", output=detail_resp))
+            review_report_resp = await runtime_strategy_manager(action="review_report", params={"strategy_id": strategy_id})
+            steps.append(_step_result("strategy_manager.review_report", output=review_report_resp))
+            events_resp = await runtime_strategy_manager(action="events", params={"strategy_id": strategy_id, "limit": limit})
+            steps.append(_step_result("strategy_manager.events", output=events_resp))
+        else:
+            list_resp = await runtime_strategy_manager(action="list", params={"limit": limit})
+            steps.append(_step_result("strategy_manager.list", output=list_resp))
+        result = _finalize_skill_result(task, steps)
+        result["summary"]["strategy_id"] = strategy_id or None
+        return result
+
+    capabilities_resp = await runtime_strategy_manager(action="capabilities", params={})
+    steps.append(_step_result("strategy_manager.capabilities", output=capabilities_resp))
+    runtime_cycle_status_resp = await runtime_strategy_manager(action="runtime_cycle_status", params={})
+    steps.append(_step_result("strategy_manager.runtime_cycle_status", output=runtime_cycle_status_resp))
+    vector_health_resp = await runtime_strategy_manager(
+        action="vector_health",
+        params={"index_name": index_name, "limit_versions": limit},
+    )
+    steps.append(_step_result("strategy_manager.vector_health", output=vector_health_resp))
+    if trigger_runtime_cycle:
+        runtime_cycle_run_resp = await runtime_strategy_manager(action="runtime_cycle_run", params={})
+        steps.append(_step_result("strategy_manager.runtime_cycle_run", output=runtime_cycle_run_resp))
+    if strategy_id:
+        runtime_alerts_resp = await runtime_strategy_manager(
+            action="runtime_alerts",
+            params={"strategy_id": strategy_id, "limit": runtime_alert_limit},
+        )
+        steps.append(_step_result("strategy_manager.runtime_alerts", output=runtime_alerts_resp))
+        runtime_control_resp = await runtime_strategy_manager(action="runtime_control", params={"strategy_id": strategy_id})
+        steps.append(_step_result("strategy_manager.runtime_control", output=runtime_control_resp))
+        promotion_reviews_resp = await runtime_strategy_manager(
+            action="promotion_reviews",
+            params={"strategy_id": strategy_id, "limit": limit},
+        )
+        steps.append(_step_result("strategy_manager.promotion_reviews", output=promotion_reviews_resp))
+    else:
+        vector_indexes_resp = await runtime_strategy_manager(
+            action="vector_indexes",
+            params={"index_name": index_name, "limit": limit},
+        )
+        steps.append(_step_result("strategy_manager.vector_indexes", output=vector_indexes_resp))
+
+    result = _finalize_skill_result(task, steps)
+    result["summary"]["strategy_id"] = strategy_id or None
+    result["summary"]["index_name"] = index_name
+    result["summary"]["trigger_runtime_cycle"] = trigger_runtime_cycle
+    return result
+
+
 async def _exec_fund_news(params: Dict[str, Any]) -> Dict[str, Any]:
     from .news import (
         get_analyst_ranking,
@@ -2068,6 +2377,7 @@ async def _exec_quant_research_process(params: Dict[str, Any]) -> Dict[str, Any]
 _SKILL_EXECUTORS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "akshare-asset-allocation": _exec_asset_allocation,
     "akshare-fee-costs": _exec_fee_costs,
+    "akshare-factor-mining": _exec_factor_mining,
     "akshare-fund-news": _exec_fund_news,
     "akshare-fundamental": _exec_fundamental,
     "akshare-investor-protection": _exec_investor_protection,
@@ -2082,6 +2392,7 @@ _SKILL_EXECUTORS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "akshare-quant-methods-foundation": _exec_quant_methods_foundation,
     "akshare-quant-ml-signals": _exec_quant_ml_signals,
     "akshare-quant-research-process": _exec_quant_research_process,
+    "akshare-strategy-factory": _exec_strategy_factory,
     "akshare-fund-manager-pro": _exec_fund_manager_pro,
 }
 

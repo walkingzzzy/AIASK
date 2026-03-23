@@ -3,12 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { delimiter, isAbsolute, resolve } from 'node:path';
 
 type McpHealth = {
   reachable: boolean;
   toolCount: number | null;
-  expectedTools: number;
+  expectedTools: number | null;
   matched: boolean;
   source: string;
   message: string;
@@ -26,7 +26,11 @@ interface PooledConnection {
   connectPromise: Promise<void> | null;
 }
 
-type DedicatedWaiter = { resolve: (conn: PooledConnection) => void };
+type Waiter = {
+  resolve: (conn: PooledConnection) => void;
+  reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
+};
 
 @Injectable()
 export class McpGatewayService implements OnModuleDestroy {
@@ -35,15 +39,25 @@ export class McpGatewayService implements OnModuleDestroy {
 
   private pool: PooledConnection[] = [];
   private readonly poolSize: number;
-  private waitQueue: Array<{ resolve: (conn: PooledConnection) => void }> = [];
+  private readonly poolAcquireTimeoutMs: number;
+  private readonly toolCallTimeoutMs: number;
+  private waitQueue: Waiter[] = [];
   private dedicatedConnections = new Map<string, PooledConnection>();
-  private dedicatedWaitQueues = new Map<string, DedicatedWaiter[]>();
+  private dedicatedWaitQueues = new Map<string, Waiter[]>();
   private initialized = false;
 
   constructor(private readonly configService: ConfigService) {
     this.poolSize = Math.max(
       1,
-      Number(this.configService.get<string>('MCP_POOL_SIZE', '3')),
+      Number(this.configService.get<string>('MCP_POOL_SIZE', '8')),
+    );
+    this.poolAcquireTimeoutMs = Math.max(
+      1000,
+      Number(this.configService.get<string>('MCP_POOL_ACQUIRE_TIMEOUT_MS', '5000')),
+    );
+    this.toolCallTimeoutMs = Math.max(
+      1000,
+      Number(this.configService.get<string>('MCP_TOOL_TIMEOUT_MS', '30000')),
     );
   }
 
@@ -52,10 +66,10 @@ export class McpGatewayService implements OnModuleDestroy {
   }
 
   async checkAvailableTools(): Promise<McpHealth> {
-    const defaultExpectedTools = process.platform === 'win32' ? '171' : '134';
-    const expectedTools = Number(
-      this.configService.get<string>('MCP_EXPECTED_TOOLS', defaultExpectedTools),
-    );
+    const configuredExpected = this.configService.get<string>('MCP_EXPECTED_TOOLS');
+    const expectedTools = configuredExpected != null && configuredExpected !== ''
+      ? Number(configuredExpected)
+      : null;
 
     try {
       const conn = await this.acquire();
@@ -67,9 +81,9 @@ export class McpGatewayService implements OnModuleDestroy {
             reachable: true,
             toolCount: count,
             expectedTools,
-            matched: count === expectedTools,
+            matched: expectedTools == null ? true : count === expectedTools,
             source: 'stdio',
-            message: 'ok',
+            message: expectedTools == null ? 'ok(dynamic)' : 'ok',
             poolSize: this.poolSize,
             activeConnections: this.pool.length,
           };
@@ -97,7 +111,11 @@ export class McpGatewayService implements OnModuleDestroy {
     const dedicated = McpGatewayService.DEDICATED_TOOL_CONNECTIONS.has(name);
     const conn = dedicated ? await this.acquireDedicated(name) : await this.acquire();
     try {
-      const result = await conn.client.callTool({ name, arguments: args });
+      const result = await this.withTimeout(
+        conn.client.callTool({ name, arguments: args }),
+        this.toolCallTimeoutMs,
+        `MCP tool ${name} timed out after ${this.toolCallTimeoutMs}ms`,
+      );
       return this.normalizeToolResult(result);
     } catch (error) {
       if (this.isTransportError(error)) {
@@ -131,9 +149,10 @@ export class McpGatewayService implements OnModuleDestroy {
       return conn;
     }
 
-    return new Promise<PooledConnection>((resolve) => {
-      this.waitQueue.push({ resolve });
-    });
+    return this.waitForConnection(
+      this.waitQueue,
+      `Timed out waiting ${this.poolAcquireTimeoutMs}ms for an available MCP pool connection`,
+    );
   }
 
   private release(conn: PooledConnection): void {
@@ -165,11 +184,12 @@ export class McpGatewayService implements OnModuleDestroy {
         existing.busy = true;
         return existing;
       }
-      return new Promise<PooledConnection>((resolve) => {
-        const queue = this.dedicatedWaitQueues.get(toolName) ?? [];
-        queue.push({ resolve });
-        this.dedicatedWaitQueues.set(toolName, queue);
-      });
+      const queue = this.dedicatedWaitQueues.get(toolName) ?? [];
+      this.dedicatedWaitQueues.set(toolName, queue);
+      return this.waitForConnection(
+        queue,
+        `Timed out waiting ${this.poolAcquireTimeoutMs}ms for dedicated MCP connection ${toolName}`,
+      );
     }
 
     const conn = await this.createConnection(this.poolSize + this.dedicatedConnections.size);
@@ -206,7 +226,7 @@ export class McpGatewayService implements OnModuleDestroy {
 
   private async createConnection(id: number): Promise<PooledConnection> {
     const cwd = this.resolveMcpCwd();
-    const command = this.configService.get<string>('MCP_STDIO_COMMAND', 'python');
+    const command = this.resolveMcpCommand(cwd);
     const args = this.parseArgs(
       this.configService.get<string>('MCP_STDIO_ARGS', '["-m","akshare_mcp.server"]'),
     );
@@ -216,8 +236,7 @@ export class McpGatewayService implements OnModuleDestroy {
         if (typeof v === 'string') acc[k] = v;
         return acc;
       }, {}),
-      PYTHONPATH:
-        this.configService.get<string>('MCP_STDIO_PYTHONPATH') || resolve(cwd, 'src'),
+      PYTHONPATH: this.buildPythonPath(cwd),
       PYTHONIOENCODING:
         this.configService.get<string>('MCP_STDIO_PYTHONIOENCODING', 'utf-8'),
       AKSHARE_MCP_STARTUP_PROFILE: startupProfile,
@@ -270,6 +289,11 @@ export class McpGatewayService implements OnModuleDestroy {
   }
 
   private async disposeAll(): Promise<void> {
+    const pendingWaiters = [...this.waitQueue, ...Array.from(this.dedicatedWaitQueues.values()).flat()];
+    for (const waiter of pendingWaiters) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error('MCP gateway is shutting down'));
+    }
     for (const conn of this.pool) {
       try {
         await conn.transport.close();
@@ -298,8 +322,49 @@ export class McpGatewayService implements OnModuleDestroy {
       msg.includes('transport') ||
       msg.includes('econnreset') ||
       msg.includes('econnrefused') ||
-      msg.includes('broken pipe')
+      msg.includes('broken pipe') ||
+      msg.includes('timed out')
     );
+  }
+
+  private waitForConnection(queue: Waiter[], timeoutMessage: string): Promise<PooledConnection> {
+    return new Promise<PooledConnection>((resolve, reject) => {
+      let waiter!: Waiter;
+      waiter = {
+        resolve: (conn) => {
+          clearTimeout(waiter.timeout);
+          resolve(conn);
+        },
+        reject: (error) => {
+          clearTimeout(waiter.timeout);
+          reject(error);
+        },
+        timeout: setTimeout(() => {
+          const index = queue.indexOf(waiter);
+          if (index !== -1) {
+            queue.splice(index, 1);
+          }
+          reject(new Error(timeoutMessage));
+        }, this.poolAcquireTimeoutMs),
+      };
+      queue.push(waiter);
+    });
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+    return await new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
   }
 
   private resolveMcpCwd(): string {
@@ -315,6 +380,43 @@ export class McpGatewayService implements OnModuleDestroy {
     if (existsSync(fromAppDir)) return fromAppDir;
 
     return fromRepoRoot;
+  }
+
+  private resolveMcpCommand(cwd: string): string {
+    const configured = this.configService.get<string>('MCP_STDIO_COMMAND');
+    if (configured && configured.trim().length > 0) {
+      return configured.trim();
+    }
+
+    const venvPython = process.platform === 'win32'
+      ? resolve(cwd, '.venv', 'Scripts', 'python.exe')
+      : resolve(cwd, '.venv', 'bin', 'python');
+
+    if (existsSync(venvPython)) {
+      return venvPython;
+    }
+
+    return 'python';
+  }
+
+  private buildPythonPath(cwd: string): string {
+    const configured = this.configService.get<string>('MCP_STDIO_PYTHONPATH');
+    const sources = [
+      process.env.PYTHONPATH,
+      configured,
+      resolve(cwd, 'src'),
+      resolve(cwd, '..', 'strategy-factory', 'src'),
+    ];
+
+    const parts = sources
+      .flatMap((value) => (value ? value.split(delimiter) : []))
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0)
+      .map((part) => (isAbsolute(part) ? part : resolve(cwd, part)))
+      .filter((part, index, list) => list.indexOf(part) === index)
+      .filter((part) => existsSync(part));
+
+    return parts.join(delimiter);
   }
 
   private parseArgs(raw: string): string[] {

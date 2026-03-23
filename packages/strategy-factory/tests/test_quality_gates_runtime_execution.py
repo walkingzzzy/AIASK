@@ -65,3 +65,39 @@ async def test_gate_1_fast_screen_uses_backtest_engine_run_backtest(monkeypatch)
     assert result.passed is True
     assert result.metrics["avg_sharpe"] == 1.25
     assert [item["code"] for item in calls] == ["600519", "000858"]
+
+
+@pytest.mark.asyncio
+async def test_gate_1_fast_screen_dispatches_backtest_via_asyncio_to_thread(monkeypatch):
+    to_thread_calls = []
+
+    class _FakeBacktestEngine:
+        @staticmethod
+        def run_backtest(code, klines, strategy, params):
+            return {"success": True, "data": {"sharpe_ratio": 0.8}}
+
+    async def _fake_to_thread(fn, *args, **kwargs):
+        to_thread_calls.append((fn, args, kwargs))
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(
+        legacy_runtime,
+        "get_strategy_factory_package",
+        lambda: SimpleNamespace(BacktestEngine=_FakeBacktestEngine),
+    )
+    monkeypatch.setattr("strategy_factory.application.quality_gates.asyncio.to_thread", _fake_to_thread)
+
+    db = SimpleNamespace(
+        get_klines=AsyncMock(
+            side_effect=[
+                [{"close": float(i + 1), "volume": 1000.0} for i in range(40)],
+                [{"close": float(i + 2), "volume": 1000.0} for i in range(40)],
+            ]
+        )
+    )
+
+    result = await gate_1_fast_screen({"strategy_type": "momentum", "params": {"lookback": 20}}, db)
+
+    assert result.passed is True
+    assert len(to_thread_calls) == 2
+    assert all(call[0] is _FakeBacktestEngine.run_backtest for call in to_thread_calls)

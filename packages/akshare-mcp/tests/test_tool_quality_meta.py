@@ -507,3 +507,34 @@ def test_get_realtime_quote_quality_meta_marks_failed_chain(monkeypatch):
     assert result["fallback_used"] is True
     assert "failed" in result["quality_flags"]
     assert result["fallback_reason"] == ["所有上游源均返回空数据"]
+
+
+def test_get_realtime_quote_backfills_prev_close_and_timestamp(monkeypatch):
+    monkeypatch.setattr(quote_mod, "get_limiter", lambda *args, **kwargs: _DummyLimiter())
+    monkeypatch.setattr(
+        quote_mod.data_source,
+        "get_realtime_quote",
+        lambda code: {
+            "code": code,
+            "name": "贵州茅台",
+            "price": 1500.0,
+            "open": 1498.0,
+            "high": 1508.0,
+            "low": 1492.0,
+            "volume": 1000,
+            "amount": 1500000.0,
+            "source": "data_source",
+        },
+    )
+    monkeypatch.setattr(quote_mod, "_get_daily_snapshot", lambda code: {"prev_close": 1490.0})
+    monkeypatch.setattr(quote_mod, "_save_quote_nonblocking", lambda payload: None)
+    monkeypatch.setattr(quote_mod, "_current_data_timestamp", lambda: "2026-03-21T10:15:30+08:00")
+
+    result = quote_mod.get_realtime_quote.__wrapped__("600519")
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["preClose"] == 1490.0
+    assert data["change"] == 10.0
+    assert round(data["changePercent"], 4) == round((10.0 / 1490.0) * 100, 4)
+    assert data["data_timestamp"] == "2026-03-21T10:15:30+08:00"

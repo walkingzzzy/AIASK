@@ -663,6 +663,23 @@ export type FactoryRunSummary = {
     submitted?: number;
     eliminated?: number;
     elapsed_seconds?: number;
+    constraint_violation_count?: number;
+    target_symbol_intersection_ratio_avg?: number;
+    universe_expansion_count?: number;
+    preference_mismatch_warning_count?: number;
+    attempt_adjusted_gate_failed?: number;
+    attempt_adjusted_score_avg?: number;
+    event_window_contamination_warning_count?: number;
+    cost_audit_missing_count?: number;
+    deflated_sharpe_proxy_avg?: number;
+    deflated_sharpe_ratio_avg?: number;
+    high_pbo_proxy_count?: number;
+    high_pbo_count?: number;
+    formal_multiple_testing_count?: number;
+    weak_white_reality_check_count?: number;
+    weak_hansen_spa_count?: number;
+    refresh_metrics_only_count?: number;
+    spawn_revision_from_existing_count?: number;
 };
 
 export type FactoryStatusResponse = {
@@ -833,14 +850,83 @@ export type ReviewReportResponse = {
         status_after_review?: string;
         validation_grade?: string;
         review_source?: string;
+        primary_validation_layer?: string;
+        refresh_mode?: string;
     };
     quality_gate?: {
         wf_ic_ir?: number;
         pkf_ic?: number;
         bootstrap_ci_lower?: number;
         param_sensitivity?: number;
+        run_correction_mode?: string;
+        deflated_sharpe_proxy?: number;
+        pbo_proxy?: number;
+        reality_check_pvalue_proxy?: number;
+        spa_pvalue_proxy?: number;
+        multiple_testing_mode?: string;
+        deflated_sharpe_ratio?: number;
+        deflated_sharpe_reference_sharpe?: number;
+        deflated_sharpe_effective_trials?: number;
+        pbo?: number;
+        white_reality_check_pvalue?: number;
+        hansen_spa_pvalue?: number;
+        multiple_testing?: Record<string, unknown>;
         reasons?: string[];
         reason_codes?: string[];
+    };
+    run_correction?: {
+        mode?: string;
+        raw_sharpe_proxy?: number;
+        deflated_sharpe_proxy?: number;
+        pbo_proxy?: number;
+        reality_check_pvalue_proxy?: number;
+        spa_pvalue_proxy?: number;
+        multiple_testing_mode?: string;
+        deflated_sharpe_ratio?: number;
+        deflated_sharpe_reference_sharpe?: number;
+        deflated_sharpe_effective_trials?: number;
+        pbo?: number;
+        white_reality_check_pvalue?: number;
+        hansen_spa_pvalue?: number;
+        multiple_testing?: Record<string, unknown>;
+    };
+    constraint_check?: {
+        intersection_ratio?: number;
+        constraint_violation?: string | null;
+        expansion_applied?: boolean;
+        expansion_reason?: string | null;
+        expansion_source?: string | null;
+        target_symbol_policy?: string | null;
+    };
+    validation_profile?: {
+        profile?: string | null;
+        validation_focus?: string | null;
+        primary_validation_layer?: string | null;
+    };
+    event_window_config?: Record<string, unknown>;
+    position_assumption?: string | null;
+    cost_assumptions?: Record<string, unknown>;
+    explicit_cost_breakdown?: Record<string, unknown>;
+    implicit_cost_breakdown?: Record<string, unknown>;
+    backtest_assumptions?: Record<string, unknown>;
+    attempt_adjustment?: {
+        attempt_count?: number;
+        task_attempt_count?: number;
+        external_llm_attempt_count?: number;
+        selection_ratio?: number;
+        penalty?: number;
+        factory_attempt_count?: number;
+        factory_selected_count?: number;
+        task_selected_count?: number;
+        external_llm_selected_count?: number;
+    };
+    task_signature?: string | null;
+    refresh_mode?: string | null;
+    task_preference?: {
+        preferred_strategy_types?: string[];
+        preference_strength?: string | null;
+        preference_reason?: string | null;
+        override_applied?: boolean;
     };
     dedup_report?: {
         duplicate?: boolean;
@@ -1171,6 +1257,19 @@ export type AiExperiment = {
             decision?: string;
             rank?: number;
             is_champion?: boolean;
+            planner_score?: number;
+            risk_score?: number;
+            feasibility_score?: number;
+            execution_score?: number;
+            capacity_score?: number;
+            task_alignment_score?: number;
+            novelty_score?: number;
+            planner_context?: Record<string, unknown>;
+            task_alignment_context?: Record<string, unknown>;
+            alignment_issues?: string[];
+            execution_issues?: string[];
+            capacity_issues?: string[];
+            suggestions?: string[];
         };
     };
     result?: Record<string, unknown>;

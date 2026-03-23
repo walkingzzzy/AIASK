@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 import httpx
 import pandas as pd
+from strategy_factory.domain.targets import _apply_target_symbol_policy, _normalize_research_task_contract
 
 from ..env_loader import load_mcp_env
 
@@ -222,7 +223,8 @@ class StrategyLLMProvider:
     def _normalize_candidate_payload(cls, candidate: Any, research_task: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
         if not isinstance(candidate, dict):
             return None
-        research_symbols = cls._normalize_code_list((research_task or {}).get('target_symbols'), limit=8)
+        normalized_task = _normalize_research_task_contract(research_task)
+        research_symbols = cls._normalize_code_list(normalized_task.get('target_symbols'), limit=8)
         dsl_payload = candidate.get('dsl')
         if not isinstance(dsl_payload, dict):
             dsl_payload = {
@@ -237,13 +239,25 @@ class StrategyLLMProvider:
             return None
         dsl = dict(dsl_payload)
         metadata = dict(dsl.get('metadata') or {})
-        target_symbols = cls._normalize_code_list([
+        raw_target_symbols = cls._normalize_code_list([
             candidate.get('target_symbols'),
             candidate.get('stock_pool'),
             metadata.get('target_symbols'),
             metadata.get('stock_pool'),
+        ], limit=8)
+        stock_pool_payload = candidate.get('stock_pool')
+        fallback_symbols = cls._normalize_code_list([
+            stock_pool_payload,
+            metadata.get('stock_pool'),
             research_symbols,
         ], limit=8)
+        policy_result = _apply_target_symbol_policy(
+            raw_target_symbols,
+            normalized_task,
+            fallback_symbols=fallback_symbols,
+            limit=8,
+        )
+        target_symbols = list(policy_result.get('target_symbols') or [])
         stock_pool_payload = candidate.get('stock_pool')
         stock_pool_symbols = cls._normalize_code_list([
             stock_pool_payload,
@@ -264,18 +278,115 @@ class StrategyLLMProvider:
             rationale = stock_pool_payload.get('rationale')
             if rationale not in (None, ''):
                 stock_pool['rationale'] = str(rationale)
+        constraint_check = dict(policy_result.get('constraint_check') or {})
+        if (
+            constraint_check.get('expansion_applied')
+            and stock_pool_symbols
+            and not str(stock_pool.get('rationale') or '').strip()
+        ):
+            stock_pool['rationale'] = str(
+                constraint_check.get('expansion_reason')
+                or constraint_check.get('constraint_violation')
+                or 'expanded_from_candidate_universe'
+            )
         metadata['target_symbols'] = list(target_symbols)
         metadata['stock_pool'] = stock_pool
+        metadata['constraint_check'] = constraint_check
+        metadata['targeting_policy'] = {
+            'target_symbol_policy': normalized_task.get('target_symbol_policy'),
+            'universe_expansion_policy': normalized_task.get('universe_expansion_policy'),
+            'validation_focus': normalized_task.get('validation_focus'),
+        }
         dsl['metadata'] = metadata
         dsl = cls._sanitize_dsl_for_candidate(dsl)
         tags = candidate.get('tags') or []
         if not isinstance(tags, list):
             tags = [tags]
+        strategy_type = str(candidate.get('strategy_type') or 'dsl_rule').strip() or 'dsl_rule'
+        hypothesis = str(
+            candidate.get('hypothesis')
+            or candidate.get('rationale')
+            or candidate.get('description')
+            or ''
+        ).strip()
+        holding_horizon = dict(candidate.get('holding_horizon') or {})
+        if not holding_horizon:
+            holding_horizon = dict(normalized_task.get('holding_window') or {})
+        risk_rules = dict(candidate.get('risk_rules') or dsl.get('risk_rules') or {})
+        if not risk_rules:
+            max_holding_days = int(holding_horizon.get('max_days') or 0)
+            risk_rules = {
+                'stop_loss_pct': 0.08 if normalized_task.get('task_source') == 'event_driven' else 0.1,
+                'take_profit_pct': 0.18 if normalized_task.get('task_source') == 'event_driven' else 0.2,
+                'max_holding_days': max_holding_days or 20,
+            }
+        dsl['risk_rules'] = dict(risk_rules)
+        rebalance_rule = dict(candidate.get('rebalance_rule') or {})
+        if not rebalance_rule:
+            rebalance_rule = {'mode': 'event_driven_hold' if normalized_task.get('task_source') == 'event_driven' else 'signal_rebalance'}
+        trade_plan = candidate.get('trade_plan')
+        if isinstance(trade_plan, dict):
+            normalized_trade_plan = dict(trade_plan)
+        elif trade_plan not in (None, '', [], {}):
+            normalized_trade_plan = {'summary': str(trade_plan)}
+        else:
+            normalized_trade_plan = {'entry_bias': 'trend_follow' if normalized_task.get('task_source') == 'event_driven' else 'signal_confirmed'}
+        execution_assumptions = dict(candidate.get('execution_assumptions') or {})
+        if not execution_assumptions:
+            execution_assumptions = {
+                'commission_rate': 0.00025,
+                'slippage_bps': 8 if normalized_task.get('task_source') == 'event_driven' else 5,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+            }
+        execution_notes = candidate.get('execution_notes')
+        if execution_notes in (None, '', [], {}):
+            normalized_execution_notes = 'prefer liquid session execution with tradability filter'
+        elif isinstance(execution_notes, list):
+            normalized_execution_notes = [str(item) for item in execution_notes[:3] if str(item or '').strip()]
+        else:
+            normalized_execution_notes = str(execution_notes)
+        portfolio_spec = dict(candidate.get('portfolio_spec') or {})
+        if not portfolio_spec:
+            portfolio_spec = {
+                'position_assumption': 'equal_weight_proxy' if len(target_symbols) > 1 else 'single_name_full_notional',
+                'target_weight_scheme': 'equal_weight' if len(target_symbols) > 1 else 'single_name',
+            }
+        position_sizing = candidate.get('position_sizing')
+        if isinstance(position_sizing, dict):
+            normalized_position_sizing = dict(position_sizing)
+        elif position_sizing not in (None, '', [], {}):
+            normalized_position_sizing = {'summary': str(position_sizing)}
+        else:
+            normalized_position_sizing = {
+                'mode': portfolio_spec.get('target_weight_scheme') or 'equal_weight',
+                'position_assumption': portfolio_spec.get('position_assumption'),
+            }
+        validation_profile = dict(candidate.get('validation_profile') or {})
+        if not validation_profile:
+            validation_profile = {
+                'profile': 'event_trade_validation' if normalized_task.get('validation_focus') == 'event_target_only' else 'trade_rule_validation',
+                'validation_focus': normalized_task.get('validation_focus'),
+                'primary_validation_layer': 'target' if normalized_task.get('validation_focus') == 'event_target_only' else 'combined',
+            }
         normalized: dict[str, Any] = {
             'name': str(candidate.get('name') or '外部 AI 候选策略'),
+            'strategy_type': strategy_type,
             'target_symbols': list(target_symbols),
             'stock_pool': stock_pool,
             'dsl': dsl,
+            'hypothesis': hypothesis,
+            'holding_horizon': holding_horizon,
+            'trade_plan': normalized_trade_plan,
+            'risk_rules': dict(risk_rules),
+            'position_sizing': normalized_position_sizing,
+            'execution_notes': normalized_execution_notes,
+            'rebalance_rule': rebalance_rule,
+            'portfolio_spec': portfolio_spec,
+            'execution_assumptions': execution_assumptions,
+            'validation_profile': validation_profile,
+            'targeting_policy': dict(metadata.get('targeting_policy') or {}),
+            'constraint_check': constraint_check,
             'tags': [str(item) for item in tags if str(item or '').strip()][:8],
         }
         description = candidate.get('description')
@@ -304,6 +415,17 @@ class StrategyLLMProvider:
         return {
             'candidates': [{
                 'name': 'single_stock_trend_follow',
+                'strategy_type': 'dsl_rule',
+                'hypothesis': '目标股票在中短期趋势延续中更容易产生顺势机会。',
+                'holding_horizon': {'max_days': 10},
+                'trade_plan': {'entry_bias': 'trend_follow', 'exit_bias': 'signal_or_time_stop'},
+                'risk_rules': {'stop_loss_pct': 0.08, 'take_profit_pct': 0.18, 'max_holding_days': 10},
+                'position_sizing': {'mode': 'single_name', 'position_assumption': 'single_name_full_notional'},
+                'execution_notes': 'prefer liquid session execution',
+                'rebalance_rule': {'mode': 'signal_rebalance'},
+                'portfolio_spec': {'position_assumption': 'single_name_full_notional', 'target_weight_scheme': 'single_name'},
+                'execution_assumptions': {'commission_rate': 0.00025, 'slippage_bps': 5, 'tradability_filter': True, 'slippage_model': 'fixed'},
+                'validation_profile': {'profile': 'trade_rule_validation', 'validation_focus': 'target_plus_representative'},
                 'target_symbols': list(symbols),
                 'stock_pool': stock_pool,
                 'dsl': {
@@ -634,22 +756,31 @@ class StrategyLLMProvider:
 
     @classmethod
     def _compact_research_task(cls, research_task: Optional[dict[str, Any]], compact_level: int = 0) -> dict[str, Any]:
-        task = dict(research_task or {})
+        task = _normalize_research_task_contract(research_task)
         compact = {
             "task_id": task.get("task_id"),
+            "task_source": task.get("task_source"),
             "opportunity_type": task.get("opportunity_type"),
             "target_symbols": list(task.get("target_symbols") or [])[:5],
+            "preferred_strategy_types": list(task.get("preferred_strategy_types") or [])[:4],
+            "allowed_strategy_types": list(task.get("allowed_strategy_types") or [])[:6],
+            "target_symbol_policy": task.get("target_symbol_policy"),
+            "universe_expansion_policy": task.get("universe_expansion_policy"),
+            "preference_strength": task.get("preference_strength"),
+            "validation_focus": task.get("validation_focus"),
         }
         is_event_driven_task = any(task.get(key) not in (None, "", [], {}) for key in ("event_id", "theme_code", "direction", "horizon"))
         if is_event_driven_task:
             compact.update({
-                "task_source": task.get("task_source"),
                 "event_id": task.get("event_id"),
                 "event_type": task.get("event_type"),
                 "theme": task.get("theme"),
                 "theme_code": task.get("theme_code"),
                 "direction": task.get("direction"),
                 "horizon": task.get("horizon"),
+                "event_window": dict(task.get("event_window") or {}),
+                "estimation_window": dict(task.get("estimation_window") or {}),
+                "holding_window": dict(task.get("holding_window") or {}),
             })
         if compact_level <= 1:
             compact["theme"] = task.get("theme") or compact.get("theme")
@@ -677,7 +808,22 @@ class StrategyLLMProvider:
                     ],
                     "score_summary": dict(evidence_bundle.get("score_summary") or {}),
                 }
+        if compact_level >= 2:
+            compact = {
+                key: compact.get(key)
+                for key in ("task_id", "opportunity_type", "target_symbols")
+                if compact.get(key) not in (None, [], {}, "")
+            }
         return {key: value for key, value in compact.items() if value not in (None, [], {}, "")}
+
+    @staticmethod
+    def _prompt_target_symbol_rule(task: Optional[dict[str, Any]]) -> str:
+        policy = str((task or {}).get("target_symbol_policy") or "").strip().lower()
+        if policy == "strict_intersection":
+            return "strict_intersection_with_research_task"
+        if policy == "prefer_intersection":
+            return "prefer_intersection_with_research_task"
+        return policy or "prefer_intersection_with_research_task"
 
     @classmethod
     def _build_prompt(
@@ -693,6 +839,8 @@ class StrategyLLMProvider:
     ) -> tuple[str, str]:
         requested_limit = cls._normalize_limit(limit)
         profile_name = cls._prompt_profile_name(compact_level)
+        normalized_task = _normalize_research_task_contract(research_task)
+        prompt_target_symbol_rule = cls._prompt_target_symbol_rule(normalized_task)
         compact_market_summary = cls._compact_market_summary(market_summary, compact_level=compact_level)
         compact_research_context = cls._compact_research_context(research_context, compact_level=compact_level)
         compact_task = cls._compact_research_task(research_task, compact_level=compact_level)
@@ -709,9 +857,9 @@ class StrategyLLMProvider:
                 'root': 'json_object',
                 'required': ['candidates'],
                 'analysis_fields': [],
-                'candidate_fields': ['name', 'target_symbols', 'stock_pool', 'dsl', 'tags'],
+                'candidate_fields': ['name', 'strategy_type', 'hypothesis', 'holding_horizon', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'dsl', 'tags'],
                 'dsl_required_fields': ['version', 'timeframe', 'entry', 'exit', 'metadata'],
-                'target_symbol_rule': 'prefer_intersection_with_research_task',
+                'target_symbol_rule': prompt_target_symbol_rule,
                 'prefer_single_high_confidence_candidate': True,
                 'candidate_limit': 1,
             }
@@ -768,12 +916,12 @@ class StrategyLLMProvider:
             '优先生成可中等频率触发的策略：最近一年通常至少 1-6 次完整交易，不要只有单边长期持有。',
             'entry/exit 各自尽量不超过 2-3 个子条件，避免过度稀疏和过拟合。',
             '窗口优先 3-30 日；volume_ratio 阈值优先 0.95-1.10；ROC 阈值绝对值优先 0.3%-3%；RSI 优先 35/65 或 40/60 一类稳健区间。',
-            '必须提供明确 exit 规则，并兼顾趋势延续或回撤退出。',
-            analysis_length_rule,
-            candidate_priority_rule,
-            f"analysis 必须包含: {', '.join(analysis_fields)}。",
-            '根对象只允许包含 analysis 与 candidates。',
-            '每个 candidate 必须包含: name, description, rationale, target_symbols, stock_pool, selection_logic, dsl, tags。',
+                '必须提供明确 exit 规则，并兼顾趋势延续或回撤退出。',
+                analysis_length_rule,
+                candidate_priority_rule,
+                f"analysis 必须包含: {', '.join(analysis_fields)}。",
+                '根对象只允许包含 analysis 与 candidates。',
+            '每个 candidate 必须包含: name, description, rationale, hypothesis, holding_horizon, trade_plan, risk_rules, position_sizing, execution_notes, rebalance_rule, portfolio_spec, execution_assumptions, validation_profile, target_symbols, stock_pool, selection_logic, dsl, tags。',
             'DSL 条件节点必须使用标准对象格式 {"op":...,"left":...,"right":...}，不要使用 {"gt":[...]} 这类简写。',
             'target_symbols 数量建议 1-5 只；stock_pool 必须包含 selection_mode 与 symbols；dsl.metadata 必须回填 target_symbols 与 stock_pool。',
             '不要生成 Python 代码，不要生成自然语言规则，只能生成 JSON DSL。',
@@ -782,10 +930,10 @@ class StrategyLLMProvider:
             'root': 'json_object',
             'required': ['analysis', 'candidates'],
             'analysis_fields': analysis_fields,
-            'target_symbol_rule': 'prefer_intersection_with_research_task',
+            'target_symbol_rule': prompt_target_symbol_rule,
             'prefer_single_high_confidence_candidate': compact_level >= 1,
-            'candidate_fields': ['name', 'description', 'rationale', 'target_symbols', 'stock_pool', 'selection_logic', 'dsl', 'tags'],
-            'task_alignment': ['research_task.theme', 'research_task.opportunity_type', 'research_task.target_symbols'],
+            'candidate_fields': ['name', 'description', 'rationale', 'hypothesis', 'holding_horizon', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'selection_logic', 'dsl', 'tags'],
+            'task_alignment': ['research_task.theme', 'research_task.opportunity_type', 'research_task.target_symbols', 'research_task.preferred_strategy_types', 'research_task.validation_focus'],
             'max_selection_logic_items': 2 if compact_level >= 1 else 3,
             'max_conditions_per_side': 3,
             'analysis_max_items': 2 if compact_level >= 1 else 4,
@@ -1087,13 +1235,29 @@ class StrategyLLMProvider:
 
         started_at = time.perf_counter()
         stage_timeout = float(timeout_sec or 10.0)
+        _compact_level, degrade_reason = self._recent_timeout_degrade_state()
+        if degrade_reason == 'recent_timeout':
+            raise StrategyLLMRequestError(
+                f"call_stage({stage_id}) skipped during timeout cooldown",
+                metrics={
+                    "stage_id": stage_id,
+                    "status": "cooldown_skip",
+                    "last_error_type": "RecentTimeoutCooldown",
+                    "recent_timeout_streak": self._recent_timeout_streak,
+                    "recent_timeout_cooldown_sec": round(
+                        max(self._recent_timeout_cooldown_until - time.monotonic(), 0.0),
+                        4,
+                    ),
+                    "elapsed_seconds": round(time.perf_counter() - started_at, 4),
+                },
+            )
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
 
-        user_prompt = json.dumps(input_data, ensure_ascii=False, default=str)
+        user_prompt = json.dumps(input_data, ensure_ascii=False, default=str, separators=(",", ":"))
         payload = {
             "model": self.config.model,
             "temperature": temperature,
@@ -1175,3 +1339,12 @@ def get_strategy_llm_provider() -> StrategyLLMProvider:
     if _strategy_llm_provider is None:
         _strategy_llm_provider = StrategyLLMProvider()
     return _strategy_llm_provider
+
+
+async def close_strategy_llm_provider() -> None:
+    global _strategy_llm_provider
+    provider = _strategy_llm_provider
+    _strategy_llm_provider = None
+    if provider is None:
+        return
+    await provider.close()

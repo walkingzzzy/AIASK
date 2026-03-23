@@ -8,7 +8,9 @@ from datetime import date
 from typing import Any, Optional
 from uuid import uuid4
 
-from strategy_factory import extract_event_context as _extract_event_context
+def _extract_event_context(*args, **kwargs):
+    from strategy_factory import extract_event_context
+    return extract_event_context(*args, **kwargs)
 
 from .artifact_registry import register_experiment
 from .strategy_generators import LLMProxyStrategyGenerator, RuleStrategyGenerator
@@ -76,9 +78,15 @@ class CandidateGenerationService:
             parents = await self.select_parents(db, parent_strategy_id=parent_strategy_id)
         task_preferences = list(research_task.get("strategy_preferences") or [])
         rule_limit = max(0, limit // 3) if research_task else max(1, limit // 2 or 1)
-        rule_specs = self.rule_generator.generate(snapshot, limit=rule_limit) if rule_limit > 0 else []
-        if task_preferences:
-            rule_specs = [spec for spec in rule_specs if spec.strategy_type in set(task_preferences)] or rule_specs
+        rule_specs = (
+            self.rule_generator.generate(
+                snapshot,
+                limit=rule_limit,
+                preferred_types=task_preferences or None,
+            )
+            if rule_limit > 0
+            else []
+        )
         llm_specs = await self.llm_generator.generate(
             db,
             limit=max(1, limit),

@@ -80,6 +80,7 @@ from .strategy_mgr_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+_STRATEGY_MANAGER_IMPL = None
 
 STRATEGY_MANAGER_REQUIRED_PARAMS: dict[str, tuple[str, ...]] = {
     "detail": ("strategy_id", "id"),
@@ -426,6 +427,38 @@ def register_strategy_manager(mcp):
             return validation_error
         result = await handler(db, params)
         return _normalize_strategy_manager_failure(action, result)
+
+
+class _StrategyManagerProbeMCP:
+    """Minimal MCP stub used to expose the registered strategy_manager as a module-level callable."""
+
+    def __init__(self):
+        self.fn = None
+
+    def tool(self):
+        def _decorator(fn):
+            self.fn = fn
+            return fn
+
+        return _decorator
+
+
+def _get_strategy_manager_impl():
+    global _STRATEGY_MANAGER_IMPL
+    if _STRATEGY_MANAGER_IMPL is None:
+        probe = _StrategyManagerProbeMCP()
+        register_strategy_manager(probe)
+        _STRATEGY_MANAGER_IMPL = probe.fn
+    return _STRATEGY_MANAGER_IMPL
+
+
+async def strategy_manager(action: str, kwargs: Any = "{}", params: Any = None) -> dict:
+    """Module-level wrapper so internal services can import and call strategy_manager directly."""
+
+    impl = _get_strategy_manager_impl()
+    if impl is None:
+        raise RuntimeError("strategy_manager implementation is unavailable")
+    return await impl(action=action, kwargs=kwargs, params=params)
 
 
 # ── Backward-compatible re-exports ───────────────────────────────────────────

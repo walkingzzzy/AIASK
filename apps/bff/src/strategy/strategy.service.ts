@@ -22,6 +22,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   private static readonly AUTO_REFRESH_CHECK_MS = 5 * 60 * 1000; // 5 min
   private static readonly AUTO_REFRESH_HOUR = 15;
   private static readonly AUTO_REFRESH_MINUTE = 5;
+  private static readonly AUTO_REFRESH_TIMEZONE = process.env.STRATEGY_MARKET_TIMEZONE || 'Asia/Shanghai';
 
   private readonly logger = new Logger(StrategyMarketService.name);
   private autoRefreshTimer?: ReturnType<typeof setInterval>;
@@ -55,18 +56,15 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isAfterMarketClose(now: Date) {
-    const hour = now.getHours();
-    const minute = now.getMinutes();
+    const { hour, minute } = this.getMarketTimeParts(now);
     if (hour > StrategyMarketService.AUTO_REFRESH_HOUR) return true;
     if (hour < StrategyMarketService.AUTO_REFRESH_HOUR) return false;
     return minute >= StrategyMarketService.AUTO_REFRESH_MINUTE;
   }
 
   private dateKey(now: Date) {
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
+    const { year, month, day } = this.getMarketTimeParts(now);
+    return `${year}-${month}-${day}`;
   }
 
   private async runAutoRefreshTick() {
@@ -152,11 +150,33 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private buildRankingCacheKey(params: { strategy_type?: string; limit?: number; rank_keys?: string[] }) {
+  private getMarketTimeParts(now: Date): { year: string; month: string; day: string; hour: number; minute: number } {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: StrategyMarketService.AUTO_REFRESH_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(now);
+
+    const readPart = (type: string) => parts.find((part) => part.type === type)?.value ?? '00';
+    return {
+      year: readPart('year'),
+      month: readPart('month'),
+      day: readPart('day'),
+      hour: Number(readPart('hour')),
+      minute: Number(readPart('minute')),
+    };
+  }
+
+  private buildRankingCacheKey(params: { strategy_type?: string; limit?: number; rank_keys?: string[]; offset?: number }) {
     const type = params.strategy_type || 'all';
     const limit = params.limit || 50;
+    const offset = params.offset || 0;
     const rankKeys = (params.rank_keys || []).join(',');
-    return `strategy:ranking:${type}:${limit}:${rankKeys}`;
+    return `strategy:ranking:${type}:${limit}:${offset}:${rankKeys}`;
   }
 
   private buildFactoryRunsCacheKey(limit?: number) {

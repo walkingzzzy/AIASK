@@ -56,7 +56,7 @@ DEFAULT_UNIVERSE = [
     "603501", "603799", "603833", "603899", "603986",
 ]
 
-DEFAULT_FACTORS = ["momentum", "value", "quality", "volatility", "reversal"]
+DEFAULT_FACTORS = ["momentum", "value", "quality", "growth", "volatility", "reversal"]
 
 
 class FactorScheduler:
@@ -165,8 +165,10 @@ class FactorScheduler:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error("FactorScheduler loop error: %s", e, exc_info=True)
-                await asyncio.sleep(60)  # retry after 1 min on error
+                self._consecutive_errors = getattr(self, '_consecutive_errors', 0) + 1
+                backoff = min(60 * (2 ** (self._consecutive_errors - 1)), 3600)
+                logger.error("FactorScheduler loop error (#%d, backoff %.0fs): %s", self._consecutive_errors, backoff, e, exc_info=True)
+                await asyncio.sleep(backoff)
 
     async def run_once(self):
         """Execute a single batch factor computation run."""

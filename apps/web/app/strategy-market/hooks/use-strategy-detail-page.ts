@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { apiKeys } from '@/lib/query-keys';
@@ -31,10 +31,12 @@ import type {
   PromotionReview,
   ListResponse,
   EventFilters,
+  FactoryReviewSection,
 } from '../types';
 
 export type StrategyDetailTab = 'overview' | 'tracking' | 'factory';
 type BadgeVariant = 'success' | 'danger' | 'warning' | 'info' | 'neutral';
+const FACTORY_SECTION_STALE_TIME = 60_000;
 
 export function useStrategyDetailPage(id: string | null, userId: string | null) {
   const detailQ = useApiQuery<StrategyDetailResponse | StrategyCore>(id ? `/strategy-market/${id}` : null);
@@ -51,6 +53,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
   const [activeTab, setActiveTab] = useState<StrategyDetailTab>('overview');
+  const [activeFactorySection, setActiveFactorySection] = useState<FactoryReviewSection>('summary');
   const [eventFilters, setEventFilters] = useState<EventFilters>({
     event_type: 'status_change',
     from_status: '',
@@ -60,16 +63,28 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     end_time: '',
     limit: '20',
   });
+  const factoryMode = Boolean(id && activeTab === 'factory');
+  const strategyIdParam = id ?? '';
+
+  useEffect(() => {
+    setActiveFactorySection('summary');
+  }, [id]);
+
+  const factorySummaryMode = Boolean(factoryMode && activeFactorySection === 'summary');
+  const factoryIncubationMode = Boolean(factoryMode && activeFactorySection === 'incubation');
+  const factoryRuntimeMode = Boolean(factoryMode && activeFactorySection === 'runtime');
+  const factoryVectorMode = Boolean(factoryMode && activeFactorySection === 'vectors');
+  const factoryExperimentMode = Boolean(factoryMode && activeFactorySection === 'experiments');
 
   const eventsPath = useMemo(() => {
-    if (!id || activeTab !== 'factory') return null;
+    if (!id) return null;
     const qs = new URLSearchParams();
     Object.entries(eventFilters).forEach(([key, value]) => {
       if (value) qs.set(key, value);
     });
     if (!qs.has('limit')) qs.set('limit', '20');
     return `/strategy-market/${id}/events?${qs.toString()}`;
-  }, [activeTab, eventFilters, id]);
+  }, [eventFilters, factoryMode, id]);
 
   const signalStatsQ = useApiQuery<SignalStatsResponse>(
     id && activeTab === 'tracking' ? `/strategy-market/${id}/signal-stats` : null,
@@ -78,65 +93,95 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     id && activeTab === 'tracking' ? `/strategy-market/${id}/signals?limit=50` : null,
   );
   const reviewReportQ = useApiQuery<ReviewReportResponse>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/review-report` : null,
+    id ? `/strategy-market/${id}/review-report` : null,
+    { enabled: factorySummaryMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
-  const eventsQ = useApiQuery<StrategyEventsResponse>(eventsPath);
+  const eventsQ = useApiQuery<StrategyEventsResponse>(eventsPath, {
+    enabled: factorySummaryMode,
+    staleTime: FACTORY_SECTION_STALE_TIME,
+    placeholderData: 'keepPrevious',
+  });
   const incubationQ = useApiQuery<IncubationOverviewResponse>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/incubation-overview` : null,
+    id ? `/strategy-market/${id}/incubation-overview` : null,
+    {
+      enabled: factorySummaryMode || factoryIncubationMode,
+      staleTime: FACTORY_SECTION_STALE_TIME,
+    },
   );
   const incubationMetricsQ = useApiQuery<ListResponse<IncubationMetric>>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/incubation-metrics?limit=12` : null,
+    id ? `/strategy-market/${id}/incubation-metrics?limit=12` : null,
+    { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const paperAccountQ = useApiQuery<PaperAccountResponse>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/paper-account?limit=20` : null,
+    id ? `/strategy-market/${id}/paper-account?limit=20` : null,
+    { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const paperOrdersQ = useApiQuery<ListResponse<PaperOrder>>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/paper-orders?limit=20` : null,
+    id ? `/strategy-market/${id}/paper-orders?limit=20` : null,
+    { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const paperNavQ = useApiQuery<ListResponse<PaperNav>>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/paper-nav?limit=20` : null,
+    id ? `/strategy-market/${id}/paper-nav?limit=20` : null,
+    { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const incubationPipelineQ = useApiQuery<ListResponse<IncubationPipelineSnapshot>>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/incubation-pipeline?limit=10` : null,
+    id ? `/strategy-market/${id}/incubation-pipeline?limit=10` : null,
+    { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const riskEventsQ = useApiQuery<ListResponse<RiskEvent>>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/risk-events?limit=20` : null,
+    id ? `/strategy-market/${id}/risk-events?limit=20` : null,
+    { enabled: factoryRuntimeMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const riskSnapshotsQ = useApiQuery<ListResponse<RuntimeRiskSnapshot>>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/risk-snapshots?limit=10` : null,
+    id ? `/strategy-market/${id}/risk-snapshots?limit=10` : null,
+    { enabled: factoryRuntimeMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const vectorProfilesQ = useApiQuery<ListResponse<VectorProfile>>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/vector-profiles?limit=10` : null,
+    id ? `/strategy-market/${id}/vector-profiles?limit=10` : null,
+    { enabled: factoryVectorMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const similarProfilesQ = useApiQuery<ListResponse<VectorProfile>>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/vector-ann-search?limit=10` : null,
+    id ? `/strategy-market/${id}/vector-ann-search?limit=10` : null,
+    { enabled: factoryVectorMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const vectorIndexSnapshotsQ = useApiQuery<ListResponse<VectorIndexSnapshot>>(
-    activeTab === 'factory' ? '/strategy-market/vector-indexes/snapshots?index_name=strategy_behavior&limit=10' : null,
+    '/strategy-market/vector-indexes/snapshots?index_name=strategy_behavior&limit=10',
+    { enabled: factoryVectorMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const aiExperimentsQ = useApiQuery<ListResponse<AiExperiment>>(
-    id && activeTab === 'factory' ? `/strategy-market/ai/experiments?strategy_id=${encodeURIComponent(id)}&limit=10` : null,
+    id ? `/strategy-market/ai/experiments?strategy_id=${encodeURIComponent(strategyIdParam)}&limit=10` : null,
+    { enabled: factoryExperimentMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const domainEventsQ = useApiQuery<ListResponse<DomainEvent>>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/domain-events?limit=20` : null,
+    id ? `/strategy-market/${id}/domain-events?limit=20` : null,
+    { enabled: factoryExperimentMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const taskRunsQ = useApiQuery<ListResponse<TaskRun>>(
-    id && activeTab === 'factory' ? `/strategy-market/task-runs?strategy_id=${encodeURIComponent(id)}&limit=10` : null,
+    id ? `/strategy-market/task-runs?strategy_id=${encodeURIComponent(strategyIdParam)}&limit=10` : null,
+    { enabled: factoryExperimentMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const runtimeControlQ = useApiQuery<RuntimeControl>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/runtime-control` : null,
+    id ? `/strategy-market/${id}/runtime-control` : null,
+    {
+      enabled: factorySummaryMode || factoryRuntimeMode,
+      staleTime: FACTORY_SECTION_STALE_TIME,
+    },
   );
   const runtimeAlertsQ = useApiQuery<ListResponse<RuntimeAlert>>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/runtime-alerts?limit=20` : null,
+    id ? `/strategy-market/${id}/runtime-alerts?limit=20` : null,
+    { enabled: factoryRuntimeMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const promotionReviewsQ = useApiQuery<ListResponse<PromotionReview>>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/promotion-reviews?limit=10` : null,
+    id ? `/strategy-market/${id}/promotion-reviews?limit=10` : null,
+    { enabled: factoryIncubationMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const domainProjectionQ = useApiQuery<DomainProjection>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/domain-projection?limit=100` : null,
+    id ? `/strategy-market/${id}/domain-projection?limit=100` : null,
+    { enabled: factorySummaryMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
   const projectionSnapshotQ = useApiQuery<ListResponse<ProjectionSnapshot>>(
-    id && activeTab === 'factory' ? `/strategy-market/${id}/domain-projection/snapshot?limit=20` : null,
+    id ? `/strategy-market/${id}/domain-projection/snapshot?limit=20` : null,
+    { enabled: factorySummaryMode, staleTime: FACTORY_SECTION_STALE_TIME },
   );
 
   const detail = useMemo(() => {
@@ -281,28 +326,37 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     );
   }
 
-  const factoryLoading =
-    reviewReportQ.isPending ||
-    eventsQ.isPending ||
-    incubationQ.isPending ||
-    incubationMetricsQ.isPending ||
-    paperAccountQ.isPending ||
-    paperOrdersQ.isPending ||
-    paperNavQ.isPending ||
-    incubationPipelineQ.isPending ||
-    riskEventsQ.isPending ||
-    riskSnapshotsQ.isPending ||
-    runtimeAlertsQ.isPending ||
-    vectorProfilesQ.isPending ||
-    similarProfilesQ.isPending ||
-    vectorIndexSnapshotsQ.isPending ||
-    aiExperimentsQ.isPending ||
-    domainEventsQ.isPending ||
-    taskRunsQ.isPending ||
-    runtimeControlQ.isPending ||
-    promotionReviewsQ.isPending ||
-    domainProjectionQ.isPending ||
-    projectionSnapshotQ.isPending;
+  const factorySectionLoading: Record<FactoryReviewSection, boolean> = {
+    summary:
+      reviewReportQ.isPending ||
+      eventsQ.isPending ||
+      incubationQ.isPending ||
+      runtimeControlQ.isPending ||
+      domainProjectionQ.isPending ||
+      projectionSnapshotQ.isPending,
+    incubation:
+      incubationQ.isPending ||
+      incubationMetricsQ.isPending ||
+      paperAccountQ.isPending ||
+      paperOrdersQ.isPending ||
+      paperNavQ.isPending ||
+      incubationPipelineQ.isPending ||
+      promotionReviewsQ.isPending,
+    runtime:
+      runtimeControlQ.isPending ||
+      riskEventsQ.isPending ||
+      riskSnapshotsQ.isPending ||
+      runtimeAlertsQ.isPending,
+    vectors:
+      vectorProfilesQ.isPending ||
+      similarProfilesQ.isPending ||
+      vectorIndexSnapshotsQ.isPending,
+    experiments:
+      aiExperimentsQ.isPending ||
+      domainEventsQ.isPending ||
+      taskRunsQ.isPending,
+  };
+  const factoryLoading = factorySectionLoading[activeFactorySection];
 
   return {
     detailLoading: detailQ.isPending,
@@ -373,6 +427,9 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       domainEvents,
       aiExperiments: aiExperimentsQ.data?.items ?? [],
       taskRuns,
+      activeSection: activeFactorySection,
+      onSectionChange: setActiveFactorySection,
+      sectionLoading: factorySectionLoading,
       eventFilters,
       onEventFilterChange: (key: keyof EventFilters, value: string) => {
         setEventFilters((prev) => ({ ...prev, [key]: value }));

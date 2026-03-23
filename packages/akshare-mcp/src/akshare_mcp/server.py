@@ -69,6 +69,7 @@ from .services.factor_scheduler import get_factor_scheduler
 from .services.matching_engine import get_matching_engine
 from .services.nav_engine import get_nav_engine
 from .services.signal_tracker import get_signal_tracker
+from .services import close_shared_runtime_clients
 from .storage import close_db
 
 
@@ -83,10 +84,6 @@ def _safe_shutdown_data_sync() -> None:
         logging.getLogger(__name__).warning(
             "[Server] data_sync shutdown failed", extra={"error": str(e)}
         )
-
-
-atexit.register(_safe_shutdown_data_sync)
-
 
 def _run_async_task_in_daemon_thread(coro_factory, name: str) -> threading.Thread:
     """Run an async task from the synchronous server bootstrap path."""
@@ -122,8 +119,21 @@ def _safe_shutdown_db() -> None:
             "[Server] db shutdown failed", extra={"error": str(e)}
         )
 
+def _safe_shutdown_services() -> None:
+    """按依赖顺序关闭后台服务，避免先关 DB 导致后续关闭失败。"""
+    _safe_shutdown_data_sync()
+    try:
+        asyncio.run(close_shared_runtime_clients())
+    except RuntimeError:
+        logging.getLogger(__name__).warning("[Server] skip shared client shutdown: event loop unavailable")
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "[Server] shared client shutdown failed", extra={"error": str(e)}
+        )
+    _safe_shutdown_db()
 
-atexit.register(_safe_shutdown_db)
+
+atexit.register(_safe_shutdown_services)
 
 
 # ===== FastMCP app =====

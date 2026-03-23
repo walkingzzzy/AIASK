@@ -2,11 +2,15 @@
 
 import json
 import logging
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import date, datetime, timedelta
+from typing import Any, Optional
 
 import numpy as np
 
+from ...services.db_first_market_context import (
+    load_db_first_document_context,
+    load_db_first_stock_fund_flow,
+)
 from ..fund_flow import get_north_fund, get_stock_fund_flow
 from ..news.news_feed import get_stock_news
 from ..news.notices import get_stock_notices
@@ -77,6 +81,196 @@ def _clip(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def _parse_date_value(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for parser in (
+        lambda item: date.fromisoformat(item[:10]),
+        lambda item: datetime.fromisoformat(item.replace("Z", "+00:00")).date(),
+    ):
+        try:
+            return parser(text)
+        except Exception:
+            continue
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) >= 8:
+        try:
+            return date.fromisoformat(f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}")
+        except Exception:
+            return None
+    return None
+
+
+def _sort_klines_ascending(klines: list[dict]) -> list[dict]:
+    rows = [dict(item) for item in list(klines or []) if isinstance(item, dict)]
+    return sorted(
+        rows,
+        key=lambda item: (
+            _parse_date_value(item.get("date")) or date.min,
+            str(item.get("date") or ""),
+        ),
+    )
+
+
+def _select_financial_snapshot(financials: Any, *, as_of_date: Optional[date] = None) -> dict[str, Any]:
+    rows = []
+    if isinstance(financials, dict):
+        rows = [dict(financials)]
+    elif isinstance(financials, list):
+        rows = [dict(item) for item in financials if isinstance(item, dict)]
+    if not rows:
+        return {}
+
+    if as_of_date is None:
+        return rows[0]
+
+    dated_rows = []
+    for row in rows:
+        report_date = _parse_date_value(row.get("report_date"))
+        if report_date is None:
+            continue
+        dated_rows.append((report_date, row))
+    dated_rows.sort(key=lambda item: item[0], reverse=True)
+    for report_date, row in dated_rows:
+        if report_date <= as_of_date:
+            return row
+    return {}
+
+
+async def _load_valuation_snapshot(
+    db,
+    code: str,
+    *,
+    as_of_date: Optional[date] = None,
+) -> dict[str, Any]:
+    normalized_code = str(code or "").strip()
+    if not normalized_code:
+        return {}
+
+    if as_of_date is not None and hasattr(db, "acquire"):
+        try:
+            async with db.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT time, pe, pb, mkt_cap, price
+                    FROM stock_quotes
+                    WHERE code = $1 AND time <= $2::date + INTERVAL '1 day'
+                    ORDER BY time DESC
+                    LIMIT 1
+                    """,
+                    normalized_code,
+                    as_of_date.isoformat(),
+                )
+            if row:
+                payload = dict(row)
+                return {
+                    "pe_ratio": _safe_float(payload.get("pe"), default=0.0),
+                    "pb_ratio": _safe_float(payload.get("pb"), default=0.0),
+                    "market_cap": _safe_float(payload.get("mkt_cap"), default=0.0),
+                    "price": _safe_float(payload.get("price"), default=0.0),
+                    "as_of_date": _parse_date_value(payload.get("time")),
+                }
+        except Exception:
+            return {}
+
+    if hasattr(db, "get_stock_info"):
+        try:
+            payload = await db.get_stock_info(normalized_code)
+            if isinstance(payload, dict):
+                return {
+                    "pe_ratio": _safe_float(payload.get("pe_ratio"), default=0.0),
+                    "pb_ratio": _safe_float(payload.get("pb_ratio"), default=0.0),
+                    "market_cap": _safe_float(payload.get("market_cap"), default=0.0),
+                    "price": _safe_float(payload.get("price"), default=0.0),
+                    "as_of_date": as_of_date,
+                }
+        except Exception:
+            return {}
+    return {}
+
+
+def _compute_scalar_factor_bundle(
+    closes: list[float],
+    *,
+    financial_snapshot: Optional[dict[str, Any]] = None,
+    valuation_snapshot: Optional[dict[str, Any]] = None,
+    factors: Optional[list[str]] = None,
+) -> dict[str, float]:
+    normalized_closes = [float(item) for item in list(closes or []) if item is not None]
+    requested = set(factors or [])
+    financial_snapshot = dict(financial_snapshot or {})
+    valuation_snapshot = dict(valuation_snapshot or {})
+    factor_values: dict[str, float] = {}
+
+    if "momentum" in requested:
+        m20 = (
+            (normalized_closes[-1] - normalized_closes[-20]) / normalized_closes[-20]
+            if len(normalized_closes) >= 20 and normalized_closes[-20]
+            else 0.0
+        )
+        m60 = (
+            (normalized_closes[-1] - normalized_closes[-60]) / normalized_closes[-60]
+            if len(normalized_closes) >= 60 and normalized_closes[-60]
+            else 0.0
+        )
+        factor_values["momentum"] = float((m20 + m60) / 2.0)
+
+    if "value" in requested:
+        pe = _safe_float(
+            valuation_snapshot.get("pe_ratio", financial_snapshot.get("pe_ratio")),
+            default=0.0,
+        )
+        pb = _safe_float(
+            valuation_snapshot.get("pb_ratio", financial_snapshot.get("pb_ratio")),
+            default=0.0,
+        )
+        components = []
+        if pe > 0:
+            components.append(1.0 / pe)
+        if pb > 0:
+            components.append(1.0 / pb)
+        factor_values["value"] = float(sum(components) / len(components)) if components else 0.0
+
+    if "quality" in requested:
+        roe = _safe_float(financial_snapshot.get("roe"), default=0.0)
+        roa = _safe_float(financial_snapshot.get("roa"), default=0.0)
+        gross_margin = _safe_float(financial_snapshot.get("gross_margin"), default=0.0)
+        debt_ratio = _safe_float(financial_snapshot.get("debt_ratio"), default=0.0)
+        factor_values["quality"] = float(
+            (roe / 30.0 if roe > 0 else 0.0) * 0.4
+            + (roa / 15.0 if roa > 0 else 0.0) * 0.3
+            + (gross_margin / 50.0 if gross_margin > 0 else 0.0) * 0.2
+            + ((1.0 - debt_ratio) if 0 <= debt_ratio < 1 else 0.0) * 0.1
+        )
+
+    if "growth" in requested:
+        revenue_growth = _safe_float(financial_snapshot.get("revenue_growth"), default=0.0)
+        profit_growth = _safe_float(financial_snapshot.get("profit_growth"), default=0.0)
+        factor_values["growth"] = float(
+            max(min((revenue_growth + profit_growth) / 200.0, 1.0), -1.0)
+        )
+
+    if "volatility" in requested:
+        prices = np.array(normalized_closes, dtype=float)
+        returns = np.diff(prices) / prices[:-1] if len(prices) > 1 else np.array([], dtype=float)
+        annual_vol = float(np.std(returns) * np.sqrt(252)) if len(returns) > 1 else 0.0
+        factor_values["volatility"] = float(1.0 / annual_vol) if annual_vol > 0 else 0.0
+
+    if "reversal" in requested:
+        factor_values["reversal"] = float(
+            -((normalized_closes[-1] - normalized_closes[-6]) / normalized_closes[-6])
+        ) if len(normalized_closes) >= 6 and normalized_closes[-6] else 0.0
+
+    return factor_values
+
+
 # ---------------------------------------------------------------------------
 # Sentiment scoring
 # ---------------------------------------------------------------------------
@@ -120,6 +314,17 @@ def _extract_news_items(payload: dict) -> list[dict]:
     return []
 
 
+def _sort_rows_by_trade_date_desc(rows: list[dict]) -> list[dict]:
+    return sorted(
+        [dict(item) for item in list(rows or []) if isinstance(item, dict)],
+        key=lambda item: (
+            _parse_date_value(item.get("trade_date")) or date.min,
+            str(item.get("trade_date") or ""),
+        ),
+        reverse=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Numpy helpers
 # ---------------------------------------------------------------------------
@@ -160,24 +365,71 @@ async def _compute_alternative_factors_for_code(
     end_date = datetime.now().date()
     start_date = end_date - timedelta(days=max(7, int(lookback_days)))
 
-    news_payload = get_stock_news(code, limit=max(5, int(limit)))
-    source_chain.append("tools.news.get_stock_news")
-    notice_payload = get_stock_notices(
-        start_date=start_date.isoformat(),
-        end_date=end_date.isoformat(),
-        stock_code=code,
-    )
-    source_chain.append("tools.news.get_stock_notices")
-    research_payload = get_research_reports(code, limit=max(5, int(limit)))
-    source_chain.append("tools.news.get_research_reports")
-    flow_payload = get_stock_fund_flow(code)
-    source_chain.append("tools.fund_flow.get_stock_fund_flow")
-    north_payload = get_north_fund(days=max(5, min(int(lookback_days), 30)))
-    source_chain.append("tools.fund_flow.get_north_fund")
+    db_context = {"news": [], "notices": [], "research": []}
+    try:
+        db_context, db_source_chain = await load_db_first_document_context(
+            db,
+            code,
+            start_date=start_date,
+            end_date=end_date,
+            news_limit=max(5, int(limit)),
+            notice_limit=max(5, int(limit)),
+            research_limit=max(5, int(limit)),
+        )
+        source_chain.extend(db_source_chain)
+    except Exception:
+        db_context = {"news": [], "notices": [], "research": []}
 
-    news_items = _extract_news_items(news_payload)
-    notice_items = _extract_news_items(notice_payload)
-    research_items = _extract_news_items(research_payload)
+    news_items = list(db_context.get("news") or [])
+    if not news_items:
+        news_payload = get_stock_news(code, limit=max(5, int(limit)))
+        source_chain.append("tools.news.get_stock_news")
+        news_items = _extract_news_items(news_payload)
+
+    notice_items = list(db_context.get("notices") or [])
+    if not notice_items:
+        notice_payload = get_stock_notices(
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            stock_code=code,
+        )
+        source_chain.append("tools.news.get_stock_notices")
+        notice_items = _extract_news_items(notice_payload)
+
+    research_items = list(db_context.get("research") or [])
+    if not research_items:
+        research_payload = get_research_reports(code, limit=max(5, int(limit)))
+        source_chain.append("tools.news.get_research_reports")
+        research_items = _extract_news_items(research_payload)
+
+    flow_data = {}
+    try:
+        flow_data, flow_source_chain = await load_db_first_stock_fund_flow(db, code)
+        source_chain.extend(flow_source_chain)
+    except Exception:
+        flow_data = {}
+    if not flow_data:
+        flow_payload = get_stock_fund_flow(code)
+        source_chain.append("tools.fund_flow.get_stock_fund_flow")
+        if isinstance(flow_payload, dict) and flow_payload.get("success") and isinstance(flow_payload.get("data"), dict):
+            flow_data = dict(flow_payload.get("data") or {})
+
+    north_rows = []
+    north_payload = None
+    north_days = max(5, min(int(lookback_days), 30))
+    try:
+        getter = getattr(db, "get_north_fund_history", None)
+        if callable(getter):
+            north_rows = await getter(days=north_days, end_date=end_date)
+            north_rows = _sort_rows_by_trade_date_desc(north_rows)
+            if north_rows:
+                source_chain.append("db.get_north_fund_history")
+    except Exception:
+        north_rows = []
+
+    if not north_rows:
+        north_payload = get_north_fund(days=north_days)
+        source_chain.append("tools.fund_flow.get_north_fund")
 
     headlines = []
     for item in news_items + notice_items + research_items:
@@ -199,8 +451,7 @@ async def _compute_alternative_factors_for_code(
     main_inflow = 0.0
     large_inflow = 0.0
     small_inflow = 0.0
-    if isinstance(flow_payload, dict) and flow_payload.get("success") and isinstance(flow_payload.get("data"), dict):
-        flow_data = flow_payload["data"]
+    if isinstance(flow_data, dict) and flow_data:
         main_inflow = _safe_float(flow_data.get("mainNetInflow"), 0.0)
         large_inflow = _safe_float(flow_data.get("largeNetInflow"), 0.0) + _safe_float(
             flow_data.get("superLargeNetInflow"), 0.0
@@ -212,12 +463,24 @@ async def _compute_alternative_factors_for_code(
     capital_behavior_raw = float(_clip(0.65 * capital_flow_raw + 0.35 * institutional_raw, -1.0, 1.0))
 
     north_flow_raw = 0.0
-    if isinstance(north_payload, dict) and north_payload.get("success") and isinstance(north_payload.get("data"), list):
+    north_totals: list[float] = []
+    if north_rows:
+        tail = north_rows[:5]
+        north_totals = [_safe_float(x.get("north_money"), 0.0) for x in tail]
+    elif isinstance(north_payload, dict) and north_payload.get("success") and isinstance(north_payload.get("data"), list):
         rows = [r for r in north_payload["data"] if isinstance(r, dict)]
         if rows:
+            rows = sorted(
+                rows,
+                key=lambda item: (
+                    _parse_date_value(item.get("date")) or date.min,
+                    str(item.get("date") or ""),
+                ),
+            )
             tail = rows[-5:]
-            totals = [_safe_float(x.get("total"), 0.0) for x in tail]
-            north_flow_raw = float(np.tanh((np.mean(totals) if totals else 0.0) / 1e9))
+            north_totals = [_safe_float(x.get("total"), 0.0) for x in tail]
+    if north_totals:
+        north_flow_raw = float(np.tanh((np.mean(north_totals) if north_totals else 0.0) / 1e9))
 
     composite_raw = float(
         _clip(

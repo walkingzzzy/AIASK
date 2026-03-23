@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+const protectedPrefixes = ['/admin', '/market', '/stock', '/fundamental', '/research', '/alerts', '/strategy', '/risk', '/user', '/settings', '/assistant', '/fund-flow', '/factor', '/valuation', '/technical', '/sentiment', '/search', '/data', '/chat', '/paper-trading', '/portfolio', '/watchlist', '/notifications'] as const;
+const authPagePaths = ['/login', '/register'] as const;
+const matcher = [...protectedPrefixes.map((prefix) => `${prefix}/:path*`), ...authPagePaths];
+
 function hasSessionToken(request: NextRequest) {
   return request.cookies.get('logged_in')?.value === '1';
 }
 
-const protectedPrefixes = ['/admin', '/market', '/stock', '/fundamental', '/research', '/alerts', '/strategy', '/risk', '/user', '/settings', '/assistant', '/fund-flow', '/factor', '/valuation', '/technical', '/sentiment', '/search', '/data', '/chat', '/paper-trading', '/portfolio', '/watchlist', '/notifications'];
+function matchesPrefix(pathname: string, prefix: string) {
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
 
 function resolveRedirectTarget(request: NextRequest) {
   const raw = request.nextUrl.searchParams.get('redirect');
@@ -20,7 +26,7 @@ export function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const hasSession = hasSessionToken(request);
 
-  if (protectedPrefixes.some((prefix) => pathname.startsWith(prefix)) && !hasSession) {
+  if (protectedPrefixes.some((prefix) => matchesPrefix(pathname, prefix)) && !hasSession) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = '/login';
     loginUrl.search = '';
@@ -52,5 +58,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/admin/:path*', '/market/:path*', '/stock/:path*', '/fundamental/:path*', '/research/:path*', '/alerts/:path*', '/strategy/:path*', '/risk/:path*', '/user/:path*', '/settings/:path*', '/assistant/:path*', '/fund-flow/:path*', '/factor/:path*', '/valuation/:path*', '/technical/:path*', '/sentiment/:path*', '/search/:path*', '/data/:path*', '/chat/:path*', '/paper-trading/:path*', '/portfolio/:path*', '/watchlist/:path*', '/notifications/:path*', '/login', '/register'],
+  matcher,
 };

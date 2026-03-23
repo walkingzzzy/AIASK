@@ -165,11 +165,14 @@ def test_repo_local_skill_registry_is_fully_executable(monkeypatch):
 
     skills = skills_mod._enrich_skills(skills_mod._load_skills())
     summary = skills_mod._build_skill_registry_summary(skills)
+    skill_ids = {skill["id"] for skill in skills}
 
-    assert len(skills) == 20
+    assert len(skills) == 19
     assert all(skill["executable"] for skill in skills)
-    assert summary["total_count"] == 20
-    assert summary["executable_count"] == 20
+    assert "akshare-factor-mining" in skill_ids
+    assert "akshare-strategy-factory" in skill_ids
+    assert summary["total_count"] == 19
+    assert summary["executable_count"] == 19
     assert summary["registered_only_count"] == 0
     assert summary["executor_coverage_ratio"] == 1.0
     assert summary["execution_gap"] == []

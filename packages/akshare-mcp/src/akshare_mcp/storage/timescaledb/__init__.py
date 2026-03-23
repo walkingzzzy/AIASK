@@ -23,6 +23,7 @@ from .kline import KlineMixin
 from .stock_info import StockInfoMixin
 from .financials import FinancialsMixin
 from .quotes import QuotesMixin
+from .market_context import MarketContextMixin
 from .artifacts import ArtifactMixin
 from .strategy import StrategyMixin
 from .factor_storage import FactorStorageMixin
@@ -37,6 +38,7 @@ class TimescaleDBAdapter(
     StockInfoMixin,
     FinancialsMixin,
     QuotesMixin,
+    MarketContextMixin,
     ArtifactMixin,
     StrategyMixin,
     FactorStorageMixin,
@@ -64,16 +66,45 @@ _db_instance: Optional[TimescaleDBAdapter] = None
 _shutdown_registered = False
 
 
+def _force_terminate_instance(instance: Optional[TimescaleDBAdapter], *, reason: str) -> None:
+    if instance is None:
+        return
+    terminate = getattr(instance, '_force_terminate_pool', None)
+    if callable(terminate):
+        try:
+            terminate(reason=reason)
+        except Exception as exc:
+            logger.warning("[storage] force terminate failed: %s", exc)
+    reset = getattr(instance, '_reset_pool_state', None)
+    if callable(reset):
+        try:
+            reset()
+        except Exception as exc:
+            logger.warning("[storage] reset pool state failed: %s", exc)
+
+
+async def _flush_cleanup_callbacks() -> None:
+    """让底层 HTTP/DB transport 在 loop 结束前完成关闭回调。"""
+    await asyncio.sleep(0)
+    await asyncio.sleep(0.01)
+
+
 def _safe_shutdown_db_atexit() -> None:
     """独立脚本退出时尽力关闭数据库连接池。"""
-    if _db_instance is None:
+    global _db_instance
+    instance = _db_instance
+    if instance is None:
         return
     try:
         asyncio.run(close_db())
     except RuntimeError:
         logger.warning("[storage] skip db shutdown: event loop unavailable")
+        _force_terminate_instance(instance, reason="atexit runtime loop unavailable")
+        _db_instance = None
     except Exception as exc:
         logger.warning("[storage] db shutdown failed: %s", exc)
+        _force_terminate_instance(instance, reason=f"atexit close failure: {exc}")
+        _db_instance = None
 
 
 def _ensure_shutdown_hook_registered() -> None:
@@ -102,18 +133,36 @@ async def close_db() -> None:
     global _db_instance
     if _db_instance is None:
         return
+    instance = _db_instance
+    _db_instance = None
     try:
-        await _db_instance.close()
-    finally:
-        _db_instance = None
+        await asyncio.shield(instance.close())
+    except Exception:
+        raise
 
 
 async def await_with_db_cleanup(awaitable: Awaitable[T]) -> T:
-    """在当前事件循环中运行 awaitable，并在结束前显式关闭 DB。"""
+    """在当前事件循环中运行 awaitable，并在结束前显式关闭共享资源。"""
     try:
         return await awaitable
     finally:
-        await close_db()
+        try:
+            from ...services import close_shared_runtime_clients
+        except Exception:
+            close_shared_runtime_clients = None
+        if callable(close_shared_runtime_clients):
+            try:
+                await asyncio.shield(close_shared_runtime_clients())
+            except Exception as exc:
+                logger.warning("[storage] shared runtime client shutdown failed: %s", exc)
+        try:
+            await asyncio.shield(close_db())
+        except Exception as exc:
+            logger.warning("[storage] db shutdown failed during cleanup: %s", exc)
+        try:
+            await asyncio.shield(_flush_cleanup_callbacks())
+        except Exception as exc:
+            logger.warning("[storage] cleanup callback drain failed: %s", exc)
 
 
 def run_with_db_cleanup(awaitable: Awaitable[T]) -> T:

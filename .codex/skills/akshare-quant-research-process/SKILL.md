@@ -6,6 +6,8 @@ description: 量化研究流程编排：数据→信号→组合→回测→执�
 > 校准说明：本 skill 用于定义量化研究的推荐门禁与阶段顺序，不代表文中列出的每个阶段在当前环境都已有完全自动化、同口径且稳定通过的执行链路。
 >
 > 实际研究能力应以当次运行时注册结果、数据质量、成本参数披露、回测契约与测试产物为准；若某阶段缺少数据、工具或验证证据，应明确标注“未通过/待补证据”，而不是默认视为完成。
+>
+> “因子挖掘”当前主要落在 `quant_manager` 的候选生成/验证/研究记忆能力，以及 `packages/strategy-factory/src/strategy_factory/application/factor_research.py` 的研究 artifact 组装；它尚未被抽象成独立 repo-local skill。
 
 
 # 目标

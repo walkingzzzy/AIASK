@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from akshare_mcp.services.strategy_generators import RuleStrategyGenerator
 from akshare_mcp.services.strategy_autonomy import StrategySpec
 from akshare_mcp.services.strategy_autonomy_components import (
     CandidateGenerationService,
@@ -41,6 +42,24 @@ async def test_candidate_generation_service_merges_and_deduplicates_specs():
     assert [spec.strategy_type for spec in merged_specs] == ["momentum", "value_factor", "quality_factor"]
     assert all(spec.metadata["research_task"]["task_id"] == "task_autonomy" for spec in merged_specs)
     assert result["llm_report"]["external_provider"]["status"] == "succeeded"
+
+
+def test_rule_strategy_generator_prefers_task_requested_types_before_global_defaults():
+    generator = RuleStrategyGenerator()
+
+    specs = generator.generate(
+        {
+            "fear_greed_index": 52,
+            "factor_research": {
+                "preferred_strategy_types": ["rsi", "value_factor"],
+                "summary": {"top_factor_names": ["reversal"]},
+            },
+        },
+        limit=2,
+        preferred_types=["momentum", "ma_cross"],
+    )
+
+    assert [spec.strategy_type for spec in specs] == ["momentum", "ma_cross"]
 
 
 def test_committee_review_service_attaches_rank_and_lineage():

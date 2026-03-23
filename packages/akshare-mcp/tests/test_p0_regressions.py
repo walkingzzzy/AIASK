@@ -1074,7 +1074,8 @@ async def test_p0_10_search_similar_stocks_should_fallback_to_market_candidates(
     assert data['candidate_scope'] == 'market'
     assert data['total_candidates'] == 1
     assert data['similar_stocks'][0]['code'] == '000001'
-    assert len(conn.calls) == 2
+    assert any('WHERE industry = $1' in query for query in conn.calls)
+    assert any('WHERE code != $1' in query for query in conn.calls)
 
 
 @pytest.mark.asyncio

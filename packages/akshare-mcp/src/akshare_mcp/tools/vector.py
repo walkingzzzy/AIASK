@@ -1,6 +1,8 @@
 """向量搜索工具 - 基于特征相似度的实现"""
 
-from typing import Optional, List, Dict
+import asyncio
+from collections import defaultdict
+from typing import Optional, List, Dict, Any
 from ..storage import get_db
 from ..services.factor_calculator import factor_calculator
 from ..services import technical_analysis
@@ -26,6 +28,317 @@ def _semantic_is_special_treatment(name: str) -> bool:
 def _semantic_is_concept_industry(industry: str) -> bool:
     text = str(industry or '').strip().lower()
     return any(hint in text for hint in _SEMANTIC_CONCEPT_HINTS)
+
+
+def _normalize_stock_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(row or {})
+    code = str(payload.get('code') or payload.get('stock_code') or '').strip()
+    return {
+        'code': code,
+        'stock_name': payload.get('stock_name') or payload.get('name') or '',
+        'industry': payload.get('industry') or payload.get('sector') or '',
+        'pe_ratio': payload.get('pe_ratio'),
+        'pb_ratio': payload.get('pb_ratio'),
+        'market_cap': payload.get('market_cap'),
+    }
+
+
+async def _load_candidate_stock_rows(db, target_code: str, target_industry: str, limit: int = 100) -> tuple[str, List[Dict[str, Any]]]:
+    candidate_scope = 'industry' if target_industry else 'market'
+
+    if hasattr(db, 'list_stock_universe'):
+        try:
+            rows: List[Dict[str, Any]] = []
+            if target_industry:
+                rows = [_normalize_stock_row(row) for row in await db.list_stock_universe(limit=limit, industry=target_industry)]
+                rows = [row for row in rows if row['code'] and row['code'] != target_code]
+            if not rows:
+                candidate_scope = 'market'
+                rows = [_normalize_stock_row(row) for row in await db.list_stock_universe(limit=limit)]
+                rows = [row for row in rows if row['code'] and row['code'] != target_code]
+            if rows:
+                return candidate_scope, rows[:limit]
+        except Exception:
+            pass
+
+    if not hasattr(db, 'acquire'):
+        return candidate_scope, []
+
+    async with db.acquire() as conn:
+        rows = []
+        if target_industry:
+            rows = await conn.fetch(
+                """SELECT code, stock_name, industry, pe_ratio, pb_ratio, market_cap FROM stocks
+                   WHERE industry = $1 AND code != $2
+                   LIMIT 100""",
+                target_industry, target_code
+            )
+        if not rows:
+            candidate_scope = 'market'
+            rows = await conn.fetch(
+                """SELECT code, stock_name, industry, pe_ratio, pb_ratio, market_cap FROM stocks
+                   WHERE code != $1
+                   LIMIT 100""",
+                target_code
+            )
+        return candidate_scope, [_normalize_stock_row(dict(row)) for row in rows]
+
+
+async def _fetch_table_columns(conn, table_name: str) -> set[str]:
+    try:
+        rows = await conn.fetch(
+            """SELECT column_name FROM information_schema.columns
+               WHERE table_schema = 'public' AND table_name = $1""",
+            table_name,
+        )
+        names = set()
+        for row in rows:
+            payload = dict(row)
+            name = str(payload.get('column_name') or '').strip()
+            if name:
+                names.add(name)
+        return names
+    except Exception:
+        return set()
+
+
+async def _fetch_latest_financial_map(conn, codes: List[str]) -> Dict[str, Dict[str, Any]]:
+    if not codes:
+        return {}
+    try:
+        cols = await _fetch_table_columns(conn, 'financials')
+        code_col = 'stock_code' if 'stock_code' in cols else 'code'
+        rows = await conn.fetch(
+            f"""
+            SELECT DISTINCT ON ({code_col})
+                   {code_col} AS code,
+                   roe,
+                   debt_ratio,
+                   revenue_growth
+            FROM financials
+            WHERE {code_col} = ANY($1::text[])
+            ORDER BY {code_col}, report_date DESC
+            """,
+            list(dict.fromkeys(codes)),
+        )
+    except Exception:
+        return {}
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        payload = dict(row)
+        code = str(payload.get('code') or '').strip()
+        if not code:
+            continue
+        result[code] = payload
+    return result
+
+
+async def _fetch_kline_batch(conn, codes: List[str], limit: int) -> Dict[str, List[Dict[str, Any]]]:
+    if not codes or limit <= 0:
+        return {}
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT code, time, open, high, low, close, volume, amount, turnover, change_pct
+            FROM (
+                SELECT
+                    code, time, open, high, low, close, volume, amount, turnover, change_pct,
+                    ROW_NUMBER() OVER (PARTITION BY code ORDER BY time DESC) AS rn
+                FROM kline_1d
+                WHERE code = ANY($1::text[])
+            ) ranked
+            WHERE rn <= $2
+            ORDER BY code, time ASC
+            """,
+            list(dict.fromkeys(codes)),
+            int(limit),
+        )
+    except Exception:
+        return {}
+
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        payload = dict(row)
+        code = str(payload.get('code') or '').strip()
+        time_value = payload.get('time')
+        if not code or time_value is None:
+            continue
+        grouped[code].append({
+            'date': time_value.strftime('%Y-%m-%d') if hasattr(time_value, 'strftime') else str(time_value),
+            'code': code,
+            'open': float(payload['open']) if payload.get('open') is not None else None,
+            'high': float(payload['high']) if payload.get('high') is not None else None,
+            'low': float(payload['low']) if payload.get('low') is not None else None,
+            'close': float(payload['close']) if payload.get('close') is not None else None,
+            'volume': int(payload['volume']) if payload.get('volume') is not None else 0,
+            'amount': float(payload['amount']) if payload.get('amount') is not None else None,
+            'turnover': float(payload['turnover']) if payload.get('turnover') is not None else None,
+            'change_pct': float(payload['change_pct']) if payload.get('change_pct') is not None else None,
+            'source': 'timescaledb',
+        })
+    return grouped
+
+
+async def _prefetch_candidate_context(
+    db,
+    candidate_rows: List[Dict[str, Any]],
+    *,
+    need_financials: bool,
+    need_klines: bool,
+    kline_limit: int,
+) -> tuple[Dict[str, Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
+    candidate_codes = [str(row.get('code') or '').strip() for row in candidate_rows if str(row.get('code') or '').strip()]
+    financial_map: Dict[str, Dict[str, Any]] = {}
+    kline_map: Dict[str, List[Dict[str, Any]]] = {}
+
+    if hasattr(db, 'acquire') and candidate_codes and (need_financials or need_klines):
+        try:
+            async with db.acquire() as conn:
+                if need_financials:
+                    financial_map = await _fetch_latest_financial_map(conn, candidate_codes)
+                if need_klines:
+                    kline_map = await _fetch_kline_batch(conn, candidate_codes, kline_limit)
+        except Exception:
+            financial_map = {}
+            kline_map = {}
+
+    if need_financials:
+        missing_financial_codes = [code for code in candidate_codes if code not in financial_map]
+        if missing_financial_codes:
+            async def _load_financial(code: str):
+                try:
+                    rows = await db.get_financials(code, limit=1)
+                    return code, (rows[0] if rows else None)
+                except Exception:
+                    return code, None
+
+            for code, payload in await asyncio.gather(*[_load_financial(code) for code in missing_financial_codes]):
+                if payload:
+                    financial_map[code] = dict(payload)
+
+    if need_klines:
+        missing_kline_codes = [code for code in candidate_codes if code not in kline_map]
+        if missing_kline_codes:
+            async def _load_klines(code: str):
+                try:
+                    rows = await db.get_klines(code, limit=kline_limit)
+                    return code, rows if rows and len(rows) >= min(20, kline_limit) else None
+                except Exception:
+                    return code, None
+
+            for code, payload in await asyncio.gather(*[_load_klines(code) for code in missing_kline_codes]):
+                if payload:
+                    kline_map[code] = payload
+
+    return financial_map, kline_map
+
+
+async def _fill_missing_candidate_stock_info(db, candidate_rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    missing_codes = [
+        str(row.get('code') or '').strip()
+        for row in candidate_rows
+        if str(row.get('code') or '').strip() and (row.get('pe_ratio') is None or row.get('pb_ratio') is None or not row.get('industry'))
+    ]
+    if not missing_codes:
+        return {}
+
+    async def _load(code: str):
+        try:
+            return code, (await db.get_stock_info(code) or {})
+        except Exception:
+            return code, {}
+
+    filled: Dict[str, Dict[str, Any]] = {}
+    for code, payload in await asyncio.gather(*[_load(code) for code in list(dict.fromkeys(missing_codes))]):
+        if payload:
+            filled[code] = dict(payload)
+    return filled
+
+
+def _extract_technical_features(klines: List[Dict[str, Any]]) -> Dict[str, float]:
+    if not klines or len(klines) < 20:
+        return {}
+    closes = [float(k['close']) for k in klines if k.get('close') is not None]
+    if len(closes) < 20:
+        return {}
+    recent_closes = closes[-20:]
+    features: Dict[str, float] = {
+        'momentum': factor_calculator.calculate_momentum(recent_closes),
+        'volatility': factor_calculator.calculate_volatility(recent_closes),
+    }
+    ma20 = technical_analysis.calculate_sma(closes, 20)
+    if ma20 and len(ma20) > 0 and ma20[-1]:
+        features['trend'] = (closes[-1] - ma20[-1]) / ma20[-1]
+    return features
+
+
+def _build_target_features(
+    target_info: Dict[str, Any],
+    financial_row: Optional[Dict[str, Any]],
+    target_klines: Optional[List[Dict[str, Any]]],
+    similarity_type: str,
+) -> Dict[str, float]:
+    target_features: Dict[str, float] = {}
+    if similarity_type in ['fundamental', 'both']:
+        if financial_row:
+            target_features['roe'] = financial_row.get('roe', 0)
+            target_features['debt_ratio'] = financial_row.get('debt_ratio', 0)
+            target_features['revenue_growth'] = financial_row.get('revenue_growth', 0)
+        target_features['pe'] = target_info.get('pe_ratio', 0)
+        target_features['pb'] = target_info.get('pb_ratio', 0)
+    if similarity_type in ['technical', 'both']:
+        target_features.update(_extract_technical_features(target_klines or []))
+    return target_features
+
+
+def _build_candidate_features(
+    candidate_row: Dict[str, Any],
+    filled_info: Optional[Dict[str, Any]],
+    financial_row: Optional[Dict[str, Any]],
+    klines: Optional[List[Dict[str, Any]]],
+    similarity_type: str,
+) -> Dict[str, float]:
+    features: Dict[str, float] = {}
+    info = dict(candidate_row or {})
+    info.update({k: v for k, v in dict(filled_info or {}).items() if v is not None})
+    if similarity_type in ['fundamental', 'both']:
+        if financial_row:
+            features['roe'] = financial_row.get('roe', 0)
+            features['debt_ratio'] = financial_row.get('debt_ratio', 0)
+            features['revenue_growth'] = financial_row.get('revenue_growth', 0)
+        features['pe'] = info.get('pe_ratio', 0)
+        features['pb'] = info.get('pb_ratio', 0)
+    if similarity_type in ['technical', 'both']:
+        features.update(_extract_technical_features(klines or []))
+    return features
+
+
+def _compute_feature_scales(target_features: Dict[str, float], candidate_payloads: List[Dict[str, Any]]) -> Dict[str, float]:
+    scales: Dict[str, float] = {}
+    feature_names = set(target_features.keys())
+    for payload in candidate_payloads:
+        feature_names.update(dict(payload.get('features') or {}).keys())
+
+    for feature in feature_names:
+        values = []
+        if feature in target_features:
+            values.append(float(target_features[feature] or 0))
+        for payload in candidate_payloads:
+            features = dict(payload.get('features') or {})
+            if feature in features:
+                values.append(float(features[feature] or 0))
+        if not values:
+            continue
+        try:
+            scale = statistics.pstdev(values) if len(values) > 1 else 0.0
+        except statistics.StatisticsError:
+            scale = 0.0
+        if scale <= 1e-9:
+            span = max(values) - min(values) if len(values) > 1 else 0.0
+            scale = span if span > 1e-9 else max(max(abs(value) for value in values), 1.0)
+        scales[feature] = float(scale or 1.0)
+    return scales
 
 
 def register(mcp):
@@ -56,142 +369,92 @@ def register(mcp):
             target_industry = target_info.get('industry', '')
             
             # 2. 获取目标股票特征
-            target_features = {}
-            
-            # 基本面特征
+            target_financial_row = None
+            target_klines = None
             if similarity_type in ['fundamental', 'both']:
                 try:
                     financials = await db.get_financials(code, limit=1)
-                    if financials and len(financials) > 0:
-                        latest = financials[0]
-                        target_features['roe'] = latest.get('roe', 0)
-                        target_features['debt_ratio'] = latest.get('debt_ratio', 0)
-                        target_features['revenue_growth'] = latest.get('revenue_growth', 0)
-                except:
+                    if financials:
+                        target_financial_row = financials[0]
+                except Exception:
                     pass
-                
-                target_features['pe'] = target_info.get('pe_ratio', 0)
-                target_features['pb'] = target_info.get('pb_ratio', 0)
-            
-            # 技术面特征
             if similarity_type in ['technical', 'both']:
                 try:
-                    klines = await db.get_klines(code, limit=60)
-                    if klines and len(klines) >= 20:
-                        closes = [k['close'] for k in klines]
-                        
-                        # 动量
-                        target_features['momentum'] = factor_calculator.calculate_momentum(closes[:20])
-                        # 波动率
-                        target_features['volatility'] = factor_calculator.calculate_volatility(closes[:20])
-                        # 趋势
-                        ma20 = technical_analysis.calculate_sma(closes, 20)
-                        if ma20 and len(ma20) > 0:
-                            target_features['trend'] = (closes[0] - ma20[-1]) / ma20[-1]
-                except:
-                    pass
+                    target_klines = await db.get_klines(code, limit=60)
+                except Exception:
+                    target_klines = None
+
+            target_features = _build_target_features(
+                dict(target_info or {}),
+                target_financial_row,
+                target_klines,
+                similarity_type,
+            )
             
             if not target_features:
                 return fail('Cannot extract features from target stock')
             
             # 3. 查找候选股票：优先同行业，无同行或行业为空时回退全市场样本
-            candidate_scope = 'industry' if target_industry else 'market'
-            async with db.acquire() as conn:
-                rows = []
-                if target_industry:
-                    rows = await conn.fetch(
-                        """SELECT code, stock_name FROM stocks
-                           WHERE industry = $1 AND code != $2
-                           LIMIT 100""",
-                        target_industry, code
-                    )
-                if not rows:
-                    candidate_scope = 'market'
-                    rows = await conn.fetch(
-                        """SELECT code, stock_name FROM stocks
-                           WHERE code != $1
-                           LIMIT 100""",
-                        code
-                    )
-                candidate_codes = [row['code'] for row in rows]
-                candidate_names = {row['code']: row['stock_name'] for row in rows}
+            candidate_scope, candidate_rows = await _load_candidate_stock_rows(db, code, target_industry, limit=100)
+            candidate_rows = candidate_rows[:50]
+            candidate_codes = [row['code'] for row in candidate_rows if row.get('code')]
+            candidate_names = {row['code']: row.get('stock_name', '') for row in candidate_rows if row.get('code')}
             
             if not candidate_codes:
                 return fail('No candidate stocks found')
+
+            filled_stock_info = await _fill_missing_candidate_stock_info(db, candidate_rows)
+            financial_map, kline_map = await _prefetch_candidate_context(
+                db,
+                candidate_rows,
+                need_financials=similarity_type in ['fundamental', 'both'],
+                need_klines=similarity_type in ['technical', 'both'],
+                kline_limit=60,
+            )
             
             # 4. 计算相似度
-            similarities = []
-            
-            for candidate_code in candidate_codes[:50]:  # 限制计算数量
-                try:
-                    candidate_features = {}
-                    
-                    # 基本面特征
-                    if similarity_type in ['fundamental', 'both']:
-                        candidate_info = await db.get_stock_info(candidate_code)
-                        if not candidate_info:
-                            continue
-                        
-                        try:
-                            financials = await db.get_financials(candidate_code, limit=1)
-                            if financials and len(financials) > 0:
-                                latest = financials[0]
-                                candidate_features['roe'] = latest.get('roe', 0)
-                                candidate_features['debt_ratio'] = latest.get('debt_ratio', 0)
-                                candidate_features['revenue_growth'] = latest.get('revenue_growth', 0)
-                        except:
-                            pass
-                        
-                        candidate_features['pe'] = candidate_info.get('pe_ratio', 0)
-                        candidate_features['pb'] = candidate_info.get('pb_ratio', 0)
-                    
-                    # 技术面特征
-                    if similarity_type in ['technical', 'both']:
-                        try:
-                            klines = await db.get_klines(candidate_code, limit=60)
-                            if klines and len(klines) >= 20:
-                                closes = [k['close'] for k in klines]
-                                candidate_features['momentum'] = factor_calculator.calculate_momentum(closes[:20])
-                                candidate_features['volatility'] = factor_calculator.calculate_volatility(closes[:20])
-                                ma20 = technical_analysis.calculate_sma(closes, 20)
-                                if ma20 and len(ma20) > 0:
-                                    candidate_features['trend'] = (closes[0] - ma20[-1]) / ma20[-1]
-                        except:
-                            pass
-                    
-                    if not candidate_features:
-                        continue
-                    
-                    # 计算欧氏距离相似度
-                    common_features = set(target_features.keys()) & set(candidate_features.keys())
-                    if not common_features:
-                        continue
-                    
-                    distances = []
-                    for feature in common_features:
-                        target_val = target_features[feature]
-                        candidate_val = candidate_features[feature]
-                        
-                        # 归一化处理
-                        if feature in ['pe', 'pb']:
-                            if target_val > 0 and candidate_val > 0:
-                                distances.append(abs(target_val - candidate_val) / max(target_val, candidate_val))
-                        elif feature in ['roe', 'debt_ratio', 'revenue_growth', 'momentum', 'volatility', 'trend']:
-                            distances.append(abs(target_val - candidate_val))
-                    
-                    if distances:
-                        avg_distance = statistics.mean(distances)
-                        similarity = 1 / (1 + avg_distance)  # 转换为相似度
-                        
-                        similarities.append({
-                            'code': candidate_code,
-                            'name': candidate_names.get(candidate_code, ''),
-                            'similarity': round(similarity, 4),
-                            'features': candidate_features
-                        })
-                
-                except Exception as e:
+            candidate_payloads = []
+            for candidate_row in candidate_rows:
+                candidate_code = str(candidate_row.get('code') or '').strip()
+                if not candidate_code:
                     continue
+                candidate_features = _build_candidate_features(
+                    candidate_row,
+                    filled_stock_info.get(candidate_code),
+                    financial_map.get(candidate_code),
+                    kline_map.get(candidate_code),
+                    similarity_type,
+                )
+                if not candidate_features:
+                    continue
+                candidate_payloads.append({
+                    'code': candidate_code,
+                    'name': candidate_names.get(candidate_code, ''),
+                    'features': candidate_features,
+                })
+
+            feature_scales = _compute_feature_scales(target_features, candidate_payloads)
+            similarities = []
+            for payload in candidate_payloads:
+                candidate_features = dict(payload.get('features') or {})
+                common_features = set(target_features.keys()) & set(candidate_features.keys())
+                if not common_features:
+                    continue
+                distances = [
+                    abs(float(target_features[feature] or 0) - float(candidate_features[feature] or 0))
+                    / max(float(feature_scales.get(feature) or 1.0), 1e-6)
+                    for feature in common_features
+                ]
+                if not distances:
+                    continue
+                avg_distance = statistics.mean(distances)
+                similarity = 1 / (1 + avg_distance)
+                similarities.append({
+                    'code': payload['code'],
+                    'name': payload['name'],
+                    'similarity': round(similarity, 4),
+                    'features': candidate_features,
+                })
             
             # 5. 排序并返回
             similarities.sort(key=lambda x: x['similarity'], reverse=True)
@@ -203,7 +466,7 @@ def register(mcp):
                 'candidate_scope': candidate_scope,
                 'similar_stocks': similarities[:top_n],
                 'similarity_type': similarity_type,
-                'total_candidates': len(candidate_codes),
+                'total_candidates': len(candidate_rows),
                 'calculated': len(similarities)
             })
         
@@ -241,35 +504,25 @@ def register(mcp):
             target_industry = target_info.get('industry', '') if target_info else ''
 
             # 3. 查找候选股票
-            async with db.acquire() as conn:
-                if target_industry:
-                    rows = await conn.fetch(
-                        """SELECT code, stock_name FROM stocks
-                           WHERE industry = $1 AND code != $2
-                           LIMIT 100""",
-                        target_industry, code
-                    )
-                else:
-                    rows = await conn.fetch(
-                        """SELECT code, stock_name FROM stocks
-                           WHERE code != $1
-                           LIMIT 100""",
-                        code
-                    )
-
-            candidates = {row['code']: row['stock_name'] for row in rows}
+            _, candidate_rows = await _load_candidate_stock_rows(db, code, target_industry, limit=100)
+            candidate_rows = candidate_rows[:50]
+            candidates = {row['code']: row.get('stock_name', '') for row in candidate_rows if row.get('code')}
             if not candidates:
                 return fail('No candidate stocks found')
 
             # 4. 获取候选K线并执行向量检索
-            candidate_klines_dict: Dict[str, List[Dict]] = {}
-            for candidate_code in list(candidates.keys())[:50]:
-                try:
-                    candidate_klines = await db.get_klines(candidate_code, limit=days)
-                    if candidate_klines and len(candidate_klines) >= days:
-                        candidate_klines_dict[candidate_code] = candidate_klines
-                except Exception:
-                    continue
+            _, candidate_klines_dict = await _prefetch_candidate_context(
+                db,
+                candidate_rows,
+                need_financials=False,
+                need_klines=True,
+                kline_limit=days,
+            )
+            candidate_klines_dict = {
+                candidate_code: rows
+                for candidate_code, rows in candidate_klines_dict.items()
+                if rows and len(rows) >= days
+            }
 
             if not candidate_klines_dict:
                 return fail('No candidate kline data available')

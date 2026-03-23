@@ -37,11 +37,24 @@ let counter = 0;
 const uid = () => `msg_${Date.now()}_${++counter}`;
 const conversationOf = (messages: ChatMsg[], id = 'default'): ChatConversation => ({ id, title: '当前会话', updatedAt: new Date().toISOString(), messages });
 let syncTimer: number | null = null;
+const CHAT_SYNC_INTERVAL_KEY = '__aiaskChatSyncInterval';
 
 function scheduleSync() {
   if (typeof window === 'undefined') return;
   if (syncTimer) window.clearTimeout(syncTimer);
   syncTimer = window.setTimeout(() => { void useChatStore.getState().pushToServer(); }, 2000);
+}
+
+function ensureBackgroundSync() {
+  if (typeof window === 'undefined') return;
+  const globalWindow = window as unknown as Window & Record<string, number | undefined>;
+  const existing = globalWindow[CHAT_SYNC_INTERVAL_KEY];
+  if (typeof existing === 'number') {
+    window.clearInterval(existing);
+  }
+  globalWindow[CHAT_SYNC_INTERVAL_KEY] = window.setInterval(() => {
+    void useChatStore.getState().pushToServer();
+  }, 300000);
 }
 
 export const useChatStore = create<ChatState>()(persist((set, get) => ({
@@ -61,7 +74,7 @@ export const useChatStore = create<ChatState>()(persist((set, get) => ({
     const conversations = Array.from(mergedMap.values()).filter((item) => item.messages.length > 0 || item.id === 'default');
     const current = conversations[0] ?? conversationOf([], 'default');
     set({ conversations, currentConversationId: current.id, messages: current.messages, syncReady: true });
-    window.setInterval(() => { void get().pushToServer(); }, 300000);
+    ensureBackgroundSync();
   },
 
   pushToServer: async () => {

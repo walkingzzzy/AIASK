@@ -183,10 +183,8 @@ export class AuthController {
   }
 
   private extractBearer(authorization?: string): string | undefined {
-    if (!authorization) return undefined;
-    const [scheme, token] = authorization.split(' ');
-    if (!scheme || !token || scheme.toLowerCase() !== 'bearer') return undefined;
-    return token;
+    const { extractBearer } = require('./extract-bearer');
+    return extractBearer(authorization);
   }
 
   private currentUserId(req: { user?: { id?: string; sub?: string } }) {

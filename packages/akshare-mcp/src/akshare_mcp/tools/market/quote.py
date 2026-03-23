@@ -1,8 +1,8 @@
 """实时行情模块"""
 
 import asyncio
-import time
 import requests
+from datetime import datetime
 from typing import Optional
 from ..market.helpers import (
     normalize_code, safe_float, safe_int, pick_value, parse_numeric,
@@ -28,6 +28,14 @@ except ImportError:
 import pandas as pd
 
 
+def _current_data_timestamp() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _log_quote_source_error(stage: str, code: str, err: Exception) -> None:
+    safe_stderr_print(f"[quote] {stage} failed for {code}: {err}")
+
+
 def _get_daily_snapshot(code: str) -> dict[str, Optional[float]]:
     """获取日K快照（用于补充 open/high/low/prev_close）
 
@@ -45,15 +53,15 @@ def _get_daily_snapshot(code: str) -> dict[str, Optional[float]]:
                 "low": safe_float(row.get("low")),
                 "prev_close": prev_close,
             }
-    except Exception:
-        pass
+    except Exception as e:
+        _log_quote_source_error("daily snapshot datasource", code, e)
 
     # 2. 降级 AkShare
     if ak is None:
         return {}
     try:
         df = _run_with_retry(
-            lambda: ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq"),
+            lambda: ak.stock_zh_a_hist(symbol=code, period="daily", adjust=""),
             _QUOTE_TIMEOUTS,
         )
         if df is None or df.empty:
@@ -66,7 +74,8 @@ def _get_daily_snapshot(code: str) -> dict[str, Optional[float]]:
             "low": safe_float(row.get("最低")),
             "prev_close": prev_close,
         }
-    except Exception:
+    except Exception as e:
+        _log_quote_source_error("daily snapshot akshare", code, e)
         return {}
 
 
@@ -175,6 +184,24 @@ def _quote_missing_fields(payload: dict) -> list[str]:
     )
 
 
+def _backfill_prev_close(payload: dict, code: str) -> dict:
+    if not isinstance(payload, dict) or payload.get("preClose"):
+        return payload
+    try:
+        snap = _get_daily_snapshot(code)
+        prev_close = snap.get("prev_close")
+        if prev_close is None:
+            return payload
+        payload["preClose"] = prev_close
+        if payload.get("change") is None:
+            change, change_pct = _calc_change(safe_float(payload.get("price")), prev_close)
+            payload["change"] = change
+            payload["changePercent"] = change_pct
+    except Exception as e:
+        _log_quote_source_error("prev_close backfill", code, e)
+    return payload
+
+
 def _ok_quote_response(
     payload: dict,
     *,
@@ -190,7 +217,7 @@ def _ok_quote_response(
         data["source_chain"] = source_chain
         data["fallback_used"] = len(source_chain) > 1 or (source_chain and source_chain[0] != "data_source")
         data["fallback_reason"] = fallback_reason
-        data["data_timestamp"] = time.strftime("%Y-%m-%d")
+        data["data_timestamp"] = payload.get("data_timestamp") or _current_data_timestamp()
         _save_quote_nonblocking(data)
     response.update(
         build_quality_meta(
@@ -259,8 +286,8 @@ def _get_minute_quote(code: str) -> dict:
                         "amount": day_amount,
                         "time": str(last_row.get("date", ""))[:19],
                     }
-    except Exception:
-        pass
+    except Exception as e:
+        _log_quote_source_error("minute quote datasource", code, e)
 
     # 2. 降级 AkShare
     if ak is None:
@@ -326,8 +353,8 @@ def _get_daily_quote(code: str, name: str) -> Optional[dict]:
                     "amount": safe_float(row.get("amount")),
                     "fallback": "daily_kline",
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        _log_quote_source_error("daily quote datasource", code, e)
 
     # 2. 降级 AkShare
     if ak is None:
@@ -358,7 +385,8 @@ def _get_daily_quote(code: str, name: str) -> Optional[dict]:
             "amount": safe_float(row.get("成交额")),
             "fallback": "daily_kline",
         }
-    except Exception:
+    except Exception as e:
+        _log_quote_source_error("daily quote akshare", code, e)
         return None
 
 
@@ -469,7 +497,8 @@ def _get_quote_tencent(code: str) -> Optional[dict]:
         high = safe_float(parts[33])
         low = safe_float(parts[34])
         volume = safe_int(parts[6])
-        amount = safe_float(parts[37]) * 10000
+        amount_raw = safe_float(parts[37])
+        amount = amount_raw * 10000 if amount_raw is not None else None
 
         change = None
         change_pct = None
@@ -487,7 +516,7 @@ def _get_quote_tencent(code: str) -> Optional[dict]:
             "high": high,
             "low": low,
             "preClose": pre_close,
-            "volume": volume * 100,
+            "volume": volume * 100 if volume is not None else None,
             "amount": amount,
             "source": f"tencent_{transport}",
         }
@@ -620,18 +649,8 @@ def get_realtime_quote(stock_code: str) -> dict:
             res = data_source.get_realtime_quote(code)
             if res:
                 validated = _as_plain_quote(validate_quote(res))
-                if isinstance(validated, dict) and not validated.get("preClose"):
-                    try:
-                        snap = _get_daily_snapshot(code)
-                        pc = snap.get("prev_close")
-                        if pc:
-                            validated["preClose"] = pc
-                            price = validated.get("price")
-                            if price is not None and validated.get("change") is None:
-                                validated["change"] = price - pc
-                                validated["changePercent"] = (price - pc) / pc * 100
-                    except Exception:
-                        pass
+                if isinstance(validated, dict):
+                    validated = _backfill_prev_close(validated, code)
                 return _ok_quote_response(validated, attempted_sources=attempted_sources, source_chain=["data_source"])
         except Exception as e:
             fallback_reason_parts.append(f"data_source失败: {e}")
@@ -647,18 +666,8 @@ def get_realtime_quote(stock_code: str) -> dict:
             res = None
         if res:
             validated = _as_plain_quote(validate_quote(res))
-            if isinstance(validated, dict) and not validated.get("preClose"):
-                try:
-                    snap = _get_daily_snapshot(code)
-                    pc = snap.get("prev_close")
-                    if pc:
-                        validated["preClose"] = pc
-                        price = validated.get("price")
-                        if price is not None and validated.get("change") is None:
-                            validated["change"] = price - pc
-                            validated["changePercent"] = (price - pc) / pc * 100
-                except Exception:
-                    pass
+            if isinstance(validated, dict):
+                validated = _backfill_prev_close(validated, code)
             return _ok_quote_response(
                 validated,
                 attempted_sources=attempted_sources,
@@ -672,18 +681,8 @@ def get_realtime_quote(stock_code: str) -> dict:
         res = _get_quote_sina(code)
         if res:
             validated = _as_plain_quote(validate_quote(res))
-            if isinstance(validated, dict) and not validated.get("preClose"):
-                try:
-                    snap = _get_daily_snapshot(code)
-                    pc = snap.get("prev_close")
-                    if pc:
-                        validated["preClose"] = pc
-                        price = validated.get("price")
-                        if price is not None and validated.get("change") is None:
-                            validated["change"] = price - pc
-                            validated["changePercent"] = (price - pc) / pc * 100
-                except Exception:
-                    pass
+            if isinstance(validated, dict):
+                validated = _backfill_prev_close(validated, code)
             return _ok_quote_response(
                 validated,
                 attempted_sources=attempted_sources,
@@ -697,18 +696,8 @@ def get_realtime_quote(stock_code: str) -> dict:
         res = _get_quote_tencent(code)
         if res:
             validated = _as_plain_quote(validate_quote(res))
-            if isinstance(validated, dict) and not validated.get("preClose"):
-                try:
-                    snap = _get_daily_snapshot(code)
-                    pc = snap.get("prev_close")
-                    if pc:
-                        validated["preClose"] = pc
-                        price = validated.get("price")
-                        if price is not None and validated.get("change") is None:
-                            validated["change"] = price - pc
-                            validated["changePercent"] = (price - pc) / pc * 100
-                except Exception:
-                    pass
+            if isinstance(validated, dict):
+                validated = _backfill_prev_close(validated, code)
             return _ok_quote_response(
                 validated,
                 attempted_sources=attempted_sources,
@@ -784,8 +773,8 @@ def get_batch_quotes(stock_codes: list[str]) -> dict:
                         fallback["name"] = name_map.get(code, "")
                     quotes.append(fallback)
                     continue
-            except Exception:
-                pass
+            except Exception as e:
+                _log_quote_source_error("batch quote datasource", code, e)
 
             # 以下为 akshare/其他降级路径，需要 name 时再拉取 name_map
             if name_map is None:
@@ -813,13 +802,14 @@ def get_batch_quotes(stock_codes: list[str]) -> dict:
                         }
                     )
                     continue
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log_quote_source_error("batch minute quote", code, e)
 
             if spot_df is None:
                 try:
                     spot_df, spot_cached = _get_spot_indexed()
-                except Exception:
+                except Exception as e:
+                    _log_quote_source_error("batch spot snapshot", code, e)
                     spot_df = None
                     spot_unavailable = True
 
@@ -861,7 +851,8 @@ def get_batch_quotes(stock_codes: list[str]) -> dict:
             if not spot_unavailable:
                 try:
                     daily = _get_daily_quote(code, name)
-                except Exception:
+                except Exception as e:
+                    _log_quote_source_error("batch daily quote", code, e)
                     daily = None
             if daily is not None:
                 quotes.append(daily)
@@ -968,8 +959,8 @@ def get_index_quote(index_code: str) -> dict:
                         if code in df_sina.index:
                             df = df_sina
                             cached = False
-            except Exception:
-                pass
+            except Exception as e:
+                safe_stderr_print(f"[quote] index sina fallback failed for {code}: {e}")
             if code not in df.index:
                 return fail(f"未找到指数 {code}")
 
@@ -1030,8 +1021,8 @@ def get_index_quote(index_code: str) -> dict:
                                 },
                                 cached=False,
                             )
-            except Exception:
-                pass
+            except Exception as e:
+                safe_stderr_print(f"[quote] tushare index daily fallback failed for {index_code}: {e}")
             return ok(
                 {
                     "code": index_code,

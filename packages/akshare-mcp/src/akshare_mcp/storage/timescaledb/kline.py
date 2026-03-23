@@ -55,7 +55,7 @@ class KlineMixin:
                     params.append(end_date_obj)
                     param_idx += 1
 
-            query += " ORDER BY time DESC"
+            query += " ORDER BY time ASC"
 
             if limit:
                 query += f" LIMIT ${param_idx}"
@@ -144,9 +144,17 @@ class KlineMixin:
                 parsed_date = _parse_date(k.get('date'))
                 if parsed_date is None:
                     continue
+                code = k.get('code')
+                open_ = k.get('open')
+                high = k.get('high')
+                low = k.get('low')
+                close = k.get('close')
+                volume = k.get('volume')
+                if code is None or open_ is None or high is None or low is None or close is None or volume is None:
+                    continue
                 rows.append((
-                    parsed_date, k['code'], k['open'], k['high'], k['low'], k['close'],
-                    k['volume'], k.get('amount'), k.get('turnover'), k.get('change_pct')
+                    parsed_date, code, open_, high, low, close,
+                    volume, k.get('amount'), k.get('turnover'), k.get('change_pct')
                 ))
 
             if rows:

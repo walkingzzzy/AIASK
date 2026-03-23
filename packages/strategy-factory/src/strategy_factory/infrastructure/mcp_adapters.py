@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 from typing import Any, Mapping, Optional
+from unittest.mock import AsyncMock, Mock
 
 from ..api.contracts import (
     AutonomyGateway,
@@ -17,6 +19,12 @@ from ..api.contracts import (
 from ..application.panels import _run_risk_report, _run_validation_report
 
 
+async def _maybe_await(result: Any):
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
 class MCPStrategyFactoryRepositoryAdapter:
     """Thin wrapper that exposes the current aggregate db surface as a typed repository."""
 
@@ -27,44 +35,52 @@ class MCPStrategyFactoryRepositoryAdapter:
     def raw(self) -> Any:
         return self._db
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._db, name)
+    def acquire(self):
+        acquire = getattr(self._db, "acquire", None)
+        if not callable(acquire):
+            raise AttributeError(f"{type(self._db).__name__} does not expose acquire()")
+        return acquire()
+
+    async def _call(self, method_name: str, *args: Any, **kwargs: Any):
+        method = getattr(self._db, method_name)
+        result = method(*args, **kwargs)
+        return await _maybe_await(result)
 
     async def get_klines(self, code: str, limit: int = 500):
-        return await self._db.get_klines(code, limit=limit)
+        return await self._call("get_klines", code, limit=limit)
 
     async def get_limit_up_stats(self):
-        return await self._db.get_limit_up_stats()
+        return await self._call("get_limit_up_stats")
 
     async def get_factor_ic_history(self, factor_name: str, horizon: str, limit: int):
-        return await self._db.get_factor_ic_history(factor_name, horizon, limit)
+        return await self._call("get_factor_ic_history", factor_name, horizon, limit)
 
     async def count_strategies_by_type(self, status: str):
-        return await self._db.count_strategies_by_type(status)
+        return await self._call("count_strategies_by_type", status)
 
     async def save_daily_snapshot(self, snapshot_date: Any, snapshot: Mapping[str, Any]):
-        return await self._db.save_daily_snapshot(snapshot_date, snapshot)
+        return await self._call("save_daily_snapshot", snapshot_date, snapshot)
 
     async def list_strategies(self, status: str, limit: int = 500):
-        return await self._db.list_strategies(status, limit=limit)
+        return await self._call("list_strategies", status, limit=limit)
 
     async def get_strategy(self, strategy_id: str):
-        return await self._db.get_strategy(strategy_id)
+        return await self._call("get_strategy", strategy_id)
 
     async def get_strategy_metrics(self, strategy_id: str):
-        return await self._db.get_strategy_metrics(strategy_id)
+        return await self._call("get_strategy_metrics", strategy_id)
 
     async def get_signal_stats(self, strategy_id: str):
-        return await self._db.get_signal_stats(strategy_id)
+        return await self._call("get_signal_stats", strategy_id)
 
     async def save_strategy(self, data: Mapping[str, Any]):
-        return await self._db.save_strategy(data)
+        return await self._call("save_strategy", data)
 
     async def save_strategy_quality_report(self, strategy_id: str, report_type: str, report: Mapping[str, Any]):
-        return await self._db.save_strategy_quality_report(strategy_id, report_type, report)
+        return await self._call("save_strategy_quality_report", strategy_id, report_type, report)
 
     async def update_strategy_status(self, strategy_id: str, status: str, **kwargs: Any):
-        return await self._db.update_strategy_status(strategy_id, status, **kwargs)
+        return await self._call("update_strategy_status", strategy_id, status, **kwargs)
 
     async def save_strategy_lineage(
         self,
@@ -73,40 +89,46 @@ class MCPStrategyFactoryRepositoryAdapter:
         reason: str,
         snapshot: Mapping[str, Any],
     ):
-        return await self._db.save_strategy_lineage(strategy_id, parent_strategy_id, reason, snapshot)
+        return await self._call("save_strategy_lineage", strategy_id, parent_strategy_id, reason, snapshot)
 
     async def save_strategy_metrics(self, strategy_id: str, period: str, payload: Mapping[str, Any]):
-        return await self._db.save_strategy_metrics(strategy_id, period, payload)
+        return await self._call("save_strategy_metrics", strategy_id, period, payload)
 
     async def save_elimination_log(self, strategy_id: str, log_date: Any, red_flags: list[str], reason: str):
-        return await self._db.save_elimination_log(strategy_id, log_date, red_flags, reason)
+        return await self._call("save_elimination_log", strategy_id, log_date, red_flags, reason)
 
     async def get_strategy_generation_experiment(self, experiment_id: str):
-        return await self._db.get_strategy_generation_experiment(experiment_id)
+        return await self._call("get_strategy_generation_experiment", experiment_id)
 
     async def save_strategy_generation_experiment(self, payload: Mapping[str, Any]):
-        return await self._db.save_strategy_generation_experiment(payload)
+        return await self._call("save_strategy_generation_experiment", payload)
 
     async def save_factory_task_evidence(self, payload: Mapping[str, Any]):
-        return await self._db.save_factory_task_evidence(payload)
+        return await self._call("save_factory_task_evidence", payload)
 
     async def save_strategy_task_run(self, payload: Mapping[str, Any]):
-        return await self._db.save_strategy_task_run(payload)
+        return await self._call("save_strategy_task_run", payload)
 
     async def update_strategy_task_run(self, task_run_id: Any, **kwargs: Any):
-        return await self._db.update_strategy_task_run(task_run_id, **kwargs)
+        return await self._call("update_strategy_task_run", task_run_id, **kwargs)
 
     async def list_stock_universe(self, limit: int = 200, offset: int = 0):
-        return await self._db.list_stock_universe(limit=limit, offset=offset)
+        return await self._call("list_stock_universe", limit=limit, offset=offset)
 
     async def list_factory_event_clusters(self, status: Optional[str] = None, limit: int = 200):
-        return await self._db.list_factory_event_clusters(status=status, limit=limit)
+        return await self._call("list_factory_event_clusters", status=status, limit=limit)
 
     async def save_factory_theme_definition(self, payload: Mapping[str, Any]):
-        return await self._db.save_factory_theme_definition(payload)
+        return await self._call("save_factory_theme_definition", payload)
 
     async def save_strategy_factory_run(self, results: Mapping[str, Any]):
-        return await self._db.save_strategy_factory_run(results)
+        return await self._call("save_strategy_factory_run", results)
+
+    async def get_strategy_incubation_account(self, strategy_id: str):
+        return await self._call("get_strategy_incubation_account", strategy_id)
+
+    async def save_strategy_incubation_account(self, strategy_id: str, account_id: str, **kwargs: Any):
+        return await self._call("save_strategy_incubation_account", strategy_id, account_id, **kwargs)
 
 
 class MCPVectorSearchGatewayImpl:
@@ -166,6 +188,36 @@ class MCPAutonomyGatewayImpl:
     def raw(self) -> Any:
         return self._service
 
+    @staticmethod
+    def _filter_supported_kwargs(method: Any, kwargs: Mapping[str, Any]) -> dict[str, Any]:
+        if not kwargs:
+            return {}
+        try:
+            signature = inspect.signature(method)
+        except (TypeError, ValueError):
+            return dict(kwargs)
+        if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()):
+            return dict(kwargs)
+        allowed = {
+            name
+            for name, parameter in signature.parameters.items()
+            if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        }
+        return {key: value for key, value in kwargs.items() if key in allowed}
+
+    @staticmethod
+    def _has_concrete_repository_method(db: Any, method_name: str) -> bool:
+        method = getattr(db, method_name, None)
+        if method is None:
+            return False
+        if isinstance(method, Mock) and not isinstance(method, AsyncMock):
+            return False
+        return True
+
+    def _requires_repository_task_persistence(self) -> bool:
+        module_name = str(type(self._service).__module__ or "")
+        return module_name.startswith("akshare_mcp.services.strategy_autonomy")
+
     async def generate_factory_candidates(
         self,
         db: StrategyFactoryRepository,
@@ -175,27 +227,29 @@ class MCPAutonomyGatewayImpl:
         research_task: Optional[Mapping[str, Any]] = None,
         source: str = "",
     ):
+        db = adapt_repository(db)
+        if self._requires_repository_task_persistence():
+            raw_db = getattr(db, "raw", db)
+            required_methods = ("save_strategy_task_run", "update_strategy_task_run")
+            missing_methods = [name for name in required_methods if not self._has_concrete_repository_method(raw_db, name)]
+            if missing_methods:
+                raise TypeError(
+                    "autonomy repository is missing concrete persistence methods: "
+                    + ", ".join(missing_methods)
+                )
         method = self._service.generate_factory_candidates
-        call_variants = [
-            {"limit": limit, "research_task": research_task, "source": source},
-            {"limit": limit, "research_task": research_task},
-            {"limit": limit, "source": source},
-            {"limit": limit},
-            {},
-        ]
-        last_exc: Exception | None = None
-        for kwargs in call_variants:
-            try:
-                result = method(db, snapshot, **kwargs)
-                if hasattr(result, "__await__"):
-                    return await result
-                return result
-            except TypeError as exc:
-                last_exc = exc
-                continue
-        if last_exc is not None:
-            raise last_exc
-        return await method(db, snapshot)
+        kwargs = self._filter_supported_kwargs(
+            method,
+            {
+                "limit": limit,
+                "research_task": research_task,
+                "source": source,
+            },
+        )
+        result = method(db, snapshot, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
 
 class MCPFactorResearchGatewayImpl:
@@ -222,18 +276,25 @@ class MCPFactorResearchGatewayImpl:
         return self._builder
 
     async def build_artifact(self, db: StrategyFactoryRepository, snapshot: Mapping[str, Any]):
+        db = adapt_repository(db)
         builder = self._builder
         if builder is None:
             return {}
         build = getattr(builder, "build", None)
         if callable(build):
-            return await build(db, dict(snapshot or {}))
+            return await _maybe_await(build(db, dict(snapshot or {})))
         if callable(builder):
-            return await builder(db, dict(snapshot or {}))
+            return await _maybe_await(builder(db, dict(snapshot or {})))
         return {}
 
     def status(self):
         return self._scheduler.status()
+
+    async def refresh(self):
+        refresh = getattr(self._scheduler, "run_once", None)
+        if not callable(refresh):
+            return {}
+        return await _maybe_await(refresh())
 
 
 class MCPIncubationGatewayImpl:
@@ -267,12 +328,13 @@ class MCPIncubationGatewayImpl:
         source_run_id: Optional[Any] = None,
         stage: str = "warmup",
     ):
-        return await self._incubation_service.ensure_account(
+        db = adapt_repository(db)
+        return await _maybe_await(self._incubation_service.ensure_account(
             db,
             strategy,
             source_run_id=source_run_id,
             stage=stage,
-        )
+        ))
 
     async def run_pipeline(
         self,
@@ -282,12 +344,13 @@ class MCPIncubationGatewayImpl:
         source: str = "strategy_factory_submit",
         auto_apply_review: bool = False,
     ):
-        return await self._pipeline_service.run_strategy(
+        db = adapt_repository(db)
+        return await _maybe_await(self._pipeline_service.run_strategy(
             db,
             strategy,
             source=source,
             auto_apply_review=auto_apply_review,
-        )
+        ))
 
     async def submit(
         self,
@@ -299,6 +362,7 @@ class MCPIncubationGatewayImpl:
         auto_apply_review: bool = False,
         stage: str = "warmup",
     ):
+        db = adapt_repository(db)
         binding = await self.ensure_account(db, strategy, source_run_id=source_run_id, stage=stage)
         pipeline = await self.run_pipeline(
             db,
@@ -320,7 +384,7 @@ class MCPValidationGatewayImpl:
         return self._runner
 
     async def run_validation_report(self, strategy_type: str, params: Mapping[str, Any], db: Any):
-        return await self._runner(strategy_type, dict(params or {}), db)
+        return await _maybe_await(self._runner(strategy_type, dict(params or {}), db))
 
 
 class MCPRiskGatewayImpl:
@@ -334,7 +398,7 @@ class MCPRiskGatewayImpl:
         return self._runner
 
     async def run_risk_report(self, strategy_type: str, params: Mapping[str, Any], db: Any):
-        return await self._runner(strategy_type, dict(params or {}), db)
+        return await _maybe_await(self._runner(strategy_type, dict(params or {}), db))
 
 
 @dataclass(frozen=True)

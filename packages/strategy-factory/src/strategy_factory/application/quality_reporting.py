@@ -77,6 +77,16 @@ def is_factory_ai_prototype_strategy(strategy: Optional[dict]) -> bool:
     return strategy_type == "dsl_rule"
 
 
+def is_factory_provisional_candidate(strategy: Optional[dict]) -> bool:
+    payload = dict(strategy or {})
+    tags = {str(tag).strip().lower() for tag in list(payload.get("tags") or [])}
+    if "factory" not in tags and "auto_generated" not in tags:
+        return False
+    if is_provisional_technical_strategy(payload):
+        return True
+    return is_factory_ai_prototype_strategy(payload)
+
+
 def is_provisional_technical_strategy(strategy: Optional[dict]) -> bool:
     payload = dict(strategy or {})
     strategy_type = str(payload.get("strategy_type") or "").strip().lower()
@@ -212,7 +222,7 @@ def maybe_grant_provisional_incubation(
     gate = normalize_quality_gate_result(quality_gate)
     if gate.get("passed"):
         return gate
-    if not is_factory_ai_prototype_strategy(strategy):
+    if not is_factory_provisional_candidate(strategy):
         return gate
     if not has_only_statistical_gate_failures(gate):
         return gate
@@ -305,16 +315,24 @@ def build_quality_report(
     review_source: str,
     report_type: str,
     spawn_reason: Optional[str] = None,
+    submission_audit: Optional[dict] = None,
 ) -> dict:
     normalized_gate = normalize_quality_gate_result(quality_gate)
     validation = dict(validation_report or {})
     rating = validation.get("rating") or {}
+    dedup = dict(dedup_report or {})
+    backtest = dict(backtest_metrics or {})
+    audit = dict(submission_audit or {})
     summary = {
         "strategy_id": strategy_id,
         "strategy_type": strategy_type,
         "status_after_review": status_after_review,
         "validation_grade": rating.get("grade"),
         "review_source": review_source,
+        "primary_validation_layer": normalized_gate.get("primary_validation_layer"),
+        "refresh_mode": audit.get("refresh_mode") or dedup.get("refresh_mode"),
+        "source_candidate_artifact_id": dict(audit.get("candidate_provenance") or {}).get("source_candidate_artifact_id"),
+        "candidate_family": dict(audit.get("candidate_provenance") or {}).get("candidate_family"),
     }
     if spawn_reason:
         summary["spawn_reason"] = spawn_reason
@@ -325,7 +343,44 @@ def build_quality_report(
         "quality_gate": normalized_gate,
         "validation_report": validation,
         "risk_report": dict(risk_report or {}),
-        "dedup_report": dict(dedup_report or {}),
-        "backtest_metrics": dict(backtest_metrics or {}),
+        "dedup_report": dedup,
+        "backtest_metrics": backtest,
+        "constraint_check": dict(backtest.get("constraint_check") or {}),
+        "validation_profile": {
+            "profile": normalized_gate.get("profile"),
+            "validation_focus": normalized_gate.get("validation_focus"),
+            "primary_validation_layer": normalized_gate.get("primary_validation_layer"),
+        },
+        "event_window_config": dict(backtest.get("event_window_config") or {}),
+        "position_assumption": backtest.get("position_assumption"),
+        "cost_assumptions": dict(backtest.get("cost_assumptions") or {}),
+        "explicit_cost_breakdown": dict(backtest.get("explicit_cost_breakdown") or {}),
+        "implicit_cost_breakdown": dict(backtest.get("implicit_cost_breakdown") or {}),
+        "tradability_summary": dict(backtest.get("tradability_summary") or {}),
+        "capacity_summary": dict(backtest.get("capacity_summary") or {}),
+        "implementation_shortfall_model_source": backtest.get("implementation_shortfall_model_source"),
+        "implementation_shortfall_components": dict(backtest.get("implementation_shortfall_components") or {}),
+        "backtest_assumptions": dict(backtest.get("backtest_assumptions") or {}),
+        "attempt_adjustment": dict(normalized_gate.get("attempt_adjustment") or {}),
+        "run_correction": {
+            "mode": normalized_gate.get("run_correction_mode"),
+            "raw_sharpe_proxy": normalized_gate.get("raw_sharpe_proxy"),
+            "deflated_sharpe_proxy": normalized_gate.get("deflated_sharpe_proxy"),
+            "pbo_proxy": normalized_gate.get("pbo_proxy"),
+            "reality_check_pvalue_proxy": normalized_gate.get("reality_check_pvalue_proxy"),
+            "spa_pvalue_proxy": normalized_gate.get("spa_pvalue_proxy"),
+            "multiple_testing_mode": normalized_gate.get("multiple_testing_mode"),
+            "deflated_sharpe_ratio": normalized_gate.get("deflated_sharpe_ratio"),
+            "deflated_sharpe_reference_sharpe": normalized_gate.get("deflated_sharpe_reference_sharpe"),
+            "deflated_sharpe_effective_trials": normalized_gate.get("deflated_sharpe_effective_trials"),
+            "pbo": normalized_gate.get("pbo"),
+            "white_reality_check_pvalue": normalized_gate.get("white_reality_check_pvalue"),
+            "hansen_spa_pvalue": normalized_gate.get("hansen_spa_pvalue"),
+            "multiple_testing": dict(normalized_gate.get("multiple_testing") or {}),
+        },
+        "task_signature": audit.get("task_signature"),
+        "refresh_mode": audit.get("refresh_mode") or dedup.get("refresh_mode"),
+        "task_preference": dict(audit.get("task_preference") or {}),
+        "candidate_provenance": dict(audit.get("candidate_provenance") or {}),
         "snapshot": dict(snapshot or {}),
     }

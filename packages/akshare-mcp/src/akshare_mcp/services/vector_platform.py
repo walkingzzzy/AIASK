@@ -124,6 +124,10 @@ class StrategyVectorPlatform:
         return resolved
 
     @staticmethod
+    def _text_embedding_fallback_method() -> str:
+        return 'price_volume'
+
+    @staticmethod
     def _signature(strategy: dict, profile_type: str, vector_method: str) -> str:
         payload = {
             'strategy_id': strategy.get('id'),
@@ -134,6 +138,12 @@ class StrategyVectorPlatform:
         }
         raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
         return hashlib.sha1(raw.encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def _as_float_array(values: Any) -> np.ndarray:
+        if values is None:
+            return np.asarray([], dtype=np.float64)
+        return np.asarray(values, dtype=np.float64)
 
     @staticmethod
     def _returns_to_pseudo_klines(series: np.ndarray) -> List[dict]:
@@ -153,7 +163,7 @@ class StrategyVectorPlatform:
 
     @staticmethod
     def _normalize_embedding(values: Any) -> np.ndarray:
-        vector = np.asarray(values or [], dtype=np.float64)
+        vector = StrategyVectorPlatform._as_float_array(values)
         if vector.ndim != 1 or len(vector) == 0:
             return np.asarray([], dtype=np.float64)
         norm = float(np.linalg.norm(vector))
@@ -207,7 +217,7 @@ class StrategyVectorPlatform:
         index_name: str,
         index_version: str,
     ) -> str:
-        series = np.asarray(panels.get('strategy_returns') or [], dtype=np.float64)
+        series = self._as_float_array(panels.get('strategy_returns'))
         holdings = list(panels.get('holdings') or [])
         params_text = json.dumps(strategy.get('params') or {}, ensure_ascii=False, sort_keys=True)
         latest = series[-20:] if len(series) >= 20 else series
@@ -219,8 +229,8 @@ class StrategyVectorPlatform:
         recent_60 = float(np.prod(1.0 + series[-60:]) - 1.0) if len(series) >= 60 else float(np.prod(1.0 + series) - 1.0) if len(series) else 0.0
         positive_ratio = float(np.mean(series > 0)) if len(series) else 0.0
         drawdown = self._max_drawdown(series)
-        factor_panel = np.asarray(panels.get('factor_panel') or [], dtype=np.float64)
-        return_panel = np.asarray(panels.get('return_panel') or [], dtype=np.float64)
+        factor_panel = self._as_float_array(panels.get('factor_panel'))
+        return_panel = self._as_float_array(panels.get('return_panel'))
         factor_shape = f'{factor_panel.shape[0]}x{factor_panel.shape[1]}' if factor_panel.ndim == 2 else '0x0'
         return_shape = f'{return_panel.shape[0]}x{return_panel.shape[1]}' if return_panel.ndim == 2 else '0x0'
         return "\n".join([
@@ -255,10 +265,10 @@ class StrategyVectorPlatform:
         profile_type: str,
         index_name: str,
         index_version: str,
-    ) -> tuple[np.ndarray, dict]:
+    ) -> tuple[np.ndarray, dict, str]:
         series = panels.get('strategy_returns')
         if series is None or len(series) < 30:
-            return np.asarray([], dtype=np.float64), {}
+            return np.asarray([], dtype=np.float64), {}, vector_method
         if vector_method == 'text_embedding':
             document = self._build_text_embedding_document(
                 strategy,
@@ -267,8 +277,7 @@ class StrategyVectorPlatform:
                 index_name=index_name,
                 index_version=index_version,
             )
-            embedding = np.asarray(await self.text_embedding_service.embed_text(document), dtype=np.float64)
-            return embedding, {
+            text_meta = {
                 'embedding_source': 'strategy_text_profile',
                 'embedding_provider': getattr(getattr(self.text_embedding_service, 'config', None), 'provider', 'openai_compatible'),
                 'embedding_model': getattr(getattr(self.text_embedding_service, 'config', None), 'model', None),
@@ -277,12 +286,45 @@ class StrategyVectorPlatform:
                 'sample_length': int(len(series)),
                 'pattern_length': int(min(len(series), 60)),
             }
+            try:
+                embedding = np.asarray(await self.text_embedding_service.embed_text(document), dtype=np.float64)
+                return embedding, {
+                    **text_meta,
+                    'requested_vector_method': 'text_embedding',
+                    'resolved_vector_method': 'text_embedding',
+                    'fallback_used': False,
+                    'fallback_reason': None,
+                }, 'text_embedding'
+            except Exception as exc:
+                fallback_method = self._text_embedding_fallback_method()
+                logger.info(
+                    'StrategyVectorPlatform text embedding unavailable for %s, fallback to %s: %s',
+                    strategy.get('id'),
+                    fallback_method,
+                    exc.__class__.__name__,
+                )
+                klines = self._returns_to_pseudo_klines(np.asarray(series, dtype=np.float64))
+                fallback_embedding = self.engine.kline_to_vector(klines, fallback_method)
+                return np.asarray(fallback_embedding if fallback_embedding is not None else [], dtype=np.float64), {
+                    **text_meta,
+                    'embedding_source': 'strategy_returns_fallback',
+                    'requested_vector_method': 'text_embedding',
+                    'resolved_vector_method': fallback_method,
+                    'fallback_used': True,
+                    'fallback_reason': 'text_embedding_request_failed',
+                    'fallback_error_type': exc.__class__.__name__,
+                    'fallback_error': str(exc or exc.__class__.__name__)[:240],
+                }, fallback_method
         klines = self._returns_to_pseudo_klines(np.asarray(series, dtype=np.float64))
         embedding = self.engine.kline_to_vector(klines, vector_method)
         return np.asarray(embedding if embedding is not None else [], dtype=np.float64), {
             'sample_length': int(len(klines)),
             'pattern_length': int(len(klines)),
-        }
+            'requested_vector_method': vector_method,
+            'resolved_vector_method': vector_method,
+            'fallback_used': False,
+            'fallback_reason': None,
+        }, vector_method
 
     async def build_strategy_profile(
         self,
@@ -309,7 +351,7 @@ class StrategyVectorPlatform:
             if series is None or len(series) < 30:
                 return None
 
-            embedding, embedding_meta = await self._build_embedding(
+            embedding, embedding_meta, effective_vector_method = await self._build_embedding(
                 strategy=strategy,
                 panels=panels,
                 vector_method=resolved_vector_method,
@@ -324,11 +366,11 @@ class StrategyVectorPlatform:
             profile = await db.save_strategy_vector_profile({
                 'strategy_id': strategy.get('id'),
                 'profile_type': profile_type,
-                'vector_method': resolved_vector_method,
+                'vector_method': effective_vector_method,
                 'metric': metric,
                 'vector_dim': int(len(embedding)),
                 'embedding': embedding.tolist(),
-                'signature': self._signature(strategy, profile_type, resolved_vector_method),
+                'signature': self._signature(strategy, profile_type, effective_vector_method),
                 'backend': self.backend_name(db),
                 'index_name': index_name,
                 'index_version': index_version,
@@ -337,6 +379,8 @@ class StrategyVectorPlatform:
                     'index_name': index_name,
                     'index_version': index_version,
                     'profile_type': profile_type,
+                    'requested_vector_method': resolved_vector_method,
+                    'effective_vector_method': effective_vector_method,
                     'audit': backend_audit,
                     **embedding_meta,
                 },
@@ -346,12 +390,14 @@ class StrategyVectorPlatform:
                 'backend': self.backend_name(db),
                 'status': 'active',
                 'profile_type': profile_type,
-                'vector_method': resolved_vector_method,
+                'vector_method': effective_vector_method,
                 'metric': metric,
                 'sample_count': 1,
                 'index_version': index_version,
                 'metadata': {
                     'last_strategy_id': strategy.get('id'),
+                    'requested_vector_method': resolved_vector_method,
+                    'effective_vector_method': effective_vector_method,
                     'audit': backend_audit,
                 },
             })
@@ -485,7 +531,7 @@ class StrategyVectorPlatform:
         else:
             initial = np.linspace(0, len(ordered) - 1, num=bucket_count, dtype=int)
             centroids = [vectors[idx].copy() for idx in initial.tolist()]
-            for _ in range(4):
+            for _ in range(12):
                 assignments: List[List[int]] = [[] for _ in range(bucket_count)]
                 for row_idx, vector in enumerate(vectors):
                     sims = [self.engine.calculate_similarity(vector, centroid, 'cosine') for centroid in centroids]
@@ -498,7 +544,13 @@ class StrategyVectorPlatform:
                         continue
                     new_centroid = self._normalize_embedding(np.mean(vectors[members], axis=0).tolist())
                     updated.append(new_centroid if len(new_centroid) else centroids[centroid_idx])
+                max_shift = max(
+                    float(np.linalg.norm(updated[idx] - centroids[idx]))
+                    for idx in range(bucket_count)
+                ) if bucket_count else 0.0
                 centroids = updated
+                if max_shift <= 1e-4:
+                    break
 
         bucket_members: List[List[int]] = [[] for _ in range(bucket_count)]
         assignments_meta: List[tuple[int, float]] = []
@@ -587,7 +639,7 @@ class StrategyVectorPlatform:
             snapshot = await db.save_strategy_vector_index_snapshot({
                 'index_name': index_name,
                 'index_version': index_version,
-                'status': 'active' if items else 'empty',
+                'status': 'building' if items else 'empty',
                 'profile_type': profile_type,
                 'vector_method': str((profiles[0] if profiles else {}).get('vector_method') or 'price_volume'),
                 'metric': str((profiles[0] if profiles else {}).get('metric') or 'cosine'),
@@ -606,20 +658,74 @@ class StrategyVectorPlatform:
                 'task_run_id': task_run_id,
                 'source': source,
                 'built_at': now,
-                'activated_at': now,
+                'activated_at': None,
             })
-        if hasattr(db, 'replace_strategy_vector_index_items'):
-            await db.replace_strategy_vector_index_items(index_name, index_version, items)
-        if items and getattr(db, 'supports_pgvector', lambda: False)() and hasattr(db, 'ensure_strategy_vector_index_item_pgvector_index'):
-            try:
-                await db.ensure_strategy_vector_index_item_pgvector_index(
-                    index_name=index_name,
-                    index_version=index_version,
-                    vector_dim=int(layout.get('vector_dim') or 0),
-                    metric=str((profiles[0] if profiles else {}).get('metric') or 'cosine'),
-                )
-            except Exception as exc:
-                logger.warning('StrategyVectorPlatform.build_persisted_ann_index failed to create pgvector index: %s', exc)
+        try:
+            if hasattr(db, 'replace_strategy_vector_index_items'):
+                await db.replace_strategy_vector_index_items(index_name, index_version, items)
+            if items and getattr(db, 'supports_pgvector', lambda: False)() and hasattr(db, 'ensure_strategy_vector_index_item_pgvector_index'):
+                try:
+                    await db.ensure_strategy_vector_index_item_pgvector_index(
+                        index_name=index_name,
+                        index_version=index_version,
+                        vector_dim=int(layout.get('vector_dim') or 0),
+                        metric=str((profiles[0] if profiles else {}).get('metric') or 'cosine'),
+                    )
+                except Exception as exc:
+                    logger.warning('StrategyVectorPlatform.build_persisted_ann_index failed to create pgvector index: %s', exc)
+            if hasattr(db, 'save_strategy_vector_index_snapshot'):
+                snapshot = await db.save_strategy_vector_index_snapshot({
+                    'index_name': index_name,
+                    'index_version': index_version,
+                    'status': 'active' if items else 'empty',
+                    'profile_type': profile_type,
+                    'vector_method': str((profiles[0] if profiles else {}).get('vector_method') or 'price_volume'),
+                    'metric': str((profiles[0] if profiles else {}).get('metric') or 'cosine'),
+                    'backend': self.backend_name(db),
+                    'profile_count': int(layout.get('profile_count') or len(items)),
+                    'bucket_count': int(layout.get('bucket_count') or 0),
+                    'vector_dim': int(layout.get('vector_dim') or 0),
+                    'centroids': layout.get('centroids') or [],
+                    'metadata': {
+                        **dict(layout.get('metadata') or {}),
+                        'index_name': index_name,
+                        'index_version': index_version,
+                        'source': source,
+                        'task_run_id': task_run_id,
+                    },
+                    'task_run_id': task_run_id,
+                    'source': source,
+                    'built_at': now,
+                    'activated_at': datetime.now(timezone.utc).isoformat(),
+                })
+        except Exception as exc:
+            if hasattr(db, 'save_strategy_vector_index_snapshot'):
+                snapshot = await db.save_strategy_vector_index_snapshot({
+                    'index_name': index_name,
+                    'index_version': index_version,
+                    'status': 'failed',
+                    'profile_type': profile_type,
+                    'vector_method': str((profiles[0] if profiles else {}).get('vector_method') or 'price_volume'),
+                    'metric': str((profiles[0] if profiles else {}).get('metric') or 'cosine'),
+                    'backend': self.backend_name(db),
+                    'profile_count': int(layout.get('profile_count') or len(items)),
+                    'bucket_count': int(layout.get('bucket_count') or 0),
+                    'vector_dim': int(layout.get('vector_dim') or 0),
+                    'centroids': layout.get('centroids') or [],
+                    'metadata': {
+                        **dict(layout.get('metadata') or {}),
+                        'index_name': index_name,
+                        'index_version': index_version,
+                        'source': source,
+                        'task_run_id': task_run_id,
+                        'error': str(exc),
+                    },
+                    'task_run_id': task_run_id,
+                    'source': source,
+                    'built_at': now,
+                    'activated_at': None,
+                })
+            raise
         return {
             'snapshot': snapshot,
             'items_count': len(items),

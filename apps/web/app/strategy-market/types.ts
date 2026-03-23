@@ -48,6 +48,13 @@ export type FactoryRunItem = NonNullable<FactoryRunsResponse['items']>[number];
 
 export type RunStatusFilter = 'all' | 'success' | 'failed';
 
+export type FactoryReviewSection =
+  | 'summary'
+  | 'incubation'
+  | 'runtime'
+  | 'vectors'
+  | 'experiments';
+
 export type TrendMetricKey =
   | 'candidates_spawned'
   | 'submitted'
@@ -55,7 +62,10 @@ export type TrendMetricKey =
   | 'elapsed_seconds'
   | 'autonomy_task_count'
   | 'event_task_count'
-  | 'snapshot_task_count';
+  | 'snapshot_task_count'
+  | 'deflated_sharpe_ratio_avg'
+  | 'high_pbo_count'
+  | 'formal_multiple_testing_count';
 
 export type CapabilityBadge = {
   key: string;

@@ -35,6 +35,53 @@ def _pct_change(data: list[float], days: int) -> float | None:
     return round((float(data[-1]) - base) / base * 100, 2)
 
 
+async def _load_db_northbound_context(db, *, days: int) -> dict[str, Any] | None:
+    getter = getattr(db, 'get_recent_north_fund_summary', None)
+    if not callable(getter):
+        return None
+    payload = getter(days=max(1, int(days)), sample_limit=max(5, int(days)))
+    if hasattr(payload, "__await__"):
+        payload = await payload
+    if not isinstance(payload, dict) or int(payload.get('sample_count') or 0) <= 0:
+        return None
+    recent_series = list(payload.get('series') or [])
+    northbound = {
+        'northbound_flow_1d': _round_or_none(recent_series[0].get('north_money'), 2) if recent_series else None,
+        'northbound_flow_3d': _round_or_none(payload.get('total_net'), 2),
+        'northbound_flow_5d': _round_or_none(
+            sum(float(item.get('north_money') or 0.0) for item in recent_series[:5]),
+            2,
+        ) if recent_series else None,
+        'source': payload.get('source') or 'north_fund_flow',
+        'stale': bool(payload.get('stale', False)),
+        'stale_age_days': payload.get('stale_age_days'),
+        'latest_trade_date': payload.get('latest_trade_date'),
+        'recent_items': recent_series[:5],
+    }
+    return northbound
+
+
+async def _load_db_margin_context(db, *, days: int) -> dict[str, Any] | None:
+    getter = getattr(db, 'get_recent_margin_summary', None)
+    if not callable(getter):
+        return None
+    payload = getter(days=max(6, int(days)), sample_limit=max(6, int(days)), change_lookback_days=5)
+    if hasattr(payload, "__await__"):
+        payload = await payload
+    if not isinstance(payload, dict) or int(payload.get('sample_count') or 0) <= 0:
+        return None
+    return {
+        'margin_balance_latest': _round_or_none(payload.get('margin_balance_latest'), 2),
+        'margin_buy_latest': _round_or_none(payload.get('margin_buy_latest'), 2),
+        'margin_balance_change_5d': _round_or_none(payload.get('margin_balance_change_5d'), 2),
+        'recent_rows': list(payload.get('recent_rows') or [])[:5],
+        'source': payload.get('source') or 'margin_market_flow',
+        'stale': bool(payload.get('stale', False)),
+        'stale_age_days': payload.get('stale_age_days'),
+        'latest_trade_date': payload.get('latest_trade_date'),
+    }
+
+
 def _pick_text(item: dict[str, Any]) -> str:
     for key in ('text', 'content', 'summary', 'title', 'headline'):
         value = item.get(key)
@@ -176,24 +223,32 @@ def register(mcp):
                 'northbound_flow_5d': None,
                 'source': None,
                 'stale': False,
+                'stale_age_days': None,
+                'latest_trade_date': None,
                 'recent_items': [],
             }
             try:
-                nf = await asyncio.to_thread(get_north_fund, max(1, int(north_days)))
-                if nf.get('success'):
-                    payload = nf.get('data', {}) or {}
-                    items = payload.get('items', []) if isinstance(payload, dict) else []
-                    recent_items = items[-max(1, int(north_days)):] if items else []
-                    northbound.update({
-                        'northbound_flow_1d': _round_or_none(recent_items[-1].get('total'), 2) if recent_items else None,
-                        'northbound_flow_3d': _round_or_none(sum(float(x.get('total') or 0) for x in recent_items[-3:]), 2) if recent_items else None,
-                        'northbound_flow_5d': _round_or_none(sum(float(x.get('total') or 0) for x in recent_items[-5:]), 2) if recent_items else None,
-                        'source': payload.get('source'),
-                        'stale': bool(payload.get('stale', False)),
-                        'recent_items': recent_items[-5:],
-                    })
+                db_northbound = await _load_db_northbound_context(db, days=max(1, int(north_days)))
+                if db_northbound is not None:
+                    northbound.update(db_northbound)
                 else:
-                    warnings.append(f"north_fund:{nf.get('error', 'unknown')}")
+                    nf = await asyncio.to_thread(get_north_fund, max(1, int(north_days)))
+                    if nf.get('success'):
+                        payload = nf.get('data', {}) or {}
+                        items = payload.get('items', []) if isinstance(payload, dict) else []
+                        recent_items = items[-max(1, int(north_days)):] if items else []
+                        northbound.update({
+                            'northbound_flow_1d': _round_or_none(recent_items[-1].get('total'), 2) if recent_items else None,
+                            'northbound_flow_3d': _round_or_none(sum(float(x.get('total') or 0) for x in recent_items[-3:]), 2) if recent_items else None,
+                            'northbound_flow_5d': _round_or_none(sum(float(x.get('total') or 0) for x in recent_items[-5:]), 2) if recent_items else None,
+                            'source': payload.get('source'),
+                            'stale': bool(payload.get('stale', False)),
+                            'stale_age_days': payload.get('stale_age_days'),
+                            'latest_trade_date': payload.get('latest_trade_date'),
+                            'recent_items': recent_items[-5:],
+                        })
+                    else:
+                        warnings.append(f"north_fund:{nf.get('error', 'unknown')}")
             except Exception as exc:
                 warnings.append(f"north_fund:{exc}")
 
@@ -201,24 +256,33 @@ def register(mcp):
                 'margin_balance_latest': None,
                 'margin_buy_latest': None,
                 'margin_balance_change_5d': None,
+                'source': None,
+                'stale': False,
+                'stale_age_days': None,
+                'latest_trade_date': None,
                 'recent_rows': [],
             }
             try:
-                mg = await asyncio.to_thread(get_margin_data, '', max(6, int(margin_days)))
-                if mg.get('success') and isinstance(mg.get('data'), list) and mg.get('data'):
-                    rows = mg.get('data') or []
-                    latest = rows[0]
-                    older = rows[min(5, len(rows) - 1)]
-                    recent_bal = float(latest.get('marginBalance') or 0)
-                    older_bal = float(older.get('marginBalance') or 0)
-                    margin_context.update({
-                        'margin_balance_latest': _round_or_none(latest.get('marginBalance'), 2),
-                        'margin_buy_latest': _round_or_none(latest.get('marginBuy'), 2),
-                        'margin_balance_change_5d': round((recent_bal - older_bal) / older_bal * 100, 2) if older_bal > 0 else None,
-                        'recent_rows': rows[:5],
-                    })
+                db_margin = await _load_db_margin_context(db, days=max(6, int(margin_days)))
+                if db_margin is not None:
+                    margin_context.update(db_margin)
                 else:
-                    warnings.append(f"margin_data:{mg.get('error', 'unknown')}")
+                    mg = await asyncio.to_thread(get_margin_data, '', max(6, int(margin_days)))
+                    if mg.get('success') and isinstance(mg.get('data'), list) and mg.get('data'):
+                        rows = mg.get('data') or []
+                        latest = rows[0]
+                        older = rows[min(5, len(rows) - 1)]
+                        recent_bal = float(latest.get('marginBalance') or 0)
+                        older_bal = float(older.get('marginBalance') or 0)
+                        margin_context.update({
+                            'margin_balance_latest': _round_or_none(latest.get('marginBalance'), 2),
+                            'margin_buy_latest': _round_or_none(latest.get('marginBuy'), 2),
+                            'margin_balance_change_5d': round((recent_bal - older_bal) / older_bal * 100, 2) if older_bal > 0 else None,
+                            'recent_rows': rows[:5],
+                            'source': 'fund_flow_market',
+                        })
+                    else:
+                        warnings.append(f"margin_data:{mg.get('error', 'unknown')}")
             except Exception as exc:
                 warnings.append(f"margin_data:{exc}")
 
@@ -259,8 +323,10 @@ def register(mcp):
                 'warnings': warnings,
                 'source_chain': [
                     'sentiment.calculate_fear_greed_index',
-                    'fund_flow.get_north_fund',
-                    'fund_flow.get_margin_data',
+                    'db.get_recent_north_fund_summary',
+                    'db.get_recent_margin_summary',
+                    'fund_flow.get_north_fund(fallback)',
+                    'fund_flow.get_margin_data(fallback)',
                     'fund_flow.get_sector_fund_flow',
                 ],
             })

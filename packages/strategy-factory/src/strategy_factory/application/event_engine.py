@@ -498,7 +498,10 @@ class LocalEventDrivenResearchEngine:
             "horizon": ((theme.get("metadata") or {}).get("horizon") or "swing_5_20d"),
             "signal_count": len(top_signals),
             "target_symbols": top_symbols,
+            "preferred_strategy_types": list(((theme.get("metadata") or {}).get("strategy_preferences") or [])),
             "strategy_preferences": list(((theme.get("metadata") or {}).get("strategy_preferences") or [])),
+            "preference_strength": str(((theme.get("metadata") or {}).get("preference_strength") or "medium")),
+            "preference_reason": " / ".join(supporting_reasons[:2]) or f"theme:{theme.get('theme_code')}",
             "supporting_reasons": supporting_reasons,
             "score_summary": {
                 "avg_final_score": round(avg_final_score, 4),

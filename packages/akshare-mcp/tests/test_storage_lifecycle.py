@@ -66,11 +66,13 @@ async def test_close_falls_back_to_terminate_when_pool_close_fails():
     schema.pool = pool
     schema._initialized = True
     schema._bound_loop = object()
+    schema._flush_close_callbacks = AsyncMock()
 
     await schema.close()
 
     pool.close.assert_awaited_once()
     pool.terminate.assert_called_once_with()
+    schema._flush_close_callbacks.assert_awaited_once()
     assert schema.pool is None
     assert schema._initialized is False
 
@@ -106,9 +108,14 @@ def test_schema_base_pool_limits_honor_env_overrides(monkeypatch):
 @pytest.mark.asyncio
 async def test_await_with_db_cleanup_closes_db(monkeypatch):
     import akshare_mcp.storage.timescaledb as db_mod
+    import akshare_mcp.services as services_mod
 
     close_mock = AsyncMock()
+    close_clients_mock = AsyncMock()
+    flush_mock = AsyncMock()
     monkeypatch.setattr(db_mod, 'close_db', close_mock)
+    monkeypatch.setattr(db_mod, '_flush_cleanup_callbacks', flush_mock)
+    monkeypatch.setattr(services_mod, 'close_shared_runtime_clients', close_clients_mock)
 
     async def _probe():
         return 'ok'
@@ -116,7 +123,9 @@ async def test_await_with_db_cleanup_closes_db(monkeypatch):
     result = await db_mod.await_with_db_cleanup(_probe())
 
     assert result == 'ok'
+    close_clients_mock.assert_awaited_once()
     close_mock.assert_awaited_once()
+    flush_mock.assert_awaited_once()
 
 
 @pytest.mark.parametrize(

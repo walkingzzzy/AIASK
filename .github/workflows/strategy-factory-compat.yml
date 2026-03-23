@@ -1,0 +1,57 @@
+name: Strategy Factory Compat
+
+on:
+  pull_request:
+    paths:
+      - "packages/strategy-factory/**"
+      - "packages/akshare-mcp/src/akshare_mcp/services/strategy_factory/**"
+      - "packages/akshare-mcp/src/akshare_mcp/services/strategy_pipeline.py"
+      - "packages/akshare-mcp/src/akshare_mcp/services/strategy_generators.py"
+      - "packages/akshare-mcp/src/akshare_mcp/services/strategy_autonomy_components.py"
+      - "packages/akshare-mcp/src/akshare_mcp/services/strategy_stages.py"
+      - "packages/akshare-mcp/tests/test_strategy_factory_package_migration_contract.py"
+      - "packages/akshare-mcp/tests/test_strategy_factory_module_compat.py"
+      - "packages/akshare-mcp/tests/test_strategy_pipeline.py"
+      - "packages/akshare-mcp/tests/test_strategy_autonomy_components.py"
+      - "packages/strategy-factory/tests/test_mcp_adapters_contract.py"
+      - ".github/workflows/strategy-factory-compat.yml"
+  push:
+    branches: ["master", "main"]
+    paths:
+      - "packages/strategy-factory/**"
+      - "packages/akshare-mcp/src/akshare_mcp/services/strategy_factory/**"
+      - "packages/akshare-mcp/src/akshare_mcp/services/strategy_pipeline.py"
+      - "packages/akshare-mcp/src/akshare_mcp/services/strategy_generators.py"
+      - "packages/akshare-mcp/src/akshare_mcp/services/strategy_autonomy_components.py"
+      - "packages/akshare-mcp/src/akshare_mcp/services/strategy_stages.py"
+      - "packages/akshare-mcp/tests/test_strategy_factory_package_migration_contract.py"
+      - "packages/akshare-mcp/tests/test_strategy_factory_module_compat.py"
+      - "packages/akshare-mcp/tests/test_strategy_pipeline.py"
+      - "packages/akshare-mcp/tests/test_strategy_autonomy_components.py"
+      - "packages/strategy-factory/tests/test_mcp_adapters_contract.py"
+      - ".github/workflows/strategy-factory-compat.yml"
+
+jobs:
+  compat-contracts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packages/akshare-mcp/requirements.txt
+          pip install akshare baostock efinance pytest pytest-benchmark
+
+      - name: Run migration contract tests
+        env:
+          PYTHONPATH: packages/akshare-mcp/src:packages/strategy-factory/src
+        run: |
+          pytest packages/akshare-mcp/tests/test_strategy_factory_package_migration_contract.py -q
+          pytest packages/akshare-mcp/tests/test_strategy_factory_module_compat.py -q
+          pytest packages/strategy-factory/tests/test_facade_fallbacks.py -q

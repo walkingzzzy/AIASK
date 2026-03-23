@@ -16,6 +16,58 @@ type ColumnDef = {
 type SortState = { key: string; dir: 'asc' | 'desc' } | null;
 
 type MobileCardRender = (row: Record<string, unknown>, index: number) => React.ReactNode;
+type RowKey = string | number;
+type RowKeyResolver = (row: Record<string, unknown>, index: number) => RowKey;
+
+const COMMON_ROW_KEY_FIELDS = [
+  'id',
+  'key',
+  'uuid',
+  'slug',
+  'code',
+  'stock_code',
+  'symbol',
+  'strategy_id',
+  'experiment_id',
+  'alert_id',
+  'task_run_id',
+  'index_version',
+] as const;
+
+function serializeRowKeyPart(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value instanceof Date) return value.toISOString();
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function deriveRowKeyBase(
+  row: Record<string, unknown>,
+  rowIndex: number,
+  cols: ColumnDef[],
+  rowKey?: string | RowKeyResolver,
+): string {
+  if (typeof rowKey === 'function') {
+    return String(rowKey(row, rowIndex));
+  }
+  if (typeof rowKey === 'string' && row[rowKey] != null) {
+    return `${rowKey}:${serializeRowKeyPart(row[rowKey])}`;
+  }
+  for (const field of COMMON_ROW_KEY_FIELDS) {
+    if (row[field] != null) {
+      return `${field}:${serializeRowKeyPart(row[field])}`;
+    }
+  }
+  const contentKey = cols
+    .slice(0, 4)
+    .map((col) => `${col.key}:${serializeRowKeyPart(row[col.key])}`)
+    .join('|');
+  return contentKey || `row:${rowIndex}`;
+}
 
 export function DataTable({
   rows,
@@ -29,6 +81,7 @@ export function DataTable({
   onRowClick,
   stickyFirstCol,
   mobileCardRender,
+  rowKey,
 }: {
   rows: Record<string, unknown>[];
   columns?: ColumnDef[];
@@ -41,6 +94,7 @@ export function DataTable({
   onRowClick?: (row: Record<string, unknown>) => void;
   stickyFirstCol?: boolean;
   mobileCardRender?: MobileCardRender;
+  rowKey?: string | RowKeyResolver;
 }) {
   const [sort, setSort] = useState<SortState>(null);
   const [page, setPage] = useState(0);
@@ -81,6 +135,20 @@ export function DataTable({
     return sorted.slice(page * pageSize, (page + 1) * pageSize);
   }, [sorted, page, pageSize]);
 
+  const pagedRows = useMemo(() => {
+    const counts = new Map<string, number>();
+    return paged.map((row, rowIndex) => {
+      const base = deriveRowKeyBase(row, rowIndex, cols, rowKey);
+      const duplicateCount = counts.get(base) ?? 0;
+      counts.set(base, duplicateCount + 1);
+      return {
+        row,
+        rowIndex,
+        key: duplicateCount === 0 ? base : `${base}__${duplicateCount}`,
+      };
+    });
+  }, [cols, paged, rowKey]);
+
   const totalPages = pageSize ? Math.ceil(filtered.length / pageSize) : 1;
 
   function toggleSort(key: string) {
@@ -113,13 +181,13 @@ export function DataTable({
       ) : null}
       {mobileCardRender ? (
         <div className="grid gap-3 md:hidden">
-          {paged.map((row, i) => (
+          {pagedRows.map(({ row, rowIndex, key }) => (
             <div
-              key={i}
+              key={key}
               className={`glass rounded-xl border border-glass-border p-3 ${onRowClick ? 'cursor-pointer' : ''}`}
               onClick={() => onRowClick?.(row)}
             >
-              {mobileCardRender(row, i)}
+              {mobileCardRender(row, rowIndex)}
             </div>
           ))}
         </div>
@@ -142,8 +210,8 @@ export function DataTable({
             </tr>
           </thead>
           <tbody>
-            {paged.map((row, i) => (
-              <tr key={i} className={`hover:bg-white/10 transition-colors${onRowClick ? ' cursor-pointer' : ''}`} onClick={() => onRowClick?.(row)}>
+            {pagedRows.map(({ row, key }) => (
+              <tr key={key} className={`hover:bg-white/10 transition-colors${onRowClick ? ' cursor-pointer' : ''}`} onClick={() => onRowClick?.(row)}>
                 {cols.map((c, ci) => (
                   <td key={c.key} className={`px-2 py-1 border-b border-glass-border text-${c.align ?? 'left'}${stickyFirstCol && ci === 0 ? ' sticky left-0 z-[1]' : ''}`}
                     style={stickyFirstCol && ci === 0 ? { background: 'var(--color-glass-strong)' } : undefined}>

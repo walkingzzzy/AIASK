@@ -27,10 +27,7 @@ def _get_db():
         return None
 
 
-# ── 公开 API ────────────────────────────────────────────
-
-def register_artifact(artifact: dict) -> dict:
-    """注册策略工件：优先写 DB，同时更新内存缓存。"""
+def _prepare_artifact_payload(artifact: dict) -> dict[str, Any]:
     aid = str((artifact or {}).get("artifact_id") or "").strip()
     if not aid:
         raise ValueError("artifact_id is required")
@@ -38,9 +35,22 @@ def register_artifact(artifact: dict) -> dict:
     payload = deepcopy(artifact)
     payload.setdefault("registered_at", _now_iso())
     payload["updated_at"] = _now_iso()
+    return payload
 
-    # 内存缓存始终更新
-    _ARTIFACTS[aid] = deepcopy(payload)
+
+def _cache_artifact(payload: dict[str, Any]) -> None:
+    aid = str((payload or {}).get("artifact_id") or "").strip()
+    if aid:
+        _ARTIFACTS[aid] = deepcopy(payload)
+
+
+# ── 公开 API ────────────────────────────────────────────
+
+def register_artifact(artifact: dict) -> dict:
+    """注册策略工件：优先写 DB，同时更新内存缓存。"""
+    payload = _prepare_artifact_payload(artifact)
+    aid = str(payload.get("artifact_id") or "").strip()
+    _cache_artifact(payload)
 
     # 尝试异步写 DB
     db = _get_db()
@@ -50,6 +60,18 @@ def register_artifact(artifact: dict) -> dict:
             loop.create_task(_safe_save(db, payload))
         except RuntimeError:
             logger.debug("No running event loop; artifact %s cached in memory only", aid)
+
+    return deepcopy(payload)
+
+
+async def register_artifact_async(artifact: dict) -> dict:
+    """异步注册策略工件：优先直写 DB，确保跨进程查询可见。"""
+    payload = _prepare_artifact_payload(artifact)
+    _cache_artifact(payload)
+
+    db = _get_db()
+    if db is not None and hasattr(db, "save_artifact"):
+        await _safe_save(db, payload)
 
     return deepcopy(payload)
 

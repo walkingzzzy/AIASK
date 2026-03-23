@@ -13,7 +13,6 @@ async function main() {
   const app = await createUnifiedDecisionTestApp();
   await app.listen(port, '127.0.0.1');
   const url = await app.getUrl();
-  // eslint-disable-next-line no-console
   console.log(`[unified-decision-harness] listening on ${url}/api`);
 
   const shutdown = async () => {
@@ -26,7 +25,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  // eslint-disable-next-line no-console
   console.error(error instanceof Error ? error.stack || error.message : String(error));
   process.exit(1);
 });

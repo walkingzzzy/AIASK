@@ -29,7 +29,7 @@ jobs:
         run: npm run lint --workspaces --if-present
 
       - name: Type check
-        run: npx tsc --noEmit --workspaces
+        run: npm run typecheck --workspaces --if-present
 
   build:
     name: Build
@@ -52,15 +52,6 @@ jobs:
       - name: Build Web
         run: npm run build -w apps/web
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-output
-          path: |
-            apps/bff/dist/
-            apps/web/.next/
-          retention-days: 3
-
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
@@ -73,11 +64,30 @@ jobs:
           node-version: 20
           cache: 'npm'
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
-        run: npm test --workspaces --if-present
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packages/akshare-mcp/requirements.txt
+          pip install akshare baostock efinance pytest
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+      - name: Run JS tests
+        run: npm test
+
+      - name: Run Python tests
+        env:
+          PYTHONPATH: packages/akshare-mcp/src:packages/strategy-factory/src
+        run: |
+          pytest packages/akshare-mcp/tests/ -q --ignore=packages/akshare-mcp/tests/archive --ignore=packages/akshare-mcp/tests/real_world_scenarios --ignore=packages/akshare-mcp/tests/tushare-pro -x
+          pytest packages/strategy-factory/tests/ -q -x
 
   e2e:
     name: E2E Tests
@@ -92,19 +102,26 @@ jobs:
           node-version: 20
           cache: 'npm'
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install dependencies
         run: npm ci
+
+      - name: Install MCP Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packages/akshare-mcp/requirements.txt
+          pip install akshare baostock efinance
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
-      - name: Download build
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
-
       - name: Run E2E tests
-        run: npx playwright test
+        run: npm run e2e:ci
         env:
           CI: true
 

@@ -27,8 +27,10 @@ async function bootstrap() {
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   app.useGlobalFilters(new SentryGlobalFilter(), new GlobalHttpExceptionFilter());
 
+  app.enableShutdownHooks();
   await app.listen(port);
-  console.log(`[bff] listening on http://127.0.0.1:${port}/api`);
+  const logger = app.get(ConfigService) && new (await import('@nestjs/common')).Logger('Bootstrap');
+  logger?.log(`BFF listening on http://127.0.0.1:${port}/api`);
 }
 
 void bootstrap();

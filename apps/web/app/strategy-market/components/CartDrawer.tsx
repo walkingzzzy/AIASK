@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useCartStore } from '@/store/cart-store';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 
@@ -8,6 +8,24 @@ export function CartDrawer({ onClose }: { onClose: () => void }) {
   const { items, removeStrategy, setWeight, clear } = useCartStore();
   const createApi = useApiMutation();
   const [name, setName] = useState('');
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<Element | null>(null);
+
+  const handleEscape = useCallback((e: KeyboardEvent) => {
+    if (e.key === 'Escape') onClose();
+  }, [onClose]);
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement;
+    drawerRef.current?.focus();
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+      if (previousFocusRef.current instanceof HTMLElement) {
+        previousFocusRef.current.focus();
+      }
+    };
+  }, [handleEscape]);
 
   const totalWeight = items.reduce((sum, i) => sum + i.weight, 0);
   const weightValid = items.length > 0 && Math.abs(totalWeight - 100) < 0.01;
@@ -31,12 +49,12 @@ export function CartDrawer({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="fixed inset-0 bg-black/30" onClick={onClose} />
-      <div className="relative w-85 bg-surface-alt border-l border-border p-4 overflow-y-auto z-10">
+    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label="组合购物车">
+      <div className="fixed inset-0 bg-black/30" onClick={onClose} role="presentation" />
+      <div ref={drawerRef} tabIndex={-1} className="relative w-85 bg-surface-alt border-l border-border p-4 overflow-y-auto z-10 outline-none">
         <div className="flex items-center justify-between mb-4">
           <h3 className="m-0 text-sm font-semibold">组合购物车 ({items.length})</h3>
-          <button onClick={onClose} className="text-lg cursor-pointer">✕</button>
+          <button onClick={onClose} aria-label="关闭购物车" className="text-lg cursor-pointer">✕</button>
         </div>
 
         {items.length === 0 && <p className="text-text-secondary text-sm">购物车为空，请从策略列表添加策略</p>}

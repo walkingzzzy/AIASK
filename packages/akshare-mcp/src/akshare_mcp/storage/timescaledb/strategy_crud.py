@@ -60,6 +60,21 @@ class StrategyCrudMixin:
             return None
 
     @staticmethod
+    def _coerce_ts_code(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        raw = str(value or "").strip().upper()
+        if not raw:
+            return None
+        if "." in raw:
+            return raw
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if len(digits) == 6:
+            suffix = "SH" if digits.startswith(("5", "6", "9")) else "SZ"
+            return f"{digits}.{suffix}"
+        return raw
+
+    @staticmethod
     def _encode_pgvector(values: Any) -> Optional[str]:
         try:
             vector = [float(item) for item in list(values or [])]
@@ -476,29 +491,290 @@ class StrategyCrudMixin:
             return None
         return self._decode_daily_snapshot(dict(row))
 
-    async def get_recent_north_fund_summary(self, days: int = 3, sample_limit: int = 5) -> Optional[dict]:
+    async def get_north_fund_history(self, days: int = 30, end_date = None) -> List[dict]:
+        normalized_end_date = self._coerce_date(end_date) or date.today()
+        fetch_limit = max(1, min(int(days or 30), 365))
         async with self.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT trade_date, north_money
+                SELECT trade_date, north_money, south_money, net_amount, ggt_ss, ggt_sz, hgt, sgt
                 FROM north_fund_flow
+                WHERE trade_date <= $1
                 ORDER BY trade_date DESC
-                LIMIT $1
+                LIMIT $2
                 """,
-                max(int(sample_limit or 5), int(days or 3), 1),
+                normalized_end_date,
+                fetch_limit,
             )
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "north_money": float(row.get("north_money") or 0.0),
+                "south_money": float(row.get("south_money") or 0.0),
+                "net_amount": float(row.get("net_amount") or 0.0),
+                "ggt_ss": float(row.get("ggt_ss") or 0.0),
+                "ggt_sz": float(row.get("ggt_sz") or 0.0),
+                "hgt": float(row.get("hgt") or 0.0),
+                "sgt": float(row.get("sgt") or 0.0),
+                "source": "north_fund_flow",
+            }
+            for row in rows
+            if isinstance(row.get("trade_date"), date)
+        ]
+
+    async def get_recent_north_fund_summary(self, days: int = 3, sample_limit: int = 5, end_date = None) -> Optional[dict]:
+        rows = await self.get_north_fund_history(
+            days=max(int(sample_limit or 5), int(days or 3), 1),
+            end_date=end_date,
+        )
         if not rows:
             return None
         selected = list(rows[: max(1, int(days or 3))])
+        latest_trade_date = rows[0].get("trade_date") if rows else None
+        stale_age_days = None
+        stale = False
+        if isinstance(latest_trade_date, date):
+            stale_age_days = max(0, (date.today() - latest_trade_date).days)
+            stale = stale_age_days > 7
         return {
             "days": max(1, int(days or 3)),
             "sample_count": len(rows),
             "trade_dates": [row.get("trade_date") for row in selected],
             "total_net": round(sum(float(row.get("north_money") or 0.0) for row in selected), 2),
+            "latest_trade_date": latest_trade_date,
+            "stale_age_days": stale_age_days,
+            "stale": stale,
+            "source": "north_fund_flow",
             "series": [
                 {"trade_date": row.get("trade_date"), "north_money": float(row.get("north_money") or 0.0)}
                 for row in rows
             ],
+        }
+
+    async def get_margin_market_history(self, days: int = 30, end_date = None) -> List[dict]:
+        fetch_limit = max(1, min(int(days or 30), 365))
+        normalized_end_date = self._coerce_date(end_date) or date.today()
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT trade_date, exchange_id, rzye, rzmre, rzche, rqye, rqmcl, rqyl, rzrqye
+                FROM margin_market_flow
+                WHERE trade_date <= $1
+                ORDER BY trade_date DESC, exchange_id ASC
+                LIMIT $2
+                """,
+                normalized_end_date,
+                fetch_limit * 3,
+            )
+        source = "margin_market_flow"
+        normalized_rows: List[Dict[str, Any]] = []
+        if rows:
+            grouped: Dict[date, Dict[str, Any]] = {}
+            for row in rows:
+                trade_date = row.get("trade_date")
+                if not isinstance(trade_date, date):
+                    continue
+                bucket = grouped.setdefault(
+                    trade_date,
+                    {
+                        "trade_date": trade_date,
+                        "marginBalance": 0.0,
+                        "marginBuy": 0.0,
+                        "marginRepay": 0.0,
+                        "shortBalance": 0.0,
+                        "shortSell": 0.0,
+                        "shortVolume": 0.0,
+                        "totalBalance": 0.0,
+                        "source": source,
+                    },
+                )
+                bucket["marginBalance"] += float(row.get("rzye") or 0.0)
+                bucket["marginBuy"] += float(row.get("rzmre") or 0.0)
+                bucket["marginRepay"] += float(row.get("rzche") or 0.0)
+                bucket["shortBalance"] += float(row.get("rqye") or 0.0)
+                bucket["shortSell"] += float(row.get("rqmcl") or 0.0)
+                bucket["shortVolume"] += float(row.get("rqyl") or 0.0)
+                bucket["totalBalance"] += float(row.get("rzrqye") or 0.0)
+            normalized_rows = sorted(grouped.values(), key=lambda item: item["trade_date"], reverse=True)
+
+        if normalized_rows:
+            return normalized_rows[:fetch_limit]
+
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    trade_date,
+                    SUM(rzye) AS rzye,
+                    SUM(rzmre) AS rzmre,
+                    SUM(rzche) AS rzche,
+                    SUM(rqye) AS rqye,
+                    SUM(rqmcl) AS rqmcl,
+                    SUM(rqyl) AS rqyl,
+                    SUM(rzrqye) AS rzrqye
+                FROM margin_detail
+                WHERE trade_date <= $1
+                GROUP BY trade_date
+                ORDER BY trade_date DESC
+                LIMIT $2
+                """,
+                normalized_end_date,
+                fetch_limit,
+            )
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "marginBalance": float(row.get("rzye") or 0.0),
+                "marginBuy": float(row.get("rzmre") or 0.0),
+                "marginRepay": float(row.get("rzche") or 0.0),
+                "shortBalance": float(row.get("rqye") or 0.0),
+                "shortSell": float(row.get("rqmcl") or 0.0),
+                "shortVolume": float(row.get("rqyl") or 0.0),
+                "totalBalance": float(row.get("rzrqye") or 0.0),
+                "source": "margin_detail_aggregate",
+            }
+            for row in rows
+            if isinstance(row.get("trade_date"), date)
+        ]
+
+    async def get_margin_detail_latest(self, limit: int = 20, ts_code = None, end_date = None) -> List[dict]:
+        normalized_end_date = self._coerce_date(end_date) or date.today()
+        normalized_ts_code = self._coerce_ts_code(ts_code)
+        fetch_limit = max(1, min(int(limit or 20), 500))
+        async with self.acquire() as conn:
+            if normalized_ts_code:
+                rows = await conn.fetch(
+                    """
+                    SELECT trade_date, ts_code, rzye, rqye, rzmre, rqyl, rzche, rqchl, rqmcl, rzrqye
+                    FROM margin_detail
+                    WHERE trade_date <= $1 AND ts_code = $2
+                    ORDER BY trade_date DESC, ts_code ASC
+                    LIMIT $3
+                    """,
+                    normalized_end_date,
+                    normalized_ts_code,
+                    fetch_limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT trade_date, ts_code, rzye, rqye, rzmre, rqyl, rzche, rqchl, rqmcl, rzrqye
+                    FROM margin_detail
+                    WHERE trade_date <= $1
+                    ORDER BY trade_date DESC, ts_code ASC
+                    LIMIT $2
+                    """,
+                    normalized_end_date,
+                    fetch_limit,
+                )
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "ts_code": str(row.get("ts_code") or ""),
+                "code": str(row.get("ts_code") or "").split(".", 1)[0],
+                "marginBalance": float(row.get("rzye") or 0.0),
+                "shortBalance": float(row.get("rqye") or 0.0),
+                "marginBuy": float(row.get("rzmre") or 0.0),
+                "shortVolume": float(row.get("rqyl") or 0.0),
+                "marginRepay": float(row.get("rzche") or 0.0),
+                "shortRepay": float(row.get("rqchl") or 0.0),
+                "shortSell": float(row.get("rqmcl") or 0.0),
+                "totalBalance": float(row.get("rzrqye") or 0.0),
+                "source": "margin_detail",
+            }
+            for row in rows
+            if isinstance(row.get("trade_date"), date)
+        ]
+
+    async def get_margin_ranking(self, top_n: int = 20, sort_by: str = "balance", end_date = None) -> List[dict]:
+        normalized_end_date = self._coerce_date(end_date) or date.today()
+        fetch_limit = max(1, min(int(top_n or 20), 200))
+        sort_key = str(sort_by or "balance").lower()
+        sort_column_map = {
+            "balance": "rzrqye",
+            "buy": "rzmre",
+            "sell": "rqmcl",
+        }
+        sort_column = sort_column_map.get(sort_key, "rzrqye")
+        async with self.acquire() as conn:
+            latest_trade_date = await conn.fetchval(
+                """
+                SELECT MAX(trade_date)
+                FROM margin_detail
+                WHERE trade_date <= $1
+                """,
+                normalized_end_date,
+            )
+            if latest_trade_date is None:
+                return []
+            rows = await conn.fetch(
+                f"""
+                SELECT trade_date, ts_code, rzye, rqye, rzmre, rqyl, rzche, rqchl, rqmcl, rzrqye
+                FROM margin_detail
+                WHERE trade_date = $1
+                ORDER BY {sort_column} DESC NULLS LAST, ts_code ASC
+                LIMIT $2
+                """,
+                latest_trade_date,
+                fetch_limit,
+            )
+        return [
+            {
+                "trade_date": row.get("trade_date"),
+                "ts_code": str(row.get("ts_code") or ""),
+                "code": str(row.get("ts_code") or "").split(".", 1)[0],
+                "marginBalance": float(row.get("rzye") or 0.0),
+                "shortBalance": float(row.get("rqye") or 0.0),
+                "marginBuy": float(row.get("rzmre") or 0.0),
+                "shortVolume": float(row.get("rqyl") or 0.0),
+                "marginRepay": float(row.get("rzche") or 0.0),
+                "shortRepay": float(row.get("rqchl") or 0.0),
+                "shortSell": float(row.get("rqmcl") or 0.0),
+                "totalBalance": float(row.get("rzrqye") or 0.0),
+                "source": "margin_detail_ranking",
+            }
+            for row in rows
+            if isinstance(row.get("trade_date"), date)
+        ]
+
+    async def get_recent_margin_summary(
+        self,
+        days: int = 10,
+        sample_limit: int = 10,
+        change_lookback_days: int = 5,
+    ) -> Optional[dict]:
+        fetch_limit = max(
+            int(sample_limit or 10),
+            int(days or 10),
+            int(change_lookback_days or 5) + 1,
+            1,
+        )
+        normalized_rows = await self.get_margin_market_history(days=fetch_limit)
+        if not normalized_rows:
+            return None
+        source = str((normalized_rows[0] or {}).get("source") or "margin_market_flow")
+
+        latest = normalized_rows[0]
+        older = normalized_rows[min(max(int(change_lookback_days or 5), 1), len(normalized_rows) - 1)]
+        latest_balance = float(latest.get("marginBalance") or 0.0)
+        older_balance = float(older.get("marginBalance") or 0.0)
+        change_5d = None
+        if older_balance > 0:
+            change_5d = round((latest_balance - older_balance) / older_balance * 100, 2)
+        stale_age_days = max(0, (date.today() - latest["trade_date"]).days) if isinstance(latest.get("trade_date"), date) else None
+        stale = bool(stale_age_days is not None and stale_age_days > 7)
+        return {
+            "days": max(1, int(days or 10)),
+            "sample_count": len(normalized_rows),
+            "latest_trade_date": latest.get("trade_date"),
+            "stale_age_days": stale_age_days,
+            "stale": stale,
+            "source": source,
+            "margin_balance_latest": round(latest_balance, 2),
+            "margin_buy_latest": round(float(latest.get("marginBuy") or 0.0), 2),
+            "margin_balance_change_5d": change_5d,
+            "recent_rows": normalized_rows[: max(1, min(fetch_limit, 5))],
+            "series": normalized_rows[:fetch_limit],
         }
 
     async def list_daily_snapshots(

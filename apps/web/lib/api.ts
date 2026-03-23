@@ -14,12 +14,16 @@ async function redirectAfterAuthExpired(): Promise<never> {
     redirecting = true;
     clearLoggedIn();
     redirectToLogin();
+    setTimeout(() => { redirecting = false; }, 3000);
   }
   throw new Error('登录已过期');
 }
 
-/** Authenticated fetch wrapper — relies on HttpOnly cookies, handles 401 auto-refresh */
-export async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
+async function authedFetchCore(
+  path: string,
+  init?: RequestInit,
+  opts?: { noStore?: boolean },
+): Promise<Response> {
   const headers: Record<string, string> = {};
   if (init?.headers) Object.assign(headers, init.headers);
 
@@ -27,6 +31,7 @@ export async function authedFetch(path: string, init?: RequestInit): Promise<Res
     ...init,
     headers,
     credentials: 'include',
+    ...(opts?.noStore ? { cache: init?.cache ?? 'no-store' as RequestCache } : {}),
   };
 
   const resp = await fetch(`${BFF_BASE}${path}`, requestInit);
@@ -40,27 +45,14 @@ export async function authedFetch(path: string, init?: RequestInit): Promise<Res
   return resp;
 }
 
+/** Authenticated fetch wrapper — relies on HttpOnly cookies, handles 401 auto-refresh */
+export async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
+  return authedFetchCore(path, init);
+}
+
 /** Authenticated streaming fetch wrapper — aligns chat/SSE requests with authedFetch auth semantics. */
 export async function authedStreamFetch(path: string, init?: RequestInit): Promise<Response> {
-  const headers: Record<string, string> = {};
-  if (init?.headers) Object.assign(headers, init.headers);
-
-  const requestInit: RequestInit = {
-    ...init,
-    headers,
-    credentials: 'include',
-    cache: init?.cache ?? 'no-store',
-  };
-
-  const resp = await fetch(`${BFF_BASE}${path}`, requestInit);
-  if (resp.status === 401) {
-    const refreshed = await refreshAuth();
-    if (refreshed) {
-      return fetch(`${BFF_BASE}${path}`, requestInit);
-    }
-    return redirectAfterAuthExpired();
-  }
-  return resp;
+  return authedFetchCore(path, init, { noStore: true });
 }
 
 export function extractApiErrorMessage(payload: unknown, fallback = '请求失败'): string {

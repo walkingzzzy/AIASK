@@ -8,15 +8,29 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from ..domain.constants import FACTORY_RESEARCH_FACTORS
-from ..infrastructure.mcp_services import get_sentiment_analyzer
-from .utils import get_strategy_factory_package
+from ..domain.constants import FACTORY_RESEARCH_FACTORS, resolve_event_runtime_mode
+from .runtime import get_strategy_factory_package
 
 logger = logging.getLogger(__name__)
 
 
+def get_sentiment_analyzer():
+    from ..infrastructure.mcp_services import get_sentiment_analyzer as _get_sentiment_analyzer
+
+    return _get_sentiment_analyzer()
+
+
 class DataCollector:
     """汇总每日市场数据快照。"""
+
+    def __init__(
+        self,
+        *,
+        sentiment_analyzer_factory=None,
+        index_kline_provider=None,
+    ):
+        self._sentiment_analyzer_factory = sentiment_analyzer_factory
+        self._index_kline_provider = index_kline_provider
 
     @staticmethod
     def _iso_now() -> str:
@@ -120,50 +134,95 @@ class DataCollector:
         text = str(value or "").strip()
         if len(text) <= limit:
             return text
-        return text[: max(0, limit - 1)] + "..."
+        return text[: max(0, limit - 3)] + "..."
 
     @staticmethod
     def _normalize_codes(values: Any, limit: int = 5) -> List[str]:
-        codes: List[str] = []
-        seen: set[str] = set()
+        from ..domain.targets import _normalize_target_codes
 
-        def visit(value: Any) -> None:
-            if value is None:
-                return
-            if isinstance(value, dict):
-                for key in ("code", "symbol", "stock_code"):
-                    if value.get(key) is not None:
-                        visit(value.get(key))
-                for key in ("codes", "symbols", "stock_codes", "target_symbols"):
-                    if value.get(key) is not None:
-                        visit(value.get(key))
-                return
-            if isinstance(value, (list, tuple, set)):
-                for item in value:
-                    visit(item)
-                return
-            raw = str(value or "").strip()
-            if not raw:
-                return
-            if any(sep in raw for sep in [",", ";", "|", "\n", "\t", " "]):
-                normalized = (
-                    raw.replace(";", ",")
-                    .replace("|", ",")
-                    .replace("\n", ",")
-                    .replace("\t", ",")
-                    .replace(" ", ",")
-                )
-                for part in normalized.split(","):
-                    visit(part)
-                return
-            code = raw.split(".")[0].strip()
-            if not code or code in seen:
-                return
-            seen.add(code)
-            codes.append(code)
+        return _normalize_target_codes(values, limit=limit)
 
-        visit(values)
-        return codes[: max(1, min(int(limit or 5), 12))]
+    def _get_sentiment_analyzer(self):
+        if self._sentiment_analyzer_factory is None:
+            self._sentiment_analyzer_factory = get_sentiment_analyzer
+        return self._sentiment_analyzer_factory()
+
+    async def _load_index_klines(self, code: str, *, limit: int = 60) -> List[dict]:
+        provider = self._index_kline_provider
+        if provider is None:
+            from ..infrastructure.mcp_services import get_index_kline_provider
+
+            provider = get_index_kline_provider()
+        result = provider(code, limit=limit)
+        if hasattr(result, "__await__"):
+            result = await result
+        if isinstance(result, dict) and result.get("success"):
+            payload = result.get("data")
+            if isinstance(payload, list):
+                return payload
+            return []
+        if isinstance(result, list):
+            return result
+        return []
+
+    @staticmethod
+    def _normalize_fear_greed_level(value: Any, *, fallback_index: Any = 50) -> str:
+        level = str(value or "").strip().lower()
+        if level in {"fear", "neutral", "greed"}:
+            return level
+        try:
+            numeric = float(fallback_index)
+        except Exception:
+            numeric = 50.0
+        if numeric >= 70:
+            return "greed"
+        if numeric <= 30:
+            return "fear"
+        return "neutral"
+
+    @classmethod
+    def _extract_recent_successful_fear_greed(cls, snapshot: Any) -> Optional[dict]:
+        if not isinstance(snapshot, dict):
+            return None
+        sources = snapshot.get("sources")
+        fear_greed_source = sources.get("fear_greed") if isinstance(sources, dict) else None
+        if not isinstance(fear_greed_source, dict):
+            return None
+        if str(fear_greed_source.get("status") or "").strip().lower() != "success":
+            return None
+        try:
+            fear_greed_index = int(round(float(snapshot.get("fear_greed_index"))))
+        except Exception:
+            return None
+        fg_components = snapshot.get("fg_components")
+        return {
+            "fear_greed_index": fear_greed_index,
+            "fg_level": cls._normalize_fear_greed_level(
+                snapshot.get("fg_level"),
+                fallback_index=fear_greed_index,
+            ),
+            "fg_components": dict(fg_components) if isinstance(fg_components, dict) else {},
+            "snapshot_date": str(snapshot.get("date") or snapshot.get("snapshot_date") or "").strip(),
+        }
+
+    async def _load_recent_successful_fear_greed_snapshot(
+        self,
+        db,
+        *,
+        current_date: Optional[Any] = None,
+        limit: int = 10,
+    ) -> Optional[dict]:
+        getter = getattr(db, "list_daily_snapshots", None)
+        if not callable(getter):
+            return None
+        rows = getter(limit=max(1, int(limit or 10)), end_date=current_date)
+        if hasattr(rows, "__await__"):
+            rows = await rows
+        for item in list(rows or []):
+            reused = self._extract_recent_successful_fear_greed(item)
+            if reused is not None:
+                return reused
+        return None
 
     @classmethod
     def _event_strategy_preferences(
@@ -172,23 +231,13 @@ class DataCollector:
         theme_name: str,
         opportunity_hint: str,
     ) -> List[str]:
-        lowered = str(theme_name or "").lower()
-        direction = str(direction or "neutral").strip().lower() or "neutral"
-        if direction in {"negative", "bearish", "cost_up"}:
-            return ["rsi", "quality_factor", "value_factor"]
-        if any(
-            token in lowered
-            for token in ["quality", "roe", "dividend", "cashflow", "防御", "高股息"]
-        ):
-            return ["quality_factor", "value_factor", "ma_cross"]
-        if any(
-            token in lowered
-            for token in ["芯片", "半导体", "算力", "机器人", "ai", "军工", "油", "gas", "资源", "航运"]
-        ):
-            return ["momentum", "ma_cross", "growth_factor"]
-        if opportunity_hint == "factor_acceleration":
-            return ["growth_factor", "momentum", "ma_cross"]
-        return ["ma_cross", "momentum", "quality_factor"]
+        from .opportunity import MarketOpportunityScanner
+
+        return MarketOpportunityScanner._event_strategy_preferences(
+            direction=direction,
+            theme_name=theme_name,
+            opportunity_type=opportunity_hint,
+        )
 
     @classmethod
     def _default_theme_code(cls, cluster: dict[str, Any], fallback: str = "general") -> str:
@@ -446,21 +495,32 @@ class DataCollector:
                     if "factor" in str(theme_code or "").lower()
                     else "sector_breakout"
                 )
+                strategy_prefs = cls._event_strategy_preferences(
+                    direction=theme.get("direction") or cluster.get("direction") or "neutral",
+                    theme_name=theme.get("theme_name") or theme_code,
+                    opportunity_hint=opportunity_hint,
+                )
+                theme_direction = (
+                    theme.get("direction")
+                    or str(cluster.get("direction") or "neutral").strip().lower()
+                    or "neutral"
+                )
                 theme_payload = {
                     "theme_code": theme_code,
                     "theme_name": theme.get("theme_name") or theme_code,
-                    "direction": theme.get("direction")
-                    or str(cluster.get("direction") or "neutral").strip().lower()
-                    or "neutral",
+                    "direction": theme_direction,
                     "horizon": str(cluster.get("horizon") or "swing_5_20d").strip()
                     or "swing_5_20d",
                     "signal_count": len(signal_values),
                     "target_symbols": target_symbols,
-                    "strategy_preferences": cls._event_strategy_preferences(
-                        direction=theme.get("direction") or cluster.get("direction") or "neutral",
-                        theme_name=theme.get("theme_name") or theme_code,
-                        opportunity_hint=opportunity_hint,
-                    ),
+                    "strategy_preferences": strategy_prefs,
+                    "preferred_strategy_types": list(strategy_prefs),
+                    "allowed_strategy_types": [],
+                    "target_symbol_policy": "strict_intersection",
+                    "universe_expansion_policy": "allow_same_theme_only",
+                    "preference_strength": "medium",
+                    "preference_reason": f"event_evidence:{theme_code}:{theme_direction}",
+                    "validation_focus": "event_target_only",
                     "supporting_reasons": list(theme.get("supporting_reasons") or [])[:4],
                     "score_summary": {
                         "avg_final_score": avg_final_score,
@@ -567,12 +627,17 @@ class DataCollector:
                     missing_fields.extend(fields)
 
         try:
-            sentiment_analyzer = get_sentiment_analyzer()
+            sentiment_analyzer = self._get_sentiment_analyzer()
             index_klines = []
             try:
-                index_klines = await db.get_klines("000001", limit=60)
+                index_klines = await db.get_klines("sh000001", limit=60)
             except Exception:
                 index_klines = []
+            if not index_klines:
+                try:
+                    index_klines = await self._load_index_klines("000001", limit=60)
+                except Exception:
+                    index_klines = []
             if not index_klines:
                 raise ValueError("index klines empty")
             breadth = None
@@ -591,14 +656,30 @@ class DataCollector:
             )
         except Exception as exc:
             logger.warning("DataCollector: fear_greed failed: %s", exc)
-            snapshot["fear_greed_index"] = 50
-            snapshot["fg_level"] = "neutral"
-            snapshot["fg_components"] = {}
+            fallback_details: Dict[str, Any] = {}
+            reused_snapshot = await self._load_recent_successful_fear_greed_snapshot(
+                db,
+                current_date=snapshot.get("date"),
+            )
+            if reused_snapshot is not None:
+                snapshot["fear_greed_index"] = reused_snapshot["fear_greed_index"]
+                snapshot["fg_level"] = reused_snapshot["fg_level"]
+                snapshot["fg_components"] = reused_snapshot["fg_components"]
+                reused_date = reused_snapshot.get("snapshot_date")
+                if reused_date:
+                    fallback_details["reused_snapshot_date"] = reused_date
+                fallback_details["reuse_mode"] = "recent_successful_snapshot"
+            else:
+                snapshot["fear_greed_index"] = 50
+                snapshot["fg_level"] = "neutral"
+                snapshot["fg_components"] = {}
+                fallback_details["reuse_mode"] = "neutral_default"
             record_source(
                 "fear_greed",
                 "fallback",
                 ["fear_greed_index", "fg_level", "fg_components"],
                 reason=f"fear_greed failed: {exc}",
+                details=fallback_details,
             )
 
         factor_ic: Dict[str, float] = {}
@@ -651,14 +732,37 @@ class DataCollector:
                 details={"expected_factors": FACTORY_RESEARCH_FACTORS},
             )
 
-        event_refresh_summary = None
-        try:
-            get_event_engine = getattr(factory_pkg, "get_local_event_engine", None)
-            if callable(get_event_engine):
-                event_refresh_summary = await get_event_engine().refresh(db, snapshot)
-        except Exception as exc:
-            logger.warning("DataCollector: local event engine refresh failed: %s", exc)
-            event_refresh_summary = {"engine": "local_db_rule_v1", "enabled": False, "error": str(exc)}
+        event_runtime_mode = resolve_event_runtime_mode()
+        event_refresh_attempted = False
+        event_refresh_summary = {
+            "engine": "local_db_rule_v1",
+            "mode": event_runtime_mode,
+            "refresh_attempted": False,
+        }
+        if event_runtime_mode == "refresh":
+            event_refresh_attempted = True
+            event_refresh_summary["refresh_attempted"] = True
+            try:
+                get_event_engine = getattr(factory_pkg, "get_local_event_engine", None)
+                if callable(get_event_engine):
+                    event_refresh_summary = {
+                        **event_refresh_summary,
+                        **dict(await get_event_engine().refresh(db, snapshot) or {}),
+                    }
+                else:
+                    event_refresh_summary.update({
+                        "enabled": False,
+                        "error": "event engine unavailable",
+                    })
+            except Exception as exc:
+                logger.warning("DataCollector: local event engine refresh failed: %s", exc)
+                event_refresh_summary.update({"enabled": False, "error": str(exc)})
+        else:
+            event_refresh_summary.update({
+                "enabled": False,
+                "read_only": True,
+                "reason": "event runtime mode is readonly",
+            })
 
         snapshot["north_fund_3d_net"] = 0.0
         snapshot["margin_5d_change_pct"] = 0.0
@@ -724,12 +828,33 @@ class DataCollector:
                 },
             )
         else:
-            record_source(
-                "margin_data",
-                "fallback",
-                ["margin_5d_change_pct"],
-                reason="margin proxy unavailable",
-            )
+            margin_summary = None
+            try:
+                getter = getattr(db, "get_recent_margin_summary", None)
+                if callable(getter):
+                    margin_summary = getter(days=10, sample_limit=10, change_lookback_days=5)
+                    if hasattr(margin_summary, "__await__"):
+                        margin_summary = await margin_summary
+            except Exception as exc:
+                logger.debug("DataCollector: margin summary failed: %s", exc)
+            if isinstance(margin_summary, dict) and margin_summary.get("margin_balance_change_5d") is not None:
+                snapshot["margin_5d_change_pct"] = round(
+                    float(margin_summary.get("margin_balance_change_5d") or 0.0),
+                    2,
+                )
+                record_source(
+                    "margin_data",
+                    "success",
+                    ["margin_5d_change_pct"],
+                    details={"mode": "db_method", "summary": margin_summary},
+                )
+            else:
+                record_source(
+                    "margin_data",
+                    "fallback",
+                    ["margin_5d_change_pct"],
+                    reason="margin proxy unavailable",
+                )
 
         hot_sectors = [
             str(item).strip()
@@ -772,8 +897,18 @@ class DataCollector:
         }
         event_driven, event_status, event_reason, event_details = await self._collect_event_driven_snapshot(db)
         snapshot["event_driven"] = event_driven
-        if event_refresh_summary is not None:
-            event_details = {**dict(event_details or {}), "refresh": event_refresh_summary}
+        event_details = {
+            **dict(event_details or {}),
+            "runtime_mode": event_runtime_mode,
+            "refresh_attempted": event_refresh_attempted,
+            "refresh": dict(event_refresh_summary or {}),
+        }
+        snapshot["event_runtime"] = {
+            "mode": event_runtime_mode,
+            "refresh_attempted": event_refresh_attempted,
+            "read_only": event_runtime_mode != "refresh",
+            "refresh": dict(event_refresh_summary or {}),
+        }
         record_source("event_driven", event_status, ["event_driven"], reason=event_reason, details=event_details)
 
         try:

@@ -108,9 +108,19 @@ async def _call_optional_async(target: Any, method_name: str, *args, default=Non
     method = getattr(target, method_name, None)
     if not callable(method):
         return default
-    result = method(*args, **kwargs)
+    try:
+        result = method(*args, **kwargs)
+    except StopIteration:
+        return default
+    except StopAsyncIteration:
+        return default
     if inspect.isawaitable(result):
-        return await result
+        try:
+            return await result
+        except StopIteration:
+            return default
+        except StopAsyncIteration:
+            return default
     return result
 
 

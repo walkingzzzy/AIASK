@@ -2,9 +2,12 @@
 
 from datetime import date, timedelta
 
+from ...services.db_first_market_context import load_db_first_document_context
+from ...storage import get_db
 from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
 from ...utils import fail, normalize_code, ok
+from ..fund_flow_common import _run_storage_call_sync
 from .helpers import (
     _map_news_rows,
     _map_research_rows,
@@ -17,7 +20,7 @@ from .research import get_research_reports, get_stock_research
 
 
 @cached(ttl=1800.0)
-def get_stock_news(stock_code: str, limit: int = 20) -> dict:
+def get_stock_news(stock_code: str, limit: int = 20, *, prefer_db: bool = True) -> dict:
     """
     获取个股新闻列表（优先使用 AkShare 内置接口，失败则回退公告/研报）
 
@@ -34,6 +37,25 @@ def get_stock_news(stock_code: str, limit: int = 20) -> dict:
         # 0. Try Tushare announcements as news
         end_date = date.today()
         start_date = end_date - timedelta(days=30)
+
+        if prefer_db:
+            try:
+                db_context, _ = _run_storage_call_sync(
+                    lambda: load_db_first_document_context(
+                        get_db(),
+                        code,
+                        start_date=start_date,
+                        end_date=end_date,
+                        news_limit=max(limit, 1),
+                    ),
+                    timeout=8.0,
+                )
+                db_news = list((db_context or {}).get("news") or [])
+                if db_news:
+                    return ok(db_news[:limit])
+            except Exception:
+                pass
+
         items = _try_tushare_anns(start_date.isoformat(), end_date.isoformat(), code, limit)
         if items:
             return ok(items[:limit])
@@ -48,6 +70,7 @@ def get_stock_news(stock_code: str, limit: int = 20) -> dict:
             end_date=end_date.isoformat(),
             types=["全部"],
             stock_code=code,
+            prefer_db=prefer_db,
         )
         if fallback.get("success") and fallback.get("data"):
             events = fallback["data"].get("events", [])
@@ -64,7 +87,7 @@ def get_stock_news(stock_code: str, limit: int = 20) -> dict:
                 return ok(mapped[:limit])
 
         # 回退3：使用研报通用接口
-        reports = get_research_reports(code, limit=max(limit, 10))
+        reports = get_research_reports(code, limit=max(limit, 10), prefer_db=prefer_db)
         if reports.get("success") and reports.get("data"):
             mapped = _map_research_rows(reports["data"] if isinstance(reports["data"], list) else [])
             if mapped:

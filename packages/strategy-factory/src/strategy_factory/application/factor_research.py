@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Any, List, Optional, Tuple
 
 from ..domain.constants import FACTORY_RESEARCH_FACTORS, preferred_strategy_types_for_factor
-from ..infrastructure.mcp_services import get_factor_scheduler_singleton
+from ..infrastructure.mcp_services import get_factor_scheduler_singleton, get_quant_manager_callable
 from .runtime import _call_optional_async
 
 
@@ -63,6 +63,17 @@ class FactorResearchBuilder:
     @classmethod
     def _preferred_types_for_factor(cls, factor_name: str) -> List[str]:
         return preferred_strategy_types_for_factor(factor_name)
+
+    @staticmethod
+    def _normalize_codes(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        text = str(value or "").strip()
+        if not text:
+            return []
+        return [item.strip() for item in text.split(",") if item.strip()]
 
     @classmethod
     def _history_summary(cls, rows: List[dict[str, Any]]) -> dict[str, Any]:
@@ -137,6 +148,43 @@ class FactorResearchBuilder:
         return history_meta, latest_factor_date
 
     @classmethod
+    async def _load_governed_candidate_pool(
+        cls,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        quant_manager = None
+        try:
+            quant_manager = get_quant_manager_callable()
+        except Exception:
+            quant_manager = None
+        if quant_manager is None:
+            return {"available": False, "reason": "quant_manager_unavailable"}
+
+        candidate_codes = cls._normalize_codes(snapshot.get("candidate_codes"))
+        kwargs: dict[str, Any] = {"op": "active_pool", "limit": 80, "market_codes_only": True}
+        if candidate_codes:
+            kwargs["codes"] = candidate_codes
+        try:
+            result = await quant_manager(action="factor_candidate_registry", kwargs=kwargs)
+        except Exception as exc:
+            return {"available": False, "reason": f"factor_candidate_registry_failed:{exc}"}
+        if not isinstance(result, dict) or not result.get("success"):
+            return {
+                "available": False,
+                "reason": str((result or {}).get("error") or (result or {}).get("message") or "active_pool_unavailable"),
+            }
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        active_pool = data.get("active_pool") if isinstance(data.get("active_pool"), dict) else {}
+        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        if not active_pool:
+            return {"available": False, "reason": "active_pool_empty", "summary": summary}
+        return {
+            "available": bool(active_pool.get("count")),
+            "summary": summary,
+            "active_pool": active_pool,
+        }
+
+    @classmethod
     async def build(cls, db, snapshot: dict[str, Any]) -> dict[str, Any]:
         factor_ic = dict(snapshot.get("factor_ic") or {})
         factor_trend = dict(snapshot.get("factor_ic_trend") or {})
@@ -150,6 +198,23 @@ class FactorResearchBuilder:
             name
             for name in names
             if name in factor_ic or name in factor_trend or bool(history_meta.get(str(name)))
+        ]
+        governed_pool = dict(await cls._load_governed_candidate_pool(snapshot) or {})
+        active_candidate_pool = dict(governed_pool.get("active_pool") or {})
+        governed_top_candidates = [
+            dict(item or {})
+            for item in list(active_candidate_pool.get("top_candidates") or [])
+            if isinstance(item, dict)
+        ]
+        governed_family_summary = [
+            dict(item or {})
+            for item in list(active_candidate_pool.get("family_summary") or [])
+            if isinstance(item, dict)
+        ]
+        governed_regime_summary = [
+            dict(item or {})
+            for item in list(active_candidate_pool.get("regime_summary") or [])
+            if isinstance(item, dict)
         ]
         scheduler_status = dict(get_factor_scheduler_singleton().status() or {})
         scheduler_quality_flags = list(scheduler_status.get("quality_flags") or [])
@@ -191,6 +256,13 @@ class FactorResearchBuilder:
         ]
         positive_rising_factors = [name for name in positive_rising_factors if name]
 
+        governed_active_factors = [
+            str(item.get("family") or "").strip()
+            for item in governed_top_candidates
+            if str(item.get("family") or "").strip()
+        ]
+        governed_active_factors = list(dict.fromkeys(governed_active_factors))
+
         active_factors = positive_rising_factors[:3]
         if not active_factors:
             active_factors = [
@@ -198,10 +270,16 @@ class FactorResearchBuilder:
                 for item in ranked_factors
                 if abs(cls._safe_float(item.get("ic_value"))) >= 0.02
             ][:3]
+        if governed_active_factors:
+            active_factors = list(dict.fromkeys([*governed_active_factors[:4], *active_factors]))[:4]
         active_factors = [name for name in active_factors if name]
 
         active_factor_set = set(active_factors)
         preferred_strategy_types: List[str] = []
+        for item in governed_top_candidates:
+            for strategy_type in cls._preferred_types_for_factor(str(item.get("family") or "")):
+                if strategy_type not in preferred_strategy_types:
+                    preferred_strategy_types.append(strategy_type)
         for item in ranked_factors:
             if str(item.get("factor_name") or "") not in active_factor_set:
                 continue
@@ -214,11 +292,20 @@ class FactorResearchBuilder:
             for item in ranked_factors[:3]
             if str(item.get("factor_name") or "")
         ]
+        top_candidate_names = [
+            str(item.get("name") or "")
+            for item in governed_top_candidates[:5]
+            if str(item.get("name") or "")
+        ]
         rationale: List[str] = []
         if active_factors:
             rationale.append(f"活跃因子: {', '.join(active_factors)}")
         if preferred_strategy_types:
             rationale.append(f"优先策略类型: {', '.join(preferred_strategy_types[:4])}")
+        if governed_top_candidates:
+            rationale.append(f"治理后候选池已接入，Top 候选: {', '.join(top_candidate_names[:3])}")
+        elif governed_pool.get("reason"):
+            rationale.append(f"治理后候选池未生效，已回退到种子因子: {governed_pool.get('reason')}")
 
         snapshot_date = cls._parse_date(snapshot.get("date"))
         freshness_days = cls._days_since(latest_factor_date, reference_date=snapshot_date)
@@ -241,6 +328,8 @@ class FactorResearchBuilder:
             quality_flags.append("stale")
         if decay_factors:
             quality_flags.append("decay_detected")
+        if governed_top_candidates:
+            quality_flags.append("governed_candidate_pool_active")
         factor_ic_status = str(factor_ic_source.get("status") or "")
         if factor_ic_status and factor_ic_status != "success":
             quality_flags.append(f"factor_ic_{factor_ic_status}")
@@ -255,17 +344,22 @@ class FactorResearchBuilder:
         if decay_factors:
             rationale.append(f"检测到衰减因子: {', '.join(decay_factors[:3])}")
 
-        degraded = not bool(ranked_factors) or stale
+        degraded = (not bool(ranked_factors) and not bool(governed_top_candidates)) or (stale and not bool(governed_top_candidates))
         return {
             "active_factors": active_factors,
             "ranked_factors": ranked_factors,
             "positive_rising_factors": positive_rising_factors,
             "preferred_strategy_types": preferred_strategy_types,
+            "governed_candidates": governed_top_candidates,
+            "active_candidate_pool": active_candidate_pool,
+            "active_family_summary": governed_family_summary,
+            "active_regime_summary": governed_regime_summary,
             "research_rationale": rationale,
             "source_chain": [
                 "snapshot.factor_ic",
                 "snapshot.factor_ic_trend",
                 f"db.factor_ic_history(limit={cls.HISTORY_LIMIT})",
+                "quant_manager.factor_candidate_registry(active_pool)",
                 "factor_scheduler.status",
                 "artifact_v2",
             ],
@@ -283,9 +377,14 @@ class FactorResearchBuilder:
             },
             "summary": {
                 "active_factor_count": len(active_factors),
+                "active_candidate_count": int(active_candidate_pool.get("count") or 0),
                 "ranked_factor_count": len(ranked_factors),
                 "top_factor_names": top_factor_names,
+                "top_candidate_names": top_candidate_names,
+                "active_family_names": [str(item.get("family") or "") for item in governed_family_summary if str(item.get("family") or "")],
+                "active_regime_names": [str(item.get("regime") or "") for item in governed_regime_summary if str(item.get("regime") or "")],
                 "preferred_strategy_types": preferred_strategy_types,
+                "factor_source_mode": "governed_candidate_pool" if governed_top_candidates else "seed_fallback",
                 "degraded": degraded,
                 "freshness_days": freshness_days,
                 "latest_factor_date": latest_factor_date.isoformat() if latest_factor_date else None,

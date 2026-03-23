@@ -19,6 +19,22 @@ function formatRatioPercent(value?: number | null) {
   return `${Math.round(Number(value) * 100)}%`;
 }
 
+function formatFactoryMetricValue(value?: number | null, digits = 0) {
+  if (value == null || Number.isNaN(Number(value))) return '-';
+  return Number(value).toFixed(digits);
+}
+
+function hasRunAuditMetrics(summary?: FactoryRunSummary | null) {
+  if (!summary) return false;
+  return [
+    summary.deflated_sharpe_ratio_avg,
+    summary.high_pbo_count,
+    summary.formal_multiple_testing_count,
+    summary.weak_white_reality_check_count,
+    summary.weak_hansen_spa_count,
+  ].some((value) => value != null);
+}
+
 function normalizeFactoryRunError(error?: string | null) {
   const text = String(error ?? '').trim();
   if (!text) return '未知错误';
@@ -259,6 +275,47 @@ function FactoryRunStructureDiagnosticsPanel({ runs }: { runs: FactoryRunItem[] 
   );
 }
 
+function FactoryQualityAuditPanel({ summary }: { summary: FactoryRunSummary }) {
+  const hasAuditMetrics = [
+    summary.formal_multiple_testing_count,
+    summary.deflated_sharpe_ratio_avg,
+    summary.high_pbo_count,
+    summary.weak_white_reality_check_count,
+    summary.weak_hansen_spa_count,
+    summary.attempt_adjusted_gate_failed,
+  ].some((value) => value != null);
+
+  if (!hasAuditMetrics) return null;
+
+  return (
+    <div className="mt-3 rounded border border-border bg-surface-alt p-3 space-y-3">
+      <div className="text-xs font-medium text-text-primary">统计审计</div>
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <FactoryMetric title="正式多重检验" value={summary.formal_multiple_testing_count ?? 0} />
+        <FactoryMetric title="平均 DSR" value={summary.deflated_sharpe_ratio_avg == null ? '-' : Number(summary.deflated_sharpe_ratio_avg).toFixed(2)} />
+        <FactoryMetric title="高 PBO 数" value={summary.high_pbo_count ?? 0} />
+        <FactoryMetric title="弱 White RC" value={summary.weak_white_reality_check_count ?? 0} />
+        <FactoryMetric title="弱 Hansen SPA" value={summary.weak_hansen_spa_count ?? 0} />
+        <FactoryMetric title="尝试惩罚失败" value={summary.attempt_adjusted_gate_failed ?? 0} />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <FactoryMetric title="约束违例" value={summary.constraint_violation_count ?? 0} />
+        <FactoryMetric title="交集均值" value={formatRatioPercent(summary.target_symbol_intersection_ratio_avg)} />
+        <FactoryMetric title="扩池次数" value={summary.universe_expansion_count ?? 0} />
+        <FactoryMetric title="偏好错配" value={summary.preference_mismatch_warning_count ?? 0} />
+        <FactoryMetric title="事件窗污染" value={summary.event_window_contamination_warning_count ?? 0} />
+        <FactoryMetric title="成本审计缺失" value={summary.cost_audit_missing_count ?? 0} />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-text-secondary">
+        <div>平均 proxy DSR：{summary.deflated_sharpe_proxy_avg == null ? '-' : Number(summary.deflated_sharpe_proxy_avg).toFixed(2)}</div>
+        <div>高 PBO proxy：{summary.high_pbo_proxy_count ?? 0}</div>
+        <div>尝试惩罚均值：{summary.attempt_adjusted_score_avg == null ? '-' : Number(summary.attempt_adjusted_score_avg).toFixed(2)}</div>
+        <div>目标池交集均值：{formatRatioPercent(summary.target_symbol_intersection_ratio_avg)}</div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- sub-panels ---------- */
 
 function FactoryRunComparisonTable({ runs }: { runs: FactoryRunItem[] }) {
@@ -303,6 +360,11 @@ function FactoryRunComparisonTable({ runs }: { runs: FactoryRunItem[] }) {
       wrap: true,
     },
     { label: '淘汰数', value: (run: FactoryRunItem) => String(run.summary?.eliminated ?? 0) },
+    { label: '平均 DSR', value: (run: FactoryRunItem) => formatFactoryMetricValue(run.summary?.deflated_sharpe_ratio_avg, 2) },
+    { label: '高 PBO 数', value: (run: FactoryRunItem) => String(run.summary?.high_pbo_count ?? 0) },
+    { label: '正式多重检验', value: (run: FactoryRunItem) => String(run.summary?.formal_multiple_testing_count ?? 0) },
+    { label: '弱 White RC', value: (run: FactoryRunItem) => String(run.summary?.weak_white_reality_check_count ?? 0) },
+    { label: '弱 Hansen SPA', value: (run: FactoryRunItem) => String(run.summary?.weak_hansen_spa_count ?? 0) },
     { label: '耗时(秒)', value: (run: FactoryRunItem) => String(run.elapsed_seconds ?? run.summary?.elapsed_seconds ?? '-') },
   ];
 
@@ -363,6 +425,9 @@ function FactoryRunTrendPanel({ runs, metricKey }: { runs: FactoryRunItem[]; met
     },
     { key: 'event_task_count', label: '事件任务', value: (run: FactoryRunItem) => Number(run.summary?.event_task_count ?? 0) },
     { key: 'snapshot_task_count', label: '快照任务', value: (run: FactoryRunItem) => Number(run.summary?.snapshot_task_count ?? 0) },
+    { key: 'deflated_sharpe_ratio_avg', label: '平均 DSR', value: (run: FactoryRunItem) => Number(run.summary?.deflated_sharpe_ratio_avg ?? 0), digits: 2 },
+    { key: 'high_pbo_count', label: '高 PBO 数', value: (run: FactoryRunItem) => Number(run.summary?.high_pbo_count ?? 0) },
+    { key: 'formal_multiple_testing_count', label: '正式多重检验', value: (run: FactoryRunItem) => Number(run.summary?.formal_multiple_testing_count ?? 0) },
   ];
   const activeMetric = metrics.find((metric) => metric.key === metricKey) ?? metrics[0];
 
@@ -382,13 +447,14 @@ function FactoryRunTrendPanel({ runs, metricKey }: { runs: FactoryRunItem[]; met
           const latestValue = activeMetric.value(latest);
           const firstValue = activeMetric.value(first);
           const delta = latestValue - firstValue;
+          const digits = activeMetric.digits ?? 0;
 
           return (
             <div className="rounded border border-border bg-surface px-3 py-3">
               <div className="flex items-center justify-between gap-3 text-xs">
                 <span className="font-medium">{activeMetric.label}</span>
                 <span className="text-text-secondary">
-                  最新 {latestValue} · 较最早 {delta > 0 ? '+' : ''}{delta}
+                  最新 {formatFactoryMetricValue(latestValue, digits)} · 较最早 {delta > 0 ? '+' : ''}{formatFactoryMetricValue(delta, digits)}
                 </span>
               </div>
               <div className="mt-2 flex items-end gap-2 h-24">
@@ -398,10 +464,10 @@ function FactoryRunTrendPanel({ runs, metricKey }: { runs: FactoryRunItem[]; met
                   return (
                     <div key={`${activeMetric.key}-${run.run_id ?? idx}`} className="flex-1 min-w-0">
                       <div className="h-20 flex items-end">
-                        <div
+                      <div
                           className={`w-full rounded-t ${run.status === 'failed' ? 'bg-danger/70' : 'bg-primary/70'}`}
                           style={{ height: `${height}%` }}
-                          title={`${activeMetric.label}: ${value}`}
+                          title={`${activeMetric.label}: ${formatFactoryMetricValue(value, digits)}`}
                         />
                       </div>
                       <div className="mt-1 text-center text-caption text-text-secondary truncate">
@@ -584,6 +650,7 @@ function FactoryRunDetailPanel({
       </div>
 
       <FactoryTaskStructurePanel summary={summary} />
+      <FactoryQualityAuditPanel summary={summary} />
 
       {snapshotRows.length > 0 && (
         <div>
@@ -718,6 +785,7 @@ export function FactoryDashboard({
         <FactoryMetric title="耗时(秒)" value={factorySummary.elapsed_seconds ?? '-'} />
       </div>
       <FactoryTaskStructurePanel summary={factorySummary} />
+      <FactoryQualityAuditPanel summary={factorySummary} />
       <div className="mt-3 flex flex-wrap gap-2">
         {capabilityBadges.map((item) => (
           <Badge key={item.key} variant={item.enabled ? 'success' : 'neutral'}>
@@ -811,6 +879,27 @@ export function FactoryDashboard({
                   ) : null;
                 })()}
               </div>
+              {hasRunAuditMetrics(item.summary) ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {item.summary?.deflated_sharpe_ratio_avg != null ? (
+                    <Badge variant="info">
+                      DSR 均值 {formatFactoryMetricValue(item.summary?.deflated_sharpe_ratio_avg, 2)}
+                    </Badge>
+                  ) : null}
+                  <Badge variant={(item.summary?.high_pbo_count ?? 0) > 0 ? 'warning' : 'neutral'}>
+                    高 PBO {item.summary?.high_pbo_count ?? 0}
+                  </Badge>
+                  <Badge variant={(item.summary?.formal_multiple_testing_count ?? 0) > 0 ? 'success' : 'neutral'}>
+                    正式多重检验 {item.summary?.formal_multiple_testing_count ?? 0}
+                  </Badge>
+                  <Badge variant={(item.summary?.weak_white_reality_check_count ?? 0) > 0 ? 'warning' : 'neutral'}>
+                    弱 White RC {item.summary?.weak_white_reality_check_count ?? 0}
+                  </Badge>
+                  <Badge variant={(item.summary?.weak_hansen_spa_count ?? 0) > 0 ? 'warning' : 'neutral'}>
+                    弱 Hansen SPA {item.summary?.weak_hansen_spa_count ?? 0}
+                  </Badge>
+                </div>
+              ) : null}
               <div className="mt-2 text-xs text-text-secondary">
                 耗时：{item.elapsed_seconds ?? item.summary?.elapsed_seconds ?? '-'} 秒
               </div>
@@ -847,7 +936,7 @@ export function FactoryDashboard({
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <div className="text-sm font-medium">运行趋势</div>
             <div className="flex flex-wrap items-center gap-2">
-              {[
+                {[
                 { key: 'candidates_spawned', label: '候选生成' },
                 { key: 'submitted', label: '提交数' },
                 { key: 'passed_quality_gate', label: '质检通过' },
@@ -855,6 +944,9 @@ export function FactoryDashboard({
                 { key: 'autonomy_task_count', label: '研究任务' },
                 { key: 'event_task_count', label: '事件任务' },
                 { key: 'snapshot_task_count', label: '快照任务' },
+                { key: 'deflated_sharpe_ratio_avg', label: '平均 DSR' },
+                { key: 'high_pbo_count', label: '高 PBO 数' },
+                { key: 'formal_multiple_testing_count', label: '正式多重检验' },
               ].map((item) => (
                 <button
                   key={item.key}

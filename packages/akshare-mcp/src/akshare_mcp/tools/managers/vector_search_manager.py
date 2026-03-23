@@ -20,7 +20,7 @@ def register_vector_search_manager(mcp):
     async def _run_registered_tool(tool_name: str, args: dict) -> dict:
         tool = getattr(getattr(mcp, "_tool_manager", None), "_tools", {}).get(tool_name)
         if tool is None:
-            return fail(f"Tool {tool_name} not found")
+            return {"success": False, "error": f"Tool {tool_name} not found"}
         result = await tool.run(args or {})
         return result if isinstance(result, dict) else {"success": False, "error": f"Unexpected result type from {tool_name}"}
     
@@ -91,6 +91,11 @@ def register_vector_search_manager(mcp):
                 # 调用真实的 K线形态搜索
                 try:
                     result = await _run_registered_tool("search_by_kline", {"code": code, "days": int(days), "top_n": int(top_n)})
+                    if not result.get("success"):
+                        return _fail(
+                            result.get("error") or f"search_by_kline failed for {code}",
+                            source_chain=['vector_search_manager', 'search_by_kline'],
+                        )
                     if result.get('success') and result.get('data'):
                         data = result['data']
                         similar = data.get('results', [])
@@ -117,16 +122,16 @@ def register_vector_search_manager(mcp):
                             'latency_ms': data.get('latency_ms', 0),
                             'retrieval_quality': retrieval_quality,
                         }, source_chain=['vector_search_manager', 'search_by_kline'])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    return _fail(
+                        f"search_by_kline exception: {type(exc).__name__}: {exc}",
+                        source_chain=['vector_search_manager', 'search_by_kline'],
+                    )
                 
-                return _ok({
-                    'code': code,
-                    'similar_stocks': [],
-                    'pattern_type': 'unknown',
-                    'confidence': 0,
-                    'message': f'暂无 {code} 的相似K线形态数据，请先运行数据预热'
-                }, source_chain=['vector_search_manager', 'search_by_kline'])
+                return _fail(
+                    f"未检索到 {code} 的相似K线形态数据，请先运行数据预热",
+                    source_chain=['vector_search_manager', 'search_by_kline'],
+                )
             
             elif action == 'similar_stocks':
                 if not code:
@@ -139,6 +144,11 @@ def register_vector_search_manager(mcp):
                 # 调用真实的相似股票搜索
                 try:
                     result = await _run_registered_tool("search_similar_stocks", {"code": code, "top_n": int(top_n), "similarity_type": str(similarity_type)})
+                    if not result.get("success"):
+                        return _fail(
+                            result.get("error") or f"search_similar_stocks failed for {code}",
+                            source_chain=['vector_search_manager', 'search_similar_stocks'],
+                        )
                     if result.get('success') and result.get('data'):
                         data = result['data']
                         similar = data.get('similar_stocks', [])
@@ -157,14 +167,16 @@ def register_vector_search_manager(mcp):
                             'similarity_type': data.get('similarity_type', similarity_type),
                             'retrieval_quality': retrieval_quality,
                         }, source_chain=['vector_search_manager', 'search_similar_stocks'])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    return _fail(
+                        f"search_similar_stocks exception: {type(exc).__name__}: {exc}",
+                        source_chain=['vector_search_manager', 'search_similar_stocks'],
+                    )
                 
-                return _ok({
-                    'code': code,
-                    'similar_stocks': [],
-                    'message': f'暂无 {code} 的相似股票数据，请先运行数据预热'
-                }, source_chain=['vector_search_manager', 'search_similar_stocks'])
+                return _fail(
+                    f"未检索到 {code} 的相似股票数据，请先运行数据预热",
+                    source_chain=['vector_search_manager', 'search_similar_stocks'],
+                )
             
             else:
                 return _fail(f'Unknown action: {action}. Supported: help, similar_patterns, similar_stocks')

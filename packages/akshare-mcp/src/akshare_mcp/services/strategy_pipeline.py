@@ -19,7 +19,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from strategy_factory import PIPELINE_STAGE_TIMEOUT_SEC, PIPELINE_STAGE_TIMEOUTS
+def _get_pipeline_constants():
+    from strategy_factory import PIPELINE_STAGE_TIMEOUT_SEC, PIPELINE_STAGE_TIMEOUTS
+    return PIPELINE_STAGE_TIMEOUT_SEC, PIPELINE_STAGE_TIMEOUTS
 
 from .strategy_stages import (
     EXTENDED_THEME_LIBRARY,
@@ -68,6 +70,9 @@ class PipelineResult:
                     "prompt_chars": sr.prompt_chars,
                     "response_chars": sr.response_chars,
                     "error": sr.error,
+                    "llm_error": sr.llm_error,
+                    "llm_error_type": sr.llm_error_type,
+                    "llm_error_metrics": dict(sr.llm_error_metrics or {}),
                 }
                 for sid, sr in self.stages.items()
             },
@@ -100,6 +105,7 @@ class MultiStageStrategyPipeline:
         snapshot = snapshot or {}
         pipeline_started = time.perf_counter()
         result = PipelineResult()
+        PIPELINE_STAGE_TIMEOUT_SEC, PIPELINE_STAGE_TIMEOUTS = _get_pipeline_constants()
 
         # 构建 Stage 1 的初始输入
         stage_input = self._build_initial_input(snapshot, research_task)
@@ -129,7 +135,6 @@ class MultiStageStrategyPipeline:
                     if stage_def.prefer_fallback:
                         consecutive_llm_failures = 0
                     consecutive_llm_failures += 1
-                    # 超时检测：耗时接近超时阈值 → 立即跳过
                     _stage_limit = PIPELINE_STAGE_TIMEOUTS.get(stage_id, PIPELINE_STAGE_TIMEOUT_SEC)
                     if stage_result.elapsed_sec >= _stage_limit * 0.8:
                         logger.info(
@@ -182,15 +187,33 @@ class MultiStageStrategyPipeline:
 
         started = time.perf_counter()
         llm_attempted = False
+        prepared_input = dict(input_data or {})
+        prompt_chars = 0
+        llm_error = None
+        llm_error_type = None
+        llm_error_metrics: dict[str, Any] = {}
 
         if stage_def.prefer_fallback:
             logger.info("Stage %s using local fallback (prefer_fallback)", stage_id)
-            return await self._call_fallback_stage(stage_def, db, input_data, snapshot, started, llm_attempted=False)
+            return await self._call_fallback_stage(
+                stage_def,
+                db,
+                input_data,
+                snapshot,
+                started,
+                llm_attempted=False,
+                prompt_chars=prompt_chars,
+                llm_error=llm_error,
+                llm_error_type=llm_error_type,
+                llm_error_metrics=llm_error_metrics,
+            )
 
         # 1) 尝试 LLM 调用（跳过条件：skip_llm 标记或 provider 不可用）
         if not skip_llm and self.provider.is_enabled():
             llm_attempted = True
             prepared_input = self._prepare_stage_input(stage_id, input_data)
+            prompt_chars = len(stage_def.system_prompt) + len(json.dumps(prepared_input, ensure_ascii=False, default=str))
+            pipeline_stage_timeout_sec, pipeline_stage_timeouts = _get_pipeline_constants()
             try:
                 output = await self.provider.call_stage(
                     stage_id=stage_def.stage_id,
@@ -198,7 +221,7 @@ class MultiStageStrategyPipeline:
                     system_prompt=stage_def.system_prompt,
                     max_tokens=stage_def.max_tokens,
                     temperature=stage_def.temperature,
-                    timeout_sec=PIPELINE_STAGE_TIMEOUTS.get(stage_def.stage_id, PIPELINE_STAGE_TIMEOUT_SEC),
+                    timeout_sec=pipeline_stage_timeouts.get(stage_def.stage_id, pipeline_stage_timeout_sec),
                 )
                 if validate_stage_output(stage_id, output):
                     elapsed = time.perf_counter() - started
@@ -207,11 +230,18 @@ class MultiStageStrategyPipeline:
                         output=output,
                         used_fallback=False,
                         llm_attempted=True,
-                        prompt_chars=len(stage_def.system_prompt) + len(json.dumps(prepared_input, ensure_ascii=False, default=str)),
+                        prompt_chars=prompt_chars,
                         response_chars=len(json.dumps(output, ensure_ascii=False, default=str)),
                         elapsed_sec=elapsed,
                     )
                 else:
+                    llm_error = f"llm output failed validation for {stage_id}"
+                    llm_error_type = "ValidationError"
+                    llm_error_metrics = {
+                        "stage_id": stage_id,
+                        "status": "invalid_output",
+                        "output_keys": list(output.keys()),
+                    }
                     logger.warning(
                         "Stage %s LLM output failed validation, falling back. "
                         "Output keys: %s, sample: %.200s",
@@ -219,7 +249,19 @@ class MultiStageStrategyPipeline:
                         list(output.keys()),
                         json.dumps(output, ensure_ascii=False, default=str)[:200],
                     )
-            except (StrategyLLMRequestError, Exception) as exc:
+            except StrategyLLMRequestError as exc:
+                llm_error = str(exc)
+                llm_error_metrics = dict(getattr(exc, "metrics", {}) or {})
+                llm_error_type = str(llm_error_metrics.get("last_error_type") or exc.__class__.__name__)
+                logger.warning("Stage %s LLM call failed: %s, falling back", stage_id, exc)
+            except Exception as exc:
+                llm_error = str(exc)
+                llm_error_type = exc.__class__.__name__
+                llm_error_metrics = {
+                    "stage_id": stage_id,
+                    "status": "failed",
+                    "last_error_type": llm_error_type,
+                }
                 logger.warning("Stage %s LLM call failed: %s, falling back", stage_id, exc)
         elif skip_llm:
             logger.info("Stage %s skipping LLM (prior stage timed out)", stage_id)
@@ -232,6 +274,10 @@ class MultiStageStrategyPipeline:
             snapshot,
             started,
             llm_attempted=llm_attempted,
+            prompt_chars=prompt_chars,
+            llm_error=llm_error,
+            llm_error_type=llm_error_type,
+            llm_error_metrics=llm_error_metrics,
         )
 
     # ------------------------------------------------------------------
@@ -244,7 +290,8 @@ class MultiStageStrategyPipeline:
         input_data: dict[str, Any],
     ) -> dict[str, Any]:
         """调用 LLM provider 执行单阶段。"""
-        stage_timeout = PIPELINE_STAGE_TIMEOUTS.get(stage_def.stage_id, PIPELINE_STAGE_TIMEOUT_SEC)
+        _timeout_sec, _timeouts = _get_pipeline_constants()
+        stage_timeout = _timeouts.get(stage_def.stage_id, _timeout_sec)
         prepared_input = self._prepare_stage_input(stage_def.stage_id, input_data)
         return await self.provider.call_stage(
             stage_id=stage_def.stage_id,
@@ -264,6 +311,10 @@ class MultiStageStrategyPipeline:
         started: float,
         *,
         llm_attempted: bool,
+        prompt_chars: int = 0,
+        llm_error: Optional[str] = None,
+        llm_error_type: Optional[str] = None,
+        llm_error_metrics: Optional[dict[str, Any]] = None,
     ) -> StageResult:
         """执行 fallback 函数。"""
         if stage_def.fallback_fn is None:
@@ -272,8 +323,12 @@ class MultiStageStrategyPipeline:
                 output={},
                 used_fallback=True,
                 llm_attempted=llm_attempted,
+                prompt_chars=prompt_chars,
                 elapsed_sec=time.perf_counter() - started,
                 error=f"no fallback for stage {stage_def.stage_id}",
+                llm_error=llm_error,
+                llm_error_type=llm_error_type,
+                llm_error_metrics=dict(llm_error_metrics or {}),
             )
         try:
             output = await stage_def.fallback_fn(db, input_data, snapshot)
@@ -284,8 +339,12 @@ class MultiStageStrategyPipeline:
                 output=output if valid else {},
                 used_fallback=True,
                 llm_attempted=llm_attempted,
+                prompt_chars=prompt_chars,
                 elapsed_sec=elapsed,
                 error=None if valid else f"fallback output failed validation for {stage_def.stage_id}",
+                llm_error=llm_error,
+                llm_error_type=llm_error_type,
+                llm_error_metrics=dict(llm_error_metrics or {}),
             )
         except Exception as exc:
             logger.error("Stage %s fallback failed: %s", stage_def.stage_id, exc)
@@ -294,8 +353,12 @@ class MultiStageStrategyPipeline:
                 output={},
                 used_fallback=True,
                 llm_attempted=llm_attempted,
+                prompt_chars=prompt_chars,
                 elapsed_sec=time.perf_counter() - started,
                 error=f"fallback failed: {exc}",
+                llm_error=llm_error,
+                llm_error_type=llm_error_type,
+                llm_error_metrics=dict(llm_error_metrics or {}),
             )
 
     @staticmethod
@@ -358,7 +421,20 @@ class MultiStageStrategyPipeline:
         if research_task:
             initial["research_task"] = {
                 k: research_task[k]
-                for k in ("task_key", "theme_code", "direction", "target_symbols", "strategy_preferences")
+                for k in (
+                    "task_key",
+                    "task_source",
+                    "theme_code",
+                    "direction",
+                    "target_symbols",
+                    "strategy_preferences",
+                    "preferred_strategy_types",
+                    "allowed_strategy_types",
+                    "target_symbol_policy",
+                    "universe_expansion_policy",
+                    "preference_strength",
+                    "validation_focus",
+                )
                 if k in research_task
             }
 
@@ -391,6 +467,12 @@ class MultiStageStrategyPipeline:
                     "direction",
                     "target_symbols",
                     "strategy_preferences",
+                    "preferred_strategy_types",
+                    "allowed_strategy_types",
+                    "target_symbol_policy",
+                    "universe_expansion_policy",
+                    "preference_strength",
+                    "validation_focus",
                     "opportunity_type",
                     "horizon",
                 )

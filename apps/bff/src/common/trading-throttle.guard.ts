@@ -87,15 +87,13 @@ export class TradingThrottleGuard extends ThrottlerGuard {
     const secKey = `throttle:trade:sec:${userId}:${Math.floor(now.getTime() / 1000)}`;
     const dayKey = `throttle:trade:day:${userId}:${now.toISOString().slice(0, 10)}`;
 
-    // 每秒限流
-    const secCount = ((await cache.get<number>(secKey)) ?? 0) + 1;
+    // 每秒限流：使用原子 INCR 避免并发绕过
+    const secCount = await cache.increment(secKey, 2);
     if (secCount > this.PER_SECOND_LIMIT) return false;
-    await cache.set(secKey, secCount, 2); // TTL 2s
 
-    // 每日限流
-    const dayCount = ((await cache.get<number>(dayKey)) ?? 0) + 1;
+    // 每日限流：使用日期分片键，TTL 24h 即可
+    const dayCount = await cache.increment(dayKey, 86400);
     if (dayCount > this.PER_DAY_LIMIT) return false;
-    await cache.set(dayKey, dayCount, 86400); // TTL 24h
 
     return true;
   }

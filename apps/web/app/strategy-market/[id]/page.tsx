@@ -28,6 +28,24 @@ function isMissingStrategyError(text: string | null): boolean {
     || source.includes('未找到');
 }
 
+function firstFiniteNumber(...values: Array<number | null | undefined>) {
+  for (const value of values) {
+    if (value != null && Number.isFinite(Number(value))) {
+      return Number(value);
+    }
+  }
+  return null;
+}
+
+function formatMultipleTestingMode(value?: string | null) {
+  const mode = String(value ?? '').trim();
+  if (!mode) return '-';
+  if (mode === 'formal_runtime') return '正式论文实现';
+  if (mode === 'paper_runtime') return '论文实现';
+  if (mode === 'runtime_proxy') return '运行时代理';
+  return mode.replaceAll('_', ' ');
+}
+
 export default function StrategyDetailPage() {
   const { id } = useParams<{ id: string }>();
   const addToCart = useCartStore((st) => st.addStrategy);
@@ -143,6 +161,33 @@ export default function StrategyDetailPage() {
   const turnoverRate = latestIncubationMetric?.turnover_rate ?? null;
   const capacityValue = strategy.capacity ?? paperAccount?.total_value ?? latestPaperNav?.total_value ?? null;
   const capacityLabel = strategy.capacity_label ?? '当前模拟容量';
+  const qualityGate = latestQualityReport?.quality_gate;
+  const runCorrection = latestQualityReport?.run_correction;
+  const multipleTestingMode = runCorrection?.multiple_testing_mode ?? qualityGate?.multiple_testing_mode ?? null;
+  const deflatedSharpeRatio = firstFiniteNumber(
+    runCorrection?.deflated_sharpe_ratio,
+    qualityGate?.deflated_sharpe_ratio,
+    runCorrection?.deflated_sharpe_proxy,
+    qualityGate?.deflated_sharpe_proxy,
+  );
+  const pboValue = firstFiniteNumber(
+    runCorrection?.pbo,
+    qualityGate?.pbo,
+    runCorrection?.pbo_proxy,
+    qualityGate?.pbo_proxy,
+  );
+  const hansenSpaPvalue = firstFiniteNumber(
+    runCorrection?.hansen_spa_pvalue,
+    qualityGate?.hansen_spa_pvalue,
+    runCorrection?.spa_pvalue_proxy,
+    qualityGate?.spa_pvalue_proxy,
+  );
+  const whiteRealityCheckPvalue = firstFiniteNumber(
+    runCorrection?.white_reality_check_pvalue,
+    qualityGate?.white_reality_check_pvalue,
+    runCorrection?.reality_check_pvalue_proxy,
+    qualityGate?.reality_check_pvalue_proxy,
+  );
 
   /* ---------- render ---------- */
 
@@ -174,20 +219,32 @@ export default function StrategyDetailPage() {
 
       {strategy.description ? <p className="text-text-secondary text-sm mt-2">{strategy.description}</p> : null}
 
-      <div className="flex gap-0 border-b border-border mt-4">
+      <div className="flex gap-0 border-b border-border mt-4" role="tablist" aria-label="策略详情视图">
         <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'overview'}
+          tabIndex={activeTab === 'overview' ? 0 : -1}
           onClick={() => setActiveTab('overview')}
           className={`px-4 py-2 text-sm cursor-pointer border-b-2 ${activeTab === 'overview' ? 'border-primary text-primary font-medium' : 'border-transparent text-text-secondary hover:text-primary'}`}
         >
           策略概览
         </button>
         <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'tracking'}
+          tabIndex={activeTab === 'tracking' ? 0 : -1}
           onClick={() => setActiveTab('tracking')}
           className={`px-4 py-2 text-sm cursor-pointer border-b-2 ${activeTab === 'tracking' ? 'border-primary text-primary font-medium' : 'border-transparent text-text-secondary hover:text-primary'}`}
         >
           实盘跟踪
         </button>
         <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'factory'}
+          tabIndex={activeTab === 'factory' ? 0 : -1}
           onClick={() => setActiveTab('factory')}
           className={`px-4 py-2 text-sm cursor-pointer border-b-2 ${activeTab === 'factory' ? 'border-primary text-primary font-medium' : 'border-transparent text-text-secondary hover:text-primary'}`}
         >
@@ -224,6 +281,10 @@ export default function StrategyDetailPage() {
                 <KpiCard title="开放风险事件" value={openRiskEvents.length} />
                 <KpiCard title="向量画像数" value={vectorProfiles.length} />
                 <KpiCard title="质量评级" value={latestQualityReport?.summary?.validation_grade ?? '-'} />
+                <KpiCard title="DSR" value={deflatedSharpeRatio == null ? '-' : fmtNum(deflatedSharpeRatio, 4)} />
+                <KpiCard title="PBO" value={pboValue == null ? '-' : fmtNum(pboValue, 4)} />
+                <KpiCard title="SPA p-value" value={hansenSpaPvalue == null ? '-' : fmtNum(hansenSpaPvalue, 4)} />
+                <KpiCard title="White RC p-value" value={whiteRealityCheckPvalue == null ? '-' : fmtNum(whiteRealityCheckPvalue, 4)} />
               </KpiGrid>
               <div className="mt-3 flex flex-wrap gap-2 text-sm">
                 {latestIncubationMetric?.decision ? (
@@ -233,6 +294,21 @@ export default function StrategyDetailPage() {
                 ) : null}
                 {promotionReady ? <Badge variant="success">达到上架条件</Badge> : <Badge variant="warning">仍在孵化观察</Badge>}
                 {openRiskEvents.length > 0 ? <Badge variant="danger">存在实时风控告警</Badge> : <Badge variant="neutral">无实时风控告警</Badge>}
+                {multipleTestingMode ? (
+                  <Badge variant={multipleTestingMode === 'formal_runtime' ? 'success' : 'warning'}>
+                    多重检验: {formatMultipleTestingMode(multipleTestingMode)}
+                  </Badge>
+                ) : null}
+                {pboValue != null ? (
+                  <Badge variant={pboValue > 0.55 ? 'danger' : 'info'}>
+                    PBO {fmtNum(pboValue, 4)}
+                  </Badge>
+                ) : null}
+                {hansenSpaPvalue != null ? (
+                  <Badge variant={hansenSpaPvalue > 0.2 ? 'warning' : 'success'}>
+                    SPA p {fmtNum(hansenSpaPvalue, 4)}
+                  </Badge>
+                ) : null}
               </div>
             </SectionCard>
           </div>

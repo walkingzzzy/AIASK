@@ -87,7 +87,7 @@ async def generate_daily_report(date: Optional[str] = None):
         hot_sectors = await _fetch_hot_sectors(db)
 
         # 4. 资金流向
-        capital_flow = _fetch_capital_flow(report_date)
+        capital_flow = await _fetch_capital_flow(db, report_date)
 
         # 5. 市场情绪
         sentiment = 'neutral'
@@ -283,67 +283,83 @@ async def _fetch_hot_sectors(db) -> list:
     return hot_sectors
 
 
-def _fetch_capital_flow(report_date: str) -> dict:
+async def _fetch_capital_flow(db, report_date: str) -> dict:
     """获取资金流向"""
     capital_flow = {
         'north_fund': {'net_inflow': 0, 'sh_connect': 0, 'sz_connect': 0},
         'main_fund': {'net_inflow': 0, 'buy': 0, 'sell': 0}
     }
     try:
-        from ..fund_flow import get_north_fund
-        nf_res = get_north_fund(days=1)
-        if nf_res and nf_res.get('success') and nf_res.get('data'):
-            nf_data = nf_res['data']
-            items = nf_data.get('items', []) if isinstance(nf_data, dict) else nf_data
-            report_dt = _parse_date_like(report_date)
-            latest_date = _parse_date_like(items[-1].get('date')) if isinstance(items, list) and items else None
-            source_name = str(nf_data.get('source') or '') if isinstance(nf_data, dict) else ''
-            is_stale = bool(nf_data.get('stale')) if isinstance(nf_data, dict) else False
+        getter = getattr(db, 'get_north_fund_history', None)
+        report_dt = _parse_date_like(report_date)
+        rows = []
+        if callable(getter):
+            rows = await getter(days=3, end_date=report_dt or report_date)
+        if rows:
+            latest = dict(rows[0])
+            latest_date = _parse_date_like(latest.get('trade_date'))
             is_fresh_enough = (
                 report_dt is not None
                 and latest_date is not None
                 and abs((report_dt - latest_date).days) <= 3
             )
-            if (
-                isinstance(items, list)
-                and len(items) > 0
-                and not is_stale
-                and not source_name.endswith('_stale')
-                and is_fresh_enough
-            ):
-                latest = items[-1]
+            if is_fresh_enough:
+                net_inflow = float(latest.get('north_money') or 0.0)
+                sh_connect = float(
+                    latest.get('hgt')
+                    or latest.get('sh_connect')
+                    or latest.get('sh_hk')
+                    or 0.0
+                )
+                sz_connect = float(
+                    latest.get('sgt')
+                    or latest.get('sz_connect')
+                    or latest.get('sz_hk')
+                    or 0.0
+                )
                 capital_flow['north_fund'] = {
-                    'net_inflow': latest.get('total', 0),
-                    'sh_connect': latest.get('shConnect', 0),
-                    'sz_connect': latest.get('szConnect', 0),
+                    'net_inflow': net_inflow,
+                    'sh_connect': sh_connect,
+                    'sz_connect': sz_connect,
+                    'trade_date': str(latest_date or ''),
+                    'source': latest.get('source') or 'north_fund_flow',
+                }
+                capital_flow['main_fund'] = {
+                    'net_inflow': net_inflow,
+                    'buy': net_inflow if net_inflow > 0 else 0,
+                    'sell': abs(net_inflow) if net_inflow < 0 else 0,
+                    'note': 'DB北向资金净流入代理主力资金',
+                    'source': latest.get('source') or 'north_fund_flow',
                 }
     except Exception:
         pass
 
     # 尝试 Tushare 获取主力资金
-    try:
-        ts_pro = data_source.get_tushare_pro()
-        if ts_pro:
-            import datetime as _dt2
-            zt_date2 = report_date.replace('-', '') if isinstance(report_date, str) else str(report_date).replace('-', '')
-            base_date2 = _dt2.datetime.strptime(zt_date2[:8], '%Y%m%d')
-            for days_back2 in range(7):
-                check_date2 = (base_date2 - _dt2.timedelta(days=days_back2)).strftime('%Y%m%d')
-                try:
-                    df_mf = ts_pro.moneyflow_hsgt(trade_date=check_date2)
-                    if df_mf is not None and not df_mf.empty:
-                        row_mf = df_mf.iloc[0]
-                        north_buy = float(row_mf.get('north_money', 0) or 0)
-                        capital_flow['main_fund'] = {
-                            'net_inflow': north_buy,
-                            'buy': north_buy if north_buy > 0 else 0,
-                            'sell': abs(north_buy) if north_buy < 0 else 0,
-                            'note': '北向资金净流入作为主力资金参考'
-                        }
-                        break
-                except Exception:
-                    continue
-    except Exception:
-        pass
+    if not capital_flow['main_fund'].get('note'):
+        try:
+            ts_pro = data_source.get_tushare_pro()
+            if ts_pro:
+                import datetime as _dt2
+                zt_date2 = report_date.replace('-', '') if isinstance(report_date, str) else str(report_date).replace('-', '')
+                base_date2 = _dt2.datetime.strptime(zt_date2[:8], '%Y%m%d')
+                for days_back2 in range(7):
+                    check_date2 = (base_date2 - _dt2.timedelta(days=days_back2)).strftime('%Y%m%d')
+                    try:
+                        df_mf = ts_pro.moneyflow_hsgt(trade_date=check_date2)
+                        if df_mf is not None and not df_mf.empty:
+                            row_mf = df_mf.iloc[0]
+                            north_buy = float(row_mf.get('north_money', 0) or 0)
+                            capital_flow['main_fund'] = {
+                                'net_inflow': north_buy,
+                                'buy': north_buy if north_buy > 0 else 0,
+                                'sell': abs(north_buy) if north_buy < 0 else 0,
+                                'note': '北向资金净流入作为主力资金参考',
+                                'source': 'tushare.moneyflow_hsgt',
+                            }
+                            break
+                    except Exception:
+                        continue
+        except Exception:
+            pass
 
     return capital_flow

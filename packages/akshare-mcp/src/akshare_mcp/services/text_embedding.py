@@ -129,3 +129,12 @@ def get_strategy_text_embedding_service() -> StrategyTextEmbeddingService:
     if _text_embedding_service is None:
         _text_embedding_service = StrategyTextEmbeddingService()
     return _text_embedding_service
+
+
+async def close_strategy_text_embedding_service() -> None:
+    global _text_embedding_service
+    service = _text_embedding_service
+    _text_embedding_service = None
+    if service is None:
+        return
+    await service.close()

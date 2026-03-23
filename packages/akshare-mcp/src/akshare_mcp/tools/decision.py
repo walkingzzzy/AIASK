@@ -24,6 +24,7 @@ from ..services.decision_rule_gate import build_rule_gates as _build_rule_gates
 from ..services.decision_fusion import fuse_unified_decision as _fuse_unified_decision
 from ..services.factor_calculator import factor_calculator
 from ..utils import ok, fail, resolve_security_code
+import asyncio
 import statistics
 import time
 
@@ -41,6 +42,9 @@ from . import investment_analysis as investment_analysis_mod
 from .investment_analysis import get_investment_analysis as _raw_get_investment_analysis
 
 
+_monkey_patch_lock = asyncio.Lock()
+
+
 async def get_investment_analysis(
     code: str | None = None,
     stock_code: str | None = None,
@@ -51,13 +55,14 @@ async def get_investment_analysis(
     code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
     if not code:
         return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
-    original_get_db = getattr(investment_analysis_mod, 'get_db', None)
-    investment_analysis_mod.get_db = get_db
-    try:
-        return await _raw_get_investment_analysis(code)
-    finally:
-        if original_get_db is not None:
-            investment_analysis_mod.get_db = original_get_db
+    async with _monkey_patch_lock:
+        original_get_db = getattr(investment_analysis_mod, 'get_db', None)
+        investment_analysis_mod.get_db = get_db
+        try:
+            return await _raw_get_investment_analysis(code)
+        finally:
+            if original_get_db is not None:
+                investment_analysis_mod.get_db = original_get_db
 
 
 def register(mcp):
@@ -185,7 +190,7 @@ def register(mcp):
                 or latest_kline.get('timestamp')
                 or ''
             )
-            current_price = float(latest_kline.get('close') or closes[0])
+            current_price = float(latest_kline.get('close') or closes[-1])
             time_precision = 'historical_eod_close'
 
             analysis_context = {}
@@ -432,7 +437,7 @@ def register(mcp):
                     )
 
             # 成交量
-            recent_vol = statistics.mean(volumes[:5])
+            recent_vol = statistics.mean(volumes[-5:])
             avg_vol = statistics.mean(volumes)
             if recent_vol > avg_vol * 1.5:
                 _apply_signal(
@@ -628,7 +633,7 @@ def register(mcp):
             )
 
             threshold_backtest = _build_threshold_backtest(
-                closes_desc=closes,
+                closes=closes,
                 thresholds=[40, 60, 80],
                 horizon=10,
             )
@@ -755,7 +760,7 @@ def register(mcp):
             if not klines:
                 return fail('No kline data')
 
-            current_price = klines[0]['close']
+            current_price = klines[-1]['close']
             closes = [k['close'] for k in klines]
 
             analysis_context = {}
@@ -871,7 +876,12 @@ def register(mcp):
             # 7. 波动风险
             volatility = _maybe_float(risk_ctx.get('volatility_20d'))
             if volatility is None:
-                returns = [(closes[i] - closes[i+1]) / closes[i+1] for i in range(min(20, len(closes)-1))]
+                recent_window = closes[-21:] if len(closes) >= 21 else closes
+                returns = [
+                    (recent_window[i + 1] - recent_window[i]) / recent_window[i]
+                    for i in range(max(len(recent_window) - 1, 0))
+                    if recent_window[i] > 0
+                ]
                 if len(returns) > 1:
                     volatility = statistics.stdev(returns)
             if volatility is not None and volatility > 0.04:
@@ -921,7 +931,7 @@ def register(mcp):
                 'risks': risks,
                 'score_breakdown': {k: round(float(v), 2) for k, v in score_breakdown.items()},
                 'signal_breakdown': signal_breakdown,
-                'analysis_date': klines[0].get('date', ''),
+                'analysis_date': klines[-1].get('date', ''),
                 'failed_modules': ([f"investment_analysis:{context_error}"] if context_error else []),
             }
 

@@ -23,6 +23,8 @@ from ..domain.constants import (
     GATE1_SHARPE_MIN,
     REPRESENTATIVE_STOCKS,
 )
+from ..domain.targets import _extract_target_codes_from_payload
+from ..domain.targets import _normalize_research_task_contract
 from ..infrastructure.mcp_services import get_strategy_dsl_compiler
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
 
@@ -102,6 +104,76 @@ def build_completed_gate_3_report(submission_result: Optional[Dict[str, Any]] = 
     }
 
 
+def _gate_2_group_key(candidate: dict) -> str:
+    payload = dict(candidate or {})
+    generation_reason = dict(payload.get("generation_reason") or {})
+    research_task = dict(payload.get("research_task") or {})
+    parent_strategy_id = str(
+        payload.get("parent_strategy_id")
+        or generation_reason.get("parent_strategy_id")
+        or research_task.get("parent_strategy_id")
+        or ""
+    ).strip()
+    if parent_strategy_id:
+        return f"parent:{parent_strategy_id}"
+
+    task_key = str(research_task.get("task_key") or research_task.get("task_id") or "").strip()
+    if task_key:
+        return f"task:{task_key}"
+
+    strategy_type = str(payload.get("strategy_type") or "unknown").strip().lower() or "unknown"
+    target_codes = tuple(sorted(_extract_target_codes_from_payload(payload, limit=4)))
+    if target_codes:
+        return f"universe:{strategy_type}:{','.join(target_codes)}"
+    return f"type:{strategy_type}"
+
+
+def _select_gate_2_candidates(
+    gate_1_scored: list[tuple[dict, float]],
+    top_k: int,
+    *,
+    per_group_cap: int = 2,
+) -> list[dict]:
+    if top_k <= 0 or not gate_1_scored:
+        return []
+
+    selected: list[dict] = []
+    selected_groups: dict[str, int] = {}
+    selected_ids: set[int] = set()
+
+    def try_select(candidate: dict, *, require_new_group: bool, enforce_cap: bool) -> bool:
+        group_key = _gate_2_group_key(candidate)
+        current = int(selected_groups.get(group_key) or 0)
+        if require_new_group and current > 0:
+            return False
+        if enforce_cap and current >= max(1, per_group_cap):
+            return False
+        marker = id(candidate)
+        if marker in selected_ids:
+            return False
+        selected.append(candidate)
+        selected_ids.add(marker)
+        selected_groups[group_key] = current + 1
+        return True
+
+    for candidate, _score in gate_1_scored:
+        if len(selected) >= top_k:
+            break
+        try_select(candidate, require_new_group=True, enforce_cap=True)
+
+    for candidate, _score in gate_1_scored:
+        if len(selected) >= top_k:
+            break
+        try_select(candidate, require_new_group=False, enforce_cap=True)
+
+    for candidate, _score in gate_1_scored:
+        if len(selected) >= top_k:
+            break
+        try_select(candidate, require_new_group=False, enforce_cap=False)
+
+    return selected[:top_k]
+
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
@@ -174,7 +246,17 @@ async def gate_1_fast_screen(
     representative_stocks = list(_compat_setting("REPRESENTATIVE_STOCKS", REPRESENTATIVE_STOCKS))
     representative_count = int(_compat_setting("GATE1_REPRESENTATIVE_COUNT", GATE1_REPRESENTATIVE_COUNT) or GATE1_REPRESENTATIVE_COUNT)
     sharpe_min = float(_compat_setting("GATE1_SHARPE_MIN", GATE1_SHARPE_MIN) or GATE1_SHARPE_MIN)
-    codes = list(representative_stocks[:representative_count])
+    research_task = _normalize_research_task_contract(candidate.get("research_task"))
+    validation_focus = str(research_task.get("validation_focus") or "target_plus_representative").strip().lower()
+    target_codes = _extract_target_codes_from_payload(candidate, limit=max(representative_count, 12))
+    prioritized_target_codes = list(target_codes[:representative_count])
+    padded_representatives = [code for code in representative_stocks if code not in prioritized_target_codes]
+    if validation_focus == "event_target_only" and prioritized_target_codes:
+        codes = list(prioritized_target_codes)
+        code_source = "event_target_only"
+    else:
+        codes = list(dict.fromkeys([*prioritized_target_codes, *padded_representatives]))[: max(representative_count, len(prioritized_target_codes))]
+        code_source = "candidate_target_symbols" if prioritized_target_codes else "representative_only"
     sharpe_values: list[float] = []
     errors: list[str] = []
 
@@ -188,7 +270,13 @@ async def gate_1_fast_screen(
                 continue
 
             BacktestEngine = factory_pkg.BacktestEngine
-            result = BacktestEngine.run_backtest(code, klines, strategy_type, params)
+            result = await asyncio.to_thread(
+                BacktestEngine.run_backtest,
+                code,
+                klines,
+                strategy_type,
+                params,
+            )
             payload = dict(result.get("data") or {}) if isinstance(result, dict) else {}
             if not result.get("success"):
                 raise ValueError(result.get("error") or "backtest_failed")
@@ -202,7 +290,23 @@ async def gate_1_fast_screen(
             passed=False,
             gate="gate_1",
             reasons=["no_backtest_results", *errors],
-            metrics={"tested_codes": codes, "sharpe_values": []},
+            metrics={
+                "tested_codes": codes,
+                "target_codes": prioritized_target_codes,
+                "code_source": code_source,
+                "validation_focus": validation_focus,
+                "event_window_config": {
+                    "event_window": dict(research_task.get("event_window") or {}),
+                    "estimation_window": dict(research_task.get("estimation_window") or {}),
+                    "holding_window": dict(research_task.get("holding_window") or {}),
+                },
+                "contamination_summary": {
+                    "validation_focus": validation_focus,
+                    "representative_included": bool([code for code in codes if code not in prioritized_target_codes]),
+                    "representative_code_count": len([code for code in codes if code not in prioritized_target_codes]),
+                },
+                "sharpe_values": [],
+            },
         )
 
     avg_sharpe = sum(sharpe_values) / len(sharpe_values)
@@ -214,9 +318,24 @@ async def gate_1_fast_screen(
         reasons=[] if passed else [f"avg_sharpe_{avg_sharpe:.4f}_below_{sharpe_min}"],
         metrics={
             "tested_codes": codes,
+            "target_codes": prioritized_target_codes,
+            "code_source": code_source,
+            "validation_focus": validation_focus,
             "sharpe_values": [round(v, 4) for v in sharpe_values],
             "avg_sharpe": round(avg_sharpe, 4),
             "threshold": sharpe_min,
+            "error_count": len(errors),
+            "errors": errors,
+            "event_window_config": {
+                "event_window": dict(research_task.get("event_window") or {}),
+                "estimation_window": dict(research_task.get("estimation_window") or {}),
+                "holding_window": dict(research_task.get("holding_window") or {}),
+            },
+            "contamination_summary": {
+                "validation_focus": validation_focus,
+                "representative_included": bool([code for code in codes if code not in prioritized_target_codes]),
+                "representative_code_count": len([code for code in codes if code not in prioritized_target_codes]),
+            },
         },
     )
 
@@ -259,17 +378,23 @@ async def run_gated_filter(
 
     async def _screen_one(c: dict) -> tuple[dict, GateResult]:
         async with sem:
-            return c, await _compat_gate_1_fast_screen(c, db, kline_cache=kline_cache)
+            try:
+                return c, await _compat_gate_1_fast_screen(c, db, kline_cache=kline_cache)
+            except Exception as exc:
+                logger.warning("Gate-1 exception for %s: %s", c.get("strategy_type"), exc)
+                return c, GateResult(
+                    passed=False,
+                    gate="gate_1",
+                    reasons=[f"gate_1_exception:{type(exc).__name__}"],
+                    metrics={"exception": str(exc)},
+                )
 
     gate_1_tasks = [_screen_one(c) for c in gate_0_passed]
-    gate_1_raw = await asyncio.gather(*gate_1_tasks, return_exceptions=True)
+    gate_1_raw = await asyncio.gather(*gate_1_tasks, return_exceptions=False)
 
     gate_1_scored: list[tuple[dict, float]] = []
     gate_1_failed: list[dict] = []
     for item in gate_1_raw:
-        if isinstance(item, Exception):
-            logger.warning("Gate-1 exception: %s", item)
-            continue
         candidate, result = item
         candidate["gate_1_result"] = {
             "passed": result.passed,
@@ -286,7 +411,7 @@ async def run_gated_filter(
     gate_1_scored.sort(key=lambda x: x[1], reverse=True)
     gate1_pass_ratio = float(_compat_setting("GATE1_PASS_RATIO", GATE1_PASS_RATIO) or GATE1_PASS_RATIO)
     top_k = max(1, math.ceil(len(gate_1_scored) * gate1_pass_ratio))
-    gate_2_candidates = [c for c, _ in gate_1_scored[:top_k]]
+    gate_2_candidates = _select_gate_2_candidates(gate_1_scored, top_k)
 
     logger.info(
         "Gate-1: %d/%d passed fast screen, top-%d enter Gate-2",
