@@ -9,7 +9,6 @@ AKShare MCP Server 启动脚本
 """
 import sys
 import os
-from pathlib import Path
 
 
 def _apply_security_defaults() -> None:
@@ -17,25 +16,13 @@ def _apply_security_defaults() -> None:
     os.environ.setdefault("MCP_HOST", "127.0.0.1")
     os.environ.setdefault("MCP_ALLOW_TOKEN_PASSTHROUGH", "false")
 
-# 在导入 akshare_mcp 之前加载 .env，使 get_db() 等使用实际数据库配置
-# 注意：如果环境变量已设置（来自 MCP 配置），则不覆盖，确保 MCP 配置优先级更高
-_env_path = Path(__file__).resolve().parent / '.env'
-if _env_path.exists():
-    try:
-        _env_content = _env_path.read_text(encoding='utf-8', errors='replace')
-    except Exception:
-        _env_content = ""
-    for line in _env_content.splitlines():
-        line = line.strip()
-        if line and not line.startswith('#') and '=' in line:
-            key, value = line.split('=', 1)
-            k, v = key.strip(), value.strip()
-            # 如果环境变量已设置（来自 MCP 配置），则不覆盖
-            if k not in os.environ:
-                os.environ[k] = v
-
-# 添加src到路径
+# 添加src到路径（必须在 import akshare_mcp 之前）
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
+# 委托 env_loader 统一加载 .env（不覆盖已有环境变量，确保 MCP 配置优先级更高）
+from akshare_mcp.env_loader import load_mcp_env  # noqa: E402
+load_mcp_env(override=False)
+
 _apply_security_defaults()
 
 if __name__ == "__main__":

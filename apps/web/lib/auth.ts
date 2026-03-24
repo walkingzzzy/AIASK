@@ -49,3 +49,30 @@ export async function refreshAuth(): Promise<boolean> {
 
   return refreshPromise;
 }
+
+/** 尝试静默恢复会话；失败时仅清除登录提示，不强制跳转。 */
+export async function probeAuthSession<T = unknown>(): Promise<T | null> {
+  const request = async () => fetch(`${BFF}/auth/me`, {
+    credentials: 'include',
+    cache: 'no-store',
+  });
+
+  try {
+    let resp = await request();
+    if (resp.status === 401) {
+      const refreshed = await refreshAuth();
+      if (!refreshed) {
+        clearLoggedIn();
+        return null;
+      }
+      resp = await request();
+    }
+    if (!resp.ok) {
+      if (resp.status === 401) clearLoggedIn();
+      return null;
+    }
+    return await resp.json() as T;
+  } catch {
+    return null;
+  }
+}

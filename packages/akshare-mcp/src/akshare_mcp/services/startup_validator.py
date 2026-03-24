@@ -15,6 +15,7 @@
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -60,6 +61,7 @@ class StartupValidator:
         # 校验结果
         self.last_report: Optional[Dict[str, Any]] = None
         self._completed = False
+        self._validator_db = None
 
     @property
     def completed(self) -> bool:
@@ -87,6 +89,8 @@ class StartupValidator:
             self.last_report = {"status": "error", "error": str(e)}
             self._completed = True
             return self.last_report
+        finally:
+            await self._close_validator_db()
 
     # ------------------------------------------------------------------
     # 核心校验
@@ -129,13 +133,36 @@ class StartupValidator:
     # ------------------------------------------------------------------
     # 1. DB 连通性
     # ------------------------------------------------------------------
+    def _build_validator_db(self):
+        """Build an isolated validator DB, but honor explicit test doubles.
+
+        In production we avoid reusing the global storage singleton across
+        event loops. In tests, ``storage.get_db`` is often patched with a mock,
+        so we should keep respecting that injection point.
+        """
+        from ..storage import TimescaleDBAdapter, get_db
+
+        try:
+            candidate = get_db()
+        except Exception:
+            candidate = None
+
+        if candidate is not None:
+            module_name = type(candidate).__module__
+            if module_name.startswith("unittest.mock"):
+                return candidate
+            if not isinstance(candidate, TimescaleDBAdapter):
+                return candidate
+
+        return TimescaleDBAdapter()
+
     async def _check_db_connectivity(self, report: Dict[str, Any]):
         """带重试的 DB 连通性检查，返回 db 实例或 None"""
-        from ..storage import get_db
-
         for attempt in range(1, self.retry_count + 1):
             try:
-                db = get_db()
+                if self._validator_db is None:
+                    self._validator_db = self._build_validator_db()
+                db = self._validator_db
                 await db.initialize()
                 async with db.acquire() as conn:
                     await conn.fetchval("SELECT 1")
@@ -301,10 +328,12 @@ class StartupValidator:
             return  # DB 不可达时无法写入
 
         try:
-            from ..storage import get_db
             import uuid
 
-            db = get_db()
+            db = self._validator_db
+            if db is None:
+                logger.warning("[StartupValidator] 跳过 sync_tasks 持久化：validator DB 未初始化")
+                return
             task_id = f"startup_validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
             async with db.acquire() as conn:
                 await conn.execute(
@@ -320,6 +349,21 @@ class StartupValidator:
             logger.info("[StartupValidator] 校验报告已写入 sync_tasks (task_id=%s)", task_id)
         except Exception as e:
             logger.warning("[StartupValidator] 写入 sync_tasks 失败: %s", e)
+
+    async def _close_validator_db(self) -> None:
+        db = self._validator_db
+        self._validator_db = None
+        if db is None:
+            return
+        try:
+            close = getattr(db, "close", None)
+            if not callable(close):
+                return
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            logger.warning("[StartupValidator] 关闭 validator DB 失败: %s", exc)
 
 
 # ------------------------------------------------------------------

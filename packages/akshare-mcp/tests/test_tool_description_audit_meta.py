@@ -10,6 +10,10 @@ def test_tool_description_audit_should_use_runtime_tool_count(tmp_path):
     package_root = Path(__file__).resolve().parents[1]
     output_path = tmp_path / "TOOL_DESCRIPTION_IMPROVEMENT_PLAN.md"
     env = os.environ.copy()
+    strategy_factory_src = str(package_root.parent / "strategy-factory" / "src")
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(package_root / "src"), strategy_factory_src, env.get("PYTHONPATH", "")])
+    )
 
     proc = subprocess.run(
         [sys.executable, "scripts/generate_tool_description_audit.py", "--output", str(output_path)],

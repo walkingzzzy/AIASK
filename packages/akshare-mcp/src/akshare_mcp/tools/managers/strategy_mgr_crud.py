@@ -1,6 +1,7 @@
 """Strategy manager CRUD action handlers."""
 
 import asyncio
+import os
 import random
 import time
 from uuid import uuid4
@@ -23,6 +24,23 @@ logger = logging.getLogger(__name__)
 
 async def _resolved(value):
     return value
+
+
+def _resolve_strategy_status_filter(raw_status, *, default: str = "visible"):
+    raw = str(raw_status or default).strip()
+    if not raw:
+        raw = default
+    tokens = [item.strip() for item in raw.replace("|", ",").split(",") if item.strip()]
+    lowered = [token.lower() for token in tokens]
+    if any(token in {"all", "*"} for token in lowered):
+        return None
+    if len(lowered) == 1 and lowered[0] in {"visible", "active", "market", "marketplace"}:
+        return ["incubating", "listed"]
+    normalized = [normalize_status_alias(token) for token in tokens]
+    normalized = [token for token in normalized if token]
+    if not normalized:
+        return ["incubating", "listed"]
+    return normalized[0] if len(normalized) == 1 else normalized
 
 
 async def _load_similar_vector_profiles(db, strategy_id: str) -> list:
@@ -112,7 +130,7 @@ async def handle_archive(db, params: dict) -> dict:
 
 
 async def handle_list(db, params: dict) -> dict:
-    status = normalize_status_alias(str(params.get("status", "published")))
+    status = _resolve_strategy_status_filter(params.get("status"), default="visible")
     strategy_type = params.get("strategy_type") or params.get("type")
     limit = min(max(int(params.get("limit", 20)), 1), 100)
     offset = max(int(params.get("offset", 0)), 0)
@@ -150,7 +168,8 @@ async def handle_detail(db, params: dict) -> dict:
         db.list_strategy_task_runs(strategy_id=sid, limit=5) if hasattr(db, "list_strategy_task_runs") else _resolved([]),
         compute_nav_series(db, sid),
     )
-    if not is_sub and metrics:
+    metric_noise_enabled = os.getenv("STRATEGY_METRIC_NOISE_ENABLED", "1").strip() not in ("0", "false", "no")
+    if not is_sub and metrics and metric_noise_enabled:
         noise = 1 + random.uniform(-0.001, 0.001)
         for m in metrics:
             for key in ("total_return", "annual_return", "sharpe_ratio", "calmar_ratio"):
@@ -262,7 +281,7 @@ async def handle_my_subscriptions(db, params: dict) -> dict:
 async def handle_rank(db, params: dict) -> dict:
     from ...services.ranking import rrf_rank
 
-    status = normalize_status_alias(str(params.get("status", "published")))
+    status = _resolve_strategy_status_filter(params.get("status"), default="visible")
     strategy_type = params.get("strategy_type") or params.get("type")
     limit = min(max(int(params.get("limit", 50)), 1), 200)
     offset = max(int(params.get("offset", 0)), 0)

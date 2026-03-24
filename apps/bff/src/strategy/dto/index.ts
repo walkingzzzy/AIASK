@@ -9,6 +9,7 @@ export class ListDto {
 }
 
 export class RankDto {
+  @IsOptional() @IsString() status?: string;
   @IsOptional() @IsString() strategy_type?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) limit?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) offset?: number;

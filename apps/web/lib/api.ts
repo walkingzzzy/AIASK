@@ -9,6 +9,11 @@ export const BFF_BASE = getBffBaseUrl();
 /** Guard: only one redirect to login at a time */
 let redirecting = false;
 
+type AuthFetchOptions = {
+  noStore?: boolean;
+  redirectOnUnauthorized?: boolean;
+};
+
 async function redirectAfterAuthExpired(): Promise<never> {
   if (!redirecting) {
     redirecting = true;
@@ -22,7 +27,7 @@ async function redirectAfterAuthExpired(): Promise<never> {
 async function authedFetchCore(
   path: string,
   init?: RequestInit,
-  opts?: { noStore?: boolean },
+  opts?: AuthFetchOptions,
 ): Promise<Response> {
   const headers: Record<string, string> = {};
   if (init?.headers) Object.assign(headers, init.headers);
@@ -40,19 +45,23 @@ async function authedFetchCore(
     if (refreshed) {
       return fetch(`${BFF_BASE}${path}`, requestInit);
     }
+    if (opts?.redirectOnUnauthorized === false) {
+      clearLoggedIn();
+      return resp;
+    }
     return redirectAfterAuthExpired();
   }
   return resp;
 }
 
 /** Authenticated fetch wrapper — relies on HttpOnly cookies, handles 401 auto-refresh */
-export async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
-  return authedFetchCore(path, init);
+export async function authedFetch(path: string, init?: RequestInit, opts?: Omit<AuthFetchOptions, 'noStore'>): Promise<Response> {
+  return authedFetchCore(path, init, opts);
 }
 
 /** Authenticated streaming fetch wrapper — aligns chat/SSE requests with authedFetch auth semantics. */
-export async function authedStreamFetch(path: string, init?: RequestInit): Promise<Response> {
-  return authedFetchCore(path, init, { noStore: true });
+export async function authedStreamFetch(path: string, init?: RequestInit, opts?: Omit<AuthFetchOptions, 'noStore'>): Promise<Response> {
+  return authedFetchCore(path, init, { ...opts, noStore: true });
 }
 
 export function extractApiErrorMessage(payload: unknown, fallback = '请求失败'): string {
@@ -76,6 +85,38 @@ export function extractApiErrorMessage(payload: unknown, fallback = '请求失�
     return body.message;
   }
   return fallback;
+}
+
+function unwrapRedundantDataLayers(payload: unknown): unknown {
+  let current = payload;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) {
+      return current;
+    }
+
+    const record = current as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(record, 'data')) {
+      return current;
+    }
+
+    const keys = Object.keys(record);
+    const wrapperOnly = keys.every((key) => (
+      key === 'data'
+      || key === 'success'
+      || key === 'ok'
+      || key === 'traceId'
+      || key === 'message'
+      || key === 'error'
+    ));
+
+    if (!wrapperOnly) {
+      return current;
+    }
+
+    current = record.data ?? null;
+  }
+
+  return current;
 }
 
 export function unwrapApiEnvelope<T = unknown>(payload: unknown): {
@@ -104,10 +145,10 @@ export function unwrapApiEnvelope<T = unknown>(payload: unknown): {
   }
 
   if (Object.prototype.hasOwnProperty.call(envelope, 'data')) {
-    return { data: envelope.data ?? null, traceId };
+    return { data: unwrapRedundantDataLayers(envelope.data ?? null), traceId };
   }
 
-  return { data: payload, traceId };
+  return { data: unwrapRedundantDataLayers(payload), traceId };
 }
 
 export function fmt(v: unknown): string {

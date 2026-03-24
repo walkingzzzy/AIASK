@@ -1,4 +1,10 @@
-"""数据同步管理器 - 任务调度、状态跟踪、即时执行"""
+"""数据同步管理器 - MCP 工具层，供用户/AI 按需触发同步任务。
+
+与 DataSyncScheduler (services/data_sync_scheduler.py) 的区别：
+- DataSyncScheduler 是后台自动调度器（启动时 + 每日 15:30）
+- 本模块是 MCP 工具，通过 ``data_sync_manager(action=...)`` 按需执行
+- sync_daily/sync_init.py 是独立脚本，用于深度历史全量回填
+"""
 
 import argparse
 import contextlib

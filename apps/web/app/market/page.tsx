@@ -6,6 +6,7 @@ import { PageContainer, TabBar, SectionCard, KpiCard, KpiGrid, DataTable, Badge,
 import { CandlestickChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useHydrated } from '@/hooks/use-hydrated';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { useSearchParams } from 'next/navigation';
 import { cacheText } from '@/lib/api';
@@ -98,10 +99,13 @@ function resolveInitialMarketViewState({
   task: string | null;
   from: string | null;
 }): InitialMarketViewState {
+  const hasExplicitContext = Boolean(
+    task || from || initialBlock || initialTab !== 'main' || initialIndexCode !== '000001',
+  );
   const base: InitialMarketViewState = {
     activeTab: initialTab,
     code: DEFAULT_MARKET_CODE,
-    submittedCode: null,
+    submittedCode: hasExplicitContext ? null : DEFAULT_MARKET_CODE,
     period: 'daily',
     submittedPeriod: 'daily',
     indexCode: initialIndexCode,
@@ -109,48 +113,7 @@ function resolveInitialMarketViewState({
     minutePeriod: '5m',
     blockCode: initialBlock,
   };
-
-  if (typeof window === 'undefined') {
-    return base;
-  }
-
-  const hasExplicitContext = Boolean(
-    task || from || initialBlock || initialTab !== 'main' || initialIndexCode !== '000001',
-  );
-  if (hasExplicitContext) {
-    return base;
-  }
-
-  try {
-    const raw = window.localStorage.getItem(MARKET_VIEW_STORAGE_KEY);
-    if (!raw) {
-      return {
-        ...base,
-        submittedCode: DEFAULT_MARKET_CODE,
-      };
-    }
-
-    const saved = JSON.parse(raw) as Partial<SavedMarketView>;
-    return {
-      activeTab: saved.activeTab && isMarketTab(saved.activeTab) ? saved.activeTab : base.activeTab,
-      code: typeof saved.code === 'string' ? saved.code : base.code,
-      submittedCode:
-        typeof saved.submittedCode === 'string' || saved.submittedCode === null
-          ? (saved.submittedCode ?? null)
-          : base.submittedCode,
-      period: isPeriod(saved.period) ? saved.period : base.period,
-      submittedPeriod: isPeriod(saved.submittedPeriod) ? saved.submittedPeriod : base.submittedPeriod,
-      indexCode: typeof saved.indexCode === 'string' && saved.indexCode ? saved.indexCode : base.indexCode,
-      searchKeyword: typeof saved.searchKeyword === 'string' ? saved.searchKeyword : base.searchKeyword,
-      minutePeriod: typeof saved.minutePeriod === 'string' && saved.minutePeriod ? saved.minutePeriod : base.minutePeriod,
-      blockCode: typeof saved.blockCode === 'string' ? saved.blockCode : base.blockCode,
-    };
-  } catch {
-    return {
-      ...base,
-      submittedCode: DEFAULT_MARKET_CODE,
-    };
-  }
+  return base;
 }
 
 export default function MarketPage() {
@@ -188,6 +151,10 @@ function MarketPageInner({
   task: string | null;
   from: string | null;
 }) {
+  const hydrated = useHydrated();
+  const hasExplicitContext = Boolean(
+    task || from || initialBlock || initialTab !== 'main' || initialIndexCode !== '000001',
+  );
   const [initialView] = useState<InitialMarketViewState>(() =>
     resolveInitialMarketViewState({
       initialTab,
@@ -197,6 +164,7 @@ function MarketPageInner({
       from,
     }),
   );
+  const [savedViewReady, setSavedViewReady] = useState(false);
   const { toast } = useToast();
   const { code, setCode, codeError, validate, resolvedCode } = useStockCode(initialView.code);
   const [period, setPeriod] = useState<Period>(initialView.period);
@@ -274,7 +242,41 @@ function MarketPageInner({
     : null;
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (!hydrated) return;
+    if (hasExplicitContext) {
+      setSavedViewReady(true);
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(MARKET_VIEW_STORAGE_KEY);
+      if (!raw) {
+        setSavedViewReady(true);
+        return;
+      }
+      const saved = JSON.parse(raw) as Partial<SavedMarketView>;
+      applyPreset({
+        activeTab: saved.activeTab && isMarketTab(saved.activeTab) ? saved.activeTab : undefined,
+        code: typeof saved.code === 'string' ? saved.code : undefined,
+        submittedCode:
+          typeof saved.submittedCode === 'string' || saved.submittedCode === null
+            ? (saved.submittedCode ?? null)
+            : undefined,
+        period: isPeriod(saved.period) ? saved.period : undefined,
+        submittedPeriod: isPeriod(saved.submittedPeriod) ? saved.submittedPeriod : undefined,
+        indexCode: typeof saved.indexCode === 'string' && saved.indexCode ? saved.indexCode : undefined,
+        searchKeyword: typeof saved.searchKeyword === 'string' ? saved.searchKeyword : undefined,
+        minutePeriod: typeof saved.minutePeriod === 'string' && saved.minutePeriod ? saved.minutePeriod : undefined,
+        blockCode: typeof saved.blockCode === 'string' ? saved.blockCode : undefined,
+      });
+    } catch {
+      // Ignore invalid saved view payloads and keep deterministic initial state.
+    } finally {
+      setSavedViewReady(true);
+    }
+  }, [hasExplicitContext, hydrated]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !hydrated || !savedViewReady) return;
     const payload: SavedMarketView = {
       activeTab,
       code,
@@ -287,7 +289,7 @@ function MarketPageInner({
       blockCode,
     };
     window.localStorage.setItem(MARKET_VIEW_STORAGE_KEY, JSON.stringify(payload));
-  }, [activeTab, blockCode, code, indexCode, minutePeriod, period, searchKeyword, submittedCode, submittedPeriod]);
+  }, [activeTab, blockCode, code, hydrated, indexCode, minutePeriod, period, savedViewReady, searchKeyword, submittedCode, submittedPeriod]);
 
   function saveCurrentView() {
     if (typeof window === 'undefined') return;
@@ -356,7 +358,7 @@ function MarketPageInner({
   const secondaryLinkCls = 'px-3 py-1 rounded-full border border-border text-xs text-text-secondary no-underline';
 
   const loading = quoteQ.isFetching || klineQ.isFetching || obQ.isFetching;
-  const showPrimaryLoading = submittedCode != null && loading;
+  const showPrimaryLoading = hydrated && submittedCode != null && loading;
 
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();

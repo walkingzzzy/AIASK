@@ -1,13 +1,27 @@
-"""策略工厂兼容导出层。
+"""策略工厂兼容导出层（已废弃，请迁移至 ``strategy_factory`` 独立包）。
 
 真正实现已迁至同级独立包 ``packages/strategy-factory``。
 这里继续保留旧导入路径，目的是兼容历史调用方与 monkeypatch/patch 测试面。
+
+.. deprecated::
+   Direct imports from ``akshare_mcp.services.strategy_factory`` are deprecated.
+   Use ``from strategy_factory.application import ...`` or
+   ``from strategy_factory.api.facade import ...`` instead.
+   This compatibility shim will be removed in a future release.
 """
 
 from __future__ import annotations
 
 import asyncio
+import warnings
 from typing import Optional
+
+warnings.warn(
+    "Importing from akshare_mcp.services.strategy_factory is deprecated. "
+    "Use the strategy_factory package directly (strategy_factory.application / strategy_factory.api.facade).",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 from .backtest_filter import BacktestFilter
 from .collect import DataCollector

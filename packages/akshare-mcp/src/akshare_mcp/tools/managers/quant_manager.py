@@ -1,4 +1,21 @@
-"""Quant manager: factor analysis and workflow orchestration."""
+"""Quant manager: factor analysis and workflow orchestration.
+
+Two distinct IC analysis paths coexist — do NOT confuse them:
+
+1. **Classic factor IC** (``factor_ic`` / ``batch_compute_factors``):
+   Operates on SUPPORTED_FACTORS (predefined names like momentum, value, quality).
+   ``run_factor_ic_analysis`` computes dual IC (Pearson + Rank IC) with bootstrap CI
+   on a single stock's time-series.  ``batch_compute_factors`` computes cross-sectional
+   IC / Rank IC across the universe and persists results.
+
+2. **LLM candidate validation** (``validate_factor_candidate``):
+   Operates on DSL-compiled candidate expressions produced by ``llm_factor_mining``.
+   ``validate_factor_candidate_pipeline`` returns OOS validation, robustness, turnover,
+   cost-capacity, and a composite rating.
+
+The two paths differ in input granularity (pre-defined name vs DSL expression),
+universe scope, and output schema.  Consumers must pick the right path.
+"""
 
 import json
 import logging
@@ -6,7 +23,7 @@ import os
 import re
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 import numpy as np
@@ -99,7 +116,12 @@ def register_quant_manager(mcp):
     """Register quant manager tool."""
 
     @mcp.tool()
-    async def quant_manager(action: str, code: Optional[str] = None, **kwargs):
+    async def quant_manager(
+        action: str,
+        code: Optional[str] = None,
+        kwargs: Any = None,
+        params: Any = None,
+    ):
         """Quant manager with unified action + kwargs protocol."""
         try:
             start_time = time.perf_counter()
@@ -107,18 +129,27 @@ def register_quant_manager(mcp):
             tool_version = "v1.2"
             db = get_db()
 
-            if isinstance(kwargs.get("params"), dict):
-                kwargs = {**kwargs, **kwargs.get("params")}
+            tool_kwargs = {}
+            if kwargs is not None:
+                tool_kwargs["kwargs"] = kwargs
+            if params is not None:
+                tool_kwargs["params"] = params
 
-            if kwargs.get("kwargs") and isinstance(kwargs.get("kwargs"), str):
+            if isinstance(tool_kwargs.get("params"), dict):
+                tool_kwargs = {**tool_kwargs, **tool_kwargs.get("params")}
+
+            if tool_kwargs.get("kwargs") and isinstance(tool_kwargs.get("kwargs"), str):
                 try:
-                    extra = json.loads(kwargs.get("kwargs") or "{}")
+                    extra = json.loads(tool_kwargs.get("kwargs") or "{}")
                     if isinstance(extra, dict):
-                        kwargs = {**kwargs, **extra}
+                        tool_kwargs = {**tool_kwargs, **extra}
                 except Exception:
                     pass
 
-            _kw = kwargs.get("kwargs") if isinstance(kwargs.get("kwargs"), dict) else kwargs
+            if isinstance(tool_kwargs.get("kwargs"), dict):
+                tool_kwargs = {**tool_kwargs, **tool_kwargs.get("kwargs")}
+
+            _kw = tool_kwargs
 
             as_of = _kw.get("as_of", "")
             adjust = _kw.get("adjust", "")
@@ -440,7 +471,41 @@ def register_quant_manager(mcp):
                 min_score: float | None = None,
                 only_active: bool = False,
                 market_codes_only: bool = False,
+                include_synthetic: bool = False,
             ) -> list[dict]:
+                def _looks_like_synthetic_candidate(
+                    artifact_id: str,
+                    payload: dict,
+                    candidate: dict,
+                    record_codes: list[str],
+                ) -> bool:
+                    if include_synthetic:
+                        return False
+                    text_parts = [
+                        artifact_id,
+                        str(payload.get("strategy") or ""),
+                        str(payload.get("strategy_version") or ""),
+                        str(candidate.get("name") or ""),
+                        str(candidate.get("family") or ""),
+                        str(candidate.get("expression_dsl") or ""),
+                    ]
+                    normalized = " ".join(text_parts).strip().lower()
+                    synthetic_tokens = (
+                        "_synthetic",
+                        "_demo",
+                        "_smoke",
+                        "_fixture",
+                        "_sample",
+                        " demo ",
+                        " smoke ",
+                        " fixture ",
+                        " synthetic ",
+                        " sample ",
+                    )
+                    if any(token in normalized for token in synthetic_tokens):
+                        return True
+                    return market_codes_only and not _filter_market_codes(record_codes)
+
                 fetch_limit = max(50, min(1000, int(limit) * 12))
                 rows = await list_artifacts_async(limit=fetch_limit)
                 summary_rows = rows if isinstance(rows, list) else []
@@ -478,6 +543,8 @@ def register_quant_manager(mcp):
                     if min_score is not None and total_score < float(min_score):
                         continue
                     if only_active and record_recommendation not in {"promote", "review"}:
+                        continue
+                    if _looks_like_synthetic_candidate(artifact_id, payload, candidate, record_codes):
                         continue
 
                     items.append(_normalize_registry_item(artifact, payload))
@@ -1195,6 +1262,7 @@ def register_quant_manager(mcp):
                 if op in {"list", "ls"}:
                     codes = _as_code_list(_kw.get("codes"))
                     market_codes_only = bool(_kw.get("market_codes_only", False))
+                    include_synthetic = bool(_kw.get("include_synthetic", False))
                     family = str(_kw.get("family") or "").strip() or None
                     grade = str(_kw.get("grade") or "").strip() or None
                     recommendation = str(_kw.get("recommendation") or "").strip() or None
@@ -1211,6 +1279,7 @@ def register_quant_manager(mcp):
                         min_score=min_score,
                         only_active=only_active,
                         market_codes_only=market_codes_only,
+                        include_synthetic=include_synthetic,
                     )
                     return _ok(
                         {
@@ -1225,6 +1294,7 @@ def register_quant_manager(mcp):
                 if op in {"summary", "stats"}:
                     codes = _as_code_list(_kw.get("codes"))
                     market_codes_only = bool(_kw.get("market_codes_only", False))
+                    include_synthetic = bool(_kw.get("include_synthetic", False))
                     family = str(_kw.get("family") or "").strip() or None
                     grade = str(_kw.get("grade") or "").strip() or None
                     recommendation = str(_kw.get("recommendation") or "").strip() or None
@@ -1241,6 +1311,7 @@ def register_quant_manager(mcp):
                         min_score=min_score,
                         only_active=only_active,
                         market_codes_only=market_codes_only,
+                        include_synthetic=include_synthetic,
                     )
                     return _ok(
                         {
@@ -1252,7 +1323,8 @@ def register_quant_manager(mcp):
 
                 if op in {"active_pool", "pool"}:
                     codes = _as_code_list(_kw.get("codes"))
-                    market_codes_only = bool(_kw.get("market_codes_only", False))
+                    market_codes_only = bool(_kw.get("market_codes_only", True))
+                    include_synthetic = bool(_kw.get("include_synthetic", False))
                     family = str(_kw.get("family") or "").strip() or None
                     min_score = _kw.get("min_score")
                     min_score = None if min_score in {None, ""} else _safe_float(min_score, 0.0)
@@ -1265,6 +1337,7 @@ def register_quant_manager(mcp):
                         min_score=min_score,
                         only_active=True,
                         market_codes_only=market_codes_only,
+                        include_synthetic=include_synthetic,
                     )
                     return _ok(
                         {
@@ -2307,10 +2380,20 @@ def _get_quant_manager_impl():
     return _QUANT_MANAGER_IMPL
 
 
-async def quant_manager(action: str, code: Optional[str] = None, **kwargs):
+async def quant_manager(
+    action: str,
+    code: Optional[str] = None,
+    kwargs: Any = None,
+    params: Any = None,
+    **extra_kwargs,
+):
     """Module-level wrapper so internal services can import and call quant_manager directly."""
 
     impl = _get_quant_manager_impl()
     if impl is None:
         raise RuntimeError("quant_manager implementation is unavailable")
-    return await impl(action=action, code=code, **kwargs)
+    merged_params = dict(params) if isinstance(params, dict) else {}
+    if extra_kwargs:
+        merged_params = {**extra_kwargs, **merged_params}
+    resolved_params = merged_params if merged_params else params
+    return await impl(action=action, code=code, kwargs=kwargs, params=resolved_params)

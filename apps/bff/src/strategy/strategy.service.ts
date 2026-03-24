@@ -171,12 +171,13 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private buildRankingCacheKey(params: { strategy_type?: string; limit?: number; rank_keys?: string[]; offset?: number }) {
+  private buildRankingCacheKey(params: { status?: string; strategy_type?: string; limit?: number; rank_keys?: string[]; offset?: number }) {
+    const status = params.status || 'visible';
     const type = params.strategy_type || 'all';
     const limit = params.limit || 50;
     const offset = params.offset || 0;
     const rankKeys = (params.rank_keys || []).join(',');
-    return `strategy:ranking:${type}:${limit}:${offset}:${rankKeys}`;
+    return `strategy:ranking:${status}:${type}:${limit}:${offset}:${rankKeys}`;
   }
 
   private buildFactoryRunsCacheKey(limit?: number) {
@@ -279,7 +280,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async fetchRankingWithCache(
-    params: { strategy_type?: string; limit?: number; rank_keys?: string[]; offset?: number },
+    params: { status?: string; strategy_type?: string; limit?: number; rank_keys?: string[]; offset?: number },
     forceRefresh = false,
   ) {
     const cacheKey = this.buildRankingCacheKey(params);
@@ -292,7 +293,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       await this.cache.del(cacheKey);
     }
 
-    const data = await this.call('rank', { status: 'listed', ...params });
+    const data = await this.call('rank', { status: params.status || 'visible', ...params });
     await this.cache.set(cacheKey, data, ttl);
     return { data, cacheKey, ttl, cacheHit: false };
   }
@@ -363,7 +364,7 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('incubation_overview', { strategy_id: id });
   }
 
-  async rank(params: { strategy_type?: string; limit?: number; rank_keys?: string[]; offset?: number }) {
+  async rank(params: { status?: string; strategy_type?: string; limit?: number; rank_keys?: string[]; offset?: number }) {
     const res = await this.fetchRankingWithCache(params, false);
     return res.data;
   }

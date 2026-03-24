@@ -8,6 +8,26 @@ A股交易时间: 9:30—11:30, 13:00—15:00
 2. 每日 15:30 自动触发同步（仅交易日）
 3. 同步范围: K线数据 + 财务数据
 
+本项目有三套并行的数据同步入口，职责不同：
+
+1. **DataSyncScheduler**（本模块）
+   - 角色：运行时后台调度器，由 MCP server 启动
+   - 触发：启动时自动 + 每日 15:30
+   - 范围：DEFAULT_UNIVERSE K 线 + 财务增量同步
+   - 适用：日常运行
+
+2. **data_sync_manager** (tools/managers/data_sync_manager.py)
+   - 角色：MCP 工具，供用户/AI 按需触发任务
+   - 触发：通过 ``data_sync_manager(action=...)`` 工具调用
+   - 范围：sync_schedules 表中的到期任务 + run_runtime_data_warmup
+   - 适用：手动补数据、审计脚本
+
+3. **sync_init.py** (sync_daily/sync_init.py)
+   - 角色：独立脚本，深度历史全量回填
+   - 触发：手工运行
+   - 范围：多年 K 线/财务/龙虎榜/北向/大宗/宏观等
+   - 适用：首次部署或数据修复
+
 使用方式:
     from .data_sync_scheduler import get_data_sync_scheduler
     scheduler = get_data_sync_scheduler()
@@ -17,6 +37,7 @@ A股交易时间: 9:30—11:30, 13:00—15:00
 import asyncio
 import logging
 import os
+from contextlib import suppress
 from datetime import datetime, time, timedelta, date
 from typing import List, Optional, Dict, Any
 
@@ -75,7 +96,7 @@ class DataSyncScheduler:
         self._running = True
 
         # 启动定时器循环
-        self._task = asyncio.ensure_future(self._loop())
+        self._task = asyncio.create_task(self._loop(), name="data-sync-scheduler")
         logger.info(
             "[DataSyncScheduler] started — daily sync at %s, universe=%d stocks, startup_sync=%s",
             self.sync_time, len(self.universe), self.sync_on_startup,
@@ -83,7 +104,7 @@ class DataSyncScheduler:
 
         # 启动时异步同步
         if self.sync_on_startup:
-            self._startup_task = asyncio.ensure_future(self._startup_sync())
+            self._startup_task = asyncio.create_task(self._startup_sync(), name="data-sync-startup")
 
     def stop(self):
         """停止调度器"""
@@ -94,6 +115,25 @@ class DataSyncScheduler:
         if self._startup_task:
             self._startup_task.cancel()
             self._startup_task = None
+        logger.info("[DataSyncScheduler] stopped")
+
+    async def shutdown(self, grace_sec: float = 3.0):
+        """停止调度器并等待后台任务退出（给予 grace period 完成当前工作）。"""
+        self._running = False
+        tasks = [task for task in (self._startup_task, self._task) if task is not None]
+        self._startup_task = None
+        self._task = None
+        for task in tasks:
+            if not task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=max(0.0, grace_sec))
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
+            else:
+                with suppress(asyncio.CancelledError):
+                    await task
         logger.info("[DataSyncScheduler] stopped")
 
     # ------------------------------------------------------------------
@@ -200,36 +240,57 @@ class DataSyncScheduler:
         fin_fail = 0
         errors: List[str] = []
 
-        # ---- Phase 1: K线同步 (分批并发) ----
+        # ---- Phase 1: K线同步 (并发抓取 + 串行写库) ----
+        #
+        # 之前这里在同一批次内并发调用 save_klines，会让多个 asyncpg 连接同时执行
+        # ON CONFLICT upsert，启动期高并发时容易出现死锁。这里保留并发抓取外部数据，
+        # 但统一改为串行落库，优先保证启动同步稳定性。
         for i in range(0, len(self.universe), self.batch_size):
             batch = self.universe[i:i + self.batch_size]
 
             semaphore = asyncio.Semaphore(self.concurrency)
 
-            async def _sync_kline(code: str):
-                nonlocal kline_ok, kline_fail
+            async def _fetch_kline(code: str):
                 async with semaphore:
                     try:
                         klines = await asyncio.to_thread(
                             data_source.get_kline, code, "daily", 250
                         )
-                        if klines:
-                            try:
-                                await db.save_klines(code, klines)
-                            except Exception as e:
-                                logger.warning("[DataSyncScheduler] %s save klines error: %s", code, e)
-                            kline_ok += 1
-                        else:
-                            kline_fail += 1
+                        return code, klines, None
                     except Exception as e:
-                        kline_fail += 1
-                        if len(errors) < 10:
-                            errors.append(f"kline:{code}:{e}")
+                        return code, None, e
 
-            await asyncio.gather(
-                *[_sync_kline(code) for code in batch],
+            fetch_results = await asyncio.gather(
+                *[_fetch_kline(code) for code in batch],
                 return_exceptions=True,
             )
+
+            for result in fetch_results:
+                if isinstance(result, Exception):
+                    kline_fail += 1
+                    if len(errors) < 10:
+                        errors.append(f"kline:batch:{result}")
+                    continue
+
+                code, klines, fetch_error = result
+                if fetch_error is not None:
+                    kline_fail += 1
+                    if len(errors) < 10:
+                        errors.append(f"kline:{code}:{fetch_error}")
+                    continue
+
+                if not klines:
+                    kline_fail += 1
+                    continue
+
+                try:
+                    await db.save_klines(code, klines)
+                    kline_ok += 1
+                except Exception as e:
+                    kline_fail += 1
+                    logger.warning("[DataSyncScheduler] %s save klines error: %s", code, e)
+                    if len(errors) < 10:
+                        errors.append(f"kline_save:{code}:{e}")
 
         # ---- Phase 2: 财务数据同步 (分批) ----
         try:

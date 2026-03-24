@@ -3,10 +3,9 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ReactNode, useEffect, useState } from 'react';
-import { useAuthStore } from '@/store/auth-store';
+import { useAuthStore, type User } from '@/store/auth-store';
 import { useStockContext } from '@/store/stock-context';
-import { authedFetch } from '@/lib/api';
-import { hasLoggedInHint } from '@/lib/auth';
+import { hasLoggedInHint, probeAuthSession } from '@/lib/auth';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { useTheme } from '@/hooks/use-theme';
 import { useWsStatus, type WsConnectionStatus } from '@/lib/ws';
@@ -214,8 +213,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
     if (isAuthPage || user) return;
     const hasLoginHint = hasLoggedInHint();
     if (!hasLoginHint) return;
-    authedFetch('/auth/me', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : null))
+    probeAuthSession<{ authenticated?: boolean; user?: User }>()
       .then((d) => {
         if (d?.authenticated && d.user) setUser(d.user);
       })

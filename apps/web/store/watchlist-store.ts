@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { getBffBaseUrl } from '@/lib/bff-base';
+import { clearLoggedIn, hasLoggedInHint, refreshAuth } from '@/lib/auth';
 
 export type WatchItem = { code: string; name: string; addedAt: number };
 export type WatchGroup = { id: string; name: string; color: string; items: WatchItem[] };
@@ -62,19 +63,30 @@ function notifySyncError(detail: string) {
 }
 
 async function fetchServer(path: string, options?: RequestInit): Promise<unknown> {
+  const requestInit: RequestInit = {
+    credentials: 'include',
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+  };
   try {
-    const res = await fetch(`${BFF_BASE}/watchlist${path}`, {
-      credentials: 'include',
-      ...options,
-      headers: { 'Content-Type': 'application/json', ...options?.headers },
-    });
+    let res = await fetch(`${BFF_BASE}/watchlist${path}`, requestInit);
+    if (res.status === 401) {
+      const refreshed = await refreshAuth();
+      if (refreshed) {
+        res = await fetch(`${BFF_BASE}/watchlist${path}`, requestInit);
+      } else {
+        clearLoggedIn();
+        notifySyncError('HTTP 401');
+        return null;
+      }
+    }
     if (!res.ok) {
       notifySyncError(`HTTP ${res.status}`);
       return null;
     }
-        const json = await res.json();
-        const payload = json && typeof json === 'object' ? json as Record<string, unknown> : {};
-        return payload.data ?? null;
+    const json = await res.json();
+    const payload = json && typeof json === 'object' ? json as Record<string, unknown> : {};
+    return payload.data ?? null;
   } catch (err) {
     if (isAbortLikeError(err)) {
       return null;
@@ -320,6 +332,10 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
       try {
         const localGroups = get().groups;
         const serverGroups = await fetchServer('/groups');
+        if (!hasLoggedInHint()) {
+          set({ synced: true, syncing: false });
+          return;
+        }
         if (serverGroups && Array.isArray(serverGroups) && serverGroups.length > 0) {
           const normalized: WatchGroup[] = serverGroups.map((group) => {
             const record = readWatchlistRecord(group);

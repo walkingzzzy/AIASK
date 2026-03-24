@@ -37,10 +37,10 @@ export function NotificationBell() {
     const [open, setOpen] = useState(false);
     const [pendingUnreadEvents, setPendingUnreadEvents] = useState<number[]>([]);
     const [markAllReadAt, setMarkAllReadAt] = useState<number | null>(null);
-    const [notificationsEnabled] = useState(() => hasLoggedInHint());
     const [pageVisible, setPageVisible] = useState(() =>
         typeof document === 'undefined' ? true : document.visibilityState === 'visible'
     );
+    const notificationsEnabled = hasLoggedInHint();
 
     useEffect(() => {
         if (typeof document === 'undefined') return;
@@ -60,11 +60,13 @@ export function NotificationBell() {
         enabled: pollingEnabled,
         refetchInterval: pollingEnabled ? 30000 : false,
         staleTime: 30000,
+        redirectOnUnauthorized: false,
     });
     const recentQ = useApiQuery<unknown>(notificationsEnabled && open && pageVisible ? '/notifications/list?limit=10' : null, {
         enabled: notificationsEnabled && open && pageVisible,
         refetchInterval: open && pageVisible ? 30000 : false,
         staleTime: 30000,
+        redirectOnUnauthorized: false,
     });
     const markAllReadApi = useApiMutation<{ markedCount?: number }>({
         invalidates: [[...apiKeys.notifications()]],

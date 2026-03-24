@@ -117,6 +117,7 @@ def test_get_north_fund_prefers_recent_partial_snapshot(monkeypatch):
 
     monkeypatch.setattr(north_mod, "get_limiter", lambda *args, **kwargs: _DummyLimiter())
     monkeypatch.setattr(north_mod, "_NORTH_FUND_FAST_MODE", False)
+    monkeypatch.setattr(north_mod, "_north_fund_from_db", lambda days: [])
     monkeypatch.setattr(north_mod, "_north_fund_from_tushare", lambda days: [])
     monkeypatch.setattr(north_mod, "_north_fund_from_hkex", lambda days: [])
     monkeypatch.setattr(

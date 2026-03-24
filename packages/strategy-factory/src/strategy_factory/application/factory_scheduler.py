@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import inspect
 import logging
 import os
@@ -170,6 +171,9 @@ class StrategyFactoryScheduler:
         self.max_daily_runs: int = FACTORY_MAX_DAILY_RUNS
         self._task: Optional[asyncio.Task] = None
         self._running = False
+        self._shutdown_grace_sec: float = float(
+            os.getenv("STRATEGY_FACTORY_SHUTDOWN_GRACE_SEC", "0.25") or 0.25
+        )
         self.last_run: Optional[datetime] = None
         self.last_result: Optional[dict] = None
         self._daily_run_count: int = 0
@@ -199,7 +203,7 @@ class StrategyFactoryScheduler:
             logger.warning("StrategyFactory already running")
             return
         self._running = True
-        self._task = asyncio.ensure_future(self._loop())
+        self._task = asyncio.create_task(self._loop(), name="strategy-factory-scheduler")
         logger.info(
             "StrategyFactory started, mode=%s, market_interval=%ds, off_hours_interval=%ds, max_daily_runs=%d",
             self.schedule_mode,
@@ -213,6 +217,28 @@ class StrategyFactoryScheduler:
         if self._task:
             self._task.cancel()
             self._task = None
+        logger.info("StrategyFactory stopped")
+
+    async def shutdown(self):
+        self._running = False
+        task = self._task
+        self._task = None
+        if task is None:
+            logger.info("StrategyFactory stopped")
+            return
+        if not task.done():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(task),
+                    timeout=max(0.0, self._shutdown_grace_sec),
+                )
+            except asyncio.TimeoutError:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        else:
+            with suppress(asyncio.CancelledError):
+                await task
         logger.info("StrategyFactory stopped")
 
     @staticmethod

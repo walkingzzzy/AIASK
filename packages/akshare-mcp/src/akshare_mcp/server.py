@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import os
+import inspect
 import logging
+import os
 import threading
 from pathlib import Path
+
+import anyio
 
 from .env_loader import load_mcp_env
 
@@ -38,7 +41,7 @@ _base_tool_names = (
     "search", "semantic", "data_warmup", "alerts",
     "vector", "skills", "quant", "sentiment", "market_blocks",
     "basic_data", "data_sync", "managers",
-    "factor_profile",
+    "factor_profile", "research",
 )
 _tool_names = _base_tool_names
 try:
@@ -48,7 +51,7 @@ try:
         search, semantic, data_warmup, alerts,
         vector, skills, quant, sentiment, market_blocks,
         basic_data, data_sync, managers,
-        factor_profile,
+        factor_profile, research,
     )
 except UnicodeDecodeError as e:
     # 定位是哪个子模块触发的解码错误（多为路径或插件内文件编码问题）
@@ -72,18 +75,32 @@ from .services.signal_tracker import get_signal_tracker
 from .services import close_shared_runtime_clients
 from .storage import close_db
 
+_started_background_services: list[tuple[str, object]] = []
+_shutdown_lock = threading.Lock()
+_shutdown_completed = False
 
-def _safe_shutdown_data_sync() -> None:
-    """进程退出时尽力 flush/关闭数据同步后台任务。"""
-    try:
-        asyncio.run(data_sync_service.shutdown())
-    except RuntimeError:
-        # 若解释器退出阶段事件循环不可用，忽略并记录
-        logging.getLogger(__name__).warning("[Server] skip data_sync shutdown: event loop unavailable")
-    except Exception as e:
-        logging.getLogger(__name__).warning(
-            "[Server] data_sync shutdown failed", extra={"error": str(e)}
-        )
+
+def _remember_started_service(name: str, service: object) -> object:
+    _started_background_services.append((name, service))
+    return service
+
+
+async def _stop_started_background_services() -> None:
+    logger = logging.getLogger(__name__)
+    while _started_background_services:
+        name, service = _started_background_services.pop()
+        shutdown = getattr(service, "shutdown", None)
+        stop = getattr(service, "stop", None)
+        closer = shutdown if callable(shutdown) else stop
+        if not callable(closer):
+            continue
+        try:
+            result = closer()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            logger.warning("[Server] stop %s failed: %s", name, exc)
+
 
 def _run_async_task_in_daemon_thread(coro_factory, name: str) -> threading.Thread:
     """Run an async task from the synchronous server bootstrap path."""
@@ -108,29 +125,47 @@ def _start_startup_validator_background() -> threading.Thread:
     return _run_async_task_in_daemon_thread(validator.run_async, "startup-validator")
 
 
-def _safe_shutdown_db() -> None:
-    """进程退出时关闭数据库连接池。"""
+async def _shutdown_services_async() -> None:
+    """按依赖顺序关闭后台服务，避免先关 DB 导致后续关闭失败。"""
+    global _shutdown_completed
+    with _shutdown_lock:
+        if _shutdown_completed:
+            return
+        _shutdown_completed = True
+    logger = logging.getLogger(__name__)
+    await _stop_started_background_services()
+    # 给取消后的任务一次排空连接释放/close 回调的机会，避免残留 transport 警告。
+    await asyncio.sleep(0)
+    await asyncio.sleep(0.05)
     try:
-        asyncio.run(close_db())
-    except RuntimeError:
-        logging.getLogger(__name__).warning("[Server] skip db shutdown: event loop unavailable")
+        await data_sync_service.shutdown()
     except Exception as e:
-        logging.getLogger(__name__).warning(
+        logger.warning(
+            "[Server] data_sync shutdown failed", extra={"error": str(e)}
+        )
+    try:
+        await close_shared_runtime_clients()
+    except Exception as e:
+        logger.warning(
+            "[Server] shared client shutdown failed", extra={"error": str(e)}
+        )
+    try:
+        await close_db()
+    except Exception as e:
+        logger.warning(
             "[Server] db shutdown failed", extra={"error": str(e)}
         )
 
+
 def _safe_shutdown_services() -> None:
-    """按依赖顺序关闭后台服务，避免先关 DB 导致后续关闭失败。"""
-    _safe_shutdown_data_sync()
     try:
-        asyncio.run(close_shared_runtime_clients())
+        asyncio.run(_shutdown_services_async())
     except RuntimeError:
-        logging.getLogger(__name__).warning("[Server] skip shared client shutdown: event loop unavailable")
+        logging.getLogger(__name__).warning("[Server] skip service shutdown: event loop unavailable")
     except Exception as e:
         logging.getLogger(__name__).warning(
-            "[Server] shared client shutdown failed", extra={"error": str(e)}
+            "[Server] service shutdown failed", extra={"error": str(e)}
         )
-    _safe_shutdown_db()
 
 
 atexit.register(_safe_shutdown_services)
@@ -153,6 +188,7 @@ valuation.register(mcp)
 decision.register(mcp)
 search.register(mcp)
 semantic.register(mcp)
+research.register(mcp)
 data_warmup.register(mcp)
 alerts.register(mcp)
 managers.register(mcp)  # Phase 5: 统一注册，消除重复
@@ -226,6 +262,18 @@ def _resolve_startup_profile() -> str:
     return "full"
 
 
+def _resolve_transport() -> tuple[str, str | None]:
+    raw = str(os.getenv("MCP_TRANSPORT", "stdio")).strip().lower()
+    mount_path = str(os.getenv("MCP_MOUNT_PATH", "")).strip() or None
+    if raw in {"", "stdio"}:
+        return "stdio", None
+    if raw == "sse":
+        return "sse", mount_path
+    if raw in {"http", "streamable-http", "streamable_http"}:
+        return "streamable-http", None
+    raise RuntimeError(f"Unsupported MCP transport: {raw}")
+
+
 def _enforce_http_security_baseline() -> None:
     """
     Enforce minimal security checks when running MCP over HTTP-like transports.
@@ -266,44 +314,55 @@ def _enforce_http_security_baseline() -> None:
         )
 
 
-def main() -> None:
-    """Start MCP server."""
-    _enforce_http_security_baseline()
+async def _run_mcp_transport_async(transport: str, mount_path: str | None) -> None:
+    if transport == "stdio":
+        await mcp.run_stdio_async()
+        return
+    if transport == "sse":
+        await mcp.run_sse_async(mount_path)
+        return
+    if transport == "streamable-http":
+        await mcp.run_streamable_http_async()
+        return
+    raise RuntimeError(f"Unsupported MCP transport: {transport}")
+
+
+async def _main_async(transport: str, mount_path: str | None) -> None:
     startup_profile = _resolve_startup_profile()
     logger = logging.getLogger(__name__)
-    logger.info("[Server] startup profile=%s", startup_profile)
+    logger.info("[Server] startup profile=%s transport=%s", startup_profile, transport)
 
     if startup_profile == "tool-only":
         logger.info("[Server] tool-only profile active, background schedulers and startup validators are disabled")
     else:
         # Start factor scheduler if enabled (default: enabled)
         if _as_bool(os.getenv("FACTOR_SCHEDULER_ENABLED", "true")):
-            scheduler = get_factor_scheduler()
+            scheduler = _remember_started_service("FactorScheduler", get_factor_scheduler())
             scheduler.start()
             logger.info("[Server] FactorScheduler started")
 
         # Start matching engine for paper trading
         if _as_bool(os.getenv("MATCHING_ENGINE_ENABLED", "true")):
-            engine = get_matching_engine()
+            engine = _remember_started_service("MatchingEngine", get_matching_engine())
             engine.start()
             logger.info("[Server] MatchingEngine started")
 
         # Start NAV engine for daily account valuation
         if _as_bool(os.getenv("NAV_ENGINE_ENABLED", "true")):
-            nav = get_nav_engine()
+            nav = _remember_started_service("NavEngine", get_nav_engine())
             nav.start()
             logger.info("[Server] NavEngine started")
 
         # Start signal tracker for forward signal generation & verification
         if _as_bool(os.getenv("SIGNAL_TRACKER_ENABLED", "true")):
-            tracker = get_signal_tracker()
+            tracker = _remember_started_service("SignalTracker", get_signal_tracker())
             tracker.start()
             logger.info("[Server] SignalTracker started")
 
         # Start strategy factory for daily auto-generation & elimination
         if _as_bool(os.getenv("STRATEGY_FACTORY_ENABLED", "true")):
             from strategy_factory import get_strategy_factory_scheduler
-            factory = get_strategy_factory_scheduler()
+            factory = _remember_started_service("StrategyFactory", get_strategy_factory_scheduler())
             factory.start()
             logger.info("[Server] StrategyFactory started")
 
@@ -315,11 +374,21 @@ def main() -> None:
         # Start data sync scheduler for automatic DB sync on startup & daily after market close
         if _as_bool(os.getenv("DATA_SYNC_SCHEDULER_ENABLED", "true")):
             from .services.data_sync_scheduler import get_data_sync_scheduler
-            sync_scheduler = get_data_sync_scheduler()
+            sync_scheduler = _remember_started_service("DataSyncScheduler", get_data_sync_scheduler())
             sync_scheduler.start()
             logger.info("[Server] DataSyncScheduler started")
 
-    mcp.run()
+    try:
+        await _run_mcp_transport_async(transport, mount_path)
+    finally:
+        await _shutdown_services_async()
+
+
+def main() -> None:
+    """Start MCP server."""
+    _enforce_http_security_baseline()
+    transport, mount_path = _resolve_transport()
+    anyio.run(_main_async, transport, mount_path)
 
 
 if __name__ == "__main__":

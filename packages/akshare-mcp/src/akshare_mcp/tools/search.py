@@ -164,15 +164,34 @@ def _search_stocks_tushare_fallback(keyword: str, limit: int) -> list:
 
 
 def _iter_registered_tools(mcp):
-    """获取已注册的工具列表 - 兼容 FastMCP"""
-    # FastMCP 使用 _tool_manager._tools 存储工具
+    """获取已注册的工具列表 - 兼容 FastMCP (多版本)"""
+    import inspect
+
+    # FastMCP internal _tool_manager._tools (stable across versions)
     tool_manager = getattr(mcp, '_tool_manager', None)
     if tool_manager:
         tools_dict = getattr(tool_manager, '_tools', None)
         if isinstance(tools_dict, dict):
             return list(tools_dict.items())
-    
-    # 兜底：返回空列表
+
+    # Fallback: public API mcp.list_tools() — may be sync or async
+    list_tools = getattr(mcp, 'list_tools', None)
+    if callable(list_tools):
+        try:
+            result_or_coro = list_tools()
+            if inspect.isawaitable(result_or_coro):
+                return []
+            tools = result_or_coro
+            if tools and hasattr(tools, '__iter__'):
+                result = []
+                for t in tools:
+                    name = getattr(t, 'name', None) or str(t)
+                    result.append((name, t))
+                if result:
+                    return result
+        except Exception:
+            pass
+
     return []
 
 

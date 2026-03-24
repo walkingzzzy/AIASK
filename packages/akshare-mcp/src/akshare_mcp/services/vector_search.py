@@ -2,14 +2,22 @@
 向量搜索服务 - K线形态相似度搜索
 当前默认使用 Python / 进程内 index 后端；
 策略工厂等持久化路径可在 TimescaleDB 启用 pgvector 后走数据库向量检索。
+
+索引持久化: 设置 VECTOR_SEARCH_CACHE_DIR 后，build_index 会将索引写入磁盘,
+重启后自动加载，避免每次冷启动重算。
 """
 
+import json as _json
+import logging
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
+from pathlib import Path
 from scipy.spatial.distance import cosine, euclidean
 from sklearn.preprocessing import StandardScaler
 import hashlib
 import os
+
+_vs_logger = logging.getLogger(__name__)
 
 
 class VectorSearchEngine:
@@ -416,8 +424,42 @@ class VectorSearchEngine:
                 index[code] = vector
         
         self.pattern_cache = index
+        self._save_index_cache(index)
         return index
-    
+
+    def _index_cache_path(self) -> Optional[Path]:
+        cache_dir = os.getenv("VECTOR_SEARCH_CACHE_DIR", "").strip()
+        if not cache_dir:
+            return None
+        p = Path(cache_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        return p / "kline_pattern_index.json"
+
+    def _save_index_cache(self, index: Dict[str, np.ndarray]) -> None:
+        path = self._index_cache_path()
+        if path is None:
+            return
+        try:
+            serializable = {k: v.tolist() for k, v in index.items()}
+            path.write_text(_json.dumps(serializable), encoding="utf-8")
+            _vs_logger.info("Vector index persisted to %s (%d entries)", path, len(index))
+        except Exception as e:
+            _vs_logger.warning("Failed to persist vector index: %s", e)
+
+    def load_index_cache(self) -> bool:
+        """Load persisted index from disk. Returns True if loaded successfully."""
+        path = self._index_cache_path()
+        if path is None or not path.exists():
+            return False
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            self.pattern_cache = {k: np.array(v) for k, v in data.items()}
+            _vs_logger.info("Vector index loaded from %s (%d entries)", path, len(self.pattern_cache))
+            return True
+        except Exception as e:
+            _vs_logger.warning("Failed to load vector index cache: %s", e)
+            return False
+
     def search_index(
         self,
         query_vector: np.ndarray,

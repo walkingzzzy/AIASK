@@ -23,6 +23,11 @@ except ImportError:
     talib = None
 
 
+def _float_array(values: List[float]) -> np.ndarray:
+    """TA-Lib expects contiguous double arrays."""
+    return np.asarray(values, dtype=np.float64)
+
+
 def _formula_sma(data: List[float], n: int, m: int = 1) -> List[float]:
     """公式引擎兼容的 SMA 实现。
 
@@ -59,7 +64,7 @@ class TechnicalAnalysis:
     @staticmethod
     def _calculate_sma_numpy(closes: List[float], period: int) -> List[float]:
         """NumPy实现的SMA（fallback）"""
-        closes_arr = np.array(closes)
+        closes_arr = _float_array(closes)
         if len(closes_arr) < period:
             return [0.0] * len(closes)
         
@@ -75,7 +80,7 @@ class TechnicalAnalysis:
     def calculate_ema(closes: List[float], period: int = 20) -> List[float]:
         """计算指数移动平均"""
         if TALIB_AVAILABLE:
-            result = talib.EMA(np.array(closes), timeperiod=period)
+            result = talib.EMA(_float_array(closes), timeperiod=period)
             return np.nan_to_num(result, 0).tolist()
         
         if PANDAS_TA_AVAILABLE:
@@ -88,7 +93,7 @@ class TechnicalAnalysis:
     @staticmethod
     def _calculate_ema_numpy(closes: List[float], period: int) -> List[float]:
         """NumPy实现的EMA（fallback）"""
-        closes_arr = np.array(closes)
+        closes_arr = _float_array(closes)
         alpha = 2 / (period + 1)
         ema = np.zeros(len(closes))
         ema[0] = closes_arr[0]
@@ -102,7 +107,7 @@ class TechnicalAnalysis:
     def calculate_rsi(closes: List[float], period: int = 14) -> Dict[str, Any]:
         """计算RSI指标"""
         if TALIB_AVAILABLE:
-            rsi = talib.RSI(np.array(closes), timeperiod=period)
+            rsi = talib.RSI(_float_array(closes), timeperiod=period)
             rsi_value = float(rsi[-1]) if not np.isnan(rsi[-1]) else 0
         elif PANDAS_TA_AVAILABLE:
             df = pd.DataFrame({'close': closes})
@@ -128,7 +133,7 @@ class TechnicalAnalysis:
     @staticmethod
     def _calculate_rsi_numpy(closes: List[float], period: int) -> float:
         """NumPy实现的RSI（fallback）"""
-        closes_arr = np.array(closes)
+        closes_arr = _float_array(closes)
         deltas = np.diff(closes_arr)
         
         gains = np.where(deltas > 0, deltas, 0)
@@ -151,10 +156,10 @@ class TechnicalAnalysis:
             return [0.0] * len(closes)
 
         if TALIB_AVAILABLE:
-            rsi = talib.RSI(np.array(closes), timeperiod=period)
+            rsi = talib.RSI(_float_array(closes), timeperiod=period)
             return np.nan_to_num(rsi, 0).tolist()
 
-        closes_arr = np.array(closes, dtype=float)
+        closes_arr = _float_array(closes)
         deltas = np.diff(closes_arr)
         gains = np.where(deltas > 0, deltas, 0.0)
         losses = np.where(deltas < 0, -deltas, 0.0)
@@ -195,7 +200,7 @@ class TechnicalAnalysis:
         """计算MACD指标"""
         if TALIB_AVAILABLE:
             macd, signal, hist = talib.MACD(
-                np.array(closes),
+                _float_array(closes),
                 fastperiod=fast_period,
                 slowperiod=slow_period,
                 signalperiod=signal_period
@@ -240,9 +245,9 @@ class TechnicalAnalysis:
         """计算KDJ指标"""
         if TALIB_AVAILABLE:
             k, d = talib.STOCH(
-                np.array(highs),
-                np.array(lows),
-                np.array(closes),
+                _float_array(highs),
+                _float_array(lows),
+                _float_array(closes),
                 fastk_period=period,
                 slowk_period=k_period,
                 slowd_period=d_period
@@ -300,7 +305,7 @@ class TechnicalAnalysis:
         """计算布林带"""
         if TALIB_AVAILABLE:
             upper, middle, lower = talib.BBANDS(
-                np.array(closes),
+                _float_array(closes),
                 timeperiod=period,
                 nbdevup=std_dev,
                 nbdevdn=std_dev
@@ -322,7 +327,7 @@ class TechnicalAnalysis:
         
         # NumPy实现
         sma = TechnicalAnalysis._calculate_sma_numpy(closes, period)
-        closes_arr = np.array(closes)
+        closes_arr = _float_array(closes)
         
         std = np.zeros(len(closes))
         for i in range(period - 1, len(closes)):
@@ -347,9 +352,9 @@ class TechnicalAnalysis:
         """计算ATR（平均真实波幅）"""
         if TALIB_AVAILABLE:
             atr = talib.ATR(
-                np.array(highs),
-                np.array(lows),
-                np.array(closes),
+                _float_array(highs),
+                _float_array(lows),
+                _float_array(closes),
                 timeperiod=period
             )
             return np.nan_to_num(atr, 0).tolist()
@@ -423,7 +428,7 @@ class TechnicalAnalysis:
     def calculate_obv(closes: List[float], volumes: List[float]) -> List[float]:
         """计算能量潮指标 (On Balance Volume)"""
         if TALIB_AVAILABLE:
-            obv = talib.OBV(np.array(closes), np.array(volumes))
+            obv = talib.OBV(_float_array(closes), _float_array(volumes))
             return np.nan_to_num(obv, 0).tolist()
         
         # NumPy实现
@@ -444,11 +449,11 @@ class TechnicalAnalysis:
     def calculate_cci(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> List[float]:
         """计算顺势指标 (Commodity Channel Index)"""
         if TALIB_AVAILABLE:
-            cci = talib.CCI(np.array(highs), np.array(lows), np.array(closes), timeperiod=period)
+            cci = talib.CCI(_float_array(highs), _float_array(lows), _float_array(closes), timeperiod=period)
             return np.nan_to_num(cci, 0).tolist()
         
         # NumPy实现
-        tp = (np.array(highs) + np.array(lows) + np.array(closes)) / 3
+        tp = (_float_array(highs) + _float_array(lows) + _float_array(closes)) / 3
         cci = np.zeros(len(closes))
         
         for i in range(period - 1, len(closes)):
@@ -463,7 +468,7 @@ class TechnicalAnalysis:
     def calculate_wr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> List[float]:
         """计算威廉指标 (Williams %R)"""
         if TALIB_AVAILABLE:
-            wr = talib.WILLR(np.array(highs), np.array(lows), np.array(closes), timeperiod=period)
+            wr = talib.WILLR(_float_array(highs), _float_array(lows), _float_array(closes), timeperiod=period)
             return np.nan_to_num(wr, 0).tolist()
         
         # NumPy实现
@@ -484,7 +489,7 @@ class TechnicalAnalysis:
     def calculate_roc(closes: List[float], period: int = 12) -> List[float]:
         """计算变动率指标 (Rate of Change)"""
         if TALIB_AVAILABLE:
-            roc = talib.ROC(np.array(closes), timeperiod=period)
+            roc = talib.ROC(_float_array(closes), timeperiod=period)
             return np.nan_to_num(roc, 0).tolist()
         
         # NumPy实现
@@ -584,11 +589,11 @@ class TechnicalAnalysis:
         """计算 CR 指标，返回 CR 与 MA1/MA2/MA3/MA4。"""
         n_bars = len(closes)
         cr = np.zeros(n_bars)
-        mid = (np.array(highs) + np.array(lows)) / 2
+        mid = (_float_array(highs) + _float_array(lows)) / 2
         for i in range(1, n_bars):
             start = max(1, i - n + 1)
-            up_sum = np.sum(np.maximum(0, np.array(highs[start:i + 1]) - mid[start - 1:i]))
-            down_sum = np.sum(np.maximum(0, mid[start - 1:i] - np.array(lows[start:i + 1])))
+            up_sum = np.sum(np.maximum(0, _float_array(highs[start:i + 1]) - mid[start - 1:i]))
+            down_sum = np.sum(np.maximum(0, mid[start - 1:i] - _float_array(lows[start:i + 1])))
             if down_sum > 0:
                 cr[i] = up_sum / down_sum * 100
 
@@ -607,8 +612,8 @@ class TechnicalAnalysis:
         """计算 VR 指标，返回 VR 序列，并兼容旧字段 MAVR。"""
         n_bars = len(closes)
         vr = np.zeros(n_bars)
-        close_arr = np.array(closes)
-        vol_arr = np.array(volumes)
+        close_arr = _float_array(closes)
+        vol_arr = _float_array(volumes)
 
         for i in range(1, n_bars):
             start = max(1, i - n + 1)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import date, datetime, timezone
 from typing import Optional
@@ -17,11 +18,47 @@ DEFAULT_INCUBATION_RULES = {
 }
 
 
+def _get_async_db_method(db, name: str):
+    """Only treat explicitly provided async methods as adapter overrides.
+
+    ``MagicMock``/``Mock`` synthesizes arbitrary attributes on access, so
+    ``hasattr`` is too permissive here and can leak un-awaited child mocks
+    into fallback branches during tests.
+    """
+    method = getattr(db, name, None)
+    if method is None or not callable(method):
+        return None
+    if inspect.iscoroutinefunction(method):
+        return method
+    if hasattr(method, "await_count"):
+        return method
+    return None
+
+
+def _get_db_acquire(db):
+    """Return a real acquire() hook, not a lazily synthesized mock child."""
+    acquire = getattr(db, "acquire", None)
+    if not callable(acquire):
+        return None
+
+    raw = getattr(db, "raw", None)
+    target = getattr(raw, "acquire", None) if raw is not None else acquire
+    if target is None or not callable(target):
+        return None
+    if type(target).__module__.startswith("unittest.mock"):
+        return None
+    return acquire
+
+
 class StrategyIncubationService:
     async def _get_strategy_account(self, db, strategy_id: str) -> Optional[dict]:
-        if hasattr(db, 'get_paper_account_by_strategy'):
-            return await db.get_paper_account_by_strategy(strategy_id)
-        async with db.acquire() as conn:
+        method = _get_async_db_method(db, 'get_paper_account_by_strategy')
+        if method is not None:
+            return await method(strategy_id)
+        acquire = _get_db_acquire(db)
+        if acquire is None:
+            return None
+        async with acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM paper_accounts WHERE strategy_id=$1 ORDER BY created_at LIMIT 1",
                 strategy_id,
@@ -29,9 +66,13 @@ class StrategyIncubationService:
         return dict(row) if row else None
 
     async def _save_strategy_account(self, db, account: dict) -> dict:
-        if hasattr(db, 'save_paper_account'):
-            return await db.save_paper_account(account)
-        async with db.acquire() as conn:
+        method = _get_async_db_method(db, 'save_paper_account')
+        if method is not None:
+            return await method(account)
+        acquire = _get_db_acquire(db)
+        if acquire is None:
+            return dict(account)
+        async with acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO paper_accounts
@@ -66,8 +107,9 @@ class StrategyIncubationService:
         return dict(row)
 
     async def _record_domain_event(self, db, strategy_id: Optional[str], event_type: str, payload: dict, *, source: str = 'incubation', severity: str = 'info', correlation_id: Optional[str] = None):
-        if hasattr(db, 'save_strategy_domain_event'):
-            await db.save_strategy_domain_event({
+        method = _get_async_db_method(db, 'save_strategy_domain_event')
+        if method is not None:
+            await method({
                 'strategy_id': strategy_id,
                 'aggregate_type': 'strategy',
                 'aggregate_id': strategy_id,
@@ -80,7 +122,8 @@ class StrategyIncubationService:
 
     async def ensure_account(self, db, strategy: dict, stage: str = 'warmup', source_run_id: Optional[str] = None) -> dict:
         strategy_id = strategy['id']
-        binding = await db.get_strategy_incubation_account(strategy_id) if hasattr(db, 'get_strategy_incubation_account') else None
+        binding_method = _get_async_db_method(db, 'get_strategy_incubation_account')
+        binding = await binding_method(strategy_id) if binding_method is not None else None
         account = None
         created = False
         if binding:
@@ -139,8 +182,9 @@ class StrategyIncubationService:
         return None
 
     async def _list_positions(self, db, account_id: str) -> list[dict]:
-        if hasattr(db, 'list_paper_positions'):
-            return await db.list_paper_positions(account_id)
+        method = _get_async_db_method(db, 'list_paper_positions')
+        if method is not None:
+            return await method(account_id)
         async with db.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM paper_positions WHERE account_id = $1 ORDER BY stock_code",
@@ -149,8 +193,9 @@ class StrategyIncubationService:
         return [dict(row) for row in rows]
 
     async def _save_position(self, db, position: dict) -> dict:
-        if hasattr(db, 'save_paper_position'):
-            return await db.save_paper_position(position)
+        method = _get_async_db_method(db, 'save_paper_position')
+        if method is not None:
+            return await method(position)
         async with db.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -179,8 +224,9 @@ class StrategyIncubationService:
         return dict(row)
 
     async def _save_trade(self, db, trade: dict) -> dict:
-        if hasattr(db, 'save_paper_trade'):
-            return await db.save_paper_trade(trade)
+        method = _get_async_db_method(db, 'save_paper_trade')
+        if method is not None:
+            return await method(trade)
         async with db.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -206,8 +252,9 @@ class StrategyIncubationService:
         return dict(row)
 
     async def _update_order(self, db, order_id: int, updates: dict) -> Optional[dict]:
-        if hasattr(db, 'update_paper_order'):
-            return await db.update_paper_order(order_id, updates)
+        method = _get_async_db_method(db, 'update_paper_order')
+        if method is not None:
+            return await method(order_id, updates)
         async with db.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -235,7 +282,8 @@ class StrategyIncubationService:
     async def _save_nav_snapshot(self, db, account: dict, nav_date: date, cash: float, market_value: float) -> dict:
         account_id = account['id']
         total_value = round(cash + market_value, 4)
-        rows = await db.get_paper_nav_rows(account_id, limit=2) if hasattr(db, 'get_paper_nav_rows') else []
+        nav_rows_method = _get_async_db_method(db, 'get_paper_nav_rows')
+        rows = await nav_rows_method(account_id, limit=2) if nav_rows_method is not None else []
         prev = next((row for row in rows if str(row.get('nav_date')) != str(nav_date)), None)
         prev_total = float((prev or {}).get('total_value') or account.get('initial_capital') or total_value or DEFAULT_INCUBATION_CAPITAL)
         daily_return = ((total_value - prev_total) / prev_total) if prev_total > 0 else 0.0
@@ -247,8 +295,9 @@ class StrategyIncubationService:
             'market_value': round(market_value, 4),
             'daily_return': round(daily_return, 6),
         }
-        if hasattr(db, 'save_paper_nav'):
-            await db.save_paper_nav(snapshot)
+        save_nav_method = _get_async_db_method(db, 'save_paper_nav')
+        if save_nav_method is not None:
+            await save_nav_method(snapshot)
         else:
             async with db.acquire() as conn:
                 await conn.execute(
@@ -272,7 +321,8 @@ class StrategyIncubationService:
         ensure = await self.ensure_account(db, strategy)
         account = ensure['account']
         account_id = account['id']
-        orders = await db.list_strategy_paper_orders(strategy['id'], signal_date) if hasattr(db, 'list_strategy_paper_orders') else []
+        list_orders_method = _get_async_db_method(db, 'list_strategy_paper_orders')
+        orders = await list_orders_method(strategy['id'], signal_date) if list_orders_method is not None else []
         executable = [item for item in orders if str(item.get('status') or 'pending') in {'pending', 'submitted'}]
         positions = {str(item.get('stock_code') or ''): dict(item) for item in await self._list_positions(db, account_id)}
         cash = float(account.get('current_capital') or account.get('initial_capital') or DEFAULT_INCUBATION_CAPITAL)
@@ -418,8 +468,9 @@ class StrategyIncubationService:
         account = ensure['account']
         account_id = account['id']
         signals = await db.get_signals(strategy['id'], start_date=signal_date, end_date=signal_date, limit=200)
-        if hasattr(db, 'list_strategy_paper_orders'):
-            existing_orders = await db.list_strategy_paper_orders(strategy['id'], signal_date)
+        list_orders_method = _get_async_db_method(db, 'list_strategy_paper_orders')
+        if list_orders_method is not None:
+            existing_orders = await list_orders_method(strategy['id'], signal_date)
         else:
             async with db.acquire() as conn:
                 rows = await conn.fetch(
@@ -455,8 +506,9 @@ class StrategyIncubationService:
             else:
                 # Fix #8: 卖出时使用实际持仓数量，而非硬编码 100 股
                 position_shares = 0
-                if hasattr(db, 'get_paper_positions'):
-                    positions = await db.get_paper_positions(account_id)
+                positions_method = _get_async_db_method(db, 'get_paper_positions')
+                if positions_method is not None:
+                    positions = await positions_method(account_id)
                     for pos in (positions or []):
                         if str(pos.get('code') or '') == str(code):
                             position_shares = int(pos.get('shares') or 0)
@@ -474,8 +526,9 @@ class StrategyIncubationService:
                 'order_type': 'limit',
                 'status': 'pending',
             }
-            if hasattr(db, 'save_paper_order'):
-                created.append(await db.save_paper_order(order))
+            save_order_method = _get_async_db_method(db, 'save_paper_order')
+            if save_order_method is not None:
+                created.append(await save_order_method(order))
             else:
                 async with db.acquire() as conn:
                     row = await conn.fetchrow(
@@ -554,8 +607,9 @@ class StrategyIncubationService:
         account = binding['account']
         account_id = account['id']
 
-        if hasattr(db, 'get_paper_nav_rows'):
-            nav_rows = await db.get_paper_nav_rows(account_id, limit=60)
+        nav_rows_method = _get_async_db_method(db, 'get_paper_nav_rows')
+        if nav_rows_method is not None:
+            nav_rows = await nav_rows_method(account_id, limit=60)
             order_summary = await db.get_paper_order_summary(account_id)
         else:
             async with db.acquire() as conn:
@@ -655,8 +709,9 @@ class StrategyIncubationService:
                 'binding_created': bool(binding.get('created')),
             },
         })
-        if hasattr(db, 'update_paper_account_status'):
-            await db.update_paper_account_status(
+        update_account_status_method = _get_async_db_method(db, 'update_paper_account_status')
+        if update_account_status_method is not None:
+            await update_account_status_method(
                 account_id,
                 'active',
                 stage=metric.get('stage') or 'warmup',

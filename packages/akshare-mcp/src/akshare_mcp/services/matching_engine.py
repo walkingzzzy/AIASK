@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from contextlib import suppress
 from .slippage import FixedSlippageModel
 from datetime import datetime, time, timedelta
 from typing import Optional
@@ -53,7 +54,7 @@ class MatchingEngine:
         if self._running:
             return
         self._running = True
-        self._task = asyncio.ensure_future(self._loop())
+        self._task = asyncio.create_task(self._loop(), name="matching-engine")
         logger.info("[MatchingEngine] started, scan every %ds", self.scan_interval)
 
     def stop(self):
@@ -61,6 +62,25 @@ class MatchingEngine:
         if self._task:
             self._task.cancel()
             self._task = None
+        logger.info("[MatchingEngine] stopped")
+
+    async def shutdown(self, grace_sec: float = 2.0):
+        self._running = False
+        task = self._task
+        self._task = None
+        if task is None:
+            logger.info("[MatchingEngine] stopped")
+            return
+        if not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=max(0.0, grace_sec))
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        else:
+            with suppress(asyncio.CancelledError):
+                await task
         logger.info("[MatchingEngine] stopped")
 
     def status(self) -> dict:

@@ -27,6 +27,8 @@ export type UseApiQueryOptions<TData> = {
   placeholderData?: 'keepPrevious';
   /** 可选数据解析器：用于运行时 schema 校验/结构转换 */
   parse?: (raw: unknown) => TData;
+  /** 401 时是否跳转到登录页；公共承载页可关闭为静默失败 */
+  redirectOnUnauthorized?: boolean;
 };
 
 /**
@@ -46,6 +48,7 @@ export function useApiQuery<TData = unknown>(
     fetchOptions,
     placeholderData,
     parse,
+    redirectOnUnauthorized = true,
   } = options;
   const isLoggingOut = useAuthStore((s) => s.isLoggingOut);
 
@@ -65,7 +68,7 @@ export function useApiQuery<TData = unknown>(
       } else if (fetchOptions?.headers) {
         init.headers = fetchOptions.headers;
       }
-      const resp = await authedFetch(path!, init);
+      const resp = await authedFetch(path!, init, { redirectOnUnauthorized });
       const bodyPayload = await resp.json().catch(() => null);
       if (!resp.ok) {
         let msg = `HTTP ${resp.status} @ ${path}`;

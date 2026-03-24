@@ -39,6 +39,7 @@ export class StrategyMarketController {
   @Get('ranking')
   async ranking(@Query() q: RankDto, @Req() req: Req_) {
     const data = await this.svc.rank({
+      status: q.status,
       strategy_type: q.strategy_type,
       limit: q.limit,
       offset: q.offset,

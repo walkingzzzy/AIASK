@@ -48,7 +48,11 @@ def test_main_schedules_startup_validator_via_helper(monkeypatch):
         return object()
 
     monkeypatch.setattr(server_mod, "_start_startup_validator_background", _fake_schedule)
-    monkeypatch.setattr(server_mod.mcp, "run", lambda: scheduled.setdefault("mcp_run", True))
+
+    async def _noop_transport(*_args, **_kwargs):
+        scheduled["mcp_run"] = True
+
+    monkeypatch.setattr(server_mod, "_run_mcp_transport_async", _noop_transport)
 
     server_mod.main()
 

@@ -16,13 +16,10 @@ export class AdminService {
 
   async getMcpStats(): Promise<Record<string, unknown>> {
     const health = await this.mcp.checkAvailableTools();
+    const metrics = this.mcp.getMetricsSnapshot();
     return {
       ...health,
-      totalCalls: 0,
-      avgLatency: 0,
-      p99Latency: 0,
-      errorRate: 0,
-      tools: [],
+      ...metrics,
     };
   }
 

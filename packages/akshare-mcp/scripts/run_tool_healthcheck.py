@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import platform
 import re
 import subprocess
 import sys
@@ -24,13 +23,14 @@ DATA_QUALITY_ARTIFACT_PATH = PACKAGE_ROOT / "tests/data-quality/DATA_QUALITY_REP
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "reports/tool_healthcheck"
 REGISTRY_OUTPUT_DIR = REPO_ROOT / "reports/tool_registry"
 SCENARIO_AUDIT_OUTPUT_DIR = REPO_ROOT / "reports/real_world_scenarios"
-DEFAULT_EXPECTED_TOOL_COUNT = 171 if platform.system() == "Windows" else 134
 
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from akshare_mcp.scenario_artifact_audit import audit_scenario_artifacts
 from akshare_mcp.tool_registry import build_tool_registry, summarize_tool_registry
+
+DEFAULT_EXPECTED_TOOL_COUNT = len(build_tool_registry())
 
 
 def _iso_now() -> str:

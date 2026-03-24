@@ -75,6 +75,24 @@ class StrategyCrudMixin:
         return raw
 
     @staticmethod
+    def _normalize_strategy_statuses(status: Any) -> Optional[list[str]]:
+        if status is None:
+            return None
+        raw_values = status if isinstance(status, (list, tuple, set)) else str(status).split(",")
+        normalized: list[str] = []
+        for item in raw_values:
+            token = str(item or "").strip().lower()
+            if not token:
+                continue
+            if token in {"all", "*"}:
+                return None
+            if token == "published":
+                token = "listed"
+            if token not in normalized:
+                normalized.append(token)
+        return normalized or None
+
+    @staticmethod
     def _encode_pgvector(values: Any) -> Optional[str]:
         try:
             vector = [float(item) for item in list(values or [])]
@@ -184,30 +202,23 @@ class StrategyCrudMixin:
             return None
         return self._decode_strategy_row(dict(row))
 
-    async def list_strategies(self, status: str = "published", strategy_type: str = None, limit: int = 20, offset: int = 0) -> List[dict]:
+    async def list_strategies(self, status: Any = "listed", strategy_type: str = None, limit: int = 20, offset: int = 0) -> List[dict]:
+        statuses = self._normalize_strategy_statuses(status)
         async with self.acquire() as conn:
-            if strategy_type:
-                rows = await conn.fetch(
-                    """
-                    SELECT s.*,
-                           COALESCE((SELECT AVG(rating)::float FROM strategy_reviews WHERE strategy_id = s.id), 0) AS avg_rating
-                    FROM strategies s
-                    WHERE s.status = $1 AND s.strategy_type = $2
-                    ORDER BY s.updated_at DESC LIMIT $3 OFFSET $4
-                    """,
-                    status, strategy_type, limit, offset,
-                )
-            else:
-                rows = await conn.fetch(
-                    """
-                    SELECT s.*,
-                           COALESCE((SELECT AVG(rating)::float FROM strategy_reviews WHERE strategy_id = s.id), 0) AS avg_rating
-                    FROM strategies s
-                    WHERE s.status = $1
-                    ORDER BY s.updated_at DESC LIMIT $2 OFFSET $3
-                    """,
-                    status, limit, offset,
-                )
+            rows = await conn.fetch(
+                """
+                SELECT s.*,
+                       COALESCE((SELECT AVG(rating)::float FROM strategy_reviews WHERE strategy_id = s.id), 0) AS avg_rating
+                FROM strategies s
+                WHERE ($1::text[] IS NULL OR s.status = ANY($1::text[]))
+                  AND ($2::text IS NULL OR s.strategy_type = $2)
+                ORDER BY s.updated_at DESC LIMIT $3 OFFSET $4
+                """,
+                statuses,
+                strategy_type,
+                limit,
+                offset,
+            )
         return [self._decode_strategy_row(dict(r)) for r in rows]
 
     async def update_strategy_status(

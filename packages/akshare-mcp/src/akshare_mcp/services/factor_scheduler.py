@@ -3,6 +3,9 @@
 Runs batch_compute_factors periodically (default: daily at 18:00 CST)
 without requiring external dependencies like APScheduler or Celery.
 
+Optionally runs LLM factor mining after classic batch computation when
+FACTOR_LLM_ENABLED=1 and FACTOR_SCHEDULER_LLM_MINING=1.
+
 Usage:
     from .factor_scheduler import FactorScheduler
     scheduler = FactorScheduler()
@@ -14,6 +17,8 @@ Usage:
 import asyncio
 import json
 import logging
+import os
+from contextlib import suppress
 from datetime import datetime, time, timedelta
 from typing import List, Optional
 
@@ -137,7 +142,7 @@ class FactorScheduler:
             logger.warning("FactorScheduler already running")
             return
         self._running = True
-        self._task = asyncio.ensure_future(self._loop())
+        self._task = asyncio.create_task(self._loop(), name="factor-scheduler")
         logger.info("FactorScheduler started, daily run at %s", self.run_time)
 
     def stop(self):
@@ -146,6 +151,26 @@ class FactorScheduler:
         if self._task:
             self._task.cancel()
             self._task = None
+        logger.info("FactorScheduler stopped")
+
+    async def shutdown(self, grace_sec: float = 3.0):
+        """Stop the scheduler and drain the background task before loop exit."""
+        self._running = False
+        task = self._task
+        self._task = None
+        if task is None:
+            logger.info("FactorScheduler stopped")
+            return
+        if not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=max(0.0, grace_sec))
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        else:
+            with suppress(asyncio.CancelledError):
+                await task
         logger.info("FactorScheduler stopped")
 
     async def _loop(self):
@@ -206,6 +231,25 @@ class FactorScheduler:
                 logger.error("FactorScheduler batch %d-%d error: %s", i, i + len(batch), e)
                 total_errors += len(batch)
 
+        # Optional: run LLM factor mining after classic batch
+        llm_mining_result = None
+        llm_enabled = os.getenv("FACTOR_LLM_ENABLED", "0").strip() in ("1", "true", "yes")
+        scheduler_llm = os.getenv("FACTOR_SCHEDULER_LLM_MINING", "0").strip() in ("1", "true", "yes")
+        if llm_enabled and scheduler_llm:
+            try:
+                from ..tools.managers.quant_manager import quant_manager
+                llm_mining_result = await quant_manager(
+                    action="llm_factor_mining",
+                    kwargs=json.dumps({
+                        "allow_fallback": True,
+                        "dedup_mode": "penalty",
+                    }, ensure_ascii=False),
+                )
+                logger.info("FactorScheduler: LLM mining completed")
+            except Exception as e:
+                logger.warning("FactorScheduler: LLM mining failed: %s", e)
+                llm_mining_result = {"error": str(e)}
+
         elapsed = (datetime.now() - start).total_seconds()
         self.last_run = datetime.now().astimezone()
         quality_meta = self._build_quality_meta(
@@ -219,6 +263,7 @@ class FactorScheduler:
             "errors": total_errors,
             "elapsed_seconds": round(elapsed, 1),
             "universe_size": len(self.universe),
+            "llm_mining": llm_mining_result,
             **quality_meta,
         }
         logger.info(

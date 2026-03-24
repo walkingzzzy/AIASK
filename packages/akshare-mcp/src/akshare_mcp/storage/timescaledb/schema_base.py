@@ -82,6 +82,9 @@ class SchemaBase:
                 logger.info("Force terminated connection pool: %s", reason)
             return True
         except Exception as exc:
+            if "event loop is closed" in str(exc).lower():
+                logger.info("Skip stale pool terminate after loop close")
+                return False
             logger.warning("Failed to terminate stale connection pool: %s", exc)
             return False
 

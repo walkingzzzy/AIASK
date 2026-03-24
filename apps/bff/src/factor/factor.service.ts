@@ -48,22 +48,22 @@ export class FactorService {
 
   async calculateIc(body: { factor_name: string; stock_codes: string[] }) {
     const payload = await this.mcp.callTool('calculate_factor_ic', { codes: body.stock_codes, factor: body.factor_name });
-    return { data: this.flattenMcpResult(payload) };
+    return this.flattenMcpResult(payload);
   }
 
   async backtestFactor(body: { factor_name: string; stock_codes: string[]; start_date?: string; end_date?: string }) {
     const payload = await this.mcp.callTool('backtest_factor', { codes: body.stock_codes, factor: body.factor_name });
-    return { data: this.flattenMcpResult(payload) };
+    return this.flattenMcpResult(payload);
   }
 
   async validateOos(body: { factor_name: string; stock_codes: string[]; start_date?: string; end_date?: string }) {
     const payload = await this.mcp.callTool('validate_factor_oos', { codes: body.stock_codes, factor: body.factor_name });
-    return { data: this.flattenMcpResult(payload) };
+    return this.flattenMcpResult(payload);
   }
 
   async robustnessCheck(body: { factor_name: string; stock_codes: string[]; start_date?: string; end_date?: string }) {
     const payload = await this.mcp.callTool('factor_robustness_check', { codes: body.stock_codes, factor: body.factor_name });
-    return { data: this.flattenMcpResult(payload) };
+    return this.flattenMcpResult(payload);
   }
 
   async icHistory(params: { factor_name: string; period?: string; limit?: number }) {
@@ -152,7 +152,7 @@ export class FactorService {
       startup_warmup_limit: body.startup_warmup_limit,
       startup_warmup_task_type: body.startup_warmup_task_type,
     });
-    return { data: this.flattenMcpResult(payload) };
+    return this.flattenMcpResult(payload);
   }
 
   async validateCandidate(body: {
@@ -179,7 +179,7 @@ export class FactorService {
       write_memory: body.write_memory,
       output_artifact_id: body.output_artifact_id,
     });
-    return { data: this.flattenMcpResult(payload) };
+    return this.flattenMcpResult(payload);
   }
 
   async factorResearchMemory(body: {
@@ -202,7 +202,7 @@ export class FactorService {
       family: body.family,
       limit: body.limit,
     });
-    return { data: this.flattenMcpResult(payload) };
+    return this.flattenMcpResult(payload);
   }
 
   async factorCandidateRegistry(body: {
@@ -227,7 +227,7 @@ export class FactorService {
       only_active: body.only_active,
       limit: body.limit,
     });
-    return { data: this.flattenMcpResult(payload) };
+    return this.flattenMcpResult(payload);
   }
 
   async replayFactorEpisode(body: {
@@ -258,17 +258,17 @@ export class FactorService {
       output_artifact_id: body.output_artifact_id,
       limit: body.limit,
     });
-    return { data: this.flattenMcpResult(payload) };
+    return this.flattenMcpResult(payload);
   }
 
   async schedulerStatus() {
     const payload = await this.callQuantManager('scheduler_status');
-    return { data: this.flattenMcpResult(payload) };
+    return this.flattenMcpResult(payload);
   }
 
   async schedulerRunNow() {
     const payload = await this.callQuantManager('scheduler_run_now');
-    return { data: this.flattenMcpResult(payload) };
+    return this.flattenMcpResult(payload);
   }
 
   private async callQuantManager(action: string, params: Record<string, unknown> = {}) {

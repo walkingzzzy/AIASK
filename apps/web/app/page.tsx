@@ -12,6 +12,7 @@ import { useDashboardPrefs } from '@/hooks/use-dashboard-prefs';
 import { useHydrated } from '@/hooks/use-hydrated';
 import type { DashboardModuleKey } from '@/hooks/use-dashboard-prefs';
 import { useQuoteSubscription, type QuoteData } from '@/lib/ws';
+import { hasLoggedInHint } from '@/lib/auth';
 import { useWatchlistStore } from '@/store/watchlist-store';
 import { useStockContext } from '@/store/stock-context';
 
@@ -92,28 +93,30 @@ export default function HomePage() {
   const liveRefetch = pageVisible ? poll : false;
   const lazyRefetch = pageVisible ? slowPoll : false;
 
+  const user = useAuthStore((s) => s.user);
+  const canLoadPersonalized = mounted && Boolean(user || hasLoggedInHint());
+
   /* ── Data queries ─────────────────────────────────────────────── */
-  const idxQ       = useApiQuery<unknown>('/market/index-batch-quotes', { enabled: mounted, refetchInterval: liveRefetch, placeholderData: 'keepPrevious', body: { codes: INDEX_CODES }, parse: (r) => ensureRecordOrArray(r, '首页指数批量') });
-  const limitUpQ   = useApiQuery<unknown>('/market/limit-up-stats', { enabled: mounted, refetchInterval: liveRefetch, placeholderData: 'keepPrevious', parse: (r) => ensureRecord(r, '涨停统计') });
-  const northQ     = useApiQuery<unknown>('/fund-flow/north', { enabled: mounted, refetchInterval: liveRefetch, placeholderData: 'keepPrevious', parse: (r) => ensureRecordOrArray(r, '北向资金') });
-  const fearGreedQ = useApiQuery<unknown>('/sentiment/fear-greed', { enabled: mounted, refetchInterval: liveRefetch, placeholderData: 'keepPrevious', parse: (r) => ensureRecord(r, '恐慌贪婪指数') });
-  const healthQ    = useApiQuery<unknown>('/health/mcp', { enabled: mounted });
-  const profileQ   = useApiQuery<Record<string, unknown>>('/auth/profile', { enabled: mounted, parse: (r) => ensureRecord(r, '用户配置') });
-  const paperSumQ  = useApiQuery<PaperTradingSummary>('/paper-trading/summary', { enabled: mounted, parse: (r) => ensureRecord(r, '模拟盘概览(首页)') as PaperTradingSummary });
-  const paperPosQ  = useApiQuery<PaperTradingPositionsResponse>('/paper-trading/positions', { enabled: mounted, parse: normalizePaperPositionsPayload });
-  const newsQ      = useApiQuery<DashboardMarketNewsResponse>('/research/market-news?limit=5', { enabled: mounted, parse: normalizeMarketNewsPayload });
+  const idxQ       = useApiQuery<unknown>('/market/index-batch-quotes', { enabled: mounted, refetchInterval: liveRefetch, placeholderData: 'keepPrevious', body: { codes: INDEX_CODES }, parse: (r) => ensureRecordOrArray(r, '首页指数批量'), redirectOnUnauthorized: false });
+  const limitUpQ   = useApiQuery<unknown>('/market/limit-up-stats', { enabled: mounted, refetchInterval: liveRefetch, placeholderData: 'keepPrevious', parse: (r) => ensureRecord(r, '涨停统计'), redirectOnUnauthorized: false });
+  const northQ     = useApiQuery<unknown>('/fund-flow/north', { enabled: mounted, refetchInterval: liveRefetch, placeholderData: 'keepPrevious', parse: (r) => ensureRecordOrArray(r, '北向资金'), redirectOnUnauthorized: false });
+  const fearGreedQ = useApiQuery<unknown>('/sentiment/fear-greed', { enabled: mounted, refetchInterval: liveRefetch, placeholderData: 'keepPrevious', parse: (r) => ensureRecord(r, '恐慌贪婪指数'), redirectOnUnauthorized: false });
+  const healthQ    = useApiQuery<unknown>('/health/mcp', { enabled: mounted, redirectOnUnauthorized: false });
+  const profileQ   = useApiQuery<Record<string, unknown>>('/auth/profile', { enabled: canLoadPersonalized, parse: (r) => ensureRecord(r, '用户配置'), redirectOnUnauthorized: false });
+  const paperSumQ  = useApiQuery<PaperTradingSummary>('/paper-trading/summary', { enabled: canLoadPersonalized, parse: (r) => ensureRecord(r, '模拟盘概览(首页)') as PaperTradingSummary, redirectOnUnauthorized: false });
+  const paperPosQ  = useApiQuery<PaperTradingPositionsResponse>('/paper-trading/positions', { enabled: canLoadPersonalized, parse: normalizePaperPositionsPayload, redirectOnUnauthorized: false });
+  const newsQ      = useApiQuery<DashboardMarketNewsResponse>('/research/market-news?limit=5', { enabled: mounted, parse: normalizeMarketNewsPayload, redirectOnUnauthorized: false });
 
   const { visibility: dashboardVisibility, toggle: toggleDashboardModule } = useDashboardPrefs(mounted, profileQ);
 
-  const sectorQ     = useApiQuery<unknown>('/market/blocks?blockType=industry&limit=20', { enabled: mounted && dashboardVisibility.market, refetchInterval: lazyRefetch, placeholderData: 'keepPrevious', parse: (r) => ensureRecordOrArray(r, '板块行情(首页)') });
-  const sectorFlowQ = useApiQuery<unknown>('/fund-flow/sector', { enabled: mounted && dashboardVisibility['fund-flow'], refetchInterval: lazyRefetch, placeholderData: 'keepPrevious', parse: (r) => ensureRecordOrArray(r, '板块资金流(首页)') });
-  const alertsQ     = useApiQuery<{ items?: AlertItem[] }>('/alerts/list?status=active', { enabled: mounted && dashboardVisibility.alerts, parse: normalizeAlertsPayload });
-  const riskQ       = useApiQuery<unknown>('/risk/summary?lookbackDays=252', { enabled: mounted && dashboardVisibility.risk, parse: (r) => ensureRecord(r, '风险汇总(首页)') });
+  const sectorQ     = useApiQuery<unknown>('/market/blocks?blockType=industry&limit=20', { enabled: mounted && dashboardVisibility.market, refetchInterval: lazyRefetch, placeholderData: 'keepPrevious', parse: (r) => ensureRecordOrArray(r, '板块行情(首页)'), redirectOnUnauthorized: false });
+  const sectorFlowQ = useApiQuery<unknown>('/fund-flow/sector', { enabled: mounted && dashboardVisibility['fund-flow'], refetchInterval: lazyRefetch, placeholderData: 'keepPrevious', parse: (r) => ensureRecordOrArray(r, '板块资金流(首页)'), redirectOnUnauthorized: false });
+  const alertsQ     = useApiQuery<{ items?: AlertItem[] }>('/alerts/list?status=active', { enabled: canLoadPersonalized && dashboardVisibility.alerts, parse: normalizeAlertsPayload, redirectOnUnauthorized: false });
+  const riskQ       = useApiQuery<unknown>('/risk/summary?lookbackDays=252', { enabled: canLoadPersonalized && dashboardVisibility.risk, parse: (r) => ensureRecord(r, '风险汇总(首页)'), redirectOnUnauthorized: false });
 
-  const user = useAuthStore((s) => s.user);
   const strategySubsQ = useApiQuery<unknown>(
     user ? '/strategy-market/my-subscriptions' : null,
-    { enabled: mounted && dashboardVisibility.strategy && Boolean(user), parse: (r) => ensureRecordOrArray(r, '策略订阅(首页)') },
+    { enabled: mounted && dashboardVisibility.strategy && Boolean(user), parse: (r) => ensureRecordOrArray(r, '策略订阅(首页)'), redirectOnUnauthorized: false },
   );
 
   const watchlistItems = useWatchlistStore((s) => s.groups.flatMap((g) => g.items));
@@ -126,7 +129,7 @@ export default function HomePage() {
   useQuoteSubscription({ codes: [...INDEX_CODES], type: 'index', onUpdate: handleWsQuote });
 
   const quoteCodes = useMemo(() => { const s = new Set<string>(); watchlistItems.forEach((i) => s.add(i.code)); recentStocks.slice(0, 8).forEach((i) => s.add(i.code)); return Array.from(s); }, [watchlistItems, recentStocks]);
-  const batchQ = useApiQuery<unknown>(quoteCodes.length > 0 ? '/market/batch-quotes' : null, { enabled: mounted && pageVisible, refetchInterval: lazyRefetch, body: { codes: quoteCodes }, placeholderData: 'keepPrevious' });
+  const batchQ = useApiQuery<unknown>(quoteCodes.length > 0 ? '/market/batch-quotes' : null, { enabled: mounted && pageVisible, refetchInterval: lazyRefetch, body: { codes: quoteCodes }, placeholderData: 'keepPrevious', redirectOnUnauthorized: false });
   const quoteMap = useMemo(() => { const m = new Map<string, DashboardQuoteSnapshot>(); extractArray(batchQ.data, 'quotes', 'items', 'data').forEach((q) => { const c = String(q.code ?? ''); if (c) m.set(c, q as DashboardQuoteSnapshot); }); return m; }, [batchQ.data]);
 
   /* ── Lifecycle ─────────────────────────────────────────────────── */

@@ -6,7 +6,7 @@
 [![NestJS](https://img.shields.io/badge/NestJS-10-red.svg)](https://nestjs.com/)
 [![MCP](https://img.shields.io/badge/Protocol-MCP-purple.svg)](https://modelcontextprotocol.io/)
 
-> 全栈 A 股量化投研平台，采用 **Web (Next.js) → BFF (NestJS) → MCP Server (Python)** 三层 Monorepo 架构。前端 30+ 页面覆盖行情、研究、回测、风控等场景；BFF 层 22 个模块统一编排；底层 **158 个 MCP 工具** + **20 个 Skills** 提供数据获取、分析计算、策略验证与智能决策能力。
+> 全栈 A 股量化投研平台，采用 **Web (Next.js) → BFF (NestJS) → MCP Server (Python)** 三层 Monorepo 架构。前端 30+ 页面覆盖行情、研究、回测、风控等场景；BFF 层 22 个模块统一编排；底层 **运行时 MCP 工具集合** + **20 个 Skills** 提供数据获取、分析计算、策略验证与智能决策能力。工具总数以 `tool_registry` / `listTools` 实测结果为准，不再以静态文档数字为准。
 
 ---
 
@@ -16,7 +16,7 @@
 - [2. 全栈架构与项目结构](#2-全栈架构与项目结构)
 - [3. 数据源处理策略](#3-数据源处理策略)
 - [4. 必备条件与环境要求](#4-必备条件与环境要求)
-- [5. 工具能力覆盖（158 个 MCP 工具）](#5-工具能力覆盖158-个-mcp-工具)
+- [5. 工具能力覆盖（运行时 MCP 工具）](#5-工具能力覆盖运行时-mcp-工具)
 - [6. 技术方案与架构（含 Skills 层）](#6-技术方案与架构含-skills-层)
 - [7. Skills 架构与使用](#7-skills-架构与使用)
 - [8. AI 平台使用指南（含 Skills 路由）](#8-ai-平台使用指南含-skills-路由)
@@ -192,9 +192,9 @@ AKSHARE_SPOT_TIMEOUT_SECONDS=15
 
 ---
 
-## 4. 工具能力覆盖（158 个 MCP 工具）
+## 4. 工具能力覆盖（运行时 MCP 工具）
 
-> 统计口径：`skill_tool_coverage_runtime.json`（`tool_count=158`，`skills_count=20`，覆盖率 `99.37%`）。
+> 统计口径：请以运行时 `tool_registry` 导出结果与 `available_tools` / `listTools` 实测为准。
 > 说明：以下为“能力域统计”，用于帮助理解覆盖范围；具体接口可通过 `available_tools` 实时查询。
 
 ### 4.1 能力域覆盖统计
@@ -219,7 +219,7 @@ AKSHARE_SPOT_TIMEOUT_SECONDS=15
 - 工具总量：请以运行时审计文件为准。
 - 平台专用入口：不纳入默认可用能力声明，当前验证以公共数据能力为准。
 - Manager 编排能力：**31/31 全覆盖**。
-- Skills 覆盖：**157/158（99.37%）**，当前缺口工具为 `factor_robustness_check`。
+- Skills 覆盖：请以最新 `skill_tool_coverage_runtime.json` 审计结果为准。
 
 ### 4.3 最小可用验证（5 分钟）
 
@@ -513,7 +513,7 @@ pytest tests/ -v
 
 ## 11. 未来开发计划（Roadmap）
 
-> 目标：在保持“158 个 MCP Tools + 20+ Skills”稳定能力的基础上，持续提升面向普通投资者的可用性、可解释性与协作效率。
+> 目标：在保持“运行时 MCP Tools + 20+ Skills”稳定能力的基础上，持续提升面向普通投资者的可用性、可解释性与协作效率。
 
 ### 11.1 前端开发（专业级可视化）
 - **回答卡片渲染引擎**：基于 `DEMO.md` 第 8 章 JSON 协议，实现结论卡、风险卡、执行卡、来源时效卡的统一渲染。

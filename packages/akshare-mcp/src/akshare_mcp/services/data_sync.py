@@ -1,12 +1,14 @@
-"""
-数据源整合优化模块
-
-Phase 4 实现 - MCP 服务开发方案
+"""数据源整合优化模块 — 统一数据访问层。
 
 功能：
 1. 统一数据访问层 - 先查缓存，再调用 API
 2. 市场数据自动同步到 TimescaleDB
 3. 智能缓存策略 - 根据数据类型设置不同 TTL
+
+注：本模块提供 ``DataSyncService`` (底层数据访问 + 缓存)。
+自动定时同步由 ``DataSyncScheduler`` (services/data_sync_scheduler.py) 驱动。
+MCP 按需同步工具由 ``data_sync_manager`` (tools/managers/data_sync_manager.py) 提供。
+深度回填请使用独立脚本 ``sync_daily/sync_init.py``。
 """
 
 import asyncio

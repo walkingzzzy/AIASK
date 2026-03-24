@@ -25,6 +25,10 @@ __pycache__/
 .claude/worktrees/
 .playwright-mcp/
 
+# Baidu Cloud upload temp files
+*.baiduyun.uploading.cfg
+*.baiduyun.uploading
+
 # Temp/debug data files
 *.debug.json
 *_debug.json

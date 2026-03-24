@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const protectedPrefixes = ['/admin', '/market', '/stock', '/fundamental', '/research', '/alerts', '/strategy', '/risk', '/user', '/settings', '/assistant', '/fund-flow', '/factor', '/valuation', '/technical', '/sentiment', '/search', '/data', '/chat', '/paper-trading', '/portfolio', '/watchlist', '/notifications'] as const;
+// UX-only guard: real security is enforced by BFF AuthGuard (JWT + HttpOnly cookie).
+// The `logged_in` cookie is a non-HttpOnly hint set by the frontend — it cannot be
+// trusted for security but prevents unauthenticated users from seeing a flash of
+// protected content before the API rejects them.
+const protectedPrefixes = ['/admin', '/market', '/stock', '/fundamental', '/research', '/alerts', '/strategy', '/strategy-market', '/risk', '/user', '/settings', '/assistant', '/fund-flow', '/factor', '/valuation', '/technical', '/sentiment', '/search', '/data', '/chat', '/paper-trading', '/portfolio', '/watchlist', '/notifications', '/backtest', '/options', '/macro'] as const;
 const authPagePaths = ['/login', '/register'] as const;
-const matcher = [...protectedPrefixes.map((prefix) => `${prefix}/:path*`), ...authPagePaths];
 
 function hasSessionToken(request: NextRequest) {
   return request.cookies.get('logged_in')?.value === '1';
@@ -58,5 +61,35 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher,
+  matcher: [
+    '/admin/:path*',
+    '/market/:path*',
+    '/stock/:path*',
+    '/fundamental/:path*',
+    '/research/:path*',
+    '/alerts/:path*',
+    '/strategy/:path*',
+    '/strategy-market/:path*',
+    '/risk/:path*',
+    '/user/:path*',
+    '/settings/:path*',
+    '/assistant/:path*',
+    '/fund-flow/:path*',
+    '/factor/:path*',
+    '/valuation/:path*',
+    '/technical/:path*',
+    '/sentiment/:path*',
+    '/search/:path*',
+    '/data/:path*',
+    '/chat/:path*',
+    '/paper-trading/:path*',
+    '/portfolio/:path*',
+    '/watchlist/:path*',
+    '/notifications/:path*',
+    '/backtest/:path*',
+    '/options/:path*',
+    '/macro/:path*',
+    '/login',
+    '/register',
+  ],
 };

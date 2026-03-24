@@ -224,6 +224,7 @@ async def init_market_tables(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_north_fund_flow_trade_date_desc
         ON north_fund_flow (trade_date DESC);
     """)
+    await _create_hypertable_if_supported(conn, "north_fund_flow", "trade_date")
     await conn.execute("""
         ALTER TABLE north_fund_flow
         ADD COLUMN IF NOT EXISTS ggt_ss DOUBLE PRECISION;
@@ -265,6 +266,7 @@ async def init_market_tables(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_stock_fund_flow_code_trade_date_desc
         ON stock_fund_flow (code, trade_date DESC);
     """)
+    await _create_hypertable_if_supported(conn, "stock_fund_flow", "trade_date")
 
     # 4.2 融资融券市场汇总
     await conn.execute("""
@@ -1052,6 +1054,9 @@ async def init_market_tables(conn) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_paper_nav_account ON paper_nav(account_id, nav_date);
     """)
+    # paper_nav has SERIAL PK + UNIQUE(account_id, nav_date) — incompatible with
+    # hypertable partitioning on nav_date unless we restructure the PK.
+    # Skipping hypertable for now; data volume is manageable with a regular table.
     await _ensure_foreign_key(
         conn,
         table_name="paper_nav",
@@ -1075,6 +1080,19 @@ async def init_market_tables(conn) -> None:
             ON strategy_artifacts(strategy);
         CREATE INDEX IF NOT EXISTS idx_strategy_artifacts_updated
             ON strategy_artifacts(updated_at DESC);
+    """)
+
+    # 24. 交易日历表（供 DataSyncScheduler 判断交易日）
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS trading_dates (
+            trade_date DATE PRIMARY KEY,
+            exchange TEXT DEFAULT 'SSE',
+            is_open BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_trading_dates_exchange
+        ON trading_dates (exchange, trade_date DESC);
     """)
 
     # 25. 因子持久化表

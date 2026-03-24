@@ -4,7 +4,7 @@ import { getBffBaseUrl } from '@/lib/bff-base';
 
 const BFF_BASE = getBffBaseUrl();
 
-type User = {
+export type User = {
   id: string;
   username: string;
   role: 'admin' | 'user';

@@ -306,6 +306,34 @@ async def test_quant_manager_integrates_memory_context_and_memory_write(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_registered_quant_manager_accepts_params_only_for_memory_stats(monkeypatch):
+    import akshare_mcp.tools.managers.quant_manager as quant_mod
+
+    class _MemoryStatsService:
+        async def summarize_memory_records(self, limit=200, codes=None, status=None, family=None):
+            return {
+                "total_records": 1,
+                "status_counts": {"success": 1},
+                "family_counts": {"momentum": 1},
+            }
+
+    monkeypatch.setattr(quant_mod, "get_db", lambda: object())
+    monkeypatch.setattr(quant_mod, "get_factor_research_memory_service", lambda: _MemoryStatsService())
+
+    mcp = _DummyMCP()
+    quant_mod.register_quant_manager(mcp)
+
+    result = await mcp.quant_manager(
+        action="factor_research_memory",
+        params={"op": "stats", "limit": 5},
+    )
+
+    assert result["success"] is True
+    assert result["data"]["op"] == "stats"
+    assert result["data"]["stats"]["total_records"] == 1
+
+
+@pytest.mark.asyncio
 async def test_quant_manager_blocks_high_similarity_candidates_when_requested(monkeypatch):
     import akshare_mcp.tools.managers.quant_manager as quant_mod
     from akshare_mcp.services.factor_prompt_builder import FactorMiningPrompt
@@ -488,9 +516,11 @@ async def test_quant_manager_factor_candidate_registry_active_pool_can_filter_no
 @pytest.mark.asyncio
 async def test_quant_manager_replay_factor_episode_revalidates_candidate_batch(monkeypatch):
     import akshare_mcp.tools.managers.quant_manager as quant_mod
+    import akshare_mcp.services.artifact_registry as _ar_mod
     from akshare_mcp.services import register_artifact
 
     monkeypatch.setattr(quant_mod, "get_db", lambda: _ValidationDB())
+    monkeypatch.setattr(_ar_mod, "_get_db", lambda: None)
 
     source_artifact_id = "factor_llm_episode_case"
     register_artifact(

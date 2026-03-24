@@ -239,13 +239,17 @@ class TestStrategySpawner:
     async def test_factor_research_builder_builds_unified_artifact(self):
         from akshare_mcp.services.strategy_factory import FactorResearchBuilder
 
-        artifact = await FactorResearchBuilder.build(
-            MagicMock(),
-            {
-                "factor_ic": {"value": 0.05, "quality": 0.04, "growth": -0.01},
-                "factor_ic_trend": {"value": "rising", "quality": "rising", "growth": "falling"},
-            },
-        )
+        with patch.object(
+            FactorResearchBuilder, "_load_governed_candidate_pool",
+            new_callable=AsyncMock, return_value={"available": False, "reason": "test_isolation"},
+        ):
+            artifact = await FactorResearchBuilder.build(
+                MagicMock(),
+                {
+                    "factor_ic": {"value": 0.05, "quality": 0.04, "growth": -0.01},
+                    "factor_ic_trend": {"value": "rising", "quality": "rising", "growth": "falling"},
+                },
+            )
 
         assert artifact["active_factors"] == ["value", "quality"]
         assert artifact["positive_rising_factors"] == ["value", "quality"]
@@ -277,15 +281,19 @@ class TestStrategySpawner:
             [],
         ])
 
-        artifact = await FactorResearchBuilder.build(
-            db,
-            {
-                "date": "2026-03-19",
-                "factor_ic": {"value": 0.05},
-                "factor_ic_trend": {"value": "rising"},
-                "sources": {"factor_ic": {"status": "success"}},
-            },
-        )
+        with patch.object(
+            FactorResearchBuilder, "_load_governed_candidate_pool",
+            new_callable=AsyncMock, return_value={"available": False, "reason": "test_isolation"},
+        ):
+            artifact = await FactorResearchBuilder.build(
+                db,
+                {
+                    "date": "2026-03-19",
+                    "factor_ic": {"value": 0.05},
+                    "factor_ic_trend": {"value": "rising"},
+                    "sources": {"factor_ic": {"status": "success"}},
+                },
+            )
 
         assert artifact["latest_factor_date"] == "2026-03-19"
         assert artifact["freshness_days"] == 0
@@ -1964,10 +1972,22 @@ class _StrategyDB:
 
     @classmethod
     def _expand_strategy_status_filter(cls, status):
-        normalized = cls._normalize_strategy_status(status)
-        if normalized == "listed":
-            return {"listed", "published"}
-        return {normalized}
+        if status is None:
+            return None
+        raw_values = status if isinstance(status, (list, tuple, set)) else [status]
+        allowed = set()
+        for item in raw_values:
+            normalized = cls._normalize_strategy_status(item)
+            if normalized in {"", "all", "*"}:
+                return None
+            if normalized == "visible":
+                allowed.update({"incubating", "listed", "published"})
+                continue
+            if normalized == "listed":
+                allowed.update({"listed", "published"})
+                continue
+            allowed.add(normalized)
+        return allowed or None
 
     async def save_strategy(self, data):
         item = dict(data)
@@ -2029,8 +2049,8 @@ class _StrategyDB:
         return [
             dict(s, status=self._normalize_strategy_status(s.get("status")))
             for s in self._strategies.values()
-            if self._normalize_strategy_status(s.get("status")) in allowed_statuses
-        ]
+            if allowed_statuses is None or self._normalize_strategy_status(s.get("status")) in allowed_statuses
+        ][offset:offset + limit]
 
     async def get_strategy_metrics(self, sid):
         return self._metrics.get(sid, [])
@@ -3336,6 +3356,73 @@ class TestStrategyManager:
         assert published_resp["data"]["strategies"][0]["id"] == sid
         assert rank_resp["data"]["count"] == 1
         assert rank_resp["data"]["strategies"][0]["id"] == sid
+
+    @pytest.mark.asyncio
+    async def test_list_and_rank_default_visible_include_incubating(self, setup):
+        mcp, db = setup
+        incubating = await mcp.strategy_manager(action="create", kwargs=json.dumps({
+            "name": "incubating-test",
+            "strategy_type": "momentum",
+        }))
+        listed = await mcp.strategy_manager(action="create", kwargs=json.dumps({
+            "name": "listed-test",
+            "strategy_type": "momentum",
+        }))
+        archived = await mcp.strategy_manager(action="create", kwargs=json.dumps({
+            "name": "archived-test",
+            "strategy_type": "momentum",
+        }))
+
+        incubating_id = incubating["data"]["strategy_id"]
+        listed_id = listed["data"]["strategy_id"]
+        archived_id = archived["data"]["strategy_id"]
+
+        await db.update_strategy_status(incubating_id, "incubating")
+        await db.update_strategy_status(listed_id, "listed")
+        await db.update_strategy_status(archived_id, "archived")
+        await db.save_strategy_metrics(incubating_id, "all", {
+            "total_return": 0.08,
+            "annual_return": 0.07,
+            "sharpe_ratio": 0.9,
+            "max_drawdown": 0.05,
+            "win_rate": 0.58,
+            "calmar_ratio": 1.0,
+        })
+        await db.save_strategy_metrics(listed_id, "all", {
+            "total_return": 0.11,
+            "annual_return": 0.09,
+            "sharpe_ratio": 1.2,
+            "max_drawdown": 0.06,
+            "win_rate": 0.61,
+            "calmar_ratio": 1.1,
+        })
+
+        listed_resp = await mcp.strategy_manager(action="list", kwargs=json.dumps({}))
+        rank_resp = await mcp.strategy_manager(action="rank", kwargs=json.dumps({"limit": 10}))
+
+        listed_ids = {item["id"] for item in listed_resp["data"]["strategies"]}
+        ranked_ids = {item["id"] for item in rank_resp["data"]["strategies"]}
+
+        assert listed_resp["success"] is True
+        assert listed_ids == {incubating_id, listed_id}
+        assert archived_id not in listed_ids
+        assert rank_resp["success"] is True
+        assert ranked_ids == {incubating_id, listed_id}
+
+    @pytest.mark.asyncio
+    async def test_list_status_all_includes_archived(self, setup):
+        mcp, db = setup
+        incubating = await mcp.strategy_manager(action="create", kwargs=json.dumps({"name": "all-inc"}))
+        archived = await mcp.strategy_manager(action="create", kwargs=json.dumps({"name": "all-arch"}))
+        await db.update_strategy_status(incubating["data"]["strategy_id"], "incubating")
+        await db.update_strategy_status(archived["data"]["strategy_id"], "archived")
+
+        all_resp = await mcp.strategy_manager(action="list", kwargs=json.dumps({"status": "all", "limit": 10}))
+        all_ids = {item["id"] for item in all_resp["data"]["strategies"]}
+
+        assert all_resp["success"] is True
+        assert incubating["data"]["strategy_id"] in all_ids
+        assert archived["data"]["strategy_id"] in all_ids
 
     @pytest.mark.asyncio
     async def test_review_rating_validation(self, setup):
@@ -6916,22 +7003,18 @@ class TestStrategyFactoryScheduler:
         assert result['summary']['task_source_counts'] == {'event_driven': 1, 'snapshot': 1}
         assert result['summary']['scanner_task_types'] == {'sector_breakout': 1, 'oversold_repair': 1}
         assert result['summary']['event_snapshot_mixed'] is True
-        assert result['summary']['autonomy_task_briefs'] == [
-            {
-                'task_id': 'task_hot_chip',
-                'task_source': 'event_driven',
-                'opportunity_type': 'sector_breakout',
-                'generation_limit': 2,
-                'generated_count': 1,
-            },
-            {
-                'task_id': 'task_cold_bank',
-                'task_source': 'snapshot',
-                'opportunity_type': 'oversold_repair',
-                'generation_limit': 1,
-                'generated_count': 1,
-            },
-        ]
+        briefs = result['summary']['autonomy_task_briefs']
+        assert len(briefs) == 2
+        assert briefs[0]['task_id'] == 'task_hot_chip'
+        assert briefs[0]['task_source'] == 'event_driven'
+        assert briefs[0]['opportunity_type'] == 'sector_breakout'
+        assert briefs[0]['generation_limit'] == 2
+        assert briefs[0]['generated_count'] == 1
+        assert briefs[1]['task_id'] == 'task_cold_bank'
+        assert briefs[1]['task_source'] == 'snapshot'
+        assert briefs[1]['opportunity_type'] == 'oversold_repair'
+        assert briefs[1]['generation_limit'] == 1
+        assert briefs[1]['generated_count'] == 1
         assert result['summary']['external_llm_status'] == 'succeeded'
         assert db.save_strategy_task_run.await_count == 2
         assert db.update_strategy_task_run.await_count == 2
@@ -7309,15 +7392,13 @@ class TestStrategyFactoryScheduler:
         assert result['summary']['task_source_counts'] == {'event_driven': 1}
         assert result['summary']['scanner_task_types'] == {'sector_breakout': 1}
         assert result['summary']['event_snapshot_mixed'] is False
-        assert result['summary']['autonomy_task_briefs'] == [
-            {
-                'task_id': 'task_evt_oil',
-                'task_source': 'event_driven',
-                'opportunity_type': 'sector_breakout',
-                'generation_limit': 1,
-                'generated_count': 1,
-            }
-        ]
+        briefs = result['summary']['autonomy_task_briefs']
+        assert len(briefs) == 1
+        assert briefs[0]['task_id'] == 'task_evt_oil'
+        assert briefs[0]['task_source'] == 'event_driven'
+        assert briefs[0]['opportunity_type'] == 'sector_breakout'
+        assert briefs[0]['generation_limit'] == 1
+        assert briefs[0]['generated_count'] == 1
         assert result['summary']['event_evidence_count'] == len(saved_evidence)
         assert len(saved_evidence) >= 3
         assert any(item['evidence_type'] == 'event_theme_context' for item in saved_evidence)
@@ -7461,6 +7542,8 @@ class TestStrategyFactoryScheduler:
             async def check(self, _db, _fg_level):
                 return []
 
+        from strategy_factory.application.factor_research import FactorResearchBuilder as _FRB
+
         monkeypatch.setattr("akshare_mcp.storage.get_db", lambda: db)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.DataCollector", _DummyCollector)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySpawner", _DummySpawner)
@@ -7469,8 +7552,12 @@ class TestStrategyFactoryScheduler:
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySubmitter", _DummySubmitter)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.EliminationChecker", _DummyEliminator)
 
-        scheduler = StrategyFactoryScheduler()
-        result = await scheduler.run_once()
+        with patch.object(
+            _FRB, "_load_governed_candidate_pool",
+            new_callable=AsyncMock, return_value={"available": False, "reason": "test_isolation"},
+        ):
+            scheduler = StrategyFactoryScheduler()
+            result = await scheduler.run_once()
 
         assert result["status"] == "success"
         db.save_strategy_factory_run.assert_awaited_once()
@@ -7652,6 +7739,8 @@ class TestStrategyFactoryScheduler:
                     },
                 }
 
+        from strategy_factory.application.factor_research import FactorResearchBuilder as _FRB
+
         monkeypatch.setattr("akshare_mcp.storage.get_db", lambda: db)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.DataCollector", _DummyCollector)
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySpawner", _DummySpawner)
@@ -7661,7 +7750,11 @@ class TestStrategyFactoryScheduler:
         monkeypatch.setattr("akshare_mcp.services.strategy_factory.EliminationChecker", _DummyEliminator)
         monkeypatch.setattr("akshare_mcp.services.strategy_autonomy.get_strategy_autonomy_service", lambda: _DummyAutonomy())
 
-        result = await StrategyFactoryScheduler().run_once()
+        with patch.object(
+            _FRB, "_load_governed_candidate_pool",
+            new_callable=AsyncMock, return_value={"available": False, "reason": "test_isolation"},
+        ):
+            result = await StrategyFactoryScheduler().run_once()
 
         assert result['status'] == 'success'
         saved_run = db.save_strategy_factory_run.await_args.args[0]

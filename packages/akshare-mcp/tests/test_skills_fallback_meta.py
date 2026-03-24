@@ -5,7 +5,7 @@ import pytest
 import akshare_mcp.tools.skills as skills_mod
 
 
-RUNTIME_TOOL_COUNT = 171 if platform.system() == "Windows" else 134
+RUNTIME_TOOL_COUNT = 174 if platform.system() == "Windows" else 145
 
 
 class _DummyMCP:

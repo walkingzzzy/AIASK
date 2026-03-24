@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from contextlib import suppress
 from datetime import datetime, time, timedelta, date
 from typing import Optional
 
@@ -25,7 +26,7 @@ class NavEngine:
         if self._running:
             return
         self._running = True
-        self._task = asyncio.ensure_future(self._loop())
+        self._task = asyncio.create_task(self._loop(), name="nav-engine")
         logger.info("[NavEngine] started, daily run at %s", self.run_time)
 
     def stop(self):
@@ -33,6 +34,25 @@ class NavEngine:
         if self._task:
             self._task.cancel()
             self._task = None
+
+    async def shutdown(self, grace_sec: float = 3.0):
+        self._running = False
+        task = self._task
+        self._task = None
+        if task is None:
+            logger.info("[NavEngine] stopped")
+            return
+        if not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=max(0.0, grace_sec))
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        else:
+            with suppress(asyncio.CancelledError):
+                await task
+        logger.info("[NavEngine] stopped")
 
     def status(self) -> dict:
         return {

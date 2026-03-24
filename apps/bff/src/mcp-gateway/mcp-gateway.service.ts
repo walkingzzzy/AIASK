@@ -4,6 +4,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { existsSync } from 'node:fs';
 import { delimiter, isAbsolute, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 
 type McpHealth = {
   reachable: boolean;
@@ -39,17 +40,29 @@ export class McpGatewayService implements OnModuleDestroy {
 
   private pool: PooledConnection[] = [];
   private readonly poolSize: number;
+  private readonly fullProfilePoolSlots: number;
   private readonly poolAcquireTimeoutMs: number;
   private readonly toolCallTimeoutMs: number;
   private waitQueue: Waiter[] = [];
   private dedicatedConnections = new Map<string, PooledConnection>();
   private dedicatedWaitQueues = new Map<string, Waiter[]>();
   private initialized = false;
+  private totalToolCalls = 0;
+  private totalToolErrors = 0;
+  private readonly latencyHistoryMs: number[] = [];
+  private readonly toolUsage = new Map<string, number>();
 
   constructor(private readonly configService: ConfigService) {
     this.poolSize = Math.max(
       1,
       Number(this.configService.get<string>('MCP_POOL_SIZE', '8')),
+    );
+    this.fullProfilePoolSlots = Math.max(
+      0,
+      Math.min(
+        this.poolSize,
+        Number(this.configService.get<string>('MCP_FULL_PROFILE_POOL_SLOTS', '0')),
+      ),
     );
     this.poolAcquireTimeoutMs = Math.max(
       1000,
@@ -77,13 +90,14 @@ export class McpGatewayService implements OnModuleDestroy {
         const tools = await conn.client.listTools();
         const count = Array.isArray(tools?.tools) ? tools.tools.length : null;
         if (count !== null) {
+          const resolvedExpectedTools = expectedTools ?? count;
           return {
             reachable: true,
             toolCount: count,
-            expectedTools,
-            matched: expectedTools == null ? true : count === expectedTools,
+            expectedTools: resolvedExpectedTools,
+            matched: count === resolvedExpectedTools,
             source: 'stdio',
-            message: expectedTools == null ? 'ok(dynamic)' : 'ok',
+            message: expectedTools == null ? 'ok(dynamic-runtime-baseline)' : 'ok',
             poolSize: this.poolSize,
             activeConnections: this.pool.length,
           };
@@ -110,14 +124,17 @@ export class McpGatewayService implements OnModuleDestroy {
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
     const dedicated = McpGatewayService.DEDICATED_TOOL_CONNECTIONS.has(name);
     const conn = dedicated ? await this.acquireDedicated(name) : await this.acquire();
+    const startedAt = performance.now();
     try {
       const result = await this.withTimeout(
         conn.client.callTool({ name, arguments: args }),
         this.toolCallTimeoutMs,
         `MCP tool ${name} timed out after ${this.toolCallTimeoutMs}ms`,
       );
+      this.recordToolMetric(name, performance.now() - startedAt, false);
       return this.normalizeToolResult(result);
     } catch (error) {
+      this.recordToolMetric(name, performance.now() - startedAt, true);
       if (this.isTransportError(error)) {
         this.logger.warn(`Transport error on pool[${conn.id}], recycling connection`);
         await this.recycleConnection(conn, dedicated ? name : undefined);
@@ -127,6 +144,36 @@ export class McpGatewayService implements OnModuleDestroy {
       if (dedicated) this.releaseDedicated(name, conn);
       else this.release(conn);
     }
+  }
+
+  getMetricsSnapshot(): {
+    totalCalls: number;
+    avgLatency: number;
+    p99Latency: number;
+    errorRate: number;
+    tools: Array<{ name: string; calls: number }>;
+  } {
+    const samples = [...this.latencyHistoryMs].sort((a, b) => a - b);
+    const avgLatency = samples.length > 0
+      ? samples.reduce((sum, value) => sum + value, 0) / samples.length
+      : 0;
+    const p99Index = samples.length > 0
+      ? Math.min(samples.length - 1, Math.max(0, Math.ceil(samples.length * 0.99) - 1))
+      : 0;
+    const topTools = [...this.toolUsage.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 12)
+      .map(([name, calls]) => ({ name, calls }));
+
+    return {
+      totalCalls: this.totalToolCalls,
+      avgLatency: Number(avgLatency.toFixed(2)),
+      p99Latency: Number((samples[p99Index] ?? 0).toFixed(2)),
+      errorRate: this.totalToolCalls > 0
+        ? Number(((this.totalToolErrors / this.totalToolCalls) * 100).toFixed(2))
+        : 0,
+      tools: topTools,
+    };
   }
 
   /* ── Pool Management ── */
@@ -221,7 +268,9 @@ export class McpGatewayService implements OnModuleDestroy {
 
     const first = await this.createConnection(0);
     this.pool.push(first);
-    this.logger.log(`MCP pool initialized (1/${this.poolSize} connections, lazy expansion)`);
+    this.logger.log(
+      `MCP pool initialized (1/${this.poolSize} connections, full-profile slots=${this.fullProfilePoolSlots})`,
+    );
   }
 
   private async createConnection(id: number): Promise<PooledConnection> {
@@ -439,7 +488,21 @@ export class McpGatewayService implements OnModuleDestroy {
     const raw = this.configService.get<string>('MCP_STDIO_STARTUP_PROFILE', 'balanced').trim().toLowerCase();
     if (raw === 'full') return 'full';
     if (raw === 'tool-only' || raw === 'tool_only' || raw === 'worker') return 'tool-only';
-    return id === 0 ? 'full' : 'tool-only';
+    return id < this.fullProfilePoolSlots ? 'full' : 'tool-only';
+  }
+
+  private recordToolMetric(name: string, latencyMs: number, errored: boolean): void {
+    this.totalToolCalls += 1;
+    if (errored) {
+      this.totalToolErrors += 1;
+    }
+
+    const normalizedName = name.trim();
+    this.toolUsage.set(normalizedName, (this.toolUsage.get(normalizedName) ?? 0) + 1);
+    this.latencyHistoryMs.push(latencyMs);
+    if (this.latencyHistoryMs.length > 500) {
+      this.latencyHistoryMs.splice(0, this.latencyHistoryMs.length - 500);
+    }
   }
 
   private withFallbackMetaDefaults(payload: unknown): unknown {
