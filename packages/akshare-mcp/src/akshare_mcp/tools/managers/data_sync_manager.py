@@ -173,6 +173,32 @@ def _build_schedule_params(task_type: str, kwargs: dict, codes: list[str]) -> di
         params["version"] = str(kwargs.get("version", "v1") or "v1").strip()
         params["dry_run"] = _as_bool(kwargs.get("dry_run", False), False)
         params["rebuild_existing"] = _as_bool(kwargs.get("rebuild_existing", False), False)
+    elif task_type == "vector_backfill_stock_profiles":
+        stock_codes = _normalize_codes(kwargs.get("stock_codes"))
+        if stock_codes:
+            params["stock_codes"] = stock_codes
+        elif codes:
+            params["stock_codes"] = list(codes)
+        profile_types = _normalize_codes(kwargs.get("profile_types") or kwargs.get("similarity_types"))
+        if profile_types:
+            params["profile_types"] = [str(item).strip().lower() for item in profile_types if str(item).strip()]
+        params["code_limit"] = max(int(kwargs.get("code_limit", 200) or 200), 1)
+        params["kline_limit"] = max(int(kwargs.get("kline_limit", 90) or 90), 30)
+        params["version"] = str(kwargs.get("version", "v1") or "v1").strip()
+        params["dry_run"] = _as_bool(kwargs.get("dry_run", False), False)
+        params["rebuild_existing"] = _as_bool(kwargs.get("rebuild_existing", False), False)
+    elif task_type == "vector_backfill_factor_candidates":
+        params["limit"] = max(int(kwargs.get("limit", 200) or 200), 1)
+        codes_arg = _normalize_codes(kwargs.get("codes") or kwargs.get("stock_codes"))
+        if codes_arg:
+            params["codes"] = list(codes_arg)
+        if kwargs.get("status"):
+            params["status"] = str(kwargs.get("status")).strip().lower()
+        if kwargs.get("family"):
+            params["family"] = str(kwargs.get("family")).strip().lower()
+        params["version"] = str(kwargs.get("version", "v1") or "v1").strip()
+        params["dry_run"] = _as_bool(kwargs.get("dry_run", False), False)
+        params["rebuild_existing"] = _as_bool(kwargs.get("rebuild_existing", False), False)
     else:
         period = kwargs.get("period")
         if period:
@@ -208,6 +234,19 @@ def _build_task_payload(task_type: str, codes: list[str], payload: dict | None =
             stock_codes = list(codes)
         if stock_codes:
             merged["stock_codes"] = stock_codes
+    elif task_type == "vector_backfill_stock_profiles":
+        stock_codes = _normalize_codes(merged.get("stock_codes"))
+        if not stock_codes and codes:
+            stock_codes = list(codes)
+        if stock_codes:
+            merged["stock_codes"] = stock_codes
+        profile_types = _normalize_codes(merged.get("profile_types") or merged.get("similarity_types"))
+        if profile_types:
+            merged["profile_types"] = [str(item).strip().lower() for item in profile_types if str(item).strip()]
+    elif task_type == "vector_backfill_factor_candidates":
+        record_codes = _normalize_codes(merged.get("codes") or merged.get("stock_codes"))
+        if record_codes:
+            merged["codes"] = record_codes
     return merged
 
 
@@ -253,7 +292,14 @@ async def _execute_sync_task(
     effective_codes = _normalize_codes(codes)
     effective_payload = _build_task_payload(task_type, effective_codes, payload)
 
-    if task_type not in {"core_market", "factor_context", "vector_backfill_market_docs", "vector_backfill_kline_patterns"} and not effective_codes:
+    if task_type not in {
+        "core_market",
+        "factor_context",
+        "vector_backfill_market_docs",
+        "vector_backfill_kline_patterns",
+        "vector_backfill_stock_profiles",
+        "vector_backfill_factor_candidates",
+    } and not effective_codes:
         raise ValueError("需要提供codes参数")
 
     try:
@@ -282,6 +328,10 @@ async def _execute_sync_task(
             results = await _sync_vector_backfill_market_docs_now(effective_payload)
         elif task_type == "vector_backfill_kline_patterns":
             results = await _sync_vector_backfill_kline_patterns_now(effective_payload)
+        elif task_type == "vector_backfill_stock_profiles":
+            results = await _sync_vector_backfill_stock_profiles_now(effective_payload)
+        elif task_type == "vector_backfill_factor_candidates":
+            results = await _sync_vector_backfill_factor_candidates_now(effective_payload)
         else:
             results = await _sync_klines_now(effective_codes)
 
@@ -622,6 +672,12 @@ async def _load_market_aux_status(db) -> dict:
             "vector_profiles_kline_patterns": await conn.fetchval(
                 "SELECT COUNT(*) FROM vector_profiles WHERE collection_name = 'kline_pattern_embeddings'"
             ) or 0,
+            "vector_profiles_stock_profiles": await conn.fetchval(
+                "SELECT COUNT(*) FROM vector_profiles WHERE collection_name = 'stock_profile_embeddings'"
+            ) or 0,
+            "vector_profiles_factor_candidates": await conn.fetchval(
+                "SELECT COUNT(*) FROM vector_profiles WHERE collection_name = 'factor_candidate_embeddings'"
+            ) or 0,
             "research_reports": await _fetch_meta("research_reports", date_col="publish_date"),
             "stock_fund_flow": await _fetch_meta("stock_fund_flow"),
         }
@@ -669,7 +725,7 @@ def register_data_sync_manager(mcp):
                 return ok({
                     'supported_actions': {
                         'status': '数据同步状态',
-                        'sync': '执行数据同步（K线/财务需 codes；core_market/vector_backfill_market_docs/vector_backfill_kline_patterns 可直接运行）',
+                        'sync': '执行数据同步（K线/财务需 codes；core_market/vector_backfill_market_docs/vector_backfill_kline_patterns/vector_backfill_stock_profiles/vector_backfill_factor_candidates 可直接运行）',
                         'get_task': '获取任务详情（需要 task_id）',
                         'list_tasks': '列出同步任务',
                         'cancel_task': '取消任务（需要 task_id）',
@@ -736,7 +792,14 @@ def register_data_sync_manager(mcp):
                 codes = _normalize_codes(kwargs.get('codes') or kwargs.get('stock_codes'))
                 priority = kwargs.get('priority', 'normal')
 
-                if task_type not in {'core_market', 'factor_context', 'vector_backfill_market_docs', 'vector_backfill_kline_patterns'} and not codes:
+                if task_type not in {
+                    'core_market',
+                    'factor_context',
+                    'vector_backfill_market_docs',
+                    'vector_backfill_kline_patterns',
+                    'vector_backfill_stock_profiles',
+                    'vector_backfill_factor_candidates',
+                } and not codes:
                     return fail('需要提供codes参数')
                 payload = _build_task_payload(task_type, codes, kwargs)
                 result = await _execute_sync_task(
@@ -821,7 +884,14 @@ def register_data_sync_manager(mcp):
                 schedule = str(kwargs.get('schedule', 'daily')).strip().lower()
                 enabled = _as_bool(kwargs.get('enabled', True), True)
                 
-                if task_type not in {'core_market', 'factor_context', 'vector_backfill_market_docs', 'vector_backfill_kline_patterns'} and not codes:
+                if task_type not in {
+                    'core_market',
+                    'factor_context',
+                    'vector_backfill_market_docs',
+                    'vector_backfill_kline_patterns',
+                    'vector_backfill_stock_profiles',
+                    'vector_backfill_factor_candidates',
+                } and not codes:
                     return fail('需要提供codes参数')
                 
                 schedule_id = f'schedule_{task_type}_{int(datetime.now().timestamp())}'
@@ -1174,5 +1244,81 @@ async def _sync_vector_backfill_kline_patterns_now(kwargs: dict) -> dict:
         'message': (
             f"kline_pattern_backfill windows={int(result.get('saved_windows') or 0)} "
             f"profiles={int(result.get('saved_profiles') or 0)}"
+        ),
+    }
+
+
+async def _sync_vector_backfill_stock_profiles_now(kwargs: dict) -> dict:
+    """回填股票画像向量到统一向量层。"""
+    from ...services.stock_profile_pipeline import backfill_stock_profile_vectors
+
+    db = get_db()
+    result = await backfill_stock_profile_vectors(
+        db,
+        stock_codes=kwargs.get('stock_codes') or kwargs.get('codes'),
+        code_limit=kwargs.get('code_limit', 200),
+        profile_types=kwargs.get('profile_types') or kwargs.get('similarity_types'),
+        kline_limit=kwargs.get('kline_limit', 90),
+        version=kwargs.get('version', 'v1'),
+        rebuild_existing=kwargs.get('rebuild_existing', False),
+        dry_run=kwargs.get('dry_run', False),
+    )
+    market_aux = await _load_market_aux_status(db)
+    return {
+        'success': 1,
+        'failed': 0,
+        'errors': [],
+        'args': {
+            'stock_codes': result.get('stock_codes'),
+            'code_limit': kwargs.get('code_limit', 200),
+            'profile_types': result.get('profile_types'),
+            'kline_limit': result.get('kline_limit'),
+            'version': result.get('version'),
+            'rebuild_existing': result.get('rebuild_existing'),
+            'dry_run': result.get('dry_run'),
+        },
+        'backfill': result,
+        'market_aux': market_aux,
+        'message': (
+            f"stock_profile_backfill profiles={int(result.get('saved_profiles') or 0)} "
+            f"codes={int(result.get('processed_codes') or 0)}"
+        ),
+    }
+
+
+async def _sync_vector_backfill_factor_candidates_now(kwargs: dict) -> dict:
+    """回填因子研究记忆向量到统一向量层。"""
+    from ...services.factor_candidate_vector_backfill import backfill_factor_candidate_vectors
+
+    db = get_db()
+    result = await backfill_factor_candidate_vectors(
+        db,
+        limit=kwargs.get('limit', 200),
+        codes=kwargs.get('codes') or kwargs.get('stock_codes'),
+        status=kwargs.get('status'),
+        family=kwargs.get('family'),
+        version=kwargs.get('version', 'v1'),
+        rebuild_existing=kwargs.get('rebuild_existing', False),
+        dry_run=kwargs.get('dry_run', False),
+    )
+    market_aux = await _load_market_aux_status(db)
+    return {
+        'success': 1,
+        'failed': 0,
+        'errors': [],
+        'args': {
+            'limit': result.get('limit'),
+            'codes': result.get('codes'),
+            'status': result.get('status'),
+            'family': result.get('family'),
+            'version': result.get('version'),
+            'rebuild_existing': result.get('rebuild_existing'),
+            'dry_run': result.get('dry_run'),
+        },
+        'backfill': result,
+        'market_aux': market_aux,
+        'message': (
+            f"factor_candidate_backfill profiles={int(result.get('saved_profiles') or 0)} "
+            f"records={int(result.get('processed_records') or 0)}"
         ),
     }
