@@ -159,6 +159,46 @@ async def init_market_tables(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_financials_updated_desc
         ON financials (updated_at DESC);
     """)
+    await conn.execute("""
+        ALTER TABLE financials
+        ADD COLUMN IF NOT EXISTS stock_code TEXT;
+    """)
+    await _run_market_migration_once(conn, "financials_rename_code_to_stock_code", """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'financials' AND column_name = 'code'
+            ) AND NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'financials' AND column_name = 'stock_code'
+            ) THEN
+                EXECUTE 'ALTER TABLE financials RENAME COLUMN code TO stock_code';
+            END IF;
+        END $$;
+    """)
+    await _run_market_migration_once(conn, "financials_backfill_stock_code", """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'financials' AND column_name = 'code'
+            ) THEN
+                EXECUTE $sql$
+                    UPDATE financials
+                    SET stock_code = COALESCE(NULLIF(stock_code, ''), code)
+                    WHERE stock_code IS NULL OR stock_code = ''
+                $sql$;
+            END IF;
+        END $$;
+    """)
+    await conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_financials_stock_code_report_date
+        ON financials (stock_code, report_date);
+    """)
 
     # 3. 股票信息表
     await conn.execute("""
@@ -175,6 +215,46 @@ async def init_market_tables(conn) -> None:
             kline_sync_attempted TIMESTAMPTZ,
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
+    """)
+    await conn.execute("""
+        ALTER TABLE stocks
+        ADD COLUMN IF NOT EXISTS stock_code TEXT;
+    """)
+    await _run_market_migration_once(conn, "stocks_rename_code_to_stock_code", """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'stocks' AND column_name = 'code'
+            ) AND NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'stocks' AND column_name = 'stock_code'
+            ) THEN
+                EXECUTE 'ALTER TABLE stocks RENAME COLUMN code TO stock_code';
+            END IF;
+        END $$;
+    """)
+    await _run_market_migration_once(conn, "stocks_backfill_stock_code", """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'stocks' AND column_name = 'code'
+            ) THEN
+                EXECUTE $sql$
+                    UPDATE stocks
+                    SET stock_code = COALESCE(NULLIF(stock_code, ''), code)
+                    WHERE stock_code IS NULL OR stock_code = ''
+                $sql$;
+            END IF;
+        END $$;
+    """)
+    await conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_stocks_stock_code
+        ON stocks (stock_code);
     """)
 
     # 4. 实时行情表（Hypertable）

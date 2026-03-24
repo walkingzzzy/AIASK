@@ -82,6 +82,53 @@ def _build_candidate(expression="momentum_20d", name="trend_factor_v2"):
     }
 
 
+def _register_validation_artifact(
+    artifact_id: str,
+    codes: list[str],
+    *,
+    name: str,
+    recommendation: str,
+    total_score: float,
+    lookahead_risk: str = "low",
+    multiple_testing_risk: str = "low",
+):
+    from akshare_mcp.services import register_artifact
+
+    register_artifact(
+        {
+            "artifact_id": artifact_id,
+            "strategy": "quant_factor_candidate_validation",
+            "strategy_version": "p2.v1",
+            "code": ",".join(codes),
+            "payload": {
+                "artifact_id": artifact_id,
+                "action": "validate_factor_candidate",
+                "codes": list(codes),
+                "candidate": _build_candidate("momentum_20d", name=name),
+                "metrics": {"rank_ic_mean": 0.11, "rank_ic_ir": 0.72, "sample_dates": 36},
+                "rating": {
+                    "grade": "A" if recommendation == "promote" else "B",
+                    "recommendation": recommendation,
+                    "total_score": total_score,
+                },
+                "lookahead_audit": {
+                    "available": True,
+                    "risk_level": lookahead_risk,
+                },
+                "multiple_testing": {
+                    "available": True,
+                    "risk_level": multiple_testing_risk,
+                },
+                "warnings": [
+                    *(["lookahead_audit_failed"] if lookahead_risk == "high" else []),
+                    *(["multiple_testing_failed"] if multiple_testing_risk == "high" else []),
+                ],
+                "stage": "validated",
+            },
+        }
+    )
+
+
 @pytest.mark.asyncio
 async def test_factor_research_memory_records_and_recalls_without_embedding():
     from akshare_mcp.services.factor_research_memory import FactorResearchMemoryService
@@ -511,6 +558,80 @@ async def test_quant_manager_factor_candidate_registry_active_pool_can_filter_no
     top_artifact_ids = [str(item.get("artifact_id") or "") for item in active_pool["data"]["active_pool"]["top_candidates"]]
     assert "factor_validation_registry_non_market_only" not in top_artifact_ids
     assert "factor_validation_registry_market_only" in top_artifact_ids
+
+
+@pytest.mark.asyncio
+async def test_quant_manager_factor_candidate_registry_active_pool_blocks_high_risk_candidates(monkeypatch):
+    import akshare_mcp.tools.managers.quant_manager as quant_mod
+    import akshare_mcp.services.artifact_registry as _ar_mod
+
+    monkeypatch.setattr(quant_mod, "get_db", lambda: _ValidationDB())
+    monkeypatch.setattr(_ar_mod, "_get_db", lambda: None)
+
+    registry_codes = ["991111", "991112", "991113", "991114"]
+    _register_validation_artifact(
+        "factor_validation_registry_governed_safe",
+        registry_codes,
+        name="governed_safe",
+        recommendation="promote",
+        total_score=92.0,
+        lookahead_risk="low",
+        multiple_testing_risk="low",
+    )
+    _register_validation_artifact(
+        "factor_validation_registry_governed_lookahead_high",
+        registry_codes,
+        name="governed_lookahead_high",
+        recommendation="promote",
+        total_score=95.0,
+        lookahead_risk="high",
+        multiple_testing_risk="low",
+    )
+    _register_validation_artifact(
+        "factor_validation_registry_governed_multiple_high",
+        registry_codes,
+        name="governed_multiple_high",
+        recommendation="review",
+        total_score=89.0,
+        lookahead_risk="low",
+        multiple_testing_risk="high",
+    )
+
+    mcp = _DummyMCP()
+    quant_mod.register_quant_manager(mcp)
+
+    registry_summary = await mcp.quant_manager(
+        action="factor_candidate_registry",
+        kwargs={"op": "summary", "codes": registry_codes, "limit": 20, "market_codes_only": True},
+    )
+
+    assert registry_summary["success"] is True
+    summary = registry_summary["data"]["summary"]
+    assert summary["count"] >= 3
+    assert summary["lookahead_risk_counts"]["high"] >= 1
+    assert summary["multiple_testing_risk_counts"]["high"] >= 1
+    assert summary["blocked_count"] >= 2
+    assert summary["governed_active_count"] >= 1
+
+    active_pool = await mcp.quant_manager(
+        action="factor_candidate_registry",
+        kwargs={"op": "active_pool", "codes": registry_codes, "limit": 20, "market_codes_only": True},
+    )
+
+    assert active_pool["success"] is True
+    pool = active_pool["data"]["active_pool"]
+    top_artifact_ids = [str(item.get("artifact_id") or "") for item in pool["top_candidates"]]
+    assert "factor_validation_registry_governed_safe" in top_artifact_ids
+    assert "factor_validation_registry_governed_lookahead_high" not in top_artifact_ids
+    assert "factor_validation_registry_governed_multiple_high" not in top_artifact_ids
+    assert pool["count"] == 1
+    assert pool["excluded_count"] >= 2
+    assert pool["exclusion_reason_counts"]["lookahead_risk_high"] >= 1
+    assert pool["exclusion_reason_counts"]["multiple_testing_risk_high"] >= 1
+
+    excluded = {str(item.get("artifact_id") or ""): item for item in pool["excluded_candidates"]}
+    assert "lookahead_risk_high" in excluded["factor_validation_registry_governed_lookahead_high"]["reasons"]
+    assert "multiple_testing_risk_high" in excluded["factor_validation_registry_governed_multiple_high"]["reasons"]
 
 
 @pytest.mark.asyncio

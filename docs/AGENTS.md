@@ -5,10 +5,11 @@
 > 校准说明：本文保留“执行原则 / 路由规范 / 风险边界”作为当前规则；其中工具数、覆盖率、外部基线等以运行时审计文件重新生成结果为准，不要把历史统计当作永久事实。
 
 ## 1. 项目事实基线（需以本地审计结果复核）
-- MCP 工具总数：请以 `skill_tool_coverage_runtime.json` 与当前运行时注册结果为准
+- MCP 工具总数：请以 `skill_tool_coverage_runtime.json` 与当前运行时注册结果为准；该文件由 `scripts/skill_coverage_audit.py` 生成，不保证默认已提交
 - Skills 总数：请以当前 `.codex/skills` 与运行时审计为准
 - Skills 工具引用覆盖率：见 `skill_tool_coverage_runtime.json.coverage`
 - Skills 执行器覆盖率：见 `skill_tool_coverage_runtime.json.executors`
+- 缺口清单：见 `skill_tool_gap_list.txt`
 - 审计时间：以 `skill_tool_coverage_runtime.json.generated_at` 为准
 
 说明：
@@ -18,11 +19,14 @@
 4. 若 `executors.executor_coverage_pct` 明显低于 `coverage.coverage_pct`，应将系统表述为“文档编排覆盖较高，但内建执行器覆盖仍有限”。
 5. Windows-only 原生桌面集成能力当前不作为默认执行路径，任何流程都必须先以通用 MCP 工具链可用为前提。
 
-强制预检命令：
+技能/工具注册变更时的预检命令：
 1. `python scripts/skill_coverage_audit.py --check-thresholds`
 2. `python scripts/skill_coverage_audit.py --output-json skill_tool_coverage_runtime.json --output-gap skill_tool_gap_list.txt`
 
-若阈值检查失败，先修复 skills/tool 映射、未知引用和缺口，再执行业务任务。
+说明：
+1. 这组检查主要用于 skills/tool registry 变更、覆盖率治理和 CI 门禁，不应机械套用到所有业务功能任务。
+2. 当前阈值基线文件 `.codex/skills/_meta/coverage_baseline.json` 仍记录旧基线（`tool_count=142`）；若运行时工具数扩容，应先重校准基线，再把 `--check-thresholds` 结果当作硬门禁。
+3. 日常业务开发至少应重新生成 `skill_tool_coverage_runtime.json` 与 `skill_tool_gap_list.txt`，避免引用过期统计。
 
 ## 2. 总体执行原则（必须遵守）
 1. 工具优先：能通过 MCP 工具获取结果时，不做主观臆测。
@@ -51,12 +55,12 @@
 ## 4. MCP 调用标准流程
 1. 任务确认：标的、周期、时间窗口、复权口径、输出格式。
 2. 标的归一：优先 `search_stocks` / `semantic_stock_search`。
-3. 数据前置：`sync_trading_calendar` -> `get_trading_dates` -> 必要时 `batch_sync_klines`。
+3. 数据前置：涉及交易日对齐、时间窗口校验或批量 K 线准备时，再使用 `sync_trading_calendar` -> `get_trading_dates` -> 必要时 `batch_sync_klines`。
 4. 分析执行：先 manager，再原子工具。
 5. 风险合规：
-   - 交易建议前必须执行 `compliance_manager(action=check_order)` 或同等合规检查。
+   - 给出具体下单/执行建议前，必须执行 `compliance_manager(action=check_order)` 或同等合规检查；若仍处于研究/观察阶段，至少应说明尚未进入可下单状态。
    - 组合建议必须附 `risk_manager` 或 `analyze_portfolio_risk` 结果。
-6. 结果留痕：结论写入日报/周报/月报模板，包含限制条件与回退说明。
+6. 结果留痕：需要沉淀日报/周报/月报或复盘材料时，按模板记录限制条件与回退说明；普通即时问答不要求强制落模板。
 
 ## 5. 顶级基金经理闭环门禁（强制）
 “组合建议/调仓建议/实盘监控”类任务，至少覆盖以下 6 环：
@@ -131,7 +135,7 @@
 - 对高风险结论附前提条件、适用边界和反例风险。
 
 ## 11. 快速执行清单（给代理）
-1. 跑覆盖审计并确认阈值通过。
+1. 若任务涉及 skills/tool registry 变更，先跑覆盖审计；普通业务任务至少刷新运行时审计结果。
 2. 根据任务语义命中最小 skill 集合。
 3. 先 manager 后原子工具，失败走 fallback。
 4. 遇到平台相关原生能力时，默认走通用 MCP 替代链。
@@ -152,6 +156,9 @@
 ## 13. 本地依据（项目事实）
 - `README.md`
 - `skill_tool_coverage_runtime.json`
-- `MCP_增强改造技术架构图与API改造清单.md`
-- `MCP_股票分析能力测试用例清单_v1.md`
+- `skill_tool_gap_list.txt`
+- `docs/171工具全量对话式深度测试任务.md`
+- `packages/akshare-mcp/README.md`
+- `packages/akshare-mcp/start_server.py`
+- `packages/akshare-mcp/src/akshare_mcp/server.py`
 - `scripts/skill_coverage_audit.py`

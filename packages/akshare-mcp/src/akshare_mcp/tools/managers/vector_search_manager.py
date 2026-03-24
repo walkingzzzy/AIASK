@@ -29,12 +29,13 @@ def register_vector_search_manager(mcp):
         """向量搜索管理器（统一 action + kwargs 协议）
 
         Args:
-            action (str, required): 操作类型，可选 help/similar_patterns/similar_stocks
+            action (str, required): 操作类型，可选 help/similar_patterns/similar_stocks/market_docs
             code (str, optional): 股票代码
             kwargs: JSON 字符串或关键字参数，不同 action 所需参数:
                 - help: 无需额外参数
                 - similar_patterns: code(str, 目标股票), days(int, optional, K线天数), top_n(int, optional)
                 - similar_stocks: code(str, 目标股票), similarity_type(str, optional, "fundamental"/"technical"/"both"), top_n(int, optional)
+                - market_docs: code(str, 股票代码), query(str, optional), doc_types(list[str], optional), limit(int, optional)
 
         Returns:
             dict: {"success": bool, "data": {...}, "error": str|None}
@@ -76,6 +77,7 @@ def register_vector_search_manager(mcp):
                     'supported_actions': {
                         'similar_patterns': '搜索相似K线形态（需要 code）',
                         'similar_stocks': '搜索相似股票（需要 code）',
+                        'market_docs': '搜索市场文本 chunk（支持 hybrid retrieval）',
                         'help': '显示帮助信息',
                     }
                 }, source_chain=['vector_search_manager'])
@@ -88,9 +90,21 @@ def register_vector_search_manager(mcp):
                 top_n = kwargs.get('top_n', 10)
                 days = kwargs.get('days', 20)
                 
+                search_backend = str(kwargs.get('search_backend', 'db') or 'db')
+                allow_fallback = bool(kwargs.get('allow_fallback', True))
+
                 # 调用真实的 K线形态搜索
                 try:
-                    result = await _run_registered_tool("search_by_kline", {"code": code, "days": int(days), "top_n": int(top_n)})
+                    result = await _run_registered_tool(
+                        "search_by_kline",
+                        {
+                            "code": code,
+                            "days": int(days),
+                            "top_n": int(top_n),
+                            "search_backend": search_backend,
+                            "allow_fallback": allow_fallback,
+                        },
+                    )
                     if not result.get("success"):
                         return _fail(
                             result.get("error") or f"search_by_kline failed for {code}",
@@ -177,9 +191,52 @@ def register_vector_search_manager(mcp):
                     f"未检索到 {code} 的相似股票数据，请先运行数据预热",
                     source_chain=['vector_search_manager', 'search_similar_stocks'],
                 )
+
+            elif action == 'market_docs':
+                if not code:
+                    return _fail('需要提供股票代码')
+
+                code = normalize_code(code)
+                query_text = str(kwargs.get('query') or kwargs.get('query_text') or '').strip()
+                raw_doc_types = kwargs.get('doc_types') or kwargs.get('doc_type') or []
+                if isinstance(raw_doc_types, str):
+                    doc_types = [item.strip().lower() for item in raw_doc_types.replace(';', ',').split(',') if item.strip()]
+                else:
+                    doc_types = [str(item).strip().lower() for item in list(raw_doc_types or []) if str(item).strip()]
+                limit = int(kwargs.get('limit', 10) or 10)
+
+                try:
+                    rows = await db.search_market_doc_chunks(
+                        query_text=query_text or None,
+                        stock_code=code,
+                        doc_types=doc_types or None,
+                        start_date=kwargs.get('start_date'),
+                        end_date=kwargs.get('end_date'),
+                        limit=limit,
+                    ) if hasattr(db, 'search_market_doc_chunks') else []
+                except Exception as exc:
+                    return _fail(
+                        f"search_market_doc_chunks exception: {type(exc).__name__}: {exc}",
+                        source_chain=['vector_search_manager', 'search_market_doc_chunks'],
+                    )
+
+                retrieval_mode = 'recent'
+                if query_text:
+                    retrieval_mode = 'hybrid'
+                if query_text and not rows:
+                    retrieval_mode = 'hybrid_empty'
+
+                return _ok({
+                    'code': code,
+                    'query': query_text,
+                    'doc_types': doc_types,
+                    'count': len(rows),
+                    'retrieval_mode': retrieval_mode,
+                    'results': rows,
+                }, source_chain=['vector_search_manager', 'search_market_doc_chunks'])
             
             else:
-                return _fail(f'Unknown action: {action}. Supported: help, similar_patterns, similar_stocks')
+                return _fail(f'Unknown action: {action}. Supported: help, similar_patterns, similar_stocks, market_docs')
         except Exception as e:
             return fail_with_meta(
                 str(e),

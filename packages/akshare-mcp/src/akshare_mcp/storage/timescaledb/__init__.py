@@ -24,6 +24,7 @@ from .stock_info import StockInfoMixin
 from .financials import FinancialsMixin
 from .quotes import QuotesMixin
 from .market_context import MarketContextMixin
+from .vector_unified import VectorUnifiedMixin
 from .artifacts import ArtifactMixin
 from .strategy import StrategyMixin
 from .factor_storage import FactorStorageMixin
@@ -39,6 +40,7 @@ class TimescaleDBAdapter(
     FinancialsMixin,
     QuotesMixin,
     MarketContextMixin,
+    VectorUnifiedMixin,
     ArtifactMixin,
     StrategyMixin,
     FactorStorageMixin,

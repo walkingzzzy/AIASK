@@ -7,10 +7,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import type {
-  StrategyManagerAction,
-  StrategyManagerErrorCode,
-} from '@aiask/shared-types';
+import type { StrategyManagerAction, StrategyManagerErrorCode } from '@aiask/shared-types';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
 
@@ -23,6 +20,11 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   private static readonly AUTO_REFRESH_HOUR = 15;
   private static readonly AUTO_REFRESH_MINUTE = 5;
   private static readonly AUTO_REFRESH_TIMEZONE = process.env.STRATEGY_MARKET_TIMEZONE || 'Asia/Shanghai';
+  private static readonly AUTO_REFRESH_ENABLED = !['0', 'false', 'no'].includes(
+    String(process.env.STRATEGY_MARKET_AUTO_REFRESH_ENABLED ?? (process.env.NODE_ENV === 'test' ? '0' : '1'))
+      .trim()
+      .toLowerCase(),
+  );
 
   private readonly logger = new Logger(StrategyMarketService.name);
   private autoRefreshTimer?: ReturnType<typeof setInterval>;
@@ -34,6 +36,10 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
+    if (!StrategyMarketService.AUTO_REFRESH_ENABLED) {
+      this.logger.log('策略排名自动刷新已禁用');
+      return;
+    }
     this.startAutoRefreshTimer();
   }
 
@@ -74,16 +80,27 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     const today = this.dateKey(now);
     if (this.lastAutoRefreshDate === today) return;
 
+    const ready = await this.isAutoRefreshReady();
+    if (!ready) {
+      this.logger.debug(`策略排名自动刷新跳过 date=${today}: MCP not ready`);
+      return;
+    }
+
     try {
       const result = await this.refreshRankingCaches();
       this.lastAutoRefreshDate = today;
-      this.logger.log(
-        `策略排名自动刷新完成 date=${today} refreshed_count=${result.refreshed_count}`,
-      );
+      this.logger.log(`策略排名自动刷新完成 date=${today} refreshed_count=${result.refreshed_count}`);
     } catch (error) {
-      this.logger.error(
-        `策略排名自动刷新失败 date=${today}: ${String(error)}`,
-      );
+      this.logger.error(`策略排名自动刷新失败 date=${today}: ${String(error)}`);
+    }
+  }
+
+  private async isAutoRefreshReady(): Promise<boolean> {
+    try {
+      const health = await this.mcp.checkAvailableTools();
+      return health.reachable;
+    } catch {
+      return false;
     }
   }
 
@@ -96,19 +113,14 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
       if (result && typeof result === 'object') {
         const obj = result as Record<string, unknown>;
         if (obj.success === false) {
-          const errorCode = String(
-            obj.error_code || 'STRATEGY_MANAGER_BACKEND_ERROR',
-          ) as StrategyManagerErrorCode;
+          const errorCode = String(obj.error_code || 'STRATEGY_MANAGER_BACKEND_ERROR') as StrategyManagerErrorCode;
           const message = String(obj.error || obj.message || `${action} 操作失败`);
           const detail = {
             action,
             error_code: errorCode,
             detail: obj.detail,
           };
-          if (
-            errorCode === 'STRATEGY_MANAGER_INVALID_ACTION' ||
-            errorCode === 'STRATEGY_MANAGER_INVALID_PARAMS'
-          ) {
+          if (errorCode === 'STRATEGY_MANAGER_INVALID_ACTION' || errorCode === 'STRATEGY_MANAGER_INVALID_PARAMS') {
             throw new BadRequestException({
               success: false,
               code: errorCode,
@@ -171,7 +183,13 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private buildRankingCacheKey(params: { status?: string; strategy_type?: string; limit?: number; rank_keys?: string[]; offset?: number }) {
+  private buildRankingCacheKey(params: {
+    status?: string;
+    strategy_type?: string;
+    limit?: number;
+    rank_keys?: string[];
+    offset?: number;
+  }) {
     const status = params.status || 'visible';
     const type = params.strategy_type || 'all';
     const limit = params.limit || 50;
@@ -209,24 +227,42 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   private normalizeFactoryRun<T>(payload: T): T {
     if (!payload || typeof payload !== 'object') return payload;
     const run = payload as Record<string, unknown>;
-    const rawStages = (run.stages && typeof run.stages === 'object')
-      ? (run.stages as Record<string, unknown>)
-      : {};
+    const rawStages = run.stages && typeof run.stages === 'object' ? (run.stages as Record<string, unknown>) : {};
     const normalizedStages = Object.fromEntries(
       Object.entries(rawStages).map(([stageName, value]) => [stageName, this.normalizeFactoryStage(stageName, value)]),
     );
-    const failedStage = Object.values(normalizedStages).find((item) => item && typeof item === 'object' && (item as Record<string, unknown>).ok === false);
+    const normalizedStageValues = Object.values(normalizedStages) as Record<string, unknown>[];
+    const stageStatusCounts = normalizedStageValues.reduce<Record<string, number>>((counts, item) => {
+      const status = String(item?.status ?? 'completed');
+      counts[status] = (counts[status] ?? 0) + 1;
+      return counts;
+    }, {});
+    const failedStage = normalizedStageValues.find((item) => String(item?.status ?? '') === 'failed');
+    const partialStage = normalizedStageValues.find((item) => String(item?.status ?? '') === 'partial');
+    const skippedStage = normalizedStageValues.find((item) => String(item?.status ?? '') === 'skipped');
+    const rawPipeline =
+      run.pipeline && typeof run.pipeline === 'object' ? (run.pipeline as Record<string, unknown>) : {};
     return {
       ...(run as object),
       dto_version: 'strategy_market.factory_run.v2',
-      trace_id: run.trace_id ?? ((run.summary as Record<string, unknown> | undefined)?.trace_id ?? null),
+      trace_id: run.trace_id ?? (run.summary as Record<string, unknown> | undefined)?.trace_id ?? null,
       stages: normalizedStages,
       pipeline: {
-        trace_id: run.trace_id ?? ((run.summary as Record<string, unknown> | undefined)?.trace_id ?? null),
-        failed_stage: (failedStage as Record<string, unknown> | undefined)?.stage ?? null,
+        ...rawPipeline,
+        trace_id: run.trace_id ?? (run.summary as Record<string, unknown> | undefined)?.trace_id ?? null,
+        failed_stage: rawPipeline.failed_stage ?? (failedStage as Record<string, unknown> | undefined)?.stage ?? null,
+        partial_stage:
+          rawPipeline.partial_stage ?? (partialStage as Record<string, unknown> | undefined)?.stage ?? null,
+        skipped_stage:
+          rawPipeline.skipped_stage ?? (skippedStage as Record<string, unknown> | undefined)?.stage ?? null,
         stage_order: Object.keys(normalizedStages),
         total_stage_count: Object.keys(normalizedStages).length,
-        completed_stage_count: Object.values(normalizedStages).filter((item) => (item as Record<string, unknown>).ok !== false).length,
+        completed_stage_count: normalizedStageValues.filter((item) => String(item?.status ?? '') === 'completed')
+          .length,
+        partial_stage_count: normalizedStageValues.filter((item) => String(item?.status ?? '') === 'partial').length,
+        skipped_stage_count: normalizedStageValues.filter((item) => String(item?.status ?? '') === 'skipped').length,
+        failed_stage_count: normalizedStageValues.filter((item) => String(item?.status ?? '') === 'failed').length,
+        stage_status_counts: stageStatusCounts,
       },
     } as T;
   }
@@ -348,15 +384,18 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('review_report_recheck', { strategy_id: id });
   }
 
-  async events(id: string, filters?: {
-    event_type?: string;
-    from_status?: string;
-    to_status?: string;
-    actor_id?: string;
-    start_time?: string;
-    end_time?: string;
-    limit?: number;
-  }) {
+  async events(
+    id: string,
+    filters?: {
+      event_type?: string;
+      from_status?: string;
+      to_status?: string;
+      actor_id?: string;
+      start_time?: string;
+      end_time?: string;
+      limit?: number;
+    },
+  ) {
     return this.call('events', { strategy_id: id, ...(filters || {}) });
   }
 
@@ -364,23 +403,46 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('incubation_overview', { strategy_id: id });
   }
 
-  async rank(params: { status?: string; strategy_type?: string; limit?: number; rank_keys?: string[]; offset?: number }) {
+  async rank(params: {
+    status?: string;
+    strategy_type?: string;
+    limit?: number;
+    rank_keys?: string[];
+    offset?: number;
+  }) {
     const res = await this.fetchRankingWithCache(params, false);
     return res.data;
   }
 
   async refreshRankingCaches(params?: { strategy_types?: string[]; limits?: number[]; rank_keys_sets?: string[][] }) {
     const strategyTypes = (params?.strategy_types?.length ? params.strategy_types : ['all']).slice(0, 10);
-    const limits = (params?.limits?.length ? params.limits : [20, 50]).map((x) => Math.max(1, Math.min(200, Number(x) || 50)));
+    const limits = (params?.limits?.length ? params.limits : [20, 50]).map((x) =>
+      Math.max(1, Math.min(200, Number(x) || 50)),
+    );
     const rankKeySets = (params?.rank_keys_sets?.length ? params.rank_keys_sets : [[]]).slice(0, 5);
 
-    const refreshed: Array<{ cacheKey: string; count: number; strategy_type?: string; limit: number; rank_keys: string[] }> = [];
+    const refreshed: Array<{
+      cacheKey: string;
+      count: number;
+      strategy_type?: string;
+      limit: number;
+      rank_keys: string[];
+    }> = [];
     for (const strategyType of strategyTypes) {
       for (const limit of limits) {
         for (const rankKeys of rankKeySets) {
-          const res = await this.fetchRankingWithCache({ strategy_type: strategyType === 'all' ? undefined : strategyType, limit, rank_keys: rankKeys }, true);
+          const res = await this.fetchRankingWithCache(
+            { strategy_type: strategyType === 'all' ? undefined : strategyType, limit, rank_keys: rankKeys },
+            true,
+          );
           const count = Number((res.data as Record<string, unknown>)?.count ?? 0) || 0;
-          refreshed.push({ cacheKey: res.cacheKey, count, strategy_type: strategyType, limit, rank_keys: rankKeys || [] });
+          refreshed.push({
+            cacheKey: res.cacheKey,
+            count,
+            strategy_type: strategyType,
+            limit,
+            rank_keys: rankKeys || [],
+          });
         }
       }
     }
@@ -460,7 +522,6 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('get_signal_stats', { strategy_id: id });
   }
 
-
   async capabilities() {
     return this.call('capabilities');
   }
@@ -497,15 +558,24 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('incubation_sync_run', { strategy_id: id, ...params });
   }
 
-  async incubationPipeline(id: string, params: { pipeline_stage?: string; pipeline_status?: string; limit?: number } = {}) {
+  async incubationPipeline(
+    id: string,
+    params: { pipeline_stage?: string; pipeline_status?: string; limit?: number } = {},
+  ) {
     return this.call('incubation_pipeline', { strategy_id: id, ...params });
   }
 
-  async runIncubationPipeline(id?: string, params: { statuses?: string[]; limit?: number; source?: string; auto_apply_review?: boolean } = {}) {
+  async runIncubationPipeline(
+    id?: string,
+    params: { statuses?: string[]; limit?: number; source?: string; auto_apply_review?: boolean } = {},
+  ) {
     return this.call('incubation_pipeline_run', { strategy_id: id, ...params });
   }
 
-  async riskEvents(id: string, params: { account_id?: string; status?: string; severity?: string; limit?: number } = {}) {
+  async riskEvents(
+    id: string,
+    params: { account_id?: string; status?: string; severity?: string; limit?: number } = {},
+  ) {
     return this.call('risk_events', { strategy_id: id, ...params });
   }
 
@@ -525,7 +595,10 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('resolve_risk_event', { event_id: eventId, resolution });
   }
 
-  async runtimeAlerts(id: string, params: { status?: string; category?: string; severity?: string; limit?: number } = {}) {
+  async runtimeAlerts(
+    id: string,
+    params: { status?: string; category?: string; severity?: string; limit?: number } = {},
+  ) {
     return this.call('runtime_alerts', { strategy_id: id, ...params });
   }
 
@@ -545,11 +618,22 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('vector_indexes', params);
   }
 
-  async vectorIndexSnapshots(params: { index_name?: string; index_version?: string; status?: string; limit?: number } = {}) {
+  async vectorIndexSnapshots(
+    params: { index_name?: string; index_version?: string; status?: string; limit?: number } = {},
+  ) {
     return this.call('vector_index_snapshots', params);
   }
 
-  async vectorAnnSearch(id: string, params: { index_name?: string; index_version?: string; profile_type?: string; candidate_limit?: number; limit?: number } = {}) {
+  async vectorAnnSearch(
+    id: string,
+    params: {
+      index_name?: string;
+      index_version?: string;
+      profile_type?: string;
+      candidate_limit?: number;
+      limit?: number;
+    } = {},
+  ) {
     return this.call('vector_ann_search', { strategy_id: id, ...params });
   }
 
@@ -557,7 +641,16 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('vector_reconcile', params);
   }
 
-  async vectorRebuild(params: { index_name?: string; index_version?: string; statuses?: string[]; limit?: number; profile_type?: string; vector_method?: string } = {}) {
+  async vectorRebuild(
+    params: {
+      index_name?: string;
+      index_version?: string;
+      statuses?: string[];
+      limit?: number;
+      profile_type?: string;
+      vector_method?: string;
+    } = {},
+  ) {
     return this.call('vector_rebuild', params);
   }
 
@@ -565,11 +658,29 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('vector_health', params);
   }
 
-  async vectorCleanup(params: { index_name?: string; keep_versions?: number; dry_run?: boolean; cleanup_hnsw?: boolean; limit_versions?: number; protect_versions?: string[] } = {}) {
+  async vectorCleanup(
+    params: {
+      index_name?: string;
+      keep_versions?: number;
+      dry_run?: boolean;
+      cleanup_hnsw?: boolean;
+      limit_versions?: number;
+      protect_versions?: string[];
+    } = {},
+  ) {
     return this.call('vector_cleanup', params);
   }
 
-  async domainEvents(id: string, params: { aggregate_type?: string; event_type?: string; source?: string; correlation_id?: string; limit?: number } = {}) {
+  async domainEvents(
+    id: string,
+    params: {
+      aggregate_type?: string;
+      event_type?: string;
+      source?: string;
+      correlation_id?: string;
+      limit?: number;
+    } = {},
+  ) {
     return this.call('domain_events', { strategy_id: id, ...params });
   }
 
@@ -589,7 +700,10 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('runtime_control', { strategy_id: id });
   }
 
-  async setRuntimeControl(id: string, params: { control_mode: string; reason?: string; source?: string; trigger_event_type?: string } ) {
+  async setRuntimeControl(
+    id: string,
+    params: { control_mode: string; reason?: string; source?: string; trigger_event_type?: string },
+  ) {
     return this.call('runtime_control_set', { strategy_id: id, ...params });
   }
 
@@ -613,11 +727,24 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('ai_generate', params);
   }
 
-  async aiExperiments(params: { experiment_id?: string; strategy_id?: string; parent_strategy_id?: string; generated_strategy_id?: string; task_run_id?: number; status?: string; source?: string; limit?: number } = {}) {
+  async aiExperiments(
+    params: {
+      experiment_id?: string;
+      strategy_id?: string;
+      parent_strategy_id?: string;
+      generated_strategy_id?: string;
+      task_run_id?: number;
+      status?: string;
+      source?: string;
+      limit?: number;
+    } = {},
+  ) {
     return this.call('ai_experiments', params);
   }
 
-  async taskRuns(params: { strategy_id?: string; task_name?: string; task_scope?: string; status?: string; limit?: number } = {}) {
+  async taskRuns(
+    params: { strategy_id?: string; task_name?: string; task_scope?: string; status?: string; limit?: number } = {},
+  ) {
     return this.call('task_runs', params);
   }
 

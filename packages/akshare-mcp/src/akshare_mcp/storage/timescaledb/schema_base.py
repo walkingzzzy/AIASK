@@ -192,11 +192,13 @@ class SchemaBase:
         """初始化数据库表结构（委托给 market / strategy 子模块）"""
         from .schema_market import init_market_tables
         from .schema_strategy import init_strategy_tables
+        from .schema_vector import init_vector_tables
 
         async with self.acquire() as conn:
             await self._ensure_pgvector(conn)
             await init_market_tables(conn)
             await init_strategy_tables(conn, self._pgvector_enabled)
+            await init_vector_tables(conn, self._pgvector_enabled)
 
         logger.info("All tables initialized successfully (aligned with Node version)")
 
@@ -235,7 +237,11 @@ class SchemaBase:
 
     @asynccontextmanager
     async def acquire(self):
-        """获取数据库连接（自动处理事件循环变更和连接池重建）"""
+        """获取数据库连接（自动处理事件循环变更和连接池重建）
+
+        关键约束：@asynccontextmanager 生成器只能 yield 一次，且不能在 except 块中 yield。
+        因此：先 acquire 连接（含重试），再 yield，最后在 finally 中 release。
+        """
         lock = self._get_init_lock()
 
         if not self._initialized or self._bound_loop is not asyncio.get_running_loop():
@@ -243,17 +249,39 @@ class SchemaBase:
                 if not self._initialized or self._bound_loop is not asyncio.get_running_loop():
                     await self.initialize()
 
+        _pool_rebuild_triggers = (
+            'event loop is closed',
+            'pool is closed',
+            'not running',
+            'connection was closed',
+            'connection is closed',
+            'connectiondoesnotexist',
+            'connection reset',
+            'server closed the connection',
+            'poolconnectionholder',
+        )
+
+        # 先获取连接（包含一次重试），再 yield，避免在 except 中 yield
+        conn = None
+        pool = self.pool
         try:
-            async with self.pool.acquire() as conn:
-                yield conn
+            conn = await pool.acquire()
         except Exception as e:
             err_msg = str(e).lower()
-            if 'event loop is closed' in err_msg or 'pool is closed' in err_msg or 'not running' in err_msg:
-                logger.warning("Pool error detected (%s), rebuilding...", e)
+            if any(trigger in err_msg for trigger in _pool_rebuild_triggers):
+                logger.warning("Pool/connection error detected (%s), rebuilding...", e)
                 async with lock:
                     self._reset_pool_state()
                     await self.initialize()
-                async with self.pool.acquire() as conn:
-                    yield conn
+                pool = self.pool
+                conn = await pool.acquire()
             else:
                 raise
+
+        try:
+            yield conn
+        finally:
+            try:
+                await pool.release(conn)
+            except Exception as exc:
+                logger.warning("Error releasing connection back to pool: %s", exc)

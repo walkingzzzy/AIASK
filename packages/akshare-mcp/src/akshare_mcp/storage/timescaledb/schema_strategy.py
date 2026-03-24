@@ -718,11 +718,12 @@ async def init_strategy_tables(conn, pgvector_enabled: bool = False) -> None:
             source TEXT DEFAULT 'system',
             built_at TIMESTAMPTZ,
             activated_at TIMESTAMPTZ,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE(index_name, index_version)
+            created_at TIMESTAMPTZ DEFAULT NOW()
         );
         CREATE INDEX IF NOT EXISTS idx_strategy_vector_index_snapshots_name
             ON strategy_vector_index_snapshots(index_name, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_strategy_vector_index_snapshots_name_version
+            ON strategy_vector_index_snapshots(index_name, index_version, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_strategy_vector_index_snapshots_status
             ON strategy_vector_index_snapshots(status, created_at DESC);
 
@@ -820,6 +821,10 @@ async def init_strategy_tables(conn, pgvector_enabled: bool = False) -> None:
     await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_strategy_vector_profiles_index_name
             ON strategy_vector_profiles(index_name, index_version, created_at DESC);
+    """)
+    await conn.execute("""
+        ALTER TABLE strategy_vector_index_snapshots
+        DROP CONSTRAINT IF EXISTS strategy_vector_index_snapshots_index_name_index_version_key;
     """)
 
     # pgvector-specific tables (gated)

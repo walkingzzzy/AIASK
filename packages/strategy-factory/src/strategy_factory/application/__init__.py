@@ -8,6 +8,9 @@ from typing import Any
 
 _EXPORT_MAP: dict[str, tuple[str, str]] = {
     "BacktestFilter": (".backtest_filter", "BacktestFilter"),
+    "FactoryCycleOutcome": (".cycle_runner", "FactoryCycleOutcome"),
+    "FactoryCycleRunner": (".cycle_runner", "FactoryCycleRunner"),
+    "FactoryRunContext": (".cycle_runner", "FactoryRunContext"),
     "DataCollector": (".collect", "DataCollector"),
     "Deduplicator": (".deduplicator", "Deduplicator"),
     "EliminationChecker": (".elimination", "EliminationChecker"),

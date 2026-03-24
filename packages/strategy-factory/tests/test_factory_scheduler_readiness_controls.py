@@ -2,6 +2,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from strategy_factory.application.cycle_runner import (
+    FactoryCycleOutcome,
+    FactoryCycleRunner,
+    FactoryRunContext,
+)
 from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
 from strategy_factory.domain.targets import _extract_target_codes_from_payload
 
@@ -510,8 +515,9 @@ async def test_scheduler_governed_candidate_pool_can_bypass_legacy_factor_stale_
 
     result = await scheduler.run_once()
 
-    assert result["status"] == "success"
+    assert result["status"] == "partial"
     assert result["stages"]["readiness"]["can_proceed"] is True
+    assert result["stages"]["readiness"]["status"] == "partial"
     assert result["stages"]["readiness"]["factor_source_mode"] == "governed_candidate_pool"
     assert result["stages"]["readiness"]["governed_candidate_pool_active"] is True
     assert result["stages"]["readiness"]["active_candidate_count"] == 2
@@ -520,6 +526,7 @@ async def test_scheduler_governed_candidate_pool_can_bypass_legacy_factor_stale_
     assert result["summary"]["factor_source_mode"] == "governed_candidate_pool"
     assert result["summary"]["active_candidate_count"] == 2
     assert result["summary"]["governed_candidate_pool_active"] is True
+    assert result["summary"]["degraded_stage_count"] >= 1
 
 
 @pytest.mark.asyncio
@@ -587,3 +594,90 @@ async def test_scheduler_summary_exposes_run_level_audit_metrics(monkeypatch):
     assert result["summary"]["weak_hansen_spa_count"] == 1
     assert result["summary"]["refresh_metrics_only_count"] == 1
     assert result["summary"]["spawn_revision_from_existing_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_marks_run_partial_when_run_persistence_fails(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock(side_effect=RuntimeError("run persistence unavailable"))
+    db.save_daily_snapshot = AsyncMock()
+    scheduler = StrategyFactoryScheduler(factor_research_gateway=_RefreshingFactorResearchGateway())
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+
+    result = await scheduler.run_once()
+
+    assert result["status"] == "partial"
+    assert result["summary"]["persistence_failure_count"] == 1
+    assert result["summary"]["persistence_failures"][0]["operation"] == "save_strategy_factory_run"
+
+
+@pytest.mark.asyncio
+async def test_cycle_runner_can_be_executed_without_scheduler_loop(monkeypatch):
+    scheduler = StrategyFactoryScheduler()
+    context = FactoryRunContext(
+        db=object(),
+        factory_pkg=object(),
+        runtime_adapters=None,
+        start=scheduler._now(),
+        trace_id="strategy_factory:test_runner",
+        run_id="factory_run_test_runner",
+    )
+
+    monkeypatch.setattr("strategy_factory.application.cycle_runner.is_factory_runtime_enabled", lambda: False)
+    monkeypatch.setattr("strategy_factory.application.cycle_runner.resolve_event_runtime_mode", lambda: "disabled")
+    monkeypatch.setattr(
+        "strategy_factory.application.cycle_runner.is_factory_readiness_hard_block_enabled",
+        lambda: True,
+    )
+
+    outcome = await FactoryCycleRunner(scheduler, context).run()
+
+    assert isinstance(outcome, FactoryCycleOutcome)
+    assert outcome.result["run_id"] == "factory_run_test_runner"
+    assert outcome.result["status"] == "skipped"
+    assert outcome.result["summary"]["skip_reason"] == "runtime_disabled"
+    assert outcome.result["stages"]["readiness"]["status"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_once_delegates_to_cycle_runner(monkeypatch):
+    db = object()
+    scheduler = StrategyFactoryScheduler(db_provider=lambda: db)
+    scheduler._persist_run_result = AsyncMock()
+    captured: dict[str, object] = {}
+
+    class _DummyRunner:
+        def __init__(self, owner, context):
+            captured["owner"] = owner
+            captured["context"] = context
+
+        async def run(self):
+            return FactoryCycleOutcome(
+                {
+                    "run_id": "factory_run_delegate",
+                    "trace_id": "strategy_factory:delegate",
+                    "started_at": scheduler._now().isoformat(),
+                    "completed_at": scheduler._now().isoformat(),
+                    "status": "success",
+                    "summary": {},
+                    "stages": {},
+                },
+                [],
+            )
+
+    monkeypatch.setattr("strategy_factory.application.factory_scheduler.FactoryCycleRunner", _DummyRunner)
+
+    result = await scheduler.run_once()
+
+    assert captured["owner"] is scheduler
+    assert isinstance(captured["context"], FactoryRunContext)
+    assert captured["context"].db is db
+    assert captured["context"].runtime_adapters is None
+    assert result["run_id"] == "factory_run_delegate"
+    assert scheduler.last_result is result
+    scheduler._persist_run_result.assert_awaited_once()

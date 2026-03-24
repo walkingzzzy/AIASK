@@ -44,6 +44,14 @@ from .runtime import (
     _call_optional_async as _runtime_call_optional_async,
     get_strategy_factory_package as _runtime_get_strategy_factory_package,
 )
+from .cycle_runner import FactoryCycleRunner, FactoryRunContext
+from .run_models import (
+    FactoryRunStatus,
+    StageStatus,
+    build_stage_result,
+    resolve_run_status,
+    summarize_stage_results,
+)
 from .utils import _extract_event_context as _local_extract_event_context
 from ..domain.targets import _extract_target_codes_from_payload, _normalize_target_codes
 from ..infrastructure.mcp_services import get_autonomy_lifecycle_runtime, get_runtime_warmup_runner
@@ -373,6 +381,16 @@ class StrategyFactoryScheduler:
             token = str(value or "").strip()
             return [token] if token else []
 
+        def _normalize_risk_audit(value: Any) -> dict[str, Any]:
+            payload = dict(value or {}) if isinstance(value, dict) else {}
+            return {
+                "lookahead_risk_level": str(payload.get("lookahead_risk_level") or "").strip() or None,
+                "multiple_testing_risk_level": str(payload.get("multiple_testing_risk_level") or "").strip() or None,
+                "overall_risk_level": str(payload.get("overall_risk_level") or "").strip() or None,
+                "blocked": bool(payload.get("blocked")),
+                "block_reasons": _normalize_list(payload.get("block_reasons")),
+            }
+
         top_candidates: list[dict[str, Any]] = []
         for item in list(active_pool.get("top_candidates") or [])[: max(1, int(candidate_limit or 5))]:
             if not isinstance(item, dict):
@@ -386,6 +404,24 @@ class StrategyFactoryScheduler:
                     "grade": str(item.get("grade") or "").strip() or None,
                     "recommendation": str(item.get("recommendation") or "").strip() or None,
                     "total_score": item.get("total_score"),
+                    "risk_audit": _normalize_risk_audit(item.get("risk_audit")),
+                }
+            )
+
+        excluded_candidates: list[dict[str, Any]] = []
+        for item in list(active_pool.get("excluded_candidates") or [])[: max(1, int(candidate_limit or 5))]:
+            if not isinstance(item, dict):
+                continue
+            excluded_candidates.append(
+                {
+                    "artifact_id": str(item.get("artifact_id") or "").strip() or None,
+                    "name": str(item.get("name") or "").strip() or None,
+                    "family": str(item.get("family") or "").strip() or None,
+                    "grade": str(item.get("grade") or "").strip() or None,
+                    "recommendation": str(item.get("recommendation") or "").strip() or None,
+                    "total_score": item.get("total_score"),
+                    "reasons": _normalize_list(item.get("reasons")),
+                    "risk_audit": _normalize_risk_audit(item.get("risk_audit")),
                 }
             )
 
@@ -411,8 +447,16 @@ class StrategyFactoryScheduler:
         ]
 
         return {
+            "source_count": int(active_pool.get("source_count") or 0),
             "count": int(active_pool.get("count") or 0),
+            "excluded_count": int(active_pool.get("excluded_count") or 0),
             "top_candidates": top_candidates,
+            "excluded_candidates": excluded_candidates,
+            "exclusion_reason_counts": {
+                str(key): int(value or 0)
+                for key, value in dict(active_pool.get("exclusion_reason_counts") or {}).items()
+                if str(key).strip()
+            },
             "family_summary": family_summary,
             "regime_summary": regime_summary,
         }
@@ -429,6 +473,8 @@ class StrategyFactoryScheduler:
             "summary": {
                 "active_factor_count": int(summary.get("active_factor_count") or 0),
                 "active_candidate_count": int(summary.get("active_candidate_count") or 0),
+                "governed_source_candidate_count": int(summary.get("governed_source_candidate_count") or 0),
+                "governed_blocked_candidate_count": int(summary.get("governed_blocked_candidate_count") or 0),
                 "ranked_factor_count": int(summary.get("ranked_factor_count") or 0),
                 "top_factor_names": list(summary.get("top_factor_names") or []),
                 "top_candidate_names": list(summary.get("top_candidate_names") or []),
@@ -436,6 +482,8 @@ class StrategyFactoryScheduler:
                 "active_regime_names": list(summary.get("active_regime_names") or []),
                 "preferred_strategy_types": list(summary.get("preferred_strategy_types") or []),
                 "factor_source_mode": summary.get("factor_source_mode"),
+                "governed_exclusion_reason_counts": dict(summary.get("governed_exclusion_reason_counts") or {}),
+                "governed_risk_counts": dict(summary.get("governed_risk_counts") or {}),
                 "degraded": bool(summary.get("degraded")),
                 "freshness_days": summary.get("freshness_days"),
                 "latest_factor_date": summary.get("latest_factor_date"),
@@ -478,17 +526,100 @@ class StrategyFactoryScheduler:
         }
 
     @staticmethod
-    def _with_stage_meta(stage_name: str, trace_id: str, payload: Optional[dict], *, default_ok: bool = True) -> dict:
-        data = dict(payload or {})
-        ok = bool(data.pop("ok", default_ok))
-        status = str(data.pop("status", "completed" if ok else "failed"))
+    def _with_stage_meta(
+        stage_name: str,
+        trace_id: str,
+        payload: Optional[dict],
+        *,
+        status: StageStatus | str,
+        ok: Optional[bool] = None,
+        hard_failure: bool = False,
+        degraded: Optional[bool] = None,
+        skip_reason: Optional[str] = None,
+    ) -> dict:
+        return build_stage_result(
+            stage_name,
+            trace_id,
+            payload,
+            status=status,
+            ok=ok,
+            hard_failure=hard_failure,
+            degraded=degraded,
+            skip_reason=skip_reason,
+        )
+
+    @staticmethod
+    def _record_persistence_failure(
+        failures: list[dict[str, Any]],
+        operation: str,
+        exc: Exception,
+        *,
+        stage: Optional[str] = None,
+    ) -> None:
+        failures.append(
+            {
+                "operation": str(operation or "unknown"),
+                "stage": str(stage or "").strip() or None,
+                "error_type": exc.__class__.__name__,
+                "error": str(exc),
+            }
+        )
+
+    @classmethod
+    def _build_pipeline_payload(
+        cls,
+        results: dict[str, Any],
+        *,
+        stage_summary: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        summary = dict(stage_summary or summarize_stage_results(results.get("stages") or {}))
+        failed_stages = list(summary.get("failed_stages") or [])
+        partial_stages = list(summary.get("partial_stages") or [])
         return {
-            "stage": stage_name,
-            "trace_id": trace_id,
-            "status": status,
-            "ok": ok,
-            **data,
+            "trace_id": results.get("trace_id"),
+            "status": results.get("status"),
+            "stage_order": list(results.get("stages", {}).keys()),
+            "total_stage_count": len(results.get("stages", {})),
+            "failed_stage": failed_stages[0] if failed_stages else None,
+            "partial_stage": partial_stages[0] if partial_stages else None,
+            "stage_status_counts": dict(summary.get("stage_status_counts") or {}),
         }
+
+    @classmethod
+    def _apply_run_audit(
+        cls,
+        results: dict[str, Any],
+        *,
+        persistence_failures: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        failures = list(persistence_failures or [])
+        stage_summary = summarize_stage_results(results.get("stages") or {})
+        summary = dict(results.get("summary") or {})
+        combined_skip_reasons: list[str] = []
+        for reason in list(stage_summary.get("skip_reasons") or []) + list(summary.get("skip_reasons") or []):
+            token = str(reason or "").strip()
+            if token and token not in combined_skip_reasons:
+                combined_skip_reasons.append(token)
+        if summary.get("skip_reason"):
+            token = str(summary.get("skip_reason") or "").strip()
+            if token and token not in combined_skip_reasons:
+                combined_skip_reasons.insert(0, token)
+
+        resolved_status = resolve_run_status(
+            results.get("status") or FactoryRunStatus.SUCCESS.value,
+            results.get("stages") or {},
+            persistence_failure_count=len(failures),
+        )
+        results["status"] = resolved_status.value
+        summary.update(stage_summary)
+        summary["skip_reasons"] = combined_skip_reasons
+        summary["persistence_failure_count"] = len(failures)
+        summary["persistence_failures"] = failures
+        if not summary.get("skip_reason") and combined_skip_reasons:
+            summary["skip_reason"] = combined_skip_reasons[0]
+        results["summary"] = summary
+        results["pipeline"] = cls._build_pipeline_payload(results, stage_summary=stage_summary)
+        return results
 
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -660,139 +791,6 @@ class StrategyFactoryScheduler:
         data["summary"] = summary
         data["scheduler_status"] = scheduler_status
         return data
-
-    async def _build_factor_research_artifact(self, factor_gateway, db, snapshot: dict[str, Any]) -> dict[str, Any]:
-        gateway_db = self._adapt_gateway_repository(db)
-        auto_refresh_enabled = is_factory_factor_auto_refresh_enabled()
-        refresh_meta: dict[str, Any] = {
-            "auto_refresh_enabled": auto_refresh_enabled,
-            "refresh_attempted": False,
-            "refresh_status": "not_needed",
-            "refresh_trigger": None,
-            "refresh_error": None,
-            "refreshed_before_build": False,
-            "refresh_result": {},
-            "refresh_timeout_sec": FACTORY_FACTOR_REFRESH_TIMEOUT_SEC,
-        }
-        artifact = dict(await factor_gateway.build_artifact(gateway_db, snapshot) or {})
-        summary = dict(artifact.get("summary") or {})
-        should_refresh = bool(auto_refresh_enabled and summary.get("stale"))
-        refresh = getattr(factor_gateway, "refresh", None)
-        if should_refresh:
-            refresh_meta["refresh_attempted"] = True
-            refresh_meta["refresh_trigger"] = "stale_artifact"
-            if callable(refresh):
-                try:
-                    refresh_result = refresh()
-                    if inspect.isawaitable(refresh_result):
-                        refresh_result = await asyncio.wait_for(
-                            refresh_result,
-                            timeout=FACTORY_FACTOR_REFRESH_TIMEOUT_SEC,
-                        )
-                    refresh_meta["refresh_status"] = "success"
-                    refresh_meta["refresh_result"] = self._summarize_refresh_result(refresh_result)
-                    refresh_meta["refreshed_before_build"] = True
-                    artifact = dict(await factor_gateway.build_artifact(gateway_db, snapshot) or {})
-                except asyncio.TimeoutError:
-                    refresh_meta["refresh_status"] = "timeout"
-                    refresh_meta["refresh_error"] = (
-                        f"factor refresh exceeded {FACTORY_FACTOR_REFRESH_TIMEOUT_SEC}s"
-                    )
-                except Exception as exc:
-                    refresh_meta["refresh_status"] = "failed"
-                    refresh_meta["refresh_error"] = str(exc)
-            else:
-                refresh_meta["refresh_status"] = "unsupported"
-                refresh_meta["refresh_error"] = "factor gateway does not expose refresh()"
-        elif not auto_refresh_enabled:
-            refresh_meta["refresh_status"] = "disabled"
-        return self._inject_factor_refresh_meta(artifact, refresh_meta)
-
-    def _build_factory_readiness(
-        self,
-        snapshot: dict[str, Any],
-        factor_research: Optional[dict],
-    ) -> dict[str, Any]:
-        factor_artifact = dict(factor_research or {})
-        factor_summary = dict(factor_artifact.get("summary") or {})
-        factor_refresh = dict(factor_artifact.get("freshness_repair") or {})
-        factor_source_mode = str(factor_summary.get("factor_source_mode") or "").strip().lower()
-        active_candidate_count = int(factor_summary.get("active_candidate_count") or 0)
-        governed_candidate_pool_active = bool(
-            factor_source_mode == "governed_candidate_pool" or active_candidate_count > 0
-        )
-        sources = dict(snapshot.get("sources") or {})
-        event_source = dict(sources.get("event_driven") or {})
-        event_state = dict(snapshot.get("event_driven") or {})
-        completion = dict(snapshot.get("completeness") or {})
-        completion_ratio = self._safe_float(completion.get("completion_ratio"), default=1.0)
-        warnings: list[str] = []
-        blockers: list[str] = []
-        score = 1.0
-
-        if bool(snapshot.get("degraded")):
-            warnings.append("snapshot_degraded")
-            score -= 0.12
-        if completion_ratio < FACTORY_READINESS_MIN_COMPLETION_RATIO:
-            blockers.append("snapshot_completion_too_low")
-            score -= 0.28
-        elif completion_ratio < 0.9:
-            warnings.append("snapshot_completion_low")
-            score -= 0.08
-
-        event_status = str(event_source.get("status") or "unknown").strip().lower() or "unknown"
-        if event_status != "success":
-            warnings.append(f"event_driven_{event_status}")
-            score -= 0.08 if event_status == "partial" else 0.14
-        if event_status == "success" and int(event_state.get("tasks_ready_count") or 0) <= 0:
-            warnings.append("event_driven_no_ready_tasks")
-            score -= 0.03
-
-        if bool(factor_summary.get("degraded")):
-            warnings.append("factor_research_degraded")
-            score -= 0.14
-        if bool(factor_summary.get("stale")):
-            if governed_candidate_pool_active:
-                warnings.append("factor_research_history_stale_governed_pool_active")
-                score -= 0.06
-            else:
-                blockers.append("factor_research_stale")
-                score -= 0.32
-        refresh_status = str(factor_refresh.get("refresh_status") or "").strip().lower()
-        if bool(factor_refresh.get("refresh_attempted")) and refresh_status not in {"success", "not_needed"}:
-            warnings.append(f"factor_refresh_{refresh_status or 'unknown'}")
-            score -= 0.08
-
-        score = max(min(round(score, 4), 1.0), 0.0)
-        hard_block = is_factory_readiness_hard_block_enabled()
-        can_proceed = not hard_block or (score >= FACTORY_READINESS_MIN_SCORE and not blockers)
-        return {
-            "runtime_enabled": is_factory_runtime_enabled(),
-            "event_runtime_mode": resolve_event_runtime_mode(),
-            "auto_refresh_enabled": bool(factor_refresh.get("auto_refresh_enabled")),
-            "hard_block_enabled": hard_block,
-            "min_score": FACTORY_READINESS_MIN_SCORE,
-            "min_completion_ratio": FACTORY_READINESS_MIN_COMPLETION_RATIO,
-            "readiness_score": score,
-            "can_proceed": can_proceed,
-            "warnings": warnings,
-            "warning_count": len(warnings),
-            "blockers": blockers,
-            "blocker_count": len(blockers),
-            "snapshot_completion_ratio": completion_ratio,
-            "snapshot_degraded": bool(snapshot.get("degraded")),
-            "event_status": event_status,
-            "event_task_ready_count": int(event_state.get("tasks_ready_count") or 0),
-            "factor_research_stale": bool(factor_summary.get("stale")),
-            "factor_research_degraded": bool(factor_summary.get("degraded")),
-            "factor_source_mode": factor_summary.get("factor_source_mode"),
-            "governed_candidate_pool_active": governed_candidate_pool_active,
-            "active_candidate_count": active_candidate_count,
-            "active_family_count": len(list(factor_summary.get("active_family_names") or [])),
-            "active_regime_count": len(list(factor_summary.get("active_regime_names") or [])),
-            "factor_refresh_attempted": bool(factor_refresh.get("refresh_attempted")),
-            "factor_refresh_status": factor_refresh.get("refresh_status"),
-        }
 
     @staticmethod
     def _filter_supported_injection_kwargs(factory: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -1103,16 +1101,26 @@ class StrategyFactoryScheduler:
             source=source,
         )
 
-    async def _persist_enriched_snapshot(self, db, snapshot: dict[str, Any]) -> None:
+    async def _persist_run_result(
+        self,
+        db,
+        results: dict[str, Any],
+        *,
+        persistence_failures: list[dict[str, Any]],
+    ) -> None:
+        if not hasattr(db, "save_strategy_factory_run"):
+            return
         try:
-            await _call_optional_async(
-                db,
-                "save_daily_snapshot",
-                snapshot.get("date") or self._now().date(),
-                snapshot,
-            )
+            await db.save_strategy_factory_run(results)
         except Exception as exc:
-            logger.warning("StrategyFactory: enriched snapshot persistence failed: %s", exc)
+            logger.warning("StrategyFactory: failed to persist run %s: %s", results.get("run_id"), exc)
+            self._record_persistence_failure(
+                persistence_failures,
+                "save_strategy_factory_run",
+                exc,
+                stage="run",
+            )
+            self._apply_run_audit(results, persistence_failures=persistence_failures)
 
     async def _prepare_shared_generation_context(self, autonomy_gateway, db, snapshot: dict[str, Any]) -> bool:
         autonomy_target = getattr(autonomy_gateway, "raw", autonomy_gateway)
@@ -1179,6 +1187,7 @@ class StrategyFactoryScheduler:
         last_error_type = None
         last_error = None
         elapsed_seconds = 0.0
+        persistence_failures: List[dict[str, Any]] = []
         _agg_lock = asyncio.Lock()
         shared_generation_context_preloaded = await self._prepare_shared_generation_context(autonomy_gateway, db, snapshot)
         effective_research_concurrency = self._resolve_research_task_concurrency(autonomy_gateway)
@@ -1194,31 +1203,54 @@ class StrategyFactoryScheduler:
             failed_phase = "preparing"
             async with sem:
                 try:
-                    evidence_rows = await self._persist_task_evidence(db, {**task, "snapshot_date": snapshot.get("date")})
-                    event_context = _extract_event_context(task)
-                    task_run = (
-                        await _call_optional_async(
+                    try:
+                        evidence_rows = await self._persist_task_evidence(
                             db,
-                            "save_strategy_task_run",
-                            {
-                                "strategy_id": None,
-                                "task_name": "strategy_research_task",
-                                "task_scope": "strategy_factory",
-                                "task_key": task.get("task_key") or task.get("task_id"),
-                                "status": "running",
-                                "trace_id": uuid4().hex[:12],
-                                "payload": {
-                                    "research_task": task,
-                                    "event_context": event_context,
-                                    "task_source": task.get("task_source"),
-                                    "evidence_count": len(evidence_rows),
-                                    "snapshot_date": snapshot.get("date"),
-                                },
-                            },
-                            default={"id": None},
+                            {**task, "snapshot_date": snapshot.get("date")},
                         )
-                        or {"id": None}
-                    )
+                    except Exception as exc:
+                        async with _agg_lock:
+                            self._record_persistence_failure(
+                                persistence_failures,
+                                "save_factory_task_evidence",
+                                exc,
+                                stage="autonomy",
+                            )
+                        evidence_rows = []
+                    event_context = _extract_event_context(task)
+                    try:
+                        task_run = (
+                            await _call_optional_async(
+                                db,
+                                "save_strategy_task_run",
+                                {
+                                    "strategy_id": None,
+                                    "task_name": "strategy_research_task",
+                                    "task_scope": "strategy_factory",
+                                    "task_key": task.get("task_key") or task.get("task_id"),
+                                    "status": "running",
+                                    "trace_id": uuid4().hex[:12],
+                                    "payload": {
+                                        "research_task": task,
+                                        "event_context": event_context,
+                                        "task_source": task.get("task_source"),
+                                        "evidence_count": len(evidence_rows),
+                                        "snapshot_date": snapshot.get("date"),
+                                    },
+                                },
+                                default={"id": None},
+                            )
+                            or {"id": None}
+                        )
+                    except Exception as exc:
+                        async with _agg_lock:
+                            self._record_persistence_failure(
+                                persistence_failures,
+                                "save_strategy_task_run",
+                                exc,
+                                stage="autonomy",
+                            )
+                        task_run = {"id": None}
                     enriched_task = {
                         **task,
                         "task_run_id": task_run.get("id"),
@@ -1287,6 +1319,13 @@ class StrategyFactoryScheduler:
                             )
                         except Exception as exc:
                             logger.warning("StrategyFactory: update task_run completed failed: %s", exc)
+                            async with _agg_lock:
+                                self._record_persistence_failure(
+                                    persistence_failures,
+                                    "update_strategy_task_run",
+                                    exc,
+                                    stage="autonomy",
+                                )
                 except Exception as exc:
                     failure_lifecycle = dict(getattr(exc, "autonomy_lifecycle", {}) or {})
                     if not failure_lifecycle:
@@ -1333,6 +1372,13 @@ class StrategyFactoryScheduler:
                             )
                         except Exception as update_exc:
                             logger.warning("StrategyFactory: update task_run failed failed: %s", update_exc)
+                            async with _agg_lock:
+                                self._record_persistence_failure(
+                                    persistence_failures,
+                                    "update_strategy_task_run",
+                                    update_exc,
+                                    stage="autonomy",
+                                )
 
         # 有界并发执行所有研究任务
         if tasks:
@@ -1361,7 +1407,6 @@ class StrategyFactoryScheduler:
             overall_status = "partial" if completed_task_count else "failed"
         lifecycle_metrics = self._aggregate_task_lifecycle_metrics(task_results)
         stage = {
-            "ok": True,
             "task_count": len(tasks),
             "task_source_counts": task_source_counts,
             "event_task_count": event_task_count,
@@ -1384,6 +1429,8 @@ class StrategyFactoryScheduler:
             "research_task_concurrency": effective_research_concurrency,
             "configured_research_task_concurrency": RESEARCH_TASK_CONCURRENCY,
             "shared_generation_context_preloaded": shared_generation_context_preloaded,
+            "persistence_failures": persistence_failures,
+            "persistence_failure_count": len(persistence_failures),
             **lifecycle_metrics,
         }
         return {"stage": stage, "candidates": generated_candidates, "experiments": all_experiments}
@@ -1391,510 +1438,25 @@ class StrategyFactoryScheduler:
 
     async def run_once(self, db=None) -> dict:
         """执行一次完整的策略工厂流程。"""
-        factory_pkg = get_strategy_factory_package()
         db = self._load_db() if db is None else db
         start = self._now()
-        trace_id = f"strategy_factory:{uuid4().hex[:12]}"
-        results: Dict[str, Any] = {
-            "run_id": f"factory_run_{int(start.timestamp())}_{uuid4().hex[:8]}",
-            "trace_id": trace_id,
-            "started_at": start.isoformat(),
-            "status": "running",
-            "summary": {},
-            "stages": {},
-        }
-
-        logger.info("StrategyFactory: starting daily cycle")
-
-        if not is_factory_runtime_enabled():
-            results["status"] = "skipped"
-            results["completed_at"] = self._now().isoformat()
-            results["elapsed_seconds"] = 0.0
-            results["stages"]["readiness"] = self._with_stage_meta(
-                "readiness",
-                trace_id,
-                {
-                    "status": "skipped",
-                    "ok": False,
-                    "runtime_enabled": False,
-                    "event_runtime_mode": resolve_event_runtime_mode(),
-                    "hard_block_enabled": is_factory_readiness_hard_block_enabled(),
-                    "readiness_score": 0.0,
-                    "can_proceed": False,
-                    "warnings": [],
-                    "warning_count": 0,
-                    "blockers": ["runtime_disabled"],
-                    "blocker_count": 1,
-                },
-                default_ok=False,
-            )
-            results["summary"] = {
-                "trace_id": trace_id,
-                "runtime_enabled": False,
-                "event_runtime_mode": resolve_event_runtime_mode(),
-                "factory_readiness_score": 0.0,
-                "factory_readiness_can_proceed": False,
-                "factory_readiness_blocker_count": 1,
-                "factory_readiness_warning_count": 0,
-                "skip_reason": "runtime_disabled",
-                "elapsed_seconds": 0.0,
-            }
-            results["pipeline"] = {
-                "trace_id": trace_id,
-                "status": results.get("status"),
-                "stage_order": list(results.get("stages", {}).keys()),
-                "total_stage_count": len(results.get("stages", {})),
-            }
-            self.last_run = self._now()
-            self.last_result = results
-            if hasattr(db, "save_strategy_factory_run"):
-                try:
-                    await db.save_strategy_factory_run(results)
-                except Exception as exc:
-                    logger.warning("StrategyFactory: failed to persist skipped run %s: %s", results.get("run_id"), exc)
-            return results
-
-        try:
-            warmup_result = await self._run_startup_warmup()
-            results["stages"]["warmup"] = self._with_stage_meta(
-                "warmup",
-                trace_id,
-                warmup_result,
-                default_ok=bool(warmup_result.get("ok", True)),
-            )
-
-            collector = factory_pkg.DataCollector()
-            snapshot = await collector.collect(db)
-            results["snapshot_summary"] = {
-                "date": snapshot.get("date"),
-                "fear_greed": snapshot.get("fear_greed_index"),
-                "fear_greed_index": snapshot.get("fear_greed_index"),
-                "fg_level": snapshot.get("fg_level"),
-                "listed_count": snapshot.get("listed_count", 0),
-                "incubating_count": snapshot.get("incubating_count", 0),
-                "degraded": bool(snapshot.get("degraded")),
-                "completion_ratio": (snapshot.get("completeness") or {}).get("completion_ratio", 1.0),
-                "missing_sources": (snapshot.get("completeness") or {}).get("missing_sources") or [],
-                "failure_reason_count": len(snapshot.get("failure_reasons") or []),
-            }
-            results["stages"]["collect"] = self._with_stage_meta("collect", trace_id, {
-                **results["snapshot_summary"],
-                "completeness": snapshot.get("completeness") or {},
-            })
-
-            factor_research = {}
-            try:
-                factor_gateway = self._get_factor_research_gateway()
-                factor_research = await self._build_factor_research_artifact(
-                    factor_gateway,
-                    db,
-                    snapshot,
-                )
-                snapshot["factor_research"] = dict(factor_research or {})
-                factor_summary = dict((snapshot.get("factor_research") or {}).get("summary") or {})
-                compact_factor_research = self._compact_factor_research_snapshot(snapshot.get("factor_research"))
-                results["stages"]["factor_research"] = self._with_stage_meta("factor_research", trace_id, {
-                    "active_factor_count": int(factor_summary.get("active_factor_count") or 0),
-                    "active_candidate_count": int(factor_summary.get("active_candidate_count") or 0),
-                    "active_family_count": len(list(factor_summary.get("active_family_names") or [])),
-                    "active_regime_count": len(list(factor_summary.get("active_regime_names") or [])),
-                    "ranked_factor_count": int(factor_summary.get("ranked_factor_count") or 0),
-                    "top_factor_names": list(factor_summary.get("top_factor_names") or []),
-                    "top_candidate_names": list(factor_summary.get("top_candidate_names") or []),
-                    "active_family_names": list(factor_summary.get("active_family_names") or []),
-                    "active_regime_names": list(factor_summary.get("active_regime_names") or []),
-                    "preferred_strategy_types": list(factor_summary.get("preferred_strategy_types") or []),
-                    "factor_source_mode": factor_summary.get("factor_source_mode"),
-                    "degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
-                    "freshness_days": factor_summary.get("freshness_days"),
-                    "latest_factor_date": factor_summary.get("latest_factor_date"),
-                    "quality_flags": list(factor_summary.get("quality_flags") or []),
-                    "refresh_attempted": bool(factor_summary.get("refresh_attempted")),
-                    "refresh_status": factor_summary.get("refresh_status"),
-                    "refresh_trigger": factor_summary.get("refresh_trigger"),
-                    "refresh_error": factor_summary.get("refresh_error"),
-                    "active_candidate_pool": compact_factor_research.get("active_candidate_pool") or {},
-                    "source_chain": list((snapshot.get("factor_research") or {}).get("source_chain") or []),
-                })
-            except Exception as exc:
-                logger.warning("StrategyFactory: factor research stage failed: %s", exc)
-                snapshot["factor_research"] = {
-                    "active_factors": [],
-                    "ranked_factors": [],
-                    "positive_rising_factors": [],
-                    "preferred_strategy_types": [],
-                    "governed_candidates": [],
-                    "active_candidate_pool": {},
-                    "active_family_summary": [],
-                    "active_regime_summary": [],
-                    "research_rationale": [str(exc)],
-                    "source_chain": ["factor_research_error"],
-                    "degraded": True,
-                    "summary": {
-                        "active_factor_count": 0,
-                        "active_candidate_count": 0,
-                        "ranked_factor_count": 0,
-                        "top_factor_names": [],
-                        "top_candidate_names": [],
-                        "active_family_names": [],
-                        "active_regime_names": [],
-                        "preferred_strategy_types": [],
-                        "factor_source_mode": "error_fallback",
-                        "degraded": True,
-                        "quality_flags": ["failed"],
-                    },
-                }
-                results["stages"]["factor_research"] = self._with_stage_meta("factor_research", trace_id, {
-                    "active_factor_count": 0,
-                    "active_candidate_count": 0,
-                    "active_family_count": 0,
-                    "active_regime_count": 0,
-                    "ranked_factor_count": 0,
-                    "top_factor_names": [],
-                    "top_candidate_names": [],
-                    "active_family_names": [],
-                    "active_regime_names": [],
-                    "preferred_strategy_types": [],
-                    "factor_source_mode": "error_fallback",
-                    "degraded": True,
-                    "quality_flags": ["failed"],
-                    "error": str(exc),
-                }, default_ok=False)
-
-            results["snapshot_summary"] = {
-                **dict(results.get("snapshot_summary") or {}),
-                "factor_research": self._compact_factor_research_snapshot(snapshot.get("factor_research")),
-            }
-
-            readiness = self._build_factory_readiness(snapshot, snapshot.get("factor_research"))
-            snapshot["factory_readiness"] = readiness
-            results["stages"]["readiness"] = self._with_stage_meta("readiness", trace_id, readiness, default_ok=bool(readiness.get("can_proceed")))
-            await self._persist_enriched_snapshot(db, snapshot)
-
-            if not bool(readiness.get("can_proceed")):
-                elapsed = (self._now() - start).total_seconds()
-                results["status"] = "skipped"
-                results["completed_at"] = self._now().isoformat()
-                results["elapsed_seconds"] = round(elapsed, 1)
-                results["summary"] = {
-                    "trace_id": trace_id,
-                    "runtime_enabled": bool(readiness.get("runtime_enabled")),
-                    "event_runtime_mode": readiness.get("event_runtime_mode"),
-                    "factory_readiness_score": readiness.get("readiness_score"),
-                    "factory_readiness_can_proceed": False,
-                    "factory_readiness_blocker_count": readiness.get("blocker_count", 0),
-                    "factory_readiness_warning_count": readiness.get("warning_count", 0),
-                    "factor_source_mode": readiness.get("factor_source_mode"),
-                    "governed_candidate_pool_active": bool(readiness.get("governed_candidate_pool_active")),
-                    "active_candidate_count": int(readiness.get("active_candidate_count") or 0),
-                    "skip_reason": "readiness_blocked",
-                    "elapsed_seconds": round(elapsed, 1),
-                }
-                results["pipeline"] = {
-                    "trace_id": trace_id,
-                    "status": results.get("status"),
-                    "stage_order": list(results.get("stages", {}).keys()),
-                    "total_stage_count": len(results.get("stages", {})),
-                }
-                logger.warning(
-                    "StrategyFactory: run %s blocked by readiness controls: %s",
-                    results.get("run_id"),
-                    readiness.get("blockers"),
-                )
-                self.last_run = self._now()
-                self.last_result = results
-                if hasattr(db, "save_strategy_factory_run"):
-                    try:
-                        await db.save_strategy_factory_run(results)
-                    except Exception as exc:
-                        logger.warning("StrategyFactory: failed to persist blocked run %s: %s", results.get("run_id"), exc)
-                return results
-
-            spawner = factory_pkg.StrategySpawner()
-            candidates = spawner.spawn(snapshot)
-            spawn_report = (
-                spawner.get_last_report()
-                if hasattr(spawner, "get_last_report")
-                else {"summary": {"candidate_count": len(candidates)}}
-            )
-            results["stages"]["spawn"] = self._with_stage_meta("spawn", trace_id, {"count": len(candidates), **spawn_report})
-
-            autonomy_batch = {"stage": {"generated_count": 0}, "candidates": [], "experiments": []}
-            try:
-                autonomy_batch = await self._run_autonomy_batches(db, snapshot)
-                ai_candidates = autonomy_batch.get("candidates") or []
-                autonomy_stage = autonomy_batch.get("stage") or {}
-                factory_attempt_count = int(autonomy_stage.get("external_llm_attempt_count") or 0)
-                factory_selected_count = int(autonomy_stage.get("external_llm_selected_count") or 0)
-                for ai_candidate in ai_candidates:
-                    params = dict(ai_candidate.get("params") or {})
-                    params["factory_attempt_count"] = factory_attempt_count
-                    params["factory_selected_count"] = factory_selected_count
-                    ai_candidate["params"] = params
-                candidates = [*candidates, *ai_candidates]
-                results["stages"]["autonomy"] = self._with_stage_meta("autonomy", trace_id, autonomy_batch.get("stage") or {
-                    "ok": True,
-                    "generated_count": len(ai_candidates),
-                })
-            except Exception as exc:
-                logger.warning("StrategyFactory: autonomy cycle failed: %s", exc)
-                results["stages"]["autonomy"] = self._with_stage_meta(
-                    "autonomy",
-                    trace_id,
-                    {"error": str(exc), "generated_count": 0},
-                    default_ok=False,
-                )
-
-            backtest_filter = factory_pkg.BacktestFilter()
-            supports_unified_gate_runner = bool(
-                candidates
-                and hasattr(factory_pkg, "run_gated_filter")
-                and inspect.iscoroutinefunction(getattr(db, "get_klines", None))
-            )
-            deduplicator = self._build_deduplicator(factory_pkg)
-            submitter = self._build_submitter(factory_pkg)
-            supports_unified_submission_runner = bool(
-                supports_unified_gate_runner
-                and hasattr(factory_pkg, "run_gated_submission_pipeline")
-            )
-
-            if supports_unified_submission_runner:
-                pipeline_run = await factory_pkg.run_gated_submission_pipeline(
-                    candidates,
-                    snapshot,
-                    db,
-                    backtest_filter=backtest_filter,
-                    deduplicator=deduplicator,
-                    submitter=submitter,
-                    gated_runner=factory_pkg.run_gated_filter,
-                    kline_cache=getattr(backtest_filter, "_kline_cache", None),
-                )
-                passed = list(pipeline_run.get("passed") or [])
-                unique = list(pipeline_run.get("unique") or [])
-                quality_gate_report = dict(pipeline_run.get("gate_report") or pipeline_run.get("quality_gate") or {})
-                backtest_report = dict(pipeline_run.get("backtest_report") or {})
-                submit_result = dict(pipeline_run.get("submit_result") or {})
-            else:
-                if supports_unified_gate_runner:
-                    gate_run = await factory_pkg.run_gated_filter(
-                        candidates,
-                        db,
-                        backtest_filter,
-                        kline_cache=getattr(backtest_filter, "_kline_cache", None),
-                    )
-                    passed = list(gate_run.get("passed") or [])
-                    quality_gate_report = dict(gate_run.get("gate_report") or gate_run.get("quality_gate") or {})
-                else:
-                    passed = await backtest_filter.filter(candidates, db)
-                    quality_gate_report = {}
-
-                backtest_report = (
-                    (quality_gate_report.get("gate_2") or {}).get("report")
-                    or (
-                        backtest_filter.get_last_report()
-                        if hasattr(backtest_filter, "get_last_report")
-                        else {
-                            "summary": {
-                                "input_count": len(candidates),
-                                "passed_count": len(passed),
-                                "failed_count": max(len(candidates) - len(passed), 0),
-                                "failed_reason_counts": {},
-                                "thresholds_by_type": {},
-                            },
-                            "passed": [],
-                            "failed": [],
-                        }
-                    )
-                )
-                if not quality_gate_report:
-                    quality_gate_report = factory_pkg.build_legacy_gate_report(candidates, passed, backtest_report)
-
-                unique = await deduplicator.deduplicate(passed, db)
-                submit_result = await submitter.submit(unique, snapshot, db)
-                quality_gate_report = factory_pkg.finalize_gate_report(quality_gate_report, submit_result)
-
-            backtest_summary = backtest_report.get("summary") or {}
-            results["stages"]["quality_gate"] = self._with_stage_meta("quality_gate", trace_id, quality_gate_report)
-            results["stages"]["backtest"] = self._with_stage_meta("backtest", trace_id, {
-                "input_count": backtest_summary.get("input_count", len(candidates)),
-                "passed_count": backtest_summary.get("passed_count", len(passed)),
-                "failed_count": backtest_summary.get("failed_count", max(len(candidates) - len(passed), 0)),
-                **backtest_report,
-            })
-            results["stages"]["deduplicate"] = self._with_stage_meta("deduplicate", trace_id, deduplicator.get_last_report())
-            results["stages"]["submit"] = self._with_stage_meta("submit", trace_id, submit_result)
-            results["quality_gate"] = quality_gate_report
-            results["gate_report"] = quality_gate_report
-
-            eliminator = factory_pkg.EliminationChecker()
-            eliminated = await eliminator.check(db, snapshot.get("fg_level", "neutral"))
-            results["stages"]["elimination"] = self._with_stage_meta("elimination", trace_id, {"count": len(eliminated), "items": eliminated})
-
-            elapsed = (self._now() - start).total_seconds()
-            results["status"] = "success"
-            results["completed_at"] = self._now().isoformat()
-            results["elapsed_seconds"] = round(elapsed, 1)
-            autonomy_summary = results.get("stages", {}).get("autonomy") or {}
-            vector_summary = self._aggregate_vector_submission_metrics(submit_result)
-            task_scan_summary = dict((autonomy_summary.get("task_scan") or {}).get("summary") or {})
-            task_source_counts = dict(
-                autonomy_summary.get("task_source_counts")
-                or task_scan_summary.get("task_sources")
-                or {}
-            )
-            snapshot_task_count = int(
-                autonomy_summary.get("snapshot_task_count")
-                or task_source_counts.get("snapshot", 0)
-            )
-            autonomy_task_briefs = [
-                {
-                    "task_id": (item.get("task") or {}).get("task_id"),
-                    "task_source": (item.get("task") or {}).get("task_source"),
-                    "opportunity_type": (item.get("task") or {}).get("opportunity_type"),
-                    "candidate_family": (item.get("task") or {}).get("candidate_family"),
-                    "source_candidate_artifact_id": (item.get("task") or {}).get("source_candidate_artifact_id"),
-                    "factor_name": (item.get("task") or {}).get("factor_name"),
-                    "generation_limit": (item.get("task") or {}).get("generation_limit"),
-                    "generated_count": item.get("generated_count", 0),
-                }
-                for item in list(autonomy_summary.get("task_results") or [])
-            ]
-            factor_research_summary = dict((snapshot.get("factor_research") or {}).get("summary") or {})
-            factor_refresh_summary = dict((snapshot.get("factor_research") or {}).get("freshness_repair") or {})
-            gate_0_summary = dict(quality_gate_report.get("gate_0") or {})
-            gate_1_summary = dict(quality_gate_report.get("gate_1") or {})
-            gate_2_summary = dict(quality_gate_report.get("gate_2") or {})
-            readiness_summary = dict(results.get("stages", {}).get("readiness") or {})
-            warmup_summary = dict(results.get("stages", {}).get("warmup") or {})
-            backtest_audit_summary = self._aggregate_backtest_audit_metrics(backtest_report)
-            submission_audit_summary = self._aggregate_submission_audit_metrics(submit_result)
-            results["summary"] = {
-                "trace_id": trace_id,
-                "runtime_enabled": bool(readiness_summary.get("runtime_enabled", True)),
-                "event_runtime_mode": readiness_summary.get("event_runtime_mode"),
-                "factory_readiness_score": readiness_summary.get("readiness_score"),
-                "factory_readiness_can_proceed": readiness_summary.get("can_proceed"),
-                "factory_readiness_blocker_count": readiness_summary.get("blocker_count", 0),
-                "factory_readiness_warning_count": readiness_summary.get("warning_count", 0),
-                "fear_greed": snapshot.get("fear_greed_index"),
-                "listed_count": snapshot.get("listed_count", 0),
-                "snapshot_degraded": bool(snapshot.get("degraded")),
-                "snapshot_completion_ratio": (snapshot.get("completeness") or {}).get("completion_ratio", 1.0),
-                "snapshot_failure_reason_count": len(snapshot.get("failure_reasons") or []),
-                "warmup_status": warmup_summary.get("status"),
-                "warmup_task_type": warmup_summary.get("task_type"),
-                "warmup_matched": int(warmup_summary.get("matched") or 0),
-                "warmup_executed": int(warmup_summary.get("executed") or 0),
-                "warmup_failed": int(warmup_summary.get("failed") or 0),
-                "candidates_spawned": len(candidates),
-                "autonomy_generated": autonomy_summary.get("generated_count", 0),
-                "autonomy_task_count": autonomy_summary.get("task_count", 0),
-                "autonomy_completed_task_count": autonomy_summary.get("completed_task_count", 0),
-                "autonomy_failed_task_count": autonomy_summary.get("failed_task_count", 0),
-                "event_task_count": autonomy_summary.get("event_task_count", 0),
-                "snapshot_task_count": snapshot_task_count,
-                "task_source_counts": task_source_counts,
-                "scanner_task_types": task_scan_summary.get("task_types") or {},
-                "event_snapshot_mixed": bool(
-                    int(autonomy_summary.get("event_task_count") or 0) > 0 and snapshot_task_count > 0
-                ),
-                "factor_research_used": bool(snapshot.get("factor_research")),
-                "active_factor_count": int(factor_research_summary.get("active_factor_count") or 0),
-                "active_candidate_count": int(factor_research_summary.get("active_candidate_count") or 0),
-                "active_family_count": len(list(factor_research_summary.get("active_family_names") or [])),
-                "active_regime_count": len(list(factor_research_summary.get("active_regime_names") or [])),
-                "top_factor_names": list(factor_research_summary.get("top_factor_names") or []),
-                "top_candidate_names": list(factor_research_summary.get("top_candidate_names") or []),
-                "active_family_names": list(factor_research_summary.get("active_family_names") or []),
-                "active_regime_names": list(factor_research_summary.get("active_regime_names") or []),
-                "factor_source_mode": factor_research_summary.get("factor_source_mode"),
-                "governed_candidate_pool_active": bool(
-                    str(factor_research_summary.get("factor_source_mode") or "").strip().lower()
-                    == "governed_candidate_pool"
-                ),
-                "factor_research_degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
-                "factor_research_stale": bool(factor_research_summary.get("stale")),
-                "factor_research_freshness_days": factor_research_summary.get("freshness_days"),
-                "factor_research_refresh_attempted": bool(factor_refresh_summary.get("refresh_attempted")),
-                "factor_research_refresh_status": factor_refresh_summary.get("refresh_status"),
-                "factor_research_refresh_trigger": factor_refresh_summary.get("refresh_trigger"),
-                "shared_generation_context_preloaded": bool(autonomy_summary.get("shared_generation_context_preloaded")),
-                "autonomy_task_briefs": autonomy_task_briefs,
-                "event_evidence_count": autonomy_summary.get("event_evidence_count", 0),
-                "autonomy_lifecycle_state_counts": autonomy_summary.get("lifecycle_state_counts") or {},
-                "autonomy_phase_status_counts": autonomy_summary.get("phase_status_counts") or {},
-                "autonomy_failed_phase_counts": autonomy_summary.get("failed_phase_counts") or {},
-                "quota_fill_candidates": (spawn_report.get("summary") or {}).get("quota_fill_count", 0),
-                "signal_trigger_candidates": (
-                    (spawn_report.get("summary") or {}).get("signal_trigger_count", len(candidates))
-                ),
-                "gate_0_passed": gate_0_summary.get("passed_count"),
-                "gate_0_failed": gate_0_summary.get("failed_count"),
-                "gate_1_passed": gate_1_summary.get("passed_count"),
-                "gate_1_failed": gate_1_summary.get("failed_count"),
-                "gate_2_input": gate_2_summary.get("input_count", backtest_summary.get("input_count", len(candidates))),
-                "gate_2_passed": gate_2_summary.get("passed_count", len(passed)),
-                "candidates_passed_backtest": gate_2_summary.get("passed_count", len(passed)),
-                "candidates_failed_backtest": backtest_summary.get("failed_count", max(len(candidates) - len(passed), 0)),
-                "backtest_failed_reason_counts": backtest_summary.get("failed_reason_counts") or {},
-                "candidates_after_dedup": len(unique),
-                "submitted": submit_result.get("submitted", 0),
-                "passed_quality_gate": submit_result.get("passed_quality_gate", 0),
-                "gate_3_passed": submit_result.get("gate_3_passed", submit_result.get("passed_quality_gate", 0)),
-                "gate_3_failed": submit_result.get(
-                    "gate_3_failed",
-                    max(
-                        int(submit_result.get("submitted", 0)) - int(submit_result.get("passed_quality_gate", 0)),
-                        0,
-                    ),
-                ),
-                "gate_3_provisional_passed": submit_result.get("gate_3_provisional_passed", 0),
-                "gate_3_failure_reason_topn": list(submit_result.get("gate_3_failure_reason_topn") or []),
-                **submission_audit_summary,
-                **backtest_audit_summary,
-                **vector_summary,
-                "eliminated": len(eliminated),
-                "external_llm_status": autonomy_summary.get("external_llm_status"),
-                "external_llm_attempt_count": autonomy_summary.get("external_llm_attempt_count", 0),
-                "external_llm_selected_count": autonomy_summary.get("external_llm_selected_count", 0),
-                "external_llm_last_error_type": autonomy_summary.get("external_llm_last_error_type"),
-                "external_llm_last_error": autonomy_summary.get("external_llm_last_error"),
-                "external_llm_elapsed_seconds": autonomy_summary.get("external_llm_elapsed_seconds"),
-                "elapsed_seconds": round(elapsed, 1),
-            }
-
-            logger.info(
-                "StrategyFactory: completed in %.1fs — spawned %d, backtest passed %d, dedup %d, submitted %s, eliminated %d",
-                elapsed,
-                len(candidates),
-                len(passed),
-                len(unique),
-                submit_result,
-                len(eliminated),
-            )
-        except Exception as exc:
-            elapsed = (self._now() - start).total_seconds()
-            logger.error("StrategyFactory: run_once failed: %s", exc, exc_info=True)
-            results["status"] = "failed"
-            results["completed_at"] = self._now().isoformat()
-            results["elapsed_seconds"] = round(elapsed, 1)
-            results["error"] = str(exc)
-            results["summary"] = {"trace_id": trace_id, "elapsed_seconds": round(elapsed, 1), "error": str(exc)}
-
-        results["pipeline"] = {
-            "trace_id": trace_id,
-            "status": results.get("status"),
-            "stage_order": list(results.get("stages", {}).keys()),
-            "total_stage_count": len(results.get("stages", {})),
-        }
-
+        context = FactoryRunContext(
+            db=db,
+            factory_pkg=get_strategy_factory_package(),
+            runtime_adapters=self._runtime_adapters,
+            start=start,
+            trace_id=f"strategy_factory:{uuid4().hex[:12]}",
+            run_id=f"factory_run_{int(start.timestamp())}_{uuid4().hex[:8]}",
+        )
+        outcome = await FactoryCycleRunner(self, context).run()
+        results = outcome.result
         self.last_run = self._now()
         self.last_result = results
-        if hasattr(db, "save_strategy_factory_run"):
-            try:
-                await db.save_strategy_factory_run(results)
-            except Exception as exc:
-                logger.warning("StrategyFactory: failed to persist run %s: %s", results.get("run_id"), exc)
+        await self._persist_run_result(
+            db,
+            results,
+            persistence_failures=outcome.persistence_failures,
+        )
         return results
 
     def status(self) -> dict:

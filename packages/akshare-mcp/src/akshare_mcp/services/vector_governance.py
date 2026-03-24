@@ -66,7 +66,7 @@ class StrategyVectorGovernanceService:
                 bucket['metadata']['profile_ids'].append(row.get('id'))
 
         if hasattr(db, 'list_strategy_vector_index_snapshots'):
-            snapshots = await db.list_strategy_vector_index_snapshots(index_name=index_name, limit=5000)
+            snapshots = await db.list_strategy_vector_index_snapshots(index_name=index_name, limit=5000, latest_only=True)
             for snapshot in snapshots:
                 key = (str(snapshot.get('index_name') or 'strategy_behavior'), str(snapshot.get('index_version') or 'v1'))
                 if key not in grouped:
@@ -205,7 +205,7 @@ class StrategyVectorGovernanceService:
                 })
 
             if hasattr(db, 'list_strategy_vector_index_snapshots') and hasattr(db, 'save_strategy_vector_index_snapshot'):
-                snapshots = await db.list_strategy_vector_index_snapshots(index_name=index_name, limit=5000)
+                snapshots = await db.list_strategy_vector_index_snapshots(index_name=index_name, limit=5000, latest_only=True)
                 for snapshot in snapshots:
                     version = str(snapshot.get('index_version') or 'v1')
                     if version == resolved_version or snapshot.get('status') == 'stale':

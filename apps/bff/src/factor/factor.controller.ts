@@ -2,6 +2,7 @@ import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
 import { IsArray, IsBoolean, IsIn, IsInt, IsNumber, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { FactorService } from './factor.service';
+import { Roles } from '../rbac/roles.decorator';
 
 class CalculateFactorDto {
   @IsString()
@@ -164,12 +165,9 @@ export class FactorController {
   constructor(private readonly factorService: FactorService) {}
 
   @Get('library')
-  async getLibrary(
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
-  ) {
+  async getLibrary(@Req() req: { traceId?: string; headers?: Record<string, string | undefined> }) {
     const data = await this.factorService.getLibrary();
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
@@ -179,8 +177,7 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.calculateFactor(body);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
@@ -196,8 +193,7 @@ export class FactorController {
       period: period || '20',
       limit: limit ? Number(limit) : 60,
     });
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
@@ -213,11 +209,9 @@ export class FactorController {
       period: period || '20',
       limit: limit ? Number(limit) : 60,
     });
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
-
 
   @Post('ic')
   async calculateIc(
@@ -225,8 +219,7 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.calculateIc(body);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
@@ -236,8 +229,7 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.backtestFactor(body);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
@@ -247,8 +239,7 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.validateOos(body);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
@@ -258,8 +249,7 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.robustnessCheck(body);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
@@ -269,8 +259,7 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.batchCompute(body);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
@@ -280,8 +269,7 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.llmFactorMining(body);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
@@ -291,8 +279,7 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.validateCandidate(body);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
@@ -302,8 +289,7 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.factorResearchMemory(body);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
@@ -313,8 +299,7 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.factorCandidateRegistry(body);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
@@ -324,28 +309,22 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.replayFactorEpisode(body);
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
   @Get('scheduler-status')
-  async schedulerStatus(
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
-  ) {
+  async schedulerStatus(@Req() req: { traceId?: string; headers?: Record<string, string | undefined> }) {
     const data = await this.factorService.schedulerStatus();
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 
   @Post('scheduler-run-now')
-  async schedulerRunNow(
-    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
-  ) {
+  @Roles('admin')
+  async schedulerRunNow(@Req() req: { traceId?: string; headers?: Record<string, string | undefined> }) {
     const data = await this.factorService.schedulerRunNow();
-    const traceId =
-      req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }
 }

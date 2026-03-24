@@ -2,6 +2,7 @@
 
 import math
 import statistics
+from datetime import date, datetime
 
 
 def _maybe_float(value):
@@ -30,6 +31,77 @@ def _estimate_volatility(closes: list[float], window: int = 20) -> float:
     if len(rets) < 2:
         return 0.0
     return float(statistics.pstdev(rets))
+
+
+def _parse_loose_date(value) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for parser in (
+        lambda item: date.fromisoformat(item[:10]),
+        lambda item: datetime.fromisoformat(item.replace("Z", "+00:00")).date(),
+    ):
+        try:
+            return parser(text)
+        except Exception:
+            continue
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) >= 8:
+        try:
+            return date.fromisoformat(f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}")
+        except Exception:
+            return None
+    return None
+
+
+def _filter_klines_by_as_of(klines: list[dict], as_of: str) -> tuple[list[dict], dict]:
+    rows = [dict(item) for item in list(klines or []) if isinstance(item, dict)]
+    if not rows:
+        return [], {
+            "requested_as_of": as_of or "",
+            "applied_as_of": None,
+            "filtered_rows": 0,
+            "dropped_future_rows": 0,
+            "active": False,
+        }
+
+    rows.sort(
+        key=lambda item: (
+            _parse_loose_date(item.get("date") or item.get("trade_date") or item.get("timestamp")) or date.min,
+            str(item.get("date") or item.get("trade_date") or item.get("timestamp") or ""),
+        )
+    )
+    as_of_date = _parse_loose_date(as_of) if as_of else None
+    if as_of_date is None:
+        return rows, {
+            "requested_as_of": as_of or "",
+            "applied_as_of": None,
+            "filtered_rows": len(rows),
+            "dropped_future_rows": 0,
+            "active": False,
+        }
+
+    filtered = []
+    dropped = 0
+    for row in rows:
+        row_date = _parse_loose_date(row.get("date") or row.get("trade_date") or row.get("timestamp"))
+        if row_date is None or row_date <= as_of_date:
+            filtered.append(row)
+        else:
+            dropped += 1
+    return filtered, {
+        "requested_as_of": as_of,
+        "applied_as_of": as_of_date.isoformat(),
+        "filtered_rows": len(filtered),
+        "dropped_future_rows": dropped,
+        "active": True,
+    }
 
 
 def _calibrate_buy_probability(
@@ -111,9 +183,43 @@ def _build_threshold_backtest(
     thresholds: list[int],
     horizon: int = 10,
 ) -> list[dict]:
-    if not closes or len(closes) < 80:
+    points = _collect_threshold_backtest_points(closes, horizon=horizon)
+    if not points:
         return []
 
+    reports: list[dict] = []
+    for threshold in thresholds:
+        subset = [p for p in points if p[0] >= float(threshold)]
+        sample_count = len(subset)
+        if sample_count == 0:
+            reports.append(
+                {
+                    "threshold": int(threshold),
+                    "sample_count": 0,
+                    "hit_rate": None,
+                    "avg_forward_return": None,
+                }
+            )
+            continue
+        win_count = sum(1 for _, r in subset if r > 0)
+        avg_ret = sum(r for _, r in subset) / sample_count
+        reports.append(
+            {
+                "threshold": int(threshold),
+                "sample_count": int(sample_count),
+                "hit_rate": float(win_count / sample_count),
+                "avg_forward_return": float(avg_ret),
+            }
+        )
+    return reports
+
+
+def _collect_threshold_backtest_points(
+    closes: list[float],
+    horizon: int = 10,
+) -> list[tuple[float, float]]:
+    if not closes or len(closes) < 80:
+        return []
     closes = [float(c) for c in closes]
     points: list[tuple[float, float]] = []
     start_idx = 30
@@ -152,35 +258,104 @@ def _build_threshold_backtest(
         price_future = closes[idx + horizon]
         forward_return = ((price_future - price_now) / price_now) if price_now > 0 else 0.0
         points.append((float(score), float(forward_return)))
+    return points
 
+
+def _build_probability_quality(
+    *,
+    current_score: float,
+    buy_probability: float,
+    selected_threshold: int,
+    threshold_backtest: list[dict],
+) -> dict:
+    if not threshold_backtest:
+        return {
+            "quality": "low",
+            "support_samples": 0,
+            "selected_threshold": int(selected_threshold),
+            "empirical_hit_rate": None,
+            "empirical_avg_forward_return": None,
+            "calibration_gap": None,
+            "method": "threshold_backtest_proxy",
+        }
+
+    selected = None
+    eligible = [
+        row for row in threshold_backtest
+        if row.get("sample_count") and int(row.get("threshold", 0)) <= float(current_score)
+    ]
+    if eligible:
+        selected = max(eligible, key=lambda row: int(row.get("threshold", 0)))
+    else:
+        selected = min(threshold_backtest, key=lambda row: abs(int(row.get("threshold", 0)) - int(selected_threshold)))
+
+    hit_rate = _maybe_float(selected.get("hit_rate"))
+    avg_return = _maybe_float(selected.get("avg_forward_return"))
+    support = int(selected.get("sample_count") or 0)
+    calibration_gap = round(float(buy_probability - hit_rate), 4) if hit_rate is not None else None
+    quality = "low"
+    if support >= 30 and calibration_gap is not None and abs(calibration_gap) <= 0.08:
+        quality = "high"
+    elif support >= 15 and calibration_gap is not None and abs(calibration_gap) <= 0.15:
+        quality = "medium"
+
+    return {
+        "quality": quality,
+        "support_samples": support,
+        "selected_threshold": int(selected.get("threshold", selected_threshold) or selected_threshold),
+        "empirical_hit_rate": round(float(hit_rate), 4) if hit_rate is not None else None,
+        "empirical_avg_forward_return": round(float(avg_return), 4) if avg_return is not None else None,
+        "calibration_gap": calibration_gap,
+        "method": "threshold_backtest_proxy",
+    }
+
+
+def _build_prediction_interval(
+    *,
+    closes: list[float],
+    current_score: float,
+    thresholds: list[int],
+    horizon: int = 10,
+    confidence: float = 0.8,
+) -> dict | None:
+    points = _collect_threshold_backtest_points(closes, horizon=horizon)
     if not points:
-        return []
+        return None
 
-    reports: list[dict] = []
-    for threshold in thresholds:
-        subset = [p for p in points if p[0] >= float(threshold)]
-        sample_count = len(subset)
-        if sample_count == 0:
-            reports.append(
-                {
-                    "threshold": int(threshold),
-                    "sample_count": 0,
-                    "hit_rate": None,
-                    "avg_forward_return": None,
-                }
-            )
-            continue
-        win_count = sum(1 for _, r in subset if r > 0)
-        avg_ret = sum(r for _, r in subset) / sample_count
-        reports.append(
-            {
-                "threshold": int(threshold),
-                "sample_count": int(sample_count),
-                "hit_rate": float(win_count / sample_count),
-                "avg_forward_return": float(avg_ret),
-            }
-        )
-    return reports
+    threshold = min(thresholds) if thresholds else 40
+    eligible = [int(t) for t in (thresholds or []) if float(current_score) >= int(t)]
+    if eligible:
+        threshold = max(eligible)
+
+    subset = [ret for score, ret in points if score >= float(threshold)]
+    if len(subset) < 10:
+        subset = [ret for _, ret in points]
+        threshold = 0
+    if len(subset) < 10:
+        return None
+
+    ordered = sorted(float(x) for x in subset)
+    alpha = max(0.01, min(0.49, (1.0 - float(confidence)) / 2.0))
+    lower_idx = int(math.floor(alpha * (len(ordered) - 1)))
+    upper_idx = int(math.ceil((1.0 - alpha) * (len(ordered) - 1)))
+    lower = ordered[max(0, min(len(ordered) - 1, lower_idx))]
+    upper = ordered[max(0, min(len(ordered) - 1, upper_idx))]
+    median = ordered[len(ordered) // 2]
+    hit_rate = sum(1 for item in ordered if item > 0) / len(ordered)
+    mean_val = sum(ordered) / len(ordered)
+    return {
+        "horizon_days": int(horizon),
+        "confidence_level": round(float(confidence), 4),
+        "threshold_used": int(threshold),
+        "sample_count": len(ordered),
+        "expected_return": round(float(mean_val), 4),
+        "median_return": round(float(median), 4),
+        "lower_return": round(float(lower), 4),
+        "upper_return": round(float(upper), 4),
+        "hit_rate": round(float(hit_rate), 4),
+        "coverage_proxy": round(float(confidence), 4),
+        "method": "historical_forward_return_quantiles",
+    }
 
 
 def _context_section(analysis_context: dict | None, name: str) -> dict:

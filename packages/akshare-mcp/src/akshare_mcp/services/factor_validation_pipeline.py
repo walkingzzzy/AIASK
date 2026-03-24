@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import re
 from typing import Any, Optional
 
 import numpy as np
@@ -12,7 +13,13 @@ from ..data_source import data_source
 from .cost_model import build_cost_model
 from .factor_analysis import FactorAnalyzer
 from .factor_candidate_compiler import compile_factor_candidate, evaluate_compiled_factor
-from .validation import FactorValidationPipeline
+from .validation import (
+    FactorValidationPipeline,
+    deflated_sharpe_ratio,
+    hansen_spa_test,
+    probability_of_backtest_overfitting,
+    white_reality_check,
+)
 
 _SIMILARITY_BASIS_DEFINITIONS = [
     {"name": "basis_momentum_20d", "family": "momentum", "inputs": ["close"], "expression_dsl": "momentum_20d"},
@@ -227,6 +234,344 @@ def _build_horizon_return_panel(close_df: pd.DataFrame, horizon: int) -> pd.Data
     shifted = close_df.shift(-horizon)
     denom = close_df.replace(0.0, np.nan)
     return (shifted - close_df) / denom
+
+
+def _date_index_health(values: Any) -> dict[str, Any]:
+    index = pd.Index(list(values or []), dtype="object")
+    if len(index) == 0:
+        return {
+            "count": 0,
+            "invalid_dates": 0,
+            "duplicate_dates": 0,
+            "monotonic_increasing": True,
+        }
+    dt_index = pd.to_datetime(index.astype(str), errors="coerce")
+    invalid_dates = int(dt_index.isna().sum())
+    valid = dt_index[~dt_index.isna()]
+    return {
+        "count": int(len(index)),
+        "invalid_dates": invalid_dates,
+        "duplicate_dates": int(valid.duplicated().sum()),
+        "monotonic_increasing": bool(valid.is_monotonic_increasing) if len(valid) else True,
+    }
+
+
+def _detect_suspicious_expression_tokens(expression_dsl: str) -> list[str]:
+    expr = str(expression_dsl or "").strip().lower()
+    if not expr:
+        return []
+    tokens: list[str] = []
+    if re.search(r"\b(?:delay|delta)\s*\([^)]*,\s*-\s*\d+", expr):
+        tokens.append("negative_delay_or_delta_literal")
+    if "shift(-" in expr or "shift (-" in expr:
+        tokens.append("negative_shift_literal")
+    for needle, label in (
+        ("lead(", "lead_function_literal"),
+        ("future", "future_keyword_literal"),
+        ("lookahead", "lookahead_keyword_literal"),
+        ("next_return", "next_return_keyword_literal"),
+        ("next_close", "next_close_keyword_literal"),
+    ):
+        if needle in expr:
+            tokens.append(label)
+    return list(dict.fromkeys(tokens))
+
+
+def _build_lookahead_audit(
+    compiled: dict[str, Any],
+    frame_map: dict[str, pd.DataFrame],
+    factor_df: pd.DataFrame,
+    return_df: pd.DataFrame,
+    *,
+    horizon_days: int,
+) -> dict[str, Any]:
+    if factor_df.empty or return_df.empty:
+        return {"available": False, "reason": "empty_factor_or_return_panel"}
+
+    common_index = factor_df.index.intersection(return_df.index)
+    common_columns = factor_df.columns.intersection(return_df.columns)
+    if len(common_index) == 0 or len(common_columns) == 0:
+        return {
+            "available": False,
+            "reason": "no_common_factor_return_panel",
+            "n_periods": int(len(common_index)),
+            "n_stocks": int(len(common_columns)),
+        }
+
+    factor_panel = factor_df.loc[common_index, common_columns].to_numpy(dtype=float)
+    return_panel = return_df.loc[common_index, common_columns].to_numpy(dtype=float)
+    finite_pairs = int((np.isfinite(factor_panel) & np.isfinite(return_panel)).sum())
+    total_cells = int(factor_panel.size)
+    finite_overlap_ratio = float(finite_pairs / total_cells) if total_cells > 0 else 0.0
+    truncated_return_cells = int((~np.isfinite(return_panel)).sum())
+
+    panel_date_health = _date_index_health(common_index.tolist())
+    issue_codes: list[str] = []
+    invalid_dates_total = 0
+    duplicate_dates_total = 0
+    non_monotonic_codes: list[str] = []
+    for code, frame in frame_map.items():
+        check = _date_index_health((frame.get("date") if "date" in frame.columns else pd.Series(dtype=str)).tolist())
+        invalid_dates_total += int(check.get("invalid_dates", 0))
+        duplicate_dates_total += int(check.get("duplicate_dates", 0))
+        if not bool(check.get("monotonic_increasing", True)):
+            non_monotonic_codes.append(str(code))
+        if (
+            int(check.get("invalid_dates", 0)) > 0
+            or int(check.get("duplicate_dates", 0)) > 0
+            or not bool(check.get("monotonic_increasing", True))
+        ):
+            issue_codes.append(str(code))
+
+    tail_rows = min(max(1, int(horizon_days)), int(len(common_index)))
+    tail_index = common_index[-tail_rows:]
+    tail_values = return_df.loc[tail_index, common_columns].to_numpy(dtype=float)
+    non_null_future_cells = int(np.isfinite(tail_values).sum()) if tail_rows > 0 else 0
+
+    expression_dsl = str((compiled.get("candidate") or {}).get("expression_dsl") or "")
+    suspicious_tokens = _detect_suspicious_expression_tokens(expression_dsl)
+
+    warnings: list[str] = []
+    if suspicious_tokens:
+        warnings.append("candidate_expression_contains_suspicious_future_token")
+    if non_null_future_cells > 0:
+        warnings.append("return_panel_tail_contains_non_null_future_cells")
+    if not bool(panel_date_health.get("monotonic_increasing", True)):
+        warnings.append("panel_dates_not_monotonic")
+    if duplicate_dates_total > 0:
+        warnings.append("duplicate_trade_dates_detected")
+    if invalid_dates_total > 0:
+        warnings.append("invalid_trade_dates_detected")
+    if finite_overlap_ratio < 0.60:
+        warnings.append("factor_return_overlap_ratio_low")
+
+    risk_level = "low"
+    if suspicious_tokens or non_null_future_cells > 0:
+        risk_level = "high"
+    elif warnings:
+        risk_level = "medium"
+
+    status = "pass"
+    if risk_level == "high":
+        status = "fail"
+    elif risk_level == "medium":
+        status = "warn"
+
+    return {
+        "available": True,
+        "status": status,
+        "risk_level": risk_level,
+        "horizon_days": int(horizon_days),
+        "warnings": warnings,
+        "candidate_expression": {
+            "expression_dsl": expression_dsl,
+            "suspicious_tokens": suspicious_tokens,
+            "referenced_fields": list(compiled.get("referenced_fields") or []),
+            "function_calls": list(compiled.get("function_calls") or []),
+        },
+        "date_integrity": {
+            "panel": panel_date_health,
+            "codes_checked": int(len(frame_map)),
+            "invalid_dates_total": int(invalid_dates_total),
+            "duplicate_dates_total": int(duplicate_dates_total),
+            "non_monotonic_codes": non_monotonic_codes[:10],
+            "issue_codes": issue_codes[:10],
+        },
+        "panel_shape": {
+            "n_periods": int(len(common_index)),
+            "n_stocks": int(len(common_columns)),
+            "finite_overlap_pairs": finite_pairs,
+            "finite_overlap_ratio": _round_float(finite_overlap_ratio, 6),
+            "truncated_return_cells": truncated_return_cells,
+        },
+        "tail_check": {
+            "expected_tail_rows": int(tail_rows),
+            "checked_stock_count": int(len(common_columns)),
+            "non_null_future_cells": int(non_null_future_cells),
+            "passed": bool(non_null_future_cells == 0),
+        },
+        "compiler_guard": {
+            "safe_function_whitelist_active": True,
+            "delay_functions_present": any(
+                str(fn) in {"delay", "delta"} for fn in list(compiled.get("function_calls") or [])
+            ),
+        },
+    }
+
+
+def _build_long_short_return_series(
+    factor_df: pd.DataFrame,
+    return_df: pd.DataFrame,
+    *,
+    reference_index: pd.Index | None = None,
+    reference_columns: pd.Index | None = None,
+) -> np.ndarray:
+    if factor_df.empty or return_df.empty:
+        return np.zeros(0, dtype=float)
+
+    common_index = pd.Index(reference_index) if reference_index is not None else factor_df.index.intersection(return_df.index)
+    common_columns = pd.Index(reference_columns) if reference_columns is not None else factor_df.columns.intersection(return_df.columns)
+    if len(common_index) == 0 or len(common_columns) < 4:
+        return np.zeros(0, dtype=float)
+
+    series: list[float] = []
+    for date_key in common_index:
+        if date_key not in factor_df.index or date_key not in return_df.index:
+            series.append(np.nan)
+            continue
+
+        candidate_columns = factor_df.columns.intersection(return_df.columns).intersection(common_columns)
+        if len(candidate_columns) < 4:
+            series.append(np.nan)
+            continue
+
+        factor_row = pd.to_numeric(factor_df.loc[date_key, candidate_columns], errors="coerce")
+        return_row = pd.to_numeric(return_df.loc[date_key, candidate_columns], errors="coerce")
+        mask = factor_row.notna() & return_row.notna()
+        if int(mask.sum()) < 4:
+            series.append(np.nan)
+            continue
+
+        ranked = factor_row.loc[mask].sort_values(ascending=False)
+        basket_size = max(1, min(int(len(ranked) // 3), 5))
+        if len(ranked) < basket_size * 2:
+            series.append(np.nan)
+            continue
+
+        top_codes = ranked.head(basket_size).index
+        bottom_codes = ranked.tail(basket_size).index
+        top_mean = pd.to_numeric(return_row.loc[top_codes], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna().mean()
+        bottom_mean = pd.to_numeric(return_row.loc[bottom_codes], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna().mean()
+        if not np.isfinite(top_mean) or not np.isfinite(bottom_mean):
+            series.append(np.nan)
+            continue
+        series.append(float(top_mean - bottom_mean))
+
+    return np.asarray(series, dtype=float)
+
+
+def _build_multiple_testing_report(
+    compiled: dict[str, Any],
+    frame_map: dict[str, pd.DataFrame],
+    factor_df: pd.DataFrame,
+    return_df: pd.DataFrame,
+) -> dict[str, Any]:
+    if not frame_map or factor_df.empty or return_df.empty:
+        return {"available": False, "reason": "empty_frame_map_or_factor_return_panel"}
+
+    common_index = factor_df.index.intersection(return_df.index)
+    common_columns = factor_df.columns.intersection(return_df.columns)
+    if len(common_index) < 20 or len(common_columns) < 4:
+        return {
+            "available": False,
+            "reason": "insufficient_panel_shape",
+            "n_periods": int(len(common_index)),
+            "n_stocks": int(len(common_columns)),
+        }
+
+    candidate_returns = _build_long_short_return_series(
+        factor_df,
+        return_df,
+        reference_index=common_index,
+        reference_columns=common_columns,
+    )
+    if int(np.isfinite(candidate_returns).sum()) < 20:
+        return {"available": False, "reason": "insufficient_candidate_long_short_samples"}
+
+    family_members = [
+        {
+            "name": str((compiled.get("candidate") or {}).get("name") or "candidate_factor"),
+            "kind": "candidate",
+            "sample_size": int(np.isfinite(candidate_returns).sum()),
+        }
+    ]
+    family_series = [candidate_returns]
+
+    for basis_name, basis_compiled in _get_similarity_basis().items():
+        basis_series_map: dict[str, pd.Series] = {}
+        for code, frame in frame_map.items():
+            try:
+                basis_series = evaluate_compiled_factor(basis_compiled, frame)
+                basis_series_map[code] = pd.Series(basis_series.values, index=frame["date"].astype(str), dtype=float)
+            except Exception:
+                continue
+
+        basis_df = _build_panel(basis_series_map)
+        basis_returns = _build_long_short_return_series(
+            basis_df,
+            return_df,
+            reference_index=common_index,
+            reference_columns=common_columns,
+        )
+        finite_count = int(np.isfinite(basis_returns).sum())
+        if finite_count < 20:
+            continue
+        family_series.append(basis_returns)
+        family_members.append(
+            {
+                "name": basis_name,
+                "kind": "basis_factor",
+                "sample_size": finite_count,
+            }
+        )
+
+    if len(family_series) < 2:
+        return {
+            "available": False,
+            "reason": "insufficient_family_members",
+            "family_member_count": int(len(family_series)),
+        }
+
+    family_matrix = np.column_stack(family_series)
+    family_matrix = family_matrix[np.all(np.isfinite(family_matrix), axis=1)]
+    if family_matrix.shape[0] < 20 or family_matrix.shape[1] < 2:
+        return {
+            "available": False,
+            "reason": "insufficient_family_return_matrix",
+            "sample_size": int(family_matrix.shape[0]),
+            "family_member_count": int(family_matrix.shape[1]),
+        }
+
+    candidate_series = family_matrix[:, 0]
+    split_count = max(4, min(8, int(family_matrix.shape[0] // 20) or 4))
+    dsr = deflated_sharpe_ratio(candidate_series, n_trials=int(family_matrix.shape[1]), periods_per_year=252.0)
+    pbo = probability_of_backtest_overfitting(family_matrix, n_splits=split_count, seed=42)
+    white_rc = white_reality_check(family_matrix, n_bootstrap=200, seed=42)
+    hansen_spa = hansen_spa_test(family_matrix, n_bootstrap=200, seed=42, center="consistent")
+
+    dsr_value = _safe_float((dsr or {}).get("dsr"), np.nan)
+    pbo_value = _safe_float((pbo or {}).get("pbo"), np.nan)
+    rc_p_value = _safe_float((white_rc or {}).get("p_value"), np.nan)
+    spa_p_value = _safe_float((hansen_spa or {}).get("p_value"), np.nan)
+
+    warnings: list[str] = []
+    if np.isfinite(dsr_value) and float(dsr_value) < 0.10:
+        warnings.append("deflated_sharpe_low")
+    if np.isfinite(pbo_value) and float(pbo_value) > 0.50:
+        warnings.append("pbo_high")
+    if np.isfinite(rc_p_value) and float(rc_p_value) > 0.20:
+        warnings.append("white_reality_check_weak")
+    if np.isfinite(spa_p_value) and float(spa_p_value) > 0.20:
+        warnings.append("hansen_spa_weak")
+
+    risk_level = "low"
+    if "pbo_high" in warnings or "deflated_sharpe_low" in warnings:
+        risk_level = "high"
+    elif warnings:
+        risk_level = "medium"
+
+    return {
+        "available": True,
+        "risk_level": risk_level,
+        "sample_size": int(family_matrix.shape[0]),
+        "family_member_count": int(family_matrix.shape[1]),
+        "family_members": family_members,
+        "warnings": warnings,
+        "deflated_sharpe": dsr,
+        "pbo": pbo,
+        "white_reality_check": white_rc,
+        "hansen_spa": hansen_spa,
+    }
 
 
 def _aggregate_rank_ic(factor_df: pd.DataFrame, return_df: pd.DataFrame) -> dict[str, Any]:
@@ -547,6 +892,8 @@ def _build_validation_rating(
     robustness_report: dict[str, Any],
     similarity_report: dict[str, Any],
     cost_capacity_report: dict[str, Any],
+    lookahead_audit: dict[str, Any],
+    multiple_testing_report: dict[str, Any],
 ) -> dict[str, Any]:
     cross_score = min(25.0, abs(float(cross_section_summary.get("rank_ic_mean", 0.0))) * 100.0)
 
@@ -557,10 +904,24 @@ def _build_validation_rating(
 
     top_similarity = ((similarity_report.get("top_similar_basis") or [{}])[0] if similarity_report.get("available") else {})
     redundancy_penalty = min(12.0, max(0.0, abs(float(top_similarity.get("correlation", 0.0))) - 0.90) * 120.0)
+    lookahead_risk = str(lookahead_audit.get("risk_level") or "low") if lookahead_audit.get("available") else "medium"
+    lookahead_penalty = 15.0 if lookahead_risk == "high" else (6.0 if lookahead_risk == "medium" else 0.0)
+    multiple_testing_risk = (
+        str(multiple_testing_report.get("risk_level") or "medium")
+        if multiple_testing_report.get("available")
+        else "medium"
+    )
+    multiple_testing_penalty = 12.0 if multiple_testing_risk == "high" else (5.0 if multiple_testing_risk == "medium" else 0.0)
 
     cost_rate = float(cost_capacity_report.get("estimated_cost_rate", 0.0)) if cost_capacity_report.get("available") else 0.0
     execution_score = float(cost_capacity_report.get("execution_score", 0.0)) * 15.0 if cost_capacity_report.get("available") else 0.0
-    total_score = max(0.0, min(100.0, cross_score + oos_score + robustness_score + execution_score - redundancy_penalty))
+    total_score = max(
+        0.0,
+        min(
+            100.0,
+            cross_score + oos_score + robustness_score + execution_score - redundancy_penalty - lookahead_penalty - multiple_testing_penalty,
+        ),
+    )
 
     if total_score >= 75:
         grade = "A"
@@ -587,6 +948,8 @@ def _build_validation_rating(
         },
         "penalties": {
             "similarity_redundancy": _round_float(redundancy_penalty, 4),
+            "lookahead_risk": _round_float(lookahead_penalty, 4),
+            "multiple_testing_risk": _round_float(multiple_testing_penalty, 4),
             "estimated_cost_rate": _round_float(cost_rate, 6),
         },
     }
@@ -683,6 +1046,15 @@ async def validate_factor_candidate_pipeline(
     close_df = _build_panel(close_series_map)
     amount_df = _build_panel(amount_series_map)
     return_df = _build_horizon_return_panel(close_df, horizon_days) if not close_df.empty else pd.DataFrame()
+    lookahead_audit = _build_lookahead_audit(
+        compiled,
+        frame_map,
+        factor_df,
+        return_df,
+        horizon_days=horizon_days,
+    )
+    if lookahead_audit.get("available"):
+        source_chain.append("services.factor_validation_pipeline.lookahead_audit")
 
     oos_report = _build_oos_validation_report(
         factor_df,
@@ -713,12 +1085,23 @@ async def validate_factor_candidate_pipeline(
     if cost_capacity_report.get("available"):
         source_chain.append("services.cost_model")
 
+    multiple_testing_report = _build_multiple_testing_report(
+        compiled,
+        frame_map,
+        factor_df,
+        return_df,
+    )
+    if multiple_testing_report.get("available"):
+        source_chain.append("services.factor_validation_pipeline.multiple_testing")
+
     rating = _build_validation_rating(
         cross_section.get("summary") or {},
         oos_report,
         robustness_report,
         similarity_report,
         cost_capacity_report,
+        lookahead_audit,
+        multiple_testing_report,
     )
 
     sample_dates = int((cross_section.get("summary") or {}).get("sample_dates", 0))
@@ -728,6 +1111,22 @@ async def validate_factor_candidate_pipeline(
         validation_warnings.append(f"oos_validation_unavailable:{oos_report.get('reason', 'unknown')}")
     if not robustness_report.get("available"):
         validation_warnings.append(f"robustness_unavailable:{robustness_report.get('reason', 'unknown')}")
+    if not lookahead_audit.get("available"):
+        validation_warnings.append(f"lookahead_audit_unavailable:{lookahead_audit.get('reason', 'unknown')}")
+    elif str(lookahead_audit.get("risk_level") or "low") == "high":
+        validation_warnings.append("lookahead_audit_failed")
+    elif str(lookahead_audit.get("risk_level") or "low") == "medium":
+        validation_warnings.append("lookahead_risk_detected")
+    for warning in list(lookahead_audit.get("warnings") or []):
+        validation_warnings.append(f"lookahead:{warning}")
+    if not multiple_testing_report.get("available"):
+        validation_warnings.append(f"multiple_testing_unavailable:{multiple_testing_report.get('reason', 'unknown')}")
+    elif str(multiple_testing_report.get("risk_level") or "low") == "high":
+        validation_warnings.append("multiple_testing_failed")
+    elif str(multiple_testing_report.get("risk_level") or "low") == "medium":
+        validation_warnings.append("multiple_testing_risk_detected")
+    for warning in list(multiple_testing_report.get("warnings") or []):
+        validation_warnings.append(f"multiple_testing:{warning}")
     if similarity_report.get("redundancy_flag"):
         validation_warnings.append("high_similarity_with_basis_factor")
     if cost_capacity_report.get("available") and float(cost_capacity_report.get("estimated_cost_rate", 0.0)) > 0.005:
@@ -740,6 +1139,8 @@ async def validate_factor_candidate_pipeline(
             if key != "compiled_code"
         },
         "cross_section": cross_section,
+        "lookahead_audit": lookahead_audit,
+        "multiple_testing": multiple_testing_report,
         "oos": oos_report,
         "robustness": robustness_report,
         "similarity": similarity_report,
@@ -761,6 +1162,8 @@ async def validate_factor_candidate_pipeline(
             "skipped_codes": skipped_codes,
             "per_code_stats": per_code_stats,
         },
+        "lookahead_audit": lookahead_audit,
+        "multiple_testing": multiple_testing_report,
         "oos_validation": oos_report,
         "robustness": robustness_report,
         "similarity": similarity_report,

@@ -115,6 +115,7 @@ async def _audit_context_tables(db) -> dict:
 async def _load_active_pool_codes_from_snapshot(db, *, limit: int = 12) -> dict:
     snapshot = await db.get_daily_snapshot() if hasattr(db, "get_daily_snapshot") else None
     factor_research = dict((snapshot or {}).get("factor_research") or {})
+    factor_summary = dict(factor_research.get("summary") or {})
     active_pool = dict(factor_research.get("active_candidate_pool") or {})
     top_candidates = list(active_pool.get("top_candidates") or [])[: max(1, int(limit or 12))]
     artifact_ids: list[str] = []
@@ -133,7 +134,22 @@ async def _load_active_pool_codes_from_snapshot(db, *, limit: int = 12) -> dict:
         "codes": codes,
         "run_id": None,
         "source": "daily_snapshot",
-        "factor_source_mode": str((factor_research.get("summary") or {}).get("factor_source_mode") or "").strip() or None,
+        "factor_source_mode": str(factor_summary.get("factor_source_mode") or "").strip() or None,
+        "candidate_count": int(active_pool.get("count") or 0),
+        "blocked_candidate_count": int(
+            active_pool.get("excluded_count")
+            or factor_summary.get("governed_blocked_candidate_count")
+            or 0
+        ),
+        "exclusion_reason_counts": {
+            str(key): int(value or 0)
+            for key, value in dict(
+                active_pool.get("exclusion_reason_counts")
+                or factor_summary.get("governed_exclusion_reason_counts")
+                or {}
+            ).items()
+            if str(key).strip()
+        },
     }
 
 
@@ -240,6 +256,21 @@ async def _load_active_pool_codes_from_factory_run(db, *, limit: int = 12, run_l
             "artifact_ids": artifact_ids,
             "codes": codes,
             "factor_source_mode": str(factor_summary.get("factor_source_mode") or "").strip() or None,
+            "candidate_count": int(active_pool.get("count") or 0),
+            "blocked_candidate_count": int(
+                active_pool.get("excluded_count")
+                or factor_summary.get("governed_blocked_candidate_count")
+                or 0
+            ),
+            "exclusion_reason_counts": {
+                str(key): int(value or 0)
+                for key, value in dict(
+                    active_pool.get("exclusion_reason_counts")
+                    or factor_summary.get("governed_exclusion_reason_counts")
+                    or {}
+                ).items()
+                if str(key).strip()
+            },
         }
     )
     return payload

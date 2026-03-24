@@ -241,6 +241,7 @@ class FactorScheduler:
                 llm_mining_result = await quant_manager(
                     action="llm_factor_mining",
                     kwargs=json.dumps({
+                        "codes": self.universe,
                         "allow_fallback": True,
                         "dedup_mode": "penalty",
                     }, ensure_ascii=False),

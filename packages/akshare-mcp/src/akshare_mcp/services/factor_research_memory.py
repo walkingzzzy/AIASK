@@ -19,6 +19,8 @@ from .factor_candidate_storage import (
 )
 from .text_embedding import get_strategy_text_embedding_service
 
+_FACTOR_MEMORY_VECTOR_DIM = 128
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -54,6 +56,53 @@ def _candidate_signature(candidate: dict[str, Any]) -> str:
 def _tokenize(text: str) -> set[str]:
     tokens = re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9_]+", str(text or "").lower())
     return {token for token in tokens if token}
+
+
+def _dense_vector_tokens(text: str) -> list[str]:
+    normalized = _normalize_text(text).lower()
+    if not normalized:
+        return []
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for token in _tokenize(normalized):
+        if token not in seen:
+            seen.add(token)
+            tokens.append(token)
+        if len(token) >= 2:
+            for width in (2, 3):
+                if len(token) < width:
+                    continue
+                for idx in range(len(token) - width + 1):
+                    ngram = token[idx: idx + width]
+                    if ngram and ngram not in seen:
+                        seen.add(ngram)
+                        tokens.append(ngram)
+    return tokens
+
+
+def build_factor_candidate_dense_vector(text: str, *, dim: int = _FACTOR_MEMORY_VECTOR_DIM) -> list[float]:
+    resolved_dim = max(16, int(dim or _FACTOR_MEMORY_VECTOR_DIM))
+    tokens = _dense_vector_tokens(text)
+    if not tokens:
+        return []
+    vector = [0.0] * resolved_dim
+    for token in tokens:
+        digest = hashlib.sha1(token.encode("utf-8")).digest()
+        bucket = int.from_bytes(digest[:4], "big", signed=False) % resolved_dim
+        sign = 1.0 if (digest[4] % 2 == 0) else -1.0
+        weight = 1.0 + ((digest[5] % 7) / 10.0)
+        vector[bucket] += sign * weight
+    return _normalize_dense_vector(vector)
+
+
+def _normalize_dense_vector(values: list[float]) -> list[float]:
+    resolved = [float(item) for item in list(values or [])]
+    if not resolved:
+        return []
+    norm = math.sqrt(sum(item * item for item in resolved))
+    if norm <= 1e-12:
+        return resolved
+    return [round(item / norm, 10) for item in resolved]
 
 
 def _normalize_tags(tags: Any) -> list[str]:
@@ -162,6 +211,52 @@ def _build_candidate_document(
         f"横截面RankIC: {float((metrics or {}).get('rank_ic_mean', 0.0)):.6f}",
     ]
     return "\n".join(lines)
+
+
+def build_factor_candidate_vector_profile(
+    record: dict[str, Any],
+    *,
+    version: str = "v1",
+) -> dict[str, Any] | None:
+    artifact_id = str((record or {}).get("artifact_id") or "").strip()
+    candidate = record.get("candidate") if isinstance(record.get("candidate"), dict) else {}
+    if not artifact_id or not candidate:
+        return None
+    codes = _normalize_codes(record.get("codes"))
+    document = _build_candidate_document(candidate, validation=record, codes=codes)
+    embedding = build_factor_candidate_dense_vector(document)
+    if not embedding:
+        return None
+    rating = record.get("rating") if isinstance(record.get("rating"), dict) else {}
+    entity_id = artifact_id
+    return {
+        "collection_name": "factor_candidate_embeddings",
+        "entity_type": "factor_candidate_memory",
+        "entity_id": entity_id,
+        "stock_code": codes[0] if len(codes) == 1 else None,
+        "profile_type": "memory",
+        "model_id": "factor-memory-v1",
+        "vector_dim": len(embedding),
+        "metric": "cosine",
+        "version": str(version or "v1"),
+        "signature": hashlib.sha1(f"{entity_id}\n{document}\n{version}".encode("utf-8")).hexdigest(),
+        "status": "active",
+        "embedding": embedding,
+        "metadata": {
+            "artifact_id": artifact_id,
+            "status": str(record.get("status") or "").strip().lower(),
+            "codes": codes,
+            "tags": _normalize_tags(record.get("tags")),
+            "candidate_name": candidate.get("name"),
+            "candidate_family": candidate.get("family"),
+            "expression_dsl": candidate.get("expression_dsl"),
+            "recommendation": rating.get("recommendation"),
+            "grade": rating.get("grade"),
+            "text_hash": _hash_text(document),
+            "text_preview": document[:240],
+            "memory_flags": deepcopy(record.get("memory_flags") or {}),
+        },
+    }
 
 
 def _build_prompt_memory_summary(rows: list[dict[str, Any]], *, limit: int = 3) -> list[dict[str, Any]]:
@@ -426,10 +521,39 @@ class FactorResearchMemoryService:
             or _build_candidate_document(query_candidate, validation=None, codes=query_codes)
         )
         query_embedding = await self._maybe_embed(query_doc)
+        query_dense_vector = build_factor_candidate_dense_vector(query_doc)
         query_family = _normalize_text(query_candidate.get("family")).lower()
         query_expr = _normalize_text(query_candidate.get("expression_dsl"))
 
         records = await self.list_memory_records(limit=max(50, int(limit) * 10), codes=query_codes or None, status=status)
+        db_dense_scores: dict[str, float] = {}
+        if query_dense_vector and records:
+            entity_ids = [
+                str(record.get("artifact_id") or "").strip()
+                for record in records
+                if str(record.get("artifact_id") or "").strip()
+            ]
+            if entity_ids:
+                try:
+                    from ..storage import get_db
+
+                    db = get_db()
+                    if hasattr(db, "search_vector_profiles_by_embedding"):
+                        dense_rows = await db.search_vector_profiles_by_embedding(
+                            query_embedding=query_dense_vector,
+                            collection_name="factor_candidate_embeddings",
+                            profile_type="memory",
+                            entity_ids=entity_ids,
+                            limit=max(20, min(int(limit) * 8, 200)),
+                            metric="cosine",
+                        )
+                        for row in dense_rows:
+                            entity_id = str(row.get("entity_id") or "").strip()
+                            if not entity_id:
+                                continue
+                            db_dense_scores[entity_id] = float(row.get("similarity") or 0.0)
+                except Exception:
+                    db_dense_scores = {}
         scored = []
         for record in records:
             candidate_payload = record.get("candidate") if isinstance(record.get("candidate"), dict) else {}
@@ -449,13 +573,17 @@ class FactorResearchMemoryService:
                     0.0,
                     _cosine_similarity(query_embedding.get("vector") or [], record_embedding.get("vector") or []),
                 )
+            dense_score = max(
+                float(db_dense_scores.get(str(record.get("artifact_id") or "").strip()) or 0.0),
+                float(embedding_score or 0.0),
+            )
             code_overlap = 0.0
             record_codes = _normalize_codes(record.get("codes"))
             if query_codes and record_codes:
                 union = set(query_codes) | set(record_codes)
                 if union:
                     code_overlap = len(set(query_codes) & set(record_codes)) / len(union)
-            similarity = max(embedding_score, lexical * 0.9) + code_overlap * 0.05
+            similarity = max(dense_score, lexical * 0.9) + code_overlap * 0.05
             similarity = max(0.0, min(1.0, similarity))
             scored.append(
                 {
@@ -467,7 +595,8 @@ class FactorResearchMemoryService:
                     "tags": list(record.get("tags") or []),
                     "similarity": round(float(similarity), 6),
                     "lexical_similarity": round(float(lexical), 6),
-                    "embedding_similarity": round(float(embedding_score), 6),
+                    "embedding_similarity": round(float(dense_score), 6),
+                    "vector_similarity": round(float(db_dense_scores.get(str(record.get("artifact_id") or "").strip()) or 0.0), 6),
                     "code_overlap": round(float(code_overlap), 6),
                 }
             )

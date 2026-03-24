@@ -37,15 +37,22 @@ def compute_signal_hit_rate(klines: Iterable[dict], signal: str, forward_days: l
     ordered = normalize_klines(klines)
     closes = np.array([float(row.get("close", 0) or 0) for row in ordered], dtype=np.float64)
     if len(closes) < 30:
-        return {"signal": signal, "sample_count": 0, "forward_returns": {}, "by_regime": {}}
+        return {"signal": signal, "sample_count": 0, "forward_returns": {}, "by_regime": {}, "recent_signals": []}
     indices = _signal_indices(closes, signal, signal_params)
     overall = {int(fd): [] for fd in forward_days}
     by_regime = {name: {int(fd): [] for fd in forward_days} for name in ("bullish", "neutral", "bearish")}
+    recent_signals = []
     for idx in indices:
         if idx < 20:
             continue
         regime_ret = (closes[idx] - closes[idx - 20]) / closes[idx - 20] if closes[idx - 20] > 0 else 0.0
         regime = "bullish" if regime_ret >= 0.05 else ("bearish" if regime_ret <= -0.05 else "neutral")
+        signal_row = {
+            "date": ordered[idx].get("date") or ordered[idx].get("time"),
+            "regime": regime,
+            "forward_returns": {},
+        }
+        any_forward = False
         for fd in forward_days:
             future_idx = idx + int(fd)
             if future_idx >= len(closes) or closes[idx] <= 0:
@@ -53,10 +60,15 @@ def compute_signal_hit_rate(klines: Iterable[dict], signal: str, forward_days: l
             fwd_ret = float((closes[future_idx] - closes[idx]) / closes[idx])
             overall[int(fd)].append(fwd_ret)
             by_regime[regime][int(fd)].append(fwd_ret)
+            signal_row["forward_returns"][f"{int(fd)}d"] = round(fwd_ret, 6)
+            any_forward = True
+        if any_forward:
+            recent_signals.append(signal_row)
     summarize = lambda values: {"samples": len(values), "hit_rate": round(float(np.mean(np.array(values) > 0)), 4) if values else None, "avg_return": round(float(np.mean(values)), 4) if values else None}
     return {
         "signal": signal,
         "sample_count": len(indices),
         "forward_returns": {f"{fd}d": summarize(values) for fd, values in overall.items()},
         "by_regime": {regime: {f"{fd}d": summarize(values) for fd, values in buckets.items()} for regime, buckets in by_regime.items()},
+        "recent_signals": recent_signals[-20:],
     }

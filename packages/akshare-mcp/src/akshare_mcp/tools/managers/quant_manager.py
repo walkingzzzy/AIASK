@@ -431,6 +431,40 @@ def register_quant_manager(mcp):
                 metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
                 candidate_resolution = payload.get("candidate_resolution") if isinstance(payload.get("candidate_resolution"), dict) else {}
                 memory_record = payload.get("memory_record") if isinstance(payload.get("memory_record"), dict) else {}
+                validation_report = (
+                    payload.get("factor_validation_report") if isinstance(payload.get("factor_validation_report"), dict) else {}
+                )
+                lookahead_audit = payload.get("lookahead_audit") if isinstance(payload.get("lookahead_audit"), dict) else {}
+                if not lookahead_audit:
+                    nested_lookahead = validation_report.get("lookahead_audit")
+                    lookahead_audit = nested_lookahead if isinstance(nested_lookahead, dict) else {}
+                multiple_testing = payload.get("multiple_testing") if isinstance(payload.get("multiple_testing"), dict) else {}
+                if not multiple_testing:
+                    nested_multiple = validation_report.get("multiple_testing")
+                    multiple_testing = nested_multiple if isinstance(nested_multiple, dict) else {}
+
+                lookahead_risk = (
+                    str(lookahead_audit.get("risk_level") or "unknown").strip().lower()
+                    if lookahead_audit
+                    else "unknown"
+                )
+                multiple_testing_risk = (
+                    str(multiple_testing.get("risk_level") or "unknown").strip().lower()
+                    if multiple_testing
+                    else "unknown"
+                )
+                risk_rank = {"unknown": 0, "low": 1, "medium": 2, "high": 3}
+                overall_risk = "unknown"
+                max_risk_rank = max(risk_rank.get(lookahead_risk, 0), risk_rank.get(multiple_testing_risk, 0))
+                for name, rank in risk_rank.items():
+                    if rank == max_risk_rank:
+                        overall_risk = name
+                block_reasons = []
+                if lookahead_risk == "high":
+                    block_reasons.append("lookahead_risk_high")
+                if multiple_testing_risk == "high":
+                    block_reasons.append("multiple_testing_risk_high")
+                warnings = list(payload.get("warnings") or [])
                 return {
                     "artifact_id": str(artifact.get("artifact_id") or payload.get("artifact_id") or ""),
                     "strategy": str(artifact.get("strategy") or payload.get("strategy") or ""),
@@ -455,7 +489,17 @@ def register_quant_manager(mcp):
                         "rank_ic_ir": _safe_float(metrics.get("rank_ic_ir"), 0.0),
                         "sample_dates": int(metrics.get("sample_dates", 0) or 0),
                     },
-                    "warnings_count": len(list(payload.get("warnings") or [])),
+                    "risk_audit": {
+                        "lookahead_risk_level": lookahead_risk,
+                        "multiple_testing_risk_level": multiple_testing_risk,
+                        "overall_risk_level": overall_risk,
+                        "lookahead_available": bool(lookahead_audit.get("available")) if lookahead_audit else False,
+                        "multiple_testing_available": bool(multiple_testing.get("available")) if multiple_testing else False,
+                        "blocked": bool(block_reasons),
+                        "block_reasons": block_reasons,
+                        "warning_samples": warnings[:5],
+                    },
+                    "warnings_count": len(warnings),
                     "stage": str(payload.get("stage") or ""),
                     "source_generation_artifact_id": candidate_resolution.get("artifact_id"),
                     "memory_record_id": memory_record.get("artifact_id"),
@@ -562,30 +606,61 @@ def register_quant_manager(mcp):
                 grade_counts = {}
                 recommendation_counts = {}
                 family_counts = {}
+                lookahead_risk_counts = {}
+                multiple_testing_risk_counts = {}
+                overall_risk_counts = {}
                 total_scores = []
                 active_items = 0
+                governed_active_items = 0
+                blocked_items = 0
+                blocked_active_items = 0
                 for item in list(items or []):
                     rating = item.get("rating") if isinstance(item.get("rating"), dict) else {}
                     candidate = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
+                    risk_audit = item.get("risk_audit") if isinstance(item.get("risk_audit"), dict) else {}
                     grade = str(rating.get("grade") or "").strip().upper()
                     recommendation = str(rating.get("recommendation") or "").strip().lower()
                     family_name = str(candidate.get("family") or "").strip().lower()
                     total_score = _safe_float(rating.get("total_score"), 0.0)
+                    lookahead_risk = str(risk_audit.get("lookahead_risk_level") or "unknown").strip().lower()
+                    multiple_testing_risk = str(risk_audit.get("multiple_testing_risk_level") or "unknown").strip().lower()
+                    overall_risk = str(risk_audit.get("overall_risk_level") or "unknown").strip().lower()
+                    blocked = bool(risk_audit.get("blocked"))
                     if grade:
                         grade_counts[grade] = int(grade_counts.get(grade, 0)) + 1
                     if recommendation:
                         recommendation_counts[recommendation] = int(recommendation_counts.get(recommendation, 0)) + 1
                     if family_name:
                         family_counts[family_name] = int(family_counts.get(family_name, 0)) + 1
+                    if lookahead_risk:
+                        lookahead_risk_counts[lookahead_risk] = int(lookahead_risk_counts.get(lookahead_risk, 0)) + 1
+                    if multiple_testing_risk:
+                        multiple_testing_risk_counts[multiple_testing_risk] = (
+                            int(multiple_testing_risk_counts.get(multiple_testing_risk, 0)) + 1
+                        )
+                    if overall_risk:
+                        overall_risk_counts[overall_risk] = int(overall_risk_counts.get(overall_risk, 0)) + 1
                     total_scores.append(total_score)
                     if recommendation in {"promote", "review"}:
                         active_items += 1
+                        if blocked:
+                            blocked_active_items += 1
+                        else:
+                            governed_active_items += 1
+                    if blocked:
+                        blocked_items += 1
                 return {
                     "count": len(list(items or [])),
                     "active_count": active_items,
+                    "governed_active_count": governed_active_items,
+                    "blocked_count": blocked_items,
+                    "blocked_active_count": blocked_active_items,
                     "grade_counts": grade_counts,
                     "recommendation_counts": recommendation_counts,
                     "family_counts": family_counts,
+                    "lookahead_risk_counts": lookahead_risk_counts,
+                    "multiple_testing_risk_counts": multiple_testing_risk_counts,
+                    "overall_risk_counts": overall_risk_counts,
                     "avg_total_score": round(float(np.mean(total_scores)), 6) if total_scores else 0.0,
                     "max_total_score": round(float(max(total_scores)), 6) if total_scores else 0.0,
                 }
@@ -594,14 +669,40 @@ def register_quant_manager(mcp):
                 family_bucket = {}
                 regime_counts = {}
                 top_candidates = []
+                excluded_candidates = []
+                exclusion_reason_counts = {}
 
                 for item in list(items or []):
                     candidate = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
                     rating = item.get("rating") if isinstance(item.get("rating"), dict) else {}
+                    risk_audit = item.get("risk_audit") if isinstance(item.get("risk_audit"), dict) else {}
                     family = str(candidate.get("family") or "unknown").strip().lower() or "unknown"
                     recommendation = str(rating.get("recommendation") or "").strip().lower()
                     score = _safe_float(rating.get("total_score"), 0.0)
                     regimes = candidate.get("expected_regime") if isinstance(candidate.get("expected_regime"), list) else []
+                    exclusion_reasons = []
+
+                    if recommendation not in {"promote", "review"}:
+                        exclusion_reasons.append(f"recommendation_{recommendation or 'unknown'}")
+                    exclusion_reasons.extend(
+                        [str(reason).strip() for reason in list(risk_audit.get("block_reasons") or []) if str(reason).strip()]
+                    )
+                    if exclusion_reasons:
+                        for reason in exclusion_reasons:
+                            exclusion_reason_counts[reason] = int(exclusion_reason_counts.get(reason, 0)) + 1
+                        excluded_candidates.append(
+                            {
+                                "artifact_id": item.get("artifact_id"),
+                                "name": candidate.get("name"),
+                                "family": family,
+                                "grade": rating.get("grade"),
+                                "recommendation": recommendation,
+                                "total_score": score,
+                                "risk_audit": risk_audit,
+                                "reasons": exclusion_reasons,
+                            }
+                        )
+                        continue
 
                     bucket = family_bucket.setdefault(
                         family,
@@ -632,6 +733,7 @@ def register_quant_manager(mcp):
                             "grade": rating.get("grade"),
                             "recommendation": recommendation,
                             "total_score": score,
+                            "risk_audit": risk_audit,
                         }
                     )
 
@@ -648,12 +750,20 @@ def register_quant_manager(mcp):
                     for regime, count in sorted(regime_counts.items(), key=lambda item: (item[1], item[0]), reverse=True)
                 ]
                 top_candidates.sort(key=lambda item: (item.get("total_score", 0.0), str(item.get("artifact_id") or "")), reverse=True)
+                excluded_candidates.sort(
+                    key=lambda item: (item.get("total_score", 0.0), str(item.get("artifact_id") or "")),
+                    reverse=True,
+                )
 
                 return {
-                    "count": len(list(items or [])),
+                    "source_count": len(list(items or [])),
+                    "count": len(top_candidates),
+                    "excluded_count": len(excluded_candidates),
                     "family_summary": family_summary,
                     "regime_summary": regime_summary,
                     "top_candidates": top_candidates[:20],
+                    "excluded_candidates": excluded_candidates[:20],
+                    "exclusion_reason_counts": exclusion_reason_counts,
                 }
 
             def _normalize_episode_item(artifact: dict, payload: dict) -> dict:
@@ -1138,6 +1248,8 @@ def register_quant_manager(mcp):
                     "coverage": validation.get("coverage") or {},
                     "latest_snapshot": validation.get("latest_snapshot") or {},
                     "cross_section_dates": validation.get("cross_section_dates") or [],
+                    "lookahead_audit": validation.get("lookahead_audit") or {},
+                    "multiple_testing": validation.get("multiple_testing") or {},
                     "oos_validation": validation.get("oos_validation") or {},
                     "robustness": validation.get("robustness") or {},
                     "similarity": validation.get("similarity") or {},

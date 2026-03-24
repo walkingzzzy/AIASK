@@ -46,7 +46,7 @@ export type {
 
 export type FactoryRunItem = NonNullable<FactoryRunsResponse['items']>[number];
 
-export type RunStatusFilter = 'all' | 'success' | 'failed';
+export type RunStatusFilter = 'all' | 'success' | 'partial' | 'skipped' | 'failed';
 
 export type FactoryReviewSection =
   | 'summary'

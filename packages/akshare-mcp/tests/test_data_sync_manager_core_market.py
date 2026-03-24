@@ -163,6 +163,103 @@ async def test_data_sync_manager_supports_core_market_sync_without_codes(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_data_sync_manager_supports_vector_backfill_market_docs_sync(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: db)
+
+    async def _fake_vector_backfill(kwargs):
+        return {
+            "success": 1,
+            "failed": 0,
+            "errors": [],
+            "args": kwargs,
+            "backfill": {
+                "saved_docs": 12,
+                "saved_chunks": 28,
+                "embedded_chunks": 28,
+            },
+            "market_aux": {
+                "market_documents": 12,
+                "market_doc_chunks": 28,
+                "vector_profiles": 28,
+            },
+        }
+
+    monkeypatch.setattr(manager_mod, "_sync_vector_backfill_market_docs_now", _fake_vector_backfill)
+
+    mcp = _DummyMCP()
+    manager_mod.register_data_sync_manager(mcp)
+    result = await mcp.data_sync_manager(
+        action="sync",
+        kwargs=json.dumps(
+            {
+                "type": "vector_backfill_market_docs",
+                "doc_types": ["news", "research"],
+                "limit": 200,
+                "batch_size": 50,
+                "embed": True,
+            }
+        ),
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["task_type"] == "vector_backfill_market_docs"
+    assert data["status"] == "completed"
+    assert data["results"]["backfill"]["saved_docs"] == 12
+    assert data["results"]["args"]["doc_types"] == ["news", "research"]
+    assert any("INSERT INTO sync_tasks" in item[0] for item in db.conn.executed)
+    assert any("UPDATE sync_tasks" in item[0] for item in db.conn.executed)
+
+
+@pytest.mark.asyncio
+async def test_data_sync_manager_supports_vector_backfill_kline_patterns_sync(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: db)
+
+    async def _fake_kline_pattern_backfill(kwargs):
+        return {
+            "success": 1,
+            "failed": 0,
+            "errors": [],
+            "args": kwargs,
+            "backfill": {
+                "saved_windows": 30,
+                "saved_profiles": 30,
+                "processed_codes": 10,
+            },
+            "market_aux": {
+                "kline_pattern_windows": 30,
+                "vector_profiles_kline_patterns": 30,
+            },
+        }
+
+    monkeypatch.setattr(manager_mod, "_sync_vector_backfill_kline_patterns_now", _fake_kline_pattern_backfill)
+
+    mcp = _DummyMCP()
+    manager_mod.register_data_sync_manager(mcp)
+    result = await mcp.data_sync_manager(
+        action="sync",
+        kwargs=json.dumps(
+            {
+                "type": "vector_backfill_kline_patterns",
+                "window_size": 20,
+                "lookback_days": 180,
+                "max_windows_per_code": 2,
+                "code_limit": 50,
+            }
+        ),
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["task_type"] == "vector_backfill_kline_patterns"
+    assert data["status"] == "completed"
+    assert data["results"]["backfill"]["saved_windows"] == 30
+    assert data["results"]["args"]["window_size"] == 20
+
+
+@pytest.mark.asyncio
 async def test_data_sync_manager_supports_core_market_schedule_without_codes(monkeypatch):
     db = _FakeDb()
     monkeypatch.setattr(manager_mod, "get_db", lambda: db)

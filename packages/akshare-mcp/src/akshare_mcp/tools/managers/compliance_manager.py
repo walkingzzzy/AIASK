@@ -3,6 +3,8 @@
 import json
 from datetime import datetime, timedelta, timezone
 from ...utils import ok, fail, normalize_code
+from ..market.order_book import get_order_book
+from ..market.quote import get_realtime_quote
 
 MAX_SINGLE_ORDER_SHARES = 1_000_000
 MAX_SINGLE_ORDER_AMOUNT = 50_000_000.0
@@ -40,6 +42,133 @@ def _in_cn_trading_hours() -> bool:
         return False
     minutes = now_cn.hour * 60 + now_cn.minute
     return (570 <= minutes <= 690) or (780 <= minutes <= 900)
+
+
+def _infer_limit_pct(code: str | None, name: str | None) -> float:
+    code_text = str(code or "").strip()
+    name_text = str(name or "").upper()
+    if "ST" in name_text:
+        return 0.05
+    if code_text.startswith(("300", "301", "688", "689")):
+        return 0.20
+    if code_text.startswith(("8", "4")):
+        return 0.30
+    return 0.10
+
+
+def _augment_realtime_checks(
+    *,
+    code: str | None,
+    direction: str,
+    quantity: int | None,
+    checks: dict,
+    violations: list[str],
+    warnings: list[str],
+) -> dict:
+    realtime = {
+        "quote_available": False,
+        "quote_source": None,
+        "order_book_available": False,
+        "order_book_source": None,
+        "name": None,
+        "current_price": None,
+        "pre_close": None,
+        "limit_pct": None,
+        "limit_up_price": None,
+        "limit_down_price": None,
+        "at_limit_up": False,
+        "at_limit_down": False,
+        "top_ask_volume": None,
+        "top_bid_volume": None,
+        "top5_ask_volume": None,
+        "top5_bid_volume": None,
+    }
+    if not code:
+        return realtime
+
+    try:
+        quote = get_realtime_quote(code)
+        payload = (quote or {}).get("data") if isinstance(quote, dict) else None
+        if isinstance(payload, dict):
+            realtime["quote_available"] = True
+            realtime["quote_source"] = payload.get("source")
+            realtime["name"] = payload.get("name")
+            realtime["current_price"] = payload.get("price")
+            realtime["pre_close"] = payload.get("preClose")
+            checks["realtime_quote"] = True
+            checks["st_stock"] = bool("ST" in str(payload.get("name") or "").upper())
+
+            current_price = payload.get("price")
+            pre_close = payload.get("preClose")
+            if current_price not in (None, "") and pre_close not in (None, ""):
+                try:
+                    current_val = float(current_price)
+                    pre_close_val = float(pre_close)
+                    if pre_close_val > 0:
+                        limit_pct = _infer_limit_pct(code, payload.get("name"))
+                        upper = round(pre_close_val * (1.0 + limit_pct), 2)
+                        lower = round(pre_close_val * (1.0 - limit_pct), 2)
+                        tol = max(0.01, pre_close_val * 0.0005)
+                        at_limit_up = current_val >= upper - tol
+                        at_limit_down = current_val <= lower + tol
+                        realtime.update(
+                            {
+                                "limit_pct": limit_pct,
+                                "limit_up_price": upper,
+                                "limit_down_price": lower,
+                                "at_limit_up": at_limit_up,
+                                "at_limit_down": at_limit_down,
+                            }
+                        )
+                        checks["limit_up_down"] = not (at_limit_up or at_limit_down)
+                        if direction == "buy" and at_limit_up:
+                            violations.append("实时行情显示接近或处于涨停，当前不宜买入")
+                        if direction == "sell" and at_limit_down:
+                            violations.append("实时行情显示接近或处于跌停，当前不宜卖出")
+                except Exception:
+                    warnings.append("实时涨跌停复核解析失败，已降级为静态规则")
+        else:
+            warnings.append("实时行情获取失败，涨跌停/ST 仅按静态规则校验")
+    except Exception as exc:
+        warnings.append(f"实时行情复核失败: {exc}")
+
+    try:
+        order_book = get_order_book(code)
+        payload = (order_book or {}).get("data") if isinstance(order_book, dict) else None
+        if isinstance(payload, dict):
+            bids = list(payload.get("bids") or [])
+            asks = list(payload.get("asks") or [])
+            top_ask = int((asks[0] or {}).get("volume") or 0) if asks else 0
+            top_bid = int((bids[0] or {}).get("volume") or 0) if bids else 0
+            top5_ask = int(sum(int(item.get("volume") or 0) for item in asks[:5]))
+            top5_bid = int(sum(int(item.get("volume") or 0) for item in bids[:5]))
+            realtime.update(
+                {
+                    "order_book_available": True,
+                    "order_book_source": payload.get("source"),
+                    "top_ask_volume": top_ask,
+                    "top_bid_volume": top_bid,
+                    "top5_ask_volume": top5_ask,
+                    "top5_bid_volume": top5_bid,
+                }
+            )
+            checks["realtime_order_book"] = True
+            if direction == "buy":
+                if top5_ask <= 0:
+                    violations.append("实时盘口卖量为 0，当前疑似无法买入")
+                elif quantity is not None and quantity > 0 and top5_ask < quantity:
+                    warnings.append(f"实时盘口卖一至卖五总量仅 {top5_ask}，可能无法一次性成交 {quantity} 股")
+            elif direction == "sell":
+                if top5_bid <= 0:
+                    violations.append("实时盘口买量为 0，当前疑似无法卖出")
+                elif quantity is not None and quantity > 0 and top5_bid < quantity:
+                    warnings.append(f"实时盘口买一至买五总量仅 {top5_bid}，可能无法一次性卖出 {quantity} 股")
+        else:
+            warnings.append("实时盘口获取失败，流动性校验已降级")
+    except Exception as exc:
+        warnings.append(f"实时盘口复核失败: {exc}")
+
+    return realtime
 
 
 
@@ -94,11 +223,23 @@ def evaluate_order_compliance(code: str, direction: str, quantity_raw, price_raw
         'st_stock': False,
         'lot_size': not (direction_n == 'buy' and quantity is not None and quantity % MIN_LOT_SIZE != 0),
         'order_amount': (order_amount is None) or (order_amount <= MAX_SINGLE_ORDER_AMOUNT),
+        'limit_up_down': True,
+        'realtime_quote': False,
+        'realtime_order_book': False,
     }
 
     if not trading_hours:
         warnings.append('当前时间不在交易时段内（仅提示，部分券商支持预委托）')
-    warnings.append('停牌/ST/涨跌停校验当前为静态规则，建议在下单前接入实时行情复核')
+    realtime = _augment_realtime_checks(
+        code=code_n,
+        direction=direction_n,
+        quantity=quantity,
+        checks=checks,
+        violations=violations,
+        warnings=warnings,
+    )
+    if not realtime.get("quote_available"):
+        warnings.append('停牌/ST/涨跌停校验当前为静态规则，建议在下单前接入实时行情复核')
 
     blocked = len(violations) > 0
     passed = not blocked
@@ -113,6 +254,7 @@ def evaluate_order_compliance(code: str, direction: str, quantity_raw, price_raw
         'checks': checks,
         'violations': violations,
         'warnings': warnings,
+        'realtime': realtime,
     }
 
 
@@ -160,78 +302,13 @@ def register_compliance_manager(mcp):
                 return ok({'supported_actions': SUPPORTED_ACTIONS})
 
             elif action in ['check_order', 'check', 'check_trade']:
-                code = normalize_code(kwargs.get('code') or '') if kwargs.get('code') else None
-                direction = str(kwargs.get('direction') or '').strip().lower()
-                quantity_raw = kwargs.get('quantity')
-                price_raw = kwargs.get('price')
-
-                violations = []
-                warnings = []
-
-                quantity = None
-                if quantity_raw is not None:
-                    try:
-                        quantity = int(float(quantity_raw))
-                    except Exception:
-                        violations.append('quantity 格式无效，需为正整数')
-
-                price = None
-                if price_raw is not None:
-                    try:
-                        price = float(price_raw)
-                    except Exception:
-                        violations.append('price 格式无效，需为正数')
-
-                if not code:
-                    violations.append('缺少 code 参数')
-                if direction not in ('buy', 'sell'):
-                    violations.append('direction 仅支持 buy/sell')
-                if quantity is None or quantity <= 0:
-                    violations.append('quantity 必须大于 0')
-                if price is not None and price <= 0:
-                    violations.append('price 必须大于 0')
-
-                if quantity is not None and quantity > MAX_SINGLE_ORDER_SHARES:
-                    violations.append(f'单笔数量超限（>{MAX_SINGLE_ORDER_SHARES}）')
-
-                if direction == 'buy' and quantity is not None and quantity % MIN_LOT_SIZE != 0:
-                    violations.append(f'买入数量必须为 {MIN_LOT_SIZE} 的整数倍')
-
-                order_amount = None
-                if quantity is not None and price is not None and price > 0:
-                    order_amount = quantity * price
-                    if order_amount > MAX_SINGLE_ORDER_AMOUNT:
-                        violations.append(f'单笔金额超限（>{MAX_SINGLE_ORDER_AMOUNT:.0f}）')
-
-                trading_hours = _in_cn_trading_hours()
-                checks = {
-                    'position_limit': quantity is not None and quantity <= MAX_SINGLE_ORDER_SHARES,
-                    'trading_hours': trading_hours,
-                    'suspended': False,   # 当前未接入实时停牌源
-                    'st_stock': False,    # 当前未接入 ST 名单实时校验
-                    'lot_size': not (direction == 'buy' and quantity is not None and quantity % MIN_LOT_SIZE != 0),
-                    'order_amount': (order_amount is None) or (order_amount <= MAX_SINGLE_ORDER_AMOUNT),
-                }
-
-                if not trading_hours:
-                    warnings.append('当前时间不在交易时段内（仅提示，部分券商支持预委托）')
-                warnings.append('停牌/ST/涨跌停校验当前为静态规则，建议在下单前接入实时行情复核')
-
-                blocked = len(violations) > 0
-                passed = not blocked
-
-                return ok({
-                    'code': code,
-                    'direction': direction,
-                    'quantity': quantity,
-                    'price': price,
-                    'order_amount': float(order_amount) if order_amount is not None else None,
-                    'passed': passed,
-                    'blocked': blocked,
-                    'checks': checks,
-                    'violations': violations,
-                    'warnings': warnings,
-                })
+                result = evaluate_order_compliance(
+                    code=kwargs.get('code'),
+                    direction=kwargs.get('direction'),
+                    quantity_raw=kwargs.get('quantity'),
+                    price_raw=kwargs.get('price'),
+                )
+                return ok(result)
 
             elif action == 'get_restrictions':
                 code = kwargs.get('code')

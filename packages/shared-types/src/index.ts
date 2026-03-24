@@ -645,6 +645,24 @@ export type FactoryAutonomyTaskBrief = {
 
 export type FactoryRunSummary = {
     trace_id?: string;
+    stage_status_counts?: Record<string, number>;
+    failed_stage_count?: number;
+    partial_stage_count?: number;
+    skipped_stage_count?: number;
+    hard_failure_count?: number;
+    degraded_stage_count?: number;
+    failed_stages?: string[];
+    partial_stages?: string[];
+    skipped_stages?: string[];
+    skip_reason?: string;
+    skip_reasons?: string[];
+    persistence_failure_count?: number;
+    persistence_failures?: Array<{
+        operation?: string;
+        stage?: string | null;
+        error_type?: string;
+        error?: string;
+    }>;
     candidates_spawned?: number;
     candidates_passed_backtest?: number;
     candidates_after_dedup?: number;
@@ -753,9 +771,15 @@ export type FactoryRunsResponse = {
         pipeline?: {
             trace_id?: string | null;
             failed_stage?: string | null;
+            partial_stage?: string | null;
+            skipped_stage?: string | null;
             stage_order?: string[];
             total_stage_count?: number;
             completed_stage_count?: number;
+            partial_stage_count?: number;
+            skipped_stage_count?: number;
+            failed_stage_count?: number;
+            stage_status_counts?: Record<string, number>;
         };
     }>;
     count?: number;
@@ -776,9 +800,15 @@ export type FactoryRunDetailResponse = {
     pipeline?: {
         trace_id?: string | null;
         failed_stage?: string | null;
+        partial_stage?: string | null;
+        skipped_stage?: string | null;
         stage_order?: string[];
         total_stage_count?: number;
         completed_stage_count?: number;
+        partial_stage_count?: number;
+        skipped_stage_count?: number;
+        failed_stage_count?: number;
+        stage_status_counts?: Record<string, number>;
     };
 };
 

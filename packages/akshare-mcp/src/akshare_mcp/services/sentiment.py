@@ -20,6 +20,37 @@ _BEARISH_KEYWORDS = [
 
 class SentimentAnalyzer:
     @staticmethod
+    def _score_bucket(score: float) -> str:
+        if float(score) >= 70.0:
+            return "bullish"
+        if float(score) <= 30.0:
+            return "bearish"
+        return "neutral"
+
+    @staticmethod
+    def _summarize_forward_returns(values: list[float]) -> dict[str, float | int | None]:
+        if not values:
+            return {
+                "samples": 0,
+                "hit_rate": None,
+                "avg_return": None,
+                "median_return": None,
+                "lower_return": None,
+                "upper_return": None,
+            }
+        ordered = sorted(float(x) for x in values)
+        lower_idx = int(max(0, math.floor(0.1 * (len(ordered) - 1))))
+        upper_idx = int(max(0, math.ceil(0.9 * (len(ordered) - 1))))
+        return {
+            "samples": len(ordered),
+            "hit_rate": round(float(np.mean(np.array(ordered) > 0)), 4),
+            "avg_return": round(float(np.mean(ordered)), 4),
+            "median_return": round(float(np.median(ordered)), 4),
+            "lower_return": round(float(ordered[lower_idx]), 4),
+            "upper_return": round(float(ordered[upper_idx]), 4),
+        }
+
+    @staticmethod
     def _parse_kline_date(value: Any) -> date | None:
         if value is None:
             return None
@@ -72,6 +103,61 @@ class SentimentAnalyzer:
         volume_ratio = np.mean(volumes[-5:]) / max(np.mean(volumes[-20:-5]), 1e-9)
         score = 50 + price_change * 100 + (volume_ratio - 1) * 20
         return max(0.0, min(100.0, score))
+
+    @classmethod
+    def _build_price_momentum_validation(
+        cls,
+        ordered_klines: List[Dict[str, Any]],
+        current_price_momentum_score: float,
+        *,
+        forward_days: tuple[int, ...] = (5, 10, 20),
+    ) -> Dict[str, Any]:
+        if len(ordered_klines) < 60:
+            return {
+                "available": False,
+                "reason": "insufficient_kline",
+                "method": "price_momentum_bucket_proxy",
+            }
+
+        closes = [float(item.get("close", 0) or 0) for item in ordered_klines]
+        bucket = cls._score_bucket(current_price_momentum_score)
+        max_forward = max(int(day) for day in forward_days)
+        matched_scores = 0
+        forward_map = {int(day): [] for day in forward_days}
+
+        for idx in range(19, len(ordered_klines) - max_forward):
+            price_now = closes[idx]
+            if price_now <= 0:
+                continue
+            score = cls._price_momentum_score(ordered_klines[idx - 19: idx + 1])
+            if cls._score_bucket(score) != bucket:
+                continue
+            matched_scores += 1
+            for day in forward_days:
+                future_idx = idx + int(day)
+                if future_idx >= len(closes):
+                    continue
+                forward_map[int(day)].append((closes[future_idx] - price_now) / price_now)
+
+        if matched_scores <= 0:
+            return {
+                "available": False,
+                "reason": "no_bucket_matches",
+                "method": "price_momentum_bucket_proxy",
+                "bucket": bucket,
+            }
+
+        return {
+            "available": True,
+            "method": "price_momentum_bucket_proxy",
+            "bucket": bucket,
+            "proxy_component": "price_momentum",
+            "sample_count": int(matched_scores),
+            "forward_returns": {
+                f"{int(day)}d": cls._summarize_forward_returns(values)
+                for day, values in forward_map.items()
+            },
+        }
 
     # ── 分量 2: 新闻情绪（30%权重） ──
     @staticmethod
@@ -139,6 +225,7 @@ class SentimentAnalyzer:
         pm = self._price_momentum_score(klines)
         ns = self._news_sentiment_score(news_headlines or [])
         ff = self._fund_flow_score(fund_flow_data)
+        ordered_klines = self._sort_klines(klines)
 
         # 加权复合
         composite = pm * 0.4 + ns * 0.3 + ff * 0.3
@@ -150,6 +237,11 @@ class SentimentAnalyzer:
         else:
             sentiment = 'neutral'
 
+        historical_validation = self._build_price_momentum_validation(
+            ordered_klines,
+            current_price_momentum_score=pm,
+        )
+
         return {
             'sentiment': sentiment,
             'score': round(composite, 2),
@@ -159,6 +251,13 @@ class SentimentAnalyzer:
                 'fund_flow': round(ff, 2),
             },
             'weights': {'price_momentum': 0.4, 'news_sentiment': 0.3, 'fund_flow': 0.3},
+            'historical_validation': historical_validation,
+            'data_quality': {
+                'headline_count': len(news_headlines or []),
+                'fund_flow_available': bool(fund_flow_data),
+                'price_history_points': len(ordered_klines),
+                'historical_validation_available': bool(historical_validation.get('available')),
+            },
         }
     
     @staticmethod

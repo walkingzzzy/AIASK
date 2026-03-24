@@ -132,6 +132,47 @@ def _build_schedule_params(task_type: str, kwargs: dict, codes: list[str]) -> di
         params["scope_sources"] = str(
             kwargs.get("scope_sources") or "explicit,representative,active_pool,factory_targets"
         ).strip()
+    elif task_type == "vector_backfill_market_docs":
+        stock_codes = _normalize_codes(kwargs.get("stock_codes"))
+        if stock_codes:
+            params["stock_codes"] = stock_codes
+        elif codes:
+            params["stock_codes"] = list(codes)
+        doc_types = _normalize_codes(kwargs.get("doc_types"))
+        if doc_types:
+            params["doc_types"] = [str(item).strip().lower() for item in doc_types if str(item).strip()]
+        if kwargs.get("start_date"):
+            params["start_date"] = str(kwargs.get("start_date")).strip()
+        if kwargs.get("end_date"):
+            params["end_date"] = str(kwargs.get("end_date")).strip()
+        params["limit"] = max(int(kwargs.get("limit", 500) or 500), 1)
+        params["batch_size"] = max(int(kwargs.get("batch_size", 100) or 100), 1)
+        params["chunk_size"] = max(int(kwargs.get("chunk_size", 800) or 800), 200)
+        params["overlap"] = max(int(kwargs.get("overlap", 120) or 120), 0)
+        params["embed"] = _as_bool(kwargs.get("embed", True), True)
+        params["dry_run"] = _as_bool(kwargs.get("dry_run", False), False)
+        params["rebuild_existing"] = _as_bool(kwargs.get("rebuild_existing", False), False)
+        params["include_legacy_research_docs"] = _as_bool(
+            kwargs.get("include_legacy_research_docs", False),
+            False,
+        )
+    elif task_type == "vector_backfill_kline_patterns":
+        stock_codes = _normalize_codes(kwargs.get("stock_codes"))
+        if stock_codes:
+            params["stock_codes"] = stock_codes
+        elif codes:
+            params["stock_codes"] = list(codes)
+        params["code_limit"] = max(int(kwargs.get("code_limit", 200) or 200), 1)
+        params["window_size"] = max(int(kwargs.get("window_size", kwargs.get("days", 20)) or 20), 5)
+        params["lookback_days"] = max(int(kwargs.get("lookback_days", 180) or 180), params["window_size"])
+        params["max_windows_per_code"] = max(int(kwargs.get("max_windows_per_code", 1) or 1), 1)
+        params["step_days"] = max(int(kwargs.get("step_days", 5) or 5), 1)
+        params["vector_method"] = str(kwargs.get("vector_method", "returns") or "returns").strip().lower()
+        params["period"] = str(kwargs.get("period", "daily") or "daily").strip().lower()
+        params["adjust"] = str(kwargs.get("adjust", "") or "").strip().lower()
+        params["version"] = str(kwargs.get("version", "v1") or "v1").strip()
+        params["dry_run"] = _as_bool(kwargs.get("dry_run", False), False)
+        params["rebuild_existing"] = _as_bool(kwargs.get("rebuild_existing", False), False)
     else:
         period = kwargs.get("period")
         if period:
@@ -152,6 +193,21 @@ def _build_task_payload(task_type: str, codes: list[str], payload: dict | None =
             merged["stock_codes"] = stock_codes
     elif task_type == "factor_context":
         merged["codes"] = list(codes)
+    elif task_type == "vector_backfill_market_docs":
+        stock_codes = _normalize_codes(merged.get("stock_codes"))
+        if not stock_codes and codes:
+            stock_codes = list(codes)
+        if stock_codes:
+            merged["stock_codes"] = stock_codes
+        doc_types = _normalize_codes(merged.get("doc_types"))
+        if doc_types:
+            merged["doc_types"] = [str(item).strip().lower() for item in doc_types if str(item).strip()]
+    elif task_type == "vector_backfill_kline_patterns":
+        stock_codes = _normalize_codes(merged.get("stock_codes"))
+        if not stock_codes and codes:
+            stock_codes = list(codes)
+        if stock_codes:
+            merged["stock_codes"] = stock_codes
     return merged
 
 
@@ -197,7 +253,7 @@ async def _execute_sync_task(
     effective_codes = _normalize_codes(codes)
     effective_payload = _build_task_payload(task_type, effective_codes, payload)
 
-    if task_type not in {"core_market", "factor_context"} and not effective_codes:
+    if task_type not in {"core_market", "factor_context", "vector_backfill_market_docs", "vector_backfill_kline_patterns"} and not effective_codes:
         raise ValueError("需要提供codes参数")
 
     try:
@@ -222,6 +278,10 @@ async def _execute_sync_task(
             results = await _sync_core_market_now(effective_payload)
         elif task_type == "factor_context":
             results = await _sync_factor_context_now(effective_payload)
+        elif task_type == "vector_backfill_market_docs":
+            results = await _sync_vector_backfill_market_docs_now(effective_payload)
+        elif task_type == "vector_backfill_kline_patterns":
+            results = await _sync_vector_backfill_kline_patterns_now(effective_payload)
         else:
             results = await _sync_klines_now(effective_codes)
 
@@ -551,6 +611,17 @@ async def _load_market_aux_status(db) -> dict:
             "vector_documents_news": await conn.fetchval("SELECT COUNT(*) FROM vector_documents WHERE doc_type = 'news'") or 0,
             "vector_documents_notice": await conn.fetchval("SELECT COUNT(*) FROM vector_documents WHERE doc_type = 'notice'") or 0,
             "vector_documents_research": await conn.fetchval("SELECT COUNT(*) FROM vector_documents WHERE doc_type = 'research'") or 0,
+            "market_documents": await conn.fetchval("SELECT COUNT(*) FROM market_documents") or 0,
+            "market_doc_chunks": await conn.fetchval("SELECT COUNT(*) FROM market_doc_chunks") or 0,
+            "market_doc_chunks_news": await conn.fetchval("SELECT COUNT(*) FROM market_doc_chunks WHERE doc_type = 'news'") or 0,
+            "market_doc_chunks_notice": await conn.fetchval("SELECT COUNT(*) FROM market_doc_chunks WHERE doc_type = 'notice'") or 0,
+            "market_doc_chunks_research": await conn.fetchval("SELECT COUNT(*) FROM market_doc_chunks WHERE doc_type = 'research'") or 0,
+            "vector_collections": await conn.fetchval("SELECT COUNT(*) FROM vector_collections") or 0,
+            "vector_profiles": await conn.fetchval("SELECT COUNT(*) FROM vector_profiles") or 0,
+            "kline_pattern_windows": await conn.fetchval("SELECT COUNT(*) FROM kline_pattern_windows") or 0,
+            "vector_profiles_kline_patterns": await conn.fetchval(
+                "SELECT COUNT(*) FROM vector_profiles WHERE collection_name = 'kline_pattern_embeddings'"
+            ) or 0,
             "research_reports": await _fetch_meta("research_reports", date_col="publish_date"),
             "stock_fund_flow": await _fetch_meta("stock_fund_flow"),
         }
@@ -598,7 +669,7 @@ def register_data_sync_manager(mcp):
                 return ok({
                     'supported_actions': {
                         'status': '数据同步状态',
-                        'sync': '执行数据同步（K线/财务/因子上下文需 codes；core_market 可直接运行）',
+                        'sync': '执行数据同步（K线/财务需 codes；core_market/vector_backfill_market_docs/vector_backfill_kline_patterns 可直接运行）',
                         'get_task': '获取任务详情（需要 task_id）',
                         'list_tasks': '列出同步任务',
                         'cancel_task': '取消任务（需要 task_id）',
@@ -665,7 +736,7 @@ def register_data_sync_manager(mcp):
                 codes = _normalize_codes(kwargs.get('codes') or kwargs.get('stock_codes'))
                 priority = kwargs.get('priority', 'normal')
 
-                if task_type not in {'core_market', 'factor_context'} and not codes:
+                if task_type not in {'core_market', 'factor_context', 'vector_backfill_market_docs', 'vector_backfill_kline_patterns'} and not codes:
                     return fail('需要提供codes参数')
                 payload = _build_task_payload(task_type, codes, kwargs)
                 result = await _execute_sync_task(
@@ -750,7 +821,7 @@ def register_data_sync_manager(mcp):
                 schedule = str(kwargs.get('schedule', 'daily')).strip().lower()
                 enabled = _as_bool(kwargs.get('enabled', True), True)
                 
-                if task_type not in {'core_market', 'factor_context'} and not codes:
+                if task_type not in {'core_market', 'factor_context', 'vector_backfill_market_docs', 'vector_backfill_kline_patterns'} and not codes:
                     return fail('需要提供codes参数')
                 
                 schedule_id = f'schedule_{task_type}_{int(datetime.now().timestamp())}'
@@ -1007,4 +1078,101 @@ async def _sync_factor_context_now(kwargs: dict) -> dict:
         },
         'market_aux': market_aux,
         'stdout_tail': tail_lines,
+    }
+
+
+async def _sync_vector_backfill_market_docs_now(kwargs: dict) -> dict:
+    """回填历史市场文本到统一向量层。"""
+    from ...services.vector_backfill import backfill_market_document_vectors
+
+    db = get_db()
+    result = await backfill_market_document_vectors(
+        db,
+        stock_codes=kwargs.get('stock_codes') or kwargs.get('codes'),
+        doc_types=kwargs.get('doc_types'),
+        start_date=kwargs.get('start_date'),
+        end_date=kwargs.get('end_date'),
+        limit=kwargs.get('limit', 500),
+        batch_size=kwargs.get('batch_size', 100),
+        embed=kwargs.get('embed', True),
+        chunk_size=kwargs.get('chunk_size', 800),
+        overlap=kwargs.get('overlap', 120),
+        rebuild_existing=kwargs.get('rebuild_existing', False),
+        dry_run=kwargs.get('dry_run', False),
+        include_legacy_research_docs=kwargs.get('include_legacy_research_docs', False),
+    )
+    market_aux = await _load_market_aux_status(db)
+    return {
+        'success': 1,
+        'failed': 0,
+        'errors': [],
+        'args': {
+            'stock_codes': result.get('stock_codes'),
+            'doc_types': result.get('doc_types'),
+            'start_date': result.get('start_date'),
+            'end_date': result.get('end_date'),
+            'limit': result.get('limit'),
+            'batch_size': result.get('batch_size'),
+            'embed': result.get('embed'),
+            'chunk_size': result.get('chunk_size'),
+            'overlap': result.get('overlap'),
+            'rebuild_existing': result.get('rebuild_existing'),
+            'dry_run': result.get('dry_run'),
+            'include_legacy_research_docs': result.get('include_legacy_research_docs'),
+        },
+        'backfill': result,
+        'market_aux': market_aux,
+        'message': (
+            f"market_doc_backfill docs={int(result.get('saved_docs') or 0)} "
+            f"chunks={int(result.get('saved_chunks') or 0)} "
+            f"embedded={int(result.get('embedded_chunks') or 0)}"
+        ),
+    }
+
+
+async def _sync_vector_backfill_kline_patterns_now(kwargs: dict) -> dict:
+    """回填 K 线模式窗口到统一向量层。"""
+    from ...services.pattern_embedding_pipeline import backfill_kline_pattern_vectors
+
+    db = get_db()
+    result = await backfill_kline_pattern_vectors(
+        db,
+        stock_codes=kwargs.get('stock_codes') or kwargs.get('codes'),
+        code_limit=kwargs.get('code_limit', 200),
+        window_size=kwargs.get('window_size', kwargs.get('days', 20)),
+        lookback_days=kwargs.get('lookback_days', 180),
+        max_windows_per_code=kwargs.get('max_windows_per_code', 1),
+        step_days=kwargs.get('step_days', 5),
+        vector_method=kwargs.get('vector_method', 'returns'),
+        period=kwargs.get('period', 'daily'),
+        adjust=kwargs.get('adjust', ''),
+        version=kwargs.get('version', 'v1'),
+        rebuild_existing=kwargs.get('rebuild_existing', False),
+        dry_run=kwargs.get('dry_run', False),
+    )
+    market_aux = await _load_market_aux_status(db)
+    return {
+        'success': 1,
+        'failed': 0,
+        'errors': [],
+        'args': {
+            'stock_codes': result.get('stock_codes'),
+            'code_limit': kwargs.get('code_limit', 200),
+            'window_size': result.get('window_size'),
+            'lookback_days': result.get('lookback_days'),
+            'max_windows_per_code': result.get('max_windows_per_code'),
+            'step_days': result.get('step_days'),
+            'vector_method': result.get('vector_method'),
+            'period': result.get('period'),
+            'adjust': result.get('adjust'),
+            'version': result.get('version'),
+            'rebuild_existing': result.get('rebuild_existing'),
+            'dry_run': result.get('dry_run'),
+        },
+        'backfill': result,
+        'market_aux': market_aux,
+        'message': (
+            f"kline_pattern_backfill windows={int(result.get('saved_windows') or 0)} "
+            f"profiles={int(result.get('saved_profiles') or 0)}"
+        ),
     }

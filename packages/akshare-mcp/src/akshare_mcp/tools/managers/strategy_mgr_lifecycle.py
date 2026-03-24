@@ -1,5 +1,6 @@
 """Strategy manager lifecycle action handlers: submit, publish, archive, lifecycle_scan, quality gates."""
 
+import inspect
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -16,6 +17,24 @@ from .strategy_mgr_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _run_once_accepts_db_arg(run_once) -> bool:
+    """Prefer passing the current db, but tolerate legacy scheduler stubs."""
+    try:
+        params = list(inspect.signature(run_once).parameters.values())
+    except (TypeError, ValueError):
+        return True
+    return any(
+        param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.VAR_KEYWORD,
+        )
+        for param in params
+    )
 
 
 async def handle_review_report_recheck(db, params: dict) -> dict:
@@ -158,7 +177,10 @@ async def handle_factory_run_once(db, params: dict) -> dict:
     from strategy_factory import get_strategy_factory_scheduler
 
     scheduler = get_strategy_factory_scheduler()
-    return ok(await scheduler.run_once())
+    run_once = scheduler.run_once
+    if _run_once_accepts_db_arg(run_once):
+        return ok(await run_once(db))
+    return ok(await run_once())
 
 
 async def handle_factory_runs(db, params: dict) -> dict:

@@ -5,20 +5,31 @@
 > **校准说明**：本指南优先描述当前仓库中更容易验证的接入方式与约束。默认推荐 **stdio**；HTTP / SSE / streamable-http 仅作为附加模式说明，不应被默认视为“已经在所有环境下验证通过”。
 
 ## 1. 配置文件位置
-- Cursor: `.cursor/mcp.json` 或 `.cursor/settings/mcp.json`
-- Augment: `.augment/mcp.json` 或 `.kiro/settings/mcp.json`
+
+> 校准边界：不同 AI 客户端版本的 MCP 配置路径可能变化。当前仓库内已有明确示例的是 `.kiro/settings/mcp.json`；其余客户端路径请以对应客户端版本文档为准。
+
+- Cursor：常见写法为 `.cursor/mcp.json` 或 `.cursor/settings/mcp.json`
+- Kiro / 仓库内现有示例：`.kiro/settings/mcp.json`
+- 其他客户端（如 Augment）：请以客户端当前版本文档为准，不要把本文示例路径当成唯一事实
 
 ## 2. 适用范围与命名说明
 - 适用服务目录：`packages/akshare-mcp`
-- Python 包名：`akshare-mcp`
+- Python 分发名：`akshare-mcp`
+- Python import 包名：`akshare_mcp`
 - MCP 服务名：可以自定义；下文统一用 `akshare-mcp`，避免与历史文档中的 `akshare-stock` 混用
+
+补充说明：
+- `packages/akshare-mcp/README.md` 仍保留“安装后通过 `akshare-mcp` CLI / `uvx` 启动”的示例
+- 本文优先给出“直接在仓库工作区内启动 `start_server.py`”的方式，因为这条路径对本项目开发和本地排障更容易验证
+- `start_server.py` 通过 `akshare_mcp.env_loader.load_mcp_env()` 会依次尝试 `packages/akshare-mcp/.env`、`cwd/packages/akshare-mcp/.env` 与 `cwd/.env`；因此从包目录或仓库根目录启动都可能生效，但前者更少路径歧义
+- 若你走已安装 CLI 路径，请确保环境变量、工作目录与 `PYTHONPATH` 仍能正确覆盖到当前仓库依赖
 
 ## 3. 推荐配置（stdio）
 
 ### 3.1 通用原则
 - 优先使用 **stdio**，因为这是当前代码里最直接、最保守、最容易验证的接入方式
 - `start_server.py` 已明确要求 stdio 协议日志走 `stderr`，避免污染协议输出
-- `cwd` 建议始终指向 `packages/akshare-mcp`
+- `cwd` 优先指向 `packages/akshare-mcp`；若必须从仓库根目录启动，也应显式核对 `.env` 与 `PYTHONPATH` 的命中路径
 - `PYTHONPATH` 建议指向 `packages/akshare-mcp/src`
 
 ### 3.2 Windows — 使用 uv
@@ -124,9 +135,9 @@ uv sync --extra legacy
 4. 禁止 token passthrough：`MCP_ALLOW_TOKEN_PASSTHROUGH=false`
 
 **证据边界说明**：
-- 本次校对已在 `start_server.py` 中确认安全默认值设置：`MCP_HOST=127.0.0.1`、`MCP_ALLOW_TOKEN_PASSTHROUGH=false`
-- 但“HTTP 模式下服务端一定会在启动时强制拒绝所有不满足条件的配置”这一点，本轮未完整追到全部校验实现链路
-- 因此本节应理解为**推荐安全基线**，而不是对所有传输模式都已完成逐项验收的声明
+- `packages/akshare-mcp/start_server.py` 已确认安全默认值设置：`MCP_HOST=127.0.0.1`、`MCP_ALLOW_TOKEN_PASSTHROUGH=false`
+- `packages/akshare-mcp/src/akshare_mcp/server.py::_enforce_http_security_baseline()` 已确认会对 `http / streamable-http / sse` 执行 host、origin、auth、token passthrough 四项硬校验
+- 因此本节既是推荐基线，也是当前服务端代码里已看到的启动约束；但“某个具体 AI 客户端配置已端到端验证通过”仍需按客户端单独回归
 
 ## 5. HTTP 安全示例
 ```json
@@ -153,13 +164,13 @@ uv sync --extra legacy
 
 ### 6.1 服务无法导入模块
 - 检查 `PYTHONPATH` 是否指向 `packages/akshare-mcp/src`
-- 检查当前工作目录是否为 `packages/akshare-mcp`
+- 检查当前工作目录是否与你配置的 `.env` / `PYTHONPATH` 路径一致；最省事的做法仍是指向 `packages/akshare-mcp`
 - 检查是否使用了正确的 Python / `.venv`
 
 ### 6.2 HTTP 模式风险较高或行为不符合预期
 - 先回退到 stdio 模式，确认服务本体可正常启动
 - 再逐项检查 `MCP_HOST`、`MCP_ALLOWED_ORIGINS`、`MCP_AUTH_MODE`、`MCP_ALLOW_TOKEN_PASSTHROUGH`
-- 若需要把 HTTP 模式写成正式现状，请先补一轮专门验证
+- 若需要把某个客户端的 HTTP 接入写成“已验证现状”，仍需补一轮该客户端的专门回归
 
 ### 6.3 行情数据源降级
 - 服务可能优先尝试主数据源，再按实现走降级链

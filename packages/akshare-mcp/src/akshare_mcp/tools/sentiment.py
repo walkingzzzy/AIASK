@@ -135,10 +135,22 @@ def register(mcp):
             try:
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
-                        "SELECT content FROM vector_documents WHERE stock_code = $1 AND doc_type = 'news' ORDER BY date DESC LIMIT 20",
+                        """
+                        SELECT chunk_text AS content
+                        FROM market_doc_chunks
+                        WHERE stock_code = $1 AND LOWER(COALESCE(doc_type, '')) = 'news'
+                        ORDER BY published_at DESC NULLS LAST, id DESC
+                        LIMIT 20
+                        """,
                         code,
                     )
                     news_headlines = [r['content'][:200] for r in rows if r.get('content')]
+                    if not news_headlines:
+                        rows = await conn.fetch(
+                            "SELECT content FROM vector_documents WHERE stock_code = $1 AND doc_type = 'news' ORDER BY date DESC LIMIT 20",
+                            code,
+                        )
+                        news_headlines = [r['content'][:200] for r in rows if r.get('content')]
             except Exception:
                 pass
 

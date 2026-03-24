@@ -170,9 +170,13 @@ async def test_resolve_scope_codes_prefers_latest_factory_run_active_pool(monkey
                 "factor_research": {
                     "summary": {
                         "factor_source_mode": "governed_candidate_pool",
+                        "governed_blocked_candidate_count": 2,
+                        "governed_exclusion_reason_counts": {"lookahead_risk_high": 1},
                     },
                     "active_candidate_pool": {
                         "count": 2,
+                        "excluded_count": 2,
+                        "exclusion_reason_counts": {"lookahead_risk_high": 1},
                         "top_candidates": [
                             {"artifact_id": "factor_validation_001", "name": "cand_a"},
                         ],
@@ -202,6 +206,9 @@ async def test_resolve_scope_codes_prefers_latest_factory_run_active_pool(monkey
     assert summary["active_pool"]["snapshot_date"] == "2026-03-23"
     assert summary["active_pool"]["artifact_ids"] == ["factor_validation_001", "factor_validation_002"]
     assert summary["active_pool"]["factor_source_mode"] == "governed_candidate_pool"
+    assert summary["active_pool"]["candidate_count"] == 2
+    assert summary["active_pool"]["blocked_candidate_count"] == 2
+    assert summary["active_pool"]["exclusion_reason_counts"]["lookahead_risk_high"] == 1
 
 
 @pytest.mark.asyncio

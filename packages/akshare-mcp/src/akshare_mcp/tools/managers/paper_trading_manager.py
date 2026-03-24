@@ -3,7 +3,7 @@
 import json
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from ...storage import get_db
 from ...utils import ok, fail
 from ...services.cost_model import build_cost_model
@@ -52,10 +52,156 @@ def _db_supports_acquire(db) -> bool:
     return callable(acquire)
 
 
+def _safe_int(value):
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
 def _canonical_stock_code(code: str | None) -> str:
     text = str(code or '').strip()
     digits = ''.join(ch for ch in text if ch.isdigit())
     return digits[-6:] if len(digits) >= 6 else text
+
+
+def _event_timestamp(value=None) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    text = str(value or "").strip()
+    if text:
+        return text
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _coerce_event_payload(payload) -> dict:
+    if isinstance(payload, dict):
+        return dict(payload)
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload or "{}")
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _event_type_profile(event_type: str) -> dict:
+    profile_map = {
+        "created": {"event_category": "order_lifecycle", "status": "pending"},
+        "filled": {"event_category": "execution", "status": "filled"},
+        "cancelled": {"event_category": "order_lifecycle", "status": "cancelled"},
+        "risk_rejected": {"event_category": "risk", "status": "rejected"},
+    }
+    return profile_map.get(str(event_type or "").strip(), {"event_category": "misc", "status": "unknown"})
+
+
+def _build_order_event_object(
+    *,
+    order_id: str,
+    event_type: str,
+    account_id: str | None = None,
+    code: str | None = None,
+    payload: dict | None = None,
+    created_at=None,
+) -> dict:
+    raw_payload = _coerce_event_payload(payload)
+    if raw_payload.get("schema_version") == "v1" and raw_payload.get("event_type") == event_type:
+        event_object = dict(raw_payload)
+    else:
+        profile = _event_type_profile(event_type)
+        normalized_code = _canonical_stock_code(code or raw_payload.get("code"))
+        order_block = {
+            "order_type": raw_payload.get("order_type"),
+            "direction": raw_payload.get("direction"),
+            "shares": _safe_int(raw_payload.get("shares") or raw_payload.get("quantity")),
+            "price": _safe_float(raw_payload.get("price")),
+            "stop_price": _safe_float(raw_payload.get("stop_price")),
+            "amount": _safe_float(raw_payload.get("amount")),
+            "commission": _safe_float(raw_payload.get("commission")),
+        }
+        event_object = {
+            "schema_version": "v1",
+            "order_id": str(order_id),
+            "account_id": account_id,
+            "code": normalized_code or (code or raw_payload.get("code")),
+            "event_type": str(event_type),
+            "event_category": profile["event_category"],
+            "status": profile["status"],
+            "occurred_at": _event_timestamp(raw_payload.get("occurred_at") or created_at),
+            "order": order_block,
+            "risk": {
+                "reason": str(raw_payload.get("reason") or "").strip() or None,
+            },
+            "transition": {
+                "from_status": raw_payload.get("from_status"),
+                "to_status": profile["status"],
+            },
+            "raw_payload": raw_payload,
+        }
+
+    event_object.setdefault("schema_version", "v1")
+    event_object.setdefault("order_id", str(order_id))
+    event_object.setdefault("account_id", account_id)
+    event_object.setdefault("code", _canonical_stock_code(code or event_object.get("code")))
+    event_object.setdefault("event_type", str(event_type))
+    profile = _event_type_profile(str(event_object.get("event_type") or event_type))
+    event_object.setdefault("event_category", profile["event_category"])
+    event_object.setdefault("status", profile["status"])
+    event_object["occurred_at"] = _event_timestamp(event_object.get("occurred_at") or created_at)
+    event_object.setdefault("order", {})
+    event_object.setdefault("risk", {"reason": None})
+    event_object.setdefault("transition", {"from_status": None, "to_status": event_object.get("status")})
+    event_object.setdefault("raw_payload", raw_payload)
+    return event_object
+
+
+def _serialize_order_event_row(row) -> dict:
+    item = dict(row) if isinstance(row, dict) else dict(row or {})
+    payload_raw = _coerce_event_payload(item.get("payload"))
+    event_object = _build_order_event_object(
+        order_id=str(item.get("order_id") or ""),
+        event_type=str(item.get("event_type") or ""),
+        account_id=item.get("account_id"),
+        code=item.get("code"),
+        payload=payload_raw,
+        created_at=item.get("created_at"),
+    )
+    return {
+        **item,
+        "payload_raw": payload_raw,
+        "payload": event_object,
+        "event_object": event_object,
+        "event_schema_version": event_object.get("schema_version"),
+        "event_category": event_object.get("event_category"),
+        "event_status": event_object.get("status"),
+        "occurred_at": event_object.get("occurred_at"),
+    }
+
+
+def _summarize_order_events(events: list[dict]) -> dict:
+    by_type: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    by_status: dict[str, int] = {}
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        event_category = str(event.get("event_category") or "")
+        event_status = str(event.get("event_status") or "")
+        if event_type:
+            by_type[event_type] = by_type.get(event_type, 0) + 1
+        if event_category:
+            by_category[event_category] = by_category.get(event_category, 0) + 1
+        if event_status:
+            by_status[event_status] = by_status.get(event_status, 0) + 1
+    return {
+        "schema_version": "v1",
+        "by_type": by_type,
+        "by_category": by_category,
+        "by_status": by_status,
+    }
 
 
 def _normalize_risk_pct(value, default: float) -> float:
@@ -492,10 +638,17 @@ async def _record_order_event(conn, order_id: str, event_type: str,
                               payload: dict | None = None):
     """订单事件审计（容错写入，不影响主流程）"""
     try:
+        event_object = _build_order_event_object(
+            order_id=str(order_id),
+            event_type=str(event_type),
+            account_id=account_id,
+            code=code,
+            payload=payload,
+        )
         await conn.execute(
             """INSERT INTO order_events (order_id, account_id, code, event_type, payload, created_at)
                VALUES ($1, $2, $3, $4, $5::jsonb, NOW())""",
-            str(order_id), account_id, code, event_type, json.dumps(payload or {})
+            str(order_id), account_id, code, event_type, json.dumps(event_object)
         )
     except Exception as e:
         logger.debug("[PaperTrading] 记录 order_events 失败: %s", e)
@@ -799,11 +952,13 @@ def register_paper_trading_manager(mcp):
                             "SELECT * FROM order_events WHERE account_id=$1 ORDER BY created_at DESC LIMIT $2",
                             account_id, limit
                         )
+                events = [_serialize_order_event_row(row) for row in rows]
                 return ok({
                     'order_id': str(order_id) if order_id else None,
                     'account_id': account_id,
-                    'events': [dict(r) for r in rows],
-                    'count': len(rows),
+                    'events': events,
+                    'summary': _summarize_order_events(events),
+                    'count': len(events),
                 })
 
             # --- summary ---

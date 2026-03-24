@@ -52,6 +52,23 @@ def _resp_data(resp: Any) -> dict[str, Any]:
     return dict(resp.get("data") or {})
 
 
+_TECHNICAL_NOISE_PATTERNS = (
+    'asyncio', 'event loop', 'coroutine', 'traceback', 'poolconnectionholder',
+    'connectiondoesnotexist', 'at 0x', 'object at ', 'future:', '<', '>',
+)
+
+
+def _sanitize_warning_message(message: str) -> str:
+    """将 Python 异常技术细节替换为简短友好的标签，避免污染业务字段。"""
+    msg_lower = message.lower()
+    if any(pat in msg_lower for pat in _TECHNICAL_NOISE_PATTERNS):
+        # 取冒号前第一段作为简短标识，其余丢弃
+        short = message.split(':')[0].strip()
+        # 若仍然过长，只保留前 60 字符
+        return short[:60] if len(short) > 60 else short
+    return message[:120] if len(message) > 120 else message
+
+
 def _append_issue(
     *,
     warnings: list[str],
@@ -62,8 +79,9 @@ def _append_issue(
 ) -> None:
     message = str(error or (response or {}).get("error") or "").strip()
     if message:
-        warnings.append(f"{label}:{message}")
-        fallback_reasons.append(f"{label}:{message}")
+        sanitized = _sanitize_warning_message(message)
+        warnings.append(f"{label}:{sanitized}")
+        fallback_reasons.append(f"{label}:{sanitized}")
     else:
         warnings.append(label)
 
@@ -454,7 +472,7 @@ async def build_user_context(user_id: str | None) -> dict[str, Any]:
                     result["profile_source"] = "app_users"
                     source_chain.append("db.app_users")
             except Exception as exc:
-                warnings.append(f"app_users:{exc}")
+                warnings.append(f"app_users:{_sanitize_warning_message(str(exc))}")
 
             try:
                 row = await conn.fetchrow(
@@ -472,7 +490,7 @@ async def build_user_context(user_id: str | None) -> dict[str, Any]:
                         result["profile_source"] = "users"
                     source_chain.append("db.users")
             except Exception as exc:
-                warnings.append(f"users:{exc}")
+                warnings.append(f"users:{_sanitize_warning_message(str(exc))}")
 
             try:
                 rows = await conn.fetch(
@@ -510,9 +528,9 @@ async def build_user_context(user_id: str | None) -> dict[str, Any]:
                         }
                     source_chain.append("db.user_profile_snapshots")
             except Exception as exc:
-                warnings.append(f"user_profile_snapshots:{exc}")
+                warnings.append(f"user_profile_snapshots:{_sanitize_warning_message(str(exc))}")
     except Exception as exc:
-        warnings.append(f"db_acquire:{exc}")
+        warnings.append(f"db_acquire:{_sanitize_warning_message(str(exc))}")
 
     if not app_users_hit and not users_hit:
         result["profile_source"] = "fallback"

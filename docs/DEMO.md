@@ -2,6 +2,7 @@
 
 > 本文用于展示 AIASK 项目当前可见能力的典型使用方式。
 > 说明：本文属于演示文档，不代表所有场景在任意环境下都可直接运行；工具数量、Skills 数量与能力覆盖请以当前运行时审计结果和实际部署环境为准。
+> 约束：本文示例只使用当前仓库可见的 skill / tool 名称，但不代表每个场景都已经过当前机器的端到端回归。
 
 ## 1. 快速开始（5 分钟上手）
 
@@ -44,7 +45,7 @@
 |---|---|---|
 | 行情查询 | 实时价格、盘口、分钟级波动跟踪 | Skills: `akshare-market` / Tools: quote、kline、order_book |
 | 基本面分析 | 财务质量、估值、研报与公告联合判断 | Skills: `akshare-fundamental` / Tools: financials、valuation、research |
-| 量化回测 | 策略有效性验证与参数对比 | Skills: `akshare-quant-research-process` / Tools: backtest、performance |
+| 量化回测 | 策略有效性验证与参数对比 | Skills: `akshare-quant-research-process` / Tools: `run_simple_backtest`、`backtest_manager` |
 | 组合管理 | 持仓优化、风险暴露、压力测试 | Skills: `akshare-fund-manager-pro` / Tools: portfolio、risk、optimize |
 | 告警与跟踪 | 价格提醒、条件组合、日报输出 | Skills: `akshare-macro-options-alerts` / Tools: alerts、watchlist、report |
 
@@ -103,18 +104,21 @@
 
 **推荐使用**：
 - Skills：`akshare-quant-research-process`
-- MCP Tools：`run_simple_backtest`、`performance_manager`
+- MCP Tools：`run_simple_backtest`
 
 **对话式测试**
 - 你对 AI 说：
   > 用均线交叉策略回测 600519（2023-01-01 到 2025-12-31），输出收益率、最大回撤、夏普比率，并给参数调优建议。
 - AI 预期调用：
   1. `run_simple_backtest(code="600519", strategy="ma_cross", start_date="2023-01-01", end_date="2025-12-31", short_period=5, long_period=20)`
-  2. `performance_manager(action="backtest_metrics", kwargs='{"artifact_id":"..."}')`
 - 预期返回（示例）：
   - 累计收益、年化收益、最大回撤、夏普
   - 交易次数、胜率、盈亏比
   - 参数建议（如 short/long 周期可调范围）
+
+补充说明：
+- `run_simple_backtest` 当前直接返回回测结果，不会自动生成可供 `performance_manager(action="backtest_metrics")` 二次查询的 `artifact_id`
+- 若需要“落库后再查绩效”的演示，应改用 `backtest_manager`
 
 **关键配置**：并行优化时可安装 `ray[default]`。
 
@@ -207,7 +211,7 @@
 
 ## 6. 备注
 - 本文示例聚焦“可运行与可复现”；不同环境下数据源命中路径会不同（主源/降级源）。
-- 所有能力均基于当前项目实际实现，不含理想化占位描述。
+- 本文示例使用的 skill / tool 名称均来自当前仓库可见实现，但是否能在当前环境完整跑通仍受数据库、令牌、上游数据源与客户端配置影响。
 - 如需扩展演示，可按相同模板新增“输入参数 + 预期输出 + 配置 + 注意事项”。
 
 ---
@@ -217,7 +221,7 @@
 > 目标：让不懂金融术语、不会写代码的用户，也能在 1~3 分钟内得到“可执行建议 + 风险边界 + 数据来源”。
 
 ### 7.1 新手模式统一输出卡片
-每次回答固定输出 6 项：
+演示中建议固定输出 6 项：
 1. **结论**：买入 / 观望 / 减仓
 2. **三条理由**：只讲结论依据，不堆术语
 3. **怎么做**：仓位、价格区间、止损/止盈
@@ -256,7 +260,7 @@
 **你对 AI 说：**
 > 我 8 天前买了 000001，成本 11.20，帮我判断现在该持有还是减仓，并告诉我止盈止损位。
 
-**AI 预期调用（内部）**：`should_i_sell`、`get_realtime_quote`、`alerts_manager`
+**AI 预期调用（内部）**：`should_i_sell`、`get_realtime_quote`；若用户要求顺带创建提醒，再调用 `alerts_manager`
 
 **你会看到（示例）**：
 - 结论：**减仓 20% + 设置保护线**
@@ -269,7 +273,7 @@
 **你对 AI 说：**
 > 今天整体市场风险高不高？我现在 80% 仓位要不要降一点？
 
-**AI 预期调用（内部）**：`generate_daily_report`、`sentiment_manager(market_sentiment)`、`risk_manager`
+**AI 预期调用（内部）**：`generate_daily_report`、`sentiment_manager(action="market_sentiment")`、`get_market_sentiment_context`
 
 **你会看到（示例）**：
 - 结论：**黄灯（偏谨慎）**
@@ -282,7 +286,7 @@
 **你对 AI 说：**
 > 我先不实盘，按你的建议做 7 天模拟交易，看看结果再说。
 
-**AI 预期调用（内部）**：`paper_trading_manager`、`run_simple_backtest`、`performance_manager`
+**AI 预期调用（内部）**：`paper_trading_manager`；若要先补一段历史回测基线，再决定是否进入模拟，可补 `run_simple_backtest`
 
 **你会看到（示例）**：
 - 结果：模拟收益、最大回撤、胜率、执行纪律评分
@@ -291,11 +295,17 @@
 - 数据来源：历史 + 实时行情
 - 时效性：每日收盘更新
 
+补充说明：
+- `paper_trading_manager` 当前负责模拟账户、委托、NAV 历史和订单流水；若要看模拟账户绩效，更接近实际链路的是 `summary` / `nav_history` / `orders`
+- `run_simple_backtest` 更适合做“历史基线参考”，不等价于模拟账户的真实 7 天运行结果
+- `performance_manager` 当前面向组合与回测绩效，不是模拟交易账户的直接查询入口
+
 ---
 
-## 8. 用户回答卡片 JSON（前端渲染协议）
+## 8. 用户回答卡片 JSON（前端渲染示例载荷）
 
-> 用途：前端可直接渲染“新手模式”回答，不暴露底层工具细节。
+> 用途：给前端演示“新手模式”回答的渲染格式。
+> 边界：本节是渲染示例，不是当前 MCP 层稳定 contract；统一决策稳定契约请以 `docs/plans/统一决策对象协议.md` 为准。
 
 ### 8.1 JSON 结构（示例）
 ```json
@@ -345,14 +355,14 @@
 - `confidence`：0~1，小于 0.55 默认输出“观望”
 - `reasons`：建议 2~4 条，每条不超过 18 字
 - `risks`：至少 1 条，最多 3 条
-- `data_provenance`：至少 1 条，必须带 `timestamp`
-- `compliance_notice`：必须返回，不可省略
+- `data_provenance`：建议至少 1 条，并带 `timestamp`
+- `compliance_notice`：演示载荷建议返回；BFF 归一化层当前也会在缺失时补默认免责声明
 
 ### 8.3 前端展示建议
 - 首屏只显示：结论、动作、风险（3 秒可读）
 - 二级展开：理由、来源、时效性
 - 风险高时（如 `action=reduce`）：按钮默认“先看风险解释”
-- 支持一键创建提醒：把 `stop_loss` / `take_profit` 自动写入告警服务
+- 若后续增强前端联动，可把 `stop_loss` / `take_profit` 映射为告警创建动作；当前默认卡片并未直接内置“一键创建提醒”按钮
 
 ---
 

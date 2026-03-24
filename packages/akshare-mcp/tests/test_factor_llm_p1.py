@@ -93,6 +93,12 @@ async def test_validate_factor_candidate_pipeline_produces_metrics():
     assert result["metrics"]["sample_dates"] >= 10
     assert result["metrics"]["rank_ic_mean"] > 0.8
     assert result["coverage"]["processed_codes"] == 4
+    assert result["lookahead_audit"]["available"] is True
+    assert result["lookahead_audit"]["risk_level"] == "low"
+    assert result["lookahead_audit"]["tail_check"]["passed"] is True
+    assert result["multiple_testing"]["available"] is True
+    assert "deflated_sharpe" in result["multiple_testing"]
+    assert "pbo" in result["multiple_testing"]
     assert result["oos_validation"]["available"] is True
     assert result["robustness"]["available"] is True
     assert result["similarity"]["available"] is True
@@ -142,6 +148,28 @@ async def test_quant_manager_validate_factor_candidate_from_artifact(monkeypatch
     assert result["data"]["candidate_resolution"]["resolved_from"] == "artifact_candidate"
     assert result["data"]["metrics"]["rank_ic_mean"] > 0.8
     assert result["data"]["coverage"]["processed_codes"] == 4
+    assert result["data"]["multiple_testing"]["available"] is True
     assert result["data"]["factor_validation_report"]["oos"]["available"] is True
+    assert result["data"]["factor_validation_report"]["multiple_testing"]["available"] is True
     assert result["data"]["factor_validation_report"]["robustness"]["available"] is True
     assert result["data"]["rating"]["grade"] in {"A", "B"}
+
+
+@pytest.mark.asyncio
+async def test_validate_factor_candidate_pipeline_flags_suspicious_future_literal():
+    from akshare_mcp.services.factor_validation_pipeline import validate_factor_candidate_pipeline
+
+    result = await validate_factor_candidate_pipeline(
+        _ValidationDB(),
+        _build_candidate("delay(close, -1)"),
+        codes=["000001", "000002", "000003", "000004"],
+        lookback_bars=180,
+        horizon_days=5,
+        max_dates=30,
+    )
+
+    assert result["success"] is True
+    assert result["lookahead_audit"]["available"] is True
+    assert result["lookahead_audit"]["risk_level"] == "high"
+    assert "negative_delay_or_delta_literal" in result["lookahead_audit"]["candidate_expression"]["suspicious_tokens"]
+    assert "lookahead_audit_failed" in result["warnings"]

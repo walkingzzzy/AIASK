@@ -74,8 +74,39 @@ function shortFactoryRunTime(value?: string | null) {
   return String(value).replace('T', ' ').slice(0, 16);
 }
 
+function getFactoryRunStatusLabel(status?: string | null) {
+  switch (String(status ?? '').trim().toLowerCase()) {
+    case 'success':
+      return '成功';
+    case 'partial':
+      return '部分成功';
+    case 'skipped':
+      return '已跳过';
+    case 'failed':
+      return '失败';
+    default:
+      return String(status ?? '-');
+  }
+}
+
+function getFactoryRunStatusVariant(status?: string | null): 'success' | 'warning' | 'danger' | 'neutral' {
+  switch (String(status ?? '').trim().toLowerCase()) {
+    case 'success':
+      return 'success';
+    case 'partial':
+      return 'warning';
+    case 'failed':
+      return 'danger';
+    case 'skipped':
+      return 'neutral';
+    default:
+      return 'neutral';
+  }
+}
+
 function detectFailedStage(run?: FactoryRunItem | null) {
   if (!run || run.status !== 'failed') return '-';
+  if (run.pipeline?.failed_stage) return run.pipeline.failed_stage;
   const order = ['collect', 'spawn', 'backtest', 'deduplicate', 'submit', 'elimination'];
   const stages = run.stages ?? {};
   for (const name of order) {
@@ -322,9 +353,7 @@ function FactoryRunComparisonTable({ runs }: { runs: FactoryRunItem[] }) {
   const rows = [
     {
       label: '状态',
-      value: (run: FactoryRunItem) => (
-        run.status === 'success' ? '成功' : run.status === 'failed' ? '失败' : (run.status ?? '-')
-      ),
+      value: (run: FactoryRunItem) => getFactoryRunStatusLabel(run.status),
     },
     { label: '候选生成', value: (run: FactoryRunItem) => String(run.summary?.candidates_spawned ?? 0) },
     { label: '去重后', value: (run: FactoryRunItem) => String(run.summary?.candidates_after_dedup ?? 0) },
@@ -464,8 +493,16 @@ function FactoryRunTrendPanel({ runs, metricKey }: { runs: FactoryRunItem[]; met
                   return (
                     <div key={`${activeMetric.key}-${run.run_id ?? idx}`} className="flex-1 min-w-0">
                       <div className="h-20 flex items-end">
-                      <div
-                          className={`w-full rounded-t ${run.status === 'failed' ? 'bg-danger/70' : 'bg-primary/70'}`}
+                        <div
+                          className={`w-full rounded-t ${
+                            run.status === 'failed'
+                              ? 'bg-danger/70'
+                              : run.status === 'partial'
+                                ? 'bg-warning/70'
+                                : run.status === 'skipped'
+                                  ? 'bg-text-secondary/40'
+                                  : 'bg-primary/70'
+                          }`}
                           style={{ height: `${height}%` }}
                           title={`${activeMetric.label}: ${formatFactoryMetricValue(value, digits)}`}
                         />
@@ -811,6 +848,12 @@ export function FactoryDashboard({
       {factoryStatus?.last_result?.status === 'failed' && (
         <p className="mt-3 mb-0 text-sm text-danger">最近一次工厂运行失败：{factoryStatus?.last_result?.error ?? '未知错误'}</p>
       )}
+      {factoryStatus?.last_result?.status === 'partial' && (
+        <p className="mt-3 mb-0 text-sm text-warning">最近一次工厂运行为降级完成，建议优先查看阶段详情和降级原因。</p>
+      )}
+      {factoryStatus?.last_result?.status === 'skipped' && (
+        <p className="mt-3 mb-0 text-sm text-text-secondary">最近一次工厂运行被跳过，通常是运行开关关闭或 readiness 未通过。</p>
+      )}
       {runFactoryError && <p className="mt-3 mb-0 text-sm text-danger">{runFactoryError}</p>}
       {factoryRunsLoading && <p className="mt-3 mb-0 text-sm text-text-secondary">加载运行历史...</p>}
       {!factoryRunsLoading && factoryRuns.length === 0 && (
@@ -822,6 +865,8 @@ export function FactoryDashboard({
           {[
             { key: 'all', label: '全部' },
             { key: 'success', label: '成功' },
+            { key: 'partial', label: '部分成功' },
+            { key: 'skipped', label: '已跳过' },
             { key: 'failed', label: '失败' },
           ].map((item) => (
             <button
@@ -843,7 +888,9 @@ export function FactoryDashboard({
           {filteredRuns.map((item) => (
             <div key={item.run_id ?? item.started_at} className="rounded border border-border bg-surface-alt px-3 py-2">
               <div className="flex items-center justify-between gap-3 text-sm">
-                <span className="font-medium">{item.status === 'success' ? '成功' : item.status === 'failed' ? '失败' : (item.status ?? '-')}</span>
+                <Badge variant={getFactoryRunStatusVariant(item.status)}>
+                  {getFactoryRunStatusLabel(item.status)}
+                </Badge>
                 <span className="text-text-secondary">{item.completed_at ?? item.started_at ?? '-'}</span>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-2 text-xs text-text-secondary">
@@ -862,6 +909,21 @@ export function FactoryDashboard({
                 <Badge variant={item.summary?.event_snapshot_mixed ? 'success' : 'neutral'}>
                   混合 {formatMixedFlag(item.summary?.event_snapshot_mixed)}
                 </Badge>
+                {(item.summary?.partial_stage_count ?? 0) > 0 ? (
+                  <Badge variant="warning">
+                    降级阶段 {item.summary?.partial_stage_count}
+                  </Badge>
+                ) : null}
+                {(item.summary?.failed_stage_count ?? 0) > 0 ? (
+                  <Badge variant="danger">
+                    失败阶段 {item.summary?.failed_stage_count}
+                  </Badge>
+                ) : null}
+                {(item.summary?.skipped_stage_count ?? 0) > 0 ? (
+                  <Badge variant="neutral">
+                    跳过阶段 {item.summary?.skipped_stage_count}
+                  </Badge>
+                ) : null}
                 {(() => {
                   const [topSource] = sortCountEntries(item.summary?.task_source_counts);
                   return topSource ? (
@@ -903,6 +965,11 @@ export function FactoryDashboard({
               <div className="mt-2 text-xs text-text-secondary">
                 耗时：{item.elapsed_seconds ?? item.summary?.elapsed_seconds ?? '-'} 秒
               </div>
+              {(item.summary?.skip_reason || (item.summary?.skip_reasons ?? []).length > 0) && (
+                <div className="mt-2 text-xs text-text-secondary">
+                  跳过原因：{item.summary?.skip_reason ?? item.summary?.skip_reasons?.join(' / ')}
+                </div>
+              )}
               {item.error && <div className="mt-2 text-xs text-danger">错误：{item.error}</div>}
               {item.run_id && (
                 <div className="mt-3">

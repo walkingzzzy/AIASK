@@ -132,6 +132,11 @@ async def test_build_quant_context_exposes_probability_targets_and_oos(monkeypat
     assert "similar_patterns" in payload
     assert "oos_validation" in payload
     assert "probability_targets" in payload and "10d" in payload["probability_targets"]
+    assert payload["probability_targets"]["10d"]["prediction_quality"]["method"] == "ensemble_empirical_blend"
+    assert payload["probability_targets"]["10d"]["prediction_quality"]["support_samples"] > 0
+    assert payload["probability_targets"]["10d"]["prediction_interval"]["horizon_days"] == 10
+    assert payload["prediction_quality"]["method"] == "ensemble_empirical_blend"
+    assert payload["confidence_meta"]["horizon_quality"]["10d"] == payload["prediction_quality"]["quality"]
     assert payload["confidence_meta"]["quality"] in {"medium", "high"}
 
 

@@ -3,6 +3,7 @@
 import asyncio
 from collections import defaultdict
 from typing import Optional, List, Dict, Any
+from datetime import date, datetime
 from ..storage import get_db
 from ..services.factor_calculator import factor_calculator
 from ..services import technical_analysis
@@ -10,6 +11,7 @@ from ..services.vector_search import vector_search_engine
 from .search import _search_stocks_tushare_fallback
 from ..utils import ok, fail, suppress_stdout
 import statistics
+import math
 
 
 _GENERIC_SEMANTIC_HINTS = {
@@ -341,6 +343,27 @@ def _compute_feature_scales(target_features: Dict[str, float], candidate_payload
     return scales
 
 
+def _normalize_kline_vector(values: List[float]) -> List[float]:
+    resolved = [float(item) for item in list(values or [])]
+    if not resolved:
+        return []
+    norm = math.sqrt(sum(item * item for item in resolved))
+    if norm <= 0:
+        return resolved
+    return [item / norm for item in resolved]
+
+
+def _coerce_date_str(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    text = str(value or "").strip()
+    return text[:10] if text else ""
+
+
 def register(mcp):
     """注册向量搜索工具"""
     
@@ -478,7 +501,7 @@ def register(mcp):
         code: str,
         days: int = 20,
         top_n: int = 10,
-        search_backend: str = 'python',
+        search_backend: str = 'db',
         allow_fallback: bool = True,
     ):
         """
@@ -488,16 +511,24 @@ def register(mcp):
             code: 股票代码
             days: K线天数
             top_n: 返回数量
-            search_backend: 检索后端（python/index）
-            allow_fallback: index 失败时是否回退 python
+            search_backend: 检索后端（db/python/index）
+            allow_fallback: 检索失败时是否回退 python
         """
         try:
             db = get_db()
+            backend_requested = str(search_backend or 'db').strip().lower()
+            if backend_requested in {'pgvector', 'timescaledb'}:
+                backend_requested = 'db'
+            if backend_requested not in {'db', 'python', 'index'}:
+                backend_requested = 'python'
+            fallback_reason = None
 
             # 1. 获取目标股票K线
-            target_klines = await db.get_klines(code, limit=days)
+            target_lookback = max(int(days) * 4, 60)
+            target_klines = await db.get_klines(code, limit=target_lookback)
             if not target_klines or len(target_klines) < days:
                 return fail(f'Insufficient kline data for {code}')
+            target_klines = list(target_klines)[-int(days):]
 
             # 2. 获取目标股票信息
             target_info = await db.get_stock_info(code)
@@ -509,6 +540,100 @@ def register(mcp):
             candidates = {row['code']: row.get('stock_name', '') for row in candidate_rows if row.get('code')}
             if not candidates:
                 return fail('No candidate stocks found')
+
+            search_meta = {
+                'backend_requested': backend_requested,
+                'backend_used': backend_requested,
+                'fallback_used': False,
+                'fallback_reason': None,
+                'latency_ms': 0.0,
+            }
+            results = []
+            candidate_klines_loaded = 0
+
+            if backend_requested == 'db':
+                try:
+                    query_vector = vector_search_engine.kline_to_vector(target_klines, method='returns')
+                    query_vector_values = _normalize_kline_vector(query_vector.tolist() if hasattr(query_vector, 'tolist') else query_vector)
+                    if query_vector_values and hasattr(db, 'search_kline_pattern_windows'):
+                        db_rows = await db.search_kline_pattern_windows(
+                            query_embedding=query_vector_values,
+                            window_size=int(days),
+                            vector_method='returns',
+                            period='daily',
+                            adjust='',
+                            stock_codes=list(candidates.keys()),
+                            exclude_stock_code=code,
+                            limit=max(int(top_n) * 5, 20),
+                        )
+                        if db_rows:
+                            results = [
+                                {
+                                    'code': str(item.get('stock_code') or ''),
+                                    'name': item.get('stock_name') or candidates.get(str(item.get('stock_code') or ''), ''),
+                                    'similarity': round(float(item.get('similarity') or 0.0), 4),
+                                    'source': 'db',
+                                    'end_date': _coerce_date_str(item.get('end_date')),
+                                    'start_date': _coerce_date_str(item.get('start_date')),
+                                    'forward_return_5d': item.get('forward_return_5d'),
+                                    'forward_return_10d': item.get('forward_return_10d'),
+                                    'forward_return_20d': item.get('forward_return_20d'),
+                                }
+                                for item in db_rows[:int(top_n)]
+                                if str(item.get('stock_code') or '')
+                            ]
+                            candidate_klines_loaded = len(db_rows)
+                            search_meta = {
+                                'backend_requested': 'db',
+                                'backend_used': 'db',
+                                'fallback_used': False,
+                                'fallback_reason': None,
+                                'latency_ms': 0.0,
+                            }
+                        else:
+                            fallback_reason = 'db_empty_result'
+                    else:
+                        fallback_reason = 'db_backend_unsupported'
+                except Exception as exc:
+                    fallback_reason = f'db_exception:{type(exc).__name__}'
+
+                if results:
+                    return ok({
+                        'code': code,
+                        'name': (target_info.get('name') or target_info.get('stock_name', '')) if target_info else '',
+                        'days': days,
+                        'results': results,
+                        'total_candidates': len(candidates),
+                        'candidate_klines_loaded': candidate_klines_loaded,
+                        'calculated': len(results),
+                        'search_backend': backend_requested,
+                        'actual_backend': search_meta.get('backend_used', 'db'),
+                        'allow_fallback': bool(allow_fallback),
+                        'backend_requested': search_meta.get('backend_requested', 'db'),
+                        'backend_used': search_meta.get('backend_used', 'db'),
+                        'fallback_used': bool(search_meta.get('fallback_used', False)),
+                        'fallback_reason': search_meta.get('fallback_reason'),
+                        'latency_ms': search_meta.get('latency_ms', 0.0),
+                    })
+
+                if not allow_fallback:
+                    return ok({
+                        'code': code,
+                        'name': (target_info.get('name') or target_info.get('stock_name', '')) if target_info else '',
+                        'days': days,
+                        'results': [],
+                        'total_candidates': len(candidates),
+                        'candidate_klines_loaded': 0,
+                        'calculated': 0,
+                        'search_backend': backend_requested,
+                        'actual_backend': 'db',
+                        'allow_fallback': bool(allow_fallback),
+                        'backend_requested': 'db',
+                        'backend_used': 'db',
+                        'fallback_used': False,
+                        'fallback_reason': fallback_reason or 'db_empty_result',
+                        'latency_ms': 0.0,
+                    })
 
             # 4. 获取候选K线并执行向量检索
             _, candidate_klines_dict = await _prefetch_candidate_context(
@@ -527,16 +652,21 @@ def register(mcp):
             if not candidate_klines_dict:
                 return fail('No candidate kline data available')
 
+            engine_backend = backend_requested if backend_requested in {'python', 'index'} else 'python'
             search_results = vector_search_engine.find_similar_patterns(
                 query_klines=target_klines,
                 candidate_klines_dict=candidate_klines_dict,
                 top_k=top_n,
                 method='returns',
                 metric='correlation',
-                backend=search_backend,
+                backend=engine_backend,
                 allow_fallback=allow_fallback,
             )
             search_meta = dict(getattr(vector_search_engine, 'last_meta', {}) or {})
+            if backend_requested == 'db':
+                search_meta['backend_requested'] = 'db'
+                search_meta['fallback_used'] = True
+                search_meta['fallback_reason'] = fallback_reason or search_meta.get('fallback_reason') or 'db_empty_result'
 
             results = []
             for item in search_results:
@@ -548,6 +678,7 @@ def register(mcp):
                     'similarity': round(similarity, 4),
                     'source': item.get('source', vector_search_engine.last_backend_used),
                 })
+            candidate_klines_loaded = len(candidate_klines_dict)
 
             return ok({
                 'code': code,
@@ -555,12 +686,12 @@ def register(mcp):
                 'days': days,
                 'results': results,
                 'total_candidates': len(candidates),
-                'candidate_klines_loaded': len(candidate_klines_dict),
+                'candidate_klines_loaded': candidate_klines_loaded,
                 'calculated': len(results),
-                'search_backend': search_backend,
+                'search_backend': backend_requested,
                 'actual_backend': vector_search_engine.last_backend_used,
                 'allow_fallback': bool(allow_fallback),
-                'backend_requested': search_meta.get('backend_requested', search_backend),
+                'backend_requested': search_meta.get('backend_requested', backend_requested),
                 'backend_used': search_meta.get('backend_used', vector_search_engine.last_backend_used),
                 'fallback_used': bool(search_meta.get('fallback_used', False)),
                 'fallback_reason': search_meta.get('fallback_reason'),
@@ -587,6 +718,26 @@ def register(mcp):
             query_stripped = query.strip()
             if not query_stripped:
                 return fail("查询关键词不能为空")
+
+            # 检测财务指标条件表达式，如 "ROE>10"、"PE<20"、"净利润增速>15%"
+            import re as _re_fin
+            _FIN_METRIC_PATTERN = _re_fin.compile(
+                r'(roe|pe|pb|eps|市盈率|市净率|净利润|营收|增速|负债率|股息率|市值|换手率)'
+                r'\s*[><=!<>]{1,2}\s*[\d.]+',
+                _re_fin.IGNORECASE,
+            )
+            if _FIN_METRIC_PATTERN.search(query_stripped):
+                return ok({
+                    'query': query_stripped,
+                    'results': [],
+                    'count': 0,
+                    'hint': (
+                        '检测到财务指标筛选条件（如 ROE>10、PE<20）。'
+                        '本工具仅支持按股票代码、名称、行业关键词搜索；'
+                        '财务条件筛选请使用 parse_selection_query 工具。'
+                    ),
+                    'suggestion': 'parse_selection_query',
+                })
 
             # 生成搜索token列表:
             #   db_tokens: 2字及以上（用于DB LIKE，避免单字误匹配）
@@ -878,11 +1029,19 @@ def register(mcp):
                     reverse=True,
                 )
 
-                return ok({
+                final_results = results[:limit]
+                response_payload = {
                     'query': query_stripped,
-                    'results': results[:limit],
-                    'count': len(results[:limit]),
-                })
+                    'results': final_results,
+                    'count': len(final_results),
+                }
+                if not final_results:
+                    response_payload['hint'] = (
+                        f'未找到与"{query_stripped}"匹配的股票。'
+                        '建议尝试：行业名称（如"白酒"、"新能源"）、股票名称或代码；'
+                        '若要按财务指标筛选请使用 parse_selection_query 工具。'
+                    )
+                return ok(response_payload)
 
         except Exception as e:
             return fail(str(e))

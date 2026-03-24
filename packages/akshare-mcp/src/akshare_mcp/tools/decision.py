@@ -35,8 +35,11 @@ from .decision_helpers import (
     _calibrate_buy_probability,
     _estimate_target_price,
     _build_threshold_backtest,
+    _build_probability_quality,
+    _build_prediction_interval,
     _context_section,
     _derive_contextual_decision,
+    _filter_klines_by_as_of,
 )
 from . import investment_analysis as investment_analysis_mod
 from .investment_analysis import get_investment_analysis as _raw_get_investment_analysis
@@ -175,6 +178,7 @@ def register(mcp):
 
             # 2. 获取K线数据
             klines = await db.get_klines(code, limit=100)
+            klines, pit_guard = _filter_klines_by_as_of(klines, as_of)
             if not klines or len(klines) < 20:
                 return _fail('Insufficient kline data')
 
@@ -191,7 +195,7 @@ def register(mcp):
                 or ''
             )
             current_price = float(latest_kline.get('close') or closes[-1])
-            time_precision = 'historical_eod_close'
+            time_precision = 'historical_eod_close_as_of' if pit_guard.get('active') else 'historical_eod_close'
 
             analysis_context = {}
             context_error = None
@@ -637,6 +641,19 @@ def register(mcp):
                 thresholds=[40, 60, 80],
                 horizon=10,
             )
+            prediction_quality = _build_probability_quality(
+                current_score=float(score),
+                buy_probability=float(buy_probability),
+                selected_threshold=int(threshold['buy']),
+                threshold_backtest=threshold_backtest,
+            )
+            prediction_interval = _build_prediction_interval(
+                closes=closes,
+                current_score=float(score),
+                thresholds=[40, 60, 80],
+                horizon=10,
+                confidence=0.8,
+            )
 
             payload = {
                 'code': code,
@@ -658,6 +675,7 @@ def register(mcp):
                 'analysis_date': analysis_date,
                 'time_precision': time_precision,
                 'price_basis': 'kline_latest_close',
+                'pit_guard': pit_guard,
                 'failed_modules': ([f"investment_analysis:{context_error}"] if context_error else []),
                 'decision_probability': {
                     'buy_probability': round(float(buy_probability), 4),
@@ -665,6 +683,7 @@ def register(mcp):
                     'band': probability_band,
                     'method': 'logit(score,confidence,volatility)',
                 },
+                'prediction_quality': prediction_quality,
                 'probability_calibration': {
                     'thresholds': style_thresholds,
                     'selected_style_threshold': threshold,
@@ -675,6 +694,8 @@ def register(mcp):
                     },
                 },
             }
+            if prediction_interval is not None:
+                payload['prediction_interval'] = prediction_interval
 
             if analysis_context:
                 payload['analysis_context'] = analysis_context
@@ -719,6 +740,7 @@ def register(mcp):
             result['meta']['data_timestamp'] = analysis_date
             result['meta']['time_precision'] = time_precision
             result['meta']['price_basis'] = 'kline_latest_close'
+            result['meta']['pit_guard'] = pit_guard
             result['meta']['evidence_chain_saved'] = bool(payload.get('evidence_trace_id'))
             return result
 
@@ -746,8 +768,8 @@ def register(mcp):
             code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
             if not code:
                 return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
-            if buy_price <= 0:
-                return fail('buy_price 必须 > 0')
+            # buy_price <= 0 视为「未提供买入价」，降级为纯技术分析，不再直接拒绝
+            has_buy_price = buy_price > 0
             db = get_db()
 
             # 1. 获取基础信息
@@ -777,9 +799,13 @@ def register(mcp):
             technical_ctx = _context_section(analysis_context, 'technical')
             risk_ctx = _context_section(analysis_context, 'risk')
 
-            # 3. 计算盈亏
-            profit_pct = (current_price - buy_price) / buy_price * 100
-            profit_amount = current_price - buy_price
+            # 3. 计算盈亏（仅在提供买入价时）
+            if has_buy_price:
+                profit_pct = (current_price - buy_price) / buy_price * 100
+                profit_amount = current_price - buy_price
+            else:
+                profit_pct = 0.0
+                profit_amount = 0.0
 
             reasons = []
             risks = []
@@ -807,19 +833,20 @@ def register(mcp):
                     'source': source,
                 })
 
-            # 4. 止盈止损分析
-            if profit_pct >= 30:
-                _apply_sell_signal('profit_loss', f'盈利{profit_pct:.1f}%，建议止盈', 40, source='direct_profit_loss')
-            elif profit_pct >= 20:
-                _apply_sell_signal('profit_loss', f'盈利{profit_pct:.1f}%，可考虑部分止盈', 25, source='direct_profit_loss')
-            elif profit_pct >= 10:
-                _apply_sell_signal('profit_loss', f'盈利{profit_pct:.1f}%，持有为主', 5, source='direct_profit_loss')
-            elif profit_pct <= -15:
-                _apply_sell_signal('profit_loss', f'亏损{abs(profit_pct):.1f}%，建议止损', 35, source='direct_profit_loss')
-            elif profit_pct <= -10:
-                _apply_sell_signal('profit_loss', f'亏损{abs(profit_pct):.1f}%，考虑止损', 20, source='direct_profit_loss')
-            elif profit_pct <= -5:
-                _apply_sell_signal('profit_loss', f'亏损{abs(profit_pct):.1f}%，注意风险', 10, source='direct_profit_loss')
+            # 4. 止盈止损分析（仅在提供买入价时）
+            if has_buy_price:
+                if profit_pct >= 30:
+                    _apply_sell_signal('profit_loss', f'盈利{profit_pct:.1f}%，建议止盈', 40, source='direct_profit_loss')
+                elif profit_pct >= 20:
+                    _apply_sell_signal('profit_loss', f'盈利{profit_pct:.1f}%，可考虑部分止盈', 25, source='direct_profit_loss')
+                elif profit_pct >= 10:
+                    _apply_sell_signal('profit_loss', f'盈利{profit_pct:.1f}%，持有为主', 5, source='direct_profit_loss')
+                elif profit_pct <= -15:
+                    _apply_sell_signal('profit_loss', f'亏损{abs(profit_pct):.1f}%，建议止损', 35, source='direct_profit_loss')
+                elif profit_pct <= -10:
+                    _apply_sell_signal('profit_loss', f'亏损{abs(profit_pct):.1f}%，考虑止损', 20, source='direct_profit_loss')
+                elif profit_pct <= -5:
+                    _apply_sell_signal('profit_loss', f'亏损{abs(profit_pct):.1f}%，注意风险', 10, source='direct_profit_loss')
 
             # 5. 技术分析
             # RSI
@@ -870,7 +897,7 @@ def register(mcp):
                 if holding_days < 7:
                     _apply_sell_signal('holding', f'持仓仅{holding_days}天，建议再观察', -10, source='direct_holding')
                 elif holding_days > 180:
-                    if profit_pct < 5:
+                    if not has_buy_price or profit_pct < 5:
                         _apply_sell_signal('holding', f'持仓{holding_days}天收益不佳，考虑换股', 15, source='direct_holding')
 
             # 7. 波动风险
@@ -907,11 +934,9 @@ def register(mcp):
             # 9. 目标卖出价（如果建议卖出）
             target_sell_price = None
             if recommendation in ['sell', 'reduce']:
-                if profit_pct > 0:
-                    # 盈利状态，当前价即可
+                if not has_buy_price or profit_pct > 0:
                     target_sell_price = current_price
                 else:
-                    # 亏损状态，等待反弹
                     target_sell_price = buy_price * 0.95  # 回本95%
 
             payload = {
@@ -922,10 +947,10 @@ def register(mcp):
                 'action_text': action_text,
                 'score': score,
                 'current_price': current_price,
-                'buy_price': buy_price,
-                'profit_pct': round(profit_pct, 2),
-                'profit_amount': round(profit_amount, 2),
-                'holding_days': holding_days,
+                'buy_price': buy_price if has_buy_price else None,
+                'profit_pct': round(profit_pct, 2) if has_buy_price else None,
+                'profit_amount': round(profit_amount, 2) if has_buy_price else None,
+                'holding_days': holding_days if holding_days > 0 else None,
                 'target_sell_price': round(target_sell_price, 2) if target_sell_price else None,
                 'reasons': reasons,
                 'risks': risks,
@@ -933,6 +958,7 @@ def register(mcp):
                 'signal_breakdown': signal_breakdown,
                 'analysis_date': klines[-1].get('date', ''),
                 'failed_modules': ([f"investment_analysis:{context_error}"] if context_error else []),
+                'analysis_mode': 'technical_only' if not has_buy_price else 'full',
             }
 
             if analysis_context:

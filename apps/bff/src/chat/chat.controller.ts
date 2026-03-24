@@ -41,6 +41,7 @@ class SyncChatConversationsDto {
 }
 
 const MODEL_PRESETS = [
+  { provider: 'A-J API', baseUrl: 'https://api.a-j.app/v1', models: ['gpt-5.4'] },
   { provider: 'OpenAI', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
   { provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-chat', 'deepseek-reasoner'] },
   { provider: 'Moonshot', baseUrl: 'https://api.moonshot.cn/v1', models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'] },

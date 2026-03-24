@@ -201,9 +201,15 @@ class FactorResearchBuilder:
         ]
         governed_pool = dict(await cls._load_governed_candidate_pool(snapshot) or {})
         active_candidate_pool = dict(governed_pool.get("active_pool") or {})
+        governed_registry_summary = dict(governed_pool.get("summary") or {})
         governed_top_candidates = [
             dict(item or {})
             for item in list(active_candidate_pool.get("top_candidates") or [])
+            if isinstance(item, dict)
+        ]
+        governed_excluded_candidates = [
+            dict(item or {})
+            for item in list(active_candidate_pool.get("excluded_candidates") or [])
             if isinstance(item, dict)
         ]
         governed_family_summary = [
@@ -216,6 +222,22 @@ class FactorResearchBuilder:
             for item in list(active_candidate_pool.get("regime_summary") or [])
             if isinstance(item, dict)
         ]
+        governed_source_candidate_count = int(
+            active_candidate_pool.get("source_count")
+            or governed_registry_summary.get("active_count")
+            or 0
+        )
+        governed_blocked_candidate_count = int(
+            active_candidate_pool.get("excluded_count")
+            or governed_registry_summary.get("blocked_active_count")
+            or governed_registry_summary.get("blocked_count")
+            or 0
+        )
+        governed_exclusion_reason_counts = {
+            str(key): int(value or 0)
+            for key, value in dict(active_candidate_pool.get("exclusion_reason_counts") or {}).items()
+            if str(key).strip()
+        }
         scheduler_status = dict(get_factor_scheduler_singleton().status() or {})
         scheduler_quality_flags = list(scheduler_status.get("quality_flags") or [])
         factor_ic_source = dict((snapshot.get("sources") or {}).get("factor_ic") or {})
@@ -304,6 +326,8 @@ class FactorResearchBuilder:
             rationale.append(f"优先策略类型: {', '.join(preferred_strategy_types[:4])}")
         if governed_top_candidates:
             rationale.append(f"治理后候选池已接入，Top 候选: {', '.join(top_candidate_names[:3])}")
+        elif governed_blocked_candidate_count:
+            rationale.append(f"治理候选池存在 {governed_blocked_candidate_count} 个高风险候选，当前未纳入活跃池。")
         elif governed_pool.get("reason"):
             rationale.append(f"治理后候选池未生效，已回退到种子因子: {governed_pool.get('reason')}")
 
@@ -330,6 +354,8 @@ class FactorResearchBuilder:
             quality_flags.append("decay_detected")
         if governed_top_candidates:
             quality_flags.append("governed_candidate_pool_active")
+        if governed_blocked_candidate_count:
+            quality_flags.append("governed_candidate_pool_blocked_candidates")
         factor_ic_status = str(factor_ic_source.get("status") or "")
         if factor_ic_status and factor_ic_status != "success":
             quality_flags.append(f"factor_ic_{factor_ic_status}")
@@ -351,6 +377,7 @@ class FactorResearchBuilder:
             "positive_rising_factors": positive_rising_factors,
             "preferred_strategy_types": preferred_strategy_types,
             "governed_candidates": governed_top_candidates,
+            "blocked_candidates": governed_excluded_candidates,
             "active_candidate_pool": active_candidate_pool,
             "active_family_summary": governed_family_summary,
             "active_regime_summary": governed_regime_summary,
@@ -378,6 +405,8 @@ class FactorResearchBuilder:
             "summary": {
                 "active_factor_count": len(active_factors),
                 "active_candidate_count": int(active_candidate_pool.get("count") or 0),
+                "governed_source_candidate_count": governed_source_candidate_count,
+                "governed_blocked_candidate_count": governed_blocked_candidate_count,
                 "ranked_factor_count": len(ranked_factors),
                 "top_factor_names": top_factor_names,
                 "top_candidate_names": top_candidate_names,
@@ -385,6 +414,12 @@ class FactorResearchBuilder:
                 "active_regime_names": [str(item.get("regime") or "") for item in governed_regime_summary if str(item.get("regime") or "")],
                 "preferred_strategy_types": preferred_strategy_types,
                 "factor_source_mode": "governed_candidate_pool" if governed_top_candidates else "seed_fallback",
+                "governed_exclusion_reason_counts": governed_exclusion_reason_counts,
+                "governed_risk_counts": {
+                    "lookahead": dict(governed_registry_summary.get("lookahead_risk_counts") or {}),
+                    "multiple_testing": dict(governed_registry_summary.get("multiple_testing_risk_counts") or {}),
+                    "overall": dict(governed_registry_summary.get("overall_risk_counts") or {}),
+                },
                 "degraded": degraded,
                 "freshness_days": freshness_days,
                 "latest_factor_date": latest_factor_date.isoformat() if latest_factor_date else None,

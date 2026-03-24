@@ -775,7 +775,13 @@ def register(mcp):
                         fallback_reason.append('缺少有效营收数据，已使用净利润反推 base_revenue')
 
             if base_revenue <= 0:
-                return fail('base_revenue 必须 > 0，且无法从财务数据自动回填')
+                # 最后兜底：使用 10 亿保守基准，避免工具因缺乏财务数据而完全不可用
+                base_revenue = 1_000_000_000.0
+                base_revenue_source = 'default_conservative_estimate'
+                fallback_reason.append(
+                    '无法从财务数据自动回填 base_revenue，已使用默认保守基准 10 亿元；'
+                    '请通过 base_revenue 参数提供实际营收以获得更准确结果'
+                )
             # 1. 确定基准参数：行业模板 → 用户覆盖 → 默认值
             if industry and industry in INDUSTRY_TEMPLATES:
                 tpl = INDUSTRY_TEMPLATES[industry]

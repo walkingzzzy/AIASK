@@ -300,6 +300,225 @@ class TestStrategySpawner:
         assert artifact["factor_history"]["value"]["stability_tag"] in {"improving", "stable", "regime_flip"}
         assert artifact["summary"]["quality_flags"] == []
 
+    @pytest.mark.asyncio
+    async def test_factor_research_builder_surfaces_governance_block_metadata(self):
+        from akshare_mcp.services.strategy_factory import FactorResearchBuilder
+
+        with patch.object(
+            FactorResearchBuilder,
+            "_load_governed_candidate_pool",
+            new_callable=AsyncMock,
+            return_value={
+                "available": True,
+                "summary": {
+                    "active_count": 3,
+                    "blocked_active_count": 2,
+                    "lookahead_risk_counts": {"low": 2, "high": 1},
+                    "multiple_testing_risk_counts": {"low": 2, "high": 1},
+                    "overall_risk_counts": {"low": 1, "high": 2},
+                },
+                "active_pool": {
+                    "source_count": 3,
+                    "count": 1,
+                    "excluded_count": 2,
+                    "top_candidates": [
+                        {
+                            "artifact_id": "cand_safe",
+                            "name": "cand_safe",
+                            "family": "momentum",
+                            "expected_regime": ["trend"],
+                            "grade": "A",
+                            "recommendation": "promote",
+                            "total_score": 92.0,
+                        }
+                    ],
+                    "excluded_candidates": [
+                        {
+                            "artifact_id": "cand_lookahead",
+                            "name": "cand_lookahead",
+                            "family": "momentum",
+                            "grade": "A",
+                            "recommendation": "promote",
+                            "total_score": 97.0,
+                            "reasons": ["lookahead_risk_high"],
+                            "risk_audit": {"overall_risk_level": "high", "blocked": True},
+                        },
+                        {
+                            "artifact_id": "cand_multiple",
+                            "name": "cand_multiple",
+                            "family": "quality",
+                            "grade": "B",
+                            "recommendation": "review",
+                            "total_score": 88.0,
+                            "reasons": ["multiple_testing_risk_high"],
+                            "risk_audit": {"overall_risk_level": "high", "blocked": True},
+                        },
+                    ],
+                    "family_summary": [
+                        {
+                            "family": "momentum",
+                            "count": 1,
+                            "promote_count": 1,
+                            "review_count": 0,
+                            "avg_total_score": 92.0,
+                            "max_total_score": 92.0,
+                        }
+                    ],
+                    "regime_summary": [{"regime": "trend", "count": 1}],
+                    "exclusion_reason_counts": {
+                        "lookahead_risk_high": 1,
+                        "multiple_testing_risk_high": 1,
+                    },
+                },
+            },
+        ):
+            artifact = await FactorResearchBuilder.build(
+                MagicMock(),
+                {
+                    "factor_ic": {"value": 0.05},
+                    "factor_ic_trend": {"value": "rising"},
+                },
+            )
+
+        assert artifact["summary"]["governed_source_candidate_count"] == 3
+        assert artifact["summary"]["governed_blocked_candidate_count"] == 2
+        assert artifact["summary"]["governed_exclusion_reason_counts"]["lookahead_risk_high"] == 1
+        assert artifact["summary"]["governed_risk_counts"]["overall"]["high"] == 2
+        assert "governed_candidate_pool_blocked_candidates" in artifact["quality_flags"]
+        assert artifact["blocked_candidates"][0]["artifact_id"] == "cand_lookahead"
+        assert artifact["summary"]["factor_source_mode"] == "governed_candidate_pool"
+
+    def test_factory_scheduler_compact_factor_research_snapshot_preserves_governance_block_metadata(self):
+        from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
+
+        compact = StrategyFactoryScheduler._compact_factor_research_snapshot(
+            {
+                "summary": {
+                    "active_factor_count": 2,
+                    "active_candidate_count": 1,
+                    "governed_source_candidate_count": 3,
+                    "governed_blocked_candidate_count": 2,
+                    "ranked_factor_count": 2,
+                    "top_factor_names": ["value", "quality"],
+                    "top_candidate_names": ["cand_safe"],
+                    "active_family_names": ["momentum"],
+                    "active_regime_names": ["trend"],
+                    "preferred_strategy_types": ["momentum", "value_factor"],
+                    "factor_source_mode": "governed_candidate_pool",
+                    "governed_exclusion_reason_counts": {
+                        "lookahead_risk_high": 1,
+                        "multiple_testing_risk_high": 1,
+                    },
+                    "governed_risk_counts": {
+                        "overall": {"high": 2},
+                    },
+                    "degraded": False,
+                    "freshness_days": 0,
+                    "latest_factor_date": "2026-03-24",
+                    "stale": False,
+                    "quality_flags": ["governed_candidate_pool_active", "governed_candidate_pool_blocked_candidates"],
+                },
+                "active_candidate_pool": {
+                    "source_count": 3,
+                    "count": 1,
+                    "excluded_count": 2,
+                    "top_candidates": [
+                        {
+                            "artifact_id": "cand_safe",
+                            "name": "cand_safe",
+                            "family": "momentum",
+                            "expected_regime": ["trend"],
+                            "grade": "A",
+                            "recommendation": "promote",
+                            "total_score": 92.0,
+                            "risk_audit": {"overall_risk_level": "low", "blocked": False},
+                        }
+                    ],
+                    "excluded_candidates": [
+                        {
+                            "artifact_id": "cand_lookahead",
+                            "name": "cand_lookahead",
+                            "family": "momentum",
+                            "grade": "A",
+                            "recommendation": "promote",
+                            "total_score": 97.0,
+                            "reasons": ["lookahead_risk_high"],
+                            "risk_audit": {
+                                "lookahead_risk_level": "high",
+                                "overall_risk_level": "high",
+                                "blocked": True,
+                                "block_reasons": ["lookahead_risk_high"],
+                            },
+                        }
+                    ],
+                    "exclusion_reason_counts": {"lookahead_risk_high": 1},
+                    "family_summary": [{"family": "momentum", "count": 1, "promote_count": 1, "review_count": 0}],
+                    "regime_summary": [{"regime": "trend", "count": 1}],
+                },
+            }
+        )
+
+        assert compact["summary"]["governed_source_candidate_count"] == 3
+        assert compact["summary"]["governed_blocked_candidate_count"] == 2
+        assert compact["summary"]["governed_exclusion_reason_counts"]["lookahead_risk_high"] == 1
+        assert compact["summary"]["governed_risk_counts"]["overall"]["high"] == 2
+        assert compact["active_candidate_pool"]["source_count"] == 3
+        assert compact["active_candidate_pool"]["excluded_count"] == 2
+        assert compact["active_candidate_pool"]["exclusion_reason_counts"]["lookahead_risk_high"] == 1
+        assert compact["active_candidate_pool"]["excluded_candidates"][0]["reasons"] == ["lookahead_risk_high"]
+        assert compact["active_candidate_pool"]["excluded_candidates"][0]["risk_audit"]["blocked"] is True
+
+    def test_factory_cycle_runner_readiness_exposes_governance_block_metadata(self):
+        from strategy_factory.application.cycle_runner import FactoryCycleRunner, FactoryRunContext
+        from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
+
+        scheduler = StrategyFactoryScheduler()
+        runner = FactoryCycleRunner(
+            scheduler,
+            FactoryRunContext(
+                db=None,
+                factory_pkg=None,
+                runtime_adapters=None,
+                start=datetime(2026, 3, 24, 9, 30, 0),
+                trace_id="trace_governed_readiness",
+                run_id="run_governed_readiness",
+            ),
+        )
+
+        readiness = runner._build_factory_readiness(
+            snapshot={
+                "degraded": False,
+                "completeness": {"completion_ratio": 1.0},
+                "sources": {"event_driven": {"status": "success"}},
+                "event_driven": {"tasks_ready_count": 1},
+            },
+            factor_research={
+                "summary": {
+                    "factor_source_mode": "governed_candidate_pool",
+                    "active_candidate_count": 1,
+                    "active_family_names": ["momentum"],
+                    "active_regime_names": ["trend"],
+                    "governed_source_candidate_count": 3,
+                    "governed_blocked_candidate_count": 2,
+                    "governed_exclusion_reason_counts": {
+                        "lookahead_risk_high": 1,
+                        "multiple_testing_risk_high": 1,
+                    },
+                    "governed_risk_counts": {"overall": {"high": 2}},
+                    "degraded": False,
+                    "stale": False,
+                },
+                "freshness_repair": {"refresh_attempted": False, "refresh_status": "not_needed"},
+            },
+        )
+
+        assert readiness["governed_source_candidate_count"] == 3
+        assert readiness["governed_blocked_candidate_count"] == 2
+        assert readiness["governed_exclusion_reason_counts"]["lookahead_risk_high"] == 1
+        assert readiness["governed_risk_counts"]["overall"]["high"] == 2
+        assert "governed_candidate_pool_blocked_candidates" in readiness["warnings"]
+        assert readiness["can_proceed"] is True
+
     def test_fear_market_generates_rsi_and_value(self):
         spawner = StrategySpawner()
         candidates = spawner._from_fear_greed({"fear_greed_index": 20})
@@ -2784,10 +3003,6 @@ class _StrategyDB:
 
     async def save_strategy_vector_index_snapshot(self, snapshot):
         item = {'id': len(self._vector_index_snapshots) + 1, **dict(snapshot)}
-        self._vector_index_snapshots = [
-            row for row in self._vector_index_snapshots
-            if not (row.get('index_name') == item.get('index_name') and row.get('index_version') == item.get('index_version'))
-        ]
         self._vector_index_snapshots.insert(0, item)
         return dict(item)
 
@@ -2795,7 +3010,7 @@ class _StrategyDB:
         rows = await self.list_strategy_vector_index_snapshots(index_name=index_name, limit=1)
         return rows[0] if rows else None
 
-    async def list_strategy_vector_index_snapshots(self, index_name=None, index_version=None, status=None, limit=20):
+    async def list_strategy_vector_index_snapshots(self, index_name=None, index_version=None, status=None, limit=20, latest_only=False):
         rows = list(self._vector_index_snapshots)
         if index_name:
             rows = [row for row in rows if row.get('index_name') == index_name]
@@ -2803,6 +3018,16 @@ class _StrategyDB:
             rows = [row for row in rows if row.get('index_version') == index_version]
         if status:
             rows = [row for row in rows if row.get('status') == status]
+        if latest_only:
+            deduped = []
+            seen = set()
+            for row in rows:
+                key = (row.get('index_name'), row.get('index_version'))
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(row)
+            rows = deduped
         return [dict(row) for row in rows[:limit]]
 
     async def replace_strategy_vector_index_items(self, index_name, index_version, items):
@@ -3696,7 +3921,7 @@ class TestStrategyManager:
             def status(self):
                 return {"running": True, "last_run": None, "last_result": None, "last_summary": None}
 
-            async def run_once(self):
+            async def run_once(self, db=None):
                 return {"run_id": "run_live_1", "status": "success", "summary": {"candidates_spawned": 3}}
 
         monkeypatch.setattr(
@@ -5671,6 +5896,42 @@ class TestVectorAnnSearchActions:
         assert search['data']['items'][0]['candidate_count'] >= 1
 
     @pytest.mark.asyncio
+    async def test_vector_index_snapshots_preserve_history_per_version(self, setup):
+        _, db = setup
+
+        await db.save_strategy_vector_index_snapshot({
+            'index_name': 'strategy_behavior',
+            'index_version': 'v9',
+            'status': 'building',
+        })
+        await db.save_strategy_vector_index_snapshot({
+            'index_name': 'strategy_behavior',
+            'index_version': 'v9',
+            'status': 'active',
+        })
+
+        rows = await db.list_strategy_vector_index_snapshots(
+            index_name='strategy_behavior',
+            index_version='v9',
+            limit=10,
+        )
+        latest_only = await db.list_strategy_vector_index_snapshots(
+            index_name='strategy_behavior',
+            limit=10,
+            latest_only=True,
+        )
+
+        assert [item.get('status') for item in rows[:2]] == ['active', 'building']
+        assert any(
+            item.get('index_version') == 'v9' and item.get('status') == 'active'
+            for item in latest_only
+        )
+        assert not any(
+            item.get('index_version') == 'v9' and item.get('status') == 'building'
+            for item in latest_only
+        )
+
+    @pytest.mark.asyncio
     async def test_vector_ann_search_uses_pgvector_backend_when_available(self, setup):
         from akshare_mcp.services.vector_platform import StrategyVectorPlatform
 
@@ -6993,7 +7254,7 @@ class TestStrategyFactoryScheduler:
 
         result = await StrategyFactoryScheduler().run_once()
 
-        assert result['status'] == 'success'
+        assert result['status'] == 'partial'
         assert result['summary']['autonomy_task_count'] == 2
         assert result['summary']['autonomy_completed_task_count'] == 2
         assert result['summary']['autonomy_failed_task_count'] == 0
@@ -7019,9 +7280,11 @@ class TestStrategyFactoryScheduler:
         assert db.save_strategy_task_run.await_count == 2
         assert db.update_strategy_task_run.await_count == 2
         saved_run = db.save_strategy_factory_run.await_args.args[0]
+        assert saved_run['summary']['partial_stage_count'] >= 1
         assert saved_run['stages']['autonomy']['task_count'] == 2
         assert saved_run['stages']['autonomy']['completed_task_count'] == 2
         assert saved_run['stages']['autonomy']['failed_task_count'] == 0
+        assert saved_run['stages']['autonomy']['status'] == 'completed'
         assert saved_run['stages']['autonomy']['external_llm_status'] == 'succeeded'
         assert saved_run['stages']['autonomy']['external_llm_status_counts']['succeeded'] == 1
         assert saved_run['stages']['autonomy']['external_llm_status_counts']['fallback_only'] == 1
@@ -7140,7 +7403,8 @@ class TestStrategyFactoryScheduler:
         result = await StrategyFactoryScheduler().run_once()
 
         saved_run = db.save_strategy_factory_run.await_args.args[0]
-        assert result['status'] == 'success'
+        assert result['status'] == 'partial'
+        assert saved_run['summary']['partial_stage_count'] >= 1
         assert saved_run['stages']['autonomy']['lifecycle_state_counts']['completed'] == 1
         assert saved_run['stages']['autonomy']['lifecycle_state_counts']['failed'] == 1
         assert saved_run['stages']['autonomy']['phase_status_counts']['completed'] >= 5
@@ -7237,9 +7501,11 @@ class TestStrategyFactoryScheduler:
 
         result = await StrategyFactoryScheduler().run_once()
 
-        assert result['status'] == 'success'
+        assert result['status'] == 'partial'
         assert result['summary']['external_llm_status'] == 'succeeded'
         saved_run = db.save_strategy_factory_run.await_args.args[0]
+        assert saved_run['summary']['partial_stage_count'] >= 1
+        assert saved_run['stages']['autonomy']['status'] == 'completed'
         assert saved_run['stages']['autonomy']['external_llm_status'] == 'succeeded'
         assert saved_run['stages']['autonomy']['external_llm_status_counts']['skipped'] == 1
 
@@ -7386,7 +7652,9 @@ class TestStrategyFactoryScheduler:
 
         result = await StrategyFactoryScheduler().run_once()
 
-        assert result['status'] == 'success'
+        assert result['status'] == 'partial'
+        assert result['stages']['autonomy']['status'] == 'completed'
+        assert result['summary']['partial_stage_count'] >= 1
         assert result['summary']['event_task_count'] == 1
         assert result['summary']['snapshot_task_count'] == 0
         assert result['summary']['task_source_counts'] == {'event_driven': 1}
@@ -7559,7 +7827,8 @@ class TestStrategyFactoryScheduler:
             scheduler = StrategyFactoryScheduler()
             result = await scheduler.run_once()
 
-        assert result["status"] == "success"
+        assert result["status"] == "partial"
+        assert result["summary"]["partial_stage_count"] >= 1
         db.save_strategy_factory_run.assert_awaited_once()
         saved_run = db.save_strategy_factory_run.await_args.args[0]
         assert saved_run["run_id"] == result["run_id"]
@@ -7756,8 +8025,10 @@ class TestStrategyFactoryScheduler:
         ):
             result = await StrategyFactoryScheduler().run_once()
 
-        assert result['status'] == 'success'
+        assert result['status'] == 'partial'
         saved_run = db.save_strategy_factory_run.await_args.args[0]
+        assert saved_run['summary']['failed_stage_count'] >= 1
+        assert saved_run['stages']['autonomy']['status'] == 'failed'
         assert saved_run['stages']['autonomy']['external_llm_status'] == 'failed'
         assert saved_run['stages']['autonomy']['external_llm_last_error_type'] == 'ReadTimeout'
         assert saved_run['summary']['external_llm_status'] == 'failed'
@@ -7879,8 +8150,9 @@ class TestStrategyFactoryScheduler:
 
         assert report["stage"]["failed_task_count"] == 1
         assert report["stage"]["external_llm_status"] == "failed"
+        assert report["stage"]["persistence_failure_count"] == 1
         assert report["stage"]["task_results"][0]["status"] == "failed"
-        assert report["stage"]["task_results"][0]["lifecycle_summary"]["failed_phase"] == "preparing"
+        assert report["stage"]["task_results"][0]["lifecycle_summary"]["failed_phase"] == "generating"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -8253,6 +8525,40 @@ class TestFactorSchedulerAndBatchFactors:
         assert result["source"] == "factor_scheduler"
         assert "degraded" in result["quality_flags"]
         assert "failed" in result["quality_flags"]
+
+    @pytest.mark.asyncio
+    async def test_factor_scheduler_passes_codes_to_llm_factor_mining(self, monkeypatch):
+        from akshare_mcp.services.factor_scheduler import FactorScheduler
+        from akshare_mcp.tools.managers import quant_manager as quant_manager_module
+
+        monkeypatch.setenv("FACTOR_LLM_ENABLED", "1")
+        monkeypatch.setenv("FACTOR_SCHEDULER_LLM_MINING", "1")
+
+        calls = []
+
+        async def _fake_quant_manager(*, action, code=None, **kwargs):
+            payload = json.loads(kwargs["kwargs"])
+            calls.append({"action": action, "code": code, "payload": payload})
+            if action == "batch_compute_factors":
+                return {"success": True, "data": {"computed_count": len(payload.get("codes") or []), "error_count": 0}}
+            if action == "llm_factor_mining":
+                return {"success": True, "data": {"codes": payload.get("codes") or []}}
+            raise AssertionError(f"unexpected action: {action}")
+
+        monkeypatch.setattr(
+            quant_manager_module,
+            "quant_manager",
+            _fake_quant_manager,
+        )
+
+        scheduler = FactorScheduler(universe=["000001", "000002"], factors=["reversal"], batch_size=1)
+        result = await scheduler.run_once()
+
+        llm_calls = [item for item in calls if item["action"] == "llm_factor_mining"]
+        assert len(llm_calls) == 1
+        assert llm_calls[0]["payload"]["codes"] == ["000001", "000002"]
+        assert result["llm_mining"]["success"] is True
+        assert result["llm_mining"]["data"]["codes"] == ["000001", "000002"]
 
     def test_factor_scheduler_status_marks_stale_result(self):
         from akshare_mcp.services.factor_scheduler import FactorScheduler

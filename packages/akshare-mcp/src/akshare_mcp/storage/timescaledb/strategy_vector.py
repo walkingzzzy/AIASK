@@ -189,6 +189,7 @@ class StrategyVectorMixin:
 
     def _decode_vector_index_snapshot(self, row: dict) -> dict:
         result = dict(row)
+        result.pop("rn", None)
         result["centroids"] = self._decode_json_field(result.get("centroids"), [])
         result["metadata"] = self._decode_json_field(result.get("metadata"), {})
         return result
@@ -205,21 +206,6 @@ class StrategyVectorMixin:
                      profile_count, bucket_count, vector_dim, centroids, metadata, task_run_id, source,
                      built_at, activated_at, created_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15::timestamptz, $16::timestamptz, NOW())
-                ON CONFLICT (index_name, index_version) DO UPDATE SET
-                    status = EXCLUDED.status,
-                    profile_type = EXCLUDED.profile_type,
-                    vector_method = EXCLUDED.vector_method,
-                    metric = EXCLUDED.metric,
-                    backend = EXCLUDED.backend,
-                    profile_count = EXCLUDED.profile_count,
-                    bucket_count = EXCLUDED.bucket_count,
-                    vector_dim = EXCLUDED.vector_dim,
-                    centroids = EXCLUDED.centroids,
-                    metadata = EXCLUDED.metadata,
-                    task_run_id = EXCLUDED.task_run_id,
-                    source = EXCLUDED.source,
-                    built_at = EXCLUDED.built_at,
-                    activated_at = EXCLUDED.activated_at
                 RETURNING *
                 """,
                 str(payload.get("index_name") or "strategy_behavior"),
@@ -251,24 +237,51 @@ class StrategyVectorMixin:
         index_version: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 20,
+        latest_only: bool = False,
     ) -> List[dict]:
         async with self.acquire() as conn:
-            sql = "SELECT * FROM strategy_vector_index_snapshots WHERE 1=1"
+            where_parts = ["1=1"]
             params: list = []
             idx = 1
             if index_name:
-                sql += f" AND index_name = ${idx}"
+                where_parts.append(f"index_name = ${idx}")
                 params.append(index_name)
                 idx += 1
             if index_version:
-                sql += f" AND index_version = ${idx}"
+                where_parts.append(f"index_version = ${idx}")
                 params.append(index_version)
                 idx += 1
             if status:
-                sql += f" AND status = ${idx}"
+                where_parts.append(f"status = ${idx}")
                 params.append(status)
                 idx += 1
-            sql += f" ORDER BY created_at DESC LIMIT ${idx}"
+            where_sql = " AND ".join(where_parts)
+            order_sql = "COALESCE(activated_at, built_at, created_at) DESC, id DESC"
+            if latest_only:
+                sql = f"""
+                    WITH ranked AS (
+                        SELECT *,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY index_name, index_version
+                                   ORDER BY {order_sql}
+                               ) AS rn
+                        FROM strategy_vector_index_snapshots
+                        WHERE {where_sql}
+                    )
+                    SELECT *
+                    FROM ranked
+                    WHERE rn = 1
+                    ORDER BY {order_sql}
+                    LIMIT ${idx}
+                """
+            else:
+                sql = f"""
+                    SELECT *
+                    FROM strategy_vector_index_snapshots
+                    WHERE {where_sql}
+                    ORDER BY {order_sql}
+                    LIMIT ${idx}
+                """
             params.append(max(1, min(int(limit or 20), 5000)))
             rows = await conn.fetch(sql, *params)
         return [self._decode_vector_index_snapshot(dict(row)) for row in rows]

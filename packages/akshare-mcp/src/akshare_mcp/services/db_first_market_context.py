@@ -89,6 +89,23 @@ def _map_vector_row(row: dict[str, Any], *, default_source: str) -> dict[str, An
     }
 
 
+def _map_market_chunk_row(row: dict[str, Any], *, default_source: str) -> dict[str, Any]:
+    content = _clean_text(row.get("chunk_text") or row.get("content"))
+    title = _clean_text(row.get("title")) or _title_from_content(content)
+    date_str = _coerce_date_str(row.get("published_at") or row.get("date"))
+    return {
+        "title": title,
+        "headline": title,
+        "content": content,
+        "text": content,
+        "summary": _clean_text(row.get("summary")) or content[:240],
+        "date": date_str,
+        "time": date_str,
+        "source": _clean_text(row.get("source")) or default_source,
+        "url": _clean_text(row.get("url")),
+    }
+
+
 def _map_research_row(row: dict[str, Any], *, default_source: str = "research_reports") -> dict[str, Any]:
     date_str = _coerce_date_str(row.get("publish_date") or row.get("date"))
     summary = _clean_text(row.get("summary"))
@@ -153,6 +170,58 @@ async def _fetch_vector_documents(
     return [_map_vector_row(dict(row), default_source=default_source) for row in rows if dict(row).get("content")]
 
 
+async def _fetch_market_doc_chunks(
+    conn,
+    code: str,
+    *,
+    kind: str,
+    limit: int,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> list[dict[str, Any]]:
+    normalized_code = str(code or "").strip()
+    if not normalized_code or int(limit or 0) <= 0:
+        return []
+
+    aliases = [str(item).strip().lower() for item in _DOC_TYPE_ALIASES.get(kind, ()) if str(item).strip()]
+    if not aliases:
+        return []
+
+    params: list[Any] = [normalized_code, aliases]
+    where_clauses = [
+        "c.stock_code = $1",
+        "LOWER(COALESCE(c.doc_type, '')) = ANY($2::text[])",
+    ]
+    if start_date is not None:
+        params.append(start_date)
+        where_clauses.append(f"c.published_at >= ${len(params)}::date")
+    if end_date is not None:
+        params.append(end_date)
+        where_clauses.append(f"c.published_at <= ${len(params)}::date")
+
+    params.append(int(limit))
+    rows = await conn.fetch(
+        f"""
+        SELECT
+            c.id,
+            c.title,
+            c.chunk_text,
+            c.published_at,
+            c.source,
+            d.summary,
+            d.url
+        FROM market_doc_chunks c
+        JOIN market_documents d ON d.id = c.doc_id
+        WHERE {' AND '.join(where_clauses)}
+        ORDER BY c.published_at DESC NULLS LAST, c.id DESC
+        LIMIT ${len(params)}
+        """,
+        *params,
+    )
+    default_source = f"market_doc_chunks.{kind}"
+    return [_map_market_chunk_row(dict(row), default_source=default_source) for row in rows if dict(row).get("chunk_text")]
+
+
 async def _fetch_research_reports(
     conn,
     code: str,
@@ -213,7 +282,7 @@ async def load_db_first_document_context(
         async with db.acquire() as conn:
             if int(news_limit or 0) > 0:
                 try:
-                    context["news"] = await _fetch_vector_documents(
+                    context["news"] = await _fetch_market_doc_chunks(
                         conn,
                         code,
                         kind="news",
@@ -224,11 +293,25 @@ async def load_db_first_document_context(
                 except Exception:
                     context["news"] = []
                 if context["news"]:
-                    source_chain.append("db.vector_documents.news")
+                    source_chain.append("db.market_doc_chunks.news")
+                else:
+                    try:
+                        context["news"] = await _fetch_vector_documents(
+                            conn,
+                            code,
+                            kind="news",
+                            limit=int(news_limit),
+                            start_date=start_date,
+                            end_date=end_date,
+                        )
+                    except Exception:
+                        context["news"] = []
+                    if context["news"]:
+                        source_chain.append("db.vector_documents.news")
 
             if int(notice_limit or 0) > 0:
                 try:
-                    context["notices"] = await _fetch_vector_documents(
+                    context["notices"] = await _fetch_market_doc_chunks(
                         conn,
                         code,
                         kind="notice",
@@ -239,7 +322,21 @@ async def load_db_first_document_context(
                 except Exception:
                     context["notices"] = []
                 if context["notices"]:
-                    source_chain.append("db.vector_documents.notice")
+                    source_chain.append("db.market_doc_chunks.notice")
+                else:
+                    try:
+                        context["notices"] = await _fetch_vector_documents(
+                            conn,
+                            code,
+                            kind="notice",
+                            limit=int(notice_limit),
+                            start_date=start_date,
+                            end_date=end_date,
+                        )
+                    except Exception:
+                        context["notices"] = []
+                    if context["notices"]:
+                        source_chain.append("db.vector_documents.notice")
 
             if int(research_limit or 0) > 0:
                 try:
@@ -256,7 +353,7 @@ async def load_db_first_document_context(
                     source_chain.append("db.research_reports")
                 else:
                     try:
-                        context["research"] = await _fetch_vector_documents(
+                        context["research"] = await _fetch_market_doc_chunks(
                             conn,
                             code,
                             kind="research",
@@ -267,7 +364,21 @@ async def load_db_first_document_context(
                     except Exception:
                         context["research"] = []
                     if context["research"]:
-                        source_chain.append("db.vector_documents.research")
+                        source_chain.append("db.market_doc_chunks.research")
+                    else:
+                        try:
+                            context["research"] = await _fetch_vector_documents(
+                                conn,
+                                code,
+                                kind="research",
+                                limit=int(research_limit),
+                                start_date=start_date,
+                                end_date=end_date,
+                            )
+                        except Exception:
+                            context["research"] = []
+                        if context["research"]:
+                            source_chain.append("db.vector_documents.research")
     except Exception:
         return context, source_chain
 
