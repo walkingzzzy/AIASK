@@ -538,7 +538,17 @@ class FactorResearchMemoryService:
                     from ..storage import get_db
 
                     db = get_db()
-                    if hasattr(db, "search_vector_profiles_by_embedding"):
+                    if hasattr(db, "search_vector_collection"):
+                        dense_payload = await db.search_vector_collection(
+                            query_embedding=query_dense_vector,
+                            collection_name="factor_candidate_embeddings",
+                            profile_type="memory",
+                            entity_ids=entity_ids,
+                            limit=max(20, min(int(limit) * 8, 200)),
+                            metric="cosine",
+                        )
+                        dense_rows = list((dense_payload or {}).get("items") or [])
+                    elif hasattr(db, "search_vector_profiles_by_embedding"):
                         dense_rows = await db.search_vector_profiles_by_embedding(
                             query_embedding=query_dense_vector,
                             collection_name="factor_candidate_embeddings",
@@ -547,11 +557,13 @@ class FactorResearchMemoryService:
                             limit=max(20, min(int(limit) * 8, 200)),
                             metric="cosine",
                         )
-                        for row in dense_rows:
-                            entity_id = str(row.get("entity_id") or "").strip()
-                            if not entity_id:
-                                continue
-                            db_dense_scores[entity_id] = float(row.get("similarity") or 0.0)
+                    else:
+                        dense_rows = []
+                    for row in dense_rows:
+                        entity_id = str(row.get("entity_id") or "").strip()
+                        if not entity_id:
+                            continue
+                        db_dense_scores[entity_id] = float(row.get("similarity") or 0.0)
                 except Exception:
                     db_dense_scores = {}
         scored = []

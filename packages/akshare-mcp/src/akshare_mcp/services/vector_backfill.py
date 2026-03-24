@@ -248,6 +248,7 @@ async def _save_grouped_backfill_rows(
     embed: bool,
     chunk_size: int,
     overlap: int,
+    version: str,
     rebuild_existing: bool,
     dry_run: bool,
 ) -> dict[str, int]:
@@ -286,6 +287,7 @@ async def _save_grouped_backfill_rows(
             embed=embed,
             chunk_size=chunk_size,
             overlap=overlap,
+            version=version,
         )
         result["saved_docs"] += int(saved.get("documents") or 0)
         result["saved_chunks"] += int(saved.get("chunks") or 0)
@@ -305,6 +307,7 @@ async def backfill_market_document_vectors(
     embed: Any = True,
     chunk_size: Any = 800,
     overlap: Any = 120,
+    version: str = "v1",
     rebuild_existing: Any = False,
     dry_run: Any = False,
     include_legacy_research_docs: Any = False,
@@ -320,6 +323,7 @@ async def backfill_market_document_vectors(
     resolved_embed = _normalize_bool(embed, True)
     resolved_chunk_size = _normalize_positive_int(chunk_size, 800, minimum=200, maximum=4000)
     resolved_overlap = _normalize_positive_int(overlap, 120, minimum=0, maximum=1500)
+    resolved_version = str(version or "v1").strip() or "v1"
     resolved_rebuild_existing = _normalize_bool(rebuild_existing, False)
     resolved_dry_run = _normalize_bool(dry_run, False)
     resolved_include_legacy_research_docs = _normalize_bool(include_legacy_research_docs, False)
@@ -334,6 +338,7 @@ async def backfill_market_document_vectors(
         "embed": resolved_embed,
         "chunk_size": resolved_chunk_size,
         "overlap": resolved_overlap,
+        "version": resolved_version,
         "rebuild_existing": resolved_rebuild_existing,
         "dry_run": resolved_dry_run,
         "include_legacy_research_docs": resolved_include_legacy_research_docs,
@@ -383,6 +388,7 @@ async def backfill_market_document_vectors(
                 embed=resolved_embed,
                 chunk_size=resolved_chunk_size,
                 overlap=resolved_overlap,
+                version=resolved_version,
                 rebuild_existing=resolved_rebuild_existing,
                 dry_run=resolved_dry_run,
             )
@@ -413,6 +419,7 @@ async def backfill_market_document_vectors(
                 embed=resolved_embed,
                 chunk_size=resolved_chunk_size,
                 overlap=resolved_overlap,
+                version=resolved_version,
                 rebuild_existing=resolved_rebuild_existing,
                 dry_run=resolved_dry_run,
             )

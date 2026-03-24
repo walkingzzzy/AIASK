@@ -170,6 +170,7 @@ class _SearchAdapter(VectorUnifiedMixin):
     def __init__(self, conn: _Conn, dense_rows: list[dict] | None = None):
         self._conn = conn
         self._dense_rows = list(dense_rows or [])
+        self.search_vector_collection_calls: list[dict] = []
 
     def acquire(self):
         return _Acquire(self._conn)
@@ -180,8 +181,20 @@ class _SearchAdapter(VectorUnifiedMixin):
             return default
         return value
 
+    async def search_vector_collection(self, **kwargs):
+        self.search_vector_collection_calls.append(dict(kwargs))
+        return {
+            "items": list(self._dense_rows),
+            "backend_used": "pgvector",
+            "fallback_used": False,
+            "fallback_reason": None,
+            "active_version": "snap_v1",
+            "index_version": "snap_v1",
+            "profile_version": "v1",
+        }
+
     async def search_vector_profiles_by_embedding(self, **_kwargs):
-        return list(self._dense_rows)
+        raise AssertionError("search_market_doc_chunks should use search_vector_collection")
 
 
 @pytest.mark.asyncio
@@ -319,3 +332,6 @@ async def test_search_market_doc_chunks_hybrid_scores_and_orders_results():
     assert rows[0]["dense_score"] == 0.72
     assert rows[0]["lexical_score"] > 0
     assert rows[0]["hybrid_score"] > rows[1]["hybrid_score"]
+    assert adapter.search_vector_collection_calls[0]["collection_name"] == "market_doc_chunks"
+    assert adapter.search_vector_collection_calls[0]["stock_code"] == "600519"
+    assert adapter.search_vector_collection_calls[0]["profile_type"] == "news"

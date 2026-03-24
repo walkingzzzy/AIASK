@@ -85,6 +85,109 @@ async def test_search_by_kline_returns_normalized_fallback_meta(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_search_similar_stocks_supports_db_backend(monkeypatch):
+    mcp = _DummyMCP()
+    vector_mod.register(mcp)
+
+    class _Db:
+        async def get_stock_info(self, code):
+            if code == "600519":
+                return {"code": "600519", "industry": "白酒", "name": "贵州茅台", "pe_ratio": 20.0, "pb_ratio": 5.0, "market_cap": 2.1e12}
+            return {"code": code, "name": "候选股"}
+
+        async def get_financials(self, code, limit=1):
+            del limit
+            return [{"roe": 18.0, "debt_ratio": 0.35, "revenue_growth": 0.12, "profit_growth": 0.15}] if code == "600519" else []
+
+        async def get_klines(self, code, limit=90):
+            del code
+            return [
+                {"close": 10.0 + idx * 0.1, "volume": 1000 + idx}
+                for idx in range(max(limit, 30))
+            ]
+
+        async def list_stock_universe(self, *, limit=200, offset=0, min_market_cap=None, industry=None, market=None):
+            del offset, min_market_cap, market
+            rows = [
+                {"code": "000001", "name": "平安银行", "industry": industry or "白酒"},
+                {"code": "000002", "name": "万科A", "industry": industry or "白酒"},
+            ]
+            return rows[:limit]
+
+        async def search_vector_profiles_by_embedding(self, **kwargs):
+            assert kwargs["collection_name"] == "stock_profile_embeddings"
+            assert kwargs["profile_type"] == "both"
+            assert kwargs["stock_codes"] == ["000001", "000002"]
+            return [
+                {
+                    "entity_id": "000001|both",
+                    "stock_code": "000001",
+                    "profile_type": "both",
+                    "similarity": 0.9321,
+                    "metadata": {
+                        "stock_name": "平安银行",
+                        "raw_features": {"pe_ratio": 18.0, "roe": 0.14},
+                    },
+                }
+            ]
+
+    monkeypatch.setattr(vector_mod, "get_db", lambda: _Db())
+
+    result = await mcp.search_similar_stocks(code="600519", top_n=1, similarity_type="both", search_backend="db")
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["backend_requested"] == "db"
+    assert data["backend_used"] == "db"
+    assert data["fallback_used"] is False
+    assert data["similar_stocks"][0]["source"] == "db"
+    assert data["similar_stocks"][0]["code"] == "000001"
+
+
+@pytest.mark.asyncio
+async def test_search_similar_stocks_db_backend_falls_back_to_python(monkeypatch):
+    mcp = _DummyMCP()
+    vector_mod.register(mcp)
+
+    class _Db:
+        async def get_stock_info(self, code):
+            if code == "600519":
+                return {"industry": "白酒", "name": "贵州茅台", "pe_ratio": 20.0, "pb_ratio": 5.0}
+            return None
+
+        async def get_financials(self, code, limit=1):
+            del limit
+            return [{"roe": 18.0, "debt_ratio": 0.35, "revenue_growth": 0.12}] if code == "600519" else []
+
+        async def get_klines(self, code, limit=60):
+            if code != "600519":
+                raise AssertionError(f"candidate get_klines should not be called: {code}")
+            return [
+                {"close": 10.0 + idx * 0.1, "open": 9.9 + idx * 0.1, "high": 10.1 + idx * 0.1, "low": 9.8 + idx * 0.1, "volume": 1000 + idx}
+                for idx in range(max(limit, 60))
+            ]
+
+        async def list_stock_universe(self, *, limit=200, offset=0, min_market_cap=None, industry=None, market=None):
+            del offset, min_market_cap, market
+            return [
+                {"code": "000001", "name": "平安银行", "industry": industry or "白酒", "pe_ratio": 18.0, "pb_ratio": 4.7},
+                {"code": "000002", "name": "万科A", "industry": industry or "白酒", "pe_ratio": 22.0, "pb_ratio": 5.3},
+            ][:limit]
+
+    monkeypatch.setattr(vector_mod, "get_db", lambda: _Db())
+
+    result = await mcp.search_similar_stocks(code="600519", top_n=1, similarity_type="fundamental", search_backend="db")
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["backend_requested"] == "db"
+    assert data["backend_used"] == "python"
+    assert data["fallback_used"] is True
+    assert data["fallback_reason"] == "db_backend_unsupported"
+    assert data["similar_stocks"][0]["code"] == "000001"
+
+
+@pytest.mark.asyncio
 async def test_vector_search_manager_preserves_normalized_fallback_meta():
     mcp = _DummyMCP()
 
@@ -117,6 +220,45 @@ async def test_vector_search_manager_preserves_normalized_fallback_meta():
     assert data["fallback_used"] is True
     assert data["fallback_reason"] == "index_empty_result"
     assert data["latency_ms"] == 18.5
+
+
+@pytest.mark.asyncio
+async def test_vector_search_manager_preserves_similar_stock_backend_meta():
+    mcp = _DummyMCP()
+
+    class _Tool:
+        async def run(self, args):
+            assert args["search_backend"] == "db"
+            return {
+                "success": True,
+                "data": {
+                    "similar_stocks": [{"code": "000001", "similarity": 0.88, "source": "python"}],
+                    "candidate_scope": "industry",
+                    "similarity_type": "both",
+                    "backend_requested": "db",
+                    "backend_used": "python",
+                    "fallback_used": True,
+                    "fallback_reason": "db_empty_result",
+                    "latency_ms": 6.5,
+                },
+            }
+
+    mcp._tool_manager._tools["search_similar_stocks"] = _Tool()
+    register_vector_search_manager(mcp)
+
+    result = await mcp.vector_search_manager(
+        action="similar_stocks",
+        code="600519",
+        kwargs='{"top_n":1,"similarity_type":"both","search_backend":"db"}',
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["backend_requested"] == "db"
+    assert data["backend_used"] == "python"
+    assert data["fallback_used"] is True
+    assert data["fallback_reason"] == "db_empty_result"
+    assert data["latency_ms"] == 6.5
 
 
 @pytest.mark.asyncio

@@ -154,10 +154,21 @@ def register_vector_search_manager(mcp):
                 code = normalize_code(code)
                 top_n = kwargs.get('top_n', 10)
                 similarity_type = kwargs.get('similarity_type', 'both')
+                search_backend = str(kwargs.get('search_backend', 'db') or 'db')
+                allow_fallback = bool(kwargs.get('allow_fallback', True))
                 
                 # 调用真实的相似股票搜索
                 try:
-                    result = await _run_registered_tool("search_similar_stocks", {"code": code, "top_n": int(top_n), "similarity_type": str(similarity_type)})
+                    result = await _run_registered_tool(
+                        "search_similar_stocks",
+                        {
+                            "code": code,
+                            "top_n": int(top_n),
+                            "similarity_type": str(similarity_type),
+                            "search_backend": search_backend,
+                            "allow_fallback": allow_fallback,
+                        },
+                    )
                     if not result.get("success"):
                         return _fail(
                             result.get("error") or f"search_similar_stocks failed for {code}",
@@ -166,19 +177,26 @@ def register_vector_search_manager(mcp):
                     if result.get('success') and result.get('data'):
                         data = result['data']
                         similar = data.get('similar_stocks', [])
+                        backend_requested = data.get('backend_requested') or data.get('search_backend') or 'python'
+                        backend_used = data.get('backend_used') or data.get('actual_backend') or backend_requested
                         retrieval_quality = summarize_ranked_results(
                             similar,
                             score_key='similarity',
-                            backend_requested='python',
-                            backend_used='python',
-                            fallback_used=False,
-                            fallback_reason=None,
+                            backend_requested=backend_requested,
+                            backend_used=backend_used,
+                            fallback_used=bool(data.get('fallback_used', backend_used != backend_requested)),
+                            fallback_reason=data.get('fallback_reason'),
                         )
                         return _ok({
                             'code': code,
                             'similar_stocks': similar,
                             'source': data.get('candidate_scope', 'similarity_search'),
                             'similarity_type': data.get('similarity_type', similarity_type),
+                            'backend_requested': backend_requested,
+                            'backend_used': backend_used,
+                            'fallback_used': bool(data.get('fallback_used', backend_used != backend_requested)),
+                            'fallback_reason': data.get('fallback_reason'),
+                            'latency_ms': data.get('latency_ms', 0),
                             'retrieval_quality': retrieval_quality,
                         }, source_chain=['vector_search_manager', 'search_similar_stocks'])
                 except Exception as exc:

@@ -1,0 +1,403 @@
+"""Unified vector collection snapshot / ANN governance helpers."""
+
+from __future__ import annotations
+
+import math
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_positive_int(value: Any, default: int, *, minimum: int = 1, maximum: int = 5000) -> int:
+    try:
+        resolved = int(default if value is None or value == "" else value)
+    except (TypeError, ValueError):
+        resolved = int(default)
+    return max(minimum, min(resolved, maximum))
+
+
+def _bucket_label(index: int) -> str:
+    return f"b_{int(index or 0):04d}"
+
+
+def _normalize_embedding(values: Any) -> list[float]:
+    resolved = [float(item) for item in list(values or [])]
+    if not resolved:
+        return []
+    norm = math.sqrt(sum(item * item for item in resolved))
+    if norm <= 1e-12:
+        return []
+    return [float(item / norm) for item in resolved]
+
+
+def _vector_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    return float(sum(l * r for l, r in zip(left, right)))
+
+
+def _mean_embedding(vectors: list[list[float]]) -> list[float]:
+    if not vectors:
+        return []
+    dim = len(vectors[0])
+    if dim <= 0:
+        return []
+    totals = [0.0] * dim
+    for vector in vectors:
+        if len(vector) != dim:
+            continue
+        for idx, value in enumerate(vector):
+            totals[idx] += float(value)
+    return _normalize_embedding([value / max(len(vectors), 1) for value in totals])
+
+
+def _build_bucket_layout(
+    rows: list[dict[str, Any]],
+    *,
+    bucket_count: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    valid: list[tuple[dict[str, Any], list[float]]] = []
+    skipped: list[dict[str, Any]] = []
+    for row in list(rows or []):
+        payload = dict(row or {})
+        embedding = _normalize_embedding(payload.get("embedding") or [])
+        if not embedding:
+            skipped.append(
+                {
+                    "profile_id": payload.get("id"),
+                    "entity_id": payload.get("entity_id"),
+                    "reason": "empty_embedding",
+                }
+            )
+            continue
+        valid.append((payload, embedding))
+    if not valid:
+        return {
+            "profile_count": 0,
+            "bucket_count": 0,
+            "vector_dim": 0,
+            "centroids": [],
+            "metadata": {"skipped_profiles": skipped},
+        }, []
+
+    dim_counts: dict[int, int] = {}
+    for _, embedding in valid:
+        dim_counts[len(embedding)] = dim_counts.get(len(embedding), 0) + 1
+    dominant_dim = max(dim_counts.items(), key=lambda item: (item[1], item[0]))[0]
+    selected = [(payload, embedding) for payload, embedding in valid if len(embedding) == dominant_dim]
+    for payload, embedding in valid:
+        if len(embedding) != dominant_dim:
+            skipped.append(
+                {
+                    "profile_id": payload.get("id"),
+                    "entity_id": payload.get("entity_id"),
+                    "reason": f"dim_mismatch:{len(embedding)}",
+                }
+            )
+    if not selected:
+        return {
+            "profile_count": 0,
+            "bucket_count": 0,
+            "vector_dim": dominant_dim,
+            "centroids": [],
+            "metadata": {"skipped_profiles": skipped},
+        }, []
+
+    ordered = sorted(
+        selected,
+        key=lambda item: (
+            str(item[0].get("stock_code") or ""),
+            str(item[0].get("entity_id") or ""),
+            int(item[0].get("id") or 0),
+        ),
+    )
+    vectors = [embedding for _, embedding in ordered]
+    resolved_bucket_count = max(1, min(int(bucket_count or 1), len(vectors)))
+    if resolved_bucket_count == 1:
+        centroids = [_mean_embedding(vectors)]
+    else:
+        initial = [
+            int(round(idx * (len(vectors) - 1) / max(resolved_bucket_count - 1, 1)))
+            for idx in range(resolved_bucket_count)
+        ]
+        centroids = [list(vectors[idx]) for idx in initial]
+        for _ in range(12):
+            assignments: list[list[int]] = [[] for _ in range(resolved_bucket_count)]
+            for row_idx, vector in enumerate(vectors):
+                sims = [_vector_similarity(vector, centroid) for centroid in centroids]
+                best_idx = int(max(range(resolved_bucket_count), key=lambda idx: sims[idx]))
+                assignments[best_idx].append(row_idx)
+            updated: list[list[float]] = []
+            max_shift = 0.0
+            for centroid_idx, members in enumerate(assignments):
+                if not members:
+                    updated.append(list(centroids[centroid_idx]))
+                    continue
+                new_centroid = _mean_embedding([vectors[row_idx] for row_idx in members]) or list(centroids[centroid_idx])
+                shift = math.sqrt(
+                    sum((float(new_centroid[idx]) - float(centroids[centroid_idx][idx])) ** 2 for idx in range(dominant_dim))
+                )
+                max_shift = max(max_shift, float(shift))
+                updated.append(list(new_centroid))
+            centroids = updated
+            if max_shift <= 1e-4:
+                break
+
+    bucket_members: list[list[int]] = [[] for _ in range(resolved_bucket_count)]
+    assignments_meta: list[tuple[int, float]] = []
+    for row_idx, vector in enumerate(vectors):
+        sims = [_vector_similarity(vector, centroid) for centroid in centroids]
+        best_idx = int(max(range(resolved_bucket_count), key=lambda idx: sims[idx]))
+        best_score = float(sims[best_idx])
+        bucket_members[best_idx].append(row_idx)
+        assignments_meta.append((best_idx, best_score))
+
+    centroid_rows: list[dict[str, Any]] = []
+    for centroid_idx, centroid in enumerate(centroids):
+        neighbors: list[str] = []
+        if resolved_bucket_count > 1:
+            scored_neighbors = []
+            for other_idx, other_centroid in enumerate(centroids):
+                if other_idx == centroid_idx:
+                    continue
+                scored_neighbors.append((other_idx, _vector_similarity(centroid, other_centroid)))
+            scored_neighbors.sort(key=lambda item: item[1], reverse=True)
+            neighbors = [_bucket_label(item[0]) for item in scored_neighbors[: min(2, len(scored_neighbors))]]
+        centroid_rows.append(
+            {
+                "bucket_id": _bucket_label(centroid_idx),
+                "centroid": [round(float(item), 8) for item in centroid],
+                "size": len(bucket_members[centroid_idx]),
+                "neighbors": neighbors,
+                "mean_similarity": round(
+                    float(
+                        sum(assignments_meta[row_idx][1] for row_idx in bucket_members[centroid_idx]) / max(len(bucket_members[centroid_idx]), 1)
+                    ),
+                    6,
+                ),
+            }
+        )
+
+    items: list[dict[str, Any]] = []
+    for row_idx, (payload, embedding) in enumerate(ordered):
+        bucket_idx, coarse_score = assignments_meta[row_idx]
+        items.append(
+            {
+                "profile_id": payload.get("id"),
+                "entity_type": payload.get("entity_type"),
+                "entity_id": payload.get("entity_id"),
+                "stock_code": payload.get("stock_code"),
+                "profile_type": payload.get("profile_type"),
+                "model_id": payload.get("model_id"),
+                "metric": payload.get("metric") or "cosine",
+                "vector_dim": int(payload.get("vector_dim") or dominant_dim),
+                "bucket_id": _bucket_label(bucket_idx),
+                "coarse_score": round(float(coarse_score), 6),
+                "embedding": [round(float(item), 8) for item in embedding],
+                "metadata": {
+                    **dict(payload.get("metadata") or {}),
+                    "source_profile_version": payload.get("version"),
+                },
+            }
+        )
+
+    return {
+        "profile_count": len(items),
+        "bucket_count": resolved_bucket_count,
+        "vector_dim": dominant_dim,
+        "centroids": centroid_rows,
+        "metadata": {
+            "skipped_profiles": skipped,
+            "dominant_dim": dominant_dim,
+            "cluster_sizes": {_bucket_label(idx): len(members) for idx, members in enumerate(bucket_members)},
+        },
+    }, items
+
+
+async def build_vector_collection_snapshot(
+    db,
+    *,
+    collection_name: str,
+    version: str | None = None,
+    index_version: str | None = None,
+    profile_type: str | None = None,
+    limit_profiles: Any = 5000,
+    bucket_count: Any = None,
+    activate: bool = True,
+    source: str = "vector_governance",
+) -> dict[str, Any]:
+    resolved_collection = str(collection_name or "").strip()
+    if not resolved_collection:
+        raise ValueError("collection_name is required")
+    resolved_limit_profiles = _normalize_positive_int(limit_profiles, 5000, minimum=1, maximum=100000)
+    rows = await db.list_vector_profiles(
+        collection_name=resolved_collection,
+        profile_type=profile_type,
+        version=version,
+        limit=resolved_limit_profiles,
+    )
+    if not rows:
+        return {
+            "collection_name": resolved_collection,
+            "profile_type": profile_type,
+            "profile_version": version,
+            "index_version": index_version,
+            "status": "skipped",
+            "sample_count": 0,
+            "items_count": 0,
+            "bucket_count": 0,
+            "snapshot": None,
+            "profile_index_name": None,
+            "item_index_name": None,
+            "reason": "no_profiles",
+        }
+
+    collection = await db.get_vector_collection(resolved_collection) if hasattr(db, "get_vector_collection") else None
+    first_row = dict(rows[0] or {})
+    resolved_profile_version = str(version or first_row.get("version") or "").strip() or None
+    filtered_rows = [
+        dict(row)
+        for row in rows
+        if str(dict(row).get("version") or "").strip() == resolved_profile_version
+    ]
+    if not filtered_rows:
+        return {
+            "collection_name": resolved_collection,
+            "profile_type": profile_type,
+            "profile_version": resolved_profile_version,
+            "index_version": index_version,
+            "status": "skipped",
+            "sample_count": 0,
+            "items_count": 0,
+            "bucket_count": 0,
+            "snapshot": None,
+            "profile_index_name": None,
+            "item_index_name": None,
+            "reason": "no_profiles_for_version",
+        }
+
+    resolved_index_version = str(index_version or resolved_profile_version or f"auto_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}").strip()
+    resolved_metric = str(first_row.get("metric") or (collection or {}).get("metric") or "cosine").strip().lower()
+    resolved_model_id = str(first_row.get("model_id") or (collection or {}).get("model_id") or "unknown").strip()
+    resolved_vector_dim = int(first_row.get("vector_dim") or len(first_row.get("embedding") or []) or 0)
+    resolved_profile_type = str(profile_type or first_row.get("profile_type") or "").strip() or None
+    resolved_bucket_count = _normalize_positive_int(
+        bucket_count,
+        default=max(1, min(int(math.sqrt(len(filtered_rows))) or 1, 256)),
+        minimum=1,
+        maximum=4096,
+    )
+
+    if hasattr(db, "save_vector_collection"):
+        await db.save_vector_collection(
+            {
+                "collection_name": resolved_collection,
+                "entity_family": str((collection or {}).get("entity_family") or first_row.get("entity_type") or "generic"),
+                "backend": str((collection or {}).get("backend") or getattr(db, "get_vector_backend", lambda: "pgvector")() or "pgvector"),
+                "metric": resolved_metric,
+                "model_id": resolved_model_id,
+                "vector_dim": resolved_vector_dim,
+                "status": "active",
+                "metadata": dict((collection or {}).get("metadata") or {}),
+            }
+        )
+
+    snapshot = await db.save_vector_index_snapshot(
+        {
+            "collection_name": resolved_collection,
+            "index_version": resolved_index_version,
+            "status": "building",
+            "model_id": resolved_model_id,
+            "profile_type": resolved_profile_type,
+            "metric": resolved_metric,
+            "vector_dim": resolved_vector_dim,
+            "sample_count": len(filtered_rows),
+            "bucket_count": resolved_bucket_count,
+            "index_params": {
+                "bucket_strategy": "centroid_kmeans",
+                "limit_profiles": resolved_limit_profiles,
+                "neighbor_count": 2,
+            },
+            "metrics": {},
+            "metadata": {
+                "profile_version": resolved_profile_version,
+                "source": source,
+            },
+            "built_at": _now_iso(),
+        }
+    )
+
+    layout, items = _build_bucket_layout(filtered_rows, bucket_count=resolved_bucket_count)
+    resolved_bucket_count = int(layout.get("bucket_count") or resolved_bucket_count)
+    replace_result = await db.replace_vector_index_items(resolved_collection, resolved_index_version, items)
+
+    profile_index_name = None
+    if hasattr(db, "ensure_vector_profile_pgvector_index"):
+        profile_index_name = await db.ensure_vector_profile_pgvector_index(
+            collection_name=resolved_collection,
+            version=resolved_profile_version,
+            vector_dim=resolved_vector_dim,
+            profile_type=resolved_profile_type,
+            metric=resolved_metric,
+        )
+    item_index_name = None
+    if hasattr(db, "ensure_vector_index_item_pgvector_index"):
+        item_index_name = await db.ensure_vector_index_item_pgvector_index(
+            collection_name=resolved_collection,
+            index_version=resolved_index_version,
+            vector_dim=resolved_vector_dim,
+            metric=resolved_metric,
+        )
+
+    final_status = "active" if activate else "built"
+    snapshot = await db.save_vector_index_snapshot(
+        {
+            "collection_name": resolved_collection,
+            "index_version": resolved_index_version,
+            "status": final_status,
+            "model_id": resolved_model_id,
+            "profile_type": resolved_profile_type,
+            "metric": resolved_metric,
+            "vector_dim": resolved_vector_dim,
+            "sample_count": len(filtered_rows),
+            "bucket_count": resolved_bucket_count,
+            "index_params": {
+                "bucket_strategy": "centroid_kmeans",
+                "limit_profiles": resolved_limit_profiles,
+                "neighbor_count": 2,
+            },
+            "metrics": {
+                "items_count": int(replace_result.get("count") or 0),
+                "avg_coarse_score": round(
+                    float(sum(float(item.get("coarse_score") or 0.0) for item in items) / max(len(items), 1)),
+                    6,
+                ) if items else 0.0,
+            },
+            "metadata": {
+                "profile_version": resolved_profile_version,
+                "source": source,
+                "profile_index_name": profile_index_name,
+                "item_index_name": item_index_name,
+                "centroids": list(layout.get("centroids") or []),
+                "layout": dict(layout.get("metadata") or {}),
+            },
+            "built_at": _now_iso(),
+            "activated_at": _now_iso() if activate else None,
+        }
+    )
+    return {
+        "collection_name": resolved_collection,
+        "profile_type": resolved_profile_type,
+        "profile_version": resolved_profile_version,
+        "index_version": resolved_index_version,
+        "status": final_status,
+        "sample_count": len(filtered_rows),
+        "items_count": int(replace_result.get("count") or 0),
+        "bucket_count": resolved_bucket_count,
+        "snapshot": snapshot,
+        "profile_index_name": profile_index_name,
+        "item_index_name": item_index_name,
+    }

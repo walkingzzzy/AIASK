@@ -29,6 +29,8 @@ async def test_init_vector_tables_creates_core_tables_and_seeds_default_collecti
     assert "CREATE TABLE IF NOT EXISTS market_doc_chunks" in sql_text
     assert "CREATE TABLE IF NOT EXISTS vector_profile_store" in sql_text
     assert "CREATE TABLE IF NOT EXISTS vector_index_item_store" in sql_text
+    assert "ADD COLUMN IF NOT EXISTS bucket_id TEXT" in sql_text
+    assert "idx_vector_index_item_store_bucket_lookup" in sql_text
     assert "market_doc_chunks" in seed_rows
     assert "kline_pattern_embeddings" in seed_rows
     assert "stock_profile_embeddings" in seed_rows

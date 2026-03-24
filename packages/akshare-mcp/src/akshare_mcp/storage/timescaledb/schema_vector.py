@@ -265,12 +265,17 @@ async def init_vector_tables(conn, pgvector_enabled: bool) -> None:
                 model_id TEXT NOT NULL,
                 metric TEXT NOT NULL DEFAULT 'cosine',
                 vector_dim INTEGER NOT NULL,
+                bucket_id TEXT,
                 embedding vector NOT NULL,
                 metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+            ALTER TABLE vector_index_item_store
+                ADD COLUMN IF NOT EXISTS bucket_id TEXT;
             CREATE INDEX IF NOT EXISTS idx_vector_index_item_store_lookup
                 ON vector_index_item_store(collection_name, index_version, profile_type, vector_dim, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_vector_index_item_store_bucket_lookup
+                ON vector_index_item_store(collection_name, index_version, bucket_id, profile_type, vector_dim, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_vector_index_item_store_stock
                 ON vector_index_item_store(stock_code, collection_name, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_vector_index_item_store_metadata_gin
@@ -306,7 +311,7 @@ async def init_vector_tables(conn, pgvector_enabled: bool) -> None:
             backend="pgvector" if pgvector_enabled else "index",
             metric="cosine",
             model_id="stock-profile-v1",
-            vector_dim=512,
+            vector_dim=11,
             metadata={"domain": "market-quant", "notes": "derived stock profile vectors"},
         )
         await _seed_vector_collection(
@@ -316,7 +321,7 @@ async def init_vector_tables(conn, pgvector_enabled: bool) -> None:
             backend="pgvector" if pgvector_enabled else "index",
             metric="cosine",
             model_id="factor-memory-v1",
-            vector_dim=512,
+            vector_dim=128,
             metadata={"domain": "quant-research", "notes": "factor candidate memory"},
         )
         await _seed_vector_collection(

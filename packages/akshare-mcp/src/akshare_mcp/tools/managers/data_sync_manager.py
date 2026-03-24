@@ -149,6 +149,7 @@ def _build_schedule_params(task_type: str, kwargs: dict, codes: list[str]) -> di
         params["batch_size"] = max(int(kwargs.get("batch_size", 100) or 100), 1)
         params["chunk_size"] = max(int(kwargs.get("chunk_size", 800) or 800), 200)
         params["overlap"] = max(int(kwargs.get("overlap", 120) or 120), 0)
+        params["version"] = str(kwargs.get("version", "v1") or "v1").strip()
         params["embed"] = _as_bool(kwargs.get("embed", True), True)
         params["dry_run"] = _as_bool(kwargs.get("dry_run", False), False)
         params["rebuild_existing"] = _as_bool(kwargs.get("rebuild_existing", False), False)
@@ -156,6 +157,10 @@ def _build_schedule_params(task_type: str, kwargs: dict, codes: list[str]) -> di
             kwargs.get("include_legacy_research_docs", False),
             False,
         )
+        params["build_snapshot"] = _as_bool(kwargs.get("build_snapshot", False), False)
+        params["activate_snapshot"] = _as_bool(kwargs.get("activate_snapshot", True), True)
+        if kwargs.get("index_version"):
+            params["index_version"] = str(kwargs.get("index_version")).strip()
     elif task_type == "vector_backfill_kline_patterns":
         stock_codes = _normalize_codes(kwargs.get("stock_codes"))
         if stock_codes:
@@ -173,6 +178,10 @@ def _build_schedule_params(task_type: str, kwargs: dict, codes: list[str]) -> di
         params["version"] = str(kwargs.get("version", "v1") or "v1").strip()
         params["dry_run"] = _as_bool(kwargs.get("dry_run", False), False)
         params["rebuild_existing"] = _as_bool(kwargs.get("rebuild_existing", False), False)
+        params["build_snapshot"] = _as_bool(kwargs.get("build_snapshot", False), False)
+        params["activate_snapshot"] = _as_bool(kwargs.get("activate_snapshot", True), True)
+        if kwargs.get("index_version"):
+            params["index_version"] = str(kwargs.get("index_version")).strip()
     elif task_type == "vector_backfill_stock_profiles":
         stock_codes = _normalize_codes(kwargs.get("stock_codes"))
         if stock_codes:
@@ -187,6 +196,10 @@ def _build_schedule_params(task_type: str, kwargs: dict, codes: list[str]) -> di
         params["version"] = str(kwargs.get("version", "v1") or "v1").strip()
         params["dry_run"] = _as_bool(kwargs.get("dry_run", False), False)
         params["rebuild_existing"] = _as_bool(kwargs.get("rebuild_existing", False), False)
+        params["build_snapshot"] = _as_bool(kwargs.get("build_snapshot", False), False)
+        params["activate_snapshot"] = _as_bool(kwargs.get("activate_snapshot", True), True)
+        if kwargs.get("index_version"):
+            params["index_version"] = str(kwargs.get("index_version")).strip()
     elif task_type == "vector_backfill_factor_candidates":
         params["limit"] = max(int(kwargs.get("limit", 200) or 200), 1)
         codes_arg = _normalize_codes(kwargs.get("codes") or kwargs.get("stock_codes"))
@@ -199,6 +212,35 @@ def _build_schedule_params(task_type: str, kwargs: dict, codes: list[str]) -> di
         params["version"] = str(kwargs.get("version", "v1") or "v1").strip()
         params["dry_run"] = _as_bool(kwargs.get("dry_run", False), False)
         params["rebuild_existing"] = _as_bool(kwargs.get("rebuild_existing", False), False)
+        params["build_snapshot"] = _as_bool(kwargs.get("build_snapshot", False), False)
+        params["activate_snapshot"] = _as_bool(kwargs.get("activate_snapshot", True), True)
+        if kwargs.get("index_version"):
+            params["index_version"] = str(kwargs.get("index_version")).strip()
+    elif task_type == "vector_build_snapshot":
+        params["collection_name"] = str(kwargs.get("collection_name") or kwargs.get("collection") or "").strip()
+        if kwargs.get("profile_type"):
+            params["profile_type"] = str(kwargs.get("profile_type")).strip()
+        if kwargs.get("version"):
+            params["version"] = str(kwargs.get("version")).strip()
+        if kwargs.get("index_version"):
+            params["index_version"] = str(kwargs.get("index_version")).strip()
+        params["limit_profiles"] = max(int(kwargs.get("limit_profiles", 5000) or 5000), 1)
+        if kwargs.get("bucket_count") is not None:
+            params["bucket_count"] = max(int(kwargs.get("bucket_count") or 1), 1)
+        params["activate"] = _as_bool(kwargs.get("activate", True), True)
+    elif task_type == "vector_benchmark_collection":
+        params["collection_name"] = str(kwargs.get("collection_name") or kwargs.get("collection") or "").strip()
+        if kwargs.get("profile_type"):
+            params["profile_type"] = str(kwargs.get("profile_type")).strip()
+        if kwargs.get("version"):
+            params["version"] = str(kwargs.get("version")).strip()
+        if kwargs.get("index_version"):
+            params["index_version"] = str(kwargs.get("index_version")).strip()
+        params["sample_size"] = max(int(kwargs.get("sample_size", 30) or 30), 1)
+        params["top_k"] = max(int(kwargs.get("top_k", 10) or 10), 1)
+        params["limit_profiles"] = max(int(kwargs.get("limit_profiles", 5000) or 5000), 10)
+        params["metric"] = str(kwargs.get("metric", "cosine") or "cosine").strip().lower()
+        params["persist_snapshot_metrics"] = _as_bool(kwargs.get("persist_snapshot_metrics", True), True)
     else:
         period = kwargs.get("period")
         if period:
@@ -247,6 +289,12 @@ def _build_task_payload(task_type: str, codes: list[str], payload: dict | None =
         record_codes = _normalize_codes(merged.get("codes") or merged.get("stock_codes"))
         if record_codes:
             merged["codes"] = record_codes
+    elif task_type == "vector_build_snapshot":
+        if merged.get("collection_name"):
+            merged["collection_name"] = str(merged.get("collection_name")).strip()
+    elif task_type == "vector_benchmark_collection":
+        if merged.get("collection_name"):
+            merged["collection_name"] = str(merged.get("collection_name")).strip()
     return merged
 
 
@@ -299,6 +347,8 @@ async def _execute_sync_task(
         "vector_backfill_kline_patterns",
         "vector_backfill_stock_profiles",
         "vector_backfill_factor_candidates",
+        "vector_build_snapshot",
+        "vector_benchmark_collection",
     } and not effective_codes:
         raise ValueError("需要提供codes参数")
 
@@ -332,6 +382,10 @@ async def _execute_sync_task(
             results = await _sync_vector_backfill_stock_profiles_now(effective_payload)
         elif task_type == "vector_backfill_factor_candidates":
             results = await _sync_vector_backfill_factor_candidates_now(effective_payload)
+        elif task_type == "vector_build_snapshot":
+            results = await _sync_vector_build_snapshot_now(effective_payload)
+        elif task_type == "vector_benchmark_collection":
+            results = await _sync_vector_benchmark_collection_now(effective_payload)
         else:
             results = await _sync_klines_now(effective_codes)
 
@@ -668,6 +722,7 @@ async def _load_market_aux_status(db) -> dict:
             "market_doc_chunks_research": await conn.fetchval("SELECT COUNT(*) FROM market_doc_chunks WHERE doc_type = 'research'") or 0,
             "vector_collections": await conn.fetchval("SELECT COUNT(*) FROM vector_collections") or 0,
             "vector_profiles": await conn.fetchval("SELECT COUNT(*) FROM vector_profiles") or 0,
+            "vector_index_snapshots": await conn.fetchval("SELECT COUNT(*) FROM vector_index_snapshots") or 0,
             "kline_pattern_windows": await conn.fetchval("SELECT COUNT(*) FROM kline_pattern_windows") or 0,
             "vector_profiles_kline_patterns": await conn.fetchval(
                 "SELECT COUNT(*) FROM vector_profiles WHERE collection_name = 'kline_pattern_embeddings'"
@@ -725,7 +780,7 @@ def register_data_sync_manager(mcp):
                 return ok({
                     'supported_actions': {
                         'status': '数据同步状态',
-                        'sync': '执行数据同步（K线/财务需 codes；core_market/vector_backfill_market_docs/vector_backfill_kline_patterns/vector_backfill_stock_profiles/vector_backfill_factor_candidates 可直接运行）',
+                        'sync': '执行数据同步（K线/财务需 codes；core_market/vector_backfill_market_docs/vector_backfill_kline_patterns/vector_backfill_stock_profiles/vector_backfill_factor_candidates/vector_build_snapshot/vector_benchmark_collection 可直接运行）',
                         'get_task': '获取任务详情（需要 task_id）',
                         'list_tasks': '列出同步任务',
                         'cancel_task': '取消任务（需要 task_id）',
@@ -799,6 +854,8 @@ def register_data_sync_manager(mcp):
                     'vector_backfill_kline_patterns',
                     'vector_backfill_stock_profiles',
                     'vector_backfill_factor_candidates',
+                    'vector_build_snapshot',
+                    'vector_benchmark_collection',
                 } and not codes:
                     return fail('需要提供codes参数')
                 payload = _build_task_payload(task_type, codes, kwargs)
@@ -891,6 +948,8 @@ def register_data_sync_manager(mcp):
                     'vector_backfill_kline_patterns',
                     'vector_backfill_stock_profiles',
                     'vector_backfill_factor_candidates',
+                    'vector_build_snapshot',
+                    'vector_benchmark_collection',
                 } and not codes:
                     return fail('需要提供codes参数')
                 
@@ -1151,6 +1210,37 @@ async def _sync_factor_context_now(kwargs: dict) -> dict:
     }
 
 
+async def _maybe_build_backfill_snapshot(
+    db,
+    *,
+    kwargs: dict,
+    collection_name: str,
+    version: str | None,
+    source: str,
+) -> dict | None:
+    if not _as_bool(kwargs.get('build_snapshot', False), False):
+        return None
+    if _as_bool(kwargs.get('dry_run', False), False):
+        return {
+            'collection_name': collection_name,
+            'profile_version': str(version or '').strip() or None,
+            'index_version': str(kwargs.get('index_version') or '').strip() or None,
+            'status': 'skipped',
+            'reason': 'dry_run',
+        }
+
+    from ...services.unified_vector_governance import build_vector_collection_snapshot
+
+    return await build_vector_collection_snapshot(
+        db,
+        collection_name=collection_name,
+        version=str(version or '').strip() or None,
+        index_version=str(kwargs.get('index_version') or '').strip() or None,
+        activate=_as_bool(kwargs.get('activate_snapshot', True), True),
+        source=source,
+    )
+
+
 async def _sync_vector_backfill_market_docs_now(kwargs: dict) -> dict:
     """回填历史市场文本到统一向量层。"""
     from ...services.vector_backfill import backfill_market_document_vectors
@@ -1167,9 +1257,17 @@ async def _sync_vector_backfill_market_docs_now(kwargs: dict) -> dict:
         embed=kwargs.get('embed', True),
         chunk_size=kwargs.get('chunk_size', 800),
         overlap=kwargs.get('overlap', 120),
+        version=kwargs.get('version', 'v1'),
         rebuild_existing=kwargs.get('rebuild_existing', False),
         dry_run=kwargs.get('dry_run', False),
         include_legacy_research_docs=kwargs.get('include_legacy_research_docs', False),
+    )
+    snapshot = await _maybe_build_backfill_snapshot(
+        db,
+        kwargs=kwargs,
+        collection_name='market_doc_chunks',
+        version=result.get('version') or kwargs.get('version') or 'v1',
+        source='data_sync_manager.vector_backfill_market_docs',
     )
     market_aux = await _load_market_aux_status(db)
     return {
@@ -1186,16 +1284,22 @@ async def _sync_vector_backfill_market_docs_now(kwargs: dict) -> dict:
             'embed': result.get('embed'),
             'chunk_size': result.get('chunk_size'),
             'overlap': result.get('overlap'),
+            'version': result.get('version'),
             'rebuild_existing': result.get('rebuild_existing'),
             'dry_run': result.get('dry_run'),
             'include_legacy_research_docs': result.get('include_legacy_research_docs'),
+            'build_snapshot': _as_bool(kwargs.get('build_snapshot', False), False),
+            'activate_snapshot': _as_bool(kwargs.get('activate_snapshot', True), True),
+            'index_version': (snapshot or {}).get('index_version') or kwargs.get('index_version'),
         },
         'backfill': result,
+        'snapshot': snapshot,
         'market_aux': market_aux,
         'message': (
             f"market_doc_backfill docs={int(result.get('saved_docs') or 0)} "
             f"chunks={int(result.get('saved_chunks') or 0)} "
             f"embedded={int(result.get('embedded_chunks') or 0)}"
+            + (f" snapshot={snapshot.get('status')}" if snapshot else "")
         ),
     }
 
@@ -1220,6 +1324,13 @@ async def _sync_vector_backfill_kline_patterns_now(kwargs: dict) -> dict:
         rebuild_existing=kwargs.get('rebuild_existing', False),
         dry_run=kwargs.get('dry_run', False),
     )
+    snapshot = await _maybe_build_backfill_snapshot(
+        db,
+        kwargs=kwargs,
+        collection_name='kline_pattern_embeddings',
+        version=result.get('version') or kwargs.get('version'),
+        source='data_sync_manager.vector_backfill_kline_patterns',
+    )
     market_aux = await _load_market_aux_status(db)
     return {
         'success': 1,
@@ -1238,12 +1349,17 @@ async def _sync_vector_backfill_kline_patterns_now(kwargs: dict) -> dict:
             'version': result.get('version'),
             'rebuild_existing': result.get('rebuild_existing'),
             'dry_run': result.get('dry_run'),
+            'build_snapshot': _as_bool(kwargs.get('build_snapshot', False), False),
+            'activate_snapshot': _as_bool(kwargs.get('activate_snapshot', True), True),
+            'index_version': (snapshot or {}).get('index_version') or kwargs.get('index_version'),
         },
         'backfill': result,
+        'snapshot': snapshot,
         'market_aux': market_aux,
         'message': (
             f"kline_pattern_backfill windows={int(result.get('saved_windows') or 0)} "
             f"profiles={int(result.get('saved_profiles') or 0)}"
+            + (f" snapshot={snapshot.get('status')}" if snapshot else "")
         ),
     }
 
@@ -1263,6 +1379,14 @@ async def _sync_vector_backfill_stock_profiles_now(kwargs: dict) -> dict:
         rebuild_existing=kwargs.get('rebuild_existing', False),
         dry_run=kwargs.get('dry_run', False),
     )
+    # 股票画像 collection 会同时承载多种 profile_type，自动快照默认按 collection+version 整体构建。
+    snapshot = await _maybe_build_backfill_snapshot(
+        db,
+        kwargs=kwargs,
+        collection_name='stock_profile_embeddings',
+        version=result.get('version') or kwargs.get('version'),
+        source='data_sync_manager.vector_backfill_stock_profiles',
+    )
     market_aux = await _load_market_aux_status(db)
     return {
         'success': 1,
@@ -1276,12 +1400,17 @@ async def _sync_vector_backfill_stock_profiles_now(kwargs: dict) -> dict:
             'version': result.get('version'),
             'rebuild_existing': result.get('rebuild_existing'),
             'dry_run': result.get('dry_run'),
+            'build_snapshot': _as_bool(kwargs.get('build_snapshot', False), False),
+            'activate_snapshot': _as_bool(kwargs.get('activate_snapshot', True), True),
+            'index_version': (snapshot or {}).get('index_version') or kwargs.get('index_version'),
         },
         'backfill': result,
+        'snapshot': snapshot,
         'market_aux': market_aux,
         'message': (
             f"stock_profile_backfill profiles={int(result.get('saved_profiles') or 0)} "
             f"codes={int(result.get('processed_codes') or 0)}"
+            + (f" snapshot={snapshot.get('status')}" if snapshot else "")
         ),
     }
 
@@ -1301,6 +1430,13 @@ async def _sync_vector_backfill_factor_candidates_now(kwargs: dict) -> dict:
         rebuild_existing=kwargs.get('rebuild_existing', False),
         dry_run=kwargs.get('dry_run', False),
     )
+    snapshot = await _maybe_build_backfill_snapshot(
+        db,
+        kwargs=kwargs,
+        collection_name='factor_candidate_embeddings',
+        version=result.get('version') or kwargs.get('version'),
+        source='data_sync_manager.vector_backfill_factor_candidates',
+    )
     market_aux = await _load_market_aux_status(db)
     return {
         'success': 1,
@@ -1314,11 +1450,109 @@ async def _sync_vector_backfill_factor_candidates_now(kwargs: dict) -> dict:
             'version': result.get('version'),
             'rebuild_existing': result.get('rebuild_existing'),
             'dry_run': result.get('dry_run'),
+            'build_snapshot': _as_bool(kwargs.get('build_snapshot', False), False),
+            'activate_snapshot': _as_bool(kwargs.get('activate_snapshot', True), True),
+            'index_version': (snapshot or {}).get('index_version') or kwargs.get('index_version'),
         },
         'backfill': result,
+        'snapshot': snapshot,
         'market_aux': market_aux,
         'message': (
             f"factor_candidate_backfill profiles={int(result.get('saved_profiles') or 0)} "
             f"records={int(result.get('processed_records') or 0)}"
+            + (f" snapshot={snapshot.get('status')}" if snapshot else "")
+        ),
+    }
+
+
+async def _sync_vector_build_snapshot_now(kwargs: dict) -> dict:
+    """构建统一向量 collection 的 snapshot 与 ANN 索引。"""
+    from ...services.unified_vector_governance import build_vector_collection_snapshot
+
+    db = get_db()
+    collection_name = str(kwargs.get('collection_name') or kwargs.get('collection') or '').strip()
+    if not collection_name:
+        return {'success': 0, 'failed': 1, 'errors': ['缺少 collection_name']}
+
+    result = await build_vector_collection_snapshot(
+        db,
+        collection_name=collection_name,
+        version=kwargs.get('version'),
+        index_version=kwargs.get('index_version'),
+        profile_type=kwargs.get('profile_type'),
+        limit_profiles=kwargs.get('limit_profiles', 5000),
+        bucket_count=kwargs.get('bucket_count'),
+        activate=kwargs.get('activate', True),
+        source='data_sync_manager',
+    )
+    market_aux = await _load_market_aux_status(db)
+    return {
+        'success': 1 if str(result.get('status') or '').strip().lower() != 'failed' else 0,
+        'failed': 0 if str(result.get('status') or '').strip().lower() != 'failed' else 1,
+        'errors': [] if str(result.get('status') or '').strip().lower() != 'failed' else [f"vector_build_snapshot failed for {collection_name}"],
+        'args': {
+            'collection_name': collection_name,
+            'profile_type': result.get('profile_type'),
+            'version': result.get('profile_version'),
+            'index_version': result.get('index_version'),
+            'limit_profiles': kwargs.get('limit_profiles', 5000),
+            'bucket_count': result.get('bucket_count'),
+            'activate': kwargs.get('activate', True),
+        },
+        'snapshot': result,
+        'market_aux': market_aux,
+        'message': (
+            f"vector_build_snapshot collection={collection_name} "
+            f"status={result.get('status')} items={int(result.get('items_count') or 0)}"
+        ),
+    }
+
+
+async def _sync_vector_benchmark_collection_now(kwargs: dict) -> dict:
+    """运行统一向量 collection 的 exact-vs-ANN 检索基线评测。"""
+    from ...services.unified_vector_benchmark import benchmark_vector_collection_search
+
+    db = get_db()
+    collection_name = str(kwargs.get('collection_name') or kwargs.get('collection') or '').strip()
+    if not collection_name:
+        return {'success': 0, 'failed': 1, 'errors': ['缺少 collection_name']}
+
+    result = await benchmark_vector_collection_search(
+        db,
+        collection_name=collection_name,
+        profile_type=kwargs.get('profile_type'),
+        version=kwargs.get('version'),
+        index_version=kwargs.get('index_version'),
+        sample_size=kwargs.get('sample_size', 30),
+        top_k=kwargs.get('top_k', 10),
+        limit_profiles=kwargs.get('limit_profiles', 5000),
+        metric=kwargs.get('metric', 'cosine'),
+        persist_snapshot_metrics=kwargs.get('persist_snapshot_metrics', True),
+    )
+    market_aux = await _load_market_aux_status(db)
+    retrieval_quality = dict(result.get('retrieval_quality') or {})
+    latency_ms = dict(result.get('latency_ms') or {})
+    return {
+        'success': 1 if str(result.get('status') or '').strip().lower() != 'failed' else 0,
+        'failed': 0 if str(result.get('status') or '').strip().lower() != 'failed' else 1,
+        'errors': [] if str(result.get('status') or '').strip().lower() != 'failed' else [f"vector_benchmark_collection failed for {collection_name}"],
+        'args': {
+            'collection_name': collection_name,
+            'profile_type': result.get('profile_type'),
+            'version': result.get('profile_version'),
+            'index_version': result.get('index_version'),
+            'sample_size': kwargs.get('sample_size', 30),
+            'top_k': kwargs.get('top_k', 10),
+            'limit_profiles': kwargs.get('limit_profiles', 5000),
+            'metric': kwargs.get('metric', 'cosine'),
+            'persist_snapshot_metrics': _as_bool(kwargs.get('persist_snapshot_metrics', True), True),
+        },
+        'benchmark': result,
+        'market_aux': market_aux,
+        'message': (
+            f"vector_benchmark collection={collection_name} "
+            f"recall@k={retrieval_quality.get('recall_at_k')} "
+            f"ann_p95={latency_ms.get('ann_p95')} "
+            f"persisted={result.get('benchmark_persisted')}"
         ),
     }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any, Iterable, List, Optional
 
@@ -123,6 +124,74 @@ class VectorUnifiedMixin:
         result["payload"] = self._decode_json_field(result.get("payload"), {})
         result["metadata"] = self._decode_json_field(result.get("metadata"), {})
         return result
+
+    @staticmethod
+    def _vector_similarity(left: List[float], right: List[float], metric: str = "cosine") -> float:
+        lv = [float(item) for item in list(left or [])]
+        rv = [float(item) for item in list(right or [])]
+        if not lv or not rv or len(lv) != len(rv):
+            return 0.0
+        normalized_metric = str(metric or "cosine").strip().lower()
+        if normalized_metric in {"ip", "inner_product"}:
+            return round(float(sum(l * r for l, r in zip(lv, rv))), 6)
+        if normalized_metric in {"l2", "euclidean"}:
+            distance = math.sqrt(sum((l - r) * (l - r) for l, r in zip(lv, rv)))
+            return round(1.0 / (1.0 + float(distance)), 6)
+        left_norm = math.sqrt(sum(item * item for item in lv))
+        right_norm = math.sqrt(sum(item * item for item in rv))
+        if left_norm <= 1e-12 or right_norm <= 1e-12:
+            return 0.0
+        return round(float(sum(l * r for l, r in zip(lv, rv)) / (left_norm * right_norm)), 6)
+
+    @staticmethod
+    def _normalize_embedding(values: Any) -> List[float]:
+        resolved = [float(item) for item in list(values or [])]
+        if not resolved:
+            return []
+        norm = math.sqrt(sum(item * item for item in resolved))
+        if norm <= 1e-12:
+            return []
+        return [float(item / norm) for item in resolved]
+
+    @staticmethod
+    def _snapshot_bucket_rows(snapshot: Optional[dict]) -> List[dict]:
+        metadata = dict((snapshot or {}).get("metadata") or {})
+        return [dict(item or {}) for item in list(metadata.get("centroids") or []) if dict(item or {}).get("bucket_id")]
+
+    @classmethod
+    def _resolve_query_buckets(
+        cls,
+        snapshot: Optional[dict],
+        query_embedding: List[float],
+    ) -> tuple[Optional[str], List[str]]:
+        bucket_rows = cls._snapshot_bucket_rows(snapshot)
+        normalized_query = cls._normalize_embedding(query_embedding)
+        if not bucket_rows or not normalized_query:
+            return None, []
+        index_params = dict((snapshot or {}).get("index_params") or {})
+        neighbor_count = max(0, min(int(index_params.get("neighbor_count") or 2), 8))
+        scored: list[tuple[str, float, list[str]]] = []
+        for row in bucket_rows:
+            bucket_id = str(row.get("bucket_id") or "").strip()
+            centroid = cls._normalize_embedding(row.get("centroid") or [])
+            if not bucket_id or not centroid or len(centroid) != len(normalized_query):
+                continue
+            scored.append(
+                (
+                    bucket_id,
+                    cls._vector_similarity(normalized_query, centroid, metric="cosine"),
+                    [str(item).strip() for item in list(row.get("neighbors") or []) if str(item).strip()],
+                )
+            )
+        if not scored:
+            return None, []
+        scored.sort(key=lambda item: item[1], reverse=True)
+        primary_bucket = scored[0][0]
+        candidate_buckets = [primary_bucket]
+        for neighbor in scored[0][2][:neighbor_count]:
+            if neighbor not in candidate_buckets:
+                candidate_buckets.append(neighbor)
+        return primary_bucket, candidate_buckets
 
     @staticmethod
     def _kline_pattern_profile_type(
@@ -320,6 +389,221 @@ class VectorUnifiedMixin:
             params.append(max(1, min(int(limit or 100), 5000)))
             rows = await conn.fetch(sql, *params)
         return [self._decode_unified_vector_profile(dict(row)) for row in rows]
+
+    async def search_vector_collection(
+        self,
+        *,
+        collection_name: str,
+        query_embedding: List[float],
+        index_version: Optional[str] = None,
+        version: Optional[str] = None,
+        profile_type: Optional[str] = None,
+        stock_code: Optional[str] = None,
+        stock_codes: Optional[List[str]] = None,
+        entity_id: Optional[str] = None,
+        entity_ids: Optional[List[str]] = None,
+        exclude_stock_code: Optional[str] = None,
+        exclude_entity_id: Optional[str] = None,
+        limit: int = 20,
+        metric: str = "cosine",
+    ) -> dict:
+        resolved_collection = str(collection_name or "").strip()
+        resolved_limit = max(1, min(int(limit or 20), 500))
+        resolved_query_embedding = [float(item) for item in list(query_embedding or [])]
+        if not resolved_collection or not resolved_query_embedding:
+            return {
+                "items": [],
+                "collection_name": resolved_collection,
+                "backend_used": "unavailable",
+                "fallback_used": False,
+                "fallback_reason": "empty_query",
+                "active_version": None,
+                "index_version": index_version,
+                "profile_version": version,
+            }
+
+        collection = await self.get_vector_collection(resolved_collection)
+        active_version = str((collection or {}).get("active_version") or "").strip() or None
+        resolved_index_version = str(index_version or active_version or "").strip() or None
+        snapshot = None
+        resolved_profile_version = str(version or "").strip() or None
+        if resolved_index_version:
+            snapshots = await self.list_vector_index_snapshots(
+                collection_name=resolved_collection,
+                index_version=resolved_index_version,
+                latest_only=True,
+                limit=1,
+            )
+            snapshot = snapshots[0] if snapshots else None
+            if snapshot and not resolved_profile_version:
+                resolved_profile_version = (
+                    str((snapshot.get("metadata") or {}).get("profile_version") or "").strip()
+                    or str(snapshot.get("index_version") or "").strip()
+                    or None
+                )
+        if not resolved_profile_version and resolved_index_version:
+            resolved_profile_version = resolved_index_version
+
+        resolved_entity_ids = [str(item).strip() for item in ([entity_id] if entity_id else list(entity_ids or [])) if str(item).strip()]
+        allowed_stock_codes = {str(item).strip() for item in list(stock_codes or []) if str(item).strip()}
+        allowed_entity_ids = set(resolved_entity_ids)
+        if entity_id:
+            allowed_entity_ids.add(str(entity_id).strip())
+        query_bucket_id, candidate_bucket_ids = self._resolve_query_buckets(snapshot, resolved_query_embedding)
+
+        ann_fallback_reason = None
+        if resolved_index_version:
+            try:
+                index_rows = await self.search_vector_index_items_by_embedding(
+                    query_embedding=resolved_query_embedding,
+                    collection_name=resolved_collection,
+                    index_version=resolved_index_version,
+                    profile_type=profile_type,
+                    stock_code=stock_code,
+                    stock_codes=stock_codes,
+                    entity_ids=resolved_entity_ids or None,
+                    bucket_ids=candidate_bucket_ids or None,
+                    exclude_stock_code=exclude_stock_code,
+                    exclude_entity_id=exclude_entity_id,
+                    limit=resolved_limit,
+                    metric=metric,
+                )
+                if index_rows:
+                    return {
+                        "items": index_rows[:resolved_limit],
+                        "collection_name": resolved_collection,
+                        "backend_used": "pgvector_index_item",
+                        "fallback_used": False,
+                        "fallback_reason": None,
+                        "active_version": active_version,
+                        "index_version": resolved_index_version or resolved_profile_version,
+                        "profile_version": resolved_profile_version,
+                        "snapshot": snapshot,
+                        "query_bucket_id": query_bucket_id,
+                        "candidate_bucket_ids": candidate_bucket_ids,
+                    }
+                ann_fallback_reason = "index_item_empty_result"
+            except Exception as exc:
+                ann_fallback_reason = f"index_item_exception:{type(exc).__name__}"
+
+        profile_fallback_reason = None
+        try:
+            dense_rows = await self.search_vector_profiles_by_embedding(
+                query_embedding=resolved_query_embedding,
+                collection_name=resolved_collection,
+                version=resolved_profile_version,
+                profile_type=profile_type,
+                stock_code=stock_code,
+                stock_codes=stock_codes,
+                entity_ids=resolved_entity_ids or None,
+                exclude_stock_code=exclude_stock_code,
+                exclude_entity_id=exclude_entity_id,
+                limit=resolved_limit,
+                metric=metric,
+            )
+            if dense_rows:
+                return {
+                    "items": dense_rows[:resolved_limit],
+                    "collection_name": resolved_collection,
+                    "backend_used": "pgvector_profile",
+                    "fallback_used": bool(ann_fallback_reason),
+                    "fallback_reason": ann_fallback_reason,
+                    "active_version": active_version,
+                    "index_version": resolved_index_version or resolved_profile_version,
+                    "profile_version": resolved_profile_version,
+                    "snapshot": snapshot,
+                    "query_bucket_id": query_bucket_id,
+                    "candidate_bucket_ids": candidate_bucket_ids,
+                }
+            profile_fallback_reason = "pgvector_empty_result"
+        except Exception as exc:
+            profile_fallback_reason = f"pgvector_exception:{type(exc).__name__}"
+
+        exact_rows: list[dict] = []
+        if resolved_index_version:
+            try:
+                index_items = await self.list_vector_index_items(
+                    collection_name=resolved_collection,
+                    index_version=resolved_index_version,
+                    bucket_ids=candidate_bucket_ids or None,
+                    profile_type=profile_type,
+                    stock_code=stock_code,
+                    stock_codes=stock_codes,
+                    entity_ids=resolved_entity_ids or None,
+                    exclude_stock_code=exclude_stock_code,
+                    exclude_entity_id=exclude_entity_id,
+                    limit=max(100, min(resolved_limit * 20, 5000)),
+                )
+                for row in index_items:
+                    candidate_stock_code = str(row.get("stock_code") or "").strip()
+                    candidate_entity_id = str(row.get("entity_id") or "").strip()
+                    if allowed_stock_codes and candidate_stock_code not in allowed_stock_codes:
+                        continue
+                    if allowed_entity_ids and candidate_entity_id not in allowed_entity_ids:
+                        continue
+                    if exclude_stock_code and candidate_stock_code == str(exclude_stock_code).strip():
+                        continue
+                    if exclude_entity_id and candidate_entity_id == str(exclude_entity_id).strip():
+                        continue
+                    exact_rows.append(
+                        {
+                            **row,
+                            "similarity": self._vector_similarity(
+                                resolved_query_embedding,
+                                list(row.get("embedding") or []),
+                                metric=metric,
+                            ),
+                        }
+                    )
+            except Exception:
+                exact_rows = []
+
+        if not exact_rows:
+            rows = await self.list_vector_profiles(
+                collection_name=resolved_collection,
+                entity_type=None,
+                entity_id=None,
+                stock_code=stock_code,
+                profile_type=profile_type,
+                version=resolved_profile_version,
+                limit=max(100, min(resolved_limit * 20, 5000)),
+            )
+            for row in rows:
+                candidate_stock_code = str(row.get("stock_code") or "").strip()
+                candidate_entity_id = str(row.get("entity_id") or "").strip()
+                if allowed_stock_codes and candidate_stock_code not in allowed_stock_codes:
+                    continue
+                if allowed_entity_ids and candidate_entity_id not in allowed_entity_ids:
+                    continue
+                if exclude_stock_code and candidate_stock_code == str(exclude_stock_code).strip():
+                    continue
+                if exclude_entity_id and candidate_entity_id == str(exclude_entity_id).strip():
+                    continue
+                exact_rows.append(
+                    {
+                        **row,
+                        "similarity": self._vector_similarity(
+                            resolved_query_embedding,
+                            list(row.get("embedding") or []),
+                            metric=metric,
+                        ),
+                    }
+                )
+
+        exact_rows.sort(key=lambda item: float(item.get("similarity") or 0.0), reverse=True)
+        return {
+            "items": exact_rows[:resolved_limit],
+            "collection_name": resolved_collection,
+            "backend_used": "exact_json",
+            "fallback_used": True,
+            "fallback_reason": ann_fallback_reason or profile_fallback_reason or "pgvector_unavailable",
+            "active_version": active_version,
+            "index_version": resolved_index_version or resolved_profile_version,
+            "profile_version": resolved_profile_version,
+            "snapshot": snapshot,
+            "query_bucket_id": query_bucket_id,
+            "candidate_bucket_ids": candidate_bucket_ids,
+        }
 
     async def save_vector_index_snapshot(self, snapshot: dict) -> dict:
         payload = dict(snapshot or {})
@@ -605,6 +889,7 @@ class VectorUnifiedMixin:
                                 str(payload.get("model_id") or "unknown"),
                                 str(payload.get("metric") or "cosine"),
                                 int(payload.get("vector_dim") or len(payload.get("embedding") or [])),
+                                payload.get("bucket_id"),
                                 vector_literal,
                                 json.dumps(payload.get("metadata") or {}, ensure_ascii=False, default=str),
                             )
@@ -614,9 +899,9 @@ class VectorUnifiedMixin:
                             """
                             INSERT INTO vector_index_item_store (
                                 item_id, collection_name, index_version, profile_id, entity_type, entity_id,
-                                stock_code, profile_type, model_id, metric, vector_dim, embedding, metadata, updated_at
+                                stock_code, profile_type, model_id, metric, vector_dim, bucket_id, embedding, metadata, updated_at
                             )
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::vector, $13::jsonb, NOW())
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::vector, $14::jsonb, NOW())
                             ON CONFLICT (item_id) DO UPDATE SET
                                 collection_name = EXCLUDED.collection_name,
                                 index_version = EXCLUDED.index_version,
@@ -628,6 +913,7 @@ class VectorUnifiedMixin:
                                 model_id = EXCLUDED.model_id,
                                 metric = EXCLUDED.metric,
                                 vector_dim = EXCLUDED.vector_dim,
+                                bucket_id = EXCLUDED.bucket_id,
                                 embedding = EXCLUDED.embedding,
                                 metadata = EXCLUDED.metadata,
                                 updated_at = NOW()
@@ -642,7 +928,12 @@ class VectorUnifiedMixin:
         collection_name: Optional[str] = None,
         index_version: Optional[str] = None,
         bucket_ids: Optional[List[str]] = None,
+        profile_type: Optional[str] = None,
         stock_code: Optional[str] = None,
+        stock_codes: Optional[List[str]] = None,
+        entity_ids: Optional[List[str]] = None,
+        exclude_stock_code: Optional[str] = None,
+        exclude_entity_id: Optional[str] = None,
         limit: int = 200,
     ) -> List[dict]:
         async with self.acquire() as conn:
@@ -661,9 +952,29 @@ class VectorUnifiedMixin:
                 sql += f" AND bucket_id = ANY(${idx}::text[])"
                 params.append([str(item) for item in bucket_ids])
                 idx += 1
+            if profile_type:
+                sql += f" AND profile_type = ${idx}"
+                params.append(str(profile_type))
+                idx += 1
             if stock_code:
                 sql += f" AND stock_code = ${idx}"
                 params.append(stock_code)
+                idx += 1
+            if stock_codes:
+                sql += f" AND stock_code = ANY(${idx}::text[])"
+                params.append([str(item).strip() for item in list(stock_codes or []) if str(item).strip()])
+                idx += 1
+            if entity_ids:
+                sql += f" AND entity_id = ANY(${idx}::text[])"
+                params.append([str(item).strip() for item in list(entity_ids or []) if str(item).strip()])
+                idx += 1
+            if exclude_stock_code:
+                sql += f" AND COALESCE(stock_code, '') != ${idx}"
+                params.append(str(exclude_stock_code))
+                idx += 1
+            if exclude_entity_id:
+                sql += f" AND entity_id != ${idx}"
+                params.append(str(exclude_entity_id))
                 idx += 1
             sql += f" ORDER BY coarse_score DESC, created_at DESC LIMIT ${idx}"
             params.append(max(1, min(int(limit or 200), 5000)))
@@ -821,6 +1132,71 @@ class VectorUnifiedMixin:
             rows = await conn.fetch(sql, *params)
         return [{**self._decode_unified_vector_profile(dict(row)), "similarity": round(float(row.get("similarity") or 0.0), 6)} for row in rows]
 
+    async def search_vector_index_items_by_embedding(
+        self,
+        *,
+        query_embedding: List[float],
+        collection_name: str,
+        index_version: str,
+        profile_type: Optional[str] = None,
+        stock_code: Optional[str] = None,
+        stock_codes: Optional[List[str]] = None,
+        entity_ids: Optional[List[str]] = None,
+        bucket_ids: Optional[List[str]] = None,
+        exclude_stock_code: Optional[str] = None,
+        exclude_entity_id: Optional[str] = None,
+        limit: int = 80,
+        metric: str = "cosine",
+    ) -> List[dict]:
+        if not getattr(self, "supports_pgvector", lambda: False)():
+            return []
+        vector_literal = self._encode_pgvector(query_embedding)
+        dim = len(list(query_embedding or []))
+        if not vector_literal or dim <= 0:
+            return []
+        distance_sql, similarity_sql = self._pgvector_distance_sql("iv.embedding", metric, dim)
+        async with self.acquire() as conn:
+            sql = f"""
+                SELECT i.*, {similarity_sql} AS similarity
+                FROM vector_index_item_store iv
+                JOIN vector_index_items i ON i.id = iv.item_id
+                WHERE iv.collection_name = $2 AND iv.index_version = $3 AND iv.vector_dim = $4
+            """
+            params: list[Any] = [vector_literal, str(collection_name or ""), str(index_version or "v1"), int(dim)]
+            idx = 5
+            if profile_type:
+                sql += f" AND iv.profile_type = ${idx}"
+                params.append(profile_type)
+                idx += 1
+            if stock_code:
+                sql += f" AND iv.stock_code = ${idx}"
+                params.append(stock_code)
+                idx += 1
+            if stock_codes:
+                sql += f" AND iv.stock_code = ANY(${idx}::text[])"
+                params.append([str(item).strip() for item in list(stock_codes or []) if str(item).strip()])
+                idx += 1
+            if entity_ids:
+                sql += f" AND iv.entity_id = ANY(${idx}::text[])"
+                params.append([str(item).strip() for item in list(entity_ids or []) if str(item).strip()])
+                idx += 1
+            if bucket_ids:
+                sql += f" AND iv.bucket_id = ANY(${idx}::text[])"
+                params.append([str(item).strip() for item in list(bucket_ids or []) if str(item).strip()])
+                idx += 1
+            if exclude_stock_code:
+                sql += f" AND COALESCE(iv.stock_code, '') != ${idx}"
+                params.append(str(exclude_stock_code))
+                idx += 1
+            if exclude_entity_id:
+                sql += f" AND iv.entity_id != ${idx}"
+                params.append(str(exclude_entity_id))
+                idx += 1
+            sql += f" ORDER BY {distance_sql} ASC LIMIT ${idx}"
+            params.append(max(1, min(int(limit or 80), 500)))
+            rows = await conn.fetch(sql, *params)
+        return [{**self._decode_unified_vector_item(dict(row)), "similarity": round(float(row.get("similarity") or 0.0), 6)} for row in rows]
+
     async def search_market_doc_chunks(
         self,
         *,
@@ -845,12 +1221,15 @@ class VectorUnifiedMixin:
 
         dense_rows: dict[str, dict] = {}
         if query_embedding:
-            for row in await self.search_vector_profiles_by_embedding(
-                query_embedding=query_embedding,
+            dense_result = await self.search_vector_collection(
                 collection_name="market_doc_chunks",
+                query_embedding=query_embedding,
+                profile_type=doc_types[0] if len(list(doc_types or [])) == 1 else None,
+                stock_code=stock_code,
                 limit=max(10, min(int(limit or 10) * 3, 100)),
                 metric="cosine",
-            ):
+            )
+            for row in list((dense_result or {}).get("items") or []):
                 dense_rows[str(row.get("entity_id") or "")] = row
 
         async with self.acquire() as conn:
@@ -972,16 +1351,17 @@ class VectorUnifiedMixin:
             period=period,
             adjust=adjust,
         )
-        rows = await self.search_vector_profiles_by_embedding(
-            query_embedding=query_embedding,
+        search_result = await self.search_vector_collection(
             collection_name="kline_pattern_embeddings",
-            profile_type=profile_type,
+            query_embedding=query_embedding,
             version=version,
+            profile_type=profile_type,
             stock_codes=stock_codes,
             exclude_stock_code=exclude_stock_code,
             limit=max(10, min(int(limit or 10) * 8, 200)),
             metric=metric,
         )
+        rows = list((search_result or {}).get("items") or [])
         if not rows:
             return []
 

@@ -401,6 +401,7 @@ async def backfill_stock_profile_vectors(
         "saved_profiles": 0,
         "errors": [],
     }
+    collection_saved = False
 
     for row in candidate_rows:
         code = str(row.get("code") or "").strip()
@@ -433,6 +434,23 @@ async def backfill_stock_profile_vectors(
                 results["saved_profiles"] += 1
                 continue
             try:
+                if not collection_saved and hasattr(db, "save_vector_collection"):
+                    await db.save_vector_collection(
+                        {
+                            "collection_name": "stock_profile_embeddings",
+                            "entity_family": "stock_profile",
+                            "backend": str(getattr(db, "get_vector_backend", lambda: "pgvector")() or "pgvector"),
+                            "metric": str(payload.get("metric") or "cosine"),
+                            "model_id": str(payload.get("model_id") or "stock-profile-v1"),
+                            "vector_dim": int(payload.get("vector_dim") or len(payload.get("embedding") or [])),
+                            "status": "active",
+                            "metadata": {
+                                "domain": "market-quant",
+                                "notes": "derived stock profile vectors",
+                            },
+                        }
+                    )
+                    collection_saved = True
                 await db.save_vector_profile(payload)
                 results["saved_profiles"] += 1
             except Exception as exc:

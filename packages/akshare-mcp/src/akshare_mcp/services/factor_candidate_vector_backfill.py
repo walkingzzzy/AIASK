@@ -85,6 +85,7 @@ async def backfill_factor_candidate_vectors(
         "saved_profiles": 0,
         "errors": [],
     }
+    collection_saved = False
 
     for record in records:
         payload = build_factor_candidate_vector_profile(record, version=str(version or "v1"))
@@ -103,6 +104,23 @@ async def backfill_factor_candidate_vectors(
             results["saved_profiles"] += 1
             continue
         try:
+            if not collection_saved and hasattr(db, "save_vector_collection"):
+                await db.save_vector_collection(
+                    {
+                        "collection_name": "factor_candidate_embeddings",
+                        "entity_family": "factor_candidate",
+                        "backend": str(getattr(db, "get_vector_backend", lambda: "pgvector")() or "pgvector"),
+                        "metric": str(payload.get("metric") or "cosine"),
+                        "model_id": str(payload.get("model_id") or "factor-memory-v1"),
+                        "vector_dim": int(payload.get("vector_dim") or len(payload.get("embedding") or [])),
+                        "status": "active",
+                        "metadata": {
+                            "domain": "quant-research",
+                            "notes": "factor candidate memory",
+                        },
+                    }
+                )
+                collection_saved = True
             await db.save_vector_profile(payload)
             results["saved_profiles"] += 1
         except Exception as exc:

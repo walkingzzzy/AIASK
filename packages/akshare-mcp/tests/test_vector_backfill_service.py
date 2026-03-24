@@ -93,6 +93,7 @@ async def test_backfill_market_document_vectors_backfills_news_and_research_and_
         limit=10,
         batch_size=10,
         embed=False,
+        version="mem_v2",
     )
 
     assert result["candidate_docs"] == 3
@@ -100,7 +101,9 @@ async def test_backfill_market_document_vectors_backfills_news_and_research_and_
     assert result["saved_docs"] == 2
     assert result["saved_chunks"] == 4
     assert result["embedded_chunks"] == 0
+    assert result["version"] == "mem_v2"
     assert len(db.save_calls) == 2
     assert db.save_calls[0]["stock_code"] == "600519"
     assert db.save_calls[0]["doc_type"] == "news"
+    assert db.save_calls[0]["kwargs"]["version"] == "mem_v2"
     assert db.save_calls[1]["doc_type"] == "research"

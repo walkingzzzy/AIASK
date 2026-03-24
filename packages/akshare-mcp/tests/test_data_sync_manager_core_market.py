@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 from datetime import datetime, timedelta
 
@@ -257,6 +258,357 @@ async def test_data_sync_manager_supports_vector_backfill_kline_patterns_sync(mo
     assert data["status"] == "completed"
     assert data["results"]["backfill"]["saved_windows"] == 30
     assert data["results"]["args"]["window_size"] == 20
+
+
+@pytest.mark.asyncio
+async def test_data_sync_manager_supports_vector_backfill_stock_profiles_sync(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: db)
+
+    async def _fake_stock_profile_backfill(kwargs):
+        return {
+            "success": 1,
+            "failed": 0,
+            "errors": [],
+            "args": kwargs,
+            "backfill": {
+                "saved_profiles": 18,
+                "processed_codes": 6,
+                "profile_types": ["fundamental", "technical", "both"],
+            },
+            "market_aux": {
+                "vector_profiles_stock_profiles": 18,
+            },
+        }
+
+    monkeypatch.setattr(manager_mod, "_sync_vector_backfill_stock_profiles_now", _fake_stock_profile_backfill)
+
+    mcp = _DummyMCP()
+    manager_mod.register_data_sync_manager(mcp)
+    result = await mcp.data_sync_manager(
+        action="sync",
+        kwargs=json.dumps(
+            {
+                "type": "vector_backfill_stock_profiles",
+                "code_limit": 20,
+                "profile_types": ["fundamental", "both"],
+                "kline_limit": 90,
+            }
+        ),
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["task_type"] == "vector_backfill_stock_profiles"
+    assert data["status"] == "completed"
+    assert data["results"]["backfill"]["saved_profiles"] == 18
+    assert data["results"]["args"]["profile_types"] == ["fundamental", "both"]
+
+
+@pytest.mark.asyncio
+async def test_data_sync_manager_supports_vector_backfill_factor_candidates_sync(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: db)
+
+    async def _fake_factor_candidate_backfill(kwargs):
+        return {
+            "success": 1,
+            "failed": 0,
+            "errors": [],
+            "args": kwargs,
+            "backfill": {
+                "saved_profiles": 9,
+                "processed_records": 9,
+                "status": "success",
+            },
+            "market_aux": {
+                "vector_profiles_factor_candidates": 9,
+            },
+        }
+
+    monkeypatch.setattr(manager_mod, "_sync_vector_backfill_factor_candidates_now", _fake_factor_candidate_backfill)
+
+    mcp = _DummyMCP()
+    manager_mod.register_data_sync_manager(mcp)
+    result = await mcp.data_sync_manager(
+        action="sync",
+        kwargs=json.dumps(
+            {
+                "type": "vector_backfill_factor_candidates",
+                "limit": 20,
+                "status": "success",
+            }
+        ),
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["task_type"] == "vector_backfill_factor_candidates"
+    assert data["status"] == "completed"
+    assert data["results"]["backfill"]["saved_profiles"] == 9
+    assert data["results"]["args"]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_data_sync_manager_supports_vector_build_snapshot_sync(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: db)
+
+    async def _fake_vector_build_snapshot(kwargs):
+        return {
+            "success": 1,
+            "failed": 0,
+            "errors": [],
+            "args": kwargs,
+            "snapshot": {
+                "collection_name": "stock_profile_embeddings",
+                "index_version": "snap_v1",
+                "status": "active",
+                "items_count": 18,
+            },
+            "market_aux": {
+                "vector_index_snapshots": 3,
+            },
+        }
+
+    monkeypatch.setattr(manager_mod, "_sync_vector_build_snapshot_now", _fake_vector_build_snapshot)
+
+    mcp = _DummyMCP()
+    manager_mod.register_data_sync_manager(mcp)
+    result = await mcp.data_sync_manager(
+        action="sync",
+        kwargs=json.dumps(
+            {
+                "type": "vector_build_snapshot",
+                "collection_name": "stock_profile_embeddings",
+                "profile_type": "both",
+                "version": "v1",
+                "index_version": "snap_v1",
+            }
+        ),
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["task_type"] == "vector_build_snapshot"
+    assert data["status"] == "completed"
+    assert data["results"]["snapshot"]["index_version"] == "snap_v1"
+    assert data["results"]["args"]["collection_name"] == "stock_profile_embeddings"
+
+
+@pytest.mark.asyncio
+async def test_data_sync_manager_supports_vector_benchmark_collection_sync(monkeypatch):
+    db = _FakeDb()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: db)
+
+    async def _fake_vector_benchmark(kwargs):
+        return {
+            "success": 1,
+            "failed": 0,
+            "errors": [],
+            "args": kwargs,
+            "benchmark": {
+                "collection_name": "stock_profile_embeddings",
+                "index_version": "snap_v2",
+                "status": "completed",
+                "retrieval_quality": {"recall_at_k": 0.95},
+                "latency_ms": {"ann_p95": 4.2},
+            },
+            "market_aux": {
+                "vector_index_snapshots": 4,
+            },
+        }
+
+    monkeypatch.setattr(manager_mod, "_sync_vector_benchmark_collection_now", _fake_vector_benchmark)
+
+    mcp = _DummyMCP()
+    manager_mod.register_data_sync_manager(mcp)
+    result = await mcp.data_sync_manager(
+        action="sync",
+        kwargs=json.dumps(
+            {
+                "type": "vector_benchmark_collection",
+                "collection_name": "stock_profile_embeddings",
+                "profile_type": "both",
+                "index_version": "snap_v2",
+                "sample_size": 20,
+                "top_k": 10,
+            }
+        ),
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["task_type"] == "vector_benchmark_collection"
+    assert data["status"] == "completed"
+    assert data["results"]["benchmark"]["index_version"] == "snap_v2"
+    assert data["results"]["args"]["collection_name"] == "stock_profile_embeddings"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("helper_name", "module_name", "module_attr", "payload", "backfill_result", "expected_collection", "expected_version"),
+    [
+        (
+            "_sync_vector_backfill_market_docs_now",
+            "akshare_mcp.services.vector_backfill",
+            "backfill_market_document_vectors",
+            {
+                "stock_codes": ["600519"],
+                "doc_types": ["news"],
+                "version": "v2",
+                "build_snapshot": True,
+                "activate_snapshot": False,
+                "index_version": "snap_docs_v2",
+            },
+            {
+                "stock_codes": ["600519"],
+                "doc_types": ["news"],
+                "version": "v2",
+                "saved_docs": 3,
+                "saved_chunks": 6,
+                "embedded_chunks": 6,
+                "rebuild_existing": False,
+                "dry_run": False,
+                "include_legacy_research_docs": False,
+            },
+            "market_doc_chunks",
+            "v2",
+        ),
+        (
+            "_sync_vector_backfill_kline_patterns_now",
+            "akshare_mcp.services.pattern_embedding_pipeline",
+            "backfill_kline_pattern_vectors",
+            {
+                "stock_codes": ["600519"],
+                "window_size": 20,
+                "version": "pat_v2",
+                "build_snapshot": True,
+                "activate_snapshot": False,
+                "index_version": "snap_pat_v2",
+            },
+            {
+                "stock_codes": ["600519"],
+                "window_size": 20,
+                "lookback_days": 180,
+                "max_windows_per_code": 1,
+                "step_days": 5,
+                "vector_method": "returns",
+                "period": "daily",
+                "adjust": "",
+                "version": "pat_v2",
+                "saved_windows": 4,
+                "saved_profiles": 4,
+                "rebuild_existing": False,
+                "dry_run": False,
+            },
+            "kline_pattern_embeddings",
+            "pat_v2",
+        ),
+        (
+            "_sync_vector_backfill_stock_profiles_now",
+            "akshare_mcp.services.stock_profile_pipeline",
+            "backfill_stock_profile_vectors",
+            {
+                "stock_codes": ["600519"],
+                "profile_types": ["both"],
+                "version": "profile_v2",
+                "build_snapshot": True,
+                "activate_snapshot": False,
+                "index_version": "snap_profile_v2",
+            },
+            {
+                "stock_codes": ["600519"],
+                "profile_types": ["both"],
+                "kline_limit": 90,
+                "version": "profile_v2",
+                "saved_profiles": 2,
+                "processed_codes": 1,
+                "rebuild_existing": False,
+                "dry_run": False,
+            },
+            "stock_profile_embeddings",
+            "profile_v2",
+        ),
+        (
+            "_sync_vector_backfill_factor_candidates_now",
+            "akshare_mcp.services.factor_candidate_vector_backfill",
+            "backfill_factor_candidate_vectors",
+            {
+                "codes": ["600519"],
+                "version": "memory_v2",
+                "build_snapshot": True,
+                "activate_snapshot": False,
+                "index_version": "snap_memory_v2",
+            },
+            {
+                "codes": ["600519"],
+                "status": "success",
+                "family": "momentum",
+                "version": "memory_v2",
+                "saved_profiles": 3,
+                "processed_records": 3,
+                "rebuild_existing": False,
+                "dry_run": False,
+            },
+            "factor_candidate_embeddings",
+            "memory_v2",
+        ),
+    ],
+)
+async def test_vector_backfill_helpers_can_build_snapshot(
+    monkeypatch,
+    helper_name,
+    module_name,
+    module_attr,
+    payload,
+    backfill_result,
+    expected_collection,
+    expected_version,
+):
+    db = _FakeDb()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: db)
+
+    captured = {"backfill_kwargs": None, "snapshot_kwargs": None}
+
+    async def _fake_market_aux(_db):
+        return {"vector_profiles": 1}
+
+    async def _fake_backfill(_db, **kwargs):
+        captured["backfill_kwargs"] = dict(kwargs)
+        return dict(backfill_result)
+
+    async def _fake_build_snapshot(_db, **kwargs):
+        captured["snapshot_kwargs"] = dict(kwargs)
+        return {
+            "collection_name": kwargs["collection_name"],
+            "profile_version": kwargs.get("version"),
+            "index_version": kwargs.get("index_version"),
+            "status": "built",
+            "items_count": 9,
+        }
+
+    monkeypatch.setattr(manager_mod, "_load_market_aux_status", _fake_market_aux)
+    monkeypatch.setattr(importlib.import_module(module_name), module_attr, _fake_backfill)
+    monkeypatch.setattr(
+        importlib.import_module("akshare_mcp.services.unified_vector_governance"),
+        "build_vector_collection_snapshot",
+        _fake_build_snapshot,
+    )
+
+    result = await getattr(manager_mod, helper_name)(payload)
+
+    assert result["snapshot"]["index_version"] == payload["index_version"]
+    assert result["snapshot"]["status"] == "built"
+    assert result["args"]["build_snapshot"] is True
+    assert result["args"]["activate_snapshot"] is False
+    assert result["args"]["index_version"] == payload["index_version"]
+    assert captured["snapshot_kwargs"]["collection_name"] == expected_collection
+    assert captured["snapshot_kwargs"]["version"] == expected_version
+    assert captured["snapshot_kwargs"]["index_version"] == payload["index_version"]
+    assert captured["snapshot_kwargs"]["activate"] is False
+    if "version" in payload:
+        assert captured["backfill_kwargs"]["version"] == payload["version"]
 
 
 @pytest.mark.asyncio
