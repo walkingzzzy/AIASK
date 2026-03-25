@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 _LEGACY_DEDUPLICATOR_MODULE = "akshare_mcp.services.strategy_factory.deduplicator"
 _LEGACY_RUNTIME_MODULE = "akshare_mcp.services.strategy_factory.runtime"
+_LEGACY_PACKAGE_MODULE = "akshare_mcp.services.strategy_factory"
 _LEGACY_UTILS_MODULE = "akshare_mcp.services.strategy_factory.utils"
 
 def _compat_setting(name: str, default):
@@ -749,7 +750,12 @@ class Deduplicator:
         cache_key = f"{strategy_type}:{json.dumps(params or {}, sort_keys=True, ensure_ascii=False, default=str)}"
         if cache_key in self._behavior_cache:
             return self._behavior_cache[cache_key]
-        panels = await factory_pkg._build_strategy_panels(strategy_type, params, db, sample_size=4)
+        build_strategy_panels = get_compat_symbol(
+            _LEGACY_PACKAGE_MODULE,
+            "_build_strategy_panels",
+            factory_pkg._build_strategy_panels,
+        )
+        panels = await build_strategy_panels(strategy_type, params, db, sample_size=4)
         series = panels.get("strategy_returns")
         if series is None or len(series) < 30:
             self._behavior_cache[cache_key] = None

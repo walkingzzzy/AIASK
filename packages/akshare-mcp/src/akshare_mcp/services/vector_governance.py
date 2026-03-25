@@ -31,10 +31,25 @@ class StrategyVectorGovernanceService:
         profile_type: Optional[str] = None,
         limit_profiles: int = 2000,
     ) -> dict:
-        rows = await db.list_strategy_vector_profiles(
-            profile_type=profile_type,
-            limit=max(1, min(int(limit_profiles or 2000), 5000)),
-        ) if hasattr(db, 'list_strategy_vector_profiles') else []
+        from .vector_platform import get_strategy_vector_platform
+
+        platform = get_strategy_vector_platform()
+        resolved_limit = max(1, min(int(limit_profiles or 2000), 5000))
+        if hasattr(platform, 'list_profiles'):
+            rows = await platform.list_profiles(
+                db,
+                profile_type=profile_type,
+                index_name=index_name,
+                limit=resolved_limit,
+            )
+        elif hasattr(db, 'list_strategy_vector_profiles'):
+            rows = await db.list_strategy_vector_profiles(
+                profile_type=profile_type,
+                index_name=index_name,
+                limit=resolved_limit,
+            )
+        else:
+            rows = []
         grouped: dict[tuple[str, str], dict] = {}
         now = datetime.now(timezone.utc).isoformat()
         for row in rows:
@@ -65,18 +80,38 @@ class StrategyVectorGovernanceService:
             if row.get('id') is not None:
                 bucket['metadata']['profile_ids'].append(row.get('id'))
 
-        if hasattr(db, 'list_strategy_vector_index_snapshots'):
-            snapshots = await db.list_strategy_vector_index_snapshots(index_name=index_name, limit=5000, latest_only=True)
-            for snapshot in snapshots:
-                key = (str(snapshot.get('index_name') or 'strategy_behavior'), str(snapshot.get('index_version') or 'v1'))
-                if key not in grouped:
-                    continue
-                grouped[key]['metadata'].update({
-                    'ann_snapshot_id': snapshot.get('id'),
-                    'bucket_count': snapshot.get('bucket_count'),
-                    'vector_dim': snapshot.get('vector_dim'),
-                    'index_snapshot_status': snapshot.get('status'),
-                })
+        if hasattr(platform, 'list_index_snapshots'):
+            snapshots = await platform.list_index_snapshots(
+                db,
+                index_name=index_name,
+                limit=5000,
+            )
+        elif hasattr(db, 'list_strategy_vector_index_snapshots'):
+            snapshots = await db.list_strategy_vector_index_snapshots(
+                index_name=index_name,
+                limit=5000,
+            )
+        else:
+            snapshots = []
+        latest_snapshots: dict[tuple[str, str], dict] = {}
+        for snapshot in snapshots:
+            key = (str(snapshot.get('index_name') or 'strategy_behavior'), str(snapshot.get('index_version') or 'v1'))
+            if key not in latest_snapshots:
+                latest_snapshots[key] = dict(snapshot)
+        for snapshot in latest_snapshots.values():
+            key = (str(snapshot.get('index_name') or 'strategy_behavior'), str(snapshot.get('index_version') or 'v1'))
+            if key not in grouped:
+                continue
+            grouped[key]['metadata'].update({
+                'ann_snapshot_id': snapshot.get('id'),
+                'bucket_count': snapshot.get('bucket_count'),
+                'vector_dim': snapshot.get('vector_dim'),
+                'index_snapshot_status': snapshot.get('status'),
+                'collection_name': snapshot.get('collection_name'),
+                'model_id': snapshot.get('model_id'),
+            })
+            if snapshot.get('backend'):
+                grouped[key]['backend'] = str(snapshot.get('backend') or grouped[key]['backend'])
 
         updated = []
         for item in grouped.values():
@@ -235,6 +270,10 @@ class StrategyVectorGovernanceService:
                     'ann_snapshot_id': ((persist_result.get('snapshot') or {}).get('id')),
                     'bucket_count': persist_result.get('bucket_count'),
                     'persisted_items': persist_result.get('items_count'),
+                    'unified_collection_name': persist_result.get('unified_collection_name'),
+                    'unified_snapshot_id': ((persist_result.get('unified_snapshot') or {}).get('snapshot') or {}).get('id')
+                    if isinstance(persist_result.get('unified_snapshot'), dict)
+                    else None,
                     'task_run_id': task_run.get('id'),
                 },
                 'built_at': datetime.now(timezone.utc).isoformat(),

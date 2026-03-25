@@ -277,7 +277,7 @@ async def test_factor_prompt_builder_prefers_db_context_before_external(monkeypa
     import akshare_mcp.services.factor_prompt_builder as prompt_mod
 
     async def _fake_alt(db, code, lookback_days=30, limit=6):
-        return ({"alternative_composite": {"score_raw": 0.42}}, ["db.vector_documents.news"])
+        return ({"alternative_composite": {"score_raw": 0.42}}, ["db.vector_documents_legacy.news"])
 
     monkeypatch.setattr(prompt_mod, "_compute_alternative_factors_for_code", _fake_alt)
     monkeypatch.setattr(

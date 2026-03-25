@@ -344,25 +344,21 @@ class StrategyVectorMixin:
                         item_rows,
                     )
                 if getattr(self, 'supports_pgvector', lambda: False)() and payloads:
-                    profile_ids = [str(payload.get('profile_id')) for payload in payloads if payload.get('profile_id') is not None]
-                    row_ids = {}
-                    if profile_ids:
-                        mapping_rows = await conn.fetch(
-                            """
-                            SELECT id, profile_id
-                            FROM strategy_vector_index_items
-                            WHERE index_name = $1
-                              AND index_version = $2
-                              AND profile_id = ANY($3::text[])
-                            """,
-                            resolved_index_name,
-                            resolved_index_version,
-                            profile_ids,
-                        )
-                        row_ids = {
-                            str(dict(row).get('profile_id')): dict(row).get('id')
-                            for row in mapping_rows
-                        }
+                    mapping_rows = await conn.fetch(
+                        """
+                        SELECT id, profile_id
+                        FROM strategy_vector_index_items
+                        WHERE index_name = $1
+                          AND index_version = $2
+                        """,
+                        resolved_index_name,
+                        resolved_index_version,
+                    )
+                    row_ids = {
+                        str(dict(row).get('profile_id')): dict(row).get('id')
+                        for row in mapping_rows
+                        if dict(row).get('profile_id') is not None
+                    }
                     store_rows = []
                     for payload in payloads:
                         vector_literal = self._encode_pgvector(payload.get('embedding') or [])
@@ -556,7 +552,7 @@ class StrategyVectorMixin:
                 """
                 SELECT format(
                     'CREATE INDEX IF NOT EXISTS %I ON strategy_vector_index_item_store USING hnsw ((embedding::vector(%s)) %s) WHERE index_name = %L AND index_version = %L AND vector_dim = %s',
-                    $1, $2, $3, $4, $5, $6
+                    $1::text, $2::int, $3::text, $4::text, $5::text, $6::int
                 )
                 """,
                 idx_name,
@@ -604,11 +600,14 @@ class StrategyVectorMixin:
             if profile_type:
                 where_sql += " AND profile_type = %L"
                 format_args.append(str(profile_type))
+            format_placeholders = ["$1::text", "$2::int", "$3::text", "$4::text", "$5::text", "$6::int"]
+            if profile_type:
+                format_placeholders.append(f"${len(format_args)}::text")
             sql = await conn.fetchval(
                 f"""
                 SELECT format(
                     'CREATE INDEX IF NOT EXISTS %I ON strategy_vector_profile_store USING hnsw ((embedding::vector(%s)) %s) WHERE {where_sql}',
-                    {', '.join(f'${idx}' for idx in range(1, len(format_args) + 1))}
+                    {', '.join(format_placeholders)}
                 )
                 """,
                 *format_args,

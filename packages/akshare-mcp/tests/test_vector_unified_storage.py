@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 import pytest
 
@@ -131,6 +132,33 @@ class _Adapter(VectorUnifiedMixin):
         return "0.01", "0.99"
 
 
+class _WindowConn:
+    def __init__(self):
+        self.args = None
+
+    async def fetchrow(self, query, *args):
+        normalized = " ".join(str(query).split())
+        assert "INSERT INTO kline_pattern_windows" in normalized
+        self.args = args
+        return {
+            "window_uid": args[0],
+            "stock_code": args[1],
+            "end_date": args[2],
+            "start_date": args[3],
+            "period": args[4],
+            "adjust": args[5],
+            "window_size": args[6],
+            "vector_method": args[7],
+            "metric": args[8],
+            "vector_dim": args[9],
+            "forward_return_5d": args[10],
+            "forward_return_10d": args[11],
+            "forward_return_20d": args[12],
+            "payload": json.loads(args[13]),
+            "metadata": json.loads(args[14]),
+        }
+
+
 @pytest.mark.asyncio
 async def test_replace_vector_index_items_persists_bucket_id_into_pgvector_store():
     conn = _StoreConn()
@@ -200,3 +228,32 @@ async def test_list_vector_index_items_pushes_pruning_filters_into_sql():
 
     assert len(rows) == 1
     assert rows[0]["entity_id"] == "000001|both"
+
+
+@pytest.mark.asyncio
+async def test_save_kline_pattern_window_coerces_string_dates_before_execute():
+    conn = _WindowConn()
+    adapter = _Adapter(conn)
+
+    row = await adapter.save_kline_pattern_window(
+        {
+            "window_uid": "kwin_demo",
+            "stock_code": "600519",
+            "end_date": "2026-03-23",
+            "start_date": "20260304",
+            "period": "daily",
+            "adjust": "",
+            "window_size": 20,
+            "vector_method": "returns",
+            "metric": "cosine",
+            "vector_dim": 5,
+            "payload": {"close_series": [1, 2, 3]},
+            "metadata": {"source": "test"},
+        }
+    )
+
+    assert isinstance(conn.args[2], date)
+    assert isinstance(conn.args[3], date)
+    assert conn.args[2].isoformat() == "2026-03-23"
+    assert conn.args[3].isoformat() == "2026-03-04"
+    assert row["window_uid"] == "kwin_demo"

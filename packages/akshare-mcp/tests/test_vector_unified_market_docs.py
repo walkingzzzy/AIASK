@@ -116,6 +116,17 @@ class _Conn:
                     }
                 )
             return rows[:limit]
+        if "FROM vector_documents" in normalized:
+            stock_code = args[0]
+            aliases = set(args[1] or [])
+            limit = int(args[-1])
+            rows = []
+            for row in self.vector_documents:
+                if row["stock_code"] != stock_code or row["doc_type"] not in aliases:
+                    continue
+                rows.append(dict(row))
+            rows.sort(key=lambda row: (str(row.get("date") or ""), int(row.get("id") or 0)), reverse=True)
+            return rows[:limit]
         return []
 
 
@@ -276,6 +287,31 @@ async def test_load_db_first_document_context_prefers_market_doc_chunks():
     assert context["news"]
     assert context["news"][0]["title"] == "茅台新闻标题"
     assert context["news"][0]["content"] == "这是已经 chunk 化后的新闻正文。"
+
+
+@pytest.mark.asyncio
+async def test_load_db_first_document_context_falls_back_to_legacy_vector_documents():
+    conn = _Conn()
+    conn.vector_documents.append(
+        {
+            "id": 1,
+            "stock_code": "600519",
+            "doc_type": "news",
+            "content": "这是 legacy vector_documents 中的新闻正文。",
+            "date": "2026-03-24",
+        }
+    )
+
+    context, source_chain = await load_db_first_document_context(
+        _DocOnlyDb(conn),
+        "600519",
+        news_limit=3,
+    )
+
+    assert source_chain == ["db.vector_documents_legacy.news"]
+    assert context["news"]
+    assert context["news"][0]["source"] == "vector_documents_legacy.news"
+    assert context["news"][0]["content"] == "这是 legacy vector_documents 中的新闻正文。"
 
 
 @pytest.mark.asyncio

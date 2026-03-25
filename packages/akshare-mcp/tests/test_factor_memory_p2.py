@@ -91,6 +91,11 @@ def _register_validation_artifact(
     total_score: float,
     lookahead_risk: str = "low",
     multiple_testing_risk: str = "low",
+    source_generation_artifact_id: str | None = None,
+    wf_stability: float = 0.72,
+    kf_stability: float = 0.68,
+    wf_degradation: float = 0.03,
+    kf_degradation: float = 0.04,
 ):
     from akshare_mcp.services import register_artifact
 
@@ -106,6 +111,26 @@ def _register_validation_artifact(
                 "codes": list(codes),
                 "candidate": _build_candidate("momentum_20d", name=name),
                 "metrics": {"rank_ic_mean": 0.11, "rank_ic_ir": 0.72, "sample_dates": 36},
+                "candidate_resolution": {
+                    "artifact_id": source_generation_artifact_id,
+                },
+                "factor_validation_report": {
+                    "oos": {
+                        "available": True,
+                        "walk_forward": {
+                            "stability_ratio": wf_stability,
+                            "degradation": wf_degradation,
+                            "oos_rank_ic_mean": 0.08,
+                            "oos_rank_ic_ir": 0.61,
+                        },
+                        "purged_kfold": {
+                            "stability_ratio": kf_stability,
+                            "degradation": kf_degradation,
+                            "oos_rank_ic_mean": 0.07,
+                            "oos_rank_ic_ir": 0.55,
+                        },
+                    }
+                },
                 "rating": {
                     "grade": "A" if recommendation == "promote" else "B",
                     "recommendation": recommendation,
@@ -190,6 +215,46 @@ async def test_factor_research_memory_persists_similarity_edges_and_stats():
     assert stats["total_records"] >= 2
     assert stats["duplicate_like_count"] >= 1
     assert stats["unstable_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_factor_research_memory_recall_uses_db_dense_vector(monkeypatch):
+    from akshare_mcp.services.factor_research_memory import FactorResearchMemoryService
+
+    service = FactorResearchMemoryService(embedding_service=_DisabledEmbeddingService())
+    scope_codes = ["TMP2DB"]
+    success_record = await service.record_validation_outcome(
+        candidate=_build_candidate("momentum_20d", name="db_dense_success"),
+        validation={"rating": {"grade": "A", "recommendation": "promote"}, "metrics": {"rank_ic_mean": 0.12}},
+        codes=scope_codes,
+    )
+    await service.record_validation_outcome(
+        candidate=_build_candidate("pb_ratio", name="db_dense_other"),
+        validation={"rating": {"grade": "B", "recommendation": "review"}, "metrics": {"rank_ic_mean": 0.05}},
+        codes=scope_codes,
+    )
+
+    class _DenseDb:
+        async def search_vector_profiles_by_embedding(self, **kwargs):
+            assert kwargs["collection_name"] == "factor_candidate_embeddings"
+            assert kwargs["profile_type"] == "memory"
+            return [
+                {
+                    "entity_id": success_record["artifact_id"],
+                    "similarity": 0.97,
+                }
+            ]
+
+    monkeypatch.setattr("akshare_mcp.storage.get_db", lambda: _DenseDb())
+    matches = await service.recall_similar_candidates(
+        candidate=_build_candidate("momentum_20d", name="db_dense_query"),
+        codes=scope_codes,
+        limit=2,
+    )
+
+    assert matches[0]["artifact_id"] == success_record["artifact_id"]
+    assert matches[0]["vector_similarity"] == 0.97
+    assert matches[0]["embedding_similarity"] >= 0.97
 
 
 def test_factor_research_memory_duplicate_policy_blocks_candidates():
@@ -632,6 +697,351 @@ async def test_quant_manager_factor_candidate_registry_active_pool_blocks_high_r
     excluded = {str(item.get("artifact_id") or ""): item for item in pool["excluded_candidates"]}
     assert "lookahead_risk_high" in excluded["factor_validation_registry_governed_lookahead_high"]["reasons"]
     assert "multiple_testing_risk_high" in excluded["factor_validation_registry_governed_multiple_high"]["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_quant_manager_model_registry_and_champion_challenger_review(monkeypatch):
+    import akshare_mcp.tools.managers.quant_manager as quant_mod
+    import akshare_mcp.services.artifact_registry as _ar_mod
+
+    monkeypatch.setattr(quant_mod, "get_db", lambda: _ValidationDB())
+    monkeypatch.setattr(_ar_mod, "_get_db", lambda: None)
+
+    registry_codes = ["301901", "301902", "301903", "301904"]
+    _register_validation_artifact(
+        "factor_validation_registry_cc_champion",
+        registry_codes,
+        name="cc_champion",
+        recommendation="promote",
+        total_score=94.0,
+        lookahead_risk="low",
+        multiple_testing_risk="low",
+    )
+    _register_validation_artifact(
+        "factor_validation_registry_cc_challenger",
+        registry_codes,
+        name="cc_challenger",
+        recommendation="review",
+        total_score=88.0,
+        lookahead_risk="low",
+        multiple_testing_risk="low",
+    )
+
+    mcp = _DummyMCP()
+    quant_mod.register_quant_manager(mcp)
+
+    review = await mcp.quant_manager(
+        action="champion_challenger",
+        kwargs={
+            "op": "review",
+            "codes": registry_codes,
+            "limit": 20,
+            "persist_artifact": False,
+            "update_registry": True,
+            "market_codes_only": True,
+        },
+    )
+
+    assert review["success"] is True
+    data = review["data"]
+    assert data["champion"]["artifact_id"] == "factor_validation_registry_cc_champion"
+    assert data["challengers"][0]["artifact_id"] == "factor_validation_registry_cc_challenger"
+    assert data["registered_models"][0]["deployment_stage"] == "champion"
+    assert data["registered_models"][1]["deployment_stage"] == "challenger"
+
+    registry_list = await mcp.quant_manager(
+        action="model_registry",
+        kwargs={"op": "list", "family": "momentum", "limit": 20},
+    )
+    assert registry_list["success"] is True
+    items = registry_list["data"]["items"]
+    assert len(items) >= 2
+    assert any(item["deployment_stage"] == "champion" for item in items)
+    assert any(item["deployment_stage"] == "challenger" for item in items)
+
+    registry_summary = await mcp.quant_manager(
+        action="model_registry",
+        kwargs={"op": "summary", "family": "momentum", "limit": 20},
+    )
+    assert registry_summary["success"] is True
+    summary = registry_summary["data"]["summary"]
+    assert summary["champion_count"] >= 1
+    assert summary["challenger_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_quant_manager_model_registry_lifecycle_scan_and_retrain_plan(monkeypatch):
+    import akshare_mcp.tools.managers.quant_manager as quant_mod
+    import akshare_mcp.services.artifact_registry as _ar_mod
+    from akshare_mcp.services import register_artifact
+
+    monkeypatch.setattr(quant_mod, "get_db", lambda: _ValidationDB())
+    monkeypatch.setattr(_ar_mod, "_get_db", lambda: None)
+
+    registry_codes = ["302101", "302102", "302103", "302104"]
+    generation_artifact_id = "factor_llm_episode_lifecycle_case"
+    register_artifact(
+        {
+            "artifact_id": generation_artifact_id,
+            "strategy": "quant_llm_factor_mining",
+            "strategy_version": "p0.v1",
+            "code": ",".join(registry_codes),
+            "payload": {
+                "artifact_id": generation_artifact_id,
+                "action": "llm_factor_mining",
+                "codes": list(registry_codes),
+                "candidate_count": 1,
+                "candidates": [_build_candidate("momentum_20d", name="lifecycle_model")],
+            },
+        }
+    )
+    _register_validation_artifact(
+        "factor_validation_registry_lifecycle_champion",
+        registry_codes,
+        name="lifecycle_champion",
+        recommendation="promote",
+        total_score=84.0,
+        source_generation_artifact_id=generation_artifact_id,
+        wf_stability=0.18,
+        kf_stability=0.24,
+        wf_degradation=0.17,
+        kf_degradation=0.15,
+    )
+    _register_validation_artifact(
+        "factor_validation_registry_lifecycle_challenger",
+        registry_codes,
+        name="lifecycle_challenger",
+        recommendation="review",
+        total_score=83.2,
+        source_generation_artifact_id=generation_artifact_id,
+        wf_stability=0.42,
+        kf_stability=0.39,
+        wf_degradation=0.05,
+        kf_degradation=0.04,
+    )
+    register_artifact(
+        {
+            "artifact_id": "factor_episode_lifecycle_replay",
+            "strategy": "quant_factor_episode_replay",
+            "strategy_version": "p2.v2",
+            "code": ",".join(registry_codes),
+            "payload": {
+                "artifact_id": "factor_episode_lifecycle_replay",
+                "action": "replay_factor_episode",
+                "source_artifact_id": generation_artifact_id,
+                "codes": list(registry_codes),
+                "episode_summary": {
+                    "validated_count": 0,
+                    "failed_count": 3,
+                },
+            },
+        }
+    )
+
+    mcp = _DummyMCP()
+    quant_mod.register_quant_manager(mcp)
+
+    review = await mcp.quant_manager(
+        action="champion_challenger",
+        kwargs={
+            "op": "review",
+            "codes": registry_codes,
+            "limit": 20,
+            "persist_artifact": True,
+            "update_registry": True,
+            "market_codes_only": True,
+        },
+    )
+    assert review["success"] is True
+    assert review["data"]["review_status"] == "tight_race"
+
+    lifecycle = await mcp.quant_manager(
+        action="model_registry",
+        kwargs={
+            "op": "lifecycle_scan",
+            "family": "momentum",
+            "limit": 20,
+            "persist_artifact": False,
+            "stability_floor": 0.35,
+            "degradation_ceiling": 0.08,
+            "tight_race_gap": 5.0,
+            "replay_success_floor": 0.6,
+        },
+    )
+    assert lifecycle["success"] is True
+    scan_items = lifecycle["data"]["items"]
+    champion_item = next(item for item in scan_items if item["deployment_stage"] == "champion")
+    assert "high_degradation" in champion_item["flags"]
+    assert "low_stability" in champion_item["flags"]
+    assert "challenger_pressure" in champion_item["flags"]
+    assert "replay_decay" in champion_item["flags"]
+    assert champion_item["recommended_action"] == "schedule_retrain"
+    assert lifecycle["data"]["summary"]["retrain_recommended_count"] >= 1
+
+    retrain_plan = await mcp.quant_manager(
+        action="model_registry",
+        kwargs={
+            "op": "schedule_retrain",
+            "artifact_id": champion_item["artifact_id"],
+            "family": "momentum",
+            "only_flagged": True,
+        },
+    )
+    assert retrain_plan["success"] is True
+    plan = retrain_plan["data"]["plan"]
+    assert plan["target_model_count"] >= 1
+    assert generation_artifact_id in plan["target_generation_artifact_ids"]
+    assert "high_degradation" in plan["reason_codes"]
+    assert plan["next_action"] == "replay_factor_episode"
+
+    retrain_list = await mcp.quant_manager(
+        action="model_registry",
+        kwargs={"op": "retrain_list", "family": "momentum", "limit": 20},
+    )
+    assert retrain_list["success"] is True
+    assert retrain_list["data"]["count"] >= 1
+
+    retrain_summary = await mcp.quant_manager(
+        action="model_registry",
+        kwargs={"op": "retrain_summary", "family": "momentum", "limit": 20},
+    )
+    assert retrain_summary["success"] is True
+    assert retrain_summary["data"]["summary"]["count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_quant_manager_execute_retrain_and_retrain_status(monkeypatch):
+    import akshare_mcp.tools.managers.quant_manager as quant_mod
+    import akshare_mcp.services.artifact_registry as _ar_mod
+    from akshare_mcp.services import register_artifact
+
+    monkeypatch.setattr(quant_mod, "get_db", lambda: _ValidationDB())
+    monkeypatch.setattr(_ar_mod, "_get_db", lambda: None)
+
+    registry_codes = ["303101", "303102", "303103", "303104"]
+    generation_artifact_id = "factor_llm_episode_retrain_execute_case"
+    register_artifact(
+        {
+            "artifact_id": generation_artifact_id,
+            "strategy": "quant_llm_factor_mining",
+            "strategy_version": "p0.v1",
+            "code": ",".join(registry_codes),
+            "payload": {
+                "artifact_id": generation_artifact_id,
+                "action": "llm_factor_mining",
+                "codes": list(registry_codes),
+                "candidate_count": 2,
+                "candidates": [
+                    _build_candidate("momentum_20d", name="retrain_good"),
+                    _build_candidate("foobar(close)", name="retrain_bad"),
+                ],
+            },
+        }
+    )
+    _register_validation_artifact(
+        "factor_validation_registry_retrain_execute_champion",
+        registry_codes,
+        name="retrain_execute_champion",
+        recommendation="promote",
+        total_score=91.0,
+        source_generation_artifact_id=generation_artifact_id,
+    )
+    _register_validation_artifact(
+        "factor_validation_registry_retrain_execute_challenger",
+        registry_codes,
+        name="retrain_execute_challenger",
+        recommendation="review",
+        total_score=86.0,
+        source_generation_artifact_id=generation_artifact_id,
+    )
+
+    mcp = _DummyMCP()
+    quant_mod.register_quant_manager(mcp)
+
+    review = await mcp.quant_manager(
+        action="champion_challenger",
+        kwargs={
+            "op": "review",
+            "codes": registry_codes,
+            "limit": 20,
+            "persist_artifact": False,
+            "update_registry": True,
+            "market_codes_only": True,
+        },
+    )
+    assert review["success"] is True
+
+    registry_list = await mcp.quant_manager(
+        action="model_registry",
+        kwargs={
+            "op": "list",
+            "deployment_stage": "champion",
+            "family": "momentum",
+            "limit": 20,
+        },
+    )
+    assert registry_list["success"] is True
+    champion_item = next(
+        item
+        for item in registry_list["data"]["items"]
+        if item["deployment_stage"] == "champion"
+        and item["source_generation_artifact_id"] == generation_artifact_id
+    )
+
+    retrain_plan = await mcp.quant_manager(
+        action="model_registry",
+        kwargs={
+            "op": "schedule_retrain",
+            "artifact_id": champion_item["artifact_id"],
+            "family": "momentum",
+            "only_flagged": False,
+            "codes": registry_codes,
+        },
+    )
+    assert retrain_plan["success"] is True
+    plan_id = retrain_plan["data"]["artifact_id"]
+
+    retrain_execute = await mcp.quant_manager(
+        action="model_registry",
+        kwargs={
+            "op": "execute_retrain",
+            "artifact_id": plan_id,
+            "codes": registry_codes,
+            "lookback_bars": 180,
+            "horizon_days": 10,
+            "max_dates": 40,
+            "write_memory": False,
+            "update_registry": True,
+        },
+    )
+    assert retrain_execute["success"] is True
+    run = retrain_execute["data"]["run"]
+    plan = retrain_execute["data"]["plan"]
+    assert run["status"] == "completed"
+    assert run["plan_id"] == plan_id
+    assert run["execution_summary"]["target_model_count"] == 1
+    assert run["execution_summary"]["replay_run_count"] == 1
+    assert run["execution_summary"]["validation_run_count"] == 1
+    assert run["execution_summary"]["registry_update_count"] == 1
+    assert plan["last_run_artifact_id"] == run["artifact_id"]
+    assert plan["last_run_status"] == "completed"
+    assert plan["run_count"] == 1
+
+    status_by_plan = await mcp.quant_manager(
+        action="model_registry",
+        kwargs={"op": "retrain_status", "artifact_id": plan_id},
+    )
+    assert status_by_plan["success"] is True
+    assert status_by_plan["data"]["latest_run"]["artifact_id"] == run["artifact_id"]
+    assert status_by_plan["data"]["run_summary"]["count"] >= 1
+
+    status_by_run = await mcp.quant_manager(
+        action="model_registry",
+        kwargs={"op": "retrain_status", "artifact_id": run["artifact_id"]},
+    )
+    assert status_by_run["success"] is True
+    assert status_by_run["data"]["run"]["artifact_id"] == run["artifact_id"]
+    assert status_by_run["data"]["plan"]["last_run_artifact_id"] == run["artifact_id"]
 
 
 @pytest.mark.asyncio

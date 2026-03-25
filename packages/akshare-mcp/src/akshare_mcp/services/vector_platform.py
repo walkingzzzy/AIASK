@@ -105,7 +105,7 @@ class StrategyVectorPlatform:
         }
 
     def default_vector_method(self) -> str:
-        return 'text_embedding' if self.text_embedding_service.is_enabled() else 'price_volume'
+        return 'text_embedding' if getattr(self.text_embedding_service, 'prefers_text_embedding_default', lambda: self.text_embedding_service.is_enabled())() else 'price_volume'
 
     def resolve_vector_method(self, vector_method: Optional[str]) -> str:
         normalized = str(vector_method or '').strip().lower()
@@ -126,6 +126,104 @@ class StrategyVectorPlatform:
     @staticmethod
     def _text_embedding_fallback_method() -> str:
         return 'price_volume'
+
+    @staticmethod
+    def _sanitize_collection_part(value: Any, max_len: int = 48) -> str:
+        normalized = ''.join(ch.lower() if str(ch).isalnum() else '_' for ch in str(value or '').strip())
+        normalized = '_'.join(part for part in normalized.split('_') if part)
+        truncated = normalized[: max(8, int(max_len or 48))].strip('_')
+        return truncated or 'na'
+
+    @staticmethod
+    def _default_strategy_model_id(vector_method: str, vector_dim: int) -> str:
+        normalized_method = str(vector_method or 'price_volume').strip().lower() or 'price_volume'
+        if normalized_method == 'price_volume' and int(vector_dim or 0) == 120:
+            return 'strategy-behavior-v1'
+        return f'strategy-{normalized_method}-v1'
+
+    def _resolve_strategy_model_id(
+        self,
+        *,
+        vector_method: str,
+        vector_dim: int,
+        embedding_meta: Optional[dict] = None,
+    ) -> str:
+        meta = dict(embedding_meta or {})
+        explicit = str(meta.get('model_id') or meta.get('embedding_model') or '').strip()
+        return explicit or self._default_strategy_model_id(vector_method, vector_dim)
+
+    @classmethod
+    def _strategy_collection_name(
+        cls,
+        *,
+        index_name: str,
+        model_id: str,
+        vector_dim: int,
+        metric: str = 'cosine',
+        normalization: str = 'unit',
+    ) -> str:
+        resolved_index_name = str(index_name or 'strategy_behavior').strip() or 'strategy_behavior'
+        base = f'{resolved_index_name}_embeddings'
+        resolved_model_id = str(model_id or '').strip() or 'strategy-behavior-v1'
+        resolved_metric = str(metric or 'cosine').strip().lower() or 'cosine'
+        resolved_normalization = str(normalization or 'unit').strip().lower() or 'unit'
+        if (
+            resolved_model_id == 'strategy-behavior-v1'
+            and int(vector_dim or 0) == 120
+            and resolved_metric == 'cosine'
+            and resolved_normalization == 'unit'
+        ):
+            return base
+        suffix = '__'.join(
+            [
+                cls._sanitize_collection_part(resolved_model_id),
+                f'd{int(vector_dim or 0)}',
+                cls._sanitize_collection_part(resolved_metric, max_len=16),
+                cls._sanitize_collection_part(resolved_normalization, max_len=16),
+            ]
+        )
+        return f'{base}__{suffix}'
+
+    @staticmethod
+    def _strategy_index_name_from_collection(collection_name: Optional[str], collection: Optional[dict] = None) -> str:
+        meta = dict((collection or {}).get('metadata') or {})
+        explicit = str(meta.get('index_name') or '').strip()
+        if explicit:
+            return explicit
+        normalized = str(collection_name or '').strip()
+        if normalized.endswith('_embeddings'):
+            return normalized[: -len('_embeddings')]
+        if '_embeddings__' in normalized:
+            return normalized.split('_embeddings__', 1)[0]
+        return 'strategy_behavior'
+
+    @classmethod
+    def _collection_sort_key(cls, collection: dict) -> tuple:
+        active_priority = 0 if str(collection.get('active_version') or '').strip() else 1
+        updated_at = str(collection.get('updated_at') or collection.get('created_at') or '')
+        return (
+            active_priority,
+            updated_at,
+            str(collection.get('collection_name') or ''),
+        )
+
+    @staticmethod
+    def _pgvector_backend_family(backend_used: Optional[str]) -> str:
+        normalized = str(backend_used or '').strip().lower()
+        if normalized.startswith('pgvector'):
+            return 'pgvector'
+        return normalized or 'unavailable'
+
+    @staticmethod
+    def _unified_retrieval_mode(backend_used: Optional[str]) -> str:
+        normalized = str(backend_used or '').strip().lower()
+        if normalized == 'pgvector_index_item':
+            return 'unified_pgvector_ann'
+        if normalized == 'pgvector_profile':
+            return 'unified_pgvector_exact'
+        if normalized == 'exact_json':
+            return 'unified_exact_json'
+        return f'unified_{normalized}' if normalized else 'unified_unknown'
 
     @staticmethod
     def _signature(strategy: dict, profile_type: str, vector_method: str) -> str:
@@ -361,6 +459,18 @@ class StrategyVectorPlatform:
             )
             if embedding is None or len(embedding) == 0:
                 return None
+            vector_dim = int(len(embedding))
+            model_id = self._resolve_strategy_model_id(
+                vector_method=effective_vector_method,
+                vector_dim=vector_dim,
+                embedding_meta=embedding_meta,
+            )
+            collection_name = self._strategy_collection_name(
+                index_name=index_name,
+                model_id=model_id,
+                vector_dim=vector_dim,
+                metric=metric,
+            )
             backend_audit = self._build_backend_audit(db, started_at)
 
             profile = await db.save_strategy_vector_profile({
@@ -368,7 +478,7 @@ class StrategyVectorPlatform:
                 'profile_type': profile_type,
                 'vector_method': effective_vector_method,
                 'metric': metric,
-                'vector_dim': int(len(embedding)),
+                'vector_dim': vector_dim,
                 'embedding': embedding.tolist(),
                 'signature': self._signature(strategy, profile_type, effective_vector_method),
                 'backend': self.backend_name(db),
@@ -382,9 +492,71 @@ class StrategyVectorPlatform:
                     'requested_vector_method': resolved_vector_method,
                     'effective_vector_method': effective_vector_method,
                     'audit': backend_audit,
+                    'unified_collection_name': collection_name,
+                    'model_id': model_id,
                     **embedding_meta,
                 },
             })
+            unified_profile = None
+            if hasattr(db, 'save_vector_collection') and hasattr(db, 'save_vector_profile'):
+                try:
+                    await db.save_vector_collection({
+                        'collection_name': collection_name,
+                        'entity_family': 'strategy_behavior',
+                        'backend': self.backend_name(db),
+                        'metric': metric,
+                        'model_id': model_id,
+                        'vector_dim': vector_dim,
+                        'normalization': 'unit',
+                        'status': 'active',
+                        'metadata': {
+                            'domain': 'strategy',
+                            'index_name': index_name,
+                            'profile_type': profile_type,
+                            'vector_method': effective_vector_method,
+                        },
+                    })
+                    unified_profile = await db.save_vector_profile({
+                        'collection_name': collection_name,
+                        'entity_type': 'strategy',
+                        'entity_id': str(strategy.get('id') or ''),
+                        'profile_type': profile_type,
+                        'model_id': model_id,
+                        'vector_dim': vector_dim,
+                        'metric': metric,
+                        'version': index_version,
+                        'signature': self._signature(strategy, profile_type, effective_vector_method),
+                        'status': 'active',
+                        'embedding': embedding.tolist(),
+                        'metadata': {
+                            'strategy_type': strategy.get('strategy_type'),
+                            'index_name': index_name,
+                            'index_version': index_version,
+                            'profile_type': profile_type,
+                            'requested_vector_method': resolved_vector_method,
+                            'effective_vector_method': effective_vector_method,
+                            'legacy_profile_id': profile.get('id'),
+                            'audit': backend_audit,
+                            **embedding_meta,
+                        },
+                    })
+                    if (
+                        getattr(db, 'supports_pgvector', lambda: False)()
+                        and hasattr(db, 'ensure_vector_profile_pgvector_index')
+                    ):
+                        await db.ensure_vector_profile_pgvector_index(
+                            collection_name=collection_name,
+                            version=index_version,
+                            vector_dim=vector_dim,
+                            profile_type=profile_type,
+                            metric=metric,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        'StrategyVectorPlatform.build_strategy_profile unified dual-write failed for %s: %s',
+                        strategy.get('id'),
+                        exc,
+                    )
             await db.save_vector_index_registry({
                 'index_name': index_name,
                 'backend': self.backend_name(db),
@@ -398,10 +570,18 @@ class StrategyVectorPlatform:
                     'last_strategy_id': strategy.get('id'),
                     'requested_vector_method': resolved_vector_method,
                     'effective_vector_method': effective_vector_method,
+                    'unified_collection_name': collection_name,
+                    'unified_profile_id': (unified_profile or {}).get('id'),
+                    'model_id': model_id,
                     'audit': backend_audit,
                 },
             })
-            return profile
+            return {
+                **dict(profile or {}),
+                'unified_collection_name': collection_name,
+                'unified_profile_id': (unified_profile or {}).get('id'),
+                'model_id': model_id,
+            }
         except Exception as exc:
             logger.warning('StrategyVectorPlatform.build_strategy_profile failed for %s: %s', strategy.get('id'), exc)
             return None
@@ -460,6 +640,263 @@ class StrategyVectorPlatform:
                     except Exception as exc:
                         logger.warning('StrategyVectorPlatform.build_profiles_for_strategies failed to create profile pgvector index: %s', exc)
         return {'count': len(items), 'items': items}
+
+    async def _list_unified_strategy_collections(
+        self,
+        db,
+        *,
+        index_name: Optional[str] = None,
+    ) -> List[dict]:
+        if not hasattr(db, 'list_vector_collections'):
+            return []
+        try:
+            rows = await db.list_vector_collections(entity_family='strategy_behavior', limit=200)
+        except Exception:
+            return []
+        resolved_index_name = str(index_name or '').strip()
+        filtered: List[dict] = []
+        for row in list(rows or []):
+            item = dict(row or {})
+            collection_name = str(item.get('collection_name') or '').strip()
+            logical_index_name = self._strategy_index_name_from_collection(collection_name, item)
+            if resolved_index_name and logical_index_name != resolved_index_name:
+                continue
+            filtered.append(
+                {
+                    **item,
+                    'collection_name': collection_name,
+                    'index_name': logical_index_name,
+                }
+            )
+        filtered.sort(key=self._collection_sort_key)
+        return filtered
+
+    async def _load_unified_query_profile(
+        self,
+        db,
+        strategy_id: str,
+        *,
+        profile_type: str = 'behavior',
+        preferred_version: Optional[str] = None,
+        index_name: Optional[str] = None,
+    ) -> Optional[dict]:
+        if not hasattr(db, 'list_vector_profiles'):
+            return None
+        collections = await self._list_unified_strategy_collections(db, index_name=index_name)
+        for collection in collections:
+            version_candidates: List[Optional[str]] = []
+            explicit_version = str(preferred_version or '').strip() or None
+            active_version = str(collection.get('active_version') or '').strip() or None
+            if explicit_version:
+                version_candidates.append(explicit_version)
+            if active_version and active_version not in version_candidates:
+                version_candidates.append(active_version)
+            version_candidates.append(None)
+            seen_versions: set[Optional[str]] = set()
+            for version in version_candidates:
+                if version in seen_versions:
+                    continue
+                seen_versions.add(version)
+                try:
+                    rows = await db.list_vector_profiles(
+                        collection_name=collection.get('collection_name'),
+                        entity_type='strategy',
+                        entity_id=strategy_id,
+                        profile_type=profile_type,
+                        version=version,
+                        limit=5,
+                    )
+                except Exception:
+                    rows = []
+                if rows:
+                    return {
+                        **dict(rows[0] or {}),
+                        'collection_name': collection.get('collection_name'),
+                        '_collection': dict(collection),
+                    }
+        return None
+
+    async def _select_primary_unified_collection(
+        self,
+        db,
+        *,
+        index_name: str,
+        profile_type: str,
+        version: Optional[str],
+    ) -> tuple[Optional[dict], int]:
+        if not hasattr(db, 'list_vector_profiles'):
+            return None, 0
+        collections = await self._list_unified_strategy_collections(db, index_name=index_name)
+        best_collection: Optional[dict] = None
+        best_count = 0
+        for collection in collections:
+            try:
+                rows = await db.list_vector_profiles(
+                    collection_name=collection.get('collection_name'),
+                    entity_type='strategy',
+                    profile_type=profile_type,
+                    version=version,
+                    limit=5000,
+                )
+            except Exception:
+                rows = []
+            count = len(list(rows or []))
+            if count > best_count:
+                best_collection = dict(collection)
+                best_count = count
+        return best_collection, best_count
+
+    def _map_unified_profile_row(
+        self,
+        row: dict,
+        collection: dict,
+        *,
+        index_name: Optional[str] = None,
+    ) -> dict:
+        metadata = dict((row or {}).get('metadata') or {})
+        resolved_index_name = str(
+            index_name
+            or metadata.get('index_name')
+            or collection.get('index_name')
+            or self._strategy_index_name_from_collection(collection.get('collection_name'), collection)
+        )
+        return {
+            'id': row.get('id'),
+            'profile_id': row.get('id'),
+            'strategy_id': row.get('entity_id'),
+            'profile_type': row.get('profile_type') or metadata.get('profile_type'),
+            'vector_method': metadata.get('effective_vector_method') or metadata.get('vector_method'),
+            'metric': row.get('metric') or collection.get('metric') or 'cosine',
+            'vector_dim': row.get('vector_dim'),
+            'embedding': row.get('embedding'),
+            'signature': row.get('signature') or metadata.get('signature'),
+            'backend': self._pgvector_backend_family(collection.get('backend')),
+            'index_name': resolved_index_name,
+            'index_version': str(row.get('version') or metadata.get('index_version') or ''),
+            'collection_name': collection.get('collection_name') or row.get('collection_name'),
+            'model_id': row.get('model_id') or collection.get('model_id'),
+            'metadata': metadata,
+        }
+
+    def _map_unified_snapshot_row(
+        self,
+        snapshot: dict,
+        collection: dict,
+        *,
+        index_name: Optional[str] = None,
+    ) -> dict:
+        resolved_index_name = str(
+            index_name
+            or collection.get('index_name')
+            or self._strategy_index_name_from_collection(collection.get('collection_name'), collection)
+        )
+        metadata = dict((snapshot or {}).get('metadata') or {})
+        return {
+            'id': snapshot.get('id'),
+            'index_name': resolved_index_name,
+            'index_version': str(snapshot.get('index_version') or ''),
+            'collection_name': collection.get('collection_name'),
+            'status': snapshot.get('status'),
+            'backend': self._pgvector_backend_family(collection.get('backend') or metadata.get('backend_used')),
+            'profile_type': snapshot.get('profile_type'),
+            'vector_method': metadata.get('vector_method'),
+            'metric': snapshot.get('metric') or collection.get('metric') or 'cosine',
+            'vector_dim': snapshot.get('vector_dim') or collection.get('vector_dim'),
+            'profile_count': int(snapshot.get('sample_count') or snapshot.get('profile_count') or 0),
+            'bucket_count': int(snapshot.get('bucket_count') or 0),
+            'model_id': snapshot.get('model_id') or collection.get('model_id'),
+            'built_at': snapshot.get('built_at'),
+            'activated_at': snapshot.get('activated_at'),
+            'metadata': metadata,
+            'source': 'unified_snapshot',
+        }
+
+    async def list_profiles(
+        self,
+        db,
+        *,
+        strategy_id: Optional[str] = None,
+        profile_type: Optional[str] = None,
+        index_name: Optional[str] = None,
+        index_version: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[dict]:
+        resolved_limit = max(1, min(int(limit or 20), 200))
+        unified_rows: List[dict] = []
+        if hasattr(db, 'list_vector_profiles'):
+            collections = await self._list_unified_strategy_collections(db, index_name=index_name)
+            for collection in collections:
+                try:
+                    rows = await db.list_vector_profiles(
+                        collection_name=collection.get('collection_name'),
+                        entity_type='strategy',
+                        entity_id=strategy_id,
+                        profile_type=profile_type,
+                        version=index_version,
+                        limit=resolved_limit,
+                    )
+                except Exception:
+                    rows = []
+                for row in rows:
+                    unified_rows.append(self._map_unified_profile_row(dict(row or {}), dict(collection), index_name=index_name))
+        if unified_rows:
+            return unified_rows[:resolved_limit]
+        if not hasattr(db, 'list_strategy_vector_profiles'):
+            return []
+        rows = await db.list_strategy_vector_profiles(
+            strategy_id=strategy_id,
+            profile_type=profile_type,
+            index_name=index_name,
+            index_version=index_version,
+            limit=resolved_limit,
+        )
+        return list(rows or [])[:resolved_limit]
+
+    async def list_index_snapshots(
+        self,
+        db,
+        *,
+        index_name: Optional[str] = None,
+        index_version: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[dict]:
+        resolved_limit = max(1, min(int(limit or 20), 200))
+        unified_rows: List[dict] = []
+        if hasattr(db, 'list_vector_index_snapshots'):
+            collections = await self._list_unified_strategy_collections(db, index_name=index_name)
+            for collection in collections:
+                try:
+                    rows = await db.list_vector_index_snapshots(
+                        collection_name=collection.get('collection_name'),
+                        index_version=index_version,
+                        status=status,
+                        latest_only=False,
+                        limit=resolved_limit,
+                    )
+                except Exception:
+                    rows = []
+                for row in rows:
+                    unified_rows.append(self._map_unified_snapshot_row(dict(row or {}), dict(collection), index_name=index_name))
+        if unified_rows:
+            unified_rows.sort(
+                key=lambda row: (
+                    str(row.get('activated_at') or row.get('built_at') or ''),
+                    str(row.get('index_version') or ''),
+                    int(row.get('id') or 0),
+                ),
+                reverse=True,
+            )
+            return unified_rows[:resolved_limit]
+        if not hasattr(db, 'list_strategy_vector_index_snapshots'):
+            return []
+        rows = await db.list_strategy_vector_index_snapshots(
+            index_name=index_name,
+            index_version=index_version,
+            status=status,
+            limit=resolved_limit,
+        )
+        return list(rows or [])[:resolved_limit]
 
     async def _load_query_profile(
         self,
@@ -626,7 +1063,7 @@ class StrategyVectorPlatform:
         limit_profiles: int = 5000,
     ) -> dict:
         if not hasattr(db, 'list_strategy_vector_profiles'):
-            return {'snapshot': None, 'items_count': 0, 'bucket_count': 0}
+            return {'snapshot': None, 'items_count': 0, 'bucket_count': 0, 'unified_snapshot': None}
         profiles = await db.list_strategy_vector_profiles(
             profile_type=profile_type,
             index_version=index_version,
@@ -726,11 +1163,38 @@ class StrategyVectorPlatform:
                     'activated_at': None,
                 })
             raise
+        unified_snapshot = None
+        unified_collection_name = None
+        if hasattr(db, 'save_vector_index_snapshot') and hasattr(db, 'list_vector_profiles'):
+            try:
+                from .unified_vector_governance import build_vector_collection_snapshot
+
+                primary_collection, _ = await self._select_primary_unified_collection(
+                    db,
+                    index_name=index_name,
+                    profile_type=profile_type,
+                    version=index_version,
+                )
+                unified_collection_name = str((primary_collection or {}).get('collection_name') or '').strip() or None
+                if unified_collection_name:
+                    unified_snapshot = await build_vector_collection_snapshot(
+                        db,
+                        collection_name=unified_collection_name,
+                        version=index_version,
+                        index_version=index_version,
+                        profile_type=profile_type,
+                        activate=True,
+                        source=source,
+                    )
+            except Exception as exc:
+                logger.warning('StrategyVectorPlatform.build_persisted_ann_index unified snapshot build failed: %s', exc)
         return {
             'snapshot': snapshot,
             'items_count': len(items),
             'bucket_count': int(layout.get('bucket_count') or 0),
             'profile_count': int(layout.get('profile_count') or len(items)),
+            'unified_snapshot': unified_snapshot,
+            'unified_collection_name': unified_collection_name,
         }
 
     async def _get_latest_snapshot(self, db, index_name: str, index_version: Optional[str] = None) -> Optional[dict]:
@@ -791,6 +1255,44 @@ class StrategyVectorPlatform:
         )
 
     async def get_active_index(self, db, index_name: str = 'strategy_behavior', index_version: Optional[str] = None) -> Optional[dict]:
+        collections = await self._list_unified_strategy_collections(db, index_name=index_name)
+        if collections and hasattr(db, 'list_vector_index_snapshots'):
+            resolved_index_version = str(index_version or '').strip() or None
+            for collection in collections:
+                if resolved_index_version:
+                    snapshots = await db.list_vector_index_snapshots(
+                        collection_name=collection.get('collection_name'),
+                        index_version=resolved_index_version,
+                        latest_only=True,
+                        limit=1,
+                    )
+                else:
+                    active_version = str(collection.get('active_version') or '').strip() or None
+                    snapshots = await db.list_vector_index_snapshots(
+                        collection_name=collection.get('collection_name'),
+                        index_version=active_version,
+                        latest_only=True,
+                        limit=1,
+                    ) if active_version else []
+                    if not snapshots:
+                        snapshots = await db.list_vector_index_snapshots(
+                            collection_name=collection.get('collection_name'),
+                            latest_only=True,
+                            limit=1,
+                        )
+                if snapshots:
+                    snapshot = dict(snapshots[0] or {})
+                    mapped = self._map_unified_snapshot_row(snapshot, dict(collection), index_name=index_name)
+                    return {
+                        'index_name': mapped.get('index_name') or str(index_name or 'strategy_behavior'),
+                        'index_version': mapped.get('index_version') or str(index_version or ''),
+                        'backend': mapped.get('backend') or self.backend_name(db),
+                        'status': mapped.get('status') or 'active',
+                        'source': mapped.get('source') or 'unified_snapshot',
+                        'collection_name': mapped.get('collection_name'),
+                        'model_id': mapped.get('model_id'),
+                        'vector_dim': mapped.get('vector_dim'),
+                    }
         snapshot = await self._get_latest_snapshot(db, index_name, index_version=index_version)
         if snapshot:
             return {
@@ -815,6 +1317,119 @@ class StrategyVectorPlatform:
                 }
         return None
 
+    async def _build_unified_health(
+        self,
+        db,
+        *,
+        index_name: str,
+        limit_versions: int,
+        include_hnsw_indexes: bool,
+    ) -> Optional[dict]:
+        del include_hnsw_indexes
+        collections = await self._list_unified_strategy_collections(db, index_name=index_name)
+        if not collections or not hasattr(db, 'list_vector_index_snapshots'):
+            return None
+        counts = {
+            'profiles': 0,
+            'profile_store': 0,
+            'index_snapshots': 0,
+            'index_items': 0,
+            'index_item_store': 0,
+        }
+        versions: List[dict] = []
+        latest_snapshot: Optional[dict] = None
+        for collection in collections:
+            collection_name = collection.get('collection_name')
+            try:
+                profiles = await db.list_vector_profiles(
+                    collection_name=collection_name,
+                    entity_type='strategy',
+                    limit=5000,
+                ) if hasattr(db, 'list_vector_profiles') else []
+            except Exception:
+                profiles = []
+            counts['profiles'] += len(profiles)
+            if getattr(db, 'supports_pgvector', lambda: False)():
+                counts['profile_store'] += len(profiles)
+            snapshots = await db.list_vector_index_snapshots(
+                collection_name=collection_name,
+                latest_only=False,
+                limit=max(20, min(int(limit_versions or 20) * 4, 500)),
+            )
+            counts['index_snapshots'] += len(snapshots)
+            for snapshot in snapshots:
+                mapped = self._map_unified_snapshot_row(dict(snapshot or {}), dict(collection), index_name=index_name)
+                try:
+                    items = await db.list_vector_index_items(
+                        collection_name=collection_name,
+                        index_version=mapped.get('index_version'),
+                        profile_type=mapped.get('profile_type'),
+                        limit=5000,
+                    ) if hasattr(db, 'list_vector_index_items') else []
+                except Exception:
+                    items = []
+                item_count = len(items)
+                counts['index_items'] += item_count
+                if getattr(db, 'supports_pgvector', lambda: False)():
+                    counts['index_item_store'] += item_count
+                versions.append({
+                    'collection_name': mapped.get('collection_name'),
+                    'index_version': mapped.get('index_version'),
+                    'registry_status': mapped.get('status'),
+                    'registry_backend': mapped.get('backend'),
+                    'snapshot_status': mapped.get('status'),
+                    'snapshot_backend': mapped.get('backend'),
+                    'profile_count': mapped.get('profile_count'),
+                    'bucket_count': mapped.get('bucket_count'),
+                    'vector_dim': mapped.get('vector_dim'),
+                    'model_id': mapped.get('model_id'),
+                    'profile_rows': sum(
+                        1
+                        for row in profiles
+                        if str((row or {}).get('version') or '') == str(mapped.get('index_version') or '')
+                    ),
+                    'profile_store_rows': sum(
+                        1
+                        for row in profiles
+                        if str((row or {}).get('version') or '') == str(mapped.get('index_version') or '')
+                    ) if getattr(db, 'supports_pgvector', lambda: False)() else 0,
+                    'index_item_rows': item_count,
+                    'index_item_store_rows': item_count if getattr(db, 'supports_pgvector', lambda: False)() else 0,
+                    'last_seen': str(mapped.get('activated_at') or mapped.get('built_at') or ''),
+                })
+                candidate_latest_key = str(mapped.get('activated_at') or mapped.get('built_at') or '')
+                current_latest_key = str((latest_snapshot or {}).get('activated_at') or (latest_snapshot or {}).get('built_at') or '')
+                if candidate_latest_key >= current_latest_key:
+                    latest_snapshot = dict(mapped)
+        versions.sort(
+            key=lambda row: (
+                str(row.get('last_seen') or ''),
+                str(row.get('collection_name') or ''),
+                str(row.get('index_version') or ''),
+            ),
+            reverse=True,
+        )
+        return {
+            'index_name': index_name,
+            'backend': self._pgvector_backend_family(getattr(db, 'get_vector_backend', lambda: 'pgvector')()),
+            'pgvector_enabled': getattr(db, 'supports_pgvector', lambda: False)(),
+            'tables': {
+                'vector_collections': True,
+                'vector_profiles': True,
+                'vector_profile_store': getattr(db, 'supports_pgvector', lambda: False)(),
+                'vector_index_snapshots': True,
+                'vector_index_items': True,
+                'vector_index_item_store': getattr(db, 'supports_pgvector', lambda: False)(),
+            },
+            'counts': counts,
+            'latest_snapshot': latest_snapshot,
+            'versions': versions[: max(1, min(int(limit_versions or 20), 200))],
+            'hnsw_indexes': [],
+            'hnsw_index_count': 0,
+            'recommended_cleanup_versions': [row.get('index_version') for row in versions[1:] if row.get('index_version')],
+            'health_mode': 'unified',
+        }
+
     async def search_similar(
         self,
         db,
@@ -838,8 +1453,12 @@ class StrategyVectorPlatform:
             index_name=index_name,
             index_version=index_version,
         )
+        first = rows[0] if rows else {}
         fallback_used = False
         fallback_reason = None
+        if rows:
+            fallback_used = bool(first.get('search_fallback_used'))
+            fallback_reason = first.get('search_fallback_reason')
         if not rows and self.allow_fallback:
             rows = await self.find_similar_profiles(
                 db,
@@ -893,6 +1512,26 @@ class StrategyVectorPlatform:
         include_hnsw_indexes: bool = False,
     ) -> dict:
         started_at = time.perf_counter()
+        unified_result = await self._build_unified_health(
+            db,
+            index_name=index_name,
+            limit_versions=limit_versions,
+            include_hnsw_indexes=include_hnsw_indexes,
+        )
+        if unified_result:
+            active_index = await self.get_active_index(db, index_name=index_name)
+            backend_requested = self.requested_backend_name(db)
+            backend_used = str((active_index or {}).get('backend') or unified_result.get('backend') or backend_requested)
+            audit = self._merge_backend_audit(
+                backend_requested=backend_requested,
+                backend_used=backend_used,
+                started_at=started_at,
+            )
+            return {
+                **unified_result,
+                'active_index': active_index,
+                **audit,
+            }
         if not hasattr(db, 'get_strategy_vector_health'):
             audit = self._merge_backend_audit(
                 backend_requested=self.requested_backend_name(db),
@@ -925,6 +1564,89 @@ class StrategyVectorPlatform:
             **audit,
         }
 
+    async def _search_unified_profiles(
+        self,
+        db,
+        strategy_id: str,
+        *,
+        profile_type: str = 'behavior',
+        limit: int = 5,
+        index_name: Optional[str] = None,
+        index_version: Optional[str] = None,
+    ) -> List[dict]:
+        if not hasattr(db, 'search_vector_collection'):
+            return []
+        query_profile = await self._load_unified_query_profile(
+            db,
+            strategy_id,
+            profile_type=profile_type,
+            preferred_version=index_version,
+            index_name=index_name,
+        )
+        if not query_profile:
+            return []
+        collection = dict(query_profile.get('_collection') or {})
+        query_embedding = self._normalize_embedding(query_profile.get('embedding'))
+        if len(query_embedding) == 0:
+            return []
+        resolved_index_name = str(
+            index_name
+            or dict(query_profile.get('metadata') or {}).get('index_name')
+            or collection.get('index_name')
+            or 'strategy_behavior'
+        )
+        search_result = await db.search_vector_collection(
+            collection_name=str(query_profile.get('collection_name') or collection.get('collection_name') or ''),
+            query_embedding=query_embedding.tolist(),
+            index_version=index_version or collection.get('active_version') or query_profile.get('version'),
+            version=index_version or query_profile.get('version'),
+            profile_type=profile_type,
+            exclude_entity_id=strategy_id,
+            limit=max(1, min(int(limit or 5), 20)),
+            metric=str(query_profile.get('metric') or collection.get('metric') or 'cosine'),
+        )
+        items = list((search_result or {}).get('items') or [])
+        if not items:
+            return []
+        backend_used = str((search_result or {}).get('backend_used') or collection.get('backend') or 'pgvector')
+        backend_family = self._pgvector_backend_family(backend_used)
+        fallback_reason = str((search_result or {}).get('fallback_reason') or '').strip() or None
+        fallback_used = bool((search_result or {}).get('fallback_used') or fallback_reason)
+        query_bucket_id = (search_result or {}).get('query_bucket_id')
+        candidate_bucket_ids = list((search_result or {}).get('candidate_bucket_ids') or [])
+        results: List[dict] = []
+        for item in items:
+            metadata = dict((item or {}).get('metadata') or {})
+            resolved_strategy_id = str(item.get('entity_id') or '').strip()
+            if not resolved_strategy_id:
+                continue
+            results.append({
+                'profile_id': item.get('profile_id') or item.get('id') or metadata.get('legacy_profile_id'),
+                'strategy_id': resolved_strategy_id,
+                'profile_type': item.get('profile_type') or profile_type,
+                'vector_method': metadata.get('effective_vector_method') or metadata.get('vector_method'),
+                'metric': item.get('metric') or query_profile.get('metric') or collection.get('metric') or 'cosine',
+                'vector_dim': item.get('vector_dim') or query_profile.get('vector_dim') or collection.get('vector_dim'),
+                'bucket_id': item.get('bucket_id'),
+                'query_bucket_id': query_bucket_id,
+                'candidate_bucket_ids': candidate_bucket_ids,
+                'coarse_score': item.get('coarse_score'),
+                'similarity': round(float(item.get('similarity') or 0.0), 6),
+                'backend': backend_family,
+                'index_name': resolved_index_name,
+                'index_version': str((search_result or {}).get('index_version') or query_profile.get('version') or index_version or ''),
+                'signature': item.get('signature') or metadata.get('signature'),
+                'candidate_count': len(items),
+                'retrieval_mode': self._unified_retrieval_mode(backend_used),
+                'collection_name': query_profile.get('collection_name') or collection.get('collection_name'),
+                'model_id': item.get('model_id') or query_profile.get('model_id') or collection.get('model_id'),
+                'metadata': metadata,
+                'search_fallback_used': fallback_used,
+                'search_fallback_reason': fallback_reason,
+            })
+        results.sort(key=lambda row: (row.get('similarity', 0), row.get('coarse_score', 0)), reverse=True)
+        return results[: max(1, min(int(limit or 5), 20))]
+
 
     async def ann_search_profiles(
         self,
@@ -936,6 +1658,16 @@ class StrategyVectorPlatform:
         index_name: Optional[str] = None,
         index_version: Optional[str] = None,
     ) -> List[dict]:
+        unified_rows = await self._search_unified_profiles(
+            db,
+            strategy_id,
+            profile_type=profile_type,
+            limit=limit,
+            index_name=index_name,
+            index_version=index_version,
+        )
+        if unified_rows:
+            return unified_rows
         query_profile = await self._load_query_profile(db, strategy_id, profile_type=profile_type, preferred_version=index_version)
         if not query_profile:
             return []

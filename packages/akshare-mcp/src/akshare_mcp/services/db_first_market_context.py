@@ -166,7 +166,7 @@ async def _fetch_vector_documents(
         """,
         *params,
     )
-    default_source = f"vector_documents.{kind}"
+    default_source = f"vector_documents_legacy.{kind}"
     return [_map_vector_row(dict(row), default_source=default_source) for row in rows if dict(row).get("content")]
 
 
@@ -307,7 +307,7 @@ async def load_db_first_document_context(
                     except Exception:
                         context["news"] = []
                     if context["news"]:
-                        source_chain.append("db.vector_documents.news")
+                        source_chain.append("db.vector_documents_legacy.news")
 
             if int(notice_limit or 0) > 0:
                 try:
@@ -336,7 +336,7 @@ async def load_db_first_document_context(
                     except Exception:
                         context["notices"] = []
                     if context["notices"]:
-                        source_chain.append("db.vector_documents.notice")
+                        source_chain.append("db.vector_documents_legacy.notice")
 
             if int(research_limit or 0) > 0:
                 try:
@@ -378,7 +378,7 @@ async def load_db_first_document_context(
                         except Exception:
                             context["research"] = []
                         if context["research"]:
-                            source_chain.append("db.vector_documents.research")
+                            source_chain.append("db.vector_documents_legacy.research")
     except Exception:
         return context, source_chain
 

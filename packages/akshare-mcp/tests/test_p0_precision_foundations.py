@@ -63,8 +63,17 @@ async def test_should_i_buy_adds_pit_guard_prediction_quality_and_interval(monke
     assert data["analysis_date"] <= "2026-04-20"
     assert data["prediction_quality"]["method"] == "threshold_backtest_proxy"
     assert data["prediction_quality"]["support_samples"] > 0
+    assert data["prediction_quality"]["sample_size"] == data["prediction_quality"]["support_samples"]
+    assert data["prediction_quality"]["calibration_bucket"]
+    assert data["prediction_quality"]["ece"] is not None
+    assert data["prediction_quality"]["brier_score"] is not None
+    assert data["offline_decision_baseline"]["method"] == "decision_threshold_bucket_backtest_proxy"
+    assert data["offline_decision_baseline"]["recommendation"] == data["recommendation"]
+    assert "benchmark_delta" in data["offline_decision_baseline"]
     assert data["prediction_interval"]["horizon_days"] == 10
     assert "lower_return" in data["prediction_interval"]
+    assert "interval_width" in data["prediction_interval"]
+    assert "observed_coverage" in data["prediction_interval"]
     assert result["meta"]["pit_guard"]["active"] is True
 
 

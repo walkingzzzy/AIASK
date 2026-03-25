@@ -169,8 +169,8 @@ async def test_compute_alternative_factors_prefers_db_text_and_flow_context(monk
         limit=5,
     )
 
-    assert "db.vector_documents.news" in source_chain
-    assert "db.vector_documents.notice" in source_chain
+    assert "db.vector_documents_legacy.news" in source_chain
+    assert "db.vector_documents_legacy.notice" in source_chain
     assert "db.research_reports" in source_chain
     assert "db.stock_fund_flow" in source_chain
     assert factors["sentiment"]["headline_count"] >= 3

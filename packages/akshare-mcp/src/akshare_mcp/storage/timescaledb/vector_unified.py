@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from datetime import date, datetime
 from typing import Any, Iterable, List, Optional
 
 
@@ -152,6 +153,29 @@ class VectorUnifiedMixin:
         if norm <= 1e-12:
             return []
         return [float(item / norm) for item in resolved]
+
+    @staticmethod
+    def _coerce_date_value(value: Any) -> Optional[date]:
+        if value is None:
+            return None
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return value
+        if isinstance(value, datetime):
+            return value.date()
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            return date.fromisoformat(raw[:10])
+        except Exception:
+            pass
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if len(digits) >= 8:
+            try:
+                return date.fromisoformat(f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}")
+            except Exception:
+                return None
+        return None
 
     @staticmethod
     def _snapshot_bucket_rows(snapshot: Optional[dict]) -> List[dict]:
@@ -695,8 +719,8 @@ class VectorUnifiedMixin:
                 """,
                 str(item.get("window_uid") or ""),
                 str(item.get("stock_code") or ""),
-                item.get("end_date"),
-                item.get("start_date"),
+                self._coerce_date_value(item.get("end_date")),
+                self._coerce_date_value(item.get("start_date")),
                 str(item.get("period") or "daily"),
                 str(item.get("adjust") or ""),
                 int(item.get("window_size") or 0),
@@ -1017,11 +1041,14 @@ class VectorUnifiedMixin:
             if profile_type:
                 where_sql += " AND profile_type = %L"
                 format_args.append(str(profile_type))
+            format_placeholders = ["$1::text", "$2::int", "$3::text", "$4::text", "$5::text", "$6::int"]
+            if profile_type:
+                format_placeholders.append(f"${len(format_args)}::text")
             sql = await conn.fetchval(
                 f"""
                 SELECT format(
                     'CREATE INDEX IF NOT EXISTS %I ON vector_profile_store USING hnsw ((embedding::vector(%s)) %s) WHERE {where_sql}',
-                    {', '.join(f'${idx}' for idx in range(1, len(format_args) + 1))}
+                    {', '.join(format_placeholders)}
                 )
                 """,
                 *format_args,
@@ -1055,7 +1082,7 @@ class VectorUnifiedMixin:
                 """
                 SELECT format(
                     'CREATE INDEX IF NOT EXISTS %I ON vector_index_item_store USING hnsw ((embedding::vector(%s)) %s) WHERE collection_name = %L AND index_version = %L AND vector_dim = %s',
-                    $1, $2, $3, $4, $5, $6
+                    $1::text, $2::int, $3::text, $4::text, $5::text, $6::int
                 )
                 """,
                 idx_name,

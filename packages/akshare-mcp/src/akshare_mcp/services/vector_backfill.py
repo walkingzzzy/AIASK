@@ -174,7 +174,7 @@ async def _load_legacy_vector_documents(
                 "title": content[:120],
                 "content": content,
                 "date": payload.get("date"),
-                "source": f"vector_documents.{doc_type}",
+                "source": f"vector_documents_legacy.{doc_type}",
             }
         )
     return payloads
