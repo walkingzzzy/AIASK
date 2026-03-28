@@ -526,8 +526,9 @@ async def get_financials(stock_code: str) -> dict:
             started_at=started_at,
         )
 
+    tried = " → ".join(source_chain) if source_chain else "无"
     return _fail_financial(
-        f"所有数据源均无法获取 {code} 的财务数据 (AkShare & Baostock)",
+        f"所有数据源均无法获取 {code} 的财务数据（已尝试: {tried}）",
         source_chain=source_chain,
         fallback_reason=fallback_reason,
         started_at=started_at,
@@ -570,42 +571,79 @@ def _get_financials_akshare(code: str) -> Optional[dict]:
         return _get_financials_akshare_em(code)
 
 def _get_financials_akshare_em(code: str) -> Optional[dict]:
-    df = _call_with_retry(lambda: ak.stock_financial_abstract(symbol=code))
-    if df is None or df.empty:
-        return None
+    try:
+        df = _call_with_retry(lambda: ak.stock_financial_abstract(symbol=code))
+        if df is None or df.empty:
+            return _get_financials_akshare_indicator(code)
 
-    date_cols = [c for c in df.columns if str(c).isdigit()]
-    if not date_cols:
-        return None
-    latest_col = sorted(date_cols)[-1]
+        date_cols = [c for c in df.columns if str(c).isdigit()]
+        if not date_cols:
+            return _get_financials_akshare_indicator(code)
+        latest_col = sorted(date_cols)[-1]
 
-    def pick_metric(metric: str) -> Optional[float]:
-        rows = df[df["指标"] == metric]
-        if rows.empty:
+        def pick_metric(metric: str) -> Optional[float]:
+            rows = df[df["指标"] == metric]
+            if rows.empty:
+                return None
+            return parse_numeric(rows.iloc[0].get(latest_col))
+
+        roa = (
+            pick_metric("总资产收益率") or
+            pick_metric("总资产报酬率") or
+            pick_metric("总资产净利率") or
+            pick_metric("资产收益率")
+        )
+
+        return {
+            "code": code,
+            "reportDate": str(latest_col),
+            "eps": pick_metric("基本每股收益"),
+            "bvps": pick_metric("每股净资产"),
+            "roe": pick_metric("净资产收益率"),
+            "roa": roa,
+            "grossProfitMargin": pick_metric("销售毛利率"),
+            "netProfitMargin": pick_metric("销售净利率"),
+            "debtRatio": pick_metric("资产负债率"),
+            "currentRatio": pick_metric("流动比率"),
+            "source": "akshare_em"
+        }
+    except Exception as e:
+        print(f"[Finance] AkShare EM failed: {e}", file=sys.stderr)
+        return _get_financials_akshare_indicator(code)
+
+
+def _get_financials_akshare_indicator(code: str) -> Optional[dict]:
+    """额外降级路径: 使用 stock_financial_analysis_indicator 获取财务指标"""
+    try:
+        df = _call_with_retry(lambda: ak.stock_financial_analysis_indicator(symbol=code))
+        if df is None or df.empty:
             return None
-        return parse_numeric(rows.iloc[0].get(latest_col))
 
-    # 尝试多个可能的ROA指标名称
-    roa = (
-        pick_metric("总资产收益率") or
-        pick_metric("总资产报酬率") or
-        pick_metric("总资产净利率") or
-        pick_metric("资产收益率")
-    )
+        row = df.iloc[0]
 
-    return {
-        "code": code,
-        "reportDate": str(latest_col),
-        "eps": pick_metric("基本每股收益"),
-        "bvps": pick_metric("每股净资产"),
-        "roe": pick_metric("净资产收益率"),
-        "roa": roa,
-        "grossProfitMargin": pick_metric("销售毛利率"),
-        "netProfitMargin": pick_metric("销售净利率"),
-        "debtRatio": pick_metric("资产负债率"),
-        "currentRatio": pick_metric("流动比率"),
-        "source": "akshare_em"
-    }
+        def _pick(names: list[str]) -> Optional[float]:
+            for name in names:
+                val = parse_numeric(row.get(name))
+                if val is not None:
+                    return val
+            return None
+
+        return {
+            "code": code,
+            "reportDate": str(row.get("日期", "") or ""),
+            "roe": _pick(["净资产收益率", "加权净资产收益率", "摊薄净资产收益率"]),
+            "roa": _pick(["总资产收益率", "总资产报酬率", "总资产净利率"]),
+            "grossProfitMargin": _pick(["销售毛利率", "毛利率"]),
+            "netProfitMargin": _pick(["销售净利率", "净利率"]),
+            "debtRatio": _pick(["资产负债率"]),
+            "currentRatio": _pick(["流动比率"]),
+            "eps": _pick(["基本每股收益", "摊薄每股收益"]),
+            "bvps": _pick(["每股净资产"]),
+            "source": "akshare_indicator",
+        }
+    except Exception as e:
+        print(f"[Finance] AkShare indicator fallback failed: {e}", file=sys.stderr)
+        return None
 
 
 @cached(ttl=86400.0)  # 24h cache for stock info

@@ -2,11 +2,20 @@
 
 import { useEffect, useRef, useCallback, useState, useMemo, useSyncExternalStore } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { getBffOrigin } from './bff-base';
+import { getBffOrigin, getRuntimeWsUrl } from './bff-base';
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1']);
 
-const WS_URL = (() => {
+function resolveWsUrl() {
+  const runtimeConfigured = getRuntimeWsUrl();
+  if (runtimeConfigured) {
+    try {
+      return new URL(runtimeConfigured).origin;
+    } catch {
+      return getBffOrigin();
+    }
+  }
+
   const direct = process.env.NEXT_PUBLIC_WS_URL?.trim();
   if (!direct) return getBffOrigin();
   if (typeof window === 'undefined') return direct;
@@ -21,7 +30,7 @@ const WS_URL = (() => {
   } catch {
     return getBffOrigin();
   }
-})();
+}
 
 
 // ── 连接状态类型 ─────────────────────────────────────────────
@@ -46,7 +55,7 @@ function notifyStatus(status: WsConnectionStatus) {
 function getSocket(): Socket {
   if (!_socket) {
     const transports = process.env.NODE_ENV === 'production' ? ['websocket', 'polling'] : ['polling'];
-    _socket = io(`${WS_URL}/ws`, {
+    _socket = io(`${resolveWsUrl()}/ws`, {
       transports,
       withCredentials: true,
       reconnection: true,

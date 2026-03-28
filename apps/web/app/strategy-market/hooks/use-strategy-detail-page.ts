@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { apiKeys } from '@/lib/query-keys';
@@ -37,9 +37,15 @@ import type {
 export type StrategyDetailTab = 'overview' | 'tracking' | 'factory';
 type BadgeVariant = 'success' | 'danger' | 'warning' | 'info' | 'neutral';
 const FACTORY_SECTION_STALE_TIME = 60_000;
+type StrategySubscriptionRow = { strategy_id?: string; id?: string };
+type StrategySubscriptionsResponse = { subscriptions?: StrategySubscriptionRow[]; items?: StrategySubscriptionRow[]; count?: number };
 
 export function useStrategyDetailPage(id: string | null, userId: string | null) {
   const detailQ = useApiQuery<StrategyDetailResponse | StrategyCore>(id ? `/strategy-market/${id}` : null);
+  const mySubscriptionsQ = useApiQuery<StrategySubscriptionsResponse>(
+    userId ? '/strategy-market/my-subscriptions' : null,
+    { enabled: Boolean(userId), staleTime: FACTORY_SECTION_STALE_TIME },
+  );
   const subscribeApi = useApiMutation({ invalidates: [apiKeys.strategy()] });
   const reviewApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '评价已提交' });
   const rebuildProjectionApi = useApiMutation({ invalidates: [apiKeys.strategy()], successToast: '事件投影已重建' });
@@ -53,7 +59,16 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
   const [activeTab, setActiveTab] = useState<StrategyDetailTab>('overview');
-  const [activeFactorySection, setActiveFactorySection] = useState<FactoryReviewSection>('summary');
+  const strategyScopeKey = id ?? '';
+  const subscriptionScopeKey = `${id ?? ''}:${userId ?? ''}`;
+  const [activeFactorySectionState, setActiveFactorySectionState] = useState<{
+    key: string;
+    value: FactoryReviewSection;
+  }>({ key: strategyScopeKey, value: 'summary' });
+  const [subscriptionOverrideState, setSubscriptionOverrideState] = useState<{
+    key: string;
+    value: boolean | null;
+  }>({ key: subscriptionScopeKey, value: null });
   const [eventFilters, setEventFilters] = useState<EventFilters>({
     event_type: 'status_change',
     from_status: '',
@@ -65,10 +80,18 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   });
   const factoryMode = Boolean(id && activeTab === 'factory');
   const strategyIdParam = id ?? '';
-
-  useEffect(() => {
-    setActiveFactorySection('summary');
-  }, [id]);
+  const activeFactorySection = activeFactorySectionState.key === strategyScopeKey
+    ? activeFactorySectionState.value
+    : 'summary';
+  const setActiveFactorySection = useCallback((value: FactoryReviewSection) => {
+    setActiveFactorySectionState({ key: strategyScopeKey, value });
+  }, [strategyScopeKey]);
+  const subscriptionOverride = subscriptionOverrideState.key === subscriptionScopeKey
+    ? subscriptionOverrideState.value
+    : null;
+  const setSubscriptionOverride = useCallback((value: boolean | null) => {
+    setSubscriptionOverrideState({ key: subscriptionScopeKey, value });
+  }, [subscriptionScopeKey]);
 
   const factorySummaryMode = Boolean(factoryMode && activeFactorySection === 'summary');
   const factoryIncubationMode = Boolean(factoryMode && activeFactorySection === 'incubation');
@@ -84,7 +107,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     });
     if (!qs.has('limit')) qs.set('limit', '20');
     return `/strategy-market/${id}/events?${qs.toString()}`;
-  }, [eventFilters, factoryMode, id]);
+  }, [eventFilters, id]);
 
   const signalStatsQ = useApiQuery<SignalStatsResponse>(
     id && activeTab === 'tracking' ? `/strategy-market/${id}/signal-stats` : null,
@@ -235,6 +258,15 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
   const runtimeRiskSnapshots = riskSnapshotsQ.data?.items ?? [];
   const domainEvents = (domainEventsQ.data?.items?.length ? domainEventsQ.data.items : detailViewModel?.domain?.events ?? detail?.domain_events) ?? [];
   const taskRuns = (taskRunsQ.data?.items?.length ? taskRunsQ.data.items : detailViewModel?.domain?.task_runs ?? detail?.task_runs) ?? [];
+  const subscribedStrategyIds = useMemo(() => {
+    const rows = mySubscriptionsQ.data?.subscriptions ?? mySubscriptionsQ.data?.items ?? [];
+    return new Set(
+      rows
+        .map((item) => String(item.strategy_id ?? item.id ?? '').trim())
+        .filter(Boolean),
+    );
+  }, [mySubscriptionsQ.data]);
+  const isSubscribed = Boolean(id && (subscriptionOverride ?? subscribedStrategyIds.has(id)));
 
   const allMetrics = useMemo(() => {
     if (!metrics.length) return null;
@@ -267,7 +299,16 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       window.alert('请先登录后再订阅策略');
       return;
     }
+    if (!id) return;
+
+    if (isSubscribed) {
+      await subscribeApi.triggerAsync(`/strategy-market/${id}/subscribe`, { method: 'DELETE' }, {});
+      setSubscriptionOverride(false);
+      return;
+    }
+
     await subscribeApi.triggerAsync(`/strategy-market/${id}/subscribe`, { method: 'POST' }, {});
+    setSubscriptionOverride(true);
   }
 
   async function handleReview() {
@@ -385,6 +426,7 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
       setRating,
       comment,
       setComment,
+      isSubscribed,
       subscribePending: subscribeApi.isPending,
       reviewPending: reviewApi.isPending,
       handleSubscribe,

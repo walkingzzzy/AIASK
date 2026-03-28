@@ -7,7 +7,7 @@ import time
 from ...storage import get_db
 from ...utils import normalize_code
 from ...data_source import data_source
-from ..market import get_kline
+from ..market import get_kline, get_realtime_quote
 from ..manager_protocol import (
     fail_with_meta,
     normalize_manager_code,
@@ -185,41 +185,64 @@ def register_comprehensive_manager(mcp):
                 if not codes and code:
                     codes = [normalize_code(code)]
                 
-                # 如果未提供codes，使用默认样本
                 if not codes:
                     codes = ['600519', '000001', '600036', '601318', '000858']
                     logger.info(f"[ComprehensiveManager] 未提供codes，使用默认样本: {codes}")
                 
                 results = []
+                price_sources = set()
                 for c in codes[:10]:
                     c = normalize_code(c)
-                    # 优先数据库
-                    klines = await _safe_db_klines(db, c, 1)
-                    # 降级到数据源
-                    if not klines:
-                        logger.info(f"[ComprehensiveManager] DB无数据，从数据源获取: {c}")
-                        res = await get_kline(c, 'daily', 1)
-                        if res.get('success') and res.get('data'):
-                            klines = res['data']
-                    if klines:
-                        klines = sorted(klines, key=lambda x: x.get('date') or '')
-                        latest = klines[-1]
-                        change_pct = latest.get('change_pct') or 0
+                    price = None
+                    change_pct = 0.0
+                    volume = 0.0
+                    price_source = 'none'
+
+                    # 优先实时行情
+                    try:
+                        rt = get_realtime_quote(c)
+                        if rt.get('success') and rt.get('data'):
+                            rtd = rt['data']
+                            price = rtd.get('price')
+                            change_pct = float(rtd.get('changePercent') or rtd.get('change_pct') or 0)
+                            volume = float(rtd.get('volume') or 0)
+                            price_source = 'realtime'
+                    except Exception:
+                        pass
+
+                    # 降级到日K线
+                    if price is None or price == 0:
+                        klines = await _safe_db_klines(db, c, 1)
+                        if not klines:
+                            res = await get_kline(c, 'daily', 1)
+                            if res.get('success') and res.get('data'):
+                                klines = res['data']
+                        if klines:
+                            klines = sorted(klines, key=lambda x: x.get('date') or '')
+                            latest = klines[-1]
+                            price = float(latest.get('close') or 0)
+                            change_pct = float(latest.get('change_pct') or 0)
+                            volume = float(latest.get('volume') or 0)
+                            price_source = 'daily_kline'
+
+                    if price is not None and price > 0:
+                        price_sources.add(price_source)
                         results.append({
                             'code': c,
-                            'price': float(latest.get('close') or 0),
+                            'price': float(price),
                             'change_pct': float(change_pct),
-                            'volume': float(latest.get('volume') or 0),
+                            'volume': float(volume),
                             'status': 'active',
-                            'trend': 'up' if change_pct > 0 else ('down' if change_pct < 0 else 'flat')
+                            'trend': 'up' if change_pct > 0 else ('down' if change_pct < 0 else 'flat'),
+                            'price_source': price_source,
                         })
                 
                 return _ok({
                     'scanned': len(results),
                     'results': results,
-                    'data_source': 'database+fallback' if results else 'none',
+                    'data_source': '+'.join(sorted(price_sources)) if price_sources else 'none',
                     'message': f'成功扫描 {len(results)}/{len(codes[:10])} 只股票'
-                }, source_chain=['comprehensive_manager', 'db.get_klines', 'tools.market.get_kline'])
+                }, source_chain=['comprehensive_manager', 'get_realtime_quote', 'db.get_klines'])
             
             else:
                 return _fail(f'Unknown action: {action}. Supported: help, full_analysis, quick_scan')

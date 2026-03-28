@@ -272,10 +272,14 @@ def _build_probability_quality(
         return {
             "quality": "low",
             "support_samples": 0,
+            "sample_size": 0,
             "selected_threshold": int(selected_threshold),
             "empirical_hit_rate": None,
             "empirical_avg_forward_return": None,
             "calibration_gap": None,
+            "calibration_bucket": None,
+            "ece": None,
+            "brier_score": None,
             "method": "threshold_backtest_proxy",
         }
 
@@ -299,13 +303,40 @@ def _build_probability_quality(
     elif support >= 15 and calibration_gap is not None and abs(calibration_gap) <= 0.15:
         quality = "medium"
 
+    # 概率校准桶（Reliability Diagram 单桶）
+    calibration_bucket = None
+    if hit_rate is not None and support > 0:
+        calibration_bucket = {
+            "mean_predicted": round(float(buy_probability), 4),
+            "mean_actual": round(float(hit_rate), 4),
+            "count": support,
+            "calibration_error": abs(calibration_gap) if calibration_gap is not None else None,
+        }
+
+    # ECE 近似（单桶简化）
+    ece = None
+    if calibration_gap is not None and support > 0:
+        # 单桶 ECE = (count/total) * |gap|，此处 count=total，ECE = |gap|
+        ece = round(abs(calibration_gap), 6)
+
+    # Brier Score 近似（单样本：用 hit_rate 作为经验分布）
+    brier_score_val = None
+    if hit_rate is not None:
+        p = max(0.0, min(1.0, float(buy_probability)))
+        y = max(0.0, min(1.0, float(hit_rate)))
+        brier_score_val = round((p - y) ** 2, 6)
+
     return {
         "quality": quality,
         "support_samples": support,
+        "sample_size": support,
         "selected_threshold": int(selected.get("threshold", selected_threshold) or selected_threshold),
         "empirical_hit_rate": round(float(hit_rate), 4) if hit_rate is not None else None,
         "empirical_avg_forward_return": round(float(avg_return), 4) if avg_return is not None else None,
         "calibration_gap": calibration_gap,
+        "calibration_bucket": calibration_bucket,
+        "ece": ece,
+        "brier_score": brier_score_val,
         "method": "threshold_backtest_proxy",
     }
 
@@ -343,6 +374,11 @@ def _build_prediction_interval(
     median = ordered[len(ordered) // 2]
     hit_rate = sum(1 for item in ordered if item > 0) / len(ordered)
     mean_val = sum(ordered) / len(ordered)
+    # interval_width = upper - lower（预测区间宽度）
+    interval_width = round(float(upper) - float(lower), 4)
+    # observed_coverage = 实际在区间内的样本比例（用历史数据估计）
+    in_interval = sum(1 for item in ordered if lower <= item <= upper)
+    observed_coverage = round(in_interval / len(ordered), 4) if ordered else float(confidence)
     return {
         "horizon_days": int(horizon),
         "confidence_level": round(float(confidence), 4),
@@ -352,6 +388,8 @@ def _build_prediction_interval(
         "median_return": round(float(median), 4),
         "lower_return": round(float(lower), 4),
         "upper_return": round(float(upper), 4),
+        "interval_width": interval_width,
+        "observed_coverage": observed_coverage,
         "hit_rate": round(float(hit_rate), 4),
         "coverage_proxy": round(float(confidence), 4),
         "method": "historical_forward_return_quantiles",

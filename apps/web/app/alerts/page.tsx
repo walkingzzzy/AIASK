@@ -187,7 +187,7 @@ export default function AlertsPage() {
             {items.map((it, idx) => {
               const id = it.id;
               return (
-                <div key={`${id || 'row'}-${idx}`} className="glass rounded-lg p-3 flex items-center justify-between gap-3">
+                <div key={`${id || 'row'}-${idx}`} className="surface-card rounded-lg p-3 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="w-1 h-10 rounded-full bg-primary" />
                     <div className="min-w-0">

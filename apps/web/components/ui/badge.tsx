@@ -1,11 +1,11 @@
 type Variant = 'success' | 'danger' | 'warning' | 'info' | 'neutral';
 
 const VARIANT_CLASSES: Record<Variant, string> = {
-  success: 'bg-success/15 text-success',
-  danger: 'bg-danger/15 text-danger',
-  warning: 'bg-warning/15 text-warning',
-  info: 'bg-primary/15 text-primary',
-  neutral: 'bg-glass text-text-secondary',
+  success: 'bg-success/12 text-success border-success/20',
+  danger: 'bg-danger/12 text-danger border-danger/20',
+  warning: 'bg-warning/12 text-warning border-warning/20',
+  info: 'bg-primary/12 text-primary border-primary/20',
+  neutral: 'bg-surface-alt text-text-secondary border-border',
 };
 
 export function Badge({
@@ -18,7 +18,7 @@ export function Badge({
   className?: string;
 }) {
   return (
-    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium backdrop-blur-sm ${VARIANT_CLASSES[variant]} ${className}`}>
+    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${VARIANT_CLASSES[variant]} ${className}`}>
       {children}
     </span>
   );

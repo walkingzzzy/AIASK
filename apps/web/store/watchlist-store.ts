@@ -6,7 +6,6 @@ export type WatchItem = { code: string; name: string; addedAt: number };
 export type WatchGroup = { id: string; name: string; color: string; items: WatchItem[] };
 
 const LS_KEY = 'aiask_watchlist';
-const BFF_BASE = getBffBaseUrl();
 
 
 /* ── LocalStorage helpers ── */
@@ -69,11 +68,12 @@ async function fetchServer(path: string, options?: RequestInit): Promise<unknown
     headers: { 'Content-Type': 'application/json', ...options?.headers },
   };
   try {
-    let res = await fetch(`${BFF_BASE}/watchlist${path}`, requestInit);
+    const bffBase = getBffBaseUrl();
+    let res = await fetch(`${bffBase}/watchlist${path}`, requestInit);
     if (res.status === 401) {
       const refreshed = await refreshAuth();
       if (refreshed) {
-        res = await fetch(`${BFF_BASE}/watchlist${path}`, requestInit);
+        res = await fetch(`${bffBase}/watchlist${path}`, requestInit);
       } else {
         clearLoggedIn();
         notifySyncError('HTTP 401');

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { PageContainer, TabBar, SectionCard, StockCodeInput, KpiCard, KpiGrid, DataTable, Badge } from '@/components/ui';
 import { PieChart, COLORS } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -18,6 +18,29 @@ const TABS = [
 ] as const;
 
 type Tab = (typeof TABS)[number]['key'];
+
+function readOptionNumber(row: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = row[key];
+    if (value == null || value === '') continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function normalizeOptionRow(row: Record<string, unknown>) {
+  const type = String(row.type ?? row.option_type ?? row.side ?? '').toLowerCase();
+  return {
+    ...row,
+    strike: readOptionNumber(row, ['strike', 'strikePrice', 'exercise_price']),
+    lastPrice: readOptionNumber(row, ['lastPrice', 'last', 'price', 'close']),
+    volume: readOptionNumber(row, ['volume', 'trade_volume']),
+    openInterest: readOptionNumber(row, ['openInterest', 'open_interest', 'oi']),
+    impliedVol: readOptionNumber(row, ['impliedVol', 'impliedVolatility', 'implied_volatility', 'iv']),
+    type,
+  };
+}
 
 export default function DataPage() {
   const [tab, setTab] = useState<Tab>('option');
@@ -44,7 +67,12 @@ export default function DataPage() {
     if (p === queryPath) refetch(); else setQueryPath(p);
   }
 
-  const optionRows = extractArray(data, 'options', 'calls', 'puts', 'chain') as Array<Record<string, unknown>>;
+  const optionRows = useMemo(
+    () => extractArray(data, 'options', 'calls', 'puts', 'chain')
+      .map((row) => normalizeOptionRow(row))
+      .filter((row) => row.strike != null || row.lastPrice != null || row.type),
+    [data],
+  );
   const calendarRows = extractArray(data, 'dates', 'tradingDates') as Array<Record<string, unknown>>;
   const ipoRows = extractArray(data, 'ipos', 'list', 'data') as Array<Record<string, unknown>>;
   const cbObj = tab === 'cb' ? extractObject(data) as Record<string, unknown> | null : null;
@@ -169,10 +197,10 @@ export default function DataPage() {
       );
     }
     if (tab === 'calendar') {
-      return <EmptyState text="加载最近 30 个交易日，快速确认节假日与开市节奏。" action={<button type="button" onClick={submit} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">加载交易日历</button>} />;
+      return <EmptyState text="加载最近 30 个交易日，快速确认节假日与开市节奏。" hint="上方操作区会直接触发查询，返回后会展示最近交易日清单。" />;
     }
     if (tab === 'ipo') {
-      return <EmptyState text="这里适合看最近的新股与新债申购安排。" action={<button type="button" onClick={submit} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">查询 IPO 信息</button>} />;
+      return <EmptyState text="这里适合看最近的新股与新债申购安排。" hint="直接使用上方查询按钮即可加载最近申购窗口。" />;
     }
     if (tab === 'cb') {
       return <EmptyState text="请输入可转债代码后再查询。" hint="示例：123039" action={<button type="button" onClick={() => setCode('123039')} className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt">填入示例 123039</button>} />;

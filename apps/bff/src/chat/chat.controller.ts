@@ -1,9 +1,10 @@
 import { Body, Controller, Get, Post, Req, Res } from '@nestjs/common';
-import { IsArray, IsString, IsIn, ValidateNested, IsOptional, MaxLength, ArrayMaxSize } from 'class-validator';
+import { IsArray, IsString, IsIn, ValidateNested, IsOptional, MaxLength, ArrayMaxSize, IsObject } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Request, Response } from 'express';
 import { ChatService } from './chat.service';
 import { PreferencesService } from '../auth/preferences.service';
+import type { ChatMode } from './chat.protocol';
 
 class SaveLlmConfigDto {
   @IsString() apiKey!: string;
@@ -22,6 +23,40 @@ class ChatCompletionsDto {
   @ValidateNested({ each: true })
   @Type(() => ChatMessageDto)
   messages!: ChatMessageDto[];
+
+  @IsOptional()
+  @IsIn(['chat', 'copilot', 'assistant'])
+  mode?: ChatMode;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ChatPageContextDto)
+  pageContext?: ChatPageContextDto | null;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ClientActionDescriptorDto)
+  availableActions?: ClientActionDescriptorDto[];
+}
+
+class ChatPageContextDto {
+  @IsString() pageKey!: string;
+  @IsString() title!: string;
+  @IsString() summary!: string;
+  @IsOptional() @IsString() stockCode?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) tags?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) suggestions?: string[];
+  @IsOptional() @IsObject() raw?: Record<string, unknown>;
+}
+
+class ClientActionDescriptorDto {
+  @IsString() id!: string;
+  @IsString() label!: string;
+  @IsOptional() @IsString() description?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) keywords?: string[];
+  @IsOptional() @IsIn(['global', 'page']) scope?: 'global' | 'page';
+  @IsOptional() @IsString() pageKey?: string;
 }
 
 class ChatConversationMessageDto {
@@ -33,6 +68,7 @@ class ChatConversationDto {
   @IsString() id!: string;
   @IsOptional() @IsString() title?: string;
   @IsString() updatedAt!: string;
+  @IsOptional() @IsString() workspaceId?: string;
   @IsArray() @ValidateNested({ each: true }) @Type(() => ChatConversationMessageDto) messages!: ChatConversationMessageDto[];
 }
 
@@ -124,7 +160,7 @@ export class ChatController {
     res.on('close', markDisconnected);
 
     try {
-      for await (const event of this.chatService.streamChat(userId, body.messages)) {
+      for await (const event of this.chatService.streamChat(userId, body)) {
         if (clientDisconnected || res.writableEnded || res.destroyed) {
           break;
         }

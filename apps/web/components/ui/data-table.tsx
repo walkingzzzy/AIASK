@@ -170,13 +170,13 @@ export function DataTable({
             onChange={(e) => { setFilterText(e.target.value); setPage(0); }}
             placeholder="搜索筛选..."
             aria-label="表格搜索筛选"
-            className="w-full max-w-[280px] px-2 py-1 border border-border rounded text-sm"
+            className="w-full max-w-[320px] px-3 py-2 text-sm"
           />
         </div>
       ) : null}
       {onExport ? (
         <div className="flex justify-end mb-1">
-          <button onClick={onExport} className="text-xs text-primary cursor-pointer hover:underline">导出 CSV</button>
+          <button onClick={onExport} className="rounded-full border border-border px-3 py-1 text-xs text-text-secondary hover:text-primary">导出 CSV</button>
         </div>
       ) : null}
       {mobileCardRender ? (
@@ -184,7 +184,7 @@ export function DataTable({
           {pagedRows.map(({ row, rowIndex, key }) => (
             <div
               key={key}
-              className={`glass rounded-xl border border-glass-border p-3 ${onRowClick ? 'cursor-pointer' : ''}`}
+              className={`rounded-[18px] border border-border bg-surface p-4 shadow-sm ${onRowClick ? 'cursor-pointer' : ''}`}
               onClick={() => onRowClick?.(row)}
             >
               {mobileCardRender(row, rowIndex)}
@@ -192,15 +192,18 @@ export function DataTable({
           ))}
         </div>
       ) : null}
-      <div className={`${mobileCardRender ? 'hidden md:block ' : ''}overflow-auto glass rounded-xl`} style={{ maxHeight }}>
+      <div
+        className={`${mobileCardRender ? 'hidden md:block ' : ''}overflow-auto rounded-[20px] border border-border bg-surface shadow-sm`}
+        style={{ maxHeight }}
+      >
         <table className="w-full border-collapse text-[13px]">
-          <thead className="sticky top-0" style={{ background: 'var(--color-glass-strong)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)' }}>
+          <thead className="sticky top-0 bg-surface-alt">
             <tr>
               {cols.map((c, ci) => (
                 <th
                   key={c.key}
-                  className={`px-2 py-1.5 font-semibold border-b border-glass-border whitespace-nowrap ${c.sortable !== false ? 'cursor-pointer select-none hover:bg-white/10' : ''} text-${c.align ?? 'left'}${stickyFirstCol && ci === 0 ? ' sticky left-0 z-[1]' : ''}`}
-                  style={{ ...(c.width ? { width: c.width } : {}), ...(stickyFirstCol && ci === 0 ? { background: 'var(--color-glass-strong)' } : {}) }}
+                  className={`border-b border-border px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-text-muted whitespace-nowrap ${c.sortable !== false ? 'cursor-pointer select-none hover:bg-primary/5' : ''} text-${c.align ?? 'left'}${stickyFirstCol && ci === 0 ? ' sticky left-0 z-[1]' : ''}`}
+                  style={{ ...(c.width ? { width: c.width } : {}), ...(stickyFirstCol && ci === 0 ? { background: 'var(--color-surface-alt)' } : {}) }}
                   onClick={() => c.sortable !== false && toggleSort(c.key)}
                 >
                   {c.label ?? c.key}
@@ -211,10 +214,13 @@ export function DataTable({
           </thead>
           <tbody>
             {pagedRows.map(({ row, key }) => (
-              <tr key={key} className={`hover:bg-white/10 transition-colors${onRowClick ? ' cursor-pointer' : ''}`} onClick={() => onRowClick?.(row)}>
+              <tr key={key} className={`transition-colors hover:bg-surface-alt/70${onRowClick ? ' cursor-pointer' : ''}`} onClick={() => onRowClick?.(row)}>
                 {cols.map((c, ci) => (
-                  <td key={c.key} className={`px-2 py-1 border-b border-glass-border text-${c.align ?? 'left'}${stickyFirstCol && ci === 0 ? ' sticky left-0 z-[1]' : ''}`}
-                    style={stickyFirstCol && ci === 0 ? { background: 'var(--color-glass-strong)' } : undefined}>
+                  <td
+                    key={c.key}
+                    className={`border-b border-border-light px-3 py-2 text-${c.align ?? 'left'} align-top text-text-secondary${stickyFirstCol && ci === 0 ? ' sticky left-0 z-[1]' : ''}`}
+                    style={stickyFirstCol && ci === 0 ? { background: 'var(--color-surface)' } : undefined}
+                  >
                     {c.render ? c.render(row[c.key], row) : fmt(row[c.key])}
                   </td>
                 ))}
@@ -227,8 +233,8 @@ export function DataTable({
         <div className="flex items-center justify-between mt-2 text-xs text-text-secondary">
           <span>共 {filtered.length} 条，第 {page + 1}/{totalPages} 页</span>
           <div className="flex gap-1">
-            <button disabled={page === 0} onClick={() => setPage(page - 1)} className="px-2 py-0.5 border border-border rounded disabled:opacity-40 cursor-pointer">上一页</button>
-            <button disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)} className="px-2 py-0.5 border border-border rounded disabled:opacity-40 cursor-pointer">下一页</button>
+            <button disabled={page === 0} onClick={() => setPage(page - 1)} className="rounded-full border border-border px-3 py-1 disabled:opacity-40">上一页</button>
+            <button disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)} className="rounded-full border border-border px-3 py-1 disabled:opacity-40">下一页</button>
           </div>
         </div>
       ) : null}

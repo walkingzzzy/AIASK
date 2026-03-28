@@ -5,11 +5,11 @@ import { usePathname } from 'next/navigation';
 import { isPublicPathname } from '@/lib/public-routes';
 
 const MOBILE_NAV_ITEMS = [
-    { href: '/', icon: '🏠', label: '首页' },
-    { href: '/market', icon: '📊', label: '行情' },
-    { href: '/watchlist', icon: '⭐', label: '自选' },
-    { href: '/paper-trading', icon: '💹', label: '交易' },
-    { href: '/assistant', icon: '🤖', label: 'AI' },
+  { href: '/', icon: '总', label: '首页' },
+  { href: '/market', icon: '盘', label: '看盘' },
+  { href: '/watchlist', icon: '选', label: '自选' },
+  { href: '/paper-trading', icon: '交', label: '交易' },
+  { href: '/assistant', icon: 'AI', label: 'AI' },
 ];
 
 /**
@@ -22,27 +22,34 @@ export function MobileBottomNav() {
         return null;
     }
 
-    return (
-        <nav
-            className="fixed bottom-0 left-0 right-0 z-40 glass-strong border-t border-glass-border md:hidden safe-area-bottom"
-            style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
-        >
-            <div className="flex justify-around items-center h-14" style={{ minHeight: 'var(--mobile-bottom-nav-height)' }}>
-                {MOBILE_NAV_ITEMS.map((item) => {
-                    const active = pathname === item.href;
-                    return (
-                        <Link
-                            key={item.href}
-                            href={item.href}
-                            className={`flex flex-col items-center justify-center gap-0.5 w-16 h-full no-underline transition-colors ${active ? 'text-primary' : 'text-text-secondary'
-                                }`}
-                        >
-                            <span className="text-lg">{item.icon}</span>
-                            <span className="text-[10px] font-medium">{item.label}</span>
-                        </Link>
-                    );
-                })}
-            </div>
-        </nav>
-    );
+  return (
+    <nav
+      className="safe-area-bottom fixed bottom-0 left-0 right-0 z-40 border-t border-border bg-[color:color-mix(in_srgb,var(--color-surface)_96%,transparent)] md:hidden"
+      style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+    >
+      <div className="flex h-14 items-center justify-around px-2" style={{ minHeight: 'var(--mobile-bottom-nav-height)' }}>
+        {MOBILE_NAV_ITEMS.map((item) => {
+          const active = pathname === item.href;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`flex h-full w-16 flex-col items-center justify-center gap-1 no-underline transition-colors ${active ? 'text-primary' : 'text-text-secondary'
+                }`}
+            >
+              <span
+                className={`inline-flex h-8 w-8 items-center justify-center rounded-2xl border text-[11px] font-semibold tracking-[0.08em] ${active
+                  ? 'border-primary/20 bg-primary/10'
+                  : 'border-transparent bg-transparent'
+                  }`}
+              >
+                {item.icon}
+              </span>
+              <span className="text-[10px] font-medium">{item.label}</span>
+            </Link>
+          );
+        })}
+      </div>
+    </nav>
+  );
 }

@@ -1,14 +1,21 @@
 import { authedFetch, authedStreamFetch } from './api';
+import type { CopilotActionMeta, CopilotPageContext } from './copilot-types';
 
 export type ChatEvent =
   | { type: 'delta'; content: string }
   | { type: 'tool_call'; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; name: string; result: unknown }
+  | { type: 'action'; actionId: string; label: string; description?: string; reason?: string; payload?: Record<string, unknown>; autoExecute?: boolean }
   | { type: 'error'; message: string }
   | { type: 'done' };
 
 export type LlmConfig = { apiKey: string; baseUrl: string; model: string };
 export type ModelPreset = { provider: string; baseUrl: string; models: string[] };
+export type StreamChatOptions = {
+  mode?: 'chat' | 'copilot' | 'assistant';
+  pageContext?: CopilotPageContext | null;
+  availableActions?: CopilotActionMeta[];
+};
 
 export async function getLlmConfig(): Promise<LlmConfig | null> {
   const r = await authedFetch('/chat/config', { cache: 'no-store' });
@@ -35,13 +42,19 @@ export async function streamChat(
   messages: Array<{ role: string; content: string }>,
   onEvent: (event: ChatEvent) => void,
   signal?: AbortSignal,
+  options?: StreamChatOptions,
 ): Promise<void> {
   let resp: Response;
   try {
     resp = await authedStreamFetch('/chat/completions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({
+        messages,
+        mode: options?.mode,
+        pageContext: options?.pageContext,
+        availableActions: options?.availableActions,
+      }),
       signal,
     });
   } catch (error) {

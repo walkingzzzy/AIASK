@@ -1,19 +1,22 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { ReactNode, useEffect, useState } from 'react';
-import { useAuthStore, type User } from '@/store/auth-store';
-import { useStockContext } from '@/store/stock-context';
-import { hasLoggedInHint, probeAuthSession } from '@/lib/auth';
-import { useHydrated } from '@/hooks/use-hydrated';
-import { useTheme } from '@/hooks/use-theme';
-import { useWsStatus, type WsConnectionStatus } from '@/lib/ws';
+import { usePathname, useRouter } from 'next/navigation';
+import { ReactNode, useEffect, useMemo, useState } from 'react';
+import CopilotDock from '@/components/copilot-dock';
 import { NotificationBell } from '@/components/notification-bell';
 import { Onboarding } from '@/components/onboarding';
+import { useHydrated } from '@/hooks/use-hydrated';
+import { useTheme } from '@/hooks/use-theme';
+import { hasLoggedInHint, probeAuthSession } from '@/lib/auth';
+import { pageActionBus, type PageActionDefinition } from '@/lib/page-action-bus';
 import { isPublicPathname } from '@/lib/public-routes';
+import { useWsStatus, type WsConnectionStatus } from '@/lib/ws';
+import { useAuthStore, type User } from '@/store/auth-store';
+import { useCopilotStore } from '@/store/copilot-store';
+import { useStockContext } from '@/store/stock-context';
+import { resolveWorkspaceLayout, selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
-/* ── 分组导航定义 ── */
 type NavItem = { href: string; label: string };
 type NavGroup = { label: string; icon: string; items: NavItem[] };
 
@@ -27,69 +30,82 @@ const TOUR_ATTRS: Record<string, string> = {
 
 const NAV_GROUPS: NavGroup[] = [
   {
-    label: '行情',
-    icon: '📈',
+    label: '看盘',
+    icon: 'MK',
     items: [
       { href: '/', label: '首页' },
       { href: '/market', label: '行情看板' },
       { href: '/watchlist', label: '自选股' },
-      { href: '/stock', label: '个股详情' },
     ],
   },
   {
-    label: '分析',
-    icon: '🔍',
+    label: '研究',
+    icon: 'RS',
     items: [
+      { href: '/research', label: '研报公告' },
       { href: '/fundamental', label: '基本面' },
       { href: '/technical', label: '技术分析' },
-      { href: '/fund-flow', label: '资金流向' },
       { href: '/sentiment', label: '情绪分析' },
-      { href: '/research', label: '研报公告' },
-      { href: '/valuation', label: '估值分析' },
     ],
   },
   {
     label: '策略',
-    icon: '🧪',
+    icon: 'ST',
     items: [
       { href: '/strategy-market', label: '策略超市' },
       { href: '/backtest', label: '回测分析' },
-      { href: '/factor', label: '因子研究' },
       { href: '/factor-analysis', label: '因子分析' },
     ],
   },
   {
     label: '交易',
-    icon: '💹',
+    icon: 'TR',
     items: [
       { href: '/paper-trading', label: '模拟交易' },
       { href: '/portfolio', label: '组合管理' },
       { href: '/risk', label: '风控中心' },
-      { href: '/alerts', label: '告警管理' },
-      { href: '/notifications', label: '通知中心' },
     ],
   },
   {
-    label: '工具',
-    icon: '🛠',
+    label: 'AI',
+    icon: 'AI',
     items: [
       { href: '/assistant', label: '智能助手' },
       { href: '/chat', label: 'AI 对话' },
       { href: '/search', label: '智能搜索' },
-      { href: '/data', label: '数据中心' },
     ],
   },
 ];
 
-/** 需要携带股票代码的页面路径 */
+const UTILITY_LINKS: NavItem[] = [
+  { href: '/alerts', label: '告警管理' },
+  { href: '/notifications', label: '通知中心' },
+  { href: '/decision', label: '统一决策' },
+  { href: '/workspace-templates', label: '工作区模板' },
+];
+
+const FALLBACK_PAGE_LABELS: Record<string, string> = {
+  '/skills': '技能中心',
+  '/events': '事件中心',
+  '/execution': '执行工作台',
+  '/performance': '绩效分析',
+  '/screener': '条件选股',
+};
+
 const STOCK_AWARE_PATHS = new Set([
   '/stock', '/market', '/watchlist', '/fundamental', '/technical', '/fund-flow',
   '/sentiment', '/research', '/valuation', '/backtest', '/factor-analysis',
-  '/paper-trading', '/alerts', '/assistant',
-  '/search', '/data',
+  '/paper-trading', '/alerts', '/assistant', '/search', '/data', '/events',
+  '/execution', '/performance', '/decision',
 ]);
 
-function buildHref(basePath: string, stockCode: string): string {
+const WS_STATUS_MAP: Record<WsConnectionStatus, { color: string; label: string }> = {
+  connected: { color: '#22c55e', label: '已连接' },
+  connecting: { color: '#eab308', label: '重连中' },
+  disconnected: { color: '#ef4444', label: '断开' },
+};
+
+function buildHref(basePath: string, stockCode: string) {
   if (!stockCode || !STOCK_AWARE_PATHS.has(basePath)) return basePath;
   return `${basePath}?code=${encodeURIComponent(stockCode)}`;
 }
@@ -98,72 +114,28 @@ function getTourAttr(href: string) {
   return TOUR_ATTRS[href];
 }
 
-/* ── 判断某个分组是否包含当前路径 ── */
 function groupContainsPath(group: NavGroup, path: string) {
-  return group.items.some((item) =>
-    item.href === '/' ? path === '/' : path.startsWith(item.href),
-  );
+  return group.items.some((item) => (item.href === '/' ? path === '/' : path.startsWith(item.href)));
 }
 
-/* ── 可折叠导航分组 ── */
-function NavSection({
-  group,
-  pathname,
-  openKey,
-  onToggle,
-  onNavigate,
-  stockCode,
-}: {
-  group: NavGroup;
-  pathname: string;
-  openKey: string | null;
-  onToggle: (label: string) => void;
-  onNavigate: () => void;
-  stockCode: string;
-}) {
-  const isActive = groupContainsPath(group, pathname);
-  const isOpen = openKey === group.label || isActive;
-
-  return (
-    <div className="mb-0.5">
-      <button
-        onClick={() => onToggle(group.label)}
-        aria-expanded={isOpen}
-        aria-label={`${group.label}导航分组`}
-        className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold uppercase tracking-wider cursor-pointer rounded-md mx-1 transition-colors ${isActive
-          ? 'text-nav-active bg-nav-active-bg/30'
-          : 'text-text-secondary hover:text-nav-text hover:bg-white/5'
-          }`}
-      >
-        <span className="text-sm" aria-hidden="true">{group.icon}</span>
-        <span className="flex-1 text-left">{group.label}</span>
-        <span className={`text-[10px] transition-transform ${isOpen ? 'rotate-90' : ''}`} aria-hidden="true">▶</span>
-      </button>
-      {isOpen ? (
-        <div className="ml-2 mt-0.5">
-          {group.items.map((item) => {
-            const active = item.href === '/'
-              ? pathname === '/'
-              : pathname.startsWith(item.href);
-            return (
-              <Link
-                key={item.href}
-                href={buildHref(item.href, stockCode)}
-                data-tour={getTourAttr(item.href)}
-                onClick={onNavigate}
-                className={`block px-4 py-1.5 no-underline text-sm rounded-md mx-1 transition-all ${active
-                  ? 'text-nav-active bg-nav-active-bg/60 font-semibold'
-                  : 'text-nav-text font-normal hover:bg-white/10'
-                  }`}
-              >
-                {item.label}
-              </Link>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
+function findNavLabel(path: string) {
+  if (/^\/strategy-market\/[^/]+/.test(path)) {
+    return '策略详情';
+  }
+  for (const group of NAV_GROUPS) {
+    for (const item of group.items) {
+      if (item.href === '/' ? path === '/' : path.startsWith(item.href)) {
+        return item.label;
+      }
+    }
+  }
+  for (const item of UTILITY_LINKS) {
+    if (path.startsWith(item.href)) return item.label;
+  }
+  for (const [href, label] of Object.entries(FALLBACK_PAGE_LABELS)) {
+    if (path.startsWith(href)) return label;
+  }
+  return path === '/' ? '首页总览' : path;
 }
 
 function ThemeToggle() {
@@ -172,8 +144,9 @@ function ThemeToggle() {
   const label = theme === 'light' ? '☀' : theme === 'dark' ? '🌙' : '⚙';
   return (
     <button
+      type="button"
       onClick={() => setTheme(next)}
-      className="text-sm px-2 py-1 rounded border border-border cursor-pointer"
+      className="rounded-full border border-border bg-surface px-2.5 py-1 text-sm shadow-sm"
       title={`当前: ${theme}，点击切换`}
     >
       {label}
@@ -181,143 +154,508 @@ function ThemeToggle() {
   );
 }
 
-const WS_STATUS_MAP: Record<WsConnectionStatus, { color: string; label: string }> = {
-  connected: { color: '#22c55e', label: '已连接' },
-  connecting: { color: '#eab308', label: '重连中' },
-  disconnected: { color: '#ef4444', label: '断开' },
-};
-
 function WsIndicator() {
   const status = useWsStatus();
   const hydrated = useHydrated();
   const { color, label } = hydrated ? WS_STATUS_MAP[status] : WS_STATUS_MAP.connecting;
 
   return (
-    <span className="flex items-center gap-1 text-xs text-text-secondary" title={`WebSocket: ${label}`}>
+    <span className="flex items-center gap-1 rounded-full border border-border bg-surface px-2.5 py-1 text-xs text-text-secondary" title={`WebSocket: ${label}`}>
       <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, display: 'inline-block' }} />
       <span className="hidden sm:inline">{label}</span>
     </span>
   );
 }
 
+function NavSection({
+  group,
+  pathname,
+  stockCode,
+  onNavigate,
+}: {
+  group: NavGroup;
+  pathname: string;
+  stockCode: string;
+  onNavigate?: () => void;
+}) {
+  const isActive = groupContainsPath(group, pathname);
+
+  return (
+    <div className="mb-5">
+      <div className={`mb-2 flex items-center gap-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${isActive ? 'text-nav-active' : 'text-text-muted'}`}>
+        <span aria-hidden="true" className="inline-flex h-6 min-w-6 items-center justify-center rounded-full border border-border bg-surface-alt px-1.5 text-[10px] tracking-[0.08em]">
+          {group.icon}
+        </span>
+        <span>{group.label}</span>
+      </div>
+      <div className="grid gap-1">
+        {group.items.map((item) => {
+          const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
+          return (
+            <Link
+              key={item.href}
+              href={buildHref(item.href, stockCode)}
+              data-tour={getTourAttr(item.href)}
+              onClick={onNavigate}
+              className={`rounded-2xl px-3 py-2.5 text-sm no-underline transition ${active
+                ? 'bg-nav-active-bg text-nav-active shadow-sm'
+                : 'text-nav-text hover:bg-surface hover:text-text-primary'
+              }`}
+            >
+              {item.label}
+            </Link>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CompactNav({
+  pathname,
+  stockCode,
+  onNavigate,
+}: {
+  pathname: string;
+  stockCode: string;
+  onNavigate?: () => void;
+}) {
+  return (
+    <div className="grid gap-2 px-2">
+      {NAV_GROUPS.flatMap((group) =>
+        group.items.map((item) => {
+          const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
+          return (
+            <Link
+              key={item.href}
+              href={buildHref(item.href, stockCode)}
+              onClick={onNavigate}
+              title={item.label}
+              className={`flex h-11 items-center justify-center rounded-2xl no-underline text-xs transition ${
+                active ? 'bg-nav-active-bg text-nav-active shadow-sm' : 'text-nav-text hover:bg-surface'
+              }`}
+            >
+              <span className="font-medium tracking-[0.08em]">{item.label.slice(0, 2)}</span>
+            </Link>
+          );
+        }),
+      )}
+    </div>
+  );
+}
+
 export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { user, setUser, logout } = useAuthStore();
-  const storeCode = useStockContext((s) => s.code);
+  const storeCode = useStockContext((state) => state.code);
   const hydrated = useHydrated();
   const isAuthPage = isPublicPathname(pathname);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [openGroup, setOpenGroup] = useState<string | null>(null);
+
+  const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
+  const workspaces = useWorkbenchStore((state) => state.workspaces);
+  const createWorkspace = useWorkbenchStore((state) => state.createWorkspace);
+  const updateLayout = useWorkbenchStore((state) => state.updateLayout);
+  const lastSyncedAt = useWorkbenchStore((state) => state.lastSyncedAt);
+  const dockOpen = useCopilotStore((state) => state.dockOpen);
+  const setDockOpen = useCopilotStore((state) => state.setDockOpen);
+  const setGlobalActions = useCopilotStore((state) => state.setGlobalActions);
+
+  const activeWorkspace = useMemo(
+    () => selectActiveWorkspace({ activeWorkspaceId, workspaces }),
+    [activeWorkspaceId, workspaces],
+  );
+  const layout = useMemo(() => resolveWorkspaceLayout(activeWorkspace.layout), [activeWorkspace.layout]);
+  const currentStockCode = hydrated ? (storeCode || activeWorkspace.context.stockCode || '') : '';
+  const desktopDockVisible = layout.dockVisible || dockOpen;
 
   useEffect(() => {
     if (isAuthPage || user) return;
-    const hasLoginHint = hasLoggedInHint();
-    if (!hasLoginHint) return;
+    if (!hasLoggedInHint()) return;
     probeAuthSession<{ authenticated?: boolean; user?: User }>()
-      .then((d) => {
-        if (d?.authenticated && d.user) setUser(d.user);
+      .then((data) => {
+        if (data?.authenticated && data.user) setUser(data.user);
       })
-      .catch(() => { });
-  }, [isAuthPage, user, setUser]);
+      .catch(() => {});
+  }, [isAuthPage, setUser, user]);
 
-  // 仅在客户端挂载后使用 store 中的股票代码，避免 SSR/CSR hydration 不匹配
-  const currentStockCode = hydrated ? storeCode : '';
+  useEffect(() => {
+    if (dockOpen && !layout.dockVisible) {
+      updateLayout({ dockVisible: true });
+    }
+  }, [dockOpen, layout.dockVisible, updateLayout]);
 
-  if (isAuthPage) return <>{children}</>;
+  const globalActions = useMemo<PageActionDefinition[]>(() => [
+    {
+      id: 'global.open-home',
+      label: '打开首页',
+      description: '跳转到首页总览',
+      keywords: ['首页', '总览'],
+      scope: 'global',
+      run: () => {
+        router.push('/');
+        return { message: '已打开首页' };
+      },
+    },
+    {
+      id: 'global.open-watchlist',
+      label: '打开自选股',
+      description: '跳转到自选股页',
+      keywords: ['自选', 'watchlist'],
+      scope: 'global',
+      run: () => {
+        router.push('/watchlist');
+        return { message: '已打开自选股' };
+      },
+    },
+    {
+      id: 'global.open-search',
+      label: '打开智能搜索',
+      description: '跳转到智能搜索页',
+      keywords: ['搜索', 'search'],
+      scope: 'global',
+      run: () => {
+        router.push('/search');
+        return { message: '已打开智能搜索' };
+      },
+    },
+    {
+      id: 'global.open-workspace-templates',
+      label: '打开工作区模板',
+      description: '查看工作区模板与编排入口',
+      keywords: ['工作区', '模板'],
+      scope: 'global',
+      run: () => {
+        router.push('/workspace-templates');
+        return { message: '已打开工作区模板' };
+      },
+    },
+    {
+      id: 'global.new-workspace',
+      label: '新建工作区',
+      description: '创建一个新的工作区',
+      keywords: ['工作区', '新建'],
+      scope: 'global',
+      run: () => {
+        createWorkspace();
+        return { message: '已新建工作区' };
+      },
+    },
+    {
+      id: 'global.toggle-nav',
+      label: layout.navCollapsed ? '展开导航' : '收起导航',
+      description: '切换左侧导航栏显示状态',
+      keywords: ['导航', '折叠'],
+      scope: 'global',
+      run: () => {
+        updateLayout({ navCollapsed: !layout.navCollapsed });
+        return { message: layout.navCollapsed ? '已展开导航' : '已收起导航' };
+      },
+    },
+    {
+      id: 'global.open-copilot',
+      label: desktopDockVisible ? '聚焦 Copilot' : '打开 Copilot',
+      description: '打开右侧 Copilot 面板',
+      keywords: ['copilot', 'ai', '助手'],
+      scope: 'global',
+      run: () => {
+        updateLayout({ dockVisible: true });
+        setDockOpen(true);
+        return { message: '已打开 Copilot' };
+      },
+    },
+  ], [createWorkspace, desktopDockVisible, layout.navCollapsed, router, setDockOpen, updateLayout]);
 
-  const handleToggle = (label: string) => {
-    setOpenGroup((prev) => (prev === label ? null : label));
-  };
+  useEffect(() => {
+    setGlobalActions(globalActions.map(({ run: _run, ...meta }) => meta));
+    const unregisters = globalActions.map((action) => pageActionBus.register(action));
+    return () => {
+      unregisters.forEach((dispose) => dispose());
+      setGlobalActions([]);
+    };
+  }, [globalActions, setGlobalActions]);
 
-  const handleNavigate = () => setDrawerOpen(false);
+  if (isAuthPage) {
+    return <>{children}</>;
+  }
 
-  const navContent = (
-    <>
-      <div className="px-4 pb-3 font-bold text-base flex items-center justify-between">
-        <Link href="/" className="no-underline">
-          <span className="bg-gradient-to-r from-primary to-purple-500 bg-clip-text text-transparent font-bold">
+  const navRailWidth = layout.navCollapsed ? 84 : layout.navWidth;
+  const pageWidthClass = layout.pageWidth === 'focused' ? 'mx-auto max-w-[1180px]' : 'mx-auto max-w-[1720px]';
+  const desktopDockWidth = `clamp(300px, 24vw, ${layout.dockWidth}px)`;
+  const syncText = lastSyncedAt
+    ? `同步 ${new Date(lastSyncedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
+    : '本地工作区';
+  const activePageLabel = findNavLabel(pathname);
+
+  const desktopNav = (
+    <aside
+      className="hidden shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col"
+      style={{ width: navRailWidth }}
+    >
+      <div className="border-b border-sidebar-border px-4 py-4">
+        <div className="eyebrow mb-2">AIASK Workspace</div>
+        <div className="flex items-center justify-between gap-2">
+          <Link href="/" className="no-underline text-lg font-semibold text-text-primary">
             AIASK
-          </span>
-        </Link>
-        <button onClick={() => setDrawerOpen(false)} className="text-lg cursor-pointer md:hidden" aria-label="关闭导航菜单">✕</button>
+          </Link>
+          <button
+            type="button"
+            onClick={() => updateLayout({ navCollapsed: !layout.navCollapsed })}
+            className="rounded-full border border-border bg-surface px-2 py-1 text-xs shadow-sm"
+            aria-label={layout.navCollapsed ? '展开导航' : '收起导航'}
+          >
+            {layout.navCollapsed ? '»' : '«'}
+          </button>
+        </div>
+        {!layout.navCollapsed ? (
+          <p className="mb-0 mt-3 text-xs leading-5 text-text-secondary">
+            用工作流而不是功能目录完成看盘、研究、策略和交易任务。
+          </p>
+        ) : null}
       </div>
-      <div className="flex flex-col gap-0.5">
-        {NAV_GROUPS.map((group) => (
-          <NavSection
-            key={group.label}
-            group={group}
-            pathname={pathname}
-            openKey={openGroup}
-            onToggle={handleToggle}
-            onNavigate={handleNavigate}
-            stockCode={currentStockCode}
-          />
-        ))}
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+        {layout.navCollapsed ? (
+          <CompactNav pathname={pathname} stockCode={currentStockCode} />
+        ) : (
+          <>
+            {NAV_GROUPS.map((group) => (
+              <NavSection
+                key={group.label}
+                group={group}
+                pathname={pathname}
+                stockCode={currentStockCode}
+              />
+            ))}
+            <div className="mt-6 border-t border-sidebar-border pt-4">
+              <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">辅助入口</div>
+              <div className="grid gap-1">
+                {UTILITY_LINKS.map((item) => {
+                  const active = pathname.startsWith(item.href);
+                  return (
+                    <Link
+                      key={item.href}
+                      href={buildHref(item.href, currentStockCode)}
+                      className={`rounded-2xl px-3 py-2 text-sm no-underline transition ${active
+                        ? 'bg-nav-active-bg text-nav-active shadow-sm'
+                        : 'text-nav-text hover:bg-surface hover:text-text-primary'
+                      }`}
+                    >
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
       </div>
-      {/* 用户中心固定在底部 */}
-      <div className="mt-auto pt-3 border-t border-glass-border mx-2">
-        <Link
-          href="/settings"
-          data-tour="settings"
-          onClick={handleNavigate}
-          className={`block px-4 py-2 no-underline text-sm rounded-md mx-1 transition-all ${pathname.startsWith('/settings')
-            ? 'text-nav-active bg-nav-active-bg/60 font-semibold'
-            : 'text-nav-text font-normal hover:bg-white/10'
-            }`}
-        >
-          ⚙ 设置中心
-        </Link>
+      <div className="border-t border-sidebar-border px-4 py-4 text-xs text-text-secondary">
+        <div className="font-medium text-text-primary">{activeWorkspace.name}</div>
+        <div className="mt-1">{syncText}</div>
+        {!layout.navCollapsed ? (
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Link href="/settings" className="rounded-full border border-border bg-surface px-3 py-1 no-underline text-inherit">设置</Link>
+            <Link href="/skills" className="rounded-full border border-border bg-surface px-3 py-1 no-underline text-inherit">技能中心</Link>
+          </div>
+        ) : null}
       </div>
-    </>
+    </aside>
   );
 
-  return (
-    <div className="flex min-h-screen">
-      <Onboarding />
-      {drawerOpen ? (
-        <div className="fixed inset-0 z-50 flex md:hidden">
-          <div className="fixed inset-0 bg-black/40" onClick={() => setDrawerOpen(false)} />
-          <nav className="relative w-[220px] glass-strong py-4 overflow-y-auto z-10 border-r border-glass-border flex flex-col" aria-label="主导航菜单">
-            {navContent}
-          </nav>
+  const mobileDrawer = drawerOpen ? (
+    <div className="fixed inset-0 z-50 flex md:hidden">
+      <div className="absolute inset-0 bg-black/40" onClick={() => setDrawerOpen(false)} />
+      <nav className="relative z-10 flex w-[280px] flex-col border-r border-sidebar-border bg-sidebar shadow-xl">
+        {/* 头部 */}
+        <div className="flex items-center justify-between border-b border-sidebar-border px-4 py-4">
+          <Link href="/" onClick={() => setDrawerOpen(false)} className="no-underline text-base font-semibold text-text-primary">
+            AIASK
+          </Link>
+          <button type="button" onClick={() => setDrawerOpen(false)} className="rounded-full border border-border bg-surface px-3 py-1 text-sm">
+            关闭
+          </button>
         </div>
-      ) : null}
-      <nav className="hidden w-[200px] glass-strong py-4 shrink-0 overflow-y-auto border-r border-glass-border md:flex md:flex-col" aria-label="主导航菜单">
-        {navContent}
-      </nav>
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-12 glass flex items-center justify-between px-4 gap-3 shrink-0 sticky top-0 z-10" role="banner">
-          <div className="flex items-center gap-2">
-            <button onClick={() => setDrawerOpen(true)} className="text-lg cursor-pointer md:hidden" aria-label="打开导航菜单" aria-expanded={drawerOpen}>☰</button>
-          </div>
-          <div className="flex items-center gap-3">
-            <WsIndicator />
-            <NotificationBell />
-            <ThemeToggle />
-            {user ? (
-              <Link href="/settings" className="flex items-center gap-2 no-underline text-inherit">
-                {user.avatarUrl ? (
-                  <img src={user.avatarUrl} alt="用户头像" className="w-7 h-7 rounded-full object-cover border border-glass-border" />
-                ) : (
-                  <span className="w-7 h-7 rounded-full bg-primary text-white text-xs flex items-center justify-center font-semibold">
-                    {(user.nickname ?? user.username).slice(0, 1).toUpperCase()}
+
+        {/* 工作流切换 */}
+        <div className="px-4 pt-4 pb-2">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">切换工作流</div>
+          <div className="grid grid-cols-2 gap-2">
+            {NAV_GROUPS.map((group) => {
+              const isActive = groupContainsPath(group, pathname);
+              const firstItem = group.items[0];
+              return (
+                <Link
+                  key={group.label}
+                  href={buildHref(firstItem.href, currentStockCode)}
+                  onClick={() => setDrawerOpen(false)}
+                  className={`flex flex-col items-center justify-center gap-1.5 rounded-[18px] border p-3 no-underline transition ${
+                    isActive
+                      ? 'border-primary/20 bg-nav-active-bg text-nav-active'
+                      : 'border-border bg-surface text-text-secondary hover:border-border hover:bg-surface-alt hover:text-text-primary'
+                  }`}
+                >
+                  <span className={`flex h-8 w-8 items-center justify-center rounded-full border text-[11px] font-bold tracking-wider ${
+                    isActive ? 'border-primary/20 bg-primary/10 text-primary' : 'border-border bg-surface-alt'
+                  }`}>
+                    {group.icon}
                   </span>
-                )}
-                <span className="text-text-secondary text-sm">{user.nickname || user.username}</span>
-              </Link>
-            ) : null}
-            {user ? (
-              <button
-                onClick={() => { logout(); window.location.href = '/login'; }}
-                className="cursor-pointer text-sm"
-                aria-label="退出登录"
+                  <span className="text-xs font-medium">{group.label}</span>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 当前工作流的子页面 */}
+        {NAV_GROUPS.filter((g) => groupContainsPath(g, pathname)).map((group) => (
+          <div key={group.label} className="border-t border-sidebar-border px-4 py-3">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">{group.label} 页面</div>
+            <div className="grid gap-1">
+              {group.items.map((item) => {
+                const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={buildHref(item.href, currentStockCode)}
+                    onClick={() => setDrawerOpen(false)}
+                    className={`rounded-2xl px-3 py-2 text-sm no-underline transition ${
+                      active ? 'bg-nav-active-bg text-nav-active' : 'text-nav-text hover:bg-surface'
+                    }`}
+                  >
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+
+        {/* 更多入口 */}
+        <div className="border-t border-sidebar-border px-4 py-3">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">更多</div>
+          <div className="grid gap-1">
+            {UTILITY_LINKS.map((item) => (
+              <Link
+                key={item.href}
+                href={buildHref(item.href, currentStockCode)}
+                onClick={() => setDrawerOpen(false)}
+                className="rounded-2xl px-3 py-2 text-sm no-underline text-nav-text hover:bg-surface"
               >
-                退出
+                {item.label}
+              </Link>
+            ))}
+            <Link href="/settings" onClick={() => setDrawerOpen(false)} className="rounded-2xl px-3 py-2 text-sm no-underline text-nav-text hover:bg-surface">
+              设置中心
+            </Link>
+          </div>
+        </div>
+      </nav>
+    </div>
+  ) : null;
+
+  const mobileDock = dockOpen ? (
+    <div className="fixed inset-0 z-50 flex justify-end xl:hidden">
+      <div className="absolute inset-0 bg-black/40" onClick={() => setDockOpen(false)} />
+      <div className="relative z-10 h-full w-full max-w-[420px] border-l border-border bg-surface shadow-2xl">
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div>
+            <div className="text-sm font-medium text-text-primary">AI 工作台</div>
+            <div className="text-xs text-text-secondary">按需展开，不常驻占据主画布</div>
+          </div>
+          <button type="button" onClick={() => setDockOpen(false)} className="rounded-full border border-border px-3 py-1 text-xs">
+            关闭
+          </button>
+        </div>
+        <div className="h-[calc(100%-57px)]">
+          <CopilotDock />
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  return (
+    <div className="min-h-screen">
+      <Onboarding />
+      {mobileDrawer}
+      {mobileDock}
+      <div className="flex min-h-screen">
+        {desktopNav}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-border bg-[color-mix(in_srgb,var(--color-surface)_88%,transparent)] px-4 backdrop-blur-xl sm:px-6">
+            <div className="flex min-w-0 items-center gap-3">
+              <button type="button" onClick={() => setDrawerOpen(true)} className="rounded-full border border-border bg-surface px-3 py-1.5 text-lg shadow-sm md:hidden" aria-label="打开导航">
+                ☰
               </button>
+              <div className="min-w-0">
+                <div className="truncate text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">当前工作区</div>
+                <div className="truncate text-base font-semibold text-text-primary">{activePageLabel}</div>
+                <div className="truncate text-[11px] text-text-secondary">
+                  {activeWorkspace.name}
+                  {currentStockCode ? <span className="ml-2 font-mono text-primary">{currentStockCode}</span> : null}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (desktopDockVisible) {
+                    updateLayout({ dockVisible: false });
+                    setDockOpen(false);
+                    return;
+                  }
+                  updateLayout({ dockVisible: true });
+                  setDockOpen(true);
+                }}
+                className="hidden rounded-full border border-border bg-surface px-3 py-1.5 text-xs shadow-sm lg:inline-flex"
+              >
+                {desktopDockVisible ? '收起 AI' : '打开 AI'}
+              </button>
+              <WsIndicator />
+              <NotificationBell />
+              <ThemeToggle />
+              {user ? (
+                <Link href="/settings" className="flex items-center gap-2 no-underline text-inherit">
+                  {user.avatarUrl ? (
+                    <img src={user.avatarUrl} alt="用户头像" className="h-8 w-8 rounded-full border border-border object-cover" />
+                  ) : (
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-white shadow-sm">
+                      {(user.nickname ?? user.username).slice(0, 1).toUpperCase()}
+                    </span>
+                  )}
+                  <span className="hidden text-sm text-text-secondary xl:inline">{user.nickname || user.username}</span>
+                </Link>
+              ) : null}
+              {user ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    logout();
+                    window.location.href = '/login';
+                  }}
+                  className="rounded-full border border-border bg-surface px-3 py-1.5 text-xs shadow-sm"
+                >
+                  退出
+                </button>
+              ) : null}
+            </div>
+          </header>
+
+          <div className="flex min-h-0 flex-1">
+            <main className="mobile-safe-bottom min-w-0 flex-1 overflow-auto">
+              <div className={`${pageWidthClass} w-full px-4 py-5 sm:px-6 lg:px-8`}>{children}</div>
+            </main>
+            {desktopDockVisible ? (
+              <aside
+                className="hidden shrink-0 border-l border-border bg-[color-mix(in_srgb,var(--color-surface)_90%,transparent)] backdrop-blur-2xl xl:flex"
+                style={{ width: desktopDockWidth }}
+              >
+                <CopilotDock />
+              </aside>
             ) : null}
           </div>
-        </header>
-        <main className="mobile-safe-bottom flex-1 overflow-auto">{children}</main>
+        </div>
       </div>
     </div>
   );

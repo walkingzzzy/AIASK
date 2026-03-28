@@ -1,9 +1,12 @@
 'use client';
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
+import { AskAiButton } from '@/components/ask-ai-button';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, ConfirmDialog } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useHydrated } from '@/hooks/use-hydrated';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useWatchlistStore } from '@/store/watchlist-store';
 import { StockLink } from '@/components/stock-link';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
@@ -61,6 +64,14 @@ export default function WatchlistPage() {
         ? activeGroupId
         : fallbackActiveGroup?.id ?? null;
     const activeGroup = visibleGroups.find((g) => g.id === effectiveActiveGroupId) || fallbackActiveGroup;
+    const activeGroupName = activeGroup?.name ?? '';
+    const activeGroupIdValue = activeGroup?.id ?? '';
+    const activeGroupExportRows = (activeGroup?.items ?? []).map((item) => ({
+        代码: item.code,
+        名称: item.name,
+        分组: activeGroupName,
+        添加时间: new Date(item.addedAt).toLocaleString('zh-CN'),
+    }));
     const allCodes = hydrated ? visibleGroups.flatMap((g) => g.items.map((i) => i.code)) : [];
 
     // Batch quote for all watchlist stocks
@@ -123,11 +134,85 @@ export default function WatchlistPage() {
         setPendingDialog(null);
     };
 
+    usePageContext({
+        pageKey: 'watchlist',
+        title: '自选股',
+        summary: `当前共有 ${visibleGroups.length} 个分组，活跃分组 ${activeGroup?.name ?? '未选择'}，包含 ${activeGroup?.items.length ?? 0} 只股票。`,
+        stockCode: activeGroup?.items[0]?.code,
+        tags: [
+            `${visibleGroups.length} 个分组`,
+            `${activeGroup?.items.length ?? 0} 只股票`,
+            viewMode === 'grid' ? '网格视图' : '列表视图',
+        ],
+        suggestions: [
+            '总结当前分组里最值得关注的股票',
+            '按涨跌幅和成交额给自选股做优先级排序',
+            '把当前分组整理成盘中巡检清单',
+        ],
+        raw: {
+            groupCount: visibleGroups.length,
+            activeGroupId: activeGroup?.id ?? null,
+            activeGroupName: activeGroup?.name ?? null,
+            stockCount: activeGroup?.items.length ?? 0,
+            viewMode,
+        },
+    });
+
+    const pageActions = [
+        {
+            id: 'watchlist.refresh',
+            label: '刷新自选股',
+            description: '重新同步自选股分组并刷新行情',
+            keywords: ['刷新', '自选'],
+            scope: 'page' as const,
+            pageKey: 'watchlist',
+            run: async () => {
+                await syncFromServer();
+                await batchQ.refetch();
+                return { message: '已刷新自选股与行情' };
+            },
+        },
+        {
+            id: 'watchlist.toggle-view',
+            label: viewMode === 'grid' ? '切到列表视图' : '切到网格视图',
+            description: '切换自选股展示方式',
+            keywords: ['视图', '列表', '网格'],
+            scope: 'page' as const,
+            pageKey: 'watchlist',
+            run: () => {
+                setViewMode((prev) => (prev === 'grid' ? 'list' : 'grid'));
+                return { message: '已切换自选股视图' };
+            },
+        },
+        {
+            id: 'watchlist.export-active',
+            label: '导出当前分组',
+            description: '导出当前分组股票清单',
+            keywords: ['导出', '分组'],
+            scope: 'page' as const,
+            pageKey: 'watchlist',
+            run: () => {
+                if (!activeGroupExportRows.length) {
+                    return { message: '当前分组没有可导出的股票' };
+                }
+                exportCSV(activeGroupExportRows, `watchlist-${activeGroupIdValue}`);
+                return { message: `已导出分组 ${activeGroupName}` };
+            },
+        },
+    ];
+
+    usePageActions(pageActions);
+
     return (
         <PageContainer>
             <div className="flex items-center justify-between mb-4">
                 <h1 className="text-lg font-semibold">📋 我的自选</h1>
                 <div className="flex items-center gap-2">
+                    <AskAiButton
+                        stockCode={activeGroup?.items[0]?.code}
+                        summary={`分组 ${activeGroup?.name ?? '未选择'}，共 ${activeGroup?.items.length ?? 0} 只股票`}
+                        prompt="请基于当前自选股分组给我一个盘中观察顺序"
+                    />
                     {activeGroup?.items.length ? (
                         <button
                             onClick={() => exportCSV(activeGroup.items.map((item) => ({

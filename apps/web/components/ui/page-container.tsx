@@ -12,9 +12,9 @@ export function PageContainer({
   return (
     <main
       className={[
-        'mx-auto px-3 py-4 font-sans sm:px-4 sm:py-7',
-        narrow ? 'max-w-[980px]' : 'max-w-[1080px]',
-        mobileBottomSafe ? 'pb-[calc(56px+env(safe-area-inset-bottom)+16px)] md:pb-7' : '',
+        'mx-auto w-full px-0 py-0 font-sans sm:px-1 sm:py-1 lg:px-2',
+        narrow ? 'max-w-[1040px]' : 'max-w-[1480px]',
+        mobileBottomSafe ? 'pb-[calc(56px+env(safe-area-inset-bottom)+24px)] md:pb-6' : '',
         className,
       ].join(' ')}
     >

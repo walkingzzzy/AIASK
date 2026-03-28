@@ -1,9 +1,13 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
+import { AskAiButton } from '@/components/ask-ai-button';
 import { PageContainer, KpiCard, KpiGrid } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { extractObject, extractArray, fmtAmount } from '@/lib/data-utils';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { tradingInterval } from '@/lib/trading-hours';
@@ -86,6 +90,7 @@ function normalizeAlertsPayload(raw: unknown): { items?: AlertItem[] } {
 }
 
 export default function HomePage() {
+  const router = useRouter();
   const mounted = useHydrated();
   const [dateStr, setDateStr] = useState('');
   const [pageVisible, setPageVisible] = useState(() => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'));
@@ -264,15 +269,149 @@ export default function HomePage() {
     },
   ], [riskQ.isPending, riskQ.error, riskSummary, riskDegraded, riskEmpty, riskMs, riskSource, strategySubsQ.isPending, strategySubsQ.error, strategySubs, user, alertsQ.isPending, alertsQ.error, activeAlerts]);
 
+  usePageContext({
+    pageKey: 'home',
+    title: '首页总览',
+    summary: `当前监控 ${validIndices.length} 个指数，${marketAnomalies.length} 条市场异常，活跃告警 ${activeAlerts.length} 条，自选股 ${watchlistItems.length} 只。`,
+    stockCode: recentStocks[0]?.code || watchlistItems[0]?.code || undefined,
+    tags: [
+      `${validIndices.length} 个指数`,
+      `${activeAlerts.length} 条告警`,
+      `${watchlistItems.length} 只自选`,
+      fgLabel,
+    ],
+    suggestions: [
+      '总结首页最值得关注的市场信号',
+      '把今天的风险、策略和告警整理成行动清单',
+      '结合我的自选股给出盘中巡检建议',
+    ],
+    raw: {
+      indices: validIndices.length,
+      marketAnomalies: marketAnomalies.length,
+      alerts: activeAlerts.length,
+      watchlist: watchlistItems.length,
+      fearGreed: fgValue,
+      northFund: Number(latestNorth?.total ?? latestNorth?.netInflow ?? latestNorth?.net_inflow ?? 0),
+    },
+  });
+
+  const pageActions = useMemo(() => [
+    {
+      id: 'home.refresh',
+      label: '刷新首页总览',
+      description: '刷新指数、资金流、风险卡片与告警状态',
+      keywords: ['刷新', '首页'],
+      scope: 'page' as const,
+      pageKey: 'home',
+      run: async () => {
+        await Promise.allSettled([
+          idxQ.refetch(),
+          limitUpQ.refetch(),
+          northQ.refetch(),
+          fearGreedQ.refetch(),
+          alertsQ.refetch(),
+          riskQ.refetch(),
+          newsQ.refetch(),
+        ]);
+        return { message: '已刷新首页数据' };
+      },
+    },
+    {
+      id: 'home.open-risk',
+      label: '打开风险巡检',
+      description: '跳转到风险页面查看 VaR 与降级状态',
+      keywords: ['风险', '巡检'],
+      scope: 'page' as const,
+      pageKey: 'home',
+      run: () => {
+        router.push('/risk?lookbackDays=252&from=home');
+        return { message: '已打开风险巡检' };
+      },
+    },
+    {
+      id: 'home.open-watchlist',
+      label: '打开自选股',
+      description: '跳转到自选股查看重点标的',
+      keywords: ['自选', 'watchlist'],
+      scope: 'page' as const,
+      pageKey: 'home',
+      run: () => {
+        router.push('/watchlist');
+        return { message: '已打开自选股' };
+      },
+    },
+  ], [alertsQ, fearGreedQ, idxQ, limitUpQ, newsQ, northQ, riskQ, router]);
+
+  usePageActions(pageActions);
+
   /* ── Render ────────────────────────────────────────────────────── */
   return (
-    <PageContainer>
-      <MarketOverview
-        mounted={mounted} dateStr={dateStr} lastUpdated={lastUpdated} fgValue={fgValue} luStats={luStats}
-        latestNorth={latestNorth} fmtAmount={fmtAmount} dashboardVisibility={dashboardVisibility}
-        idxQ={idxQ} validIndices={validIndices} INDEX_CODES={INDEX_CODES}
-        sectorQ={sectorQ} sectors={sectors}
-      />
+    <PageContainer className="space-y-4">
+
+      {/* ── 首屏：市场脉搏 + 今日优先任务 ── */}
+      <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_300px]">
+        {/* 左：市场状态 + 指数 */}
+        <div className="rounded-lg border border-border bg-surface p-5 shadow-sm">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <div>
+              <div className="eyebrow">今日市场</div>
+              <h1 className="mt-1 text-xl font-bold">{dateStr}</h1>
+            </div>
+            <AskAiButton
+              stockCode={recentStocks[0]?.code || watchlistItems[0]?.code}
+              prompt="请总结今日市场状态、主要指数和需要关注的信号"
+              label="AI 市场总结"
+            />
+          </div>
+          <MarketOverview
+            mounted={mounted} dateStr={dateStr} lastUpdated={lastUpdated} fgValue={fgValue} luStats={luStats}
+            latestNorth={latestNorth} fmtAmount={fmtAmount} dashboardVisibility={dashboardVisibility}
+            idxQ={idxQ} validIndices={validIndices} INDEX_CODES={INDEX_CODES}
+            sectorQ={sectorQ} sectors={sectors}
+          />
+        </div>
+
+        {/* 右：今日优先事项 */}
+        <div className="flex flex-col gap-3">
+          {/* 快速状态 */}
+          <div className="grid grid-cols-3 gap-2">
+            <div className="rounded-[16px] border border-border bg-surface px-3 py-3 text-center">
+              <div className="metric-label">活跃告警</div>
+              <div className={`mt-1.5 text-xl font-bold ${activeAlerts.length > 0 ? 'text-error' : 'text-text-primary'}`}>{activeAlerts.length}</div>
+            </div>
+            <div className="rounded-[16px] border border-border bg-surface px-3 py-3 text-center">
+              <div className="metric-label">市场异动</div>
+              <div className="mt-1.5 text-xl font-bold text-text-primary">{marketAnomalies.length}</div>
+            </div>
+            <div className="rounded-[16px] border border-border bg-surface px-3 py-3 text-center">
+              <div className="metric-label">情绪</div>
+              <div className="mt-1.5 text-sm font-bold text-text-primary">{fgLabel}</div>
+            </div>
+          </div>
+
+          {/* 今日快捷任务 */}
+          <div className="rounded-card border border-border bg-surface p-4 shadow-sm flex-1">
+            <div className="eyebrow mb-3">今日任务</div>
+            <div className="grid gap-2">
+              {quickActions.slice(0, 4).map((action) => (
+                <a
+                  key={action.href}
+                  href={action.href}
+                  className="flex items-center gap-3 rounded-md border border-border px-3 py-2.5 no-underline transition hover:border-primary/20 hover:bg-surface-alt"
+                >
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary/8 text-base">{action.icon}</span>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-text-primary">{action.title}</div>
+                    <div className="text-xs text-text-muted truncate">{action.description}</div>
+                  </div>
+                </a>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── 第二屏：持仓/自选 + 风险/策略/告警 ── */}
       <PersonalDashboard
         nickname={nickname} paperSummary={paperSummary} paperAccount={paperAccount}
         paperPositions={paperPositions} activeAlerts={activeAlerts} watchlistItems={watchlistItems}
@@ -283,20 +422,31 @@ export default function HomePage() {
         mounted={mounted} dashboardVisibility={dashboardVisibility} dashboardCards={dashboardCards}
         marketAnomalies={marketAnomalies} anomalyDegraded={anomalyDegraded}
       />
-      <FundFlowSection
-        dashboardVisibility={dashboardVisibility} fmtAmount={fmtAmount} fearGreedQ={fearGreedQ}
-        fgValue={fgValue} fgLabel={fgLabel} sectorFlowQ={sectorFlowQ} sectorFlows={sectorFlows}
-        limitUpQ={limitUpQ} luStats={luStats} northQ={northQ} latestNorth={latestNorth} northFlows={northFlows}
-      />
-      <WatchlistRecent
-        mounted={mounted} watchlistItems={watchlistItems} recentStocks={recentStocks}
-        quoteMap={quoteMap} batchQIsFetching={batchQ.isFetching}
-      />
-      <SystemStatus
-        moduleStatuses={moduleStatuses} showDashboardSettings={showDashboardSettings}
-        setShowDashboardSettings={setShowDashboardSettings} dashboardVisibility={dashboardVisibility}
-        toggleDashboardModule={toggleDashboardModule} healthQ={healthQ} health={health} mcp={mcp}
-      />
+
+      {/* ── 第三屏（折叠区）：资金流、自选近期、系统状态 ── */}
+      <details className="group">
+        <summary className="flex cursor-pointer list-none items-center gap-2 rounded-[16px] border border-border bg-surface px-4 py-3 text-sm font-medium text-text-secondary hover:bg-surface-alt">
+          <span className="transition-transform group-open:rotate-90">▶</span>
+          <span>更多数据 · 资金流向、自选动态、系统状态</span>
+        </summary>
+        <div className="mt-3 space-y-4">
+          <FundFlowSection
+            dashboardVisibility={dashboardVisibility} fmtAmount={fmtAmount} fearGreedQ={fearGreedQ}
+            fgValue={fgValue} fgLabel={fgLabel} sectorFlowQ={sectorFlowQ} sectorFlows={sectorFlows}
+            limitUpQ={limitUpQ} luStats={luStats} northQ={northQ} latestNorth={latestNorth} northFlows={northFlows}
+          />
+          <WatchlistRecent
+            mounted={mounted} watchlistItems={watchlistItems} recentStocks={recentStocks}
+            quoteMap={quoteMap} batchQIsFetching={batchQ.isFetching}
+          />
+          <SystemStatus
+            moduleStatuses={moduleStatuses} showDashboardSettings={showDashboardSettings}
+            setShowDashboardSettings={setShowDashboardSettings} dashboardVisibility={dashboardVisibility}
+            toggleDashboardModule={toggleDashboardModule} healthQ={healthQ} health={health} mcp={mcp}
+          />
+        </div>
+      </details>
+
     </PageContainer>
   );
 }

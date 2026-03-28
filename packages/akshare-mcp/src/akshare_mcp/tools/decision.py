@@ -697,6 +697,22 @@ def register(mcp):
             if prediction_interval is not None:
                 payload['prediction_interval'] = prediction_interval
 
+            # 离线决策评估基线（benchmark_delta = hit_rate - historical_avg）
+            empirical_hit_rate = prediction_quality.get('empirical_hit_rate')
+            historical_positive_rate = 0.45  # A 股经验基准：约 45% 的情况下 5d 收益 > 0
+            benchmark_delta = (
+                round(float(empirical_hit_rate) - historical_positive_rate, 4)
+                if empirical_hit_rate is not None else None
+            )
+            payload['offline_decision_baseline'] = {
+                'recommendation': recommendation,
+                'hit_rate': empirical_hit_rate,
+                'benchmark_delta': benchmark_delta,
+                'historical_positive_rate': historical_positive_rate,
+                'method': 'decision_threshold_bucket_backtest_proxy',
+                'support_samples': prediction_quality.get('support_samples', 0),
+            }
+
             if analysis_context:
                 payload['analysis_context'] = analysis_context
 

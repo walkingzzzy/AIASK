@@ -1,13 +1,19 @@
 'use client';
 
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AskAiButton } from '@/components/ask-ai-button';
+import WorkspaceSplitLayout from '@/components/workspace-split-layout';
+import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge } from '@/components/ui';
 import { BarChart, PieChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { ErrorState, LoadingState, MetaLine } from '@/components/status-state';
 import { ensureRecord } from '@/lib/query-parse';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
 type ModuleKey = 'var' | 'stress' | 'exposure';
 type RiskSummary = {
@@ -38,12 +44,16 @@ function brief(v: unknown): string {
 }
 
 export default function RiskPage() {
+  const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
+  const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
+  const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
   const [portfolioId, setPortfolioId] = useState(() => searchParams.get('portfolioId') ?? '');
   const [lookbackDays, setLookbackDays] = useState(() => searchParams.get('lookbackDays') ?? '252');
   const [formError, setFormError] = useState<string | null>(null);
+  const applyingWorkspaceDefaultsRef = useRef(false);
   const task = searchParams.get('task');
   const from = searchParams.get('from');
   const submittedQs = useMemo(
@@ -163,9 +173,110 @@ export default function RiskPage() {
   const partialDegraded = !!summary?.degraded && moduleCards.some((c) => c.data != null) && moduleCards.some((c) => c.data == null);
   const showInitialEmptyState = !summary && !loading && !error;
 
-  return (
-    <PageContainer>
-      <h1>风险分析</h1>
+  usePageContext({
+    pageKey: 'risk',
+    title: '风险分析',
+    summary: `组合 ${portfolioId || String(summary?.portfolioId ?? '未选择')}，回看 ${lookbackDays} 天，降级状态 ${summary?.degraded ? '是' : '否'}。`,
+    tags: [
+      `${lookbackDays} 天`,
+      summary?.degraded ? '已降级' : '正常',
+      allEmpty ? '空结果' : '有结果',
+    ],
+    suggestions: [
+      '总结当前 VaR、压力测试和暴露结果的核心风险',
+      '指出当前风险页最需要补的上下文或数据',
+      '把风险分析整理成执行层面的行动建议',
+    ],
+    raw: {
+      portfolioId: portfolioId || summary?.portfolioId || null,
+      lookbackDays,
+      degraded: summary?.degraded ?? false,
+      allEmpty,
+      partialDegraded,
+    },
+  });
+
+  const pageActions = useMemo(() => [
+    {
+      id: 'risk.refresh',
+      label: '刷新风险分析',
+      description: '刷新风险汇总和 VaR 数据',
+      keywords: ['刷新', '风险'],
+      scope: 'page' as const,
+      pageKey: 'risk',
+      run: async () => {
+        await Promise.allSettled([summaryQ.refetch(), varQ.refetch()]);
+        return { message: '已刷新风险分析数据' };
+      },
+    },
+    {
+      id: 'risk.set-lookback',
+      label: '切到 252 天窗口',
+      description: '将风险观察窗口切到 252 天',
+      keywords: ['252天', '窗口'],
+      scope: 'page' as const,
+      pageKey: 'risk',
+      run: () => {
+        setLookbackDays('252');
+        return { message: '已切到 252 天窗口' };
+      },
+    },
+  ], [summaryQ, varQ]);
+
+  usePageActions(pageActions);
+
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    let appliedWorkspaceDefaults = false;
+    const deferredUpdates: Array<() => void> = [];
+    if (!portfolioId && workbenchContext.portfolioId) {
+      appliedWorkspaceDefaults = true;
+      deferredUpdates.push(() => setPortfolioId(workbenchContext.portfolioId!));
+    }
+    if (
+      typeof workbenchContext.lookbackDays === 'number' &&
+      !searchParams.get('lookbackDays') &&
+      lookbackDays !== String(workbenchContext.lookbackDays)
+    ) {
+      appliedWorkspaceDefaults = true;
+      deferredUpdates.push(() => setLookbackDays(String(workbenchContext.lookbackDays)));
+    }
+    applyingWorkspaceDefaultsRef.current = appliedWorkspaceDefaults;
+    if (!deferredUpdates.length) return;
+    const timer = window.setTimeout(() => {
+      deferredUpdates.forEach((apply) => apply());
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [lookbackDays, portfolioId, searchParams, workbenchContext.lookbackDays, workbenchContext.portfolioId, workbenchHydrated]);
+
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    if (applyingWorkspaceDefaultsRef.current) {
+      applyingWorkspaceDefaultsRef.current = false;
+      return;
+    }
+    updateWorkbenchContext({
+      portfolioId: portfolioId || null,
+      lookbackDays: Number.isFinite(Number(lookbackDays)) ? Number(lookbackDays) : null,
+    });
+  }, [lookbackDays, portfolioId, updateWorkbenchContext, workbenchHydrated]);
+
+  const currentView = useMemo<Record<string, unknown>>(
+    () => ({ portfolioId, lookbackDays }),
+    [lookbackDays, portfolioId],
+  );
+
+  const applyView = useCallback((snapshot: Record<string, unknown>) => {
+    if (typeof snapshot.portfolioId === 'string') {
+      setPortfolioId(snapshot.portfolioId);
+    }
+    if (typeof snapshot.lookbackDays === 'string' || typeof snapshot.lookbackDays === 'number') {
+      setLookbackDays(String(snapshot.lookbackDays));
+    }
+  }, []);
+
+  const primaryContent = (
+    <>
       {(from || task) ? (
         <MetaLine>
           上下文跳转
@@ -253,7 +364,6 @@ export default function RiskPage() {
         </SectionCard>
       )}
 
-      {/* Stress Test + Exposure side by side */}
       {(stressItems.length > 0 || exposureItems.length > 0) && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
           {stressItems.length > 0 && (
@@ -278,17 +388,48 @@ export default function RiskPage() {
           {summary ? (
             <details className="mt-2">
               <summary className="cursor-pointer text-text-secondary text-sm">查看风险汇总原始数据（summary）</summary>
-              <pre className="mt-1 text-xs glass p-3 rounded-xl overflow-auto max-h-[300px]">{JSON.stringify(summary, null, 2)}</pre>
+              <pre className="mt-1 text-xs surface-muted p-3 rounded-xl overflow-auto max-h-[300px] font-mono">{JSON.stringify(summary, null, 2)}</pre>
             </details>
           ) : null}
           {varQ.data != null ? (
             <details className="mt-2">
               <summary className="cursor-pointer text-text-secondary text-sm">查看 VaR 原始数据（varOnly）</summary>
-              <pre className="mt-1 text-xs glass p-3 rounded-xl overflow-auto max-h-[300px]">{JSON.stringify(varQ.data, null, 2)}</pre>
+              <pre className="mt-1 text-xs surface-muted p-3 rounded-xl overflow-auto max-h-[300px] font-mono">{JSON.stringify(varQ.data, null, 2)}</pre>
             </details>
           ) : null}
         </SectionCard>
       ) : null}
+    </>
+  );
+
+  const secondaryContent = (
+    <SectionCard className="p-4">
+      <div className="text-sm font-medium text-text-primary">风险工作区摘要</div>
+      <div className="mt-3 grid gap-3 text-xs text-text-secondary">
+        <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3">
+          <div>组合：{portfolioId || topCards.portfolioId}</div>
+          <div className="mt-1">窗口：{lookbackDays} 天</div>
+          <div className="mt-1">降级：{summary?.degraded ? '是' : '否'}</div>
+          <div className="mt-1">模块：{moduleCards.filter((item) => item.data != null).length} / {moduleCards.length}</div>
+        </div>
+        <div className="rounded-xl border border-dashed border-glass-border p-3">
+          保存视图后，可以把组合 ID、回看窗口和当前面板布局作为工作区快照复用。
+        </div>
+      </div>
+    </SectionCard>
+  );
+
+  return (
+    <PageContainer>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h1 className="mb-0">风险分析</h1>
+        <AskAiButton
+          summary={`组合 ${portfolioId || String(summary?.portfolioId ?? '未选择')}，回看 ${lookbackDays} 天`}
+          prompt="请总结当前风险分析结果，并指出最需要处理的风险点"
+        />
+      </div>
+      <WorkspaceToolbar pageKey="risk" currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      <WorkspaceSplitLayout pageKey="risk" primary={primaryContent} secondary={secondaryContent} />
     </PageContainer>
   );
 }

@@ -55,9 +55,9 @@ export class OptionsService {
     if (cached.value) await this.cacheService.del(cacheKey);
 
     try {
-      const payload = await this.mcp.callTool('options_manager', {
-        action: 'calculate_greeks',
-        params: { underlying: symbol },
+      const payload = await this.callManager('calculate_greeks', {
+        code: symbol,
+        option_type: 'call',
       });
       if (this.hasToolError(payload)) {
         throw new Error(this.extractToolError(payload) ?? 'calculate_greeks 返回异常');
@@ -79,9 +79,8 @@ export class OptionsService {
 
   async getVolatilitySmirk(symbol: string) {
     try {
-      const payload = await this.mcp.callTool('options_manager', {
-        action: 'volatility_smirk',
-        params: { underlying: symbol },
+      const payload = await this.callManager('volatility_smirk', {
+        underlying: symbol,
       });
       if (this.hasToolError(payload)) {
         throw new Error(this.extractToolError(payload) ?? 'volatility_smirk 返回异常');
@@ -98,6 +97,13 @@ export class OptionsService {
 
   private hasToolError(payload: unknown): boolean {
     return this.extractToolError(payload) != null;
+  }
+
+  private async callManager(action: string, payload: Record<string, unknown>) {
+    return this.mcp.callTool('options_manager', {
+      action,
+      kwargs: JSON.stringify(payload),
+    });
   }
 
   private extractToolError(payload: unknown): string | null {

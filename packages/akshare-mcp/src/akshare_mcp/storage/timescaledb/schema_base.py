@@ -147,6 +147,22 @@ class SchemaBase:
             },
         }
 
+    def _schema_init_lock_key(self) -> int:
+        return self._read_int_env('AKSHARE_MCP_SCHEMA_LOCK_KEY', 84217051, 1)
+
+    @asynccontextmanager
+    async def _schema_init_lock(self, conn):
+        """跨进程串行化 DDL，避免多 stdio worker 同时建表导致死锁。"""
+        lock_key = self._schema_init_lock_key()
+        await conn.fetchval("SELECT pg_advisory_lock($1)", lock_key)
+        try:
+            yield
+        finally:
+            try:
+                await conn.fetchval("SELECT pg_advisory_unlock($1)", lock_key)
+            except Exception as exc:
+                logger.warning("Failed to release schema init advisory lock %s: %s", lock_key, exc)
+
     async def initialize(self) -> None:
         """初始化数据库连接池"""
         current_loop = asyncio.get_running_loop()
@@ -195,10 +211,11 @@ class SchemaBase:
         from .schema_vector import init_vector_tables
 
         async with self.acquire() as conn:
-            await self._ensure_pgvector(conn)
-            await init_market_tables(conn)
-            await init_strategy_tables(conn, self._pgvector_enabled)
-            await init_vector_tables(conn, self._pgvector_enabled)
+            async with self._schema_init_lock(conn):
+                await self._ensure_pgvector(conn)
+                await init_market_tables(conn)
+                await init_strategy_tables(conn, self._pgvector_enabled)
+                await init_vector_tables(conn, self._pgvector_enabled)
 
         logger.info("All tables initialized successfully (aligned with Node version)")
 

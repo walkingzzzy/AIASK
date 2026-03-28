@@ -1,16 +1,22 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { AskAiButton } from '@/components/ask-ai-button';
+import WorkspaceSplitLayout from '@/components/workspace-split-layout';
+import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, TabBar, SectionCard, StockCodeInput, DataTable } from '@/components/ui';
 import { ProgressBar } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { LoadingState, ErrorState, EmptyState } from '@/components/status-state';
 import { extractArray, fmtNum } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
+import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
 const TABS = [
   { key: 'similar', label: '相似股票' },
@@ -24,6 +30,9 @@ const STOCK_EXAMPLES = ['600519', '000858', '300750'];
 const starterActionCls = 'rounded-full border border-glass-border px-3 py-1 text-xs text-text-secondary no-underline';
 
 export default function SearchPage() {
+  const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
+  const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
+  const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const [tab, setTab] = useState<Tab>('similar');
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
   const [query, setQuery] = useState('');
@@ -31,7 +40,7 @@ export default function SearchPage() {
   const [queryPath, setQueryPath] = useState<string | null>(null);
   const { data, isFetching: isPending, error, refetch } = useApiQuery<unknown>(queryPath);
 
-  function submit() {
+  const submit = useCallback(() => {
     let p: string;
     if (tab === 'semantic') {
       if (!query.trim()) { setQueryError('请输入搜索关键词'); return; }
@@ -43,7 +52,7 @@ export default function SearchPage() {
       p = `${endpoint}?code=${encodeURIComponent(trimmedCode)}`;
     }
     if (p === queryPath) refetch(); else setQueryPath(p);
-  }
+  }, [query, queryPath, refetch, tab, trimmedCode, validate]);
 
   const rows = useMemo(() => {
     const arr = extractArray(data, 'items', 'results', 'similar_stocks') as Record<string, unknown>[];
@@ -101,9 +110,117 @@ export default function SearchPage() {
     { label: '基本面', href: `/fundamental?code=${encodeURIComponent(primaryCode)}` },
   ] : [];
 
-  return (
-    <PageContainer>
-      <h1>智能搜索</h1>
+  usePageContext({
+    pageKey: 'search',
+    title: '智能搜索',
+    summary: rows.length
+      ? `当前为 ${tab} 模式，已返回 ${rows.length} 条结果，优先结果 ${primaryCode || '无'}。`
+      : `智能搜索页，当前模式 ${tab === 'semantic' ? '语义搜索' : tab === 'similar' ? '相似股票' : 'K 线搜索'}。`,
+    stockCode: tab === 'semantic' ? primaryCode || undefined : trimmedCode || primaryCode || undefined,
+    tags: [tab, `${rows.length} 条结果`],
+    suggestions: [
+      '总结当前搜索结果里最值得继续跟进的股票',
+      tab === 'semantic' ? '优化当前语义搜索词并给出更聚焦的版本' : '解释当前相似/形态搜索的命中逻辑',
+      '把结果整理成下一步研究路线',
+    ],
+    raw: {
+      tab,
+      query,
+      code: trimmedCode,
+      resultCount: rows.length,
+      primaryCode,
+    },
+  });
+
+  const pageActions = useMemo(() => [
+    {
+      id: 'search.run',
+      label: '执行当前搜索',
+      description: '按当前 tab 和输入重新执行搜索',
+      keywords: ['搜索', '执行'],
+      scope: 'page' as const,
+      pageKey: 'search',
+      run: () => {
+        submit();
+        return { message: '已触发搜索' };
+      },
+    },
+    {
+      id: 'search.try-semantic',
+      label: '填入语义搜索词',
+      description: '切换到语义搜索并填入查询词',
+      keywords: ['语义', 'query'],
+      scope: 'page' as const,
+      pageKey: 'search',
+      run: (payload?: Record<string, unknown>) => {
+        if (typeof payload?.query === 'string') {
+          setTab('semantic');
+          setQuery(payload.query);
+          setQueryError(null);
+          return { message: `已填入搜索词：${payload.query}` };
+        }
+        return { message: '缺少 query 参数' };
+      },
+    },
+    {
+      id: 'search.set-code',
+      label: '填入股票代码',
+      description: '切换到股票搜索并填入代码',
+      keywords: ['代码', 'stock'],
+      scope: 'page' as const,
+      pageKey: 'search',
+      run: (payload?: Record<string, unknown>) => {
+        if (typeof payload?.code === 'string') {
+          setTab('similar');
+          setCode(payload.code);
+          return { message: `已填入股票代码 ${payload.code}` };
+        }
+        return { message: '缺少 code 参数' };
+      },
+    },
+  ], [setCode, submit]);
+
+  usePageActions(pageActions);
+
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    if (!trimmedCode && workbenchContext.stockCode) {
+      setCode(workbenchContext.stockCode);
+    }
+  }, [setCode, trimmedCode, workbenchContext.stockCode, workbenchHydrated]);
+
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    updateWorkbenchContext({
+      stockCode: primaryCode || trimmedCode || null,
+    });
+  }, [primaryCode, trimmedCode, updateWorkbenchContext, workbenchHydrated]);
+
+  const currentView = useMemo<Record<string, unknown>>(
+    () => ({ tab, query, code: trimmedCode, queryPath }),
+    [query, queryPath, tab, trimmedCode],
+  );
+
+  const applyView = useCallback((snapshot: Record<string, unknown>) => {
+    if (snapshot.tab === 'semantic' || snapshot.tab === 'similar' || snapshot.tab === 'kline') {
+      setTab(snapshot.tab);
+    }
+    if (typeof snapshot.query === 'string') {
+      setQuery(snapshot.query);
+      setQueryError(null);
+    }
+    if (typeof snapshot.code === 'string') {
+      setCode(snapshot.code);
+    }
+    if (typeof snapshot.queryPath === 'string') {
+      setQueryPath(snapshot.queryPath);
+    } else if (snapshot.queryPath === null) {
+      setQueryPath(null);
+    }
+  }, [setCode]);
+
+  const searchPanel = (
+    <>
       <TabBar tabs={TABS} active={tab} onChange={(key) => { setTab(key); setQueryPath(null); }} />
       <SectionCard tabAttached>
         {tab === 'semantic' ? (
@@ -242,6 +359,52 @@ export default function SearchPage() {
           />
         ) : null}
       </SectionCard>
+    </>
+  );
+
+  const workspacePanel = (
+    <SectionCard className="p-4">
+      <div className="text-sm font-medium text-text-primary">搜索工作区摘要</div>
+      <div className="mt-3 grid gap-3">
+        <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3 text-xs text-text-secondary">
+          <div>模式：{tab}</div>
+          <div className="mt-1">结果数：{rows.length}</div>
+          <div className="mt-1">当前代码：{trimmedCode || '-'}</div>
+          <div className="mt-1">优先结果：{primaryCode || '-'}</div>
+        </div>
+        {primaryCode ? (
+          <div className="rounded-xl border border-glass-border bg-surface p-3">
+            <div className="text-xs font-medium text-text-primary">优先结果</div>
+            <div className="mt-2 text-sm text-text-primary">{primaryName || primaryCode}</div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {resultLinks.slice(0, 3).map((link) => (
+                <Link key={link.href} href={link.href} className={starterActionCls}>
+                  {link.label}
+                </Link>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-glass-border p-3 text-xs text-text-secondary">
+            运行一次搜索后，这里会展示优先结果与下一步跳转。
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  );
+
+  return (
+    <PageContainer>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h1 className="mb-0">智能搜索</h1>
+        <AskAiButton
+          stockCode={primaryCode || trimmedCode || undefined}
+          summary={rows.length ? `当前模式 ${tab}，已返回 ${rows.length} 条结果` : `当前模式 ${tab}`}
+          prompt="请帮我解释当前搜索结果，并给出下一步研究建议"
+        />
+      </div>
+      <WorkspaceToolbar pageKey="search" currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      <WorkspaceSplitLayout pageKey="search" primary={searchPanel} secondary={workspacePanel} />
     </PageContainer>
   );
 }

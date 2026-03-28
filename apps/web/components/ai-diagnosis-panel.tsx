@@ -161,7 +161,7 @@ export function AIDiagnosisPanel({ code }: { code: string }) {
             </div>
 
             {/* Summary */}
-            <div className="glass rounded-lg p-4">
+            <div className="surface-card rounded-lg p-4">
                 <h4 className="text-sm font-semibold mb-2">📋 综合分析</h4>
                 <p className="text-sm text-text-secondary leading-relaxed">{result.summary}</p>
             </div>
@@ -174,7 +174,7 @@ export function AIDiagnosisPanel({ code }: { code: string }) {
                         {result.factors.map((f, i) => {
                             const cfg = SIGNAL_COLORS[f.signal] || SIGNAL_COLORS.neutral;
                             return (
-                                <div key={i} className="glass rounded-lg p-3">
+                                <div key={i} className="surface-muted rounded-lg p-3">
                                     <div className="flex items-center gap-2 mb-1">
                                         <span>{cfg.icon}</span>
                                         <span className="text-sm font-medium">{f.name}</span>

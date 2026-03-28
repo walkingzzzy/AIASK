@@ -595,8 +595,11 @@ def register_decision_manager(mcp):
             else:
                 return _fail(f'Unknown action: {action}. Supported: help, analyze, recommend, portfolio_advice')
         except Exception as e:
+            msg = str(e).strip()
+            if not msg:
+                msg = f'{type(e).__name__}: decision_manager({action}) 内部异常'
             return fail_with_meta(
-                str(e),
+                msg,
                 tool_name='decision_manager',
                 action=action,
                 started_at=start_time,

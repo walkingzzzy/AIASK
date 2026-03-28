@@ -1,12 +1,17 @@
-import { BadGatewayException, HttpException, Injectable, UnprocessableEntityException } from '@nestjs/common';
+import { BadGatewayException, HttpException, Injectable, Logger, UnprocessableEntityException } from '@nestjs/common';
+import { CommonCacheService } from '../common/cache.service';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { PaperTradingIdempotencyService } from './paper-trading-idempotency.service';
 
 @Injectable()
 export class PaperTradingService {
+  private static readonly SUMMARY_TTL_SECONDS = 30;
+  private readonly logger = new Logger(PaperTradingService.name);
+
   constructor(
     private readonly mcp: McpGatewayService,
     private readonly idempotency: PaperTradingIdempotencyService,
+    private readonly cacheService: CommonCacheService,
   ) { }
 
   private async call(action: string, params: Record<string, unknown> = {}) {
@@ -32,7 +37,38 @@ export class PaperTradingService {
   }
 
   async summary(userId: string, accountId?: string) {
-    return this.call('summary', { user_id: userId, account_id: accountId });
+    const cacheKey = `paper-trading:summary:${userId}:${accountId?.trim() || 'default'}`;
+    const ttlSeconds = this.cacheService.resolveTtl('paper-trading.summary', PaperTradingService.SUMMARY_TTL_SECONDS);
+
+    try {
+      const data = await this.call('summary', { user_id: userId, account_id: accountId });
+      if (data && typeof data === 'object') {
+        await this.cacheService.set(cacheKey, data, ttlSeconds);
+      }
+      return data;
+    } catch (error) {
+      const cached = await this.cacheService.get<Record<string, unknown>>(cacheKey);
+      if (cached) {
+        this.logger.warn(`paper-trading.summary 降级到缓存: ${this.errorMessage(error)}`);
+        return {
+          ...cached,
+          degraded: true,
+          message: '模拟盘概览暂时降级到缓存结果，请稍后刷新重试',
+        };
+      }
+
+      this.logger.warn(`paper-trading.summary 降级到空结果: ${this.errorMessage(error)}`);
+      return {
+        account_id: accountId?.trim() || null,
+        account: null,
+        positions_count: 0,
+        pending_orders_count: 0,
+        total_value: 0,
+        total_return_pct: 0,
+        degraded: true,
+        message: '模拟盘概览暂时不可用，已返回空结果',
+      };
+    }
   }
 
   async positions(userId: string, accountId?: string) {
@@ -85,10 +121,20 @@ export class PaperTradingService {
   }
 
   async performance(userId: string, accountId?: string, days = 30) {
-    const [navPayload, orderPayload] = await Promise.all([
+    const [navResult, orderResult] = await Promise.allSettled([
       this.navHistory(userId, accountId, days > 0 ? Math.max(days, 30) : 365),
       this.orders(userId, accountId),
     ]);
+    const navPayload = navResult.status === 'fulfilled' ? navResult.value : null;
+    const orderPayload = orderResult.status === 'fulfilled' ? orderResult.value : null;
+    const warnings = [
+      navResult.status === 'rejected'
+        ? this.toPerformanceWarning('nav_history', navResult.reason)
+        : null,
+      orderResult.status === 'rejected'
+        ? this.toPerformanceWarning('orders', orderResult.reason)
+        : null,
+    ].filter((item): item is string => Boolean(item));
 
     const nav = Array.isArray((navPayload as Record<string, unknown>)?.nav)
       ? ((navPayload as Record<string, unknown>).nav as Record<string, unknown>[])
@@ -129,6 +175,7 @@ export class PaperTradingService {
     return {
       dailyReturns: series,
       metrics: { totalReturn, sharpe, maxDrawdown, winRate, avgHoldDays },
+      warnings,
     };
   }
 
@@ -202,6 +249,7 @@ export class PaperTradingService {
   async routeExecution(userId: string, params: {
     code: string; direction: string; quantity: number;
     price?: number; urgency?: string; order_type?: string; stop_price?: number; account_id?: string;
+    artifact_id?: string; output_artifact_id?: string;
   }, idempotencyKey?: string) {
     return this.idempotency.execute({
       userId,
@@ -219,6 +267,7 @@ export class PaperTradingService {
               duration_minutes: params.urgency === 'high' ? 5 : 15,
               slices: params.urgency === 'high' ? 1 : 3,
               reference_price: params.price ?? params.stop_price,
+              artifact_id: params.artifact_id ?? params.output_artifact_id,
             }),
           }));
           const order = await this.call('place_order', {
@@ -343,5 +392,14 @@ export class PaperTradingService {
 
     if (!holdDays.length) return 0;
     return holdDays.reduce((sum, item) => sum + item, 0) / holdDays.length;
+  }
+
+  private toPerformanceWarning(scope: 'nav_history' | 'orders', error: unknown) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return `performance.${scope} degraded: ${detail}`;
+  }
+
+  private errorMessage(error: unknown) {
+    return error instanceof Error ? error.message : String(error);
   }
 }

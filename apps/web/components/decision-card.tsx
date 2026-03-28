@@ -84,7 +84,7 @@ export default function DecisionCard({ data }: { data: CardData }) {
     : null;
 
   return (
-    <div className="glass rounded-xl p-4 mt-3">
+    <div className="surface-card rounded-xl p-4 mt-3">
       <div className="flex gap-2.5 items-center mb-2.5">
         <span className={`${a.bg} ${a.text} px-3 py-1 rounded-md font-bold`}>{a.label}</span>
         <span className="text-text-muted">置信度 {pct}</span>
@@ -93,8 +93,8 @@ export default function DecisionCard({ data }: { data: CardData }) {
       {data.summary ? <p className="my-2 font-medium">{data.summary}</p> : null}
       {rawAiAction || recommendedHorizon ? (
         <div className="my-2 flex flex-wrap gap-2 text-xs text-text-muted">
-          {rawAiAction ? <span className="rounded-md bg-glass px-2 py-1">原始 AI 判断: {rawAiAction}</span> : null}
-          {recommendedHorizon ? <span className="rounded-md bg-glass px-2 py-1">建议观察周期: {recommendedHorizon}</span> : null}
+          {rawAiAction ? <span className="rounded-md bg-surface-alt px-2 py-1">原始 AI 判断: {rawAiAction}</span> : null}
+          {recommendedHorizon ? <span className="rounded-md bg-surface-alt px-2 py-1">建议观察周期: {recommendedHorizon}</span> : null}
         </div>
       ) : null}
       {vetoReason ? (
@@ -103,7 +103,7 @@ export default function DecisionCard({ data }: { data: CardData }) {
         </div>
       ) : null}
       {positionSignal ? (
-        <div className="my-2 p-2.5 glass rounded-lg">
+        <div className="my-2 p-2.5 surface-muted rounded-lg">
           <b>仓位信号</b>
           <div className="mt-1 text-sm text-text-secondary">
             {positionSignal.label ?? '暂不出手'}
@@ -146,12 +146,12 @@ export default function DecisionCard({ data }: { data: CardData }) {
         </div>
       ) : null}
       {Array.isArray(executionPlan) && executionPlan.length > 0 ? (
-        <div className="my-2 p-2.5 glass rounded-lg">
+        <div className="my-2 p-2.5 surface-muted rounded-lg">
           <b>执行计划</b>
           <ul className="my-1 pl-5 text-sm text-text-secondary">{executionPlan.map((item, index) => <li key={index}>{item}</li>)}</ul>
         </div>
       ) : executionPlanDetails ? (
-        <div className="my-2 p-2.5 glass rounded-lg">
+        <div className="my-2 p-2.5 surface-muted rounded-lg">
           <b>执行计划</b>
           <div>仓位：{executionPlanDetails.position ?? '-'}</div>
           {executionPlanDetails.buy_zone ? <div>买入区间：{executionPlanDetails.buy_zone}</div> : null}
@@ -170,7 +170,7 @@ export default function DecisionCard({ data }: { data: CardData }) {
       {provenance?.length ? (
         <details className="my-2 text-xs text-text-muted">
           <summary className="cursor-pointer">数据溯源</summary>
-          <div className="mt-1 glass rounded-lg p-2 space-y-1">
+          <div className="mt-1 surface-muted rounded-lg p-2 space-y-1">
             {provenance.map((item, i) => {
               if (typeof item === 'string') return <div key={i}>{item}</div>;
               return <div key={i}>{item.source} / {item.dataset} — {item.timestamp}</div>;
@@ -182,7 +182,7 @@ export default function DecisionCard({ data }: { data: CardData }) {
       {fallbackReason?.length ? (
         <details className="my-2 text-xs text-text-muted">
           <summary className="cursor-pointer">降级记录</summary>
-          <div className="mt-1 glass rounded-lg p-2 space-y-1">
+          <div className="mt-1 surface-muted rounded-lg p-2 space-y-1">
             {fallbackReason.map((item, index) => <div key={`${item}-${index}`}>{item}</div>)}
           </div>
         </details>
@@ -193,7 +193,7 @@ export default function DecisionCard({ data }: { data: CardData }) {
       ) : null}
 
       {complianceNotice ? (
-        <div className="mt-2 text-xs glass rounded-lg p-2 text-text-muted">{complianceNotice}</div>
+        <div className="mt-2 text-xs surface-muted rounded-lg p-2 text-text-muted">{complianceNotice}</div>
       ) : null}
     </div>
   );

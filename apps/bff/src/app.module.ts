@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { HealthModule } from './health/health.module';
 import { McpGatewayModule } from './mcp-gateway/mcp-gateway.module';
@@ -40,11 +40,39 @@ import { WatchlistModule } from './watchlist/watchlist.module';
 import { NotificationModule } from './notification/notification.module';
 import { ExportModule } from './export/export.module';
 import { AdminModule } from './admin/admin.module';
+import { EventModule } from './event/event.module';
+import { ExecutionModule } from './execution/execution.module';
+import { PerformanceModule } from './performance/performance.module';
+import { WorkspaceModule } from './workspace/workspace.module';
+
+const DEFAULT_HTTP_THROTTLE_TTL_MS = 60_000;
+const DEFAULT_HTTP_THROTTLE_LIMIT = 600;
+
+function readPositiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    ThrottlerModule.forRoot([{ ttl: 60000, limit: 60 }]),
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const ttl = readPositiveInt(
+          config.get<string>('HTTP_THROTTLE_TTL_MS')
+            ?? config.get<string>('THROTTLE_TTL_MS'),
+          DEFAULT_HTTP_THROTTLE_TTL_MS,
+        );
+        const limit = readPositiveInt(
+          config.get<string>('HTTP_THROTTLE_LIMIT')
+            ?? config.get<string>('THROTTLE_LIMIT'),
+          DEFAULT_HTTP_THROTTLE_LIMIT,
+        );
+
+        return [{ ttl, limit }];
+      },
+    }),
     DbModule,
     CommonCacheModule,
     McpGatewayModule,
@@ -76,6 +104,10 @@ import { AdminModule } from './admin/admin.module';
     SkillsModule,
     WatchlistModule,
     NotificationModule,
+    EventModule,
+    ExecutionModule,
+    PerformanceModule,
+    WorkspaceModule,
     ExportModule,
     AdminModule,
   ],

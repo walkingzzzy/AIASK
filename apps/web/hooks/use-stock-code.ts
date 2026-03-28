@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
+import { useHydrated } from '@/hooks/use-hydrated';
 import { useStockContext } from '@/store/stock-context';
 
 const STOCK_CODE_RE = /^\d{6}$/;
@@ -18,11 +19,12 @@ export function useStockCode(initial = '', syncUrl = true) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
+  const hydrated = useHydrated();
   const { code: globalCode, setStock } = useStockContext();
   const urlCode = searchParams.get('code') || '';
   const normalizedUrlCode = STOCK_CODE_RE.test(urlCode) ? urlCode : '';
   const normalizedGlobalCode = STOCK_CODE_RE.test(globalCode) ? globalCode : '';
-  const resolvedCode = normalizedUrlCode || normalizedGlobalCode || null;
+  const resolvedCode = normalizedUrlCode || (hydrated ? normalizedGlobalCode : '') || null;
   const resolvedInitial = resolvedCode || initial;
 
   const [draftCode, setDraftCode] = useState<string | null>(null);

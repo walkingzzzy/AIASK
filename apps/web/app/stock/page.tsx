@@ -1,10 +1,13 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { AskAiButton } from '@/components/ask-ai-button';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, Badge, TabBar, SkeletonCard, Skeleton } from '@/components/ui';
 import { CandlestickChart, BarChart, GaugeChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { fmtNum, fmtPct, fmtAmount, extractArray, extractObject } from '@/lib/data-utils';
@@ -297,6 +300,87 @@ export default function StockPage() {
     };
   }, [actionCard, contextCode, fundamentalObj, fundFlowItems, klineQ.data?.kline, newsItems, orderBook, q, sentimentPayload.label, sentimentPayload.signal, sentimentPayload.summary, sentimentScore, valuationMetrics]);
 
+  usePageContext({
+    pageKey: 'stock',
+    title: q ? `${q.name} ${contextCode}` : '股票详情',
+    summary: q
+      ? `${contextCode} 当前价 ${fmtNum(Number(q.price), 2)}，涨跌幅 ${fmtPct(Number(q.changePercent ?? q.change_pct ?? 0))}，情绪分数 ${fmtNum(sentimentScore, 0)}。`
+      : `股票详情页，当前输入 ${code || '未填写'}。`,
+    stockCode: contextCode || undefined,
+    tags: [
+      submittedPeriod === 'daily' ? '日线' : submittedPeriod === 'weekly' ? '周线' : '月线',
+      infoTab,
+      q ? `PE ${fmtNum(Number(valuationMetrics.pe ?? valuationMetrics.pe_ttm ?? 0), 2)}` : '未加载估值',
+    ],
+    suggestions: [
+      contextCode ? `总结 ${contextCode} 当前最强和最弱的信号` : '选择一个股票后总结当前信号',
+      '结合技术面、资金流和估值给出短中期观察重点',
+      '把当前个股页整理成一个复盘清单',
+    ],
+    raw: {
+      code: contextCode || null,
+      period: submittedPeriod,
+      tab: infoTab,
+      hasQuote: Boolean(q),
+      sentimentScore,
+      fundFlowItems: fundFlowItems.length,
+      newsItems: newsItems.length,
+    },
+  });
+
+  const pageActions = useMemo(() => [
+    {
+      id: 'stock.refresh',
+      label: '刷新个股数据',
+      description: '刷新行情、K 线、情绪、资金流和新闻',
+      keywords: ['刷新', '行情', '个股'],
+      scope: 'page' as const,
+      pageKey: 'stock',
+      run: async () => {
+        await Promise.allSettled([
+          quoteQ.refetch(),
+          klineQ.refetch(),
+          sentimentQ.refetch(),
+          fundFlowQ.refetch(),
+          fundamentalQ.refetch(),
+          newsQ.refetch(),
+          orderBookQ.refetch(),
+          valuationQ.refetch(),
+        ]);
+        return { message: `已刷新 ${contextCode || code} 个股数据` };
+      },
+    },
+    {
+      id: 'stock.open-research',
+      label: '切到研报公告',
+      description: '打开当前股票的研报公告页',
+      keywords: ['研报', '公告'],
+      scope: 'page' as const,
+      pageKey: 'stock',
+      run: () => {
+        if (!contextCode) {
+          return { message: '当前还没有有效股票代码' };
+        }
+        window.location.href = `/research?code=${encodeURIComponent(contextCode)}`;
+        return { message: `已打开 ${contextCode} 研报公告` };
+      },
+    },
+    {
+      id: 'stock.switch-tab',
+      label: '切到 AI 诊断',
+      description: '在当前个股页切换到 AI 诊断标签',
+      keywords: ['AI', '诊断', 'tab'],
+      scope: 'page' as const,
+      pageKey: 'stock',
+      run: () => {
+        setInfoTab('ai');
+        return { message: '已切换到 AI 诊断标签' };
+      },
+    },
+  ], [code, contextCode, fundFlowQ, fundamentalQ, klineQ, newsQ, orderBookQ, quoteQ, sentimentQ, valuationQ]);
+
+  usePageActions(pageActions);
+
   // Update page title with stock name
   useEffect(() => {
     if (q) document.title = `${q.name}(${activeCode ?? ''}) | AIASK`;
@@ -311,6 +395,11 @@ export default function StockPage() {
       <div className="flex items-center gap-3 min-h-[40px] flex-wrap">
         <h1 className="mb-0">{q ? `${q.name} ${activeCode ?? ''}` : '股票详情'}</h1>
         {q && <WatchlistButton code={contextCode || code.trim()} name={String(q.name ?? '')} size="md" />}
+        <AskAiButton
+          stockCode={contextCode || undefined}
+          summary={q ? `${q.name}，现价 ${fmtNum(Number(q.price), 2)}，涨跌幅 ${fmtPct(Number(q.changePercent ?? q.change_pct ?? 0))}` : undefined}
+          prompt={contextCode ? `请分析 ${contextCode} 当前个股页信号` : '请分析当前个股页'}
+        />
         {quoteQ.isFetching && <span className="text-xs text-text-muted animate-pulse">刷新中...</span>}
         {quoteQ.dataUpdatedAt ? <span className="text-xs text-text-muted">自动刷新: {new Date(quoteQ.dataUpdatedAt).toLocaleTimeString('zh-CN')}</span> : null}
       </div>
@@ -493,14 +582,14 @@ export default function StockPage() {
                 const kdjColor = kdjSignal === '金叉' ? 'text-danger' : kdjSignal === '死叉' ? 'text-success' : '';
                 return (
                   <div className="space-y-3">
-                    <div className="glass rounded-lg p-3">
+                    <div className="surface-muted rounded-lg p-3">
                       <div className="flex justify-between items-center">
                         <span className="text-sm font-medium">RSI(14)</span>
                         <Badge variant={rsiColor.includes('danger') ? 'danger' : rsiColor.includes('success') ? 'success' : 'neutral'}>{rsiLabel}</Badge>
                       </div>
                       <div className={`text-2xl font-bold mt-1 ${rsiColor}`}>{fmtNum(rsiVal, 2)}</div>
                     </div>
-                    <div className="glass rounded-lg p-3">
+                    <div className="surface-muted rounded-lg p-3">
                       <div className="flex justify-between items-center">
                         <span className="text-sm font-medium">MACD</span>
                         <Badge variant={macdCrossColor.includes('danger') ? 'danger' : macdCrossColor.includes('success') ? 'success' : 'neutral'}>{macdCross}</Badge>
@@ -509,7 +598,7 @@ export default function StockPage() {
                         DIF: {fmtNum(macdLast, 2)} / DEA: {fmtNum(sigLast, 2)}
                       </div>
                     </div>
-                    <div className="glass rounded-lg p-3">
+                    <div className="surface-muted rounded-lg p-3">
                       <div className="flex justify-between items-center">
                         <span className="text-sm font-medium">KDJ</span>
                         <Badge variant={kdjColor.includes('danger') ? 'danger' : kdjColor.includes('success') ? 'success' : 'neutral'}>{kdjSignal}</Badge>

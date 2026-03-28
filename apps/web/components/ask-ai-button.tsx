@@ -1,0 +1,84 @@
+'use client';
+
+import { type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { useCopilotStore } from '@/store/copilot-store';
+
+export type AskAiButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick'> & {
+  /** 预填入 Copilot 的提问文本，不传则使用 "分析当前内容" */
+  prompt?: string;
+  /** 注入的股票代码（会拼入提示词） */
+  stockCode?: string;
+  /** 注入的数据摘要 */
+  summary?: string;
+  /** 额外 raw 上下文，JSON 序列化后附到提问末尾 */
+  raw?: Record<string, unknown>;
+  /** 按钮文案 */
+  label?: ReactNode;
+  /** 是否仅展示图标（图标模式下不显示文字） */
+  iconOnly?: boolean;
+};
+
+/**
+ * AskAiButton
+ *
+ * 可放置在任意表格行、卡片、详情区，点击后：
+ * 1. 打开右侧 CopilotDock
+ * 2. 将局部对象（prompt + 上下文）注入 Dock 输入框
+ *
+ * 用法示例：
+ * ```tsx
+ * <AskAiButton stockCode="600519" summary="茅台，估值偏高" prompt="请分析这只股票的买入时机" />
+ * ```
+ */
+export function AskAiButton({
+  prompt,
+  stockCode,
+  summary,
+  raw,
+  label,
+  iconOnly = false,
+  className = '',
+  ...rest
+}: AskAiButtonProps) {
+  const setDockOpen = useCopilotStore((s) => s.setDockOpen);
+  const setPendingInject = useCopilotStore((s) => s.setPendingInject);
+
+  const handleClick = () => {
+    const parts: string[] = [];
+    if (prompt) {
+      parts.push(prompt);
+    } else if (stockCode) {
+      parts.push(`请帮我分析 ${stockCode}`);
+    } else {
+      parts.push('请分析当前内容');
+    }
+    if (summary && !prompt) {
+      parts.push(`（${summary}）`);
+    }
+
+    setPendingInject({
+      prompt: parts.join(''),
+      contextPatch: {
+        ...(stockCode ? { stockCode } : {}),
+        ...(summary ? { summary } : {}),
+        ...(raw ? { raw } : {}),
+      },
+    });
+    setDockOpen(true);
+  };
+
+  const defaultLabel = iconOnly ? '✦' : (label ?? 'Ask AI');
+  const baseClass = [
+    'inline-flex items-center gap-1 cursor-pointer transition-colors',
+    'text-xs font-medium rounded-full border border-primary/40 px-2 py-0.5',
+    'text-primary hover:bg-primary/10 hover:border-primary/70',
+    className,
+  ].join(' ');
+
+  return (
+    <button type="button" className={baseClass} onClick={handleClick} {...rest}>
+      <span aria-hidden="true">✦</span>
+      {!iconOnly ? <span>{defaultLabel === '✦' ? 'Ask AI' : defaultLabel}</span> : null}
+    </button>
+  );
+}

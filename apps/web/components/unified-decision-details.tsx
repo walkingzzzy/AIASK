@@ -53,7 +53,7 @@ function SignalPill({ label, value, tone = 'neutral' }: { label: string; value: 
       ? 'bg-warning/15 text-warning'
       : tone === 'danger'
         ? 'bg-danger/15 text-danger'
-        : 'bg-glass text-text-secondary';
+        : 'bg-surface-alt text-text-secondary';
   return (
     <div className={`rounded-xl px-3 py-2 text-xs ${toneClass}`}>
       <div className="font-medium">{label}</div>

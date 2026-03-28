@@ -55,10 +55,13 @@ function CardGrid({ mounted, dashboardVisibility, dashboardCards }: Pick<Dashboa
   return (
     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
       {visible.map((card) => (
-        <SectionCard key={card.key} className="min-h-[220px] p-4">
+        <SectionCard key={card.key} className="min-h-[220px]">
           <div className="flex items-center justify-between mb-2">
-            <h3 className="mt-0 mb-0">{card.title}</h3>
-            <Link href={card.href} className="text-xs text-primary no-underline">查看详情</Link>
+            <div>
+              <div className="eyebrow">监控卡片</div>
+              <h2 className="mt-2">{card.title}</h2>
+            </div>
+            <Link href={card.href} className="text-sm text-primary no-underline">查看详情</Link>
           </div>
           {card.error ? <ErrorState text={card.error} />
             : card.pending ? <KpiGrid cols={3}><SkeletonCard /><SkeletonCard /><SkeletonCard /></KpiGrid>
@@ -77,17 +80,22 @@ function CardGrid({ mounted, dashboardVisibility, dashboardCards }: Pick<Dashboa
 
 function AnomalyFeed({ marketAnomalies, anomalyDegraded }: Pick<DashboardCardsProps, 'marketAnomalies' | 'anomalyDegraded'>) {
   return (
-    <SectionCard className="min-h-[160px] p-4 mb-4">
-      <h3 className="mt-0">市场异动榜</h3>
+    <SectionCard className="min-h-[160px]">
+      <div className="mb-4 flex items-end justify-between gap-3">
+        <div>
+          <div className="eyebrow">异动提醒</div>
+          <h2 className="mt-2">市场异动榜</h2>
+        </div>
+      </div>
       {anomalyDegraded && marketAnomalies.length > 0 && (
         <div className="text-xs text-warning mb-2">部分数据源不可用，异动信息可能不完整</div>
       )}
       {marketAnomalies.length > 0 ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {marketAnomalies.map((item) => (
-            <Link key={`${item.title}-${item.href}`} href={item.href} className="glass rounded-lg px-3 py-2 no-underline text-inherit flex items-center justify-between">
+            <Link key={`${item.title}-${item.href}`} href={item.href} className="flex items-center justify-between rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3 no-underline text-inherit shadow-sm">
               <div>
-                <div className="text-sm font-medium">{item.title}</div>
+                <div className="text-sm font-medium text-text-primary">{item.title}</div>
                 <div className={`text-xs ${item.tone === 'danger' ? 'text-danger' : item.tone === 'success' ? 'text-success' : item.tone === 'warning' ? 'text-warning' : 'text-primary'}`}>{item.value}</div>
               </div>
               <span className="text-xs text-text-secondary">查看</span>

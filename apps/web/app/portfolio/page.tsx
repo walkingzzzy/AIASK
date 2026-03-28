@@ -1,16 +1,22 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AskAiButton } from '@/components/ask-ai-button';
+import WorkspaceSplitLayout from '@/components/workspace-split-layout';
+import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, StockCodeInput } from '@/components/ui';
 import { PieChart, BarChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { apiKeys } from '@/lib/query-keys';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
+import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
 type OptData = { optimization?: { expectedReturn?: number; expectedRisk?: number; sharpe?: number; weights?: Record<string, number> | Array<{ code: string; weight: number }> } };
 type RiskData = { riskMetrics?: { var95?: number; var99?: number; cvar?: number; beta?: number; volatility?: number; riskContribution?: Record<string, number> } };
@@ -21,6 +27,11 @@ type PortfolioDetailRecord = Record<string, unknown> & {
 };
 
 export default function PortfolioPage() {
+  const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
+  const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
+  const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
+  const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
+  const lastWorkspaceIdRef = useRef<string | null>(null);
   const [portfolioId, setPortfolioId] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -55,18 +66,18 @@ export default function PortfolioPage() {
   const loading = listQ.isFetching || detailQ.isFetching || optimizeApi.isPending || riskApi.isPending || stressApi.isPending || createApi.isPending || addHoldingApi.isPending;
   const error = formError || listQ.error || detailQ.error || optimizeApi.error || riskApi.error || stressApi.error || createApi.error || addHoldingApi.error;
 
-  function optimize() {
+  const optimize = useCallback(() => {
     if (!portfolioId.trim()) return setFormError('请输入 portfolioId');
     optimizeApi.trigger('/portfolio/optimize', { method: 'POST' }, { portfolioId: portfolioId.trim() });
-  }
-  function analyzeRisk() {
+  }, [optimizeApi, portfolioId]);
+  const analyzeRisk = useCallback(() => {
     if (!portfolioId.trim()) return setFormError('请输入 portfolioId');
     riskApi.trigger('/portfolio/risk-analysis', { method: 'POST' }, { portfolioId: portfolioId.trim() });
-  }
-  function runStress() {
+  }, [portfolioId, riskApi]);
+  const runStress = useCallback(() => {
     if (!portfolioId.trim()) return setFormError('请输入 portfolioId');
     stressApi.trigger('/portfolio/stress-test', { method: 'POST' }, { portfolioId: portfolioId.trim() });
-  }
+  }, [portfolioId, stressApi]);
   async function handleCreate() {
     if (!newName.trim()) return setFormError('请输入组合名称');
     try {
@@ -127,30 +138,198 @@ export default function PortfolioPage() {
     () => portfolioList.find((item) => String(item.id ?? '').trim() === activePortfolioId) ?? null,
     [portfolioList, activePortfolioId],
   );
+  const portfolioDisplayName = selectedPortfolio ? String(selectedPortfolio.name ?? activePortfolioId) : '尚未选择组合';
+  const portfolioNextStep = activePortfolioId ? '继续查看详情、加仓或执行分析' : '先创建新组合或在列表中选择组合';
 
-  return (
-    <PageContainer>
-      <h1>投资组合</h1>
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    const workspaceChanged = lastWorkspaceIdRef.current !== activeWorkspaceId;
+    lastWorkspaceIdRef.current = activeWorkspaceId;
+    if (!workspaceChanged) return;
+    const timer = window.setTimeout(() => {
+      setPortfolioId(workbenchContext.portfolioId ?? '');
+      setHoldCode(workbenchContext.stockCode ?? '');
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeWorkspaceId, setHoldCode, workbenchContext.portfolioId, workbenchContext.stockCode, workbenchHydrated]);
+
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    updateWorkbenchContext({
+      portfolioId: activePortfolioId || null,
+      stockCode: holdTrimmed || null,
+      mode: activePortfolioId ? 'portfolio' : null,
+    });
+  }, [activePortfolioId, holdTrimmed, updateWorkbenchContext, workbenchHydrated]);
+
+  usePageContext({
+    pageKey: 'portfolio',
+    title: '组合管理',
+    summary: `当前选中组合 ${selectedPortfolio ? String(selectedPortfolio.name ?? activePortfolioId) : '未选择'}，组合总数 ${portfolioList.length}，持仓 ${detailHoldings.length} 条。`,
+    stockCode: holdTrimmed || undefined,
+    tags: [
+      `${portfolioList.length} 个组合`,
+      `${detailHoldings.length} 条持仓`,
+      activePortfolioId ? `组合 ${activePortfolioId}` : '未选择组合',
+    ],
+    suggestions: [
+      activePortfolioId ? `评估组合 ${activePortfolioId} 当前配置和风险` : '先选择一个组合，再评估配置和风险',
+      '总结当前组合列表里最值得继续跟进的标的',
+      '给出组合优化、风控和压力测试的下一步顺序',
+    ],
+    raw: {
+      portfolioId: activePortfolioId || null,
+      portfolioCount: portfolioList.length,
+      holdingCount: detailHoldings.length,
+      strategyCount: detailStrategies.length,
+    },
+  });
+
+  const pageActions = useMemo(() => [
+    {
+      id: 'portfolio.refresh',
+      label: '刷新组合',
+      description: '刷新组合列表与当前组合详情',
+      keywords: ['刷新', '组合'],
+      scope: 'page' as const,
+      pageKey: 'portfolio',
+      run: async () => {
+        await Promise.allSettled([listQ.refetch(), detailQ.refetch()]);
+        return { message: '已刷新组合数据' };
+      },
+    },
+    {
+      id: 'portfolio.optimize',
+      label: '执行组合优化',
+      description: '对当前组合执行优化配置',
+      keywords: ['优化', '组合'],
+      scope: 'page' as const,
+      pageKey: 'portfolio',
+      run: () => {
+        optimize();
+        return { message: '已触发组合优化' };
+      },
+    },
+    {
+      id: 'portfolio.risk',
+      label: '执行风险分析',
+      description: '对当前组合执行风险分析',
+      keywords: ['风险', '分析'],
+      scope: 'page' as const,
+      pageKey: 'portfolio',
+      run: () => {
+        analyzeRisk();
+        return { message: '已触发风险分析' };
+      },
+    },
+    {
+      id: 'portfolio.stress',
+      label: '执行压力测试',
+      description: '对当前组合执行压力测试',
+      keywords: ['压力测试', 'stress'],
+      scope: 'page' as const,
+      pageKey: 'portfolio',
+      run: () => {
+        runStress();
+        return { message: '已触发压力测试' };
+      },
+    },
+  ], [analyzeRisk, detailQ, listQ, optimize, runStress]);
+
+  usePageActions(pageActions);
+
+  const currentView = useMemo<Record<string, unknown>>(
+    () => ({
+      portfolioId,
+      holdCode,
+      holdShares,
+      holdCost,
+    }),
+    [holdCode, holdCost, holdShares, portfolioId],
+  );
+
+  const applyView = useCallback((snapshot: Record<string, unknown>) => {
+    if (typeof snapshot.portfolioId === 'string') {
+      setPortfolioId(snapshot.portfolioId);
+    }
+    if (typeof snapshot.holdCode === 'string') {
+      setHoldCode(snapshot.holdCode);
+    }
+    if (typeof snapshot.holdShares === 'string' || typeof snapshot.holdShares === 'number') {
+      setHoldShares(String(snapshot.holdShares));
+    }
+    if (typeof snapshot.holdCost === 'string' || typeof snapshot.holdCost === 'number') {
+      setHoldCost(String(snapshot.holdCost));
+    }
+  }, [setHoldCode]);
+
+  const primaryContent = (
+    <>
+      <section className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_360px]">
+        <div className="rounded-[28px] border border-border bg-surface p-6 shadow-sm">
+          <div className="eyebrow">Portfolio Workspace</div>
+          <h1 className="mt-3">先确认组合状态，再决定加仓、优化还是做风险复盘。</h1>
+          <p className="page-lead mt-3 mb-0">
+            组合页首屏不再让创建、加仓、分析按钮同时抢注意力。先锁定当前组合，再按“持仓维护、配置优化、风险复盘”的顺序推进。
+          </p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <span className="rounded-full border border-border bg-surface-alt/72 px-3 py-1 text-xs text-text-secondary">
+              当前组合 {portfolioDisplayName}
+            </span>
+            <span className="rounded-full border border-border bg-surface-alt/72 px-3 py-1 text-xs text-text-secondary">
+              组合总数 {portfolioList.length}
+            </span>
+            <span className="rounded-full border border-border bg-surface-alt/72 px-3 py-1 text-xs text-text-secondary">
+              持仓 {detailHoldings.length} 条
+            </span>
+          </div>
+        </div>
+        <SectionCard className="mt-0">
+          <div className="eyebrow">当前聚焦</div>
+          <h2 className="mt-2">{portfolioDisplayName}</h2>
+          <div className="mt-4 space-y-3 text-sm text-text-secondary">
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">组合 ID</div>
+              <div className="mt-2 text-lg font-semibold text-text-primary">{activePortfolioId || '未选择'}</div>
+            </div>
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">待加仓股票</div>
+              <div className="mt-2 text-lg font-semibold text-text-primary">{holdTrimmed || '未填写'}</div>
+            </div>
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">下一步</div>
+              <div className="mt-2 text-sm font-medium text-text-primary">{portfolioNextStep}</div>
+            </div>
+          </div>
+          <div className="mt-4">
+            <AskAiButton
+              stockCode={holdTrimmed || undefined}
+              summary={`当前组合 ${portfolioDisplayName}，持仓 ${detailHoldings.length} 条`}
+              prompt="请评估当前组合结构、风险和下一步优化方向"
+            />
+          </div>
+        </SectionCard>
+      </section>
       {loading ? <LoadingState text="处理中..." /> : null}
       {error ? <ErrorState text={error} /> : null}
 
-      <SectionCard className="p-3">
-        <h2 className="mt-0 text-base font-semibold">当前组合操作</h2>
+      <SectionCard className="mt-0 p-3">
+        <h2 className="mt-0 text-base font-semibold">操作台</h2>
         <p className="text-sm text-text-secondary mt-1 mb-3">优先从下方组合列表点选目标组合；创建成功后也会自动选中，随后再执行加仓、优化、风险分析和压力测试。</p>
         <div className="mb-3 grid gap-3 md:grid-cols-3">
-          <div className="rounded-xl border border-border bg-surface p-3">
+          <div className="rounded-[18px] border border-border bg-surface-alt/72 p-3">
             <div className="text-xs text-text-secondary">当前选中</div>
-            <div className="mt-1 text-sm font-medium">{selectedPortfolio ? String(selectedPortfolio.name ?? activePortfolioId) : '尚未选择组合'}</div>
+            <div className="mt-1 text-sm font-medium">{portfolioDisplayName}</div>
             <div className="mt-1 text-xs text-text-secondary">{activePortfolioId || '请从列表点选一条组合后继续'}</div>
           </div>
-          <div className="rounded-xl border border-border bg-surface p-3">
+          <div className="rounded-[18px] border border-border bg-surface-alt/72 p-3">
             <div className="text-xs text-text-secondary">组合总数</div>
             <div className="mt-1 text-sm font-medium">{portfolioList.length}</div>
             <div className="mt-1 text-xs text-text-secondary">支持从列表直接切换查看详情</div>
           </div>
-          <div className="rounded-xl border border-border bg-surface p-3">
+          <div className="rounded-[18px] border border-border bg-surface-alt/72 p-3">
             <div className="text-xs text-text-secondary">下一步建议</div>
-            <div className="mt-1 text-sm font-medium">{activePortfolioId ? '继续查看详情、加仓或执行分析' : '先创建新组合或在列表中选择组合'}</div>
+            <div className="mt-1 text-sm font-medium">{portfolioNextStep}</div>
           </div>
         </div>
         <div className="flex gap-2 flex-wrap items-end">
@@ -167,7 +346,7 @@ export default function PortfolioPage() {
       </SectionCard>
 
       {/* Create Portfolio */}
-      <SectionCard className="p-4 mt-4">
+      <SectionCard className="mt-0 p-4">
         <h3 className="mt-0">创建组合</h3>
         <div className="flex gap-2 flex-wrap items-end">
           <label htmlFor="portfolio-new-name" className="grid gap-1 text-xs text-text-secondary">
@@ -189,7 +368,7 @@ export default function PortfolioPage() {
 
       {/* Add Holding (only when portfolioId is set) */}
       {activePortfolioId && (
-        <SectionCard className="p-4 mt-4">
+        <SectionCard className="mt-0 p-4">
           <h3 className="mt-0">添加持仓（组合 {activePortfolioId}）</h3>
           <div className="flex gap-2 flex-wrap items-end">
             <StockCodeInput id="portfolio-holding-code" label="股票代码" value={holdCode} onChange={setHoldCode} error={holdCodeError} placeholder="股票代码" />
@@ -208,7 +387,7 @@ export default function PortfolioPage() {
       )}
 
       {portfolioList.length > 0 && (
-        <SectionCard className="mt-4 p-3">
+        <SectionCard className="mt-0 p-3">
           <h3 className="mt-0">组合列表</h3>
           <DataTable
             rows={portfolioList}
@@ -257,13 +436,13 @@ export default function PortfolioPage() {
       )}
 
       {!activePortfolioId ? (
-        <SectionCard className="mt-4 p-4">
+        <SectionCard className="mt-0 p-4">
           <EmptyState text="还没有选中组合。可以先从“组合列表”点选一条，或在上方创建新组合后继续。" hint="后续的详情、加仓、优化和压力测试都会围绕当前选中的组合展开。" />
         </SectionCard>
       ) : null}
 
       {detailObj && (
-        <SectionCard className="mt-4 p-3">
+        <SectionCard className="mt-0 p-3">
           <h3 className="mt-0">组合详情</h3>
           <KpiGrid cols={4}>
             <KpiCard title="组合名称" value={detailObj.name != null ? String(detailObj.name) : null} />
@@ -301,7 +480,7 @@ export default function PortfolioPage() {
       )}
 
       {(weightSlices.length > 0 || riskBars.length > 0) && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {weightSlices.length > 0 && (
             <SectionCard className="p-3">
               <h3 className="mt-0">配置权重</h3>
@@ -318,7 +497,7 @@ export default function PortfolioPage() {
       )}
 
       {optimizeApi.data?.optimization && (
-        <SectionCard className="mt-4 p-3">
+        <SectionCard className="mt-0 p-3">
           <KpiGrid cols={3}>
             <KpiCard title="预期收益" value={fmtPct(Number(optimizeApi.data.optimization.expectedReturn))} />
             <KpiCard title="预期风险" value={fmtPct(Number(optimizeApi.data.optimization.expectedRisk))} />
@@ -328,7 +507,7 @@ export default function PortfolioPage() {
       )}
 
       {riskApi.data?.riskMetrics && (
-        <SectionCard className="mt-4 p-3">
+        <SectionCard className="mt-0 p-3">
           <h3 className="mt-0">风险指标</h3>
           <KpiGrid cols={5}>
             <KpiCard title="VaR (95%)" value={fmtPct(Number(riskApi.data.riskMetrics.var95))} />
@@ -341,7 +520,7 @@ export default function PortfolioPage() {
       )}
 
       {stressScenarios.length > 0 && (
-        <SectionCard className="mt-4 p-3">
+        <SectionCard className="mt-0 p-3">
           <h3 className="mt-0">压力测试</h3>
           <DataTable rows={stressScenarios} onExport={() => exportCSV(stressScenarios, 'stress-test')} mobileCardRender={(row) => (
             <div className="space-y-2">
@@ -352,6 +531,36 @@ export default function PortfolioPage() {
           )} />
         </SectionCard>
       )}
+    </>
+  );
+
+  const secondaryContent = (
+    <SectionCard className="p-4">
+      <div className="text-sm font-medium text-text-primary">组合工作区摘要</div>
+      <div className="mt-3 grid gap-3 text-xs text-text-secondary">
+        <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3">
+          <div>当前组合：{selectedPortfolio ? String(selectedPortfolio.name ?? activePortfolioId) : activePortfolioId || '未选择'}</div>
+          <div className="mt-1">组合数：{portfolioList.length}</div>
+          <div className="mt-1">持仓数：{detailHoldings.length}</div>
+          <div className="mt-1">策略数：{detailStrategies.length}</div>
+        </div>
+        <div className="rounded-xl border border-glass-border bg-surface p-3">
+          <div>待加仓股票：{holdTrimmed || '未填写'}</div>
+          <div className="mt-1">股数：{holdShares || '-'}</div>
+          <div className="mt-1">成本价：{holdCost || '未填写'}</div>
+          <div className="mt-1">优化结果：{optimizeApi.data?.optimization ? '已生成' : '未生成'}</div>
+        </div>
+        <div className="rounded-xl border border-dashed border-glass-border p-3">
+          保存视图后，可以把当前组合、加仓参数和分析入口固定成一套组合复盘工作台。
+        </div>
+      </div>
+    </SectionCard>
+  );
+
+  return (
+    <PageContainer>
+      <WorkspaceToolbar pageKey="portfolio" currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      <WorkspaceSplitLayout pageKey="portfolio" primary={primaryContent} secondary={secondaryContent} />
     </PageContainer>
   );
 }

@@ -5,6 +5,7 @@ import { AlertToastProvider } from '@/components/alert-toast';
 import { Spotlight } from '@/components/spotlight';
 import { MobileBottomNav } from '@/components/mobile-nav';
 import { WatchlistInit } from '@/components/watchlist-init';
+import { WorkspaceSync } from '@/components/workspace-sync';
 import { isPublicPathname } from '@/lib/public-routes';
 
 export function GlobalOverlays() {
@@ -20,6 +21,7 @@ export function GlobalOverlays() {
       <Spotlight />
       <MobileBottomNav />
       <WatchlistInit />
+      <WorkspaceSync />
     </>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { BFF_BASE } from '@/lib/api';
+import { getBffBaseUrl } from '@/lib/bff-base';
 
 type SpotlightResult = {
     type: 'stock' | 'page' | 'command';
@@ -110,7 +110,7 @@ export function Spotlight() {
         // Try BFF search if query is text
         if (q.trim().length >= 2 && !/^\d+$/.test(q.trim())) {
             try {
-                const res = await fetch(`${BFF_BASE}/market/search?keyword=${encodeURIComponent(q.trim())}&limit=5`, {
+                const res = await fetch(`${getBffBaseUrl()}/market/search?keyword=${encodeURIComponent(q.trim())}&limit=5`, {
                     credentials: 'include',
                 });
                 if (res.ok) {

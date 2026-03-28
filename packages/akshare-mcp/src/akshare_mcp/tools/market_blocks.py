@@ -514,6 +514,8 @@ async def get_block_stocks(block_code: str) -> Dict[str, Any]:
             guessed_type = 'industry'
         elif code.startswith('region::'):
             guessed_type = 'region'
+        elif code.upper().startswith('BK'):
+            guessed_type = 'concept'
         elif code.isdigit() and code.startswith('30'):
             guessed_type = 'concept'
 
@@ -612,8 +614,44 @@ async def get_block_stocks(block_code: str) -> Dict[str, Any]:
         if text and text not in candidate_symbols:
             candidate_symbols.append(text)
 
+    # 路径0: BK 前缀（东财板块代码 → 从板块列表反查名称 → 拉成分股）
+    if block_code.upper().startswith('BK') and not stocks:
+        resolved_bk_name = block_name
+        if not resolved_bk_name:
+            for board_type, list_fn in [
+                ('concept', lambda: ak.stock_board_concept_name_em()),
+                ('industry', lambda: ak.stock_board_industry_name_em()),
+            ]:
+                try:
+                    df_boards = list_fn()
+                    if df_boards is not None and not df_boards.empty:
+                        code_col = '板块代码' if '板块代码' in df_boards.columns else None
+                        name_col = '板块名称' if '板块名称' in df_boards.columns else None
+                        if code_col and name_col:
+                            match = df_boards[df_boards[code_col].astype(str) == block_code.upper()]
+                            if not match.empty:
+                                resolved_bk_name = str(match.iloc[0][name_col])
+                                block_name = resolved_bk_name
+                                block_type = board_type
+                                break
+                except Exception as e:
+                    safe_stderr_print(f"[BlockStocks] BK板块列表查询失败({board_type}): {e}")
+        if resolved_bk_name:
+            for api_fn, tag in [
+                (lambda s: ak.stock_board_concept_cons_em(symbol=s), 'eastmoney_concept_cons'),
+                (lambda s: ak.stock_board_industry_cons_em(symbol=s), 'eastmoney_industry_cons'),
+            ]:
+                try:
+                    attempted.append(f'{tag}:{resolved_bk_name}')
+                    df = api_fn(resolved_bk_name)
+                    _append_from_df(df, tag)
+                    if stocks:
+                        break
+                except Exception as e:
+                    safe_stderr_print(f"[BlockStocks] {tag}失败({resolved_bk_name}): {e}")
+
     # 路径1: 新浪 sector_detail（适用于 new_xxx 格式 label）
-    if block_code.startswith('new_'):
+    if not stocks and block_code.startswith('new_'):
         try:
             attempted.append(f'sina_sector_detail:{block_code}')
             df = ak.stock_sector_detail(sector=block_code)
@@ -647,6 +685,44 @@ async def get_block_stocks(block_code: str) -> Dict[str, Any]:
         attempted.append('ths_concept_detail')
         stocks = _fetch_concept_stocks_from_ths(block_code, block_name)
 
+    # Tushare concept + concept_detail 降级（按板块名匹配）
+    if not stocks:
+        search_name = block_name or (block_code if not block_code.upper().startswith('BK') and not block_code.startswith('new_') else None)
+        if search_name:
+            try:
+                from ..data_source import data_source
+                ts_pro = data_source.get_tushare_pro()
+                if ts_pro:
+                    attempted.append(f'tushare_concept:{search_name}')
+                    df_concepts = ts_pro.concept()
+                    if df_concepts is not None and not df_concepts.empty:
+                        # 精确匹配优先，再模糊匹配
+                        exact = df_concepts[df_concepts['name'] == search_name]
+                        fuzzy = df_concepts[df_concepts['name'].str.contains(search_name[:2], na=False)] if not exact.empty is False else exact
+                        match = exact if not exact.empty else (fuzzy if not fuzzy.empty else None)
+                        if match is not None and not match.empty:
+                            concept_id = str(match.iloc[0]['code'])
+                            concept_nm = str(match.iloc[0]['name'])
+                            if not block_name:
+                                block_name = concept_nm
+                            df_detail = ts_pro.concept_detail(id=concept_id, fields="ts_code,name,in_date")
+                            if df_detail is not None and not df_detail.empty:
+                                for _, row in df_detail.iterrows():
+                                    ts_c = str(row.get('ts_code', '') or '')
+                                    raw_code = ts_c.split('.')[0] if '.' in ts_c else ts_c
+                                    if raw_code:
+                                        stocks.append({
+                                            'stock_code': raw_code,
+                                            'stock_name': str(row.get('name', '') or ''),
+                                            'change_pct': 0.0,
+                                            'price': 0.0,
+                                            'volume': 0,
+                                            'amount': 0.0,
+                                            '_source': 'tushare_concept_detail',
+                                        })
+            except Exception as e:
+                safe_stderr_print(f"[BlockStocks] Tushare concept查询失败: {e}")
+
     if not stocks:
         attempted.append('db_cache')
         stocks = await _load_cached_block_stocks(block_code, block_name)
@@ -654,15 +730,19 @@ async def get_block_stocks(block_code: str) -> Dict[str, Any]:
     if not stocks:
         resolved = f", resolved_name={block_name}" if block_name else ""
         tried = ", tried=" + "|".join(attempted) if attempted else ""
+        eastmoney_down = any('eastmoney' in a for a in attempted) and not any('sina' in a for a in attempted and stocks)
+        hint = ""
+        if block_code.upper().startswith('BK') or (not block_code.startswith('new_') and block_type in ('concept', None)):
+            hint = "。提示: 东财概念板块 API 可能因代理拦截不可用，请尝试使用 new_xxx 格式的新浪行业代码（如 new_dlhy=电力行业），或直接传入中文板块名称"
         return {
             'success': False,
-            'error': f'No stocks found in block {block_code}{resolved}{tried}',
+            'error': f'板块 {block_code} 未找到成分股{resolved}{tried}{hint}',
             'data': {
                 'block_code': block_code,
                 'block_name': block_name,
                 'block_type': block_type,
                 'tried': attempted,
-                'fallback_reason': 'upstream_unavailable_or_code_system_mismatch',
+                'fallback_reason': 'upstream_api_unavailable' if eastmoney_down else 'upstream_unavailable_or_code_system_mismatch',
             }
         }
 

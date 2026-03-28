@@ -4,8 +4,6 @@ import type { CacheMeta, Envelope } from '@aiask/shared-types';
 
 export type { CacheMeta, Envelope } from '@aiask/shared-types';
 
-export const BFF_BASE = getBffBaseUrl();
-
 /** Guard: only one redirect to login at a time */
 let redirecting = false;
 
@@ -38,12 +36,13 @@ async function authedFetchCore(
     credentials: 'include',
     ...(opts?.noStore ? { cache: init?.cache ?? 'no-store' as RequestCache } : {}),
   };
+  const bffBase = getBffBaseUrl();
 
-  const resp = await fetch(`${BFF_BASE}${path}`, requestInit);
+  const resp = await fetch(`${bffBase}${path}`, requestInit);
   if (resp.status === 401) {
     const refreshed = await refreshAuth();
     if (refreshed) {
-      return fetch(`${BFF_BASE}${path}`, requestInit);
+      return fetch(`${bffBase}${path}`, requestInit);
     }
     if (opts?.redirectOnUnauthorized === false) {
       clearLoggedIn();

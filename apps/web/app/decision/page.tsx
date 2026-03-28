@@ -1,14 +1,23 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AskAiButton } from '@/components/ask-ai-button';
+import WorkspaceSplitLayout from '@/components/workspace-split-layout';
+import WorkspaceToolbar from '@/components/workspace-toolbar';
 import UnifiedDecisionPanel from '@/components/unified-decision-panel';
 import UnifiedDecisionDiffLogList from '@/components/unified-decision-diff-log-list';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { PageContainer, SectionCard, StockCodeInput } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
+import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
 export default function DecisionPage() {
+  const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
+  const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
+  const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode();
   const { trigger, data, isPending, error, reset } = useApiMutation<unknown>();
   const {
@@ -26,6 +35,26 @@ export default function DecisionPage() {
   const details = detailsEnvelope?.details ?? detailsEnvelope?.raw ?? null;
   const legacyComparison = detailsEnvelope?.legacyComparison ?? envelope?.legacyComparison ?? null;
 
+  usePageContext({
+    pageKey: 'decision',
+    title: '统一决策工作台',
+    summary: `${trimmedCode || '未选择股票'}，风格 ${investmentStyle}，legacy diff ${legacyMode ? '开启' : '关闭'}。`,
+    stockCode: trimmedCode || undefined,
+    tags: [investmentStyle, legacyMode ? 'legacy diff' : 'modern decision'],
+    suggestions: [
+      trimmedCode ? `解释 ${trimmedCode} 当前统一决策结果` : '选择股票后解释统一决策结果',
+      '比较当前 unified decision 和 legacy diff 的差异',
+      '把当前决策页整理成执行建议',
+    ],
+    raw: {
+      code: trimmedCode || null,
+      investmentStyle,
+      legacyMode,
+      hasResult: Boolean(result),
+      hasDetails: Boolean(details),
+    },
+  });
+
   function runDecision() {
     if (!validate()) return;
     reset();
@@ -39,8 +68,72 @@ export default function DecisionPage() {
     triggerDetails('/assistant/unified-decision/details', { method: 'POST' }, lastBody);
   }
 
-  return (
-    <PageContainer>
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    if (!trimmedCode && workbenchContext.stockCode) {
+      setCode(workbenchContext.stockCode);
+    }
+  }, [setCode, trimmedCode, workbenchContext.stockCode, workbenchHydrated]);
+
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    updateWorkbenchContext({ stockCode: trimmedCode || null });
+  }, [trimmedCode, updateWorkbenchContext, workbenchHydrated]);
+
+  usePageActions([
+    {
+      id: 'decision.run',
+      label: '运行统一决策',
+      description: '按当前股票和风格运行 unified decision',
+      keywords: ['决策', '运行'],
+      scope: 'page',
+      pageKey: 'decision',
+      run: () => {
+        runDecision();
+        return { message: '已触发统一决策' };
+      },
+    },
+    {
+      id: 'decision.load-details',
+      label: '加载决策详情',
+      description: '加载统一决策的完整证据链详情',
+      keywords: ['详情', '证据链'],
+      scope: 'page',
+      pageKey: 'decision',
+      run: () => {
+        loadDetails();
+        return { message: '已触发决策详情加载' };
+      },
+    },
+  ]);
+
+  const currentView = useMemo<Record<string, unknown>>(
+    () => ({
+      code: trimmedCode,
+      investmentStyle,
+      legacyMode,
+    }),
+    [investmentStyle, legacyMode, trimmedCode],
+  );
+
+  const applyView = useCallback((snapshot: Record<string, unknown>) => {
+    if (typeof snapshot.code === 'string') {
+      setCode(snapshot.code);
+    }
+    if (
+      snapshot.investmentStyle === 'aggressive'
+      || snapshot.investmentStyle === 'balanced'
+      || snapshot.investmentStyle === 'conservative'
+    ) {
+      setInvestmentStyle(snapshot.investmentStyle);
+    }
+    if (typeof snapshot.legacyMode === 'boolean') {
+      setLegacyMode(snapshot.legacyMode);
+    }
+  }, [setCode]);
+
+  const primaryContent = (
+    <>
       <SectionCard className="p-5">
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
           <div>
@@ -82,6 +175,11 @@ export default function DecisionPage() {
             >
               运行统一决策
             </button>
+            <AskAiButton
+              stockCode={trimmedCode || undefined}
+              summary={`风格 ${investmentStyle}，legacy diff ${legacyMode ? '开启' : '关闭'}`}
+              prompt={trimmedCode ? `请解释 ${trimmedCode} 当前统一决策页` : '请解释当前统一决策页'}
+            />
           </div>
         </div>
       </SectionCard>
@@ -114,6 +212,31 @@ export default function DecisionPage() {
           />
         </>
       ) : null}
+    </>
+  );
+
+  const secondaryContent = (
+    <SectionCard className="p-4">
+      <div className="text-sm font-medium text-text-primary">决策工作区摘要</div>
+      <div className="mt-3 grid gap-3 text-xs text-text-secondary">
+        <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3">
+          <div>股票：{trimmedCode || '-'}</div>
+          <div className="mt-1">风格：{investmentStyle}</div>
+          <div className="mt-1">Legacy diff：{legacyMode ? '开启' : '关闭'}</div>
+          <div className="mt-1">结果：{result ? '已生成' : '未生成'}</div>
+          <div className="mt-1">详情：{details ? '已加载' : '未加载'}</div>
+        </div>
+        <div className="rounded-xl border border-dashed border-glass-border p-3">
+          保存视图后，可以把股票、风格和 legacy diff 组合作为工作区快照复用。
+        </div>
+      </div>
+    </SectionCard>
+  );
+
+  return (
+    <PageContainer>
+      <WorkspaceToolbar pageKey="decision" currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      <WorkspaceSplitLayout pageKey="decision" primary={primaryContent} secondary={secondaryContent} />
     </PageContainer>
   );
 }

@@ -32,10 +32,7 @@ export class WatchlistService {
         const cached = await this.cacheService.getWithMeta<WatchlistGroup[]>(cacheKey);
         if (cached.value) return cached.value;
 
-        const payload = await this.callTool('watchlist_manager', {
-            action: 'list',
-            params: { user_id: userId },
-        });
+        const payload = await this.callManager('list', { user_id: userId });
 
         const groups = this.extractGroups(payload);
         await this.cacheService.set(cacheKey, groups, WatchlistService.CACHE_TTL);
@@ -43,14 +40,11 @@ export class WatchlistService {
     }
 
     async createGroup(userId: string, groupId: string | undefined, name: string, color = '#6366f1') {
-        const payload = await this.callTool('watchlist_manager', {
-            action: 'create_group',
-            params: {
-                user_id: userId,
-                group_id: groupId,
-                name,
-                color,
-            },
+        const payload = await this.callManager('create_group', {
+            user_id: userId,
+            group_id: groupId,
+            name,
+            color,
         });
 
         await this.invalidateCache(userId);
@@ -58,14 +52,11 @@ export class WatchlistService {
     }
 
     async addStocks(userId: string, group: string, codes: string[], groupName?: string) {
-        const payload = await this.callTool('watchlist_manager', {
-            action: 'add_stocks',
-            params: {
-                user_id: userId,
-                group_id: group,
-                group_name: groupName,
-                codes,
-            },
+        const payload = await this.callManager('add_stocks', {
+            user_id: userId,
+            group_id: group,
+            group_name: groupName,
+            codes,
         });
 
         await this.invalidateCache(userId);
@@ -73,23 +64,17 @@ export class WatchlistService {
     }
 
     async removeStock(userId: string, group: string, code: string) {
-        const payload = await this.callTool('watchlist_manager', {
-            action: 'remove_stock',
-            params: { user_id: userId, group_id: group, code },
-        });
+        const payload = await this.callManager('remove_stock', { user_id: userId, group_id: group, code });
 
         await this.invalidateCache(userId);
         return { success: true, result: payload };
     }
 
     async deleteGroup(userId: string, groupId?: string, name?: string) {
-        const payload = await this.callTool('watchlist_manager', {
-            action: 'delete_group',
-            params: {
-                user_id: userId,
-                group_id: groupId,
-                name,
-            },
+        const payload = await this.callManager('delete_group', {
+            user_id: userId,
+            group_id: groupId,
+            name,
         });
 
         await this.invalidateCache(userId);
@@ -97,10 +82,7 @@ export class WatchlistService {
     }
 
     async reorderStocks(userId: string, group: string, codes: string[]) {
-        const payload = await this.callTool('watchlist_manager', {
-            action: 'reorder',
-            params: { user_id: userId, group_id: group, codes },
-        });
+        const payload = await this.callManager('reorder', { user_id: userId, group_id: group, codes });
 
         await this.invalidateCache(userId);
         return { success: true, result: payload };
@@ -110,9 +92,21 @@ export class WatchlistService {
         await this.cacheService.del(`watchlist:${userId}:groups`);
     }
 
+    private async callManager(action: string, payload: Record<string, unknown>) {
+        return this.callTool('watchlist_manager', {
+            action,
+            kwargs: JSON.stringify(payload),
+        });
+    }
+
     private async callTool(name: string, args: Record<string, unknown>) {
         try {
-            return await this.mcpGatewayService.callTool(name, args);
+            const result = await this.mcpGatewayService.callTool(name, args);
+            const toolError = this.extractToolError(result);
+            if (toolError) {
+                throw new Error(toolError);
+            }
+            return result;
         } catch (error) {
             throw new BadGatewayException({
                 success: false,
@@ -184,5 +178,28 @@ export class WatchlistService {
             }
             return (acc as Record<string, unknown>)[key];
         }, obj);
+    }
+
+    private extractToolError(payload: unknown): string | null {
+        if (typeof payload === 'string') {
+            return /error executing tool|validation error/i.test(payload) ? payload : null;
+        }
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+            return null;
+        }
+
+        const record = payload as Record<string, unknown>;
+        if (record.success === false) {
+            return String(record.error ?? record.message ?? 'watchlist tool error');
+        }
+
+        const nestedCandidates = [record.data, record.result];
+        for (const candidate of nestedCandidates) {
+            if (typeof candidate === 'string' && /error executing tool|validation error/i.test(candidate)) {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 }

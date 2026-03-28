@@ -239,7 +239,32 @@ def register(mcp):
                     "freshness_sec": result.get("freshness_sec"),
                     "latency_ms": result.get("latency_ms"),
                 })
-            else:
-                return fail(result.get("message") or result.get("error") or "获取股本数据失败")
+
+            # 降级: 从 get_stock_info 提取股本数据
+            from .finance import get_stock_info
+            info_result = get_stock_info(code)
+            if info_result.get("success") and info_result.get("data"):
+                info_data = info_result["data"]
+                total_shares = info_data.get("totalShares")
+                float_shares = info_data.get("floatShares")
+                if total_shares or float_shares:
+                    import datetime
+                    today = datetime.datetime.now().strftime('%Y%m%d')
+                    from ..utils import parse_numeric
+                    capital_entry = {
+                        "Date": int(today),
+                        "zgb": float(parse_numeric(total_shares) or 0),
+                        "ltgb": float(parse_numeric(float_shares) or 0),
+                    }
+                    return ok({
+                        "capital_data": [capital_entry],
+                        "count": 1,
+                        "source": "get_stock_info_fallback",
+                        "message": "通过 get_stock_info 降级获取股本数据",
+                        "fallback_used": True,
+                        "fallback_reason": result.get("message") or "get_gb_info failed",
+                    })
+
+            return fail(result.get("message") or result.get("error") or "获取股本数据失败")
         except Exception as e:
             return fail(str(e))

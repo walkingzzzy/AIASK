@@ -153,7 +153,7 @@ def get_stock_research(stock_code: str, limit: int = 10) -> dict:
 
 
 @cached(ttl=3600.0)
-def search_research(keyword: str = "", stock_code: str = "", days: int = 30) -> dict:
+def search_research(keyword: str = "", stock_code: str = "", days: int = 90) -> dict:
     """
     搜索研究报告
 
@@ -186,11 +186,34 @@ def search_research(keyword: str = "", stock_code: str = "", days: int = 30) -> 
             if ts_pro:
                 end_dt = date.today().strftime("%Y%m%d")
                 start_dt = (date.today() - timedelta(days=days)).strftime("%Y%m%d")
-                kwargs = {"start_date": start_dt, "end_date": end_dt, "fields": "ts_code,report_title,org_name,author_name,report_date,rating"}
+                ts_kwargs = {"start_date": start_dt, "end_date": end_dt, "fields": "ts_code,report_title,org_name,author_name,report_date,rating"}
                 if code:
                     ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
-                    kwargs["ts_code"] = ts_code
-                df_ts = ts_pro.report_rc(**kwargs)
+                    ts_kwargs["ts_code"] = ts_code
+                df_ts = ts_pro.report_rc(**ts_kwargs)
+
+                # 若仅有关键词但无 stock_code，且 Tushare 结果过少或无结果，
+                # 先通过 stock_basic 将关键词解析成股票代码再精确拉取
+                if keyword and not code and (df_ts is None or df_ts.empty):
+                    try:
+                        df_basic = ts_pro.stock_basic(exchange="", list_status="L", fields="ts_code,symbol,name")
+                        if df_basic is not None and not df_basic.empty:
+                            matched_ts_codes = [
+                                str(r.get("ts_code", ""))
+                                for _, r in df_basic.iterrows()
+                                if _keyword_match(str(r.get("name", "")), keyword) or keyword in str(r.get("symbol", ""))
+                            ]
+                            for ts_c in matched_ts_codes[:3]:
+                                try:
+                                    df_rc = ts_pro.report_rc(ts_code=ts_c, start_date=start_dt, end_date=end_dt,
+                                                              fields="ts_code,report_title,org_name,author_name,report_date,rating")
+                                    if df_rc is not None and not df_rc.empty:
+                                        df_ts = df_rc if df_ts is None or df_ts.empty else df_ts._append(df_rc, ignore_index=True)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+
                 if df_ts is not None and not df_ts.empty:
                     if keyword:
                         df_ts = df_ts[
@@ -318,6 +341,49 @@ def search_research(keyword: str = "", stock_code: str = "", days: int = 30) -> 
                         )
             except Exception:
                 pass
+
+        # 终极降级: 查 DB research_reports 表（与 search_research_db 同源）
+        try:
+            db = get_db()
+            since = date.today() - timedelta(days=days)
+            conditions = ["publish_date >= $1"]
+            params: list = [since]
+            idx = 2
+            if code:
+                conditions.append(f"code = ${idx}")
+                params.append(code)
+                idx += 1
+            if keyword:
+                conditions.append(f"(title ILIKE ${idx} OR summary ILIKE ${idx})")
+                params.append(f"%{keyword.strip()}%")
+                idx += 1
+            where_clause = " AND ".join(conditions)
+            query = f"SELECT * FROM research_reports WHERE {where_clause} ORDER BY publish_date DESC LIMIT 20"
+
+            async def _fetch_db():
+                async with db.acquire() as conn:
+                    return await conn.fetch(query, *params)
+
+            rows = _run_storage_call_sync(_fetch_db)
+            if rows:
+                reports = []
+                for r in rows:
+                    r = dict(r)
+                    reports.append({
+                        "stockCode": str(r.get("code") or code or ""),
+                        "title": str(r.get("title") or "").strip(),
+                        "institution": str(r.get("institution") or "").strip(),
+                        "rating": str(r.get("rating") or "").strip(),
+                        "date": format_period(r.get("publish_date")),
+                    })
+                if reports:
+                    return ok({
+                        "keyword": keyword, "stockCode": code,
+                        "reports": reports, "total": len(reports),
+                        "message": "结果来自数据库研报缓存",
+                    })
+        except Exception:
+            pass
 
         return ok({"keyword": keyword, "stockCode": code, "reports": [], "total": 0, "message": "未找到匹配的研报"})
     except Exception as e:

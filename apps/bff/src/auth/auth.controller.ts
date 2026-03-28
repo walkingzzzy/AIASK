@@ -30,9 +30,27 @@ export class AuthController {
     private readonly totpService: TotpService,
   ) {}
 
-  private setCookies(res: Response, accessToken: string, refreshToken: string, accessTtl: number) {
-    const isProduction = process.env.NODE_ENV === 'production';
-    const commonOpts = { path: '/', sameSite: 'lax' as const, secure: isProduction, httpOnly: true };
+  private shouldUseSecureCookies(req: Request) {
+    const forced = String(process.env.APP_COOKIE_SECURE ?? '').trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(forced)) return true;
+    if (['0', 'false', 'no', 'off'].includes(forced)) return false;
+    if (process.env.NODE_ENV !== 'production') return false;
+
+    const hostname = String(req.hostname || req.headers.host || '')
+      .split(':')[0]
+      .trim()
+      .toLowerCase();
+
+    return !['localhost', '127.0.0.1', '::1'].includes(hostname);
+  }
+
+  private setCookies(req: Request, res: Response, accessToken: string, refreshToken: string, accessTtl: number) {
+    const commonOpts = {
+      path: '/',
+      sameSite: 'lax' as const,
+      secure: this.shouldUseSecureCookies(req),
+      httpOnly: true,
+    };
     res.cookie('access_token', accessToken, { ...commonOpts, maxAge: accessTtl * 1000 });
     res.cookie('refresh_token', refreshToken, { ...commonOpts, maxAge: 7 * 24 * 60 * 60 * 1000 });
   }
@@ -44,17 +62,17 @@ export class AuthController {
 
   @Public()
   @Post('login')
-  async login(@Body() body: LoginDto, @Res({ passthrough: true }) res: Response) {
+  async login(@Req() req: Request, @Body() body: LoginDto, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.login(body.username, body.password);
-    this.setCookies(res, result.accessToken, result.refreshToken, result.expiresIn);
+    this.setCookies(req, res, result.accessToken, result.refreshToken, result.expiresIn);
     return { success: true, data: { user: result.user, expiresIn: result.expiresIn, tokenDelivery: 'cookie' } };
   }
 
   @Public()
   @Post('register')
-  async register(@Body() body: RegisterDto, @Res({ passthrough: true }) res: Response) {
+  async register(@Req() req: Request, @Body() body: RegisterDto, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.register(body.username, body.password);
-    this.setCookies(res, result.accessToken, result.refreshToken, result.expiresIn);
+    this.setCookies(req, res, result.accessToken, result.refreshToken, result.expiresIn);
     return { success: true, data: { user: result.user, expiresIn: result.expiresIn, tokenDelivery: 'cookie' } };
   }
 
@@ -64,7 +82,7 @@ export class AuthController {
     const token = req.cookies?.refresh_token || body.refreshToken;
     if (!token) throw new UnauthorizedException('缺少 refresh token');
     const result = await this.authService.refresh(token);
-    this.setCookies(res, result.accessToken, result.refreshToken, result.expiresIn);
+    this.setCookies(req, res, result.accessToken, result.refreshToken, result.expiresIn);
     return { success: true, data: { user: result.user, expiresIn: result.expiresIn, tokenDelivery: 'cookie' } };
   }
 

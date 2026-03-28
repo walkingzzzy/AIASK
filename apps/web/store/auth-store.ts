@@ -2,8 +2,6 @@ import { create } from 'zustand';
 import { clearLoggedIn } from '@/lib/auth';
 import { getBffBaseUrl } from '@/lib/bff-base';
 
-const BFF_BASE = getBffBaseUrl();
-
 export type User = {
   id: string;
   username: string;
@@ -30,6 +28,6 @@ export const useAuthStore = create<AuthState>((set) => ({
   logout: () => {
     clearLoggedIn();
     set({ user: null, isAuthenticated: false, isLoggingOut: true });
-    fetch(`${BFF_BASE}/auth/logout`, { method: 'POST', credentials: 'include', keepalive: true }).catch(() => {});
+    fetch(`${getBffBaseUrl()}/auth/logout`, { method: 'POST', credentials: 'include', keepalive: true }).catch(() => {});
   },
 }));

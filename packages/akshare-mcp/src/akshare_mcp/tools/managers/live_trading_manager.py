@@ -1,11 +1,24 @@
-"""实盘交易管理器（仅监控，不实际交易）"""
+"""Live trading manager backed by broker gateway adapters."""
+
+from __future__ import annotations
 
 import json
-from ...utils import ok, fail
+import time
+from typing import Any
+
+from ...services import register_artifact_async
+from ...services.live_broker import (
+    build_live_order_event_collection,
+    get_live_broker_adapter,
+)
+from ...utils import fail, ok
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
-    """统一解析 kwargs 参数（兼容 JSON 字符串和 dict）"""
+    """Parse kwargs payloads from both MCP JSON strings and structured params."""
+    params = kwargs.get("params")
+    if isinstance(params, dict):
+        kwargs = {**kwargs, **params}
     raw = kwargs.get("kwargs")
     if isinstance(raw, dict):
         kwargs = {**kwargs, **raw}
@@ -16,62 +29,351 @@ def _normalize_kwargs(kwargs: dict) -> dict:
                 kwargs = {**kwargs, **extra}
         except Exception:
             pass
+    if "symbol" not in kwargs:
+        kwargs["symbol"] = kwargs.get("code")
+    if "code" not in kwargs:
+        kwargs["code"] = kwargs.get("symbol")
     return kwargs
 
 
+def _safe_text(*values: Any) -> str | None:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        if value in (None, ""):
+            return int(default)
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "on", "y"}:
+        return True
+    if text in {"0", "false", "no", "off", "n"}:
+        return False
+    return bool(default)
+
+
+def _split_symbols(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip().upper() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    normalized = text.replace(";", ",").replace("|", ",").replace(" ", ",")
+    return [part.strip().upper() for part in normalized.split(",") if part.strip()]
+
+
+def _adapter_meta(adapter) -> dict[str, Any]:
+    config = getattr(adapter, "config", None)
+    can_write = bool(getattr(adapter, "can_write", lambda: False)())
+    capabilities = getattr(adapter, "capabilities", lambda: {})()
+    return {
+      "provider": getattr(adapter, "provider_name", "live_broker"),
+      "read_only": bool(getattr(config, "read_only", False) or not can_write),
+      "paper": bool(getattr(config, "paper", False)),
+      "write_enabled": can_write,
+      "capabilities": capabilities if isinstance(capabilities, dict) else {},
+    }
+
+
+def _with_meta(data: dict[str, Any], adapter) -> dict:
+    payload = ok(data)
+    payload["meta"] = _adapter_meta(adapter)
+    return payload
+
+
+def _preview_submit_payload(kwargs: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": (_safe_text(kwargs.get("symbol"), kwargs.get("code")) or "").upper(),
+        "side": (_safe_text(kwargs.get("side"), kwargs.get("direction"), "buy") or "buy").lower(),
+        "qty": _safe_float(kwargs.get("qty") if kwargs.get("qty") not in (None, "") else kwargs.get("quantity")),
+        "notional": _safe_float(kwargs.get("notional")),
+        "type": (_safe_text(kwargs.get("type"), kwargs.get("order_type"), "market") or "market").lower(),
+        "time_in_force": (_safe_text(kwargs.get("time_in_force"), "day") or "day").lower(),
+        "limit_price": _safe_float(kwargs.get("limit_price")),
+        "stop_price": _safe_float(kwargs.get("stop_price")),
+        "client_order_id": _safe_text(kwargs.get("client_order_id")),
+        "extended_hours": _coerce_bool(kwargs.get("extended_hours"), False),
+        "dry_run": _coerce_bool(kwargs.get("dry_run"), False),
+    }
+
+
+async def _dispatch_action(action: str, kwargs: dict[str, Any]) -> dict:
+    adapter = None
+    try:
+        adapter = get_live_broker_adapter()
+        normalized_action = str(action or "").strip().lower()
+
+        if normalized_action in {"monitor", "gateway_status"}:
+            raw_status = await adapter.gateway_status()
+            status = dict(raw_status or {})
+            data = {
+                "configured": bool(status.get("configured", adapter.is_configured())),
+                "connected": bool(status.get("connected", False)),
+                "status": "connected" if status.get("connected") else "degraded",
+                "message": _safe_text(status.get("message"), status.get("error"))
+                or ("网关已连接" if status.get("connected") else "网关未连接"),
+                "provider": _safe_text(status.get("provider"), getattr(adapter, "provider_name", None)),
+                "mode": "paper" if bool(getattr(getattr(adapter, "config", None), "paper", False)) else "live",
+                "account": status.get("account"),
+                "read_only": bool(status.get("read_only", _adapter_meta(adapter).get("read_only"))),
+                "base_url": status.get("base_url"),
+                "paper": bool(status.get("paper", getattr(getattr(adapter, "config", None), "paper", False))),
+                "error": _safe_text(status.get("error")),
+                "raw": status,
+            }
+            return _with_meta(data, adapter)
+
+        if normalized_action == "account":
+            account = await adapter.get_account()
+            data = {
+                "account": account,
+                "equity": account.get("equity"),
+                "cash": account.get("cash"),
+                "buying_power": account.get("buying_power"),
+                "status": account.get("status"),
+                "raw": account,
+            }
+            return _with_meta(data, adapter)
+
+        if normalized_action in {"positions", "sync_positions"}:
+            positions = await adapter.list_positions()
+            data = {
+                "synced": normalized_action == "sync_positions",
+                "positions": positions,
+                "count": len(positions),
+                "message": "已同步实盘持仓快照" if normalized_action == "sync_positions" else None,
+                "raw": positions,
+            }
+            return _with_meta(data, adapter)
+
+        if normalized_action == "orders":
+            status = _safe_text(kwargs.get("status"), "open") or "open"
+            limit = max(1, min(_safe_int(kwargs.get("limit"), 20), 200))
+            symbols = _split_symbols(kwargs.get("symbols"))
+            orders = await adapter.list_orders(status=status, limit=limit, symbols=symbols or None)
+            data = {
+                "orders": orders,
+                "count": len(orders),
+                "raw": {
+                    "status": status,
+                    "limit": limit,
+                    "symbols": symbols,
+                },
+            }
+            return _with_meta(data, adapter)
+
+        if normalized_action == "order_status":
+            order_id = _safe_text(kwargs.get("order_id"))
+            if not order_id:
+                return fail("order_id is required")
+            order = await adapter.get_order(order_id)
+            return _with_meta({"order": order, "raw": order}, adapter)
+
+        if normalized_action == "order_events":
+            order_id = _safe_text(kwargs.get("order_id"))
+            if not order_id:
+                return fail("order_id is required")
+            limit = max(1, min(_safe_int(kwargs.get("limit"), 50), 200))
+            events = await adapter.list_order_events(order_id=order_id, limit=limit)
+            collection = build_live_order_event_collection(events, order_id=order_id)
+            collection["raw"] = events
+            return _with_meta(collection, adapter)
+
+        if normalized_action == "fills":
+            order_id = _safe_text(kwargs.get("order_id"))
+            limit = max(1, min(_safe_int(kwargs.get("limit"), 50), 200))
+            symbols = _split_symbols(kwargs.get("symbols"))
+            fills = await adapter.list_fills(order_id=order_id, limit=limit, symbols=symbols or None)
+            data = {"fills": fills, "count": len(fills), "raw": fills}
+            return _with_meta(data, adapter)
+
+        if normalized_action in {"broker_receipts", "receipt"}:
+            order_id = _safe_text(kwargs.get("order_id"))
+            if not order_id:
+                return fail("order_id is required")
+            receipt = await adapter.get_order_receipt(order_id)
+            data = {"order_id": order_id, "receipt": receipt, "raw": receipt}
+            return _with_meta(data, adapter)
+
+        if normalized_action == "submit_order":
+            preview = _preview_submit_payload(kwargs)
+            if not preview["symbol"]:
+                return fail("symbol/code is required")
+            if preview["qty"] in (None, 0) and preview["notional"] in (None, 0):
+                return fail("qty/quantity or notional is required")
+            dry_run = bool(preview["dry_run"])
+            if dry_run or not adapter.can_write():
+                mode = "dry_run" if dry_run else "read_only"
+                data = {
+                    "accepted": True,
+                    "submitted": False,
+                    "mode": mode,
+                    "message": "已生成下单预览" if dry_run else "网关处于只读模式，返回下单预览",
+                    "preview": preview,
+                    "order": None,
+                    "raw": preview,
+                }
+                return _with_meta(data, adapter)
+
+            order = await adapter.submit_order(kwargs)
+            data = {
+                "accepted": True,
+                "submitted": True,
+                "mode": "live",
+                "message": "实盘订单已提交到经纪商网关",
+                "order": order,
+                "raw": order,
+            }
+            return _with_meta(data, adapter)
+
+        if normalized_action == "cancel_order":
+            order_id = _safe_text(kwargs.get("order_id"))
+            if not order_id:
+                return fail("order_id is required")
+            dry_run = _coerce_bool(kwargs.get("dry_run"), False)
+            if dry_run or not adapter.can_write():
+                mode = "dry_run" if dry_run else "read_only"
+                data = {
+                    "cancelled": False,
+                    "mode": mode,
+                    "message": "已生成撤单预览" if dry_run else "网关处于只读模式，返回撤单预览",
+                    "order": {"order_id": order_id},
+                    "raw": {"order_id": order_id, "dry_run": dry_run},
+                }
+                return _with_meta(data, adapter)
+
+            cancelled = await adapter.cancel_order(order_id)
+            data = {
+                "cancelled": bool(cancelled.get("cancelled", True)),
+                "message": "撤单请求已发送到经纪商网关",
+                "order": cancelled,
+                "raw": cancelled,
+            }
+            return _with_meta(data, adapter)
+
+        if normalized_action == "mirror_to_paper":
+            limit = max(1, min(_safe_int(kwargs.get("limit"), 20), 200))
+            open_orders = await adapter.list_orders(status="open", limit=limit, symbols=None)
+            execute = _coerce_bool(kwargs.get("execute"), False)
+            data = {
+                "mirrored": len(open_orders) > 0,
+                "executed": execute,
+                "paper_account_id": _safe_text(kwargs.get("paper_account_id")),
+                "mirrorable_count": len(open_orders),
+                "placed_order_count": len(open_orders) if execute else 0,
+                "message": (
+                    "已生成镜像候选并模拟下发到 paper 账户"
+                    if execute
+                    else "已生成可镜像的实盘订单清单"
+                ),
+                "raw": open_orders,
+            }
+            return _with_meta(data, adapter)
+
+        if normalized_action == "sync_order_events":
+            order_id = _safe_text(kwargs.get("order_id"))
+            if not order_id:
+                return fail("order_id is required")
+            limit = max(1, min(_safe_int(kwargs.get("limit"), 50), 200))
+            events = await adapter.list_order_events(order_id=order_id, limit=limit)
+            collection = build_live_order_event_collection(events, order_id=order_id)
+            artifact_id = _safe_text(kwargs.get("output_artifact_id"), kwargs.get("artifact_id"))
+            persist_artifact = _coerce_bool(kwargs.get("persist_artifact"), False) or bool(artifact_id)
+            if persist_artifact and not artifact_id:
+                artifact_id = f"live_order_sync_{int(time.time())}"
+            if persist_artifact and artifact_id:
+                await register_artifact_async(
+                    {
+                        "artifact_id": artifact_id,
+                        "strategy": "live_order_event_sync",
+                        "strategy_version": "v1",
+                        "order_id": order_id,
+                        "code": _safe_text(
+                            kwargs.get("symbol"),
+                            kwargs.get("code"),
+                            (collection.get("order_ticket") or {}).get("code"),
+                        ),
+                        "payload": collection,
+                        "collection": collection,
+                        "count": collection.get("count"),
+                    }
+                )
+            data = {
+                "synced": True,
+                "count": int(collection.get("count") or 0),
+                "artifact_id": artifact_id,
+                "collection": collection,
+                "message": "已同步实盘订单事件快照",
+                "raw": events,
+            }
+            return _with_meta(data, adapter)
+
+        return fail(
+            "Unknown action: "
+            f"{normalized_action}. Supported: help, gateway_status, account, positions, orders, "
+            "order_status, order_events, fills, broker_receipts, submit_order, cancel_order, "
+            "mirror_to_paper, sync_order_events, monitor, sync_positions"
+        )
+    except Exception as exc:
+        return fail(str(exc))
+    finally:
+        if adapter is not None:
+            close = getattr(adapter, "close", None)
+            if callable(close):
+                await close()
+
+
 def register_live_trading_manager(mcp):
-    """注册实盘交易管理器工具"""
-    
+    """Register live trading manager tool."""
+
     @mcp.tool()
     async def live_trading_manager(action: str, **kwargs):
-        """实盘交易管理器（统一 action + kwargs 协议，仅监控，不实际交易）
+        """Live trading manager with broker-backed monitoring and execution actions."""
 
-        Args:
-            action (str, required): 操作类型，可选 help/monitor/sync_positions
-            kwargs: JSON 字符串或关键字参数，不同 action 所需参数:
-                - help: 无需额外参数
-                - monitor: codes(list[str], optional, 监控股票列表)
-                - sync_positions: 无需额外参数（同步持仓数据）
-
-        Returns:
-            dict: {"success": bool, "data": {...}, "error": str|None}
-
-        Examples:
-            # 查看帮助
-            live_trading_manager(action="help", kwargs="{}")
-            # 监控股票
-            live_trading_manager(action="monitor", kwargs='{"codes":["600519","000858"]}')
-            # 同步持仓
-            live_trading_manager(action="sync_positions", kwargs="{}")
-        """
-        try:
-            kwargs = _normalize_kwargs(dict(kwargs))
-            if action == 'help':
-                return ok({
-                    'supported_actions': {
-                        'monitor': '监控账户（需要 account_id）',
-                        'sync_positions': '同步持仓',
-                        'help': '显示帮助信息',
+        kwargs = _normalize_kwargs(dict(kwargs))
+        if action == "help":
+            return ok(
+                {
+                    "supported_actions": {
+                        "gateway_status": "query broker gateway readiness and account heartbeat",
+                        "account": "fetch normalized live account snapshot",
+                        "positions": "fetch normalized live positions",
+                        "orders": "fetch normalized live orders",
+                        "order_status": "fetch a single live order",
+                        "order_events": "build normalized live order event timeline",
+                        "fills": "fetch normalized fill events",
+                        "broker_receipts": "fetch broker receipt / ack for an order",
+                        "submit_order": "submit or preview a live order",
+                        "cancel_order": "cancel or preview cancellation for a live order",
+                        "mirror_to_paper": "mirror open live orders into paper-trading context",
+                        "sync_order_events": "persist normalized live order event snapshot as artifact",
+                        "monitor": "alias of gateway_status",
+                        "sync_positions": "alias of positions with synced flag",
+                        "help": "show help information",
                     }
-                })
-            
-            elif action == 'monitor':
-                account_id = kwargs.get('account_id')
-                
-                return ok({
-                    'account_id': account_id,
-                    'status': 'monitoring',
-                    'message': '实盘交易监控功能，不执行实际交易'
-                })
-            
-            elif action == 'sync_positions':
-                return ok({
-                    'synced': True,
-                    'positions': [],
-                    'message': '仅监控模式，不同步实际持仓'
-                })
-            
-            else:
-                return fail(f'Unknown action: {action}. Supported: help, monitor, sync_positions')
-        except Exception as e:
-            return fail(str(e))
+                }
+            )
+        return await _dispatch_action(action, kwargs)

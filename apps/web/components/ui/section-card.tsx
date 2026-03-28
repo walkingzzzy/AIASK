@@ -9,9 +9,11 @@ export function SectionCard({
 }) {
   return (
     <section
-      className={`glass glass-hover p-3 ${
-        tabAttached ? 'rounded-b-[12px]' : 'rounded-[12px] mt-3'
-      } ${className}`}
+      className={`surface-card ${
+        tabAttached ? 'rounded-b-[22px] rounded-t-none' : 'rounded-[22px]'
+      } ${tabAttached ? 'mt-0 p-4' : 'mt-4 p-4 sm:p-5'} ${
+        className
+      }`}
     >
       {children}
     </section>

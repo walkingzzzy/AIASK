@@ -3,15 +3,17 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { PageContainer, SectionCard, TabBar } from '@/components/ui';
+import { Badge, DataTable, PageContainer, SectionCard, TabBar } from '@/components/ui';
+import { AskAiButton } from '@/components/ask-ai-button';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { StrategyCard } from '@/components/strategy-card';
 import { useCartStore } from '@/store/cart-store';
-import { extractArray } from '@/lib/data-utils';
+import { extractArray, fmtPct, fmtNum } from '@/lib/data-utils';
 import { ensureRecordOrArray } from '@/lib/query-parse';
 import { apiKeys } from '@/lib/query-keys';
+import { getStrategyMetricSnapshot } from '@/lib/strategy-metrics';
 import type {
   RankingResponse,
   FactoryStatusResponse,
@@ -34,6 +36,23 @@ const CATEGORIES = [
   { key: 'multi_factor', label: '多因子' },
   { key: 'macro', label: '宏观' },
 ] as const;
+
+const STRATEGY_TYPE_LABELS: Record<string, string> = {
+  momentum: '动量',
+  value: '价值',
+  quality: '质量',
+  quality_factor: '质量',
+  multi_factor: '多因子',
+  macro: '宏观',
+  ma_cross: '均线',
+  dsl_rule: 'DSL',
+};
+
+function resolveCategoryLabel(key?: string | null) {
+  const type = String(key ?? 'all');
+  if (STRATEGY_TYPE_LABELS[type]) return STRATEGY_TYPE_LABELS[type];
+  return CATEGORIES.find((item) => item.key === type)?.label ?? type;
+}
 
 export default function StrategyMarketPage() {
   const searchParams = useSearchParams();
@@ -64,19 +83,40 @@ export default function StrategyMarketPage() {
   });
   const addToCart = useCartStore((s) => s.addStrategy);
   const cartItems = useCartStore((s) => s.items);
+  const [showCart, setShowCart] = useState(false);
+  const [showFeatured, setShowFeatured] = useState(false);
+  type SortKey = 'totalReturn' | 'sharpe' | 'maxDrawdown' | 'subscriber_count';
+  const [sortBy, setSortBy] = useState<SortKey>('totalReturn');
+  const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
 
   /* ---------- derived data ---------- */
 
   const strategies = useMemo(() => {
     const list = extractArray(rankQ.data, 'strategies', 'items', 'data') as Strategy[];
-    if (!search.trim()) return list;
-    const q = search.trim().toLowerCase();
-    return list.filter((s) =>
-      s.name.toLowerCase().includes(q) ||
-      (s.description ?? '').toLowerCase().includes(q) ||
-      (s.strategy_type ?? '').toLowerCase().includes(q),
-    );
-  }, [rankQ.data, search]);
+    let filtered = list;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      filtered = list.filter((s) =>
+        s.name.toLowerCase().includes(q) ||
+        (s.description ?? '').toLowerCase().includes(q) ||
+        (s.strategy_type ?? '').toLowerCase().includes(q),
+      );
+    }
+    return [...filtered].sort((a, b) => {
+      const ma = getStrategyMetricSnapshot(a);
+      const mb = getStrategyMetricSnapshot(b);
+      let va: number;
+      let vb: number;
+      if (sortBy === 'subscriber_count') {
+        va = Number(a.subscriber_count ?? 0);
+        vb = Number(b.subscriber_count ?? 0);
+      } else {
+        va = Number(ma[sortBy] ?? Number.NEGATIVE_INFINITY);
+        vb = Number(mb[sortBy] ?? Number.NEGATIVE_INFINITY);
+      }
+      return sortDir === 'desc' ? vb - va : va - vb;
+    });
+  }, [rankQ.data, search, sortBy, sortDir]);
 
   const factorySummary = useMemo(() => {
     const raw = factoryStatusQ.data;
@@ -121,8 +161,8 @@ export default function StrategyMarketPage() {
   const comparableRuns = useMemo(() => filteredRuns.slice(0, 5), [filteredRuns]);
   const trendRuns = useMemo(() => [...comparableRuns].reverse(), [comparableRuns]);
 
-  const [showCart, setShowCart] = useState(false);
   const showEmptyStrategyState = !rankQ.isPending && strategies.length === 0 && !rankQ.error;
+  const featuredStrategies = useMemo(() => strategies.slice(0, 3), [strategies]);
   const factoryOverview = useMemo(
     () => [
       { label: '调度状态', value: factoryStatusQ.data?.running ? '运行中' : '待命' },
@@ -132,6 +172,108 @@ export default function StrategyMarketPage() {
     ],
     [factoryStatusQ.data?.running, factorySummary.candidates_spawned, factorySummary.passed_quality_gate, latestSnapshot?.snapshot_date],
   );
+  const bestAnnualReturn = useMemo(() => {
+    if (!strategies.length) return null;
+    return strategies.reduce((best, strategy) => {
+      const value = Number(getStrategyMetricSnapshot(strategy).totalReturn ?? Number.NEGATIVE_INFINITY);
+      return value > best ? value : best;
+    }, Number.NEGATIVE_INFINITY);
+  }, [strategies]);
+  const bestSharpe = useMemo(() => {
+    if (!strategies.length) return null;
+    return strategies.reduce((best, strategy) => {
+      const value = Number(getStrategyMetricSnapshot(strategy).sharpe ?? Number.NEGATIVE_INFINITY);
+      return value > best ? value : best;
+    }, Number.NEGATIVE_INFINITY);
+  }, [strategies]);
+  const enabledCapabilityCount = useMemo(
+    () => capabilityBadges.filter((item) => item.enabled).length,
+    [capabilityBadges],
+  );
+  const activeCategoryLabel = useMemo(() => resolveCategoryLabel(category), [category]);
+
+  const strategyColumns = useMemo(() => [
+    {
+      key: 'name',
+      label: '策略',
+      render: (_: unknown, row: Record<string, unknown>) => {
+        const strategy = row as Strategy;
+        return (
+          <div className="min-w-[200px]">
+            <Link href={`/strategy-market/${strategy.id}`} className="no-underline text-inherit">
+              <div className="font-semibold text-text-primary">{strategy.name}</div>
+              <div className="mt-1 text-xs text-text-secondary">{strategy.description || strategy.strategy_type || '暂无描述'}</div>
+            </Link>
+          </div>
+        );
+      },
+    },
+    {
+      key: 'strategy_type',
+      label: '类型',
+      render: (value: unknown) => {
+        const type = String(value ?? '其他');
+        const label = resolveCategoryLabel(type);
+        const variant = type === 'momentum' || type === 'ma_cross'
+          ? 'info'
+          : type === 'value'
+            ? 'success'
+            : type === 'quality' || type === 'quality_factor'
+              ? 'warning'
+              : 'neutral';
+        return <Badge variant={variant}>{label}</Badge>;
+      },
+    },
+    {
+      key: 'annual_return',
+      label: '年化收益',
+      align: 'right' as const,
+      render: (_: unknown, row: Record<string, unknown>) => {
+        const value = Number(getStrategyMetricSnapshot(row as Strategy).totalReturn ?? 0);
+        return <span className={value >= 0 ? 'text-success font-medium' : 'text-danger font-medium'}>{fmtPct(value)}</span>;
+      },
+    },
+    {
+      key: 'sharpe_ratio',
+      label: 'Sharpe',
+      align: 'right' as const,
+      render: (_: unknown, row: Record<string, unknown>) => fmtNum(getStrategyMetricSnapshot(row as Strategy).sharpe ?? 0, 2),
+    },
+    {
+      key: 'max_drawdown',
+      label: '最大回撤',
+      align: 'right' as const,
+      render: (_: unknown, row: Record<string, unknown>) => <span className="text-danger font-medium">{fmtPct(getStrategyMetricSnapshot(row as Strategy).maxDrawdown ?? 0)}</span>,
+    },
+    {
+      key: 'subscriber_count',
+      label: '订阅',
+      align: 'right' as const,
+      render: (value: unknown) => String(value ?? 0),
+    },
+    {
+      key: '_actions',
+      label: '操作',
+      sortable: false,
+      render: (_: unknown, row: Record<string, unknown>) => {
+        const strategy = row as Strategy;
+        return (
+          <div className="flex justify-end gap-2">
+            <Link href={`/strategy-market/${strategy.id}`} className="rounded-full border border-border bg-surface px-3 py-1 text-xs no-underline text-text-secondary">
+              详情
+            </Link>
+            <button
+              type="button"
+              onClick={() => addToCart({ strategyId: strategy.id, name: strategy.name, weight: 0 })}
+              className="rounded-full bg-primary px-3 py-1 text-xs text-white shadow-sm"
+            >
+              加入组合
+            </button>
+          </div>
+        );
+      },
+    },
+  ], [addToCart]);
 
   const expandedRun = useMemo(() => {
     if (!expandedRunId) return null;
@@ -143,127 +285,309 @@ export default function StrategyMarketPage() {
   /* ---------- render ---------- */
 
   return (
-    <PageContainer>
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <h1 className="m-0">策略超市</h1>
-          <p className="mt-1 mb-0 text-sm text-text-secondary">先挑策略、再做组合。工厂运行遥测默认收起，避免把真实用户任务淹没在运维信息里。</p>
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-          <label className="grid gap-1 text-xs text-text-secondary">
-            <span>搜索策略</span>
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索策略名称..."
-              aria-label="搜索策略名称、描述或类型"
-              className="px-2 py-1 border border-border rounded text-sm w-full sm:w-45"
-            />
-          </label>
-          <button
-            onClick={() => setShowCart(!showCart)}
-            className="relative px-3 py-1 text-sm rounded border border-border cursor-pointer hover:bg-surface-alt"
-          >
-            组合购物车
-            {cartItems.length > 0 && (
-              <span className="absolute -top-1.5 -right-1.5 bg-primary text-white text-[10px] w-4 h-4 rounded-full flex items-center justify-center">
-                {cartItems.length}
-              </span>
-            )}
-          </button>
-        </div>
-      </div>
-      {(from || task) ? <div className="text-xs text-text-secondary mt-2">上下文跳转{from ? ` · 来源: ${from}` : ''}{task ? ` · 任务: ${task}` : ''}</div> : null}
-
-      <SectionCard className="mt-4 p-4 min-h-[164px]">
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div>
-            <h2 className="m-0 text-base font-semibold">{showEmptyStrategyState ? '工厂状态' : '工厂摘要'}</h2>
-            <p className="m-0 mt-1 text-sm text-text-secondary">
-              {showEmptyStrategyState
-                ? '当前目录为空时，先看工厂有没有产出候选、是否卡在质量门控，再决定下一步动作。'
-                : '当前仅保留关键状态与快捷动作，详细运行历史放到下方展开查看。'}
-            </p>
+    <PageContainer className="space-y-4">
+      <section className="grid gap-4 xl:grid-cols-[minmax(0,1.18fr)_360px]">
+        <div className="rounded-[28px] border border-border bg-surface p-6 shadow-sm">
+          <div className="eyebrow">Strategy Workspace</div>
+          <h1 className="mt-3">先看筛选结果，再决定订阅、组合和工厂动作。</h1>
+          <p className="page-lead mt-3 mb-0">
+            策略页首屏改成两层结构：上层只保留工厂摘要与精选候选，下层用表格完成对比和筛选。工厂运行态默认下沉，不再和选策略任务抢注意力。
+          </p>
+          {(from || task) ? (
+            <div className="mt-4 text-xs text-text-secondary">
+              上下文跳转{from ? ` · 来源: ${from}` : ''}{task ? ` · 任务: ${task}` : ''}
+            </div>
+          ) : null}
+          <div className="mt-5 flex flex-wrap gap-2">
+            {capabilityBadges.slice(0, 8).map((item) => (
+              <Badge key={item.key} variant={item.enabled ? 'info' : 'neutral'}>
+                {item.label}
+              </Badge>
+            ))}
           </div>
-          <div className="flex gap-2 flex-wrap">
+        </div>
+
+        <SectionCard className="mt-0">
+          <div className="eyebrow">目录摘要</div>
+          <h2 className="mt-2">当前目录</h2>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-2">
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">目录策略数</div>
+              <div className="mt-2 text-2xl font-semibold text-text-primary">{strategies.length}</div>
+            </div>
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">已启用能力</div>
+              <div className="mt-2 text-2xl font-semibold text-text-primary">{enabledCapabilityCount}</div>
+            </div>
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">最佳年化</div>
+              <div className={`mt-2 text-lg font-semibold ${(bestAnnualReturn ?? 0) >= 0 ? 'text-success' : 'text-danger'}`}>
+                {bestAnnualReturn == null || !Number.isFinite(bestAnnualReturn) ? '-' : fmtPct(bestAnnualReturn)}
+              </div>
+            </div>
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">最佳 Sharpe</div>
+              <div className="mt-2 text-lg font-semibold text-text-primary">
+                {bestSharpe == null || !Number.isFinite(bestSharpe) ? '-' : fmtNum(bestSharpe, 2)}
+              </div>
+            </div>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <AskAiButton
+              prompt={`当前策略目录共 ${strategies.length} 个策略，请推荐几个值得重点关注的，并说明理由`}
+              label="AI 推荐策略"
+            />
             <button
+              type="button"
               onClick={() => runFactoryApi.trigger('/strategy-market/factory/run-once', { method: 'POST' })}
               disabled={runFactoryApi.isPending}
-              className="px-3 py-1.5 text-sm rounded bg-primary text-white cursor-pointer disabled:opacity-50"
+              className="rounded-full bg-primary px-4 py-2 text-sm text-white shadow-sm disabled:opacity-50"
             >
-              {runFactoryApi.isPending ? '运行中...' : '立即运行一轮工厂'}
+              {runFactoryApi.isPending ? '工厂运行中...' : '立即运行一轮工厂'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCart((prev) => !prev)}
+              className="relative rounded-full border border-border bg-surface px-4 py-2 text-sm text-text-secondary"
+            >
+              组合购物车
+              {cartItems.length > 0 ? (
+                <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] text-white">
+                  {cartItems.length}
+                </span>
+              ) : null}
             </button>
             <button
               type="button"
               onClick={() => setShowFactoryDetails((prev) => !prev)}
-              className="px-3 py-1.5 text-sm rounded border border-border cursor-pointer hover:bg-surface-alt"
+              className="rounded-full border border-border bg-surface px-4 py-2 text-sm text-text-secondary"
               aria-expanded={showFactoryDetails}
             >
               {showFactoryDetails ? '收起工厂运行态' : '展开工厂运行态'}
             </button>
           </div>
+          {runFactoryApi.error ? <p className="mb-0 mt-3 text-sm text-danger">{runFactoryApi.error}</p> : null}
+        </SectionCard>
+      </section>
+
+      <SectionCard className="mt-0">
+        <div className="flex flex-col gap-3">
+          {/* 行 1：搜索 + 排序 + 视图切换 + 操作 */}
+          <div className="toolbar-strip">
+            <div className="flex flex-wrap items-center gap-2 flex-1">
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="搜索策略名称 / 描述"
+                aria-label="搜索策略名称、描述或类型"
+                className="w-48 px-3 py-2 text-sm"
+              />
+              <span className="text-xs text-text-muted hidden sm:inline">排序</span>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                aria-label="排序字段"
+                className="w-28 px-2 py-2 text-xs"
+              >
+                <option value="totalReturn">按年化</option>
+                <option value="sharpe">按 Sharpe</option>
+                <option value="maxDrawdown">按最大回撤</option>
+                <option value="subscriber_count">按订阅数</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setSortDir((d) => d === 'desc' ? 'asc' : 'desc')}
+                className="action-chip text-xs"
+                title={sortDir === 'desc' ? '当前降序' : '当前升序'}
+              >
+                {sortDir === 'desc' ? '↓ 降序' : '↑ 升序'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowFeatured((v) => !v)}
+                className="action-chip text-xs ml-auto"
+              >
+                {showFeatured ? '收起精选卡片' : '展开精选卡片'}
+              </button>
+              <Link href="/paper-trading?from=strategy-market" className="action-chip text-xs no-underline text-inherit">
+                去模拟盘
+              </Link>
+              <Link href="/portfolio?from=strategy-market" className="action-chip text-xs no-underline text-inherit">
+                去组合页
+              </Link>
+            </div>
+          </div>
+          {/* 行 2：分类 Tab + 结果数 */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="overflow-x-auto">
+              <TabBar
+                tabs={CATEGORIES}
+                active={category}
+                onChange={(c) => { setCategory(c); setSearch(''); }}
+              />
+            </div>
+            <span className="ml-auto text-xs text-text-muted shrink-0">
+              共 <span className="font-semibold text-text-primary">{strategies.length}</span> 个策略
+            </span>
+          </div>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+      </SectionCard>
+
+      <SectionCard className="mt-0">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="eyebrow">工厂概况</div>
+            <h2 className="mt-2">{showEmptyStrategyState ? '先确认工厂有没有产出' : '只看关键工厂指标'}</h2>
+          </div>
+          <Badge variant={snapshotDegraded ? 'warning' : 'success'}>
+            {snapshotDegraded ? '快照存在降级' : '快照完整'}
+          </Badge>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {factoryOverview.map((item) => (
-            <div key={item.label} className="rounded border border-border bg-surface-alt px-3 py-2">
-              <div className="text-xs text-text-secondary">{item.label}</div>
-              <div className="mt-1 text-base font-semibold">{item.value}</div>
+            <div key={item.label} className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">{item.label}</div>
+              <div className="mt-2 text-base font-semibold text-text-primary">{item.value}</div>
             </div>
           ))}
         </div>
-        {runFactoryApi.error ? <p className="mt-3 mb-0 text-sm text-danger">{runFactoryApi.error}</p> : null}
+        <div className="mt-3 flex flex-wrap gap-2 text-xs text-text-secondary">
+          <span className="rounded-full border border-border bg-surface px-3 py-1">
+            快照完成率 {snapshotCompletionRatio == null ? '-' : fmtPct(snapshotCompletionRatio)}
+          </span>
+          <span className="rounded-full border border-border bg-surface px-3 py-1">
+            失败原因 {snapshotFailureCount}
+          </span>
+          <span className="rounded-full border border-border bg-surface px-3 py-1">
+            最近失败运行 {failedRuns.length}
+          </span>
+        </div>
       </SectionCard>
 
+      {rankQ.isPending ? <LoadingState text="加载策略列表..." /> : null}
+      {rankQ.error ? <ErrorState text={rankQ.error} /> : null}
+
       {showEmptyStrategyState ? (
-        <SectionCard className="mt-4 p-5">
+        <SectionCard className="mt-0">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <h2 className="m-0 text-base font-semibold">当前还没有可选策略</h2>
-              <p className="m-0 mt-1 text-sm text-text-secondary">常见原因是工厂尚未运行、最新候选还在质量门控里，或者策略仍停留在孵化态。建议先用下面三个动作定位问题，再回到目录页挑选。</p>
+              <h2>当前还没有可选策略</h2>
+              <p className="mb-0 mt-2 text-sm text-text-secondary">
+                常见原因是工厂尚未运行、最新候选还在质量门控里，或者策略仍停留在孵化态。建议先执行工厂，再去看详细运行态确认卡点。
+              </p>
             </div>
-            <div className="flex gap-2 flex-wrap">
+            <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={() => runFactoryApi.trigger('/strategy-market/factory/run-once', { method: 'POST' })}
                 disabled={runFactoryApi.isPending}
-                className="px-3 py-1.5 text-sm rounded bg-primary text-white cursor-pointer disabled:opacity-50"
+                className="rounded-full bg-primary px-4 py-2 text-sm text-white shadow-sm disabled:opacity-50"
               >
                 {runFactoryApi.isPending ? '运行中...' : '立即运行一轮工厂'}
               </button>
               <button
                 type="button"
                 onClick={() => setShowFactoryDetails(true)}
-                className="px-3 py-1.5 text-sm rounded border border-border cursor-pointer hover:bg-surface-alt"
+                className="rounded-full border border-border bg-surface px-4 py-2 text-sm text-text-secondary"
               >
-                查看最近快照与运行态
+                查看工厂运行态
               </button>
-              <Link href="/paper-trading" className="px-3 py-1.5 text-sm rounded border border-border no-underline text-inherit hover:bg-surface-alt">
+              <Link href="/paper-trading" className="rounded-full border border-border bg-surface px-4 py-2 text-sm no-underline text-text-secondary">
                 了解孵化后的落地路径
               </Link>
             </div>
           </div>
         </SectionCard>
-      ) : null}
+      ) : (
+        <>
+          {showFeatured ? (
+            <SectionCard className="mt-0">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="eyebrow">精选策略卡片</div>
+                  <h2 className="mt-1">前 3 个候选（按当前排序）</h2>
+                </div>
+                <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3 text-sm text-text-secondary">
+                  分类：<span className="font-semibold text-text-primary">{activeCategoryLabel}</span>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-4 lg:grid-cols-3">
+                {featuredStrategies.map((strategy) => (
+                  <StrategyCard
+                    key={strategy.id}
+                    s={strategy}
+                    onAdd={(item) => addToCart({ strategyId: item.id, name: item.name, weight: 0 })}
+                  />
+                ))}
+              </div>
+            </SectionCard>
+          ) : null}
 
-      <div className="overflow-x-auto pb-1">
-        <div className="min-w-max">
-          <TabBar tabs={CATEGORIES} active={category} onChange={(c) => { setCategory(c); setSearch(''); }} />
-        </div>
-      </div>
-
-      {rankQ.isPending && <LoadingState text="加载策略列表..." />}
-      {rankQ.error && <ErrorState text={rankQ.error} />}
-
-      {strategies.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mt-4">
-          {strategies.map((s) => (
-            <StrategyCard
-              key={s.id}
-              s={s}
-              onAdd={(st) => addToCart({ strategyId: st.id, name: st.name, weight: 0 })}
+          <SectionCard className="mt-0">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <div>
+                <div className="eyebrow">全量目录</div>
+                <h2 className="mt-1">策略表格视图</h2>
+              </div>
+              <span className="text-xs text-text-muted">共 {strategies.length} 条 · 按 <b className="text-text-primary">{sortBy === 'totalReturn' ? '年化' : sortBy === 'sharpe' ? 'Sharpe' : sortBy === 'maxDrawdown' ? '最大回撤' : '订阅数'}</b> {sortDir === 'desc' ? '降序' : '升序'}</span>
+            </div>
+            <DataTable
+              rows={strategies as Record<string, unknown>[]}
+              columns={strategyColumns}
+              rowKey="id"
+              maxHeight={560}
+              mobileCardRender={(row) => {
+                const strategy = row as Strategy;
+                const metrics = getStrategyMetricSnapshot(strategy);
+                return (
+                  <div className="space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <Link href={`/strategy-market/${strategy.id}`} className="no-underline text-inherit">
+                          <div className="text-sm font-semibold text-text-primary">{strategy.name}</div>
+                        </Link>
+                        <div className="mt-1 text-xs text-text-secondary">
+                          {strategy.description || strategy.strategy_type || '暂无描述'}
+                        </div>
+                      </div>
+                      <Badge variant="neutral">{resolveCategoryLabel(strategy.strategy_type)}</Badge>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-xs text-text-secondary">
+                      <div>
+                        <div className="metric-label">年化</div>
+                        <div className={`mt-2 text-sm font-semibold ${(metrics.totalReturn ?? 0) >= 0 ? 'text-success' : 'text-danger'}`}>
+                          {fmtPct(metrics.totalReturn ?? 0)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="metric-label">Sharpe</div>
+                        <div className="mt-2 text-sm font-semibold text-text-primary">
+                          {fmtNum(metrics.sharpe ?? 0, 2)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="metric-label">回撤</div>
+                        <div className="mt-2 text-sm font-semibold text-danger">
+                          {fmtPct(metrics.maxDrawdown ?? 0)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 border-t border-border pt-3 text-xs text-text-secondary">
+                      <span>{strategy.subscriber_count ?? 0} 人订阅</span>
+                      <button
+                        type="button"
+                        onClick={() => addToCart({ strategyId: strategy.id, name: strategy.name, weight: 0 })}
+                        className="rounded-full bg-primary px-3 py-1.5 text-xs text-white shadow-sm"
+                      >
+                        加入组合
+                      </button>
+                    </div>
+                  </div>
+                );
+              }}
             />
-          ))}
-        </div>
+          </SectionCard>
+        </>
       )}
 
       {showFactoryDetails ? (

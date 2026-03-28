@@ -6,58 +6,80 @@ import { useAuthStore } from '@/store/auth-store';
 import { useHydrated } from '@/hooks/use-hydrated';
 
 const KEY = 'onboarding-done';
-const STEPS = [
-  { target: '[data-tour="dashboard"]', title: '欢迎来到 AIASK', content: '这里是你的个人首页，优先展示资产、自选、告警和市场快讯。' },
-  { target: '[data-tour="chat"]', title: 'AI 对话', content: '你可以在这里和 AI 连续对话，分析股票、板块和策略。' },
-  { target: '[data-tour="watchlist"]', title: '自选股', content: '把你关心的股票加入自选，后续就能持续跟踪行情和异动。' },
-  { target: '[data-tour="paper-trading"]', title: '模拟交易', content: '先用模拟盘练手，观察策略表现和持仓变化。' },
-  { target: '[data-tour="settings"]', title: '设置中心', content: '如果还没配置 LLM Key，建议先到设置中心完成配置。' },
+
+const CHECKLIST = [
+  { id: 'market', title: '查看行情', description: '打开行情页，选定标的，看 K 线和盘口。', href: '/market' },
+  { id: 'strategy', title: '浏览策略', description: '策略超市里筛选、对比、加入组合。', href: '/strategy-market' },
+  { id: 'watchlist', title: '建立自选', description: '把关心的股票加入自选，持续跟踪。', href: '/watchlist' },
+  { id: 'llm', title: '配置 LLM Key', description: '在设置中心完成 AI 接口配置，解锁 AI 功能。', href: '/settings' },
 ];
 
 export function Onboarding() {
   const user = useAuthStore((s) => s.user);
   const hydrated = useHydrated();
   const [dismissed, setDismissed] = useState(false);
-  const [step, setStep] = useState(0);
+  const [minimized, setMinimized] = useState(false);
   const completed = hydrated ? window.localStorage.getItem(KEY) === '1' : true;
   const open = hydrated && Boolean(user) && !dismissed && !completed;
 
   if (!open) return null;
 
-  const current = STEPS[step];
-  const target = document.querySelector(current.target) as HTMLElement | null;
-  const rect = target?.getBoundingClientRect();
-
   const close = () => {
     window.localStorage.setItem(KEY, '1');
     setDismissed(true);
   };
-  const next = () => {
-    if (step >= STEPS.length - 1) {
-      close();
-      return;
-    }
-    setStep((prev) => prev + 1);
-  };
 
   return createPortal(
-    <div className="fixed inset-0 z-[80]">
-      <div className="absolute inset-0 bg-black/55" />
-      {rect ? (
-        <div
-          className="absolute rounded-xl border-2 border-primary shadow-[0_0_0_9999px_rgba(0,0,0,0.35)] pointer-events-none"
-          style={{ top: rect.top - 8, left: rect.left - 8, width: rect.width + 16, height: rect.height + 16 }}
-        />
-      ) : null}
-      <div className="absolute inset-x-4 bottom-6 sm:inset-x-auto sm:right-6 sm:bottom-6 sm:w-[360px] rounded-2xl border border-glass-border bg-background/95 backdrop-blur p-4 shadow-2xl">
-        <div className="text-xs text-text-secondary mb-2">引导 {step + 1} / {STEPS.length}</div>
-        <div className="text-base font-semibold mb-2">{current.title}</div>
-        <div className="text-sm text-text-secondary leading-6 mb-4">{current.content}</div>
-        <div className="flex items-center justify-between gap-3">
-          <button type="button" onClick={close} className="px-3 py-2 text-sm rounded border border-glass-border cursor-pointer">跳过</button>
-          <button type="button" onClick={next} className="px-3 py-2 text-sm rounded bg-primary text-white cursor-pointer">{step === STEPS.length - 1 ? '完成' : '下一步'}</button>
+    <div className="pointer-events-auto fixed bottom-[calc(var(--mobile-bottom-nav-height)+12px)] right-4 z-60 sm:bottom-6 sm:right-6">
+      {minimized ? (
+        <button
+          type="button"
+          onClick={() => setMinimized(false)}
+          className="rounded-full border border-border bg-surface px-4 py-2.5 text-sm font-medium text-text-primary shadow-lg"
+        >
+          快速上手 ↑
+        </button>
+      ) : (
+        <div className="w-[320px] rounded-[22px] border border-border bg-surface p-4 shadow-xl sm:w-[360px]">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="eyebrow">快速上手</div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setMinimized(true)}
+                className="rounded-full border border-border px-2.5 py-1 text-xs text-text-secondary"
+              >
+                收起
+              </button>
+              <button
+                type="button"
+                onClick={close}
+                className="rounded-full border border-border px-2.5 py-1 text-xs text-text-secondary"
+              >
+                完成
+              </button>
+            </div>
+          </div>
+          <p className="mb-3 text-xs leading-5 text-text-secondary">按需完成以下步骤，随时可以关闭。</p>
+          <div className="grid gap-2">
+            {CHECKLIST.map((item) => (
+              <a
+                key={item.id}
+                href={item.href}
+                className="flex gap-3 rounded-[16px] border border-border bg-surface-alt/60 px-3 py-2.5 no-underline transition hover:border-primary/20 hover:bg-primary/5"
+              >
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-surface text-[10px] font-bold text-text-muted">
+                  →
+                </span>
+                <div>
+                  <div className="text-sm font-medium text-text-primary">{item.title}</div>
+                  <div className="mt-0.5 text-xs leading-4 text-text-secondary">{item.description}</div>
+                </div>
+              </a>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>,
     document.body,
   );

@@ -792,6 +792,7 @@ def register_performance_manager(mcp):
                     dtype=float,
                 )
                 timing_info = _compute_timing_component(price_matrix, start_values)
+                aligned_days = int(timing_info.get('aligned_days', len(common_dates)))
 
                 # 归一化权重
                 for r in rows:
@@ -870,7 +871,7 @@ def register_performance_manager(mcp):
                             'description': '择时贡献（真实路径收益 - 静态权重线性收益）',
                             'status': 'implemented',
                             'basis': 'buy_and_hold_path_minus_static_linear',
-                            'aligned_days': int(timing_info.get('aligned_days', min_len)),
+                            'aligned_days': aligned_days,
                             'assets_used': int(timing_info.get('assets_used', len(rows))),
                             'static_total_return': float(static_total_return),
                             'realized_total_return': float(realized_total_return),
@@ -898,12 +899,12 @@ def register_performance_manager(mcp):
                     },
                     'data_window': {
                         'lookback_days': int(lookback_days),
-                        'aligned_days': int(timing_info.get('aligned_days', min_len)),
+                        'aligned_days': aligned_days,
                     },
                     'fees': fee_disclosure,
                     'window_audit': _build_window_audit(
                         lookback_days=lookback_days,
-                        aligned_days=int(timing_info.get('aligned_days', min_len)),
+                        aligned_days=aligned_days,
                         rolling_window=rolling_window,
                     ),
                 }, source_chain=source_chain)

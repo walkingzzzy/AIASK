@@ -100,7 +100,7 @@ export default function UserPage() {
         {profileQ.isPending ? (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
             {Array.from({ length: 3 }).map((_, index) => (
-              <div key={index} className="glass rounded-lg p-3 min-h-[96px]">
+              <div key={index} className="surface-card rounded-lg p-3 min-h-[96px]">
                 <Skeleton width="35%" height={12} />
                 <Skeleton className="mt-3" width="72%" height={22} />
                 {index === 2 ? <Skeleton className="mt-3" width="58%" height={32} /> : null}
@@ -109,15 +109,15 @@ export default function UserPage() {
           </div>
         ) : user ? (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
-            <div className="glass rounded-lg p-3 min-h-[96px]">
+            <div className="surface-card rounded-lg p-3 min-h-[96px]">
               <div className="text-text-secondary text-xs">用户名</div>
               <div className="font-medium mt-2">{fmt(user.username)}</div>
             </div>
-            <div className="glass rounded-lg p-3 min-h-[96px]">
+            <div className="surface-card rounded-lg p-3 min-h-[96px]">
               <div className="text-text-secondary text-xs">角色</div>
               <div className="font-medium mt-2">{fmt(user.role)}</div>
             </div>
-            <div className="glass rounded-lg p-3 min-h-[96px]">
+            <div className="surface-card rounded-lg p-3 min-h-[96px]">
               <label htmlFor="user-risk-level" className="text-text-secondary text-xs">风险等级</label>
               <div className="flex items-end gap-2 mt-2">
                 <select
@@ -212,7 +212,7 @@ export default function UserPage() {
         <h3 className="mt-0">快捷入口</h3>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {QUICK_LINKS.map((lk) => (
-            <Link key={lk.href} href={lk.href} className="glass glass-hover rounded-xl p-4 text-center no-underline text-inherit">
+            <Link key={lk.href} href={lk.href} className="surface-card rounded-xl p-4 text-center no-underline text-inherit transition hover:border-primary/20 hover:shadow-md">
               <div className="font-medium text-sm">{lk.label}</div>
               <div className="text-xs text-text-muted mt-1">{lk.desc}</div>
             </Link>

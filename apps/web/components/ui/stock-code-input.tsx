@@ -18,8 +18,8 @@ export function StockCodeInput({
   labelClassName?: string;
 }) {
   return (
-    <div className={`inline-flex ${label ? 'flex-col items-start gap-1' : 'items-center gap-2'}`}>
-      {label ? <label htmlFor={id} className={labelClassName ?? 'text-xs text-text-secondary'}>{label}</label> : null}
+    <div className={`inline-flex ${label ? 'flex-col items-start gap-1.5' : 'items-center gap-2'}`}>
+      {label ? <label htmlFor={id} className={labelClassName ?? 'text-xs font-medium uppercase tracking-[0.12em] text-text-muted'}>{label}</label> : null}
       <div className="inline-flex items-center gap-2">
         <input
           id={id}
@@ -28,7 +28,7 @@ export function StockCodeInput({
           maxLength={6}
           placeholder={placeholder}
           aria-invalid={error ? true : undefined}
-          className="w-[140px] px-2 py-1 border border-border rounded text-sm"
+          className="w-[150px] px-3 py-2 text-sm font-medium"
         />
         {error ? <span className="text-error text-xs">{error}</span> : null}
       </div>

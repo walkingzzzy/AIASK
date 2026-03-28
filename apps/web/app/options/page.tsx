@@ -42,6 +42,110 @@ type GreeksData = {
     interpretation?: Record<string, string>;
 };
 
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function unwrapToolData(value: unknown, depth = 0): Record<string, unknown> {
+    if (depth > 4) return {};
+    const record = asRecord(value);
+    if (!record.data || typeof record.data !== 'object' || Array.isArray(record.data)) {
+        return record;
+    }
+
+    const keys = Object.keys(record);
+    const wrapperOnly = keys.every((key) => [
+        'data',
+        'success',
+        'ok',
+        'error',
+        'message',
+        'source',
+        'cached',
+        'timestamp',
+        'backend_requested',
+        'backend_used',
+        'fallback_used',
+        'fallback_reason',
+        'latency_ms',
+        'traceId',
+    ].includes(key));
+
+    if (!wrapperOnly) {
+        return record;
+    }
+
+    return unwrapToolData(record.data, depth + 1);
+}
+
+function readNumber(value: unknown): number | undefined {
+    if (value == null || value === '') return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function normalizeOptionItem(value: unknown): OptionChainItem {
+    const item = asRecord(value);
+    return {
+        type: typeof item.type === 'string' ? item.type.toLowerCase() : undefined,
+        strike: readNumber(item.strike ?? item.strikePrice ?? item.exercise_price),
+        last: readNumber(item.last ?? item.lastPrice ?? item.price ?? item.close),
+        lastPrice: readNumber(item.lastPrice ?? item.last ?? item.price ?? item.close),
+        changePercent: readNumber(item.changePercent ?? item.change_pct),
+        openInterest: readNumber(item.openInterest ?? item.open_interest ?? item.oi),
+        impliedVolatility: readNumber(item.impliedVolatility ?? item.implied_volatility ?? item.iv),
+        iv: readNumber(item.iv ?? item.impliedVolatility ?? item.implied_volatility),
+    };
+}
+
+function normalizeOptionChainData(raw: unknown): OptionChainData {
+    const payload = unwrapToolData(raw);
+    const underlying = asRecord(payload.underlying);
+    const selectedExpiryRaw = payload.selectedExpiry ?? payload.expiryMonths;
+
+    return {
+        underlying: Object.keys(underlying).length > 0 ? {
+            code: typeof underlying.code === 'string' ? underlying.code : undefined,
+            name: typeof underlying.name === 'string' ? underlying.name : undefined,
+            price: readNumber(underlying.price ?? underlying.last ?? underlying.lastPrice),
+            time: typeof underlying.time === 'string' ? underlying.time : undefined,
+            date: typeof underlying.date === 'string' ? underlying.date : undefined,
+        } : undefined,
+        selectedExpiry: Array.isArray(selectedExpiryRaw)
+            ? selectedExpiryRaw.map((item) => String(item)).filter(Boolean)
+            : typeof selectedExpiryRaw === 'string' && selectedExpiryRaw
+                ? [selectedExpiryRaw]
+                : [],
+        options: Array.isArray(payload.options) ? payload.options.map((item) => normalizeOptionItem(item)) : [],
+    };
+}
+
+function normalizeTextRecord(value: unknown): Record<string, string> | undefined {
+    const record = asRecord(value);
+    const entries = Object.entries(record)
+        .map(([key, item]) => [key, String(item ?? '').trim()] as const)
+        .filter(([, item]) => item);
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function normalizeGreeksData(raw: unknown): GreeksData {
+    const payload = unwrapToolData(raw);
+    return {
+        code: typeof payload.code === 'string' ? payload.code : undefined,
+        option_type: typeof payload.option_type === 'string' ? payload.option_type : undefined,
+        spot: readNumber(payload.spot),
+        strike: readNumber(payload.strike),
+        option_price: payload.option_price != null ? String(payload.option_price) : undefined,
+        volatility: payload.volatility != null ? String(payload.volatility) : undefined,
+        risk_free_rate: payload.risk_free_rate != null ? String(payload.risk_free_rate) : undefined,
+        time_to_maturity: payload.time_to_maturity != null ? String(payload.time_to_maturity) : undefined,
+        greeks: normalizeTextRecord(payload.greeks),
+        interpretation: normalizeTextRecord(payload.interpretation),
+    };
+}
+
 export default function OptionsPage() {
     const [symbol, setSymbol] = useState('510300'); // Default to 300 ETF
     const [querySymbol, setQuerySymbol] = useState('510300');
@@ -49,12 +153,12 @@ export default function OptionsPage() {
 
     const { data: chainData, isPending: chainLoading, error: chainError, refetch: refetchChain } = useApiQuery<OptionChainData>(
         `/v1/options/chain/${querySymbol}`,
-        { staleTime: 60 * 1000 },
+        { staleTime: 60 * 1000, parse: normalizeOptionChainData },
     );
 
     const { data: greeksData, isPending: greeksLoading, error: greeksError, refetch: refetchGreeks } = useApiQuery<GreeksData>(
         `/v1/options/greeks/${querySymbol}`,
-        { staleTime: 60 * 1000 },
+        { staleTime: 60 * 1000, parse: normalizeGreeksData },
     );
 
     const pairedRows = useMemo(() => {

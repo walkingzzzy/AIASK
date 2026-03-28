@@ -23,7 +23,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         <div className="flex gap-4 min-h-[60vh]">
             {/* Admin sidebar */}
             <aside className="w-48 flex-shrink-0 hidden md:block">
-                <div className="glass rounded-xl p-2 sticky top-4">
+                <div className="surface-card rounded-xl p-2 sticky top-4">
                     <h3 className="text-xs font-bold text-text-secondary px-3 py-2 uppercase tracking-wider">管理后台</h3>
                     <nav className="space-y-0.5">
                         {ADMIN_NAV.map((item) => {

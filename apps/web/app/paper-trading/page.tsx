@@ -1,12 +1,17 @@
 'use client';
 
 import { FormEvent, useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import { AskAiButton } from '@/components/ask-ai-button';
+import WorkspaceSplitLayout from '@/components/workspace-split-layout';
+import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, SectionCard, KpiCard, KpiGrid, StockCodeInput, DataTable, Badge } from '@/components/ui';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { useToast } from '@/components/ui/toast';
 import { LineChart, PieChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { apiKeys } from '@/lib/query-keys';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState } from '@/components/status-state';
@@ -14,6 +19,7 @@ import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import { useTradeSubscription } from '@/lib/ws';
 import { isTradingHours } from '@/lib/trading-hours';
 import { exportCSV } from '@/lib/export';
+import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type {
   PaperTradingAccountsResponse,
   PaperTradingAccount,
@@ -73,6 +79,11 @@ function readStatusProbeNote(probe: PaperTradingStatusProbe, fallback: string) {
 
 export default function PaperTradingPage() {
   const { toast } = useToast();
+  const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
+  const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
+  const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
+  const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
+  const lastWorkspaceIdRef = useRef<string | null>(null);
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy');
   const [quantity, setQuantity] = useState('100');
@@ -229,7 +240,7 @@ export default function PaperTradingPage() {
     autoRefreshTriggerRef.current = autoRefreshPricesApi.triggerAsync;
   }, [autoRefreshPricesApi.triggerAsync]);
 
-  async function handleRefreshPrices() {
+  const handleRefreshPrices = useCallback(async () => {
     setFormError(null);
     setFormStatus('正在刷新持仓价格...');
     setLastActionResult(null);
@@ -242,7 +253,7 @@ export default function PaperTradingPage() {
       setFormStatus(null);
       setFormError(err instanceof Error ? err.message : String(err));
     }
-  }
+  }, [accountId, refreshPricesApi, toast]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -435,10 +446,161 @@ export default function PaperTradingPage() {
   const matchStatusLabel = matchOk ? '运行中' : showAccountBootstrap ? '待确认' : '待检查';
   const navStatusLabel = navOk ? '运行中' : showAccountBootstrap ? '待确认' : '待检查';
 
-  return (
-    <PageContainer>
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    const workspaceChanged = lastWorkspaceIdRef.current !== activeWorkspaceId;
+    lastWorkspaceIdRef.current = activeWorkspaceId;
+    if (!workspaceChanged) return;
+    setCode(workbenchContext.stockCode ?? '600519');
+    setAccountId(workbenchContext.accountId ?? '');
+  }, [activeWorkspaceId, setCode, workbenchContext.accountId, workbenchContext.stockCode, workbenchHydrated]);
+
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    updateWorkbenchContext({
+      stockCode: trimmedCode || null,
+      accountId: accountId || null,
+      mode: 'account',
+    });
+  }, [accountId, trimmedCode, updateWorkbenchContext, workbenchHydrated]);
+
+  usePageContext({
+    pageKey: 'paper-trading',
+    title: '模拟交易',
+    summary: `账户 ${accountId || 'default'}，持仓 ${positions.length} 条，挂单 ${pending.length} 条，订单 ${trades.length} 条，总资产 ${fmtNum(totalValue, 2)}。`,
+    stockCode: trimmedCode || undefined,
+    tags: [
+      `${positions.length} 条持仓`,
+      `${pending.length} 条挂单`,
+      `${trades.length} 条订单`,
+      useComplianceCheck ? '合规检查开启' : '标准提交流程',
+    ],
+    suggestions: [
+      trimmedCode ? `评估 ${trimmedCode} 当前下单参数是否合理` : '评估当前模拟盘状态',
+      '总结账户表现、持仓和待处理订单',
+      '把当前模拟盘整理成下一步操作清单',
+    ],
+    raw: {
+      accountId: accountId || 'default',
+      stockCode: trimmedCode || null,
+      positionCount: positions.length,
+      pendingCount: pending.length,
+      orderCount: trades.length,
+      totalValue,
+      urgentExecution,
+      useComplianceCheck,
+    },
+  });
+
+  const pageActions = useMemo(() => [
+    {
+      id: 'paper.refresh',
+      label: '刷新模拟盘',
+      description: '刷新账户、持仓、订单、净值和绩效数据',
+      keywords: ['刷新', '模拟盘'],
+      scope: 'page' as const,
+      pageKey: 'paper-trading',
+      run: async () => {
+        await Promise.allSettled([
+          accountsQ.refetch(),
+          summaryQ.refetch(),
+          positionsQ.refetch(),
+          ordersQ.refetch(),
+          pendingQ.refetch(),
+          navQ.refetch(),
+          performanceQ.refetch(),
+        ]);
+        return { message: '已刷新模拟盘数据' };
+      },
+    },
+    {
+      id: 'paper.refresh-prices',
+      label: '刷新持仓价格',
+      description: '刷新当前模拟盘持仓价格',
+      keywords: ['刷新', '价格'],
+      scope: 'page' as const,
+      pageKey: 'paper-trading',
+      run: async () => {
+        await handleRefreshPrices();
+        return { message: '已触发持仓价格刷新' };
+      },
+    },
+    {
+      id: 'paper.toggle-compliance',
+      label: useComplianceCheck ? '关闭合规检查' : '开启合规检查',
+      description: '切换下单前的合规风控检查',
+      keywords: ['合规', '风控'],
+      scope: 'page' as const,
+      pageKey: 'paper-trading',
+      run: () => {
+        setUseComplianceCheck((prev) => !prev);
+        return { message: useComplianceCheck ? '已关闭合规检查' : '已开启合规检查' };
+      },
+    },
+  ], [accountsQ, handleRefreshPrices, navQ, ordersQ, pendingQ, performanceQ, positionsQ, summaryQ, useComplianceCheck]);
+
+  usePageActions(pageActions);
+
+  const currentView = useMemo<Record<string, unknown>>(
+    () => ({
+      code,
+      direction,
+      quantity,
+      price,
+      orderType,
+      stopPrice,
+      accountId,
+      useComplianceCheck,
+      urgentExecution,
+      perfDays,
+    }),
+    [accountId, code, direction, orderType, perfDays, price, quantity, stopPrice, urgentExecution, useComplianceCheck],
+  );
+
+  const applyView = useCallback((snapshot: Record<string, unknown>) => {
+    if (typeof snapshot.code === 'string') {
+      setCode(snapshot.code);
+    }
+    if (snapshot.direction === 'buy' || snapshot.direction === 'sell') {
+      setDirection(snapshot.direction);
+    }
+    if (typeof snapshot.quantity === 'string' || typeof snapshot.quantity === 'number') {
+      setQuantity(String(snapshot.quantity));
+    }
+    if (typeof snapshot.price === 'string' || typeof snapshot.price === 'number') {
+      setPrice(String(snapshot.price));
+    }
+    if (snapshot.orderType === 'market' || snapshot.orderType === 'limit' || snapshot.orderType === 'stop') {
+      setOrderType(snapshot.orderType);
+    }
+    if (typeof snapshot.stopPrice === 'string' || typeof snapshot.stopPrice === 'number') {
+      setStopPrice(String(snapshot.stopPrice));
+    }
+    if (typeof snapshot.accountId === 'string') {
+      setAccountId(snapshot.accountId);
+    }
+    if (typeof snapshot.useComplianceCheck === 'boolean') {
+      setUseComplianceCheck(snapshot.useComplianceCheck);
+    }
+    if (typeof snapshot.urgentExecution === 'boolean') {
+      setUrgentExecution(snapshot.urgentExecution);
+    }
+    if (typeof snapshot.perfDays === 'number') {
+      setPerfDays(snapshot.perfDays);
+    }
+  }, [setCode]);
+
+  const primaryContent = (
+    <>
       <div className="mb-3">
-        <h1 className="text-lg font-semibold m-0">模拟交易</h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-lg font-semibold m-0">模拟交易</h1>
+          <AskAiButton
+            stockCode={trimmedCode || undefined}
+            summary={`账户 ${accountId || 'default'}，持仓 ${positions.length} 条，挂单 ${pending.length} 条`}
+            prompt="请评估当前模拟盘状态，并给出下一步操作建议"
+          />
+        </div>
         <p className="mt-1 mb-0 text-xs text-text-secondary">先完成一笔示例委托或真实模拟单，再继续看账户状态、持仓和绩效更顺手。</p>
       </div>
 
@@ -920,6 +1082,36 @@ export default function PaperTradingPage() {
         confirmText="确认撤单"
         danger
       />
+    </>
+  );
+
+  const secondaryContent = (
+    <SectionCard className="p-4">
+      <div className="text-sm font-medium text-text-primary">模拟盘工作区摘要</div>
+      <div className="mt-3 grid gap-3 text-xs text-text-secondary">
+        <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3">
+          <div>账户：{accountId || '默认账户'}</div>
+          <div className="mt-1">标的：{trimmedCode || '未填写'}</div>
+          <div className="mt-1">方向 / 类型：{directionLabel} / {orderTypeLabel}</div>
+          <div className="mt-1">预估金额：{estimatedAmount != null ? fmtNum(estimatedAmount) : '待补价格'}</div>
+        </div>
+        <div className="rounded-xl border border-glass-border bg-surface p-3">
+          <div>持仓 / 挂单 / 成交：{positions.length} / {pending.length} / {trades.length}</div>
+          <div className="mt-1">撮合状态：{matchStatusLabel}</div>
+          <div className="mt-1">净值状态：{navStatusLabel}</div>
+          <div className="mt-1">绩效窗口：{perfDays} 天</div>
+        </div>
+        <div className="rounded-xl border border-dashed border-glass-border p-3">
+          保存视图后，可复用账户、下单参数和风控开关，作为一套固定的模拟盘操作面板。
+        </div>
+      </div>
+    </SectionCard>
+  );
+
+  return (
+    <PageContainer>
+      <WorkspaceToolbar pageKey="paper-trading" currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      <WorkspaceSplitLayout pageKey="paper-trading" primary={primaryContent} secondary={secondaryContent} />
     </PageContainer>
   );
 }

@@ -2,7 +2,7 @@
 
 import { SectionCard, Badge, Skeleton } from '@/components/ui';
 import { ErrorState, EmptyState } from '@/components/status-state';
-import { BFF_BASE } from '@/lib/api';
+import { getBffBaseUrl } from '@/lib/bff-base';
 import { DASHBOARD_MODULES } from '@/hooks/use-dashboard-prefs';
 import type { DashboardModuleKey } from '@/hooks/use-dashboard-prefs';
 
@@ -29,13 +29,16 @@ export interface SystemStatusProps {
 
 function ModuleStatusBar({ moduleStatuses, showDashboardSettings, setShowDashboardSettings, dashboardVisibility, toggleDashboardModule }: Omit<SystemStatusProps, 'healthQ' | 'health' | 'mcp'>) {
   return (
-    <SectionCard className="p-4 mb-4">
+    <SectionCard>
       <div className="flex items-center justify-between gap-3 mb-2">
-        <h3 className="mt-0 mb-0">模块状态</h3>
+        <div>
+          <div className="eyebrow">运行状态</div>
+          <h2 className="mt-2">模块状态</h2>
+        </div>
         <button
           type="button"
           onClick={() => setShowDashboardSettings(!showDashboardSettings)}
-          className="text-xs px-2 py-1 rounded border border-border cursor-pointer"
+          className="rounded-full border border-border px-3 py-1 text-xs"
         >
           {showDashboardSettings ? '收起模块配置' : '配置首页模块'}
         </button>
@@ -67,20 +70,22 @@ function ModuleStatusBar({ moduleStatuses, showDashboardSettings, setShowDashboa
 /* ------------------------------------------------------------------ */
 
 function HealthDetails({ healthQ, health, mcp }: Pick<SystemStatusProps, 'healthQ' | 'health' | 'mcp'>) {
+  const bffBase = getBffBaseUrl();
+
   return (
     <details className="mt-6">
       <summary className="cursor-pointer text-text-secondary text-sm">BFF / MCP 健康状态</summary>
-      <SectionCard className="p-4 mt-2">
+      <SectionCard className="mt-2">
         {healthQ.error ? <ErrorState text={String(healthQ.error)} onRetry={() => healthQ.refetch()} />
           : healthQ.isPending ? <Skeleton height={60} />
             : health ? (
-              <div className="grid grid-cols-2 gap-2 text-sm">
+              <div className="grid grid-cols-2 gap-3 text-sm">
                 <div>服务: <Badge variant={String(health.status) === 'ok' ? 'success' : 'warning'}>{String(health.status ?? '-')}</Badge></div>
                 <div>MCP: <Badge variant={mcp.reachable ? 'success' : 'danger'}>{mcp.reachable ? '已连接' : '未连接'}</Badge></div>
                 <div>工具数: {String(mcp.toolCount ?? '-')} / {String(mcp.expectedTools ?? '-')}</div>
                 <div>匹配: <Badge variant={mcp.matched ? 'success' : 'warning'}>{String(mcp.matched ?? '-')}</Badge></div>
               </div>
-            ) : <EmptyState text={`暂无健康数据：${BFF_BASE}`} />}
+            ) : <EmptyState text={`暂无健康数据：${bffBase}`} />}
       </SectionCard>
     </details>
   );

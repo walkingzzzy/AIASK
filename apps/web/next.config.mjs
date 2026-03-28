@@ -1,10 +1,17 @@
 import { withSentryConfig } from '@sentry/nextjs';
 
-const bffUrl = process.env.NEXT_PUBLIC_BFF_BASE_URL || 'http://localhost:3001/api';
+const bffUrl = process.env.BFF_BASE_URL || process.env.NEXT_PUBLIC_BFF_BASE_URL || 'http://localhost:3001/api';
 let bffOrigin;
 try { bffOrigin = new URL(bffUrl).origin; } catch { bffOrigin = 'http://localhost:3001'; }
-const devOrigins = ['http://localhost:3001', 'http://127.0.0.1:3001'];
-const devSockets = ['ws://localhost:*', 'ws://127.0.0.1:*'];
+const localLoopbackOrigins = process.env.ALLOW_LOCALHOST_PORT_WILDCARD === 'false'
+  ? []
+  : ['http://localhost:*', 'http://127.0.0.1:*'];
+const localLoopbackSockets = process.env.ALLOW_LOCALHOST_PORT_WILDCARD === 'false'
+  ? []
+  : ['ws://localhost:*', 'ws://127.0.0.1:*'];
+const bffSocketOrigin = bffOrigin.startsWith('https://')
+  ? bffOrigin.replace(/^https:/, 'wss:')
+  : bffOrigin.replace(/^http:/, 'ws:');
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -14,7 +21,7 @@ const csp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  `connect-src 'self' ${[bffOrigin, ...devOrigins, ...devSockets, 'https://*.ingest.sentry.io'].join(' ')}`,
+  `connect-src 'self' ${[bffOrigin, bffSocketOrigin, ...localLoopbackOrigins, ...localLoopbackSockets, 'https://*.ingest.sentry.io'].join(' ')}`,
   "frame-ancestors 'none'",
 ].join('; ');
 

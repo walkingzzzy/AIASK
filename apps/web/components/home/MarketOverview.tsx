@@ -41,19 +41,39 @@ function MarketPulse({
   const marketOpen = mounted ? isTradingHours() : false;
   const lastUpdatedLabel = mounted && lastUpdated ? lastUpdated.toLocaleTimeString('zh-CN') : null;
   return (
-    <div className="glass rounded-xl p-4 mb-4 flex items-center justify-between flex-wrap gap-3">
-      <div className="flex items-center gap-2">
-        <div className={`w-2 h-2 rounded-full ${marketOpen ? 'bg-success animate-pulse' : 'bg-text-muted'}`} />
-        <span className="text-sm font-medium">{marketOpen ? '交易中' : '已休市'}</span>
-        <span className="text-xs text-text-muted">{mounted ? dateStr : ''}</span>
+    <section className="mt-4 rounded-[24px] border border-border bg-surface p-5 shadow-sm">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="min-w-0">
+          <div className="eyebrow">市场脉搏</div>
+          <div className="mt-3 flex items-center gap-3">
+            <span className={`inline-flex h-3 w-3 rounded-full ${marketOpen ? 'bg-success animate-pulse' : 'bg-text-muted'}`} />
+            <div className="text-xl font-semibold text-text-primary">{marketOpen ? '交易中' : '已休市'}</div>
+          </div>
+          <div className="mt-2 text-sm text-text-secondary">
+            {mounted ? dateStr : ''}
+            {lastUpdatedLabel ? ` · 最近更新 ${lastUpdatedLabel}` : ''}
+          </div>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3 lg:min-w-[540px]">
+          <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+            <div className="metric-label">情绪温度</div>
+            <div className={`mt-2 text-lg font-semibold ${fgValue > 60 ? 'text-success' : fgValue < 40 ? 'text-danger' : 'text-text-primary'}`}>
+              恐贪 {fgValue.toFixed(0)}
+            </div>
+          </div>
+          <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+            <div className="metric-label">涨停数量</div>
+            <div className="mt-2 text-lg font-semibold text-text-primary">{String(luStats.totalLimitUp ?? luStats.total ?? luStats.count ?? '-')}</div>
+          </div>
+          <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+            <div className="metric-label">北向资金</div>
+            <div className={`mt-2 text-lg font-semibold ${Number(latestNorth?.total ?? latestNorth?.netInflow ?? 0) >= 0 ? 'text-success' : 'text-danger'}`}>
+              {fmtAmount(latestNorth?.total ?? latestNorth?.netInflow)}
+            </div>
+          </div>
+        </div>
       </div>
-      <div className="flex items-center gap-4 text-xs text-text-secondary">
-        {lastUpdatedLabel ? <span>更新: {lastUpdatedLabel}</span> : null}
-        <span>恐贪: <span className={fgValue > 60 ? 'text-danger font-medium' : fgValue < 40 ? 'text-success font-medium' : 'font-medium'}>{fgValue.toFixed(0)}</span></span>
-        <span>涨停: <span className="font-medium">{String(luStats.totalLimitUp ?? luStats.total ?? luStats.count ?? '-')}</span></span>
-        <span>北向: <span className={Number(latestNorth?.total ?? latestNorth?.netInflow ?? 0) >= 0 ? 'text-danger font-medium' : 'text-success font-medium'}>{fmtAmount(latestNorth?.total ?? latestNorth?.netInflow)}</span></span>
-      </div>
-    </div>
+    </section>
   );
 }
 
@@ -64,8 +84,13 @@ function MarketPulse({
 function MultiIndexQuotes({ dashboardVisibility, idxQ, validIndices, INDEX_CODES }: Pick<MarketOverviewProps, 'dashboardVisibility' | 'idxQ' | 'validIndices' | 'INDEX_CODES'>) {
   if (!dashboardVisibility['market']) return null;
   return (
-    <SectionCard className="min-h-[220px] p-4">
-      <h3 className="mt-0">主要指数</h3>
+    <SectionCard className="min-h-[220px]">
+      <div className="mb-4 flex items-end justify-between gap-3">
+        <div>
+          <div className="eyebrow">市场基线</div>
+          <h2 className="mt-2">主要指数</h2>
+        </div>
+      </div>
       {idxQ.error ? <ErrorState text={idxQ.error} onRetry={() => idxQ.refetch()} /> : null}
       {validIndices.length > 0 ? (
         <KpiGrid cols={4}>
@@ -101,19 +126,28 @@ function MultiIndexQuotes({ dashboardVisibility, idxQ, validIndices, INDEX_CODES
 function SectorHeatmap({ dashboardVisibility, sectorQ, sectors }: Pick<MarketOverviewProps, 'dashboardVisibility' | 'sectorQ' | 'sectors'>) {
   if (!dashboardVisibility['market']) return null;
   return (
-    <SectionCard className="min-h-[220px] p-4 mt-4">
-      <h3 className="mt-0">板块热力</h3>
+    <SectionCard className="min-h-[220px]">
+      <div className="mb-4 flex items-end justify-between gap-3">
+        <div>
+          <div className="eyebrow">轮动观察</div>
+          <h2 className="mt-2">板块热力</h2>
+        </div>
+        <Link href="/market?tab=blocks" className="text-sm text-primary no-underline">查看全部</Link>
+      </div>
       {sectorQ.error ? <ErrorState text={sectorQ.error} onRetry={() => sectorQ.refetch()} /> : null}
       {sectors.length > 0 ? (
-        <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
           {sectors.map((s, i) => {
             const chg = Number(s.avgChange ?? s.avg_change ?? s.change_pct ?? 0);
             return (
               <Link key={i} href={`/market?tab=blocks&block=${encodeURIComponent(String(s.code ?? s.block_code ?? ''))}`}
-                className={`glass rounded-lg p-2 text-center text-xs no-underline text-inherit ${chg >= 0 ? 'border border-danger/30' : 'border border-success/30'} transition-transform hover:scale-105`}
+                className={`rounded-[18px] border p-3 text-left text-xs no-underline text-inherit shadow-sm transition-transform hover:-translate-y-0.5 ${chg >= 0 ? 'border-success/20 bg-success/8' : 'border-danger/20 bg-danger/8'}`}
                 aria-label={`${String(s.name ?? '')} ${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`}>
-                <div className="truncate font-medium">{String(s.name ?? '').slice(0, 6)}</div>
-                <div className={`text-sm font-bold ${chg >= 0 ? 'text-danger' : 'text-success'}`}>{chg >= 0 ? '+' : ''}{chg.toFixed(2)}%</div>
+                <div className="truncate font-medium text-text-primary">{String(s.name ?? '').slice(0, 8)}</div>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-text-secondary">平均涨幅</span>
+                  <span className={`text-sm font-semibold ${chg >= 0 ? 'text-success' : 'text-danger'}`}>{chg >= 0 ? '+' : ''}{chg.toFixed(2)}%</span>
+                </div>
               </Link>
             );
           })}

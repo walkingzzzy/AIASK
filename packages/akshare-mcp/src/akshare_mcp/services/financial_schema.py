@@ -202,7 +202,12 @@ def financial_payload_is_usable(payload: Optional[dict]) -> bool:
     normalized, metrics = financial_payload_metrics(payload)
     if not isinstance(normalized, dict):
         return False
-    return normalized.get("reportDate") is not None and metrics["primary"] >= 4
+    has_date = normalized.get("reportDate") is not None
+    has_any_ratio = any(
+        normalized.get(f) is not None
+        for f in ("roe", "debtRatio", "eps", "grossProfitMargin", "netProfitMargin")
+    )
+    return has_date and (metrics["primary"] >= 3 or has_any_ratio)
 
 
 def financial_gap_summary(payload: Optional[dict]) -> str:

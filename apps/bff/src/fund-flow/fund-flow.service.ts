@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable } from '@nestjs/common';
+import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
 
@@ -14,6 +14,7 @@ export class FundFlowService {
   private static readonly SECTOR_TTL_SECONDS = 120;
   private static readonly CONCEPT_TTL_SECONDS = 120;
   private static readonly NORTH_TTL_SECONDS = 120;
+  private readonly logger = new Logger(FundFlowService.name);
 
   constructor(
     private readonly mcp: McpGatewayService,
@@ -61,10 +62,20 @@ export class FundFlowService {
       return { ...cached.value as Record<string, unknown>, meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } } };
     }
 
-    const payload = await this.mcp.callTool('get_sector_fund_flow', {});
-    const result = { data: { flows: this.normalizeFlows(payload) }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
-    await this.cacheService.set(cacheKey, result, ttlSeconds);
-    return result;
+    try {
+      const payload = await this.mcp.callTool('get_sector_fund_flow', {});
+      const result = { data: { flows: this.normalizeFlows(payload) }, meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
+      await this.cacheService.set(cacheKey, result, ttlSeconds);
+      return result;
+    } catch (error) {
+      this.logger.warn(`fund-flow.sector 降级到空结果: ${this.errorMessage(error)}`);
+      return {
+        data: { flows: [] },
+        degraded: true,
+        message: '板块资金流暂时不可用，已返回空结果',
+        meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } },
+      };
+    }
   }
 
   async getConceptFundFlow() {
@@ -266,5 +277,9 @@ export class FundFlowService {
       message: `MCP ${primaryTool} 调用失败`,
       detail: lastError instanceof Error ? lastError.message : String(lastError),
     });
+  }
+
+  private errorMessage(error: unknown) {
+    return error instanceof Error ? error.message : String(error);
   }
 }

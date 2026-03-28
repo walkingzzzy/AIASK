@@ -1,10 +1,15 @@
 'use client';
 
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { AskAiButton } from '@/components/ask-ai-button';
+import WorkspaceSplitLayout from '@/components/workspace-split-layout';
+import WorkspaceToolbar from '@/components/workspace-toolbar';
 import { PageContainer, SectionCard, TabBar, DataTable, StockCodeInput, KpiCard, KpiGrid } from '@/components/ui';
 import { BarChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { usePageActions } from '@/hooks/use-page-actions';
+import { usePageContext } from '@/hooks/use-page-context';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
@@ -13,6 +18,7 @@ import { fmt, cacheText, type CacheMeta } from '@/lib/api';
 import { StockLink } from '@/components/stock-link';
 import { WatchlistButton } from '@/components/watchlist-button';
 import { useHydrated } from '@/hooks/use-hydrated';
+import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
 type ResearchItem = { title: string; date: string; source: string; summary: string };
 type ResearchData = {
@@ -77,6 +83,11 @@ function highlight(text: string, kw: string): ReactNode {
 
 export default function ResearchPage() {
   const mounted = useHydrated();
+  const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
+  const activeWorkspaceId = useWorkbenchStore((state) => state.activeWorkspaceId);
+  const workbenchContext = useWorkbenchStore((state) => selectActiveWorkspace(state).context);
+  const updateWorkbenchContext = useWorkbenchStore((state) => state.updateContext);
+  const lastWorkspaceIdRef = useRef<string | null>(null);
   const savedView = useMemo(() => readSavedResearchView(), []);
   const savedCode = typeof savedView?.code === 'string' && savedView.code.trim() ? savedView.code.trim() : '600519';
   const { code, setCode, codeError, validate, trimmedCode, resolvedCode } = useStockCode(savedCode);
@@ -110,7 +121,24 @@ export default function ResearchPage() {
     window.localStorage.setItem(RESEARCH_VIEW_STORAGE_KEY, JSON.stringify(payload));
   }, [code, endDate, keyword, listPath, mounted, newsTab, range, startDate]);
 
-  function submitListQuery(nextRange = range, nextStartDate = startDate, nextEndDate = endDate, nextKeyword = keyword) {
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    const workspaceChanged = lastWorkspaceIdRef.current !== activeWorkspaceId;
+    lastWorkspaceIdRef.current = activeWorkspaceId;
+    if (!workspaceChanged) return;
+    const nextCode = workbenchContext.stockCode || workbenchContext.eventCode || savedCode;
+    setCode(nextCode);
+  }, [activeWorkspaceId, savedCode, setCode, workbenchContext.eventCode, workbenchContext.stockCode, workbenchHydrated]);
+
+  useEffect(() => {
+    if (!workbenchHydrated) return;
+    updateWorkbenchContext({
+      stockCode: resolvedCode || null,
+      eventCode: resolvedCode || null,
+    });
+  }, [resolvedCode, updateWorkbenchContext, workbenchHydrated]);
+
+  const submitListQuery = useCallback((nextRange = range, nextStartDate = startDate, nextEndDate = endDate, nextKeyword = keyword) => {
     if (!validate()) return;
     if (nextRange === 'custom' && (!nextStartDate || !nextEndDate)) {
       setFormError('自定义时间范围需要开始与结束日期');
@@ -127,14 +155,14 @@ export default function ResearchPage() {
     const newPath = `/research/list?${params.toString()}`;
     if (newPath === effectiveListPath) listQ.refetch();
     else setListPath(newPath);
-  }
+  }, [effectiveListPath, keyword, listQ, range, startDate, endDate, trimmedCode, validate]);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     submitListQuery();
   }
 
-  function fetchNews(type: string) {
+  const fetchNews = useCallback((type: string) => {
     if (['stock-news', 'forecast'].includes(type) && !validate()) return;
     setFormError(null);
     const c = trimmedCode;
@@ -150,7 +178,7 @@ export default function ResearchPage() {
     const newPath = paths[type] ?? `/research/reports?code=${encodeURIComponent(c)}`;
     if (newPath === newsPath) newsQ.refetch();
     else setNewsPath(newPath);
-  }
+  }, [newsPath, newsQ, trimmedCode, validate]);
 
   const reports = useMemo(() => listQ.data?.reports ?? [], [listQ.data]);
   const notices = useMemo(() => listQ.data?.notices ?? [], [listQ.data]);
@@ -159,20 +187,183 @@ export default function ResearchPage() {
   const loading = listQ.isFetching;
   const error = formError || codeError || listQ.error;
   const showPrimaryEmptyState = !loading && !error && reports.length === 0 && notices.length === 0;
+  const rangeLabel = range === 'custom' ? `${startDate || '-'} ~ ${endDate || '-'}` : `近 ${range} 天`;
+  const newsTabLabel = NEWS_TABS.find((tab) => tab.key === newsTab)?.label ?? newsTab;
+  const updatedAtLabel = mounted && listQ.dataUpdatedAt ? new Date(listQ.dataUpdatedAt).toLocaleString('zh-CN') : '-';
+  const fetchedAtLabel = mounted && freshness ? new Date(freshness).toLocaleString('zh-CN') : '-';
 
-  return (
-    <PageContainer narrow>
-      <h1>研报公告</h1>
-      {resolvedCode && (
-        <div className="flex items-center gap-2 mb-2">
-          <StockLink code={resolvedCode} name={resolvedCode} />
-          <WatchlistButton code={resolvedCode} name="" />
+  usePageContext({
+    pageKey: 'research',
+    title: '研报公告',
+    summary: `当前标的 ${resolvedCode || '未选择'}，研报 ${reports.length} 条，公告 ${notices.length} 条，资讯标签 ${newsTab}。`,
+    stockCode: resolvedCode || undefined,
+    tags: [range === 'custom' ? '自定义区间' : `近 ${range} 天`, newsTab, `${reports.length} 条研报`, `${notices.length} 条公告`],
+    suggestions: [
+      resolvedCode ? `总结 ${resolvedCode} 近阶段研报和公告的核心变化` : '选择股票后总结近阶段研报公告变化',
+      '把当前资讯页整理成研究纪要',
+      '指出当前资讯里最值得继续核验的结论',
+    ],
+    raw: {
+      code: resolvedCode || null,
+      range,
+      keyword,
+      newsTab,
+      reports: reports.length,
+      notices: notices.length,
+    },
+  });
+
+  const pageActions = useMemo(() => [
+    {
+      id: 'research.refresh',
+      label: '刷新研报公告',
+      description: '刷新当前研报列表与资讯标签',
+      keywords: ['刷新', '研报', '公告'],
+      scope: 'page' as const,
+      pageKey: 'research',
+      run: async () => {
+        await Promise.allSettled([
+          listQ.refetch(),
+          newsPath ? newsQ.refetch() : Promise.resolve(null),
+        ]);
+        return { message: '已刷新研报公告数据' };
+      },
+    },
+    {
+      id: 'research.open-market-news',
+      label: '切到市场新闻',
+      description: '切换资讯标签到市场新闻并立即拉取',
+      keywords: ['市场新闻', '资讯'],
+      scope: 'page' as const,
+      pageKey: 'research',
+      run: () => {
+        setNewsTab('market-news');
+        fetchNews('market-news');
+        return { message: '已切到市场新闻' };
+      },
+    },
+    {
+      id: 'research.expand-window',
+      label: '扩到近 90 天',
+      description: '把时间范围切换到近 90 天并重查',
+      keywords: ['90天', '时间范围'],
+      scope: 'page' as const,
+      pageKey: 'research',
+      run: () => {
+        setRange('90');
+        submitListQuery('90', startDate, endDate, keyword);
+        return { message: '已扩展到近 90 天' };
+      },
+    },
+  ], [endDate, fetchNews, keyword, listQ, newsPath, newsQ, startDate, submitListQuery]);
+
+  usePageActions(pageActions);
+
+  const currentView = useMemo<Record<string, unknown>>(
+    () => ({
+      code,
+      range,
+      startDate,
+      endDate,
+      keyword,
+      newsTab,
+      listPath,
+      newsPath,
+    }),
+    [code, endDate, keyword, listPath, newsPath, newsTab, range, startDate],
+  );
+
+  const applyView = useCallback((snapshot: Record<string, unknown>) => {
+    if (typeof snapshot.code === 'string') {
+      setCode(snapshot.code);
+    }
+    if (isValidRange(snapshot.range)) {
+      setRange(snapshot.range);
+    }
+    if (typeof snapshot.startDate === 'string') {
+      setStartDate(snapshot.startDate);
+    }
+    if (typeof snapshot.endDate === 'string') {
+      setEndDate(snapshot.endDate);
+    }
+    if (typeof snapshot.keyword === 'string') {
+      setKeyword(snapshot.keyword);
+    }
+    if (isValidNewsTab(snapshot.newsTab)) {
+      setNewsTab(snapshot.newsTab);
+    }
+    if (typeof snapshot.listPath === 'string') {
+      setListPath(snapshot.listPath);
+    } else if (snapshot.listPath === null) {
+      setListPath(null);
+    }
+    if (typeof snapshot.newsPath === 'string') {
+      setNewsPath(snapshot.newsPath);
+    } else if (snapshot.newsPath === null) {
+      setNewsPath(null);
+    }
+  }, [setCode]);
+
+  const primaryContent = (
+    <>
+      <section className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_360px]">
+        <div className="rounded-[28px] border border-border bg-surface p-6 shadow-sm">
+          <div className="eyebrow">Research Workspace</div>
+          <h1 className="mt-3">先看结论，再决定继续追研报、公告还是资讯流。</h1>
+          <p className="page-lead mt-3 mb-0">
+            研究页首屏只回答三个问题：当前在看哪只股票、这次拉的时间窗口是什么、下一步该继续追研报还是切市场新闻。
+            先把范围和信息源收紧，再进入正文列表，避免一上来就被长列表淹没。
+          </p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <span className="rounded-full border border-border bg-surface-alt/72 px-3 py-1 text-xs text-text-secondary">
+              时间范围 {rangeLabel}
+            </span>
+            <span className="rounded-full border border-border bg-surface-alt/72 px-3 py-1 text-xs text-text-secondary">
+              当前资讯 {newsTabLabel}
+            </span>
+            <span className="rounded-full border border-border bg-surface-alt/72 px-3 py-1 text-xs text-text-secondary">
+              缓存 {cacheText(cache)}
+            </span>
+          </div>
         </div>
-      )}
-      <SectionCard className="p-4 mb-3">
+        <SectionCard className="mt-0">
+          <div className="eyebrow">当前聚焦</div>
+          <h2 className="mt-2">{resolvedCode || '未选择标的'}</h2>
+          {resolvedCode ? (
+            <div className="mt-3 flex items-center gap-2">
+              <StockLink code={resolvedCode} name={resolvedCode} />
+              <WatchlistButton code={resolvedCode} name="" />
+            </div>
+          ) : null}
+          <div className="mt-4 space-y-3 text-sm text-text-secondary">
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">本次窗口</div>
+              <div className="mt-2 text-lg font-semibold text-text-primary">{rangeLabel}</div>
+            </div>
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">当前资讯组</div>
+              <div className="mt-2 text-lg font-semibold text-text-primary">{newsTabLabel}</div>
+            </div>
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">最近刷新</div>
+              <div className="mt-2 text-sm font-medium text-text-primary">{updatedAtLabel}</div>
+              <div className="mt-1 text-xs">抓取 {fetchedAtLabel}</div>
+            </div>
+          </div>
+          <div className="mt-4">
+            <AskAiButton
+              stockCode={resolvedCode || undefined}
+              summary={`研报 ${reports.length} 条，公告 ${notices.length} 条，资讯标签 ${newsTab}`}
+              prompt={resolvedCode ? `请总结 ${resolvedCode} 近期研报与公告变化` : '请总结当前研报公告页'}
+            />
+          </div>
+        </SectionCard>
+      </section>
+
+      <SectionCard className="mt-0 p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h3 className="mt-0 mb-1 text-base">常用入口</h3>
+            <h3 className="mt-0 mb-1 text-base">操作台</h3>
             <p className="m-0 text-sm text-text-secondary">如果默认结果较少，优先扩大时间范围或切到市场新闻，不用先手动重填一遍表单。</p>
           </div>
           <div className="flex gap-2 flex-wrap">
@@ -209,40 +400,51 @@ export default function ResearchPage() {
           </div>
         </div>
       </SectionCard>
-      <form onSubmit={onSubmit} className="grid gap-3 md:grid-cols-2">
-        <StockCodeInput id="research-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} placeholder="如 600519" />
-        <label className="grid gap-1 text-xs text-text-secondary">
-          <span>时间范围</span>
-          <select value={range} onChange={(e) => setRange(e.target.value as Range)}>
-            <option value="7">近1周</option>
-            <option value="30">近1月</option>
-            <option value="90">近3月</option>
-            <option value="custom">自定义</option>
-          </select>
-        </label>
-        {range === 'custom' ? (
-          <>
-            <label className="grid gap-1 text-xs text-text-secondary">
-              <span>开始日期</span>
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+      <SectionCard className="mt-0">
+        <div className="toolbar-strip">
+          <form onSubmit={onSubmit} className="grid flex-1 gap-3 lg:grid-cols-[minmax(0,220px)_120px_minmax(0,180px)_minmax(0,180px)_minmax(0,1fr)_auto] lg:items-end">
+            <StockCodeInput id="research-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} placeholder="如 600519" />
+            <label className="grid gap-1 text-xs font-medium uppercase tracking-[0.12em] text-text-muted">
+              <span>时间范围</span>
+              <select value={range} onChange={(e) => setRange(e.target.value as Range)} className="px-3 py-2 text-sm">
+                <option value="7">近1周</option>
+                <option value="30">近1月</option>
+                <option value="90">近3月</option>
+                <option value="custom">自定义</option>
+              </select>
             </label>
-            <label className="grid gap-1 text-xs text-text-secondary">
-              <span>结束日期</span>
-              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            {range === 'custom' ? (
+              <>
+                <label className="grid gap-1 text-xs font-medium uppercase tracking-[0.12em] text-text-muted">
+                  <span>开始日期</span>
+                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="px-3 py-2 text-sm" />
+                </label>
+                <label className="grid gap-1 text-xs font-medium uppercase tracking-[0.12em] text-text-muted">
+                  <span>结束日期</span>
+                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="px-3 py-2 text-sm" />
+                </label>
+              </>
+            ) : (
+              <>
+                <div className="hidden lg:block" />
+                <div className="hidden lg:block" />
+              </>
+            )}
+            <label className="grid gap-1 text-xs font-medium uppercase tracking-[0.12em] text-text-muted">
+              <span>关键词</span>
+              <input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="可输入行业、机构或主题词" className="px-3 py-2 text-sm" />
             </label>
-          </>
-        ) : null}
-        <label className="grid gap-1 text-xs text-text-secondary">
-          <span>关键词</span>
-          <input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="可输入行业、机构或主题词" />
-        </label>
-        <div className="flex items-end">
-          <button type="submit" disabled={loading}>{loading ? '查询中...' : '查询'}</button>
+            <div className="flex flex-wrap gap-2 lg:justify-end">
+              <button type="submit" disabled={loading} className="rounded-full bg-primary px-4 py-2 text-sm text-white shadow-sm disabled:opacity-50">
+                {loading ? '查询中...' : '查询'}
+              </button>
+            </div>
+          </form>
         </div>
-      </form>
+      </SectionCard>
       {error ? <ErrorState text={error} /> : null}
       <div className="mt-2 text-text-secondary">
-        更新：{mounted && listQ.dataUpdatedAt ? new Date(listQ.dataUpdatedAt).toLocaleString('zh-CN') : '-'} ｜ 抓取：{mounted && freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'} ｜ 缓存：{cacheText(cache)}
+        更新：{updatedAtLabel} ｜ 抓取：{fetchedAtLabel} ｜ 缓存：{cacheText(cache)}
       </div>
 
       <section className="mt-3.5 grid grid-cols-1 xl:grid-cols-2 gap-3">
@@ -495,6 +697,35 @@ export default function ResearchPage() {
           })() : null}
         </SectionCard>
       </section>
+    </>
+  );
+
+  const secondaryContent = (
+    <SectionCard className="p-4">
+      <div className="text-sm font-medium text-text-primary">研究工作区摘要</div>
+      <div className="mt-3 grid gap-3 text-xs text-text-secondary">
+        <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3">
+          <div>标的：{resolvedCode || '-'}</div>
+          <div className="mt-1">时间范围：{range === 'custom' ? `${startDate || '-'} ~ ${endDate || '-'}` : `近 ${range} 天`}</div>
+          <div className="mt-1">资讯标签：{NEWS_TABS.find((item) => item.key === newsTab)?.label ?? newsTab}</div>
+          <div className="mt-1">研报 / 公告：{reports.length} / {notices.length}</div>
+        </div>
+        <div className="rounded-xl border border-glass-border bg-surface p-3">
+          <div>关键词：{keyword.trim() || '未设置'}</div>
+          <div className="mt-1">最近刷新：{freshness || '尚未拉取'}</div>
+          <div className="mt-1">缓存状态：{cache ? cacheText(cache) : '未知'}</div>
+        </div>
+        <div className="rounded-xl border border-dashed border-glass-border p-3">
+          保存视图后，可把当前标的、时间窗口、关键词和资讯标签打包为研究快照，在工作区之间复用。
+        </div>
+      </div>
+    </SectionCard>
+  );
+
+  return (
+    <PageContainer>
+      <WorkspaceToolbar pageKey="research" currentView={currentView} onApplyView={applyView} supportsPagePanels />
+      <WorkspaceSplitLayout pageKey="research" primary={primaryContent} secondary={secondaryContent} />
     </PageContainer>
   );
 }

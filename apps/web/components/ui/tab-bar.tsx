@@ -12,7 +12,11 @@ export function TabBar<T extends string>({
   onChange: (key: T) => void;
 }) {
   return (
-    <div className="flex gap-0 mt-5" role="tablist" aria-label="标签页导航">
+    <div
+      className="inline-flex flex-wrap items-center gap-1 rounded-[18px] border border-border bg-surface-alt/72 p-1"
+      role="tablist"
+      aria-label="标签页导航"
+    >
       {tabs.map((t) => (
         <button
           key={t.key}
@@ -20,10 +24,10 @@ export function TabBar<T extends string>({
           role="tab"
           aria-selected={active === t.key}
           tabIndex={active === t.key ? 0 : -1}
-          className={`px-4 py-1.5 cursor-pointer rounded-t-[8px] text-sm transition-all ${active === t.key
-              ? 'glass font-bold border-b-transparent'
-              : 'bg-surface-alt/50 font-normal border border-glass-border'
-            }`}
+          className={`rounded-[14px] px-4 py-2 text-sm transition-all ${active === t.key
+            ? 'bg-surface text-text-primary shadow-sm border border-border font-semibold'
+            : 'border border-transparent text-text-secondary hover:bg-surface hover:border-border-light'
+          }`}
           onClick={() => onChange(t.key as T)}
         >
           {t.label}

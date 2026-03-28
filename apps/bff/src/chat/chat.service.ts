@@ -4,18 +4,18 @@ import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { PreferencesService } from '../auth/preferences.service';
 import { UserContextService } from './user-context.service';
 import { CHAT_TOOLS, buildSystemPrompt } from './chat.tools';
+import type {
+  ChatEvent,
+  ChatMessageInput,
+  ChatPageContext,
+  ChatRequestPayload,
+  ClientActionDescriptor,
+} from './chat.protocol';
 
-export type ChatEvent =
-  | { type: 'delta'; content: string }
-  | { type: 'tool_call'; name: string; args: Record<string, unknown> }
-  | { type: 'tool_result'; name: string; result: unknown }
-  | { type: 'error'; message: string }
-  | { type: 'done' };
-
-type ChatMessage = { role: 'user' | 'assistant' | 'system'; content: string };
 type ToolCallRecord = { name: string; args: Record<string, unknown>; result: unknown };
 
 const MAX_TOOL_ROUNDS = 10;
+const CLIENT_ACTION_TOOL_NAME = 'request_client_action';
 
 @Injectable()
 export class ChatService {
@@ -27,19 +27,29 @@ export class ChatService {
     private readonly userContextService: UserContextService,
   ) {}
 
-  async *streamChat(userId: string, messages: ChatMessage[]): AsyncGenerator<ChatEvent> {
+  async *streamChat(userId: string, payload: ChatRequestPayload): AsyncGenerator<ChatEvent> {
+    const messages = payload.messages ?? [];
+    const pageContext = payload.pageContext ?? null;
+    const availableActions = payload.availableActions ?? [];
+
     const config = await this.preferencesService.getLlmConfig(userId);
     if (!config) throw new BadRequestException('请先在设置中配置 LLM API Key');
 
     const openai = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseUrl });
-
     const userContext = await this.userContextService.getUserContext(userId);
     const systemPrompt = buildSystemPrompt(userContext);
+    const clientActionTool = this.buildClientActionTool(availableActions);
+    const tools = clientActionTool ? [...CHAT_TOOLS, clientActionTool] : CHAT_TOOLS;
 
     const conversationMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
-      ...messages.map((m) => ({ role: m.role, content: m.content }) as OpenAI.Chat.Completions.ChatCompletionMessageParam),
+      ...this.buildCopilotContextMessages(payload.mode, pageContext, availableActions),
+      ...messages.map((message) => ({
+        role: message.role,
+        content: message.content,
+      }) as OpenAI.Chat.Completions.ChatCompletionMessageParam),
     ];
+
     const calledTools = new Set<string>();
     let lastProfileArgs: Record<string, unknown> | null = null;
 
@@ -47,7 +57,7 @@ export class ChatService {
       const stream = await openai.chat.completions.create({
         model: config.model,
         messages: conversationMessages,
-        tools: CHAT_TOOLS,
+        tools,
         stream: true,
       });
 
@@ -65,15 +75,19 @@ export class ChatService {
         }
 
         if (delta?.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            const idx = tc.index;
-            if (!toolCallFragments.has(idx)) {
-              toolCallFragments.set(idx, { id: tc.id ?? '', name: tc.function?.name ?? '', arguments: '' });
+          for (const toolCall of delta.tool_calls) {
+            const index = toolCall.index;
+            if (!toolCallFragments.has(index)) {
+              toolCallFragments.set(index, {
+                id: toolCall.id ?? '',
+                name: toolCall.function?.name ?? '',
+                arguments: '',
+              });
             }
-            const frag = toolCallFragments.get(idx)!;
-            if (tc.id) frag.id = tc.id;
-            if (tc.function?.name) frag.name = tc.function.name;
-            if (tc.function?.arguments) frag.arguments += tc.function.arguments;
+            const fragment = toolCallFragments.get(index)!;
+            if (toolCall.id) fragment.id = toolCall.id;
+            if (toolCall.function?.name) fragment.name = toolCall.function.name;
+            if (toolCall.function?.arguments) fragment.arguments += toolCall.function.arguments;
           }
         }
       }
@@ -95,13 +109,15 @@ export class ChatService {
         return;
       }
 
-      // Build assistant message with tool_calls
       const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = [];
-      for (const [, frag] of toolCallFragments) {
+      for (const [, fragment] of toolCallFragments) {
         toolCalls.push({
-          id: frag.id,
+          id: fragment.id,
           type: 'function',
-          function: { name: frag.name, arguments: frag.arguments },
+          function: {
+            name: fragment.name,
+            arguments: fragment.arguments,
+          },
         });
       }
 
@@ -111,35 +127,55 @@ export class ChatService {
         tool_calls: toolCalls,
       } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
 
-      // Execute each tool call via MCP
-      for (const tc of toolCalls) {
+      for (const toolCall of toolCalls) {
         let args: Record<string, unknown> = {};
-        try { args = JSON.parse(tc.function.arguments); } catch { /* empty */ }
-        args = this.bindComplianceToolArgs(userId, tc.function.name, args);
-        yield { type: 'tool_call', name: tc.function.name, args };
+        try {
+          args = JSON.parse(toolCall.function.arguments);
+        } catch {
+          args = {};
+        }
+
+        if (toolCall.function.name === CLIENT_ACTION_TOOL_NAME) {
+          const actionEvent = this.buildClientActionEvent(args, availableActions);
+          const result = actionEvent
+            ? { scheduled: true, actionId: actionEvent.actionId }
+            : { scheduled: false, error: 'invalid action request' };
+
+          if (actionEvent) {
+            yield actionEvent;
+          }
+
+          conversationMessages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(result),
+          } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
+          continue;
+        }
+
+        args = this.bindComplianceToolArgs(userId, toolCall.function.name, args);
+        yield { type: 'tool_call', name: toolCall.function.name, args };
 
         let result: unknown;
         try {
-          result = await this.mcp.callTool(tc.function.name, args);
-        } catch (err) {
-          result = { error: err instanceof Error ? err.message : String(err) };
+          result = await this.mcp.callTool(toolCall.function.name, args);
+        } catch (error) {
+          result = { error: error instanceof Error ? error.message : String(error) };
         }
 
-        calledTools.add(tc.function.name);
-        if (tc.function.name === 'update_user_profile') {
+        calledTools.add(toolCall.function.name);
+        if (toolCall.function.name === 'update_user_profile') {
           lastProfileArgs = args;
           this.recordEmotionFromProfile(userId, args);
         }
 
-        yield { type: 'tool_result', name: tc.function.name, result };
-
+        yield { type: 'tool_result', name: toolCall.function.name, result };
         conversationMessages.push({
           role: 'tool',
-          tool_call_id: tc.id,
+          tool_call_id: toolCall.id,
           content: typeof result === 'string' ? result : JSON.stringify(result),
         } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
       }
-      // Loop back for LLM to process tool results
     }
 
     yield { type: 'error', message: '工具调用轮次超限' };
@@ -149,7 +185,7 @@ export class ChatService {
   private async enforceRequiredToolCalls(
     userId: string,
     userContext: Awaited<ReturnType<UserContextService['getUserContext']>>,
-    messages: ChatMessage[],
+    messages: ChatMessageInput[],
     assistantContent: string,
     calledTools: Set<string>,
     lastProfileArgs: Record<string, unknown> | null,
@@ -186,8 +222,8 @@ export class ChatService {
   private async callToolSafely(name: string, args: Record<string, unknown>): Promise<unknown> {
     try {
       return await this.mcp.callTool(name, args);
-    } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
     }
   }
 
@@ -196,7 +232,11 @@ export class ChatService {
     toolName: string,
     args: Record<string, unknown>,
   ): Record<string, unknown> {
-    if (toolName === 'update_user_profile' || toolName === 'get_user_profile' || toolName === 'log_recommendation_audit') {
+    if (
+      toolName === 'update_user_profile'
+      || toolName === 'get_user_profile'
+      || toolName === 'log_recommendation_audit'
+    ) {
       return {
         ...args,
         user_id: userId,
@@ -207,23 +247,23 @@ export class ChatService {
 
   private recordEmotionFromProfile(userId: string, args: Record<string, unknown>) {
     try {
-      const gfa = Number(args.greed_fear_axis ?? 0);
+      const greedFearAxis = Number(args.greed_fear_axis ?? 0);
       let label: string;
-      if (gfa < -0.6) label = '极度焦虑';
-      else if (gfa < -0.2) label = '偏焦虑';
-      else if (gfa < 0.2) label = '理性';
-      else if (gfa < 0.6) label = '偏乐观';
+      if (greedFearAxis < -0.6) label = '极度焦虑';
+      else if (greedFearAxis < -0.2) label = '偏焦虑';
+      else if (greedFearAxis < 0.2) label = '理性';
+      else if (greedFearAxis < 0.6) label = '偏乐观';
       else label = '极度贪婪';
       this.userContextService.recordEmotion(userId, label);
     } catch {
-      /* best-effort */
+      // best-effort
     }
   }
 
   private buildFallbackUserProfileArgs(
     userId: string,
     userContext: Awaited<ReturnType<UserContextService['getUserContext']>>,
-    messages: ChatMessage[],
+    messages: ChatMessageInput[],
   ): Record<string, unknown> {
     const userText = messages
       .filter((message) => message.role === 'user')
@@ -281,7 +321,7 @@ export class ChatService {
   private buildFallbackRecommendationAuditArgs(
     userId: string,
     userContext: Awaited<ReturnType<UserContextService['getUserContext']>>,
-    messages: ChatMessage[],
+    messages: ChatMessageInput[],
     assistantContent: string,
     profileArgs: Record<string, unknown> | null,
   ): Record<string, unknown> {
@@ -312,7 +352,7 @@ export class ChatService {
     return 'buy';
   }
 
-  private detectCognitiveBiases(messages: ChatMessage[]): string[] {
+  private detectCognitiveBiases(messages: ChatMessageInput[]): string[] {
     const userText = messages
       .filter((message) => message.role === 'user')
       .map((message) => message.content)
@@ -324,5 +364,100 @@ export class ChatService {
     if (/(亏不起|不能亏|回本再说|套牢)/.test(userText)) biases.push('loss_aversion');
     if (/(别人都在买|大家都在买|跟风|抄作业|群里都说)/.test(userText)) biases.push('herding');
     return biases;
+  }
+
+  private buildCopilotContextMessages(
+    mode: ChatRequestPayload['mode'],
+    pageContext: ChatPageContext | null,
+    availableActions: ClientActionDescriptor[],
+  ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+    if (!pageContext && availableActions.length === 0 && mode !== 'copilot') {
+      return [];
+    }
+
+    const lines: string[] = [];
+    if (mode) {
+      lines.push(`当前模式: ${mode}`);
+    }
+    if (pageContext) {
+      lines.push('页面上下文:');
+      lines.push(`- 页面: ${pageContext.pageKey} / ${pageContext.title}`);
+      lines.push(`- 摘要: ${pageContext.summary}`);
+      if (pageContext.stockCode) lines.push(`- 股票代码: ${pageContext.stockCode}`);
+      if (pageContext.tags?.length) lines.push(`- 标签: ${pageContext.tags.join(' / ')}`);
+      if (pageContext.suggestions?.length) lines.push(`- 建议问题: ${pageContext.suggestions.join('；')}`);
+      if (pageContext.raw) lines.push(`- 原始上下文: ${JSON.stringify(pageContext.raw)}`);
+    }
+    if (availableActions.length) {
+      lines.push('客户端可执行动作:');
+      availableActions.slice(0, 20).forEach((action) => {
+        lines.push(`- ${action.id}: ${action.label}${action.description ? `，${action.description}` : ''}`);
+      });
+      lines.push(`如果需要前端执行动作，请调用 ${CLIENT_ACTION_TOOL_NAME}。`);
+    }
+
+    return lines.length ? [{ role: 'system', content: lines.join('\n') }] : [];
+  }
+
+  private buildClientActionTool(
+    availableActions: ClientActionDescriptor[],
+  ): OpenAI.ChatCompletionTool | null {
+    if (!availableActions.length) return null;
+
+    return {
+      type: 'function',
+      function: {
+        name: CLIENT_ACTION_TOOL_NAME,
+        description: '请求前端执行一个已注册的页面动作或全局动作。',
+        parameters: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            actionId: {
+              type: 'string',
+              enum: availableActions.map((action) => action.id),
+              description: '要执行的动作 ID，必须来自当前可执行动作列表。',
+            },
+            reason: {
+              type: 'string',
+              description: '触发该动作的原因，供前端展示。',
+            },
+            autoExecute: {
+              type: 'boolean',
+              description: '是否由前端自动执行该动作。',
+            },
+            payload: {
+              type: 'object',
+              additionalProperties: true,
+              description: '传给客户端动作的可选参数。',
+            },
+          },
+          required: ['actionId'],
+        },
+      },
+    };
+  }
+
+  private buildClientActionEvent(
+    args: Record<string, unknown>,
+    availableActions: ClientActionDescriptor[],
+  ): Extract<ChatEvent, { type: 'action' }> | null {
+    const actionId = typeof args.actionId === 'string' ? args.actionId.trim() : '';
+    if (!actionId) return null;
+
+    const meta = availableActions.find((action) => action.id === actionId);
+    if (!meta) return null;
+
+    return {
+      type: 'action',
+      actionId,
+      label: meta.label,
+      description: meta.description,
+      reason: typeof args.reason === 'string' ? args.reason : undefined,
+      payload: args.payload && typeof args.payload === 'object' && !Array.isArray(args.payload)
+        ? args.payload as Record<string, unknown>
+        : undefined,
+      autoExecute: args.autoExecute === true,
+    };
   }
 }

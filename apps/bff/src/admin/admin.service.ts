@@ -8,6 +8,8 @@ import { AuthService } from '../auth/auth.service';
 
 @Injectable()
 export class AdminService {
+  private static readonly TOOL_TIMEOUT_MS = 5_000;
+
   constructor(
     private readonly mcp: McpGatewayService,
     private readonly cache: CommonCacheService,
@@ -27,7 +29,7 @@ export class AdminService {
     const bff = this.cache.getStats();
     let mcp: Record<string, unknown> = {};
     try {
-      const raw = await this.mcp.callTool('get_cache_stats', {});
+      const raw = await this.callToolWithTimeout('get_cache_stats', {});
       mcp = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
     } catch {
       mcp = { error: 'MCP unavailable' };
@@ -56,7 +58,7 @@ export class AdminService {
     const bffCleared = await this.cache.clear(prefix);
     let mcpCleared = 0;
     try {
-      const raw = await this.mcp.callTool('clear_cache', {});
+      const raw = await this.callToolWithTimeout('clear_cache', {});
       const result = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
       mcpCleared = Number(result.cleared_count ?? 0);
     } catch {
@@ -67,7 +69,7 @@ export class AdminService {
 
   async getDeadLetters(): Promise<{ items: unknown[]; path?: string; count: number }> {
     try {
-      const raw = await this.mcp.callTool('get_dead_letters', { limit: 20 });
+      const raw = await this.callToolWithTimeout('get_dead_letters', { limit: 20 });
       const result = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
       const records = Array.isArray(result.records) ? result.records : [];
       const items = records.map((record, index) => this.normalizeDeadLetterRecord(record, index));
@@ -103,7 +105,7 @@ export class AdminService {
     }
 
     try {
-      const raw = await this.mcp.callTool('batch_sync_klines', {
+      const raw = await this.callToolWithTimeout('batch_sync_klines', {
         codes: [stockCode],
         period: 'daily',
       });
@@ -139,7 +141,7 @@ export class AdminService {
 
   async clearDeadLetters(): Promise<{ removed: number }> {
     try {
-      const raw = await this.mcp.callTool('clear_dead_letters', {});
+      const raw = await this.callToolWithTimeout('clear_dead_letters', {});
       const result = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
       return { removed: Number(result.removed ?? 0) };
     } catch {
@@ -234,5 +236,21 @@ export class AdminService {
 
     const matched = candidates.find((candidate) => existsSync(candidate));
     return matched ?? candidates[0];
+  }
+
+  private async callToolWithTimeout(name: string, args: Record<string, unknown>) {
+    return await new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${name} timed out after ${AdminService.TOOL_TIMEOUT_MS}ms`)), AdminService.TOOL_TIMEOUT_MS);
+      this.mcp.callTool(name, args).then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
   }
 }

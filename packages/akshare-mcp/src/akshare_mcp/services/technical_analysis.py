@@ -198,6 +198,11 @@ class TechnicalAnalysis:
         signal_period: int = 9
     ) -> Dict[str, Any]:
         """计算MACD指标"""
+        warmup = slow_period + signal_period - 2
+
+        def _nan_to_none(arr):
+            return [None if (v != v or v is None) else float(v) for v in arr]
+
         if TALIB_AVAILABLE:
             macd, signal, hist = talib.MACD(
                 _float_array(closes),
@@ -206,18 +211,20 @@ class TechnicalAnalysis:
                 signalperiod=signal_period
             )
             return {
-                'macd': np.nan_to_num(macd, 0).tolist(),
-                'signal': np.nan_to_num(signal, 0).tolist(),
-                'histogram': np.nan_to_num(hist, 0).tolist(),
+                'macd': _nan_to_none(macd),
+                'signal': _nan_to_none(signal),
+                'histogram': _nan_to_none(hist),
+                'warmup_periods': warmup,
             }
         
         if PANDAS_TA_AVAILABLE:
             df = pd.DataFrame({'close': closes})
             macd_df = df.ta.macd(fast=fast_period, slow=slow_period, signal=signal_period)
             return {
-                'macd': macd_df[f'MACD_{fast_period}_{slow_period}_{signal_period}'].fillna(0).tolist(),
-                'signal': macd_df[f'MACDs_{fast_period}_{slow_period}_{signal_period}'].fillna(0).tolist(),
-                'histogram': macd_df[f'MACDh_{fast_period}_{slow_period}_{signal_period}'].fillna(0).tolist(),
+                'macd': _nan_to_none(macd_df[f'MACD_{fast_period}_{slow_period}_{signal_period}']),
+                'signal': _nan_to_none(macd_df[f'MACDs_{fast_period}_{slow_period}_{signal_period}']),
+                'histogram': _nan_to_none(macd_df[f'MACDh_{fast_period}_{slow_period}_{signal_period}']),
+                'warmup_periods': warmup,
             }
         
         # NumPy fallback
@@ -231,6 +238,7 @@ class TechnicalAnalysis:
             'macd': macd.tolist(),
             'signal': signal,
             'histogram': histogram.tolist(),
+            'warmup_periods': warmup,
         }
     
     @staticmethod

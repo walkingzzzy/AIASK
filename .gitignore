@@ -31,6 +31,7 @@ __pycache__/
 # Claude worktrees
 .claude/worktrees/
 .playwright-mcp/
+.playwright/
 
 # Baidu Cloud upload temp files
 *.baiduyun.uploading.cfg

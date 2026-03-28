@@ -48,6 +48,8 @@ class RouteExecutionDto {
   @IsOptional() @IsString() order_type?: string;
   @IsOptional() @Type(() => Number) @IsNumber() stop_price?: number;
   @IsOptional() @IsString() account_id?: string;
+  @IsOptional() @IsString() artifact_id?: string;
+  @IsOptional() @IsString() output_artifact_id?: string;
   @IsOptional() @IsString() idempotency_key?: string;
 }
 

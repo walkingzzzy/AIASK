@@ -1,7 +1,5 @@
 import { getBffBaseUrl } from './bff-base';
 
-const BFF = getBffBaseUrl();
-
 /** 设置非敏感登录指示器（供 middleware 判断） */
 export function setLoggedIn() {
   document.cookie = 'logged_in=1; Path=/; Max-Age=604800; SameSite=Lax';
@@ -34,7 +32,7 @@ export async function refreshAuth(): Promise<boolean> {
 
   refreshPromise = (async () => {
     try {
-      const resp = await fetch(`${BFF}/auth/refresh`, {
+      const resp = await fetch(`${getBffBaseUrl()}/auth/refresh`, {
         method: 'POST',
         credentials: 'include',
         cache: 'no-store',
@@ -52,7 +50,7 @@ export async function refreshAuth(): Promise<boolean> {
 
 /** 尝试静默恢复会话；失败时仅清除登录提示，不强制跳转。 */
 export async function probeAuthSession<T = unknown>(): Promise<T | null> {
-  const request = async () => fetch(`${BFF}/auth/me`, {
+  const request = async () => fetch(`${getBffBaseUrl()}/auth/me`, {
     credentials: 'include',
     cache: 'no-store',
   });

@@ -36,7 +36,12 @@ type Waiter = {
 @Injectable()
 export class McpGatewayService implements OnModuleDestroy {
   private readonly logger = new Logger(McpGatewayService.name);
-  private static readonly DEDICATED_TOOL_CONNECTIONS = new Set(['alerts_manager']);
+  private static readonly DEDICATED_TOOL_CONNECTIONS = new Set([
+    'alerts_manager',
+    // execution_manager keeps task state in-process, so follow-up summary/list
+    // calls must hit the same stdio session that created the task.
+    'execution_manager',
+  ]);
 
   private pool: PooledConnection[] = [];
   private readonly poolSize: number;

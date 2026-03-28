@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import { IBM_Plex_Mono, IBM_Plex_Sans } from 'next/font/google';
 import { Suspense } from 'react';
 import './globals.css';
 import QueryProvider from '@/lib/query-provider';
@@ -6,10 +7,24 @@ import AppShell from '@/components/app-shell';
 import { ToastProvider } from '@/components/ui/toast';
 import { GlobalOverlays } from '@/components/global-overlays';
 
+const appSans = IBM_Plex_Sans({
+  subsets: ['latin'],
+  variable: '--font-app-sans',
+  display: 'swap',
+  weight: ['400', '500', '600', '700'],
+});
+
+const appMono = IBM_Plex_Mono({
+  subsets: ['latin'],
+  variable: '--font-app-mono',
+  display: 'swap',
+  weight: ['400', '500', '600'],
+});
+
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  themeColor: '#1a73e8',
+  themeColor: '#0b6bcb',
 };
 
 export const metadata: Metadata = {
@@ -48,17 +63,9 @@ function LoadingFallback() {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" className={`${appSans.variable} ${appMono.variable}`}>
       <head>
-        {(() => {
-          try {
-            return process.env.NEXT_PUBLIC_BFF_BASE_URL ? (
-              <link rel="preconnect" href={new URL(process.env.NEXT_PUBLIC_BFF_BASE_URL).origin} />
-            ) : null;
-          } catch {
-            return null;
-          }
-        })()}
+        <script src="/runtime-config.js" />
       </head>
       <body>
         <QueryProvider>

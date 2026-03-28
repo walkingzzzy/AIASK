@@ -1,8 +1,9 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { PageContainer, TabBar, SectionCard, KpiCard, KpiGrid, DataTable, Badge, StockCodeInput } from '@/components/ui';
+import { AskAiButton } from '@/components/ask-ai-button';
 import { CandlestickChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
@@ -241,6 +242,18 @@ function MarketPageInner({
     ? (blockStocksPath ?? `/market/block-stocks?blockCode=${encodeURIComponent(blockCode.trim())}`)
     : null;
 
+  const applyPreset = useCallback((preset: Partial<SavedMarketView>) => {
+    if (preset.activeTab && isMarketTab(preset.activeTab)) setActiveTab(preset.activeTab);
+    if (preset.code != null) setCode(preset.code);
+    if (preset.submittedCode !== undefined) setSubmittedCode(preset.submittedCode);
+    if (preset.period) setPeriod(preset.period);
+    if (preset.submittedPeriod) setSubmittedPeriod(preset.submittedPeriod);
+    if (preset.indexCode != null) setIndexCode(preset.indexCode);
+    if (preset.searchKeyword != null) setSearchKeyword(preset.searchKeyword);
+    if (preset.minutePeriod != null) setMinutePeriod(preset.minutePeriod);
+    if (preset.blockCode != null) setBlockCode(preset.blockCode);
+  }, [setCode]);
+
   useEffect(() => {
     if (!hydrated) return;
     if (hasExplicitContext) {
@@ -273,7 +286,7 @@ function MarketPageInner({
     } finally {
       setSavedViewReady(true);
     }
-  }, [hasExplicitContext, hydrated]);
+  }, [applyPreset, hasExplicitContext, hydrated]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !hydrated || !savedViewReady) return;
@@ -306,18 +319,6 @@ function MarketPageInner({
     };
     window.localStorage.setItem(MARKET_VIEW_STORAGE_KEY, JSON.stringify(payload));
     toast('当前行情视图已保存', 'success');
-  }
-
-  function applyPreset(preset: Partial<SavedMarketView>) {
-    if (preset.activeTab && isMarketTab(preset.activeTab)) setActiveTab(preset.activeTab);
-    if (preset.code != null) setCode(preset.code);
-    if (preset.submittedCode !== undefined) setSubmittedCode(preset.submittedCode);
-    if (preset.period) setPeriod(preset.period);
-    if (preset.submittedPeriod) setSubmittedPeriod(preset.submittedPeriod);
-    if (preset.indexCode != null) setIndexCode(preset.indexCode);
-    if (preset.searchKeyword != null) setSearchKeyword(preset.searchKeyword);
-    if (preset.minutePeriod != null) setMinutePeriod(preset.minutePeriod);
-    if (preset.blockCode != null) setBlockCode(preset.blockCode);
   }
 
   const limitUpQ = useApiQuery<unknown>(effectiveLimitUpPath, {
@@ -353,9 +354,9 @@ function MarketPageInner({
 
   const tabPending = limitUpQ.isFetching || blocksQ.isFetching || tradeQ.isFetching || indexQuoteQ.isFetching || minuteKlineQ.isFetching || searchQ.isFetching || stockListQ.isFetching || blockStocksQ.isFetching || batchQuotes.isPending || limitUpStatsQ.isFetching;
   const tabError = limitUpQ.error || blocksQ.error || tradeQ.error || indexQuoteQ.error || minuteKlineQ.error || searchQ.error || blockStocksQ.error || batchQuotes.error || limitUpStatsQ.error;
-  const primaryActionCls = 'px-3 py-1 rounded-full border border-primary text-xs text-primary cursor-pointer';
-  const secondaryActionCls = 'px-3 py-1 rounded-full border border-border text-xs text-text-secondary cursor-pointer';
-  const secondaryLinkCls = 'px-3 py-1 rounded-full border border-border text-xs text-text-secondary no-underline';
+  const primaryActionCls = 'rounded-full bg-primary px-4 py-2 text-xs text-white shadow-sm';
+  const secondaryActionCls = 'rounded-full border border-border bg-surface px-4 py-2 text-xs text-text-secondary';
+  const secondaryLinkCls = 'rounded-full border border-border bg-surface px-4 py-2 text-xs text-text-secondary no-underline';
 
   const loading = quoteQ.isFetching || klineQ.isFetching || obQ.isFetching;
   const showPrimaryLoading = hydrated && submittedCode != null && loading;
@@ -403,6 +404,7 @@ function MarketPageInner({
   const freshness = [quote?.meta?.fetchedAt, kline?.meta?.fetchedAt, ob?.meta?.fetchedAt].filter(Boolean).sort().at(-1) ?? '';
   const activeDisplayCode = activeCode || submittedCode || code.trim();
   const activeDisplayName = String((quote?.quote?.name ?? quote?.quote?.code ?? activeDisplayCode) || '当前标的');
+  const activeTaskLabel = TABS.find((tab) => tab.key === activeTab)?.label ?? '基础行情';
 
   const tradeColumns = useMemo(() => [
     { key: 'time', label: '时间' },
@@ -425,108 +427,114 @@ function MarketPageInner({
     low: Number(r.low ?? 0), high: Number(r.high ?? 0), volume: Number(r.volume ?? 0),
   })), [minuteRows]);
   return (
-    <PageContainer>
-      <h1>行情看板</h1>
-      {(from || task) ? <div className="text-xs text-text-secondary mb-2">上下文跳转{from ? ` · 来源: ${from}` : ''}{task ? ` · 任务: ${task}` : ''}</div> : null}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-start">
-        <SectionCard className="p-4 xl:sticky xl:top-16">
-          <form onSubmit={onSubmit} className="grid gap-3 lg:grid-cols-[minmax(0,220px)_120px_auto] lg:items-end">
-            <StockCodeInput id="market-code" label="股票代码" value={code} onChange={setCode} error={codeError} placeholder="如 600519" />
-            <label className="grid gap-1 text-xs text-text-secondary">
-              <span>K线周期</span>
-              <select value={period} onChange={(e) => setPeriod(e.target.value as Period)} aria-label="K线周期" className="border border-border rounded px-2 py-2 text-sm">
-                <option value="daily">日线</option><option value="weekly">周线</option><option value="monthly">月线</option>
-              </select>
-            </label>
-            <div className="flex gap-2 flex-wrap lg:justify-end">
-              <button type="submit" disabled={showPrimaryLoading} className="px-4 py-2 bg-primary text-white rounded cursor-pointer disabled:opacity-50 text-sm">{showPrimaryLoading ? '加载中...' : '查询行情'}</button>
-              <button type="button" onClick={saveCurrentView} className="px-3 py-2 rounded border border-primary text-primary hover:bg-primary/5 cursor-pointer text-sm">保存当前视图</button>
+    <PageContainer className="space-y-4">
+      <section className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_360px]">
+        <div className="rounded-[28px] border border-border bg-surface p-5 shadow-sm">
+          <div className="eyebrow">行情工作台</div>
+          <h1 className="mt-2">当前标的走势与盘口</h1>
+          <p className="mt-2 mb-0 text-sm text-text-secondary">先确认标的，看图和价格，再决定研究、板块或交易下一步。</p>
+          {(from || task) ? <div className="mt-2 text-xs text-text-muted">来源: {from ?? '-'} · 任务: {task ?? '-'}</div> : null}
+        </div>
+        <SectionCard className="mt-0">
+          <div className="eyebrow">当前聚焦</div>
+          <h2 className="mt-2">{activeDisplayName}</h2>
+          <div className="mt-3 space-y-3 text-sm text-text-secondary">
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">当前任务</div>
+              <div className="mt-2 text-lg font-semibold text-text-primary">{activeTaskLabel}</div>
             </div>
-          </form>
-          <div className="mt-3 flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-text-secondary">首次进入可直接看这些示例标的</span>
-            {MARKET_STARTER_CODES.map((item) => (
-              <button
-                key={item.code}
-                type="button"
-                onClick={() => {
-                  setCode(item.code);
-                  setSubmittedCode(item.code);
-                  setSubmittedPeriod(period);
-                }}
-                className="px-2.5 py-1 rounded-full border border-border text-xs text-text-secondary hover:text-primary hover:border-primary cursor-pointer"
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-          <div className="mt-3 text-text-secondary text-sm">
-            更新：{formatStableDateTime(quoteQ.dataUpdatedAt)} ｜ 抓取：{formatStableDateTime(freshness)}
-          </div>
-          <details className="text-xs text-text-muted mt-1">
-            <summary className="cursor-pointer">缓存详情</summary>
-            <span>行情：{cacheText(quoteCache)} ｜ K线：{cacheText(klineCache)} ｜ 盘口：{cacheText(obCache)}</span>
-          </details>
-          <div className="mt-4 overflow-x-auto pb-1">
-            <div className="min-w-max">
-              <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">股票代码</div>
+              <div className="mt-2 text-lg font-semibold text-text-primary">{activeDisplayCode || '未选择'}</div>
+            </div>
+            <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+              <div className="metric-label">数据时效</div>
+              <div className="mt-2 text-sm font-medium text-text-primary">{formatStableDateTime(quoteQ.dataUpdatedAt)}</div>
+              <div className="mt-1 text-xs">抓取 {formatStableDateTime(freshness)}</div>
             </div>
           </div>
-          <div className="mt-3 flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-text-secondary">常用视图</span>
-            {MARKET_VIEW_PRESETS.map((preset) => (
-              <button
-                key={preset.key}
-                type="button"
-                onClick={() => {
-                  applyPreset(preset.apply());
-                  toast(`已切换到${preset.label}`, 'info');
-                }}
-                className="px-2.5 py-1 rounded border border-border text-xs text-text-secondary hover:text-primary hover:border-primary cursor-pointer"
-              >
-                {preset.label}
-              </button>
-            ))}
+          <div className="mt-4 flex flex-wrap gap-2">
+            <AskAiButton stockCode={activeDisplayCode} prompt={activeDisplayCode ? `请解读 ${activeDisplayCode} 的当前走势与盘口` : '请分析当前行情看板'} label="解读当前行情" />
+            <AskAiButton stockCode={activeDisplayCode} prompt={activeDisplayCode ? `请给 ${activeDisplayCode} 一个下一步交易建议` : '请给出行情操作建议'} label="交易建议" />
           </div>
         </SectionCard>
+      </section>
 
-        <aside className="grid gap-4 xl:sticky xl:top-16">
-          <SectionCard className="p-4 min-h-49">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h3 className="mt-0 mb-1">右侧摘要动作区</h3>
-                <p className="m-0 text-xs leading-5 text-text-secondary">把盯盘后的高频动作固定在这里，避免在长页面里来回找按钮。</p>
+      <SectionCard className="mt-0">
+        <div className="flex flex-col gap-3">
+          {/* 行 1：股票代码 + 周期 + 提交 + 快捷标的/视图 */}
+          <div className="toolbar-strip">
+            <form onSubmit={onSubmit} className="flex flex-wrap items-center gap-2 flex-1">
+              <div className="w-36">
+                <StockCodeInput id="market-code" label="" value={code} onChange={setCode} error={codeError} placeholder="股票代码" />
               </div>
-              <Badge variant="info">摘要</Badge>
+              <select value={period} onChange={(e) => setPeriod(e.target.value as Period)} aria-label="K线周期" className="w-20 px-2 py-2 text-sm min-h-0">
+                <option value="daily">日线</option>
+                <option value="weekly">周线</option>
+                <option value="monthly">月线</option>
+              </select>
+              <button type="submit" disabled={showPrimaryLoading} className="rounded-full bg-primary px-3 py-2 text-sm text-white shadow-sm disabled:opacity-50">
+                {showPrimaryLoading ? '加载中' : '查询'}
+              </button>
+              <span className="h-4 w-px bg-border mx-1 hidden sm:block" />
+              {MARKET_STARTER_CODES.map((item) => (
+                <button
+                  key={item.code}
+                  type="button"
+                  onClick={() => { setCode(item.code); setSubmittedCode(item.code); setSubmittedPeriod(period); }}
+                  className={`action-chip text-xs ${submittedCode === item.code ? 'border-primary/30 bg-primary/8 text-primary' : ''}`}
+                >
+                  {item.label}
+                </button>
+              ))}
+              <span className="h-4 w-px bg-border mx-1 hidden sm:block" />
+              {MARKET_VIEW_PRESETS.map((preset) => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  onClick={() => { applyPreset(preset.apply()); toast(`已切换到${preset.label}`, 'info'); }}
+                  className="action-chip text-xs"
+                >
+                  {preset.label}
+                </button>
+              ))}
+              <button type="button" onClick={saveCurrentView} className="action-chip ml-auto text-xs">
+                保存视图
+              </button>
+            </form>
+          </div>
+
+          {/* 行 2：Tab 切换 + 缓存状态 */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="overflow-x-auto">
+              <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
             </div>
-            <div className="mt-3 rounded-2xl border border-border bg-surface-alt/40 px-3 py-3">
-              <div className="text-xs text-text-secondary">当前聚焦</div>
-              <div className="mt-1 text-sm font-medium text-text-primary">{activeDisplayName}</div>
-              <div className="mt-1 text-xs text-text-secondary">代码：{activeDisplayCode || '未选择'} · 任务：{TABS.find((tab) => tab.key === activeTab)?.label ?? '基础行情'}</div>
-            </div>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
-              <button type="button" onClick={() => applyPreset({ activeTab: 'main' })} className="rounded-xl border border-border px-3 py-2 text-left text-sm cursor-pointer hover:bg-surface-alt">回基础行情</button>
-              <button type="button" onClick={() => applyPreset({ activeTab: 'blocks' })} className="rounded-xl border border-border px-3 py-2 text-left text-sm cursor-pointer hover:bg-surface-alt">看板块轮动</button>
-              <Link href={activeDisplayCode ? `/paper-trading?code=${encodeURIComponent(activeDisplayCode)}&from=market` : '/paper-trading?from=market'} className="rounded-xl border border-border px-3 py-2 text-sm no-underline text-inherit hover:bg-surface-alt">去模拟交易</Link>
-              <Link href={activeDisplayCode ? `/research?code=${encodeURIComponent(activeDisplayCode)}&from=market` : '/research?from=market'} className="rounded-xl border border-border px-3 py-2 text-sm no-underline text-inherit hover:bg-surface-alt">去研究页补充信息</Link>
-            </div>
-          </SectionCard>
-        </aside>
-      </div>
-      {quoteQ.error ? <p className="text-error mt-3">降级提示：{quoteQ.error}</p> : null}
+            <details className="ml-auto text-xs text-text-muted">
+              <summary className="cursor-pointer select-none">缓存</summary>
+              <span>行情：{cacheText(quoteCache)} ｜ K线：{cacheText(klineCache)} ｜ 盘口：{cacheText(obCache)}</span>
+            </details>
+          </div>
+        </div>
+      </SectionCard>
+
+      {quoteQ.error ? <p className="text-error mt-2">降级提示：{quoteQ.error}</p> : null}
       {tabError ? <p className="text-error text-sm mt-1">{tabError}</p> : null}
 
-      {/* ── 基础行情 cards always shown below the tab bar ── */}
-      <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_320px] xl:items-start">
-        <SectionCard className="min-h-105 p-3">
-          <h3 className="mt-0">K线图（{period === 'daily' ? '日线' : period === 'weekly' ? '周线' : '月线'}）</h3>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_360px] xl:items-start">
+        <SectionCard className="min-h-[520px] mt-0">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <div className="eyebrow">主图</div>
+              <h2 className="mt-2">K线图（{period === 'daily' ? '日线' : period === 'weekly' ? '周线' : '月线'}）</h2>
+            </div>
+          </div>
           {candleData.length ? (
-            <CandlestickChart data={candleData} height={360} />
+            <CandlestickChart data={candleData} height={420} />
           ) : (
-            <div className="flex min-h-85 items-center">
+            <div className="flex min-h-[380px] items-center">
               <EmptyState
                 text="当前标的还没有可展示的 K 线"
-                hint="你可以先切到示例标的确认页面正常，再决定是否换代码或切换到指数、板块视图继续看盘。"
+                hint="先切到示例标的确认页面正常，再决定是否换代码或切换到指数、板块视图继续看盘。"
                 action={
                   <>
                     {MARKET_STARTER_CODES.slice(0, 2).map((item) => (
@@ -553,32 +561,57 @@ function MarketPageInner({
           )}
         </SectionCard>
 
-        <div className="grid gap-4">
-          <SectionCard className="min-h-55 p-3">
-            <h3 className="mt-0">实时行情摘要</h3>
+        <aside className="grid gap-4 xl:sticky xl:top-24">
+          <SectionCard className="mt-0">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <div className="eyebrow">即时摘要</div>
+                <h2 className="mt-2">实时行情</h2>
+              </div>
+              <Badge variant="info">主任务</Badge>
+            </div>
             {quote?.quote ? (() => {
               const q = quote.quote;
               const chg = Number(q.change ?? 0);
-              const clr = chg >= 0 ? 'text-danger' : 'text-success';
+              const clr = chg >= 0 ? 'text-success' : 'text-danger';
               return (
-                <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3 xl:grid-cols-2">
-                  <div className="col-span-full flex flex-wrap items-center gap-1">股票：<StockLink code={String(q.code)} name={String(q.name ?? '')} /><WatchlistButton code={String(q.code)} name={String(q.name ?? '')} /></div>
-                  <div>现价：<span className={clr}>{fmtNum(q.price as number | null, 2)}</span></div>
-                  <div>涨跌：<span className={clr}>{fmtNum(q.change as number | null, 2)}</span></div>
-                  <div>涨跌幅：<span className={clr}>{fmtPct(q.changePercent as number | null)}</span></div>
-                  <div>成交量：{fmtAmount(q.volume as number | null)}</div>
-                  <div>成交额：{fmtAmount(q.amount as number | null)}</div>
-                  <div>最高：{fmtNum(q.high as number | null, 2)}</div>
-                  <div>最低：{fmtNum(q.low as number | null, 2)}</div>
-                  <div>开盘：{fmtNum(q.open as number | null, 2)}</div>
-                  <div>昨收：{fmtNum(q.prevClose as number | null, 2)}</div>
+                <div className="space-y-3 text-sm">
+                  <div className="flex flex-wrap items-center gap-2 rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+                    <StockLink code={String(q.code)} name={String(q.name ?? '')} />
+                    <WatchlistButton code={String(q.code)} name={String(q.name ?? '')} />
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-2">
+                    <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+                      <div className="metric-label">现价</div>
+                      <div className={`mt-2 text-2xl font-semibold ${clr}`}>{fmtNum(q.price as number | null, 2)}</div>
+                    </div>
+                    <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3">
+                      <div className="metric-label">涨跌幅</div>
+                      <div className={`mt-2 text-2xl font-semibold ${clr}`}>{fmtPct(q.changePercent as number | null)}</div>
+                    </div>
+                    <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3 text-text-secondary">
+                      <div className="metric-label">成交额</div>
+                      <div className="mt-2 text-base font-semibold text-text-primary">{fmtAmount(q.amount as number | null)}</div>
+                    </div>
+                    <div className="rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3 text-text-secondary">
+                      <div className="metric-label">成交量</div>
+                      <div className="mt-2 text-base font-semibold text-text-primary">{fmtAmount(q.volume as number | null)}</div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs text-text-secondary">
+                    <div className="rounded-[16px] border border-border-light bg-surface px-3 py-2">涨跌：<span className={clr}>{fmtNum(q.change as number | null, 2)}</span></div>
+                    <div className="rounded-[16px] border border-border-light bg-surface px-3 py-2">开盘：{fmtNum(q.open as number | null, 2)}</div>
+                    <div className="rounded-[16px] border border-border-light bg-surface px-3 py-2">最高：{fmtNum(q.high as number | null, 2)}</div>
+                    <div className="rounded-[16px] border border-border-light bg-surface px-3 py-2">最低：{fmtNum(q.low as number | null, 2)}</div>
+                    <div className="rounded-[16px] border border-border-light bg-surface px-3 py-2">昨收：{fmtNum(q.prevClose as number | null, 2)}</div>
+                  </div>
                 </div>
               );
             })() : (
-              <div className="flex min-h-35 items-center">
+              <div className="flex min-h-[280px] items-center">
                 <EmptyState
                   text="当前没有可展示的行情摘要"
-                  hint="首次进入建议直接点上方示例标的；如果你想先看整体环境，也可以切到板块或涨停复盘视图。"
+                  hint="首次进入建议直接点示例标的；如果你想先看整体环境，也可以切到板块或涨停复盘视图。"
                   action={
                     <>
                       <button type="button" onClick={() => applyPreset({ activeTab: 'blocks' })} className={primaryActionCls}>
@@ -594,24 +627,48 @@ function MarketPageInner({
             )}
           </SectionCard>
 
-          <SectionCard className="min-h-55 p-3">
-            <h3 className="mt-0">五档盘口</h3>
-            <div className="grid grid-cols-2 gap-3 text-sm">
+          <SectionCard className="mt-0">
+            <div className="mb-4">
+              <div className="eyebrow">执行动作</div>
+              <h2 className="mt-2">下一步</h2>
+            </div>
+            <div className="grid gap-2">
+              <button type="button" onClick={() => applyPreset({ activeTab: 'main' })} className="rounded-2xl border border-border bg-surface px-4 py-3 text-left text-sm hover:bg-surface-alt">回基础行情</button>
+              <button type="button" onClick={() => applyPreset({ activeTab: 'blocks' })} className="rounded-2xl border border-border bg-surface px-4 py-3 text-left text-sm hover:bg-surface-alt">看板块轮动</button>
+              <Link href={activeDisplayCode ? `/paper-trading?code=${encodeURIComponent(activeDisplayCode)}&from=market` : '/paper-trading?from=market'} className="rounded-2xl border border-border bg-surface px-4 py-3 text-sm no-underline text-inherit hover:bg-surface-alt">去模拟交易</Link>
+              <Link href={activeDisplayCode ? `/research?code=${encodeURIComponent(activeDisplayCode)}&from=market` : '/research?from=market'} className="rounded-2xl border border-border bg-surface px-4 py-3 text-sm no-underline text-inherit hover:bg-surface-alt">去研究页补充信息</Link>
+            </div>
+          </SectionCard>
+
+          <SectionCard className="mt-0">
+            <div className="mb-4">
+              <div className="eyebrow">盘口深度</div>
+              <h2 className="mt-2">五档盘口</h2>
+            </div>
+            <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
-                <div className="font-medium text-danger mb-1">卖盘</div>
-                {[...obView.asks].reverse().map((x, i, arr) => <div key={`a${i}`} className="flex justify-between py-0.5 text-danger/80">
-                  <span>卖{arr.length - i}</span><span>{fmtNum(x.price, 2)}</span><span>{fmtAmount(x.volume)}</span>
-                </div>)}
+                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-danger">卖盘</div>
+                {[...obView.asks].reverse().map((x, i, arr) => (
+                  <div key={`a${i}`} className="mb-2 flex justify-between rounded-md border border-danger/10 bg-danger/6 px-3 py-2 text-danger/80">
+                    <span>卖{arr.length - i}</span>
+                    <span>{fmtNum(x.price, 2)}</span>
+                    <span>{fmtAmount(x.volume)}</span>
+                  </div>
+                ))}
               </div>
               <div>
-                <div className="font-medium text-success mb-1">买盘</div>
-                {obView.bids.map((x, i) => <div key={`b${i}`} className="flex justify-between py-0.5 text-success/80">
-                  <span>买{i + 1}</span><span>{fmtNum(x.price, 2)}</span><span>{fmtAmount(x.volume)}</span>
-                </div>)}
+                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-success">买盘</div>
+                {obView.bids.map((x, i) => (
+                  <div key={`b${i}`} className="mb-2 flex justify-between rounded-md border border-success/10 bg-success/6 px-3 py-2 text-success/80">
+                    <span>买{i + 1}</span>
+                    <span>{fmtNum(x.price, 2)}</span>
+                    <span>{fmtAmount(x.volume)}</span>
+                  </div>
+                ))}
               </div>
             </div>
           </SectionCard>
-        </div>
+        </aside>
       </div>
 
       {activeTab === 'limitup' ? (

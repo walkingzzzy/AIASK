@@ -4,9 +4,45 @@ import { NextRequest, NextResponse } from 'next/server';
 // The `logged_in` cookie is a non-HttpOnly hint set by the frontend — it cannot be
 // trusted for security but prevents unauthenticated users from seeing a flash of
 // protected content before the API rejects them.
-const protectedPrefixes = ['/admin', '/market', '/stock', '/fundamental', '/research', '/alerts', '/strategy', '/strategy-market', '/risk', '/user', '/settings', '/assistant', '/fund-flow', '/factor', '/valuation', '/technical', '/sentiment', '/search', '/data', '/chat', '/paper-trading', '/portfolio', '/watchlist', '/notifications', '/backtest', '/options', '/macro'] as const;
+const PROTECTED_PREFIXES = [
+  '/',
+  '/admin',
+  '/market',
+  '/stock',
+  '/fundamental',
+  '/research',
+  '/alerts',
+  '/strategy',
+  '/strategy-market',
+  '/risk',
+  '/user',
+  '/settings',
+  '/assistant',
+  '/fund-flow',
+  '/factor',
+  '/factor-analysis',
+  '/valuation',
+  '/technical',
+  '/sentiment',
+  '/search',
+  '/data',
+  '/chat',
+  '/paper-trading',
+  '/portfolio',
+  '/watchlist',
+  '/notifications',
+  '/backtest',
+  '/options',
+  '/macro',
+  '/events',
+  '/execution',
+  '/performance',
+  '/screener',
+  '/decision',
+  '/workspace-templates',
+  '/skills',
+] as const;
 const authPagePaths = ['/login', '/register'] as const;
-
 function hasSessionToken(request: NextRequest) {
   return request.cookies.get('logged_in')?.value === '1';
 }
@@ -29,7 +65,7 @@ export function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const hasSession = hasSessionToken(request);
 
-  if (protectedPrefixes.some((prefix) => matchesPrefix(pathname, prefix)) && !hasSession) {
+  if (PROTECTED_PREFIXES.some((prefix) => matchesPrefix(pathname, prefix)) && !hasSession) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = '/login';
     loginUrl.search = '';
@@ -62,6 +98,7 @@ export function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
+    '/',
     '/admin/:path*',
     '/market/:path*',
     '/stock/:path*',
@@ -76,6 +113,7 @@ export const config = {
     '/assistant/:path*',
     '/fund-flow/:path*',
     '/factor/:path*',
+    '/factor-analysis/:path*',
     '/valuation/:path*',
     '/technical/:path*',
     '/sentiment/:path*',
@@ -89,6 +127,13 @@ export const config = {
     '/backtest/:path*',
     '/options/:path*',
     '/macro/:path*',
+    '/events/:path*',
+    '/execution/:path*',
+    '/performance/:path*',
+    '/screener/:path*',
+    '/decision/:path*',
+    '/workspace-templates/:path*',
+    '/skills/:path*',
     '/login',
     '/register',
   ],
