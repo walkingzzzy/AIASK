@@ -1,21 +1,33 @@
 'use client';
 
-import { FormEvent, useMemo, useState } from 'react';
-import { PageContainer, SectionCard, TabBar, DataTable } from '@/components/ui';
+import Link from 'next/link';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Badge, DataTable, PageContainer, SectionCard, TabBar } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useToast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth-store';
 import { clearLoggedIn } from '@/lib/auth';
+import { getLlmConfig, saveLlmConfig, probeModels } from '@/lib/chat-api';
+import { useChatStore } from '@/store/chat-store';
 
-type TabKey = 'account' | 'security' | 'sessions';
-const TABS = [{ key: 'account', label: '账户信息' }, { key: 'security', label: '安全日志' }, { key: 'sessions', label: '活跃会话' }] as const;
+type TabKey = 'account' | 'ai' | 'security' | 'sessions';
+const TABS = [
+  { key: 'account', label: '账户信息' },
+  { key: 'ai', label: 'AI 模型' },
+  { key: 'security', label: '安全日志' },
+  { key: 'sessions', label: '活跃会话' },
+] as const;
 const RISK_OPTIONS = ['保守', '稳健', '激进'] as const;
 
+const LABEL_CLS = 'mb-1 block text-xs font-medium text-text-secondary';
+const INPUT_CLS = 'w-full rounded-xl border border-glass-border bg-white/55 px-3 py-2.5 text-sm outline-none transition placeholder:text-text-muted focus:border-primary/45 focus:bg-white/72';
+const BTN_PRIMARY = 'cursor-pointer rounded-full bg-primary px-5 py-2 text-sm font-medium text-white shadow-sm transition hover:-translate-y-0.5 disabled:opacity-50 disabled:hover:translate-y-0';
+const BTN_GHOST = 'cursor-pointer rounded-full border border-glass-border bg-white/35 px-5 py-2 text-sm text-text-primary shadow-sm transition hover:-translate-y-0.5';
+const CARD_CLS = 'panel-soft rounded-[26px] p-5';
+
 function readRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return {};
-  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
 }
 
@@ -40,9 +52,15 @@ export default function SettingsPage() {
   const revokeApi = useApiMutation<Record<string, unknown>>({ successToast: '会话已吊销' });
   const exportApi = useApiMutation<Record<string, unknown>>({ successToast: false });
   const reportApi = useApiMutation<Record<string, unknown>>({ successToast: false });
+
   const riskLevelValue = riskLevel ?? String(profileQ.data?.riskLevel ?? '稳健');
   const nicknameValue = nickname ?? String(profileQ.data?.nickname ?? '');
   const avatarUrlValue = avatarUrl ?? String(profileQ.data?.avatarUrl ?? '');
+  const profileRecord = readRecord(profileQ.data);
+  const displayName = nicknameValue || String(profileRecord.username ?? '-');
+  const displayRole = String(profileRecord.role ?? 'user');
+  const displayInitial = (displayName || '?').slice(0, 1).toUpperCase();
+  const reportReady = reportText.trim().length > 0;
 
   const logRows = useMemo(() => {
     const root = readRecord(logsQ.data);
@@ -57,16 +75,24 @@ export default function SettingsPage() {
         duration: `${Number(item.duration_ms ?? 0)}ms`,
       }));
   }, [logsQ.data]);
+
   const sessionRows = useMemo(() => {
     const root = readRecord(sessionsQ.data);
     const data = readRecord(root.data);
     const items = Array.isArray(data.items) ? data.items : Array.isArray(root.items) ? root.items : [];
-    return items.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+    return items.filter(
+      (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item),
+    );
   }, [sessionsQ.data]);
+
   const activeSessionCount = sessionRows.length;
 
   async function saveProfile() {
-    const data = await profileApi.triggerAsync('/auth/profile', { method: 'POST' }, { riskLevel: riskLevelValue, nickname: nicknameValue, avatarUrl: avatarUrlValue });
+    const data = await profileApi.triggerAsync(
+      '/auth/profile',
+      { method: 'POST' },
+      { riskLevel: riskLevelValue, nickname: nicknameValue, avatarUrl: avatarUrlValue },
+    );
     const profile = readRecord(data);
     const existing = readRecord(profileQ.data);
     const roleValue = profile.role ?? existing.role;
@@ -85,26 +111,19 @@ export default function SettingsPage() {
   async function changePassword() {
     setPasswordFormError(null);
     if (!oldPassword || !newPassword || !confirmPassword) {
-      const message = '请填写完整密码信息';
-      setPasswordFormError(message);
-      toast(message, 'warning');
-      return;
+      const msg = '请填写完整密码信息';
+      setPasswordFormError(msg); toast(msg, 'warning'); return;
     }
     if (newPassword.length < 6) {
-      const message = '新密码至少需要 6 位';
-      setPasswordFormError(message);
-      toast(message, 'warning');
-      return;
+      const msg = '新密码至少需要 6 位';
+      setPasswordFormError(msg); toast(msg, 'warning'); return;
     }
     if (newPassword !== confirmPassword) {
-      const message = '两次新密码不一致';
-      setPasswordFormError(message);
-      toast(message, 'warning');
-      return;
+      const msg = '两次新密码不一致';
+      setPasswordFormError(msg); toast(msg, 'warning'); return;
     }
     await passwordApi.triggerAsync('/auth/change-password', { method: 'POST' }, { oldPassword, newPassword });
-    clearLoggedIn();
-    setUser(null);
+    clearLoggedIn(); setUser(null);
     toast('密码修改成功，请重新登录', 'success');
     window.location.href = '/login';
   }
@@ -119,9 +138,7 @@ export default function SettingsPage() {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = url;
-    link.download = 'aiask-my-data.json';
-    link.click();
+    link.href = url; link.download = 'aiask-my-data.json'; link.click();
     URL.revokeObjectURL(url);
     toast('已导出个人数据', 'success');
   }
@@ -139,78 +156,381 @@ export default function SettingsPage() {
 
   return (
     <PageContainer>
-      <div className="mb-4">
-        <h1 className="text-xl font-semibold m-0">设置中心</h1>
-        <p className="text-sm text-text-secondary mt-1">管理个人资料、密码、安全日志和活跃会话。</p>
-      </div>
-      <SectionCard className="mb-4 p-4">
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="rounded-xl border border-border bg-surface p-3">
-            <div className="text-xs text-text-secondary">账户资料</div>
-            <div className="mt-1 text-sm font-medium">昵称、头像与风险偏好统一维护</div>
+      {/* ---- 精简 Hero ---- */}
+      <section className="page-hero mb-4 p-5 sm:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-4">
+            {avatarUrlValue ? (
+              <img src={avatarUrlValue} alt="头像" className="h-14 w-14 shrink-0 rounded-full border border-glass-border object-cover" />
+            ) : (
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-primary text-lg font-semibold text-white">
+                {displayInitial}
+              </div>
+            )}
+            <div>
+              <h1 className="m-0 text-xl font-semibold text-text-primary sm:text-2xl">设置中心</h1>
+              <p className="m-0 mt-1 text-sm text-text-secondary">
+                {displayName} · {displayRole} · 风险偏好 {riskLevelValue}
+              </p>
+            </div>
           </div>
-          <div className="rounded-xl border border-border bg-surface p-3">
-            <div className="text-xs text-text-secondary">安全操作</div>
-            <div className="mt-1 text-sm font-medium">密码修改、审计日志与会话吊销分层清晰</div>
-          </div>
-          <div className="rounded-xl border border-border bg-surface p-3">
-            <div className="text-xs text-text-secondary">当前会话</div>
-            <div className="mt-1 text-sm font-medium">共 {activeSessionCount} 个活跃会话，可按需逐个踢出</div>
+          <div className="flex flex-wrap gap-2">
+            <Badge variant={activeSessionCount > 1 ? 'warning' : 'success'}>
+              {activeSessionCount > 0 ? `${activeSessionCount} 个活跃会话` : '无活跃会话'}
+            </Badge>
+            <Badge variant={reportReady ? 'success' : 'neutral'}>
+              {reportReady ? '报告已就绪' : '待生成报告'}
+            </Badge>
           </div>
         </div>
-      </SectionCard>
+      </section>
+
       <TabBar tabs={TABS} active={tab} onChange={setTab} />
 
-      {tab === 'account' ? <SectionCard className="p-4"><div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="space-y-3">
-          <label htmlFor="settings-nickname" className="block">
-            <span className="text-xs text-text-secondary mb-1 block">昵称</span>
-            <input id="settings-nickname" value={nicknameValue} onChange={(e) => setNickname(e.target.value)} className="w-full border border-border rounded px-3 py-2 bg-surface text-sm" placeholder="输入昵称" />
-          </label>
-          <label htmlFor="settings-avatar-url" className="block">
-            <span className="text-xs text-text-secondary mb-1 block">头像 URL</span>
-            <input id="settings-avatar-url" value={avatarUrlValue} onChange={(e) => setAvatarUrl(e.target.value)} className="w-full border border-border rounded px-3 py-2 bg-surface text-sm" placeholder="https://..." />
-          </label>
-          <label htmlFor="settings-risk-level" className="block">
-            <span className="text-xs text-text-secondary mb-1 block">风险偏好</span>
-            <select id="settings-risk-level" value={riskLevelValue} onChange={(e) => setRiskLevel(e.target.value)} className="w-full border border-border rounded px-3 py-2 bg-surface text-sm">{RISK_OPTIONS.map((item) => <option key={item} value={item}>{item}</option>)}</select>
-          </label>
-          <button type="button" onClick={() => void saveProfile()} disabled={profileApi.isPending} className="px-4 py-2 rounded bg-primary text-white text-sm cursor-pointer disabled:opacity-50">{profileApi.isPending ? '保存中...' : '保存资料'}</button>
-        </div>
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">{avatarUrlValue ? <img src={avatarUrlValue} alt="头像预览" className="w-12 h-12 rounded-full object-cover border border-glass-border" /> : <div className="w-12 h-12 rounded-full bg-primary text-white flex items-center justify-center">{(nicknameValue || String(profileQ.data?.username ?? '?')).slice(0, 1)}</div>}<div><div className="text-sm font-medium">{nicknameValue || String(profileQ.data?.username ?? '-')}</div><div className="text-xs text-text-secondary">{String(profileQ.data?.role ?? 'user')}</div></div></div>
-          <form onSubmit={handlePasswordSubmit} className="pt-2 border-t border-glass-border space-y-2">
-            <div className="text-sm font-medium">修改密码</div>
-            <p className="m-0 text-xs text-text-secondary">此区域使用独立表单提交。修改成功后会要求重新登录，避免旧会话继续生效。</p>
-            <label htmlFor="settings-old-password" className="block">
-              <span className="text-xs text-text-secondary mb-1 block">旧密码</span>
-              <input id="settings-old-password" type="password" autoComplete="current-password" value={oldPassword} onChange={(e) => { setOldPassword(e.target.value); setPasswordFormError(null); }} className="w-full border border-border rounded px-3 py-2 bg-surface text-sm" placeholder="输入当前密码" />
-            </label>
-            <label htmlFor="settings-new-password" className="block">
-              <span className="text-xs text-text-secondary mb-1 block">新密码</span>
-              <input id="settings-new-password" type="password" autoComplete="new-password" value={newPassword} onChange={(e) => { setNewPassword(e.target.value); setPasswordFormError(null); }} className="w-full border border-border rounded px-3 py-2 bg-surface text-sm" placeholder="至少 6 位" />
-            </label>
-            <label htmlFor="settings-confirm-password" className="block">
-              <span className="text-xs text-text-secondary mb-1 block">确认新密码</span>
-              <input id="settings-confirm-password" type="password" autoComplete="new-password" value={confirmPassword} onChange={(e) => { setConfirmPassword(e.target.value); setPasswordFormError(null); }} className="w-full border border-border rounded px-3 py-2 bg-surface text-sm" placeholder="再次输入新密码" />
-            </label>
-            {passwordFormError ? <p className="m-0 text-xs text-danger" role="alert">{passwordFormError}</p> : null}
-            <button type="submit" disabled={passwordApi.isPending} className="px-4 py-2 rounded border border-primary/40 text-primary text-sm cursor-pointer disabled:opacity-50">{passwordApi.isPending ? '提交中...' : '修改密码'}</button>
-          </form>
-          <div className="pt-2 border-t border-glass-border space-y-2">
-            <div className="text-sm font-medium">数据导出</div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <button type="button" onClick={() => void exportMyData()} disabled={exportApi.isPending} className="px-4 py-2 rounded border border-glass-border text-sm cursor-pointer disabled:opacity-50">导出我的数据</button>
-              <button type="button" onClick={() => void generateReport()} disabled={reportApi.isPending} className="px-4 py-2 rounded border border-glass-border text-sm cursor-pointer disabled:opacity-50">生成投资报告</button>
-            </div>
-            {reportText ? <pre className="text-xs whitespace-pre-wrap bg-surface rounded p-3 border border-border max-h-64 overflow-auto">{reportText}</pre> : null}
+      {/* ======== 账户信息 Tab ======== */}
+      {tab === 'account' ? (
+        <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
+          <div className="space-y-4">
+            {/* 个人资料 */}
+            <SectionCard>
+              <div className={CARD_CLS}>
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="m-0 text-base font-semibold text-text-primary">个人资料</h3>
+                  <Badge variant="neutral">Profile</Badge>
+                </div>
+                <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                  <label htmlFor="settings-nickname" className="block">
+                    <span className={LABEL_CLS}>昵称</span>
+                    <input id="settings-nickname" value={nicknameValue} onChange={(e) => setNickname(e.target.value)} className={INPUT_CLS} placeholder="输入昵称" />
+                  </label>
+                  <label htmlFor="settings-risk-level" className="block">
+                    <span className={LABEL_CLS}>风险偏好</span>
+                    <select id="settings-risk-level" value={riskLevelValue} onChange={(e) => setRiskLevel(e.target.value)} className={INPUT_CLS}>
+                      {RISK_OPTIONS.map((item) => <option key={item} value={item}>{item}</option>)}
+                    </select>
+                  </label>
+                  <label htmlFor="settings-avatar-url" className="block sm:col-span-2">
+                    <span className={LABEL_CLS}>头像 URL</span>
+                    <input id="settings-avatar-url" value={avatarUrlValue} onChange={(e) => setAvatarUrl(e.target.value)} className={INPUT_CLS} placeholder="https://..." />
+                  </label>
+                </div>
+                <div className="mt-5 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => void saveProfile()} disabled={profileApi.isPending} className={BTN_PRIMARY}>
+                    {profileApi.isPending ? '保存中...' : '保存资料'}
+                  </button>
+                  <button type="button" onClick={() => { setNickname(String(profileRecord.nickname ?? '')); setAvatarUrl(String(profileRecord.avatarUrl ?? '')); setRiskLevel(String(profileRecord.riskLevel ?? '稳健')); }} className={BTN_GHOST}>
+                    重置
+                  </button>
+                </div>
+              </div>
+            </SectionCard>
+
+            {/* 修改密码 */}
+            <SectionCard>
+              <div className={CARD_CLS}>
+                <h3 className="m-0 text-base font-semibold text-text-primary">修改密码</h3>
+                <p className="m-0 mt-1 text-xs text-text-secondary">修改成功后需要重新登录。</p>
+                <form onSubmit={handlePasswordSubmit} className="mt-4 space-y-4">
+                  <label htmlFor="settings-old-password" className="block">
+                    <span className={LABEL_CLS}>旧密码</span>
+                    <input id="settings-old-password" type="password" autoComplete="current-password" value={oldPassword} onChange={(e) => { setOldPassword(e.target.value); setPasswordFormError(null); }} className={INPUT_CLS} placeholder="输入当前密码" />
+                  </label>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label htmlFor="settings-new-password" className="block">
+                      <span className={LABEL_CLS}>新密码</span>
+                      <input id="settings-new-password" type="password" autoComplete="new-password" value={newPassword} onChange={(e) => { setNewPassword(e.target.value); setPasswordFormError(null); }} className={INPUT_CLS} placeholder="至少 6 位" />
+                    </label>
+                    <label htmlFor="settings-confirm-password" className="block">
+                      <span className={LABEL_CLS}>确认新密码</span>
+                      <input id="settings-confirm-password" type="password" autoComplete="new-password" value={confirmPassword} onChange={(e) => { setConfirmPassword(e.target.value); setPasswordFormError(null); }} className={INPUT_CLS} placeholder="再次输入新密码" />
+                    </label>
+                  </div>
+                  {passwordFormError ? <p className="m-0 text-xs text-danger" role="alert">{passwordFormError}</p> : null}
+                  <button type="submit" disabled={passwordApi.isPending} className={`${BTN_GHOST} border-primary/40 text-primary`}>
+                    {passwordApi.isPending ? '提交中...' : '修改密码'}
+                  </button>
+                </form>
+              </div>
+            </SectionCard>
+          </div>
+
+          {/* 右侧信息栏 */}
+          <div className="space-y-4">
+            <SectionCard>
+              <div className={CARD_CLS}>
+                <div className="text-xs font-semibold uppercase tracking-widest text-text-muted">数据导出</div>
+                <p className="m-0 mt-2 text-xs leading-5 text-text-secondary">用于个人归档、合规留存和月度复盘输出。</p>
+                <div className="mt-4 flex flex-col gap-2">
+                  <button type="button" onClick={() => void exportMyData()} disabled={exportApi.isPending} className={BTN_GHOST}>
+                    {exportApi.isPending ? '导出中...' : '导出我的数据'}
+                  </button>
+                  <button type="button" onClick={() => void generateReport()} disabled={reportApi.isPending} className={BTN_GHOST}>
+                    {reportApi.isPending ? '生成中...' : '生成投资报告'}
+                  </button>
+                </div>
+                {reportText ? (
+                  <pre className="mt-4 max-h-56 overflow-auto rounded-xl border border-glass-border bg-white/42 p-3 text-xs whitespace-pre-wrap text-text-secondary">
+                    {reportText}
+                  </pre>
+                ) : null}
+              </div>
+            </SectionCard>
+
+            <SectionCard>
+              <div className={CARD_CLS}>
+                <div className="text-xs font-semibold uppercase tracking-widest text-text-muted">快捷入口</div>
+                <div className="mt-3 flex flex-col gap-2">
+                  <Link href="/settings/audit-log" className={`${BTN_GHOST} block text-center no-underline`}>查看完整审计日志</Link>
+                </div>
+              </div>
+            </SectionCard>
           </div>
         </div>
-      </div></SectionCard> : null}
+      ) : null}
 
-      {tab === 'security' ? <SectionCard className="p-4"><DataTable rows={logRows} columns={[{ key: 'time', label: '时间' }, { key: 'action', label: '操作' }, { key: 'status', label: '状态' }, { key: 'duration', label: '耗时' }]} pageSize={10} emptyText={logsQ.isFetching ? '加载安全日志中...' : '暂无安全日志'} mobileCardRender={(row) => (<div className="space-y-2"><div className="flex items-center justify-between gap-3"><div className="text-sm font-medium text-text-primary">{String(row.action ?? '-')}</div><div className="text-xs text-text-secondary">{String(row.status ?? '-')}</div></div><div className="text-xs text-text-secondary">时间：{String(row.time ?? '-')}</div><div className="text-xs text-text-secondary">耗时：{String(row.duration ?? '-')}</div></div>)} /></SectionCard> : null}
+      {/* ======== AI 模型 Tab ======== */}
+      {tab === 'ai' ? (
+        <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
+          <SectionCard>
+            <div className={CARD_CLS}>
+              <AiModelConfig />
+            </div>
+          </SectionCard>
+          <SectionCard>
+            <div className={CARD_CLS}>
+              <div className="text-xs font-semibold uppercase tracking-widest text-text-muted">说明</div>
+              <ul className="mb-0 mt-3 space-y-2 pl-4 text-xs leading-6 text-text-secondary">
+                <li>填写 Base URL 和 API Key 后系统会自动检测可用模型列表。</li>
+                <li>支持所有 OpenAI 兼容接口（DeepSeek、Qwen、GLM 等）。</li>
+                <li>配置会保存到你的账户，AI 中心和 Copilot 会使用此配置。</li>
+                <li>如果自动检测失败，可以手动输入模型名称。</li>
+              </ul>
+            </div>
+          </SectionCard>
+        </div>
+      ) : null}
 
-      {tab === 'sessions' ? <SectionCard className="p-4"><DataTable rows={sessionRows.map((row) => ({ ...row, createdAt: new Date(String(row.createdAt ?? '')).toLocaleString('zh-CN'), accessExpiresAt: new Date(String(row.accessExpiresAt ?? '')).toLocaleString('zh-CN'), refreshExpiresAt: new Date(String(row.refreshExpiresAt ?? '')).toLocaleString('zh-CN') }))} columns={[{ key: 'createdAt', label: '创建时间' }, { key: 'accessExpiresAt', label: '访问过期' }, { key: 'refreshExpiresAt', label: '刷新过期' }, { key: 'status', label: '状态' }, { key: 'action', label: '操作', sortable: false, render: (_v, row) => row.current ? '当前会话' : <button className="text-xs text-danger cursor-pointer" onClick={(e) => { e.stopPropagation(); void revokeSession(String(row.id ?? '')); }}>踢出</button> }]} pageSize={10} emptyText={sessionsQ.isFetching ? '加载会话中...' : '暂无活跃会话'} mobileCardRender={(row) => (<div className="space-y-2"><div className="flex items-center justify-between gap-3"><div className="text-sm font-medium text-text-primary">{row.current ? '当前会话' : '异地会话'}</div><div className="text-xs text-text-secondary">{String(row.status ?? '-')}</div></div><div className="text-xs text-text-secondary">创建：{String(row.createdAt ?? '-')}</div><div className="text-xs text-text-secondary">访问过期：{String(row.accessExpiresAt ?? '-')}</div><div className="text-xs text-text-secondary">刷新过期：{String(row.refreshExpiresAt ?? '-')}</div>{row.current ? <div className="text-xs text-success">当前设备会话</div> : <button type="button" className="text-xs text-danger cursor-pointer" onClick={() => void revokeSession(String(row.id ?? ''))}>踢出该会话</button>}</div>)} /></SectionCard> : null}
+      {/* ======== 安全日志 Tab ======== */}
+      {tab === 'security' ? (
+        <div className="mt-4 grid gap-4 xl:grid-cols-[clamp(240px,22vw,320px)_minmax(0,1fr)]">
+          <SectionCard>
+            <div className={CARD_CLS}>
+              <div className="text-xs font-semibold uppercase tracking-widest text-text-muted">安全巡检</div>
+              <div className="mt-4 space-y-3 text-xs leading-6 text-text-secondary">
+                <div>日志条数：<span className="font-medium text-text-primary">{logRows.length}</span></div>
+                <div>状态：<span className="font-medium text-text-primary">{logsQ.isFetching ? '同步中...' : logRows.length > 0 ? `最近 ${logRows.length} 条` : '暂无记录'}</span></div>
+                <div>建议：<span className="font-medium text-text-primary">关注异常状态码和超长耗时</span></div>
+              </div>
+              <div className="mt-4">
+                <Link href="/settings/audit-log" className={`${BTN_GHOST} block text-center no-underline`}>查看全量日志</Link>
+              </div>
+            </div>
+          </SectionCard>
+
+          <SectionCard>
+            <div className={CARD_CLS}>
+              <DataTable
+                rows={logRows}
+                columns={[
+                  { key: 'time', label: '时间' },
+                  { key: 'action', label: '操作' },
+                  { key: 'status', label: '状态' },
+                  { key: 'duration', label: '耗时' },
+                ]}
+                pageSize={10}
+                emptyText={logsQ.isFetching ? '加载安全日志中...' : '暂无安全日志'}
+                mobileCardRender={(row) => (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-medium text-text-primary">{String(row.action ?? '-')}</div>
+                      <div className="text-xs text-text-secondary">{String(row.status ?? '-')}</div>
+                    </div>
+                    <div className="text-xs text-text-secondary">时间：{String(row.time ?? '-')}</div>
+                    <div className="text-xs text-text-secondary">耗时：{String(row.duration ?? '-')}</div>
+                  </div>
+                )}
+              />
+            </div>
+          </SectionCard>
+        </div>
+      ) : null}
+
+      {/* ======== 活跃会话 Tab ======== */}
+      {tab === 'sessions' ? (
+        <div className="mt-4 grid gap-4 xl:grid-cols-[clamp(240px,22vw,320px)_minmax(0,1fr)]">
+          <SectionCard>
+            <div className={CARD_CLS}>
+              <div className="text-xs font-semibold uppercase tracking-widest text-text-muted">会话管理</div>
+              <div className="mt-4 space-y-3 text-xs leading-6 text-text-secondary">
+                <div>活跃总数：<span className="font-medium text-text-primary">{activeSessionCount}</span></div>
+                <div>当前设备：<span className="font-medium text-text-primary">{sessionRows.some((row) => Boolean(row.current)) ? '已识别' : '待识别'}</span></div>
+                <div>建议：<span className="font-medium text-text-primary">改密后同步清理历史会话</span></div>
+              </div>
+            </div>
+          </SectionCard>
+
+          <SectionCard>
+            <div className={CARD_CLS}>
+              <DataTable
+                rows={sessionRows.map((row) => ({
+                  ...row,
+                  createdAt: new Date(String(row.createdAt ?? '')).toLocaleString('zh-CN'),
+                  accessExpiresAt: new Date(String(row.accessExpiresAt ?? '')).toLocaleString('zh-CN'),
+                  refreshExpiresAt: new Date(String(row.refreshExpiresAt ?? '')).toLocaleString('zh-CN'),
+                }))}
+                columns={[
+                  { key: 'createdAt', label: '创建时间' },
+                  { key: 'accessExpiresAt', label: '访问过期' },
+                  { key: 'refreshExpiresAt', label: '刷新过期' },
+                  { key: 'status', label: '状态' },
+                  {
+                    key: 'action', label: '操作', sortable: false,
+                    render: (_v, row) => row.current
+                      ? '当前会话'
+                      : <button className="text-xs text-danger cursor-pointer" onClick={(e) => { e.stopPropagation(); void revokeSession(String(row.id ?? '')); }}>踢出</button>,
+                  },
+                ]}
+                pageSize={10}
+                emptyText={sessionsQ.isFetching ? '加载会话中...' : '暂无活跃会话'}
+                mobileCardRender={(row) => (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-medium text-text-primary">{row.current ? '当前会话' : '异地会话'}</div>
+                      <div className="text-xs text-text-secondary">{String(row.status ?? '-')}</div>
+                    </div>
+                    <div className="text-xs text-text-secondary">创建：{String(row.createdAt ?? '-')}</div>
+                    <div className="text-xs text-text-secondary">访问过期：{String(row.accessExpiresAt ?? '-')}</div>
+                    {row.current
+                      ? <div className="text-xs text-success">当前设备</div>
+                      : <button type="button" className="text-xs text-danger cursor-pointer" onClick={() => void revokeSession(String(row.id ?? ''))}>踢出该会话</button>
+                    }
+                  </div>
+                )}
+              />
+            </div>
+          </SectionCard>
+        </div>
+      ) : null}
     </PageContainer>
+  );
+}
+
+/* ======== AI 模型配置内联组件 ======== */
+function AiModelConfig() {
+  const [baseUrl, setBaseUrl] = useState('');
+  const [model, setModel] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [loaded, setLoaded] = useState(false);
+
+  const [detectedModels, setDetectedModels] = useState<string[]>([]);
+  const [probing, setProbing] = useState(false);
+  const [probeError, setProbeError] = useState('');
+  const probeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { toast } = useToast();
+  const setConfigLoaded = useChatStore((s) => s.setConfigLoaded);
+
+  useEffect(() => {
+    getLlmConfig().then((c) => {
+      if (c) { setBaseUrl(c.baseUrl); setModel(c.model); setApiKey(c.apiKey); }
+      setLoaded(true);
+    }).catch(() => setLoaded(true));
+  }, []);
+
+  const doProbe = useCallback((url: string, key: string) => {
+    if (!url.trim() || !key.trim()) { setDetectedModels([]); setProbeError(''); return; }
+    setProbing(true); setProbeError('');
+    probeModels(url, key)
+      .then((r) => {
+        if (r.success && r.models.length > 0) { setDetectedModels(r.models); setProbeError(''); }
+        else { setDetectedModels([]); setProbeError(r.error || '未检测到可用模型'); }
+      })
+      .catch(() => { setDetectedModels([]); setProbeError('检测请求失败'); })
+      .finally(() => setProbing(false));
+  }, []);
+
+  function scheduleProbe(url: string, key: string) {
+    if (probeTimerRef.current) clearTimeout(probeTimerRef.current);
+    probeTimerRef.current = setTimeout(() => doProbe(url, key), 600);
+  }
+
+  async function onSave() {
+    if (!apiKey.trim() || !baseUrl.trim() || !model.trim()) { setError('请填写完整配置'); return; }
+    setSaving(true); setError('');
+    try {
+      await saveLlmConfig({ apiKey: apiKey.trim(), baseUrl: baseUrl.trim(), model: model.trim() });
+      setConfigLoaded(true, true);
+      toast('AI 模型配置已保存', 'success');
+    } catch (err) { setError(err instanceof Error ? err.message : '保存失败'); }
+    finally { setSaving(false); }
+  }
+
+  if (!loaded) return <div className="py-8 text-center text-sm text-text-muted">加载配置中...</div>;
+
+  const hasModels = detectedModels.length > 0;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="m-0 text-base font-semibold text-text-primary">AI 模型配置</h3>
+        <Badge variant={model ? 'success' : 'neutral'}>{model || '未配置'}</Badge>
+      </div>
+      <p className="m-0 mt-1 text-xs text-text-secondary">填写 Base URL 和 API Key 后自动检测可用模型。</p>
+
+      <div className="mt-5 space-y-4">
+        <label className="block">
+          <span className={LABEL_CLS}>Base URL</span>
+          <input
+            value={baseUrl}
+            onChange={(e) => { setBaseUrl(e.target.value); setError(''); scheduleProbe(e.target.value, apiKey); }}
+            placeholder="https://api.openai.com/v1"
+            className={INPUT_CLS}
+          />
+        </label>
+
+        <label className="block">
+          <span className={LABEL_CLS}>API Key</span>
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => { setApiKey(e.target.value); setError(''); scheduleProbe(baseUrl, e.target.value); }}
+            placeholder="sk-..."
+            className={INPUT_CLS}
+          />
+        </label>
+
+        <div>
+          <span className={LABEL_CLS}>模型</span>
+          {probing ? (
+            <div className="mt-1 rounded-xl border border-glass-border bg-white/40 px-3 py-2.5 text-xs text-text-muted">正在检测可用模型...</div>
+          ) : hasModels ? (
+            <select value={model} onChange={(e) => setModel(e.target.value)} className={INPUT_CLS}>
+              <option value="">选择模型</option>
+              {detectedModels.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          ) : (
+            <>
+              <input value={model} onChange={(e) => { setModel(e.target.value); setError(''); }} placeholder="gpt-4o" className={INPUT_CLS} />
+              {probeError ? (
+                <div className="mt-1 text-xs text-text-muted">{probeError}，可手动输入模型名称</div>
+              ) : baseUrl.trim() && apiKey.trim() ? (
+                <button type="button" onClick={() => doProbe(baseUrl, apiKey)} className="mt-1 cursor-pointer border-none bg-transparent p-0 text-xs text-primary hover:underline">
+                  点击重新检测
+                </button>
+              ) : null}
+            </>
+          )}
+        </div>
+      </div>
+
+      {error ? <p className="mt-3 text-xs text-danger" role="alert">{error}</p> : null}
+
+      <div className="mt-5 flex gap-2">
+        <button type="button" onClick={() => void onSave()} disabled={saving} className={BTN_PRIMARY}>
+          {saving ? '保存中...' : '保存配置'}
+        </button>
+      </div>
+    </div>
   );
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useCallback, useState, useMemo, useSyncExternalStore } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { useBffAvailability } from './bff-availability';
 import { getBffOrigin, getRuntimeWsUrl } from './bff-base';
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1']);
@@ -32,7 +33,6 @@ function resolveWsUrl() {
   }
 }
 
-
 // ── 连接状态类型 ─────────────────────────────────────────────
 
 export type WsConnectionStatus = 'connected' | 'connecting' | 'disconnected';
@@ -41,7 +41,7 @@ export type WsConnectionStatus = 'connected' | 'connecting' | 'disconnected';
 
 let _socket: Socket | null = null;
 let _refCount = 0;
-let _status: WsConnectionStatus = 'connecting';
+let _status: WsConnectionStatus = 'disconnected';
 let _statusListeners = new Set<(s: WsConnectionStatus) => void>();
 let _releaseTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -124,12 +124,18 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
   const socketRef = useRef<Socket | null>(null);
   const optionsRef = useRef(options);
   const enabled = options.enabled ?? true;
+  const bffAvailability = useBffAvailability({ probeOnMount: enabled });
+  const canConnect = enabled && bffAvailability.reachable;
   useEffect(() => {
     optionsRef.current = options;
   }, [options]);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!canConnect) {
+      setConnected(false);
+      if (bffAvailability.unavailable) notifyStatus('disconnected');
+      return;
+    }
 
     const socket = acquireSocket();
     socketRef.current = socket;
@@ -163,13 +169,13 @@ export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketRet
       socketRef.current = null;
       releaseSocket();
     };
-  }, [enabled]);
+  }, [bffAvailability.unavailable, canConnect]);
 
   const emit = useCallback((event: string, data: unknown) => {
     socketRef.current?.emit(event, data);
   }, []);
 
-  return { connected: enabled ? connected : false, emit };
+  return { connected: canConnect ? connected : false, emit };
 }
 
 // ── 连接状态 Hook ────────────────────────────────────────────
@@ -249,10 +255,11 @@ export function useQuoteSubscription(options: UseQuoteSubscriptionOptions = {}) 
       return;
     }
 
-    const changed = !prev
-      || prev.type !== type
-      || prev.codes.length !== normalizedCodes.length
-      || prev.codes.some((code, index) => code !== normalizedCodes[index]);
+    const changed =
+      !prev ||
+      prev.type !== type ||
+      prev.codes.length !== normalizedCodes.length ||
+      prev.codes.some((code, index) => code !== normalizedCodes[index]);
 
     if (!changed) return;
 
@@ -264,13 +271,16 @@ export function useQuoteSubscription(options: UseQuoteSubscriptionOptions = {}) 
     activeSubRef.current = { codes: normalizedCodes, type };
   }, [connected, emit, enabled, normalizedCodes, type]);
 
-  useEffect(() => () => {
-    const prev = activeSubRef.current;
-    if (prev) {
-      emit('unsubscribe:quote', { codes: prev.codes, type: prev.type });
-      activeSubRef.current = null;
-    }
-  }, [emit]);
+  useEffect(
+    () => () => {
+      const prev = activeSubRef.current;
+      if (prev) {
+        emit('unsubscribe:quote', { codes: prev.codes, type: prev.type });
+        activeSubRef.current = null;
+      }
+    },
+    [emit],
+  );
 
   return socket;
 }

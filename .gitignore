@@ -50,6 +50,7 @@ limitup_data.json
 skill_tool_*.json
 skill_tool_*.txt
 test-screenshots/
+output/
 
 # Project cleanup outputs
 reports/

@@ -241,14 +241,8 @@ export default function PerformancePage() {
 
   const attribution = attributionQ.data;
   const benchmarkComparison = benchmarkQ.data;
-  const attributionByStock = useMemo(
-    () => attribution?.attributionByStock ?? [],
-    [attribution?.attributionByStock],
-  );
-  const sectorPerformance = useMemo(
-    () => attribution?.sectorPerformance ?? [],
-    [attribution?.sectorPerformance],
-  );
+  const attributionByStock = useMemo(() => attribution?.attributionByStock ?? [], [attribution?.attributionByStock]);
+  const sectorPerformance = useMemo(() => attribution?.sectorPerformance ?? [], [attribution?.sectorPerformance]);
   const waterfallData = useMemo(
     () => [
       { name: '个股选择', value: Number(attribution?.attribution?.stockSelection?.contribution ?? 0) },
@@ -388,6 +382,13 @@ export default function PerformancePage() {
   const pageSummary = isAccountMode
     ? `当前账户 ${accountId || '默认账户'}，观察窗口 ${days} 天，总资产 ${fmtNum(totalValue)}，累计收益率 ${fmtPct(totalReturnPct)}，最大回撤 ${fmtPct(Number(accountMetrics.maxDrawdown ?? 0) * 100)}。`
     : `当前组合为 ${portfolioName}，基准 ${benchmark}，观察窗口 ${portfolioLookbackDays} 天。组合收益 ${fmtPct(portfolioTotalReturnPct)}，超额收益 ${fmtPct(Number(benchmarkComparison?.excessReturnPct ?? 0))}，信息比率 ${fmtNum(Number(benchmarkComparison?.informationRatio ?? 0))}。`;
+  const heroPrimaryButtonCls =
+    'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
+  const heroSecondaryButtonCls =
+    'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
+  const chipButtonCls = 'action-chip cursor-pointer text-xs text-text-primary';
+  const noteCardCls = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
+  const sidePanelCls = 'panel-soft rounded-[28px] p-4 sm:p-5';
 
   useEffect(() => {
     if (!workbenchHydrated || !contextInitializedRef.current) return;
@@ -413,37 +414,43 @@ export default function PerformancePage() {
     workbenchHydrated,
   ]);
 
-  const openStockTarget = useCallback((code?: string) => {
-    const nextCode = (code ?? '').trim();
-    if (!nextCode) {
-      throw new Error('当前没有可打开的股票代码');
-    }
-    updateWorkbenchContext({ stockCode: nextCode });
-    addWorkbenchTask({
-      pageKey: 'performance',
-      title: `查看 ${nextCode} 个股详情`,
-      href: `/stock?code=${encodeURIComponent(nextCode)}`,
-      kind: 'stock-review',
-      payload: { code: nextCode },
-    });
-    router.push(`/stock?code=${encodeURIComponent(nextCode)}`);
-  }, [addWorkbenchTask, router, updateWorkbenchContext]);
+  const openStockTarget = useCallback(
+    (code?: string) => {
+      const nextCode = (code ?? '').trim();
+      if (!nextCode) {
+        throw new Error('当前没有可打开的股票代码');
+      }
+      updateWorkbenchContext({ stockCode: nextCode });
+      addWorkbenchTask({
+        pageKey: 'performance',
+        title: `查看 ${nextCode} 个股详情`,
+        href: `/stock?code=${encodeURIComponent(nextCode)}`,
+        kind: 'stock-review',
+        payload: { code: nextCode },
+      });
+      router.push(`/stock?code=${encodeURIComponent(nextCode)}`);
+    },
+    [addWorkbenchTask, router, updateWorkbenchContext],
+  );
 
-  const openResearchTarget = useCallback((code?: string) => {
-    const nextCode = (code ?? '').trim();
-    if (!nextCode) {
-      throw new Error('当前没有可打开的股票代码');
-    }
-    updateWorkbenchContext({ stockCode: nextCode, eventCode: nextCode });
-    addWorkbenchTask({
-      pageKey: 'performance',
-      title: `查看 ${nextCode} 研究事件`,
-      href: `/research?code=${encodeURIComponent(nextCode)}`,
-      kind: 'research-review',
-      payload: { code: nextCode },
-    });
-    router.push(`/research?code=${encodeURIComponent(nextCode)}`);
-  }, [addWorkbenchTask, router, updateWorkbenchContext]);
+  const openResearchTarget = useCallback(
+    (code?: string) => {
+      const nextCode = (code ?? '').trim();
+      if (!nextCode) {
+        throw new Error('当前没有可打开的股票代码');
+      }
+      updateWorkbenchContext({ stockCode: nextCode, eventCode: nextCode });
+      addWorkbenchTask({
+        pageKey: 'performance',
+        title: `查看 ${nextCode} 研究事件`,
+        href: `/research?code=${encodeURIComponent(nextCode)}`,
+        kind: 'research-review',
+        payload: { code: nextCode },
+      });
+      router.push(`/research?code=${encodeURIComponent(nextCode)}`);
+    },
+    [addWorkbenchTask, router, updateWorkbenchContext],
+  );
 
   const openRiskWorkspace = useCallback(() => {
     updateWorkbenchContext({
@@ -485,56 +492,59 @@ export default function PerformancePage() {
     updateWorkbenchContext,
   ]);
 
-  const applyPerformanceContext = useCallback((payload?: Record<string, unknown>) => {
-    if (!payload) {
-      return { message: '未提供可更新的绩效上下文' };
-    }
+  const applyPerformanceContext = useCallback(
+    (payload?: Record<string, unknown>) => {
+      if (!payload) {
+        return { message: '未提供可更新的绩效上下文' };
+      }
 
-    const nextMode = payload.mode === 'account' || payload.mode === 'portfolio' ? payload.mode : null;
-    if (nextMode) {
-      setMode(nextMode);
-    }
+      const nextMode = payload.mode === 'account' || payload.mode === 'portfolio' ? payload.mode : null;
+      if (nextMode) {
+        setMode(nextMode);
+      }
 
-    const nextDays = clampDays(payload.days, days);
-    if (nextDays !== days) {
-      setDays(nextDays);
-    }
+      const nextDays = clampDays(payload.days, days);
+      if (nextDays !== days) {
+        setDays(nextDays);
+      }
 
-    const nextAccountId =
-      typeof payload.accountId === 'string'
-        ? payload.accountId.trim()
-        : typeof payload.account_id === 'string'
-          ? payload.account_id.trim()
-          : '';
-    if (nextAccountId) {
-      setAccountId(nextAccountId);
-      setMode('account');
-    }
+      const nextAccountId =
+        typeof payload.accountId === 'string'
+          ? payload.accountId.trim()
+          : typeof payload.account_id === 'string'
+            ? payload.account_id.trim()
+            : '';
+      if (nextAccountId) {
+        setAccountId(nextAccountId);
+        setMode('account');
+      }
 
-    const nextPortfolioId =
-      typeof payload.portfolioId === 'string'
-        ? payload.portfolioId.trim()
-        : typeof payload.portfolio_id === 'string'
-          ? payload.portfolio_id.trim()
-          : typeof payload.portfolioId === 'number' && Number.isFinite(payload.portfolioId)
-            ? String(payload.portfolioId)
-            : typeof payload.portfolio_id === 'number' && Number.isFinite(payload.portfolio_id)
-              ? String(payload.portfolio_id)
-              : '';
-    if (nextPortfolioId) {
-      setPortfolioId(nextPortfolioId);
-      setMode('portfolio');
-    }
+      const nextPortfolioId =
+        typeof payload.portfolioId === 'string'
+          ? payload.portfolioId.trim()
+          : typeof payload.portfolio_id === 'string'
+            ? payload.portfolio_id.trim()
+            : typeof payload.portfolioId === 'number' && Number.isFinite(payload.portfolioId)
+              ? String(payload.portfolioId)
+              : typeof payload.portfolio_id === 'number' && Number.isFinite(payload.portfolio_id)
+                ? String(payload.portfolio_id)
+                : '';
+      if (nextPortfolioId) {
+        setPortfolioId(nextPortfolioId);
+        setMode('portfolio');
+      }
 
-    const nextBenchmark = typeof payload.benchmark === 'string' ? payload.benchmark.trim() : '';
-    if (nextBenchmark && BENCHMARK_OPTIONS.some((item) => item.code === nextBenchmark)) {
-      setBenchmark(nextBenchmark);
-    }
+      const nextBenchmark = typeof payload.benchmark === 'string' ? payload.benchmark.trim() : '';
+      if (nextBenchmark && BENCHMARK_OPTIONS.some((item) => item.code === nextBenchmark)) {
+        setBenchmark(nextBenchmark);
+      }
 
-    return {
-      message: `已更新绩效上下文${nextMode ? `，模式 ${nextMode === 'account' ? '账户绩效' : '组合归因'}` : ''}${nextPortfolioId ? `，组合 ${nextPortfolioId}` : ''}${nextBenchmark ? `，基准 ${nextBenchmark}` : ''}${nextDays ? `，窗口 ${nextDays} 天` : ''}`,
-    };
-  }, [days]);
+      return {
+        message: `已更新绩效上下文${nextMode ? `，模式 ${nextMode === 'account' ? '账户绩效' : '组合归因'}` : ''}${nextPortfolioId ? `，组合 ${nextPortfolioId}` : ''}${nextBenchmark ? `，基准 ${nextBenchmark}` : ''}${nextDays ? `，窗口 ${nextDays} 天` : ''}`,
+      };
+    },
+    [days],
+  );
 
   const currentView = useMemo(
     () => ({
@@ -736,7 +746,7 @@ export default function PerformancePage() {
 
   return (
     <PageContainer>
-      <section className="mb-4 overflow-hidden rounded-[32px] border border-white/45 bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.28),_rgba(255,255,255,0.08)_34%,_rgba(214,235,255,0.24)_72%,_rgba(180,211,255,0.08)_100%)] p-5 shadow-[0_24px_80px_-40px_rgba(35,85,150,0.45)] backdrop-blur-xl sm:p-6">
+      <section className="page-hero p-5 sm:p-6">
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_380px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
@@ -760,18 +770,10 @@ export default function PerformancePage() {
               </div>
             ) : null}
             <div className="mt-5 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => void refreshActiveModeData()}
-                className="rounded-full bg-primary px-4 py-2 text-sm text-white shadow-sm"
-              >
+              <button type="button" onClick={() => void refreshActiveModeData()} className={heroPrimaryButtonCls}>
                 刷新当前数据
               </button>
-              <button
-                type="button"
-                onClick={() => openRiskWorkspace()}
-                className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm"
-              >
+              <button type="button" onClick={() => openRiskWorkspace()} className={heroSecondaryButtonCls}>
                 打开风险中心
               </button>
               {focusStockCode ? (
@@ -779,14 +781,14 @@ export default function PerformancePage() {
                   <button
                     type="button"
                     onClick={() => openStockTarget(focusStockCode)}
-                    className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm"
+                    className={heroSecondaryButtonCls}
                   >
                     查看重点股票
                   </button>
                   <button
                     type="button"
                     onClick={() => openResearchTarget(focusStockCode)}
-                    className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm"
+                    className={heroSecondaryButtonCls}
                   >
                     查看研究页
                   </button>
@@ -819,7 +821,9 @@ export default function PerformancePage() {
                   {isAccountMode ? fmtNum(totalValue) : fmtPct(portfolioTotalReturnPct)}
                 </div>
                 <div className="mt-1 text-xs text-text-secondary">
-                  {isAccountMode ? `累计收益率 ${fmtPct(totalReturnPct)}` : `超额收益 ${fmtPct(Number(benchmarkComparison?.excessReturnPct ?? 0))}`}
+                  {isAccountMode
+                    ? `累计收益率 ${fmtPct(totalReturnPct)}`
+                    : `超额收益 ${fmtPct(Number(benchmarkComparison?.excessReturnPct ?? 0))}`}
                 </div>
               </div>
               <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
@@ -827,37 +831,54 @@ export default function PerformancePage() {
                 <div className="mt-3 text-2xl font-semibold text-text-primary">{focusStockCode || '-'}</div>
                 <div className="mt-1 text-xs text-text-secondary">
                   {isAccountMode
-                    ? accountLeader?.stock_name ? `${accountLeader.stock_name} 为当前领先持仓` : '当前还没有领先持仓'
-                    : topContributor?.code ? `最大正贡献来自 ${topContributor.code}` : '当前暂无贡献股明细'}
+                    ? accountLeader?.stock_name
+                      ? `${accountLeader.stock_name} 为当前领先持仓`
+                      : '当前还没有领先持仓'
+                    : topContributor?.code
+                      ? `最大正贡献来自 ${topContributor.code}`
+                      : '当前暂无贡献股明细'}
                 </div>
               </div>
             </div>
           </div>
 
           <div className="grid gap-3">
-            <div className="rounded-[28px] border border-white/45 bg-white/34 p-4 shadow-[0_22px_50px_-36px_rgba(36,74,144,0.44)] backdrop-blur-xl">
+            <div className={sidePanelCls}>
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前聚焦</div>
               <div className="mt-3 text-base font-semibold text-text-primary">
                 {isAccountMode ? `${accountId || '默认账户'} 账户复盘` : `${portfolioName} 组合归因`}
               </div>
-              <div className="mt-3 space-y-2 text-xs leading-6 text-text-secondary">
-                <div>核心摘要：<span className="font-medium text-text-primary">{pageSummary}</span></div>
+              <div className="mt-4 space-y-3">
+                <div className={noteCardCls}>
+                  核心摘要：<span className="font-medium text-text-primary">{pageSummary}</span>
+                </div>
                 {!isAccountMode ? (
-                  <div>
-                    基准口径：<span className="font-medium text-text-primary">{selectedBenchmark?.label ?? benchmark}</span>
+                  <div className={noteCardCls}>
+                    基准口径：
+                    <span className="font-medium text-text-primary">{selectedBenchmark?.label ?? benchmark}</span>
                   </div>
                 ) : null}
-                <div>联动股票：<span className="font-medium text-text-primary">{focusStockCode || '暂无'}</span></div>
+                <div className={noteCardCls}>
+                  联动股票：<span className="font-medium text-text-primary">{focusStockCode || '暂无'}</span>
+                </div>
               </div>
             </div>
 
-            <div className="rounded-[28px] border border-dashed border-white/40 bg-white/20 p-4 backdrop-blur-xl">
+            <div className={sidePanelCls}>
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">下一步动作</div>
-              <ul className="mb-0 mt-3 space-y-2 pl-4 text-xs leading-6 text-text-secondary">
-                <li>{portfolioNarrative}</li>
-                <li>{isAccountMode ? '先核对回撤和胜率，再决定是否追到单只股票。' : '先看超额收益来源，再判断是配置问题还是个股问题。'}</li>
-                <li>{focusStockCode ? `当前可直接跳转 ${focusStockCode} 的研究页和详情页。` : '如果没有聚焦股票，先在持仓或归因列表中选一只拖累股或贡献股。'}</li>
-              </ul>
+              <div className="mt-4 space-y-3">
+                <div className={noteCardCls}>{portfolioNarrative}</div>
+                <div className={noteCardCls}>
+                  {isAccountMode
+                    ? '先核对回撤和胜率，再决定是否追到单只股票。'
+                    : '先看超额收益来源，再判断是配置问题还是个股问题。'}
+                </div>
+                <div className={noteCardCls}>
+                  {focusStockCode
+                    ? `当前可直接跳转 ${focusStockCode} 的研究页和详情页。`
+                    : '如果没有聚焦股票，先在持仓或归因列表中选一只拖累股或贡献股。'}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -888,7 +909,7 @@ export default function PerformancePage() {
                       : '用于观察组合收益是由个股选择、行业配置还是择时带来的，适合从研究和配置往后复盘。'}
                   </p>
                 </div>
-                <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3 text-xs text-text-secondary">
+                <div className="panel-soft rounded-[24px] p-4 text-xs text-text-secondary">
                   <div className="font-medium text-text-primary">联动建议</div>
                   <ol className="mb-0 mt-2 space-y-1 pl-4">
                     <li>先确认当前查看的是账户还是组合。</li>
@@ -903,7 +924,7 @@ export default function PerformancePage() {
                   <select
                     value={accountId}
                     onChange={(event) => setAccountId(event.target.value)}
-                    className="rounded border border-glass-border px-2 py-1.5 text-sm"
+                    className="w-auto min-w-[148px] text-sm"
                   >
                     <option value="">默认账户</option>
                     {accounts.map((account, index) => (
@@ -917,7 +938,7 @@ export default function PerformancePage() {
                     <select
                       value={portfolioId}
                       onChange={(event) => setPortfolioId(event.target.value)}
-                      className="rounded border border-glass-border px-2 py-1.5 text-sm"
+                      className="w-auto min-w-[168px] text-sm"
                     >
                       <option value="">选择组合</option>
                       {portfolios.map((portfolio) => (
@@ -929,7 +950,7 @@ export default function PerformancePage() {
                     <select
                       value={benchmark}
                       onChange={(event) => setBenchmark(event.target.value)}
-                      className="rounded border border-glass-border px-2 py-1.5 text-sm"
+                      className="w-auto min-w-[144px] text-sm"
                     >
                       {BENCHMARK_OPTIONS.map((item) => (
                         <option key={item.code} value={item.code}>
@@ -944,7 +965,7 @@ export default function PerformancePage() {
                     key={windowDays}
                     type="button"
                     onClick={() => setDays(windowDays)}
-                    className={`rounded border px-3 py-1 text-xs ${days === windowDays ? 'border-primary text-primary' : 'border-glass-border text-text-secondary'}`}
+                    className={`action-chip cursor-pointer text-xs ${days === windowDays ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
                   >
                     {windowDays} 天
                   </button>
@@ -963,10 +984,7 @@ export default function PerformancePage() {
                   text="当前还没有可归因的组合。"
                   hint="先在组合页创建一个组合并添加持仓，归因和基准对比才有意义。"
                   action={
-                    <Link
-                      href="/portfolio"
-                      className="rounded border border-primary px-3 py-1.5 text-sm text-primary no-underline"
-                    >
+                    <Link href="/portfolio" className="action-chip text-sm no-underline text-inherit">
                       去创建组合
                     </Link>
                   }
@@ -980,11 +998,7 @@ export default function PerformancePage() {
                   <h3 className="m-0 font-medium">{isAccountMode ? '账户复盘说明' : '归因解释与下一步动作'}</h3>
                   <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">{portfolioNarrative}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => openRiskWorkspace()}
-                      className="rounded border border-glass-border px-3 py-1 text-xs"
-                    >
+                    <button type="button" onClick={() => openRiskWorkspace()} className={chipButtonCls}>
                       打开风险中心
                     </button>
                     {(isAccountMode ? accountLeader?.stock_code : topContributor?.code) ? (
@@ -995,7 +1009,7 @@ export default function PerformancePage() {
                             String((isAccountMode ? accountLeader?.stock_code : topContributor?.code) ?? ''),
                           )
                         }
-                        className="rounded border border-glass-border px-3 py-1 text-xs"
+                        className={chipButtonCls}
                       >
                         打开重点股票详情
                       </button>
@@ -1008,14 +1022,14 @@ export default function PerformancePage() {
                             String((isAccountMode ? accountLeader?.stock_code : topContributor?.code) ?? ''),
                           )
                         }
-                        className="rounded border border-glass-border px-3 py-1 text-xs"
+                        className={chipButtonCls}
                       >
                         打开重点股票研究
                       </button>
                     ) : null}
                   </div>
                 </div>
-                <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-3">
+                <div className="panel-soft rounded-[24px] p-4">
                   <div className="text-xs font-medium uppercase tracking-[0.16em] text-text-muted">当前联动上下文</div>
                   <div className="mt-3 space-y-2 text-xs text-text-secondary">
                     <div>
@@ -1051,7 +1065,7 @@ export default function PerformancePage() {
                           key={item.code}
                           type="button"
                           onClick={() => setBenchmark(item.code)}
-                          className={`rounded border px-2.5 py-1 text-[11px] ${benchmark === item.code ? 'border-primary text-primary' : 'border-glass-border text-text-secondary'}`}
+                          className={`action-chip cursor-pointer text-[11px] ${benchmark === item.code ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
                         >
                           {item.label}
                         </button>
@@ -1104,7 +1118,7 @@ export default function PerformancePage() {
                             `performance-nav-${days}.csv`,
                           )
                         }
-                        className="rounded border border-glass-border px-3 py-1 text-xs"
+                        className={chipButtonCls}
                       >
                         导出净值
                       </button>
@@ -1131,7 +1145,7 @@ export default function PerformancePage() {
                             `performance-returns-${days}.csv`,
                           )
                         }
-                        className="rounded border border-glass-border px-3 py-1 text-xs"
+                        className={chipButtonCls}
                       >
                         导出收益
                       </button>
@@ -1177,17 +1191,13 @@ export default function PerformancePage() {
                           if (!rowCode) return '-';
                           return (
                             <div className="flex flex-wrap gap-2">
-                              <button
-                                type="button"
-                                onClick={() => openStockTarget(rowCode)}
-                                className="rounded border border-glass-border px-2 py-0.5 text-[11px]"
-                              >
+                              <button type="button" onClick={() => openStockTarget(rowCode)} className={chipButtonCls}>
                                 详情
                               </button>
                               <button
                                 type="button"
                                 onClick={() => openResearchTarget(rowCode)}
-                                className="rounded border border-glass-border px-2 py-0.5 text-[11px]"
+                                className={chipButtonCls}
                               >
                                 研究
                               </button>
@@ -1220,14 +1230,14 @@ export default function PerformancePage() {
                             <button
                               type="button"
                               onClick={() => openStockTarget(String(row.stock_code ?? ''))}
-                              className="rounded border border-glass-border px-2 py-1 text-[11px]"
+                              className={chipButtonCls}
                             >
                               打开详情
                             </button>
                             <button
                               type="button"
                               onClick={() => openResearchTarget(String(row.stock_code ?? ''))}
-                              className="rounded border border-glass-border px-2 py-1 text-[11px]"
+                              className={chipButtonCls}
                             >
                               打开研究
                             </button>
@@ -1338,7 +1348,7 @@ export default function PerformancePage() {
                           `performance-attribution-${selectedPortfolioId ?? 'portfolio'}-${portfolioLookbackDays}.csv`,
                         )
                       }
-                      className="rounded border border-glass-border px-3 py-1 text-xs"
+                      className={chipButtonCls}
                     >
                       导出归因
                     </button>
@@ -1374,17 +1384,13 @@ export default function PerformancePage() {
                           if (!rowCode) return '-';
                           return (
                             <div className="flex flex-wrap gap-2">
-                              <button
-                                type="button"
-                                onClick={() => openStockTarget(rowCode)}
-                                className="rounded border border-glass-border px-2 py-0.5 text-[11px]"
-                              >
+                              <button type="button" onClick={() => openStockTarget(rowCode)} className={chipButtonCls}>
                                 详情
                               </button>
                               <button
                                 type="button"
                                 onClick={() => openResearchTarget(rowCode)}
-                                className="rounded border border-glass-border px-2 py-0.5 text-[11px]"
+                                className={chipButtonCls}
                               >
                                 研究
                               </button>
@@ -1414,14 +1420,14 @@ export default function PerformancePage() {
                             <button
                               type="button"
                               onClick={() => openStockTarget(String(row.code ?? ''))}
-                              className="rounded border border-glass-border px-2 py-1 text-[11px]"
+                              className={chipButtonCls}
                             >
                               打开详情
                             </button>
                             <button
                               type="button"
                               onClick={() => openResearchTarget(String(row.code ?? ''))}
-                              className="rounded border border-glass-border px-2 py-1 text-[11px]"
+                              className={chipButtonCls}
                             >
                               打开研究
                             </button>
@@ -1438,25 +1444,25 @@ export default function PerformancePage() {
                     <span className="text-xs text-text-secondary">用于核对超额收益来源是否可靠</span>
                   </div>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
-                    <div className="rounded-xl border border-glass-border p-3">
+                    <div className={noteCardCls}>
                       <div className="text-xs text-text-secondary">基准代码</div>
                       <div className="mt-1 text-sm font-medium text-text-primary">
                         {benchmarkComparison?.benchmark ?? benchmark}
                       </div>
                     </div>
-                    <div className="rounded-xl border border-glass-border p-3">
+                    <div className={noteCardCls}>
                       <div className="text-xs text-text-secondary">年化超额收益</div>
                       <div className="mt-1 text-sm font-medium text-text-primary">
                         {fmtPct(Number(benchmarkComparison?.annualizedExcessReturnPct ?? 0))}
                       </div>
                     </div>
-                    <div className="rounded-xl border border-glass-border p-3">
+                    <div className={noteCardCls}>
                       <div className="text-xs text-text-secondary">对齐交易日</div>
                       <div className="mt-1 text-sm font-medium text-text-primary">
                         {String(benchmarkComparison?.alignedDays ?? '-')}
                       </div>
                     </div>
-                    <div className="rounded-xl border border-glass-border p-3">
+                    <div className={noteCardCls}>
                       <div className="text-xs text-text-secondary">归因方法</div>
                       <div className="mt-1 text-sm font-medium text-text-primary">{attribution?.method ?? '-'}</div>
                     </div>
@@ -1477,59 +1483,47 @@ export default function PerformancePage() {
         }
         secondary={
           <div className="space-y-4 xl:h-full xl:overflow-y-auto xl:pl-1">
-            <SectionCard className="p-4">
+            <div className={sidePanelCls}>
               <div className="text-sm font-medium text-text-primary">当前联动摘要</div>
               <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">{portfolioNarrative}</p>
-              <div className="mt-3 space-y-2 text-xs text-text-secondary">
-                <div>
+              <div className="mt-4 space-y-3">
+                <div className={noteCardCls}>
                   模式：<span className="font-medium text-text-primary">{activeModeLabel}</span>
                 </div>
-                <div>
+                <div className={noteCardCls}>
                   观察窗口：
                   <span className="font-medium text-text-primary">
                     {isAccountMode ? days : portfolioLookbackDays} 天
                   </span>
                 </div>
-                <div>
+                <div className={noteCardCls}>
                   基准：
                   <span className="font-medium text-text-primary">
                     {isAccountMode ? '账户净值视角' : (selectedBenchmark?.label ?? benchmark)}
                   </span>
                 </div>
                 {focusStockCode ? (
-                  <div>
+                  <div className={noteCardCls}>
                     焦点股票：<span className="font-medium text-text-primary">{focusStockCode}</span>
                   </div>
                 ) : null}
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => openRiskWorkspace()}
-                  className="rounded border border-glass-border px-3 py-1 text-xs"
-                >
+                <button type="button" onClick={() => openRiskWorkspace()} className={chipButtonCls}>
                   打开风险中心
                 </button>
                 {focusStockCode ? (
-                  <button
-                    type="button"
-                    onClick={() => openStockTarget(focusStockCode)}
-                    className="rounded border border-glass-border px-3 py-1 text-xs"
-                  >
+                  <button type="button" onClick={() => openStockTarget(focusStockCode)} className={chipButtonCls}>
                     打开股票详情
                   </button>
                 ) : null}
                 {focusStockCode ? (
-                  <button
-                    type="button"
-                    onClick={() => openResearchTarget(focusStockCode)}
-                    className="rounded border border-glass-border px-3 py-1 text-xs"
-                  >
+                  <button type="button" onClick={() => openResearchTarget(focusStockCode)} className={chipButtonCls}>
                     打开研究页
                   </button>
                 ) : null}
               </div>
-            </SectionCard>
+            </div>
 
             {isAccountMode ? (
               <>
@@ -1558,10 +1552,7 @@ export default function PerformancePage() {
                   </div>
                   <div className="mt-3 space-y-3">
                     {topPositions.slice(0, 5).map((item) => (
-                      <div
-                        key={`${item.stock_code}-${item.stock_name}`}
-                        className="rounded-xl border border-glass-border bg-surface-alt/30 p-3"
-                      >
+                      <div key={`${item.stock_code}-${item.stock_name}`} className={noteCardCls}>
                         <div className="flex items-center justify-between gap-2">
                           <div>
                             <div className="text-sm font-medium text-text-primary">
@@ -1577,14 +1568,14 @@ export default function PerformancePage() {
                           <button
                             type="button"
                             onClick={() => openStockTarget(String(item.stock_code ?? ''))}
-                            className="rounded border border-glass-border px-2 py-0.5 text-[11px]"
+                            className={chipButtonCls}
                           >
                             详情
                           </button>
                           <button
                             type="button"
                             onClick={() => openResearchTarget(String(item.stock_code ?? ''))}
-                            className="rounded border border-glass-border px-2 py-0.5 text-[11px]"
+                            className={chipButtonCls}
                           >
                             研究
                           </button>
@@ -1683,7 +1674,7 @@ export default function PerformancePage() {
                           key={item.code}
                           type="button"
                           onClick={() => setBenchmark(item.code)}
-                          className={`rounded border px-2.5 py-1 text-[11px] ${benchmark === item.code ? 'border-primary text-primary' : 'border-glass-border text-text-secondary'}`}
+                          className={`action-chip cursor-pointer text-[11px] ${benchmark === item.code ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
                         >
                           {item.label}
                         </button>

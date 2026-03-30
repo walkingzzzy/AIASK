@@ -12,6 +12,11 @@ class SaveLlmConfigDto {
   @IsString() model!: string;
 }
 
+class ProbeModelsDto {
+  @IsString() baseUrl!: string;
+  @IsString() apiKey!: string;
+}
+
 class ChatMessageDto {
   @IsIn(['user', 'assistant', 'system']) role!: 'user' | 'assistant' | 'system';
   @IsString() @MaxLength(32000) content!: string;
@@ -118,6 +123,29 @@ export class ChatController {
   @Get('models')
   getModels() {
     return { success: true, data: MODEL_PRESETS };
+  }
+
+  @Post('probe-models')
+  async probeModels(@Body() body: ProbeModelsDto) {
+    const url = `${body.baseUrl.replace(/\/+$/, '')}/models`;
+    try {
+      const resp = await fetch(url, {
+        headers: { Authorization: `Bearer ${body.apiKey}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) {
+        return { success: false, error: `API 返回 ${resp.status}`, models: [] };
+      }
+      const json = (await resp.json()) as { data?: Array<{ id: string }> };
+      const models = (json.data ?? [])
+        .map((m) => m.id)
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+      return { success: true, models };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message, models: [] };
+    }
   }
 
   @Get('conversations')

@@ -7,7 +7,7 @@ import { useApiMutation } from '@/hooks/use-api-mutation';
 import { apiKeys } from '@/lib/query-keys';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
-import { fmt, cacheText, type CacheMeta } from '@/lib/api';
+import { cacheText, fmt, type CacheMeta } from '@/lib/api';
 
 type AlertItem = { id: string; code: string; indicator: string; condition: string; value: number | null };
 type ListData = { status?: string; items?: AlertItem[]; sourceTool?: string; meta?: CacheMeta };
@@ -32,6 +32,15 @@ const ALERT_TEMPLATES = [
   { label: '成交量放大', indicator: 'volume_ratio', condition: '>', value: '2' },
 ] as const;
 
+const HERO_PRIMARY_BUTTON_CLS =
+  'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
+const HERO_SECONDARY_BUTTON_CLS =
+  'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
+const CHIP_BUTTON_CLS = 'action-chip cursor-pointer text-xs text-text-primary';
+const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
+const FIELD_CLS =
+  'h-11 rounded-[20px] border border-white/65 bg-white/55 px-4 text-sm text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] outline-none transition placeholder:text-text-muted focus:border-primary/45 focus:bg-white/72';
+
 export default function AlertsPage() {
   const { code, setCode, codeError, validate, trimmedCode } = useStockCode('600519');
   const [indicator, setIndicator] = useState('price');
@@ -51,18 +60,29 @@ export default function AlertsPage() {
     e.preventDefault();
     if (!validate()) return;
     try {
-      await createApi.triggerAsync('/alerts/create', { method: 'POST' }, {
-        code: trimmedCode, indicator: indicator.trim(), condition, value: value.trim(),
-      });
+      await createApi.triggerAsync(
+        '/alerts/create',
+        { method: 'POST' },
+        {
+          code: trimmedCode,
+          indicator: indicator.trim(),
+          condition,
+          value: value.trim(),
+        },
+      );
       setLastCreatedSummary(`${trimmedCode} · ${indicator.trim()} ${condition} ${value.trim()}`);
-    } catch { /* error captured by mutation */ }
+    } catch {
+      // error handled by mutation hook
+    }
   }
 
   async function onDelete(id: string) {
     try {
       await deleteApi.triggerAsync(`/alerts/delete?alertId=${encodeURIComponent(id)}`, { method: 'DELETE' });
       setLastCreatedSummary(null);
-    } catch { /* error captured by mutation */ }
+    } catch {
+      // error handled by mutation hook
+    }
   }
 
   const items = useMemo(() => listQ.data?.items ?? [], [listQ.data]);
@@ -81,7 +101,7 @@ export default function AlertsPage() {
     return '阈值会按照你选择的指标解释；价格单位为元，其它指标按各自量纲处理。';
   }, [indicatorKey]);
 
-  function applyTemplate(template: typeof ALERT_TEMPLATES[number]) {
+  function applyTemplate(template: (typeof ALERT_TEMPLATES)[number]) {
     setIndicator(template.indicator);
     setCondition(template.condition);
     setValue(template.value);
@@ -89,32 +109,128 @@ export default function AlertsPage() {
 
   return (
     <PageContainer narrow>
-      <h1>告警中心</h1>
+      <section className="page-hero mb-4 p-5 sm:p-6">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="info">Alerts Workspace</Badge>
+              <Badge variant="neutral">{STATUS_OPTIONS.find((item) => item.value === status)?.label ?? status}</Badge>
+              <Badge variant={items.length > 0 ? 'success' : 'warning'}>
+                {items.length > 0 ? `已加载 ${items.length} 条规则` : '等待创建或加载'}
+              </Badge>
+            </div>
+            <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
+              告警中心工作台
+            </h1>
+            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
+              这一页把模板、创建、筛选和结果放进一条连续链路。先确定监控指标和阈值，再在右侧立即确认列表结果，不用在多个页面之间来回跳转。
+            </p>
+            <div className="mt-5 flex flex-wrap gap-2">
+              <button type="submit" form="alerts-create-form" disabled={loading} className={HERO_PRIMARY_BUTTON_CLS}>
+                {loading ? '处理中...' : '创建告警'}
+              </button>
+              <button type="button" onClick={() => listQ.refetch()} className={HERO_SECONDARY_BUTTON_CLS}>
+                刷新列表
+              </button>
+            </div>
+
+            <div className="mt-5 grid gap-3 sm:grid-cols-4">
+              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前代码</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '600519'}</div>
+                <div className="mt-1 text-xs text-text-secondary">用于创建下一条监控规则</div>
+              </div>
+              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前指标</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">{indicator}</div>
+                <div className="mt-1 text-xs text-text-secondary">
+                  {condition} {value}
+                </div>
+              </div>
+              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">生效列表</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">{items.length}</div>
+                <div className="mt-1 text-xs text-text-secondary">当前筛选状态下返回的告警数</div>
+              </div>
+              <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">最近创建</div>
+                <div className="mt-3 text-sm font-semibold leading-6 text-text-primary">
+                  {lastCreatedSummary || '尚未创建'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-3">
+            <div className="panel-soft rounded-[28px] p-4 sm:p-5">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">创建提示</div>
+              <div className="mt-4 space-y-3">
+                <div className={NOTE_CARD_CLS}>1. 先用模板快速建立第一条规则，再按需要微调阈值。</div>
+                <div className={NOTE_CARD_CLS}>2. 规则创建后会立即刷新列表，优先确认是否落在当前筛选状态里。</div>
+                <div className={NOTE_CARD_CLS}>
+                  3. 盘中异动更适合监控 `price` 与 `volume_ratio`，震荡策略更适合 `rsi`。
+                </div>
+              </div>
+            </div>
+
+            <div className="panel-soft rounded-[28px] p-4 sm:p-5">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">模板捷径</div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {ALERT_TEMPLATES.map((template) => (
+                  <button
+                    key={template.label}
+                    type="button"
+                    onClick={() => applyTemplate(template)}
+                    className={CHIP_BUTTON_CLS}
+                  >
+                    {template.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {error ? <ErrorState text={error} hint="请稍后重试" /> : null}
+
       <div className="grid gap-4 lg:grid-cols-[minmax(0,0.92fr)_minmax(320px,1.08fr)]">
-        <SectionCard className="p-4">
+        <div className="panel-soft rounded-[28px] p-4 sm:p-5">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="mt-0 mb-1">创建告警</h3>
-              <p className="m-0 text-xs leading-5 text-text-secondary">模板、创建结果和列表放在同一任务流中。创建成功后右侧会立即显示最新结果，避免“创建完不知道去哪看”。</p>
+              <div className="eyebrow">Create Alert</div>
+              <h2 className="mb-0 mt-2 text-xl font-semibold text-text-primary">创建告警</h2>
+              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+                模板、创建结果和列表放在同一任务流中。创建成功后右侧会立即显示最新结果，避免“创建完不知道去哪看”。
+              </p>
             </div>
             <Badge variant="info">步骤 1</Badge>
           </div>
-          <div className="mt-3 mb-3 flex gap-2 flex-wrap">
+
+          <div className="mt-4 flex flex-wrap gap-2">
             {ALERT_TEMPLATES.map((template) => (
               <button
                 key={template.label}
                 type="button"
                 onClick={() => applyTemplate(template)}
-                className="text-xs px-3 py-1 rounded-full border border-border cursor-pointer hover:bg-surface-alt"
+                className={CHIP_BUTTON_CLS}
               >
                 {template.label}
               </button>
             ))}
           </div>
-          <form onSubmit={onCreate} className="grid gap-3 md:grid-cols-2">
-            <StockCodeInput id="alerts-stock-code" label="股票代码" value={code} onChange={setCode} error={codeError} placeholder="如 600519" />
-            <label className="grid gap-1 text-xs text-text-secondary">
-              <span>指标</span>
+
+          <form id="alerts-create-form" onSubmit={onCreate} className="mt-4 grid gap-4 md:grid-cols-2">
+            <StockCodeInput
+              id="alerts-stock-code"
+              label="股票代码"
+              value={code}
+              onChange={setCode}
+              error={codeError}
+              placeholder="如 600519"
+            />
+            <label className="grid gap-2 text-xs text-text-secondary">
+              <span className="font-medium uppercase tracking-[0.12em] text-text-muted">指标</span>
               <input
                 id="alerts-indicator"
                 value={indicator}
@@ -122,107 +238,164 @@ export default function AlertsPage() {
                 list="alerts-indicator-options"
                 placeholder="如 price / rsi"
                 aria-describedby="alerts-indicator-help"
-                className="px-2 py-1 rounded text-sm"
+                className={FIELD_CLS}
               />
-              <span id="alerts-indicator-help" className="text-[11px] leading-5 text-text-muted">{indicatorHint}</span>
+              <span id="alerts-indicator-help" className="text-[11px] leading-5 text-text-muted">
+                {indicatorHint}
+              </span>
             </label>
-            <label className="grid gap-1 text-xs text-text-secondary">
-              <span>条件</span>
-              <select id="alerts-condition" value={condition} onChange={(e) => setCondition(e.target.value)} className="px-2 py-1 rounded text-sm">
+            <label className="grid gap-2 text-xs text-text-secondary">
+              <span className="font-medium uppercase tracking-[0.12em] text-text-muted">条件</span>
+              <select
+                id="alerts-condition"
+                value={condition}
+                onChange={(e) => setCondition(e.target.value)}
+                className={FIELD_CLS}
+              >
                 {CONDITION_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
                 ))}
               </select>
             </label>
-            <label className="grid gap-1 text-xs text-text-secondary">
-              <span>阈值</span>
-              <input id="alerts-threshold" value={value} onChange={(e) => setValue(e.target.value)} placeholder="输入阈值" aria-describedby="alerts-threshold-help" className="px-2 py-1 rounded text-sm" />
-              <span id="alerts-threshold-help" className="text-[11px] leading-5 text-text-muted">{thresholdHint}</span>
+            <label className="grid gap-2 text-xs text-text-secondary">
+              <span className="font-medium uppercase tracking-[0.12em] text-text-muted">阈值</span>
+              <input
+                id="alerts-threshold"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                placeholder="输入阈值"
+                aria-describedby="alerts-threshold-help"
+                className={FIELD_CLS}
+              />
+              <span id="alerts-threshold-help" className="text-[11px] leading-5 text-text-muted">
+                {thresholdHint}
+              </span>
             </label>
-            <div className="md:col-span-2 rounded-xl border border-border bg-surface-alt/40 p-3 text-xs text-text-secondary">
+            <div className="md:col-span-2 metric-tile rounded-[24px] p-4 text-xs text-text-secondary">
               <div className="font-medium text-text-primary">当前预览</div>
-              <div className="mt-2">{trimmedCode || '股票代码'} · {indicator.trim() || '指标'} {condition} {value.trim() || '阈值'}</div>
+              <div className="mt-2">
+                {trimmedCode || '股票代码'} · {indicator.trim() || '指标'} {condition} {value.trim() || '阈值'}
+              </div>
               <div className="mt-1">创建后会自动刷新列表，并保留当前筛选条件。</div>
             </div>
-            <button type="submit" disabled={loading} className="md:col-span-2">{loading ? '处理中...' : '创建告警'}</button>
           </form>
+
           <datalist id="alerts-indicator-options">
             <option value="price" />
             <option value="rsi" />
             <option value="volume_ratio" />
           </datalist>
-        </SectionCard>
+        </div>
 
-        <SectionCard className="p-4">
-          <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="panel-soft rounded-[28px] p-4 sm:p-5">
+          <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="mt-0 mb-1 flex items-center gap-2">
+              <div className="eyebrow">Alert List</div>
+              <h2 className="mb-0 mt-2 flex items-center gap-2 text-xl font-semibold text-text-primary">
                 告警列表
                 <Badge variant={items.length > 0 ? 'info' : 'neutral'}>{items.length}</Badge>
-              </h3>
-              <p className="m-0 text-xs leading-5 text-text-secondary">创建成功后，最新结果会在这里直接可见；也可以随时切换状态筛选查看当前生效中的规则。</p>
+              </h2>
+              <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
+                创建成功后，最新结果会在这里直接可见；也可以随时切换状态筛选查看当前生效中的规则。
+              </p>
             </div>
             <Badge variant="neutral">步骤 2</Badge>
           </div>
+
           {lastCreatedSummary ? (
-            <div className="mb-3 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-text-secondary">
+            <div className="mt-4 metric-tile rounded-[22px] px-4 py-3 text-sm text-text-secondary">
               最近创建：<span className="font-medium text-text-primary">{lastCreatedSummary}</span>
             </div>
           ) : null}
-          <div className="mb-3 flex gap-2.5 items-end flex-wrap">
-            <label className="grid gap-1 text-xs text-text-secondary">
-              <span>状态筛选</span>
-              <select value={status} onChange={(e) => setStatus(e.target.value)} className="px-2 py-1 rounded text-sm">
+
+          <div className="mt-4 flex flex-wrap items-end gap-2.5">
+            <label className="grid gap-2 text-xs text-text-secondary">
+              <span className="font-medium uppercase tracking-[0.12em] text-text-muted">状态筛选</span>
+              <select value={status} onChange={(e) => setStatus(e.target.value)} className={FIELD_CLS}>
                 {STATUS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
                 ))}
               </select>
             </label>
-            <button type="button" disabled={loading} onClick={() => listQ.refetch()}>{loading ? '加载中...' : '刷新列表'}</button>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => listQ.refetch()}
+              className={HERO_SECONDARY_BUTTON_CLS}
+            >
+              {loading ? '加载中...' : '刷新列表'}
+            </button>
           </div>
+
           {loading ? <LoadingState text="处理中..." /> : null}
           {error ? <ErrorState text={error} hint="请稍后重试" /> : null}
-          <MetaLine>更新：{listQ.dataUpdatedAt ? new Date(listQ.dataUpdatedAt).toLocaleString('zh-CN') : '-'} ｜ 抓取：{freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'} ｜ 来源：{fmt(listQ.data?.sourceTool)} ｜ 缓存：{cacheText(cache)}</MetaLine>
-          <div className="mt-3 max-h-[520px] overflow-auto space-y-2">
-            {items.map((it, idx) => {
-              const id = it.id;
+
+          <MetaLine>
+            更新：{listQ.dataUpdatedAt ? new Date(listQ.dataUpdatedAt).toLocaleString('zh-CN') : '-'} ｜ 抓取：
+            {freshness ? new Date(freshness).toLocaleString('zh-CN') : '-'} ｜ 来源：{fmt(listQ.data?.sourceTool)} ｜
+            缓存：
+            {cacheText(cache)}
+          </MetaLine>
+
+          <div className="mt-4 max-h-[560px] space-y-2 overflow-auto">
+            {items.map((item, index) => {
+              const id = item.id;
               return (
-                <div key={`${id || 'row'}-${idx}`} className="surface-card rounded-lg p-3 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-1 h-10 rounded-full bg-primary" />
+                <div
+                  key={`${id || 'row'}-${index}`}
+                  className="metric-tile flex items-center justify-between gap-3 rounded-[22px] p-3"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="h-10 w-1 rounded-full bg-primary" />
                     <div className="min-w-0">
-                      <div className="font-semibold text-sm">{fmt(it.code)} - {fmt(it.indicator)}</div>
-                      <div className="text-xs text-text-secondary mt-0.5 break-all">
-                        {fmt(it.condition)} {fmt(it.value)}
+                      <div className="text-sm font-semibold text-text-primary">
+                        {fmt(item.code)} - {fmt(item.indicator)}
+                      </div>
+                      <div className="mt-0.5 break-all text-xs text-text-secondary">
+                        {fmt(item.condition)} {fmt(item.value)}
                       </div>
                     </div>
                   </div>
                   {id ? (
-                    <button type="button" onClick={() => onDelete(id)} disabled={loading}
-                      className="text-xs text-danger cursor-pointer px-2 py-1 rounded hover:bg-danger/10">
+                    <button
+                      type="button"
+                      onClick={() => onDelete(id)}
+                      disabled={loading}
+                      className="rounded-full px-3 py-1 text-xs text-danger transition hover:bg-danger/10"
+                    >
                       删除
                     </button>
                   ) : null}
                 </div>
               );
             })}
-            {!items.length ? <EmptyState text="暂无告警数据，先创建或点击刷新列表。" hint="你也可以先套用下方模板，再回到左侧完成创建。" /> : null}
+
             {!items.length ? (
-              <div className="flex justify-center gap-2 flex-wrap pb-2">
-                {ALERT_TEMPLATES.map((template) => (
-                  <button
-                    key={`empty-${template.label}`}
-                    type="button"
-                    onClick={() => applyTemplate(template)}
-                    className="text-xs px-3 py-1 rounded-full border border-border cursor-pointer hover:bg-surface-alt"
-                  >
-                    使用{template.label}模板
-                  </button>
-                ))}
-              </div>
+              <EmptyState
+                text="暂无告警数据，先创建或点击刷新列表"
+                hint="你也可以先套用模板，再回到左侧完成创建。"
+                action={
+                  <>
+                    {ALERT_TEMPLATES.map((template) => (
+                      <button
+                        key={`empty-${template.label}`}
+                        type="button"
+                        onClick={() => applyTemplate(template)}
+                        className={CHIP_BUTTON_CLS}
+                      >
+                        使用{template.label}
+                      </button>
+                    ))}
+                  </>
+                }
+              />
             ) : null}
           </div>
-        </SectionCard>
+        </div>
       </div>
     </PageContainer>
   );

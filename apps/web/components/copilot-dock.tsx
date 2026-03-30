@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { FormEvent, startTransition, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { FormEvent, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { pageActionBus } from '@/lib/page-action-bus';
 import { getLlmConfig, streamChat } from '@/lib/chat-api';
 import type { CopilotActionMeta } from '@/lib/copilot-types';
@@ -99,8 +99,10 @@ export default function CopilotDock({
 
   const [input, setInput] = useState('');
   const abortRef = useRef<AbortController | null>(null);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const userScrolledUpRef = useRef(false);
   const availableActions = useMemo(() => [...pageActions, ...globalActions], [globalActions, pageActions]);
   const activeWorkspace = useMemo(
     () => selectActiveWorkspace({ activeWorkspaceId, workspaces }),
@@ -125,9 +127,27 @@ export default function CopilotDock({
     }
   }, [configLoaded, setConfigLoaded]);
 
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    bottomRef.current?.scrollIntoView({ behavior });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!userScrolledUpRef.current) {
+      scrollToBottom('smooth');
+    }
+  }, [messages, scrollToBottom]);
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    const el = scrollAreaRef.current;
+    if (!el) return;
+    function handleScroll() {
+      if (!el) return;
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      userScrolledUpRef.current = distFromBottom > 80;
+    }
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, []);
 
   // 消费 AskAiButton 注入的 pendingInject：预填输入框
   useEffect(() => {
@@ -226,6 +246,7 @@ export default function CopilotDock({
     }
 
     setInput('');
+    userScrolledUpRef.current = false;
     addUserMessage(text);
     const assistantId = addAssistantMessage();
     setStreaming(true);
@@ -318,8 +339,8 @@ export default function CopilotDock({
   }
 
   const shellClassName = variant === 'page'
-    ? 'flex h-full min-h-0 flex-col rounded-[28px] border border-border bg-surface shadow-[0_24px_80px_rgba(15,23,42,0.08)]'
-    : 'flex h-full min-h-0 flex-col border-l border-border bg-surface';
+    ? 'panel-solid flex h-full min-h-0 flex-col rounded-[30px]'
+    : 'flex h-full min-h-0 flex-col bg-transparent';
 
   return (
     <aside className={`${shellClassName} ${className}`} style={style}>
@@ -354,7 +375,7 @@ export default function CopilotDock({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+      <div ref={scrollAreaRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         <section className="mb-4 rounded-2xl border border-border bg-surface-alt/60 p-3">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
@@ -464,36 +485,41 @@ export default function CopilotDock({
         <div ref={bottomRef} />
       </div>
 
-      <form onSubmit={handleSubmit} className="border-t border-border px-4 py-3">
+      <form onSubmit={handleSubmit} className="shrink-0 border-t border-border bg-surface/50 backdrop-blur-sm px-4 py-3">
         <label htmlFor={`copilot-input-${variant}`} className="sr-only">AI 输入框</label>
-        <textarea
-          id={`copilot-input-${variant}`}
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-          placeholder={hasConfig ? '输入问题，Copilot 会结合当前页面进行回答...' : '输入问题后，发送时会提示先完成模型配置'}
-          disabled={streaming}
-          rows={variant === 'page' ? 4 : 3}
-          className="min-h-[96px] w-full resize-none rounded-2xl border border-border bg-surface px-3 py-3 text-sm"
-        />
-        <div className="mt-3 flex items-center justify-between gap-3">
-          <div className="text-[11px] leading-5 text-text-muted">
-            {pageContext ? `${pageContext.title} · ${availableActions.length} 个可联动动作` : '当前未挂载页面上下文'}
-          </div>
+        <div className="flex items-end gap-2">
+          <textarea
+            id={`copilot-input-${variant}`}
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+            placeholder={hasConfig ? '输入问题...' : '输入问题后发送时会提示配置'}
+            disabled={streaming}
+            rows={1}
+            className="min-h-[42px] max-h-[100px] flex-1 resize-none rounded-xl border border-border bg-surface px-3 py-2.5 text-sm"
+            onInput={(event) => {
+              const el = event.currentTarget;
+              el.style.height = 'auto';
+              el.style.height = `${Math.min(el.scrollHeight, 100)}px`;
+            }}
+          />
           {streaming ? (
-            <button type="button" onClick={stop} className="rounded-full bg-danger px-4 py-2 text-xs text-white">
+            <button type="button" onClick={stop} className="shrink-0 rounded-full bg-danger px-3 py-2 text-xs text-white">
               停止
             </button>
           ) : (
-            <button type="submit" disabled={!input.trim()} className="rounded-full bg-primary px-4 py-2 text-xs text-white disabled:opacity-50">
-              {hasConfig ? '发送' : '继续并配置'}
+            <button type="submit" disabled={!input.trim()} className="shrink-0 rounded-full bg-primary px-3 py-2 text-xs text-white disabled:opacity-50">
+              {hasConfig ? '发送' : '配置'}
             </button>
           )}
+        </div>
+        <div className="mt-2 truncate text-[11px] leading-5 text-text-muted">
+          {pageContext ? `${pageContext.title} · ${availableActions.length} 个联动` : '未挂载页面上下文'}
         </div>
       </form>
 

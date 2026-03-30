@@ -1824,7 +1824,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
             get().replaceSnapshot(data);
             return;
           }
-          set({ remoteReady: true });
+          set({ remoteReady: false });
         } finally {
           set({ syncing: false });
         }
@@ -1844,7 +1844,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
             set({ lastSyncedAt: data.updatedAt ?? new Date().toISOString(), remoteReady: true });
             return;
           }
-          set({ remoteReady: true });
+          set({ remoteReady: false });
         } finally {
           set({ syncing: false });
         }

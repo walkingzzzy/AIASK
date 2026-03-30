@@ -1,7 +1,9 @@
 'use client';
 
+import { useCallback } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { authedFetch, extractApiErrorMessage, unwrapApiEnvelope } from '@/lib/api';
+import { ensureBffAvailability, useBffAvailability } from '@/lib/bff-availability';
 import { useAuthStore } from '@/store/auth-store';
 import type { Envelope } from '@aiask/shared-types';
 
@@ -35,10 +37,7 @@ export type UseApiQueryOptions<TData> = {
  * 读请求 hook — 基于 useQuery + authedFetch。
  * path 为 null 时自动禁用查询。
  */
-export function useApiQuery<TData = unknown>(
-  path: string | null,
-  options: UseApiQueryOptions<TData> = {},
-) {
+export function useApiQuery<TData = unknown>(path: string | null, options: UseApiQueryOptions<TData> = {}) {
   const {
     queryKey: keyExtra = [],
     enabled = true,
@@ -51,6 +50,7 @@ export function useApiQuery<TData = unknown>(
     redirectOnUnauthorized = true,
   } = options;
   const isLoggingOut = useAuthStore((s) => s.isLoggingOut);
+  const bffAvailability = useBffAvailability({ probeOnMount: enabled && path != null });
 
   // Extract module from path (e.g. '/portfolio/list' → 'portfolio')
   // so invalidateQueries({ queryKey: ['api', 'portfolio'] }) matches all portfolio queries.
@@ -74,9 +74,12 @@ export function useApiQuery<TData = unknown>(
         let msg = `HTTP ${resp.status} @ ${path}`;
         const detail = extractApiErrorMessage(bodyPayload, msg);
         if (detail !== msg) msg = `${detail} @ ${path}`;
-        const traceId = bodyPayload && typeof bodyPayload === 'object' && typeof (bodyPayload as { traceId?: unknown }).traceId === 'string'
-          ? (bodyPayload as { traceId: string }).traceId
-          : undefined;
+        const traceId =
+          bodyPayload &&
+          typeof bodyPayload === 'object' &&
+          typeof (bodyPayload as { traceId?: unknown }).traceId === 'string'
+            ? (bodyPayload as { traceId: string }).traceId
+            : undefined;
         if (traceId) msg = `${msg} (traceId: ${traceId})`;
         throw new Error(msg);
       }
@@ -97,18 +100,30 @@ export function useApiQuery<TData = unknown>(
       }
       return rawData as TData;
     },
-    enabled: !isLoggingOut && enabled && path != null,
+    enabled: !isLoggingOut && enabled && path != null && bffAvailability.reachable,
     refetchInterval: refetchInterval as number | false | undefined,
     staleTime,
     placeholderData: placeholderData === 'keepPrevious' ? keepPreviousData : undefined,
   });
 
+  const disabledByOffline = enabled && path != null && bffAvailability.unavailable;
+  const derivedError = disabledByOffline ? '数据服务暂不可用' : (query.error?.message ?? null);
+  const derivedPending = (enabled && path != null && bffAvailability.checking) || query.isPending;
+  const refetch = useCallback(async () => {
+    if (enabled && path != null && !bffAvailability.reachable) {
+      const reachable = await ensureBffAvailability({ force: true });
+      if (!reachable) return query.refetch();
+    }
+    return query.refetch();
+  }, [bffAvailability.reachable, enabled, path, query]);
+
   return {
     data: query.data ?? null,
-    isPending: query.isPending,
+    isPending: derivedPending,
     isFetching: query.isFetching,
-    error: query.error?.message ?? null,
+    error: derivedError,
     dataUpdatedAt: query.dataUpdatedAt,
-    refetch: query.refetch,
+    refetch,
+    serviceUnavailable: disabledByOffline,
   };
 }

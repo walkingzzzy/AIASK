@@ -2,16 +2,18 @@ export function SectionCard({
   children,
   className = '',
   tabAttached = false,
+  interactive = false,
 }: {
   children: React.ReactNode;
   className?: string;
   tabAttached?: boolean;
+  interactive?: boolean;
 }) {
   return (
     <section
-      className={`surface-card ${
-        tabAttached ? 'rounded-b-[22px] rounded-t-none' : 'rounded-[22px]'
-      } ${tabAttached ? 'mt-0 p-4' : 'mt-4 p-4 sm:p-5'} ${
+      className={`panel-solid ${interactive ? 'card-interactive' : 'glass-hover'} ${
+        tabAttached ? 'rounded-[28px] rounded-t-[18px]' : 'rounded-[28px]'
+      } ${tabAttached ? 'mt-0 p-5 sm:p-7' : 'mt-5 p-5 sm:p-7'} ${
         className
       }`}
     >

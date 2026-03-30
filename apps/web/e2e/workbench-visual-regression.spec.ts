@@ -68,14 +68,14 @@ async function verifyStrategyDetailWorkbench(page: Page) {
     await assertProtectedShell(page);
     await waitForSettledUi(page, 2_500);
 
-    await expect(page.locator('banner')).toContainText('策略详情');
+    await expect(page).toHaveURL(/\/strategy-market\/[^/?#]+/);
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
     await expect(page.getByText('Strategy Workspace')).toBeVisible();
     await expect(page.getByText('Workspace Summary')).toBeVisible();
-    await expect(page.getByText('页面 策略详情')).toBeVisible();
+    await expect(page.getByText('页面 策略详情').first()).toBeVisible();
     await expect(page.getByRole('tab', { name: '策略概览' })).toBeVisible();
     await expect(page.getByRole('button', { name: '加入组合' })).toBeVisible();
-    await expect(page.getByText('当前页面')).toBeVisible();
+    await expect(page.getByText('当前页面').first()).toBeVisible();
     await expect(page.getByText('策略详情').first()).toBeVisible();
     await assertNoHorizontalOverflow(page);
     assertNoCriticalPageIssues(collector);

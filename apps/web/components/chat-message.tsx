@@ -13,7 +13,7 @@ export default function ChatMessage({
   return (
     <div className={`flex mb-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-[75%] px-3.5 py-2.5 rounded-xl whitespace-pre-wrap break-words leading-relaxed text-sm ${
+        className={`max-w-[90%] sm:max-w-[75%] px-3 py-2.5 sm:px-3.5 rounded-xl whitespace-pre-wrap wrap-break-word leading-relaxed text-sm ${
           isUser ? 'bg-primary text-white' : 'surface-card text-text'
         }`}
       >

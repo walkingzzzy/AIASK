@@ -16,7 +16,7 @@ export function LoadingState({ text = '加载中...' }: { text?: string }) {
 
 export function ErrorState({ text, hint, onRetry }: { text: string; hint?: string; onRetry?: () => void }) {
   return (
-    <div className="mt-2 rounded-[18px] border border-danger/20 bg-danger/8 p-4" role="alert">
+    <div className="mt-2 rounded-[22px] border border-danger/20 bg-[linear-gradient(180deg,rgba(217,45,32,0.12),rgba(255,255,255,0.52))] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.72)] backdrop-blur-xl" role="alert">
       <p className="m-0 text-sm font-medium text-error">{text}</p>
       {hint ? <p className="mb-0 mt-1 text-xs text-text-secondary">{hint}</p> : null}
       {onRetry ? (
@@ -48,12 +48,12 @@ export function EmptyState({
 }) {
   if (variant === 'compact') {
     return (
-      <div className={`flex items-center gap-3 rounded-md border border-dashed border-border bg-surface-alt/60 px-4 py-3 ${className}`}>
+      <div className={`flex items-center gap-3 rounded-[16px] border border-dashed border-border/70 bg-[linear-gradient(145deg,rgba(255,255,255,0.42),rgba(240,248,255,0.26))] px-4 py-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.64)] backdrop-blur-sm ${className}`}>
         {icon ? (
           <span className="shrink-0 text-text-muted">{icon}</span>
         ) : (
-          <span className="shrink-0 text-text-muted opacity-50">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <span className="shrink-0 inline-flex h-7 w-7 items-center justify-center rounded-xl bg-[rgba(11,107,203,0.08)] text-primary/60">
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-2.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
             </svg>
           </span>
@@ -68,21 +68,21 @@ export function EmptyState({
   }
 
   return (
-    <div className={`flex flex-col items-center justify-center rounded-[18px] border border-dashed border-border bg-surface-alt/60 px-4 py-10 text-center ${className}`}>
+    <div className={`flex flex-col items-center justify-center rounded-[22px] border border-dashed border-border/70 bg-[linear-gradient(145deg,rgba(255,255,255,0.42),rgba(240,248,255,0.26))] px-6 py-12 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.64)] backdrop-blur-sm ${className}`}>
       {icon ? (
-        <span className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-surface text-text-muted shadow-sm">
+        <span className="mb-4 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,rgba(11,107,203,0.12),rgba(56,214,255,0.08))] text-primary shadow-[0_8px_20px_-10px_rgba(11,107,203,0.24)]">
           {icon}
         </span>
       ) : (
-        <span className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-surface text-text-muted shadow-sm">
-          <svg className="h-5 w-5 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <span className="mb-4 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,rgba(11,107,203,0.10),rgba(56,214,255,0.06))] text-primary/60 shadow-[0_8px_20px_-10px_rgba(11,107,203,0.16)]">
+          <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-2.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
           </svg>
         </span>
       )}
-      <p className="m-0 text-sm font-medium text-text-primary">{text}</p>
-      {hint ? <p className="mt-1 max-w-sm text-xs leading-5 text-text-muted">{hint}</p> : null}
-      {action ? <div className="mt-4 flex flex-wrap items-center justify-center gap-2">{action}</div> : null}
+      <p className="m-0 text-sm font-semibold text-text-primary">{text}</p>
+      {hint ? <p className="mt-1.5 max-w-xs text-xs leading-5 text-text-muted">{hint}</p> : null}
+      {action ? <div className="mt-5 flex flex-wrap items-center justify-center gap-2">{action}</div> : null}
     </div>
   );
 }

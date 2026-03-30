@@ -12,8 +12,8 @@ export function PageContainer({
   return (
     <main
       className={[
-        'mx-auto w-full px-0 py-0 font-sans sm:px-1 sm:py-1 lg:px-2',
-        narrow ? 'max-w-[1040px]' : 'max-w-[1480px]',
+        'mx-auto w-full px-0 py-0 font-sans animate-fade-up sm:px-1 sm:py-1 lg:px-2',
+        narrow ? 'max-w-[1140px]' : 'max-w-[1580px]',
         mobileBottomSafe ? 'pb-[calc(56px+env(safe-area-inset-bottom)+24px)] md:pb-6' : '',
         className,
       ].join(' ')}

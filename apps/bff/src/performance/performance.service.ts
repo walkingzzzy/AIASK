@@ -167,18 +167,23 @@ export class PerformanceService {
 
   private async resolvePortfolioContext(userId: string, portfolioId?: number): Promise<PortfolioContext | null> {
     if (Number.isFinite(portfolioId) && Number(portfolioId) > 0) {
-      const payload = await this.callTool('portfolio_manager', {
-        action: 'get',
-        kwargs: JSON.stringify({ user_id: userId, portfolio_id: Number(portfolioId) }),
-      });
-      const record = this.extractDataRecord(payload);
-      const resolvedId = this.toInt(record.id ?? record.portfolioId ?? record.portfolio_id);
-      if (!resolvedId) return null;
-      return {
-        portfolioId: resolvedId,
-        portfolioName: this.toStringValue(record.name),
-        autoSelectedPortfolio: false,
-      };
+      try {
+        const payload = await this.callTool('portfolio_manager', {
+          action: 'get',
+          kwargs: JSON.stringify({ user_id: userId, portfolio_id: Number(portfolioId) }),
+        });
+        const record = this.extractDataRecord(payload);
+        const resolvedId = this.toInt(record.id ?? record.portfolioId ?? record.portfolio_id);
+        if (resolvedId) {
+          return {
+            portfolioId: resolvedId,
+            portfolioName: this.toStringValue(record.name),
+            autoSelectedPortfolio: false,
+          };
+        }
+      } catch {
+        // portfolioId 不存在或无权访问，回退到自动选择第一个组合
+      }
     }
 
     const payload = await this.callTool('portfolio_manager', {

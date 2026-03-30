@@ -184,7 +184,7 @@ export function DataTable({
           {pagedRows.map(({ row, rowIndex, key }) => (
             <div
               key={key}
-              className={`rounded-[18px] border border-border bg-surface p-4 shadow-sm ${onRowClick ? 'cursor-pointer' : ''}`}
+              className={`panel-solid rounded-[24px] p-4 ${onRowClick ? 'cursor-pointer' : ''}`}
               onClick={() => onRowClick?.(row)}
             >
               {mobileCardRender(row, rowIndex)}
@@ -193,11 +193,11 @@ export function DataTable({
         </div>
       ) : null}
       <div
-        className={`${mobileCardRender ? 'hidden md:block ' : ''}overflow-auto rounded-[20px] border border-border bg-surface shadow-sm`}
+        className={`${mobileCardRender ? 'hidden md:block ' : ''}panel-solid overflow-auto rounded-[28px]`}
         style={{ maxHeight }}
       >
         <table className="w-full border-collapse text-[13px]">
-          <thead className="sticky top-0 bg-surface-alt">
+          <thead className="sticky top-0 bg-[rgba(241,247,255,0.84)] backdrop-blur-xl">
             <tr>
               {cols.map((c, ci) => (
                 <th
@@ -214,7 +214,7 @@ export function DataTable({
           </thead>
           <tbody>
             {pagedRows.map(({ row, key }) => (
-              <tr key={key} className={`transition-colors hover:bg-surface-alt/70${onRowClick ? ' cursor-pointer' : ''}`} onClick={() => onRowClick?.(row)}>
+              <tr key={key} className={`transition-colors hover:bg-white/55${onRowClick ? ' cursor-pointer' : ''}`} onClick={() => onRowClick?.(row)}>
                 {cols.map((c, ci) => (
                   <td
                     key={c.key}

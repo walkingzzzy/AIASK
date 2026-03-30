@@ -25,13 +25,7 @@ const DETAIL_TABS = [
   { key: 'factory', label: '工厂审查' },
 ] as const;
 
-const FACTORY_SECTIONS: FactoryReviewSection[] = [
-  'summary',
-  'incubation',
-  'runtime',
-  'vectors',
-  'experiments',
-];
+const FACTORY_SECTIONS: FactoryReviewSection[] = ['summary', 'incubation', 'runtime', 'vectors', 'experiments'];
 
 function extractTraceId(text: string | null): string | null {
   const source = String(text ?? '');
@@ -42,11 +36,13 @@ function extractTraceId(text: string | null): string | null {
 
 function isMissingStrategyError(text: string | null): boolean {
   const source = String(text ?? '').toLowerCase();
-  return source.includes('404')
-    || source.includes('not_found')
-    || source.includes('strategy not found')
-    || source.includes('不存在')
-    || source.includes('未找到');
+  return (
+    source.includes('404') ||
+    source.includes('not_found') ||
+    source.includes('strategy not found') ||
+    source.includes('不存在') ||
+    source.includes('未找到')
+  );
 }
 
 function firstFiniteNumber(...values: Array<number | null | undefined>) {
@@ -116,14 +112,23 @@ export default function StrategyDetailPage() {
 
   const pageKey = 'strategy-detail';
   const activeTabLabel = DETAIL_TABS.find((item) => item.key === activeTab)?.label ?? '策略概览';
-  const strategySummary = strategy?.description
-    || '先确认策略合同、质量门状态和当前孵化决策，再决定是加入组合、继续订阅，还是转到工厂审查继续追踪。';
+  const strategySummary =
+    strategy?.description ||
+    '先确认策略合同、质量门状态和当前孵化决策，再决定是加入组合、继续订阅，还是转到工厂审查继续追踪。';
   const portfolioHref = strategy?.id
     ? `/portfolio?from=strategy-detail&strategy_id=${encodeURIComponent(String(strategy.id))}`
     : '/portfolio';
   const paperHref = strategy?.id
     ? `/paper-trading?from=strategy-detail&strategy_id=${encodeURIComponent(String(strategy.id))}`
     : '/paper-trading';
+  const heroPrimaryButtonCls =
+    'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
+  const heroSecondaryButtonCls =
+    'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
+  const chipLinkCls = 'action-chip text-xs no-underline text-inherit';
+  const chipButtonCls = 'action-chip cursor-pointer text-xs text-text-primary';
+  const sidePanelCls = 'panel-soft rounded-[28px] p-4 sm:p-5';
+  const sideMetricCls = 'metric-tile rounded-[22px] px-4 py-3';
 
   const currentView = useMemo(
     () => ({
@@ -310,7 +315,7 @@ export default function StrategyDetailPage() {
   if (detailError || !strategy) {
     return (
       <PageContainer narrow>
-        <SectionCard className="p-5">
+        <SectionCard className="p-5 sm:p-6">
           <div className="mb-4">
             <Link href="/strategy-market" className="text-sm text-text-secondary no-underline hover:text-primary">
               &larr; 返回策略超市
@@ -320,20 +325,16 @@ export default function StrategyDetailPage() {
             <EmptyState
               text="策略不存在或已下架"
               hint={`你访问的策略 ID「${id ?? '-'}」目前不可用，可能是链接无效、策略已归档，或当前环境没有这条记录。`}
-              action={(
+              action={
                 <>
-                  <Link href="/strategy-market" className="rounded border border-primary px-3 py-2 text-primary no-underline hover:bg-primary/10">
+                  <Link href="/strategy-market" className={chipLinkCls}>
                     返回策略列表
                   </Link>
-                  <button
-                    type="button"
-                    onClick={() => window.location.reload()}
-                    className="cursor-pointer rounded border border-border bg-surface-alt px-3 py-2"
-                  >
+                  <button type="button" onClick={() => window.location.reload()} className={chipButtonCls}>
                     重新加载
                   </button>
                 </>
-              )}
+              }
             />
           ) : (
             <>
@@ -342,14 +343,10 @@ export default function StrategyDetailPage() {
                 hint="可以先返回策略超市重新选择，或稍后再试；原始接口路径和技术细节已下沉到下方折叠区。"
               />
               <div className="mt-4 flex flex-wrap gap-2">
-                <Link href="/strategy-market" className="rounded border border-primary px-3 py-2 text-primary no-underline hover:bg-primary/10">
+                <Link href="/strategy-market" className={chipLinkCls}>
                   返回策略列表
                 </Link>
-                <button
-                  type="button"
-                  onClick={() => window.location.reload()}
-                  className="cursor-pointer rounded border border-border bg-surface-alt px-3 py-2"
-                >
+                <button type="button" onClick={() => window.location.reload()} className={chipButtonCls}>
                   重新加载
                 </button>
               </div>
@@ -358,7 +355,7 @@ export default function StrategyDetailPage() {
           {detailError ? (
             <details className="mt-4">
               <summary className="cursor-pointer text-xs text-text-muted">查看技术详情</summary>
-              <div className="mt-2 rounded-xl border border-border bg-surface-alt/40 p-3 text-xs text-text-secondary">
+              <div className="panel-soft mt-2 rounded-[22px] p-3 text-xs text-text-secondary">
                 <div>策略 ID：{id ?? '-'}</div>
                 {traceId ? <div className="mt-1">Trace ID：{traceId}</div> : null}
                 <pre className="mt-2 overflow-auto whitespace-pre-wrap break-all text-xs">{detailError}</pre>
@@ -372,7 +369,7 @@ export default function StrategyDetailPage() {
 
   const sampleStart = strategy.sample_start_date ?? paperNavRows[0]?.nav_date ?? null;
   const sampleEnd = strategy.sample_end_date ?? paperNavRows[paperNavRows.length - 1]?.nav_date ?? null;
-  const sampleWindow = sampleStart && sampleEnd ? `${sampleStart} - ${sampleEnd}` : sampleStart ?? sampleEnd ?? '-';
+  const sampleWindow = sampleStart && sampleEnd ? `${sampleStart} - ${sampleEnd}` : (sampleStart ?? sampleEnd ?? '-');
   const turnoverRate = latestIncubationMetric?.turnover_rate ?? null;
   const capacityValue = strategy.capacity ?? paperAccount?.total_value ?? latestPaperNav?.total_value ?? null;
   const capacityLabel = strategy.capacity_label ?? '当前模拟容量';
@@ -409,8 +406,8 @@ export default function StrategyDetailPage() {
       setActiveTab(snapshot.activeTab as (typeof DETAIL_TABS)[number]['key']);
     }
     if (
-      typeof snapshot.factorySection === 'string'
-      && FACTORY_SECTIONS.includes(snapshot.factorySection as FactoryReviewSection)
+      typeof snapshot.factorySection === 'string' &&
+      FACTORY_SECTIONS.includes(snapshot.factorySection as FactoryReviewSection)
     ) {
       factoryPanelProps.onSectionChange(snapshot.factorySection as FactoryReviewSection);
       setActiveTab('factory');
@@ -450,20 +447,95 @@ export default function StrategyDetailPage() {
             />
           </SectionCard>
         ) : null}
-        <SectionCard className="mt-0 p-3">
-          <h3 className="mt-0">运行摘要</h3>
-          <KpiGrid cols={2}>
-            <KpiCard title="孵化阶段" value={incubationAccount?.stage ?? latestIncubationMetric?.stage ?? '-'} />
-            <KpiCard title="账户状态" value={incubationAccount?.status ?? '-'} />
-            <KpiCard title="最新NAV" value={fmtNum(latestIncubationMetric?.nav ?? 0, 4)} />
-            <KpiCard title="开放风险事件" value={openRiskEvents.length} />
-            <KpiCard title="向量画像数" value={vectorProfiles.length} />
-            <KpiCard title="质量评级" value={latestQualityReport?.summary?.validation_grade ?? '-'} />
-            <KpiCard title="DSR" value={deflatedSharpeRatio == null ? '-' : fmtNum(deflatedSharpeRatio, 4)} />
-            <KpiCard title="PBO" value={pboValue == null ? '-' : fmtNum(pboValue, 4)} />
-            <KpiCard title="SPA p-value" value={hansenSpaPvalue == null ? '-' : fmtNum(hansenSpaPvalue, 4)} />
-            <KpiCard title="White RC p-value" value={whiteRealityCheckPvalue == null ? '-' : fmtNum(whiteRealityCheckPvalue, 4)} />
-          </KpiGrid>
+        <SectionCard className="mt-0 p-4 sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="mt-0">运行摘要</h3>
+              <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
+                把孵化状态、风险信号与统计修正并列呈现，方便先判断是否值得继续跟踪，再决定要不要切到工厂审查。
+              </p>
+            </div>
+            <Badge variant={promotionReady ? 'success' : 'warning'}>
+              {promotionReady ? '达到上架条件' : '仍在孵化观察'}
+            </Badge>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">孵化上下文</div>
+              <div className="mt-3 space-y-2 text-sm text-text-secondary">
+                <div>
+                  孵化阶段：
+                  <span className="font-medium text-text-primary">
+                    {incubationAccount?.stage ?? latestIncubationMetric?.stage ?? '-'}
+                  </span>
+                </div>
+                <div>
+                  账户状态：<span className="font-medium text-text-primary">{incubationAccount?.status ?? '-'}</span>
+                </div>
+                <div>
+                  最新 NAV：
+                  <span className="font-medium text-text-primary">{fmtNum(latestIncubationMetric?.nav ?? 0, 4)}</span>
+                </div>
+              </div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">风险与画像</div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div>
+                  <div className="text-2xl font-semibold text-text-primary">{openRiskEvents.length}</div>
+                  <div className="mt-1 text-xs text-text-secondary">开放风险事件</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-semibold text-text-primary">{vectorProfiles.length}</div>
+                  <div className="mt-1 text-xs text-text-secondary">向量画像数</div>
+                </div>
+              </div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">质量门</div>
+              <div className="mt-3 space-y-2 text-sm text-text-secondary">
+                <div>
+                  质量评级：
+                  <span className="font-medium text-text-primary">
+                    {latestQualityReport?.summary?.validation_grade ?? '-'}
+                  </span>
+                </div>
+                <div>
+                  DSR：
+                  <span className="font-medium text-text-primary">
+                    {deflatedSharpeRatio == null ? '-' : fmtNum(deflatedSharpeRatio, 4)}
+                  </span>
+                </div>
+                <div>
+                  PBO：
+                  <span className="font-medium text-text-primary">{pboValue == null ? '-' : fmtNum(pboValue, 4)}</span>
+                </div>
+              </div>
+            </div>
+            <div className="metric-tile rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">统计修正</div>
+              <div className="mt-3 space-y-2 text-sm text-text-secondary">
+                <div>
+                  SPA p-value：
+                  <span className="font-medium text-text-primary">
+                    {hansenSpaPvalue == null ? '-' : fmtNum(hansenSpaPvalue, 4)}
+                  </span>
+                </div>
+                <div>
+                  White RC：
+                  <span className="font-medium text-text-primary">
+                    {whiteRealityCheckPvalue == null ? '-' : fmtNum(whiteRealityCheckPvalue, 4)}
+                  </span>
+                </div>
+                <div>
+                  多重检验：
+                  <span className="font-medium text-text-primary">
+                    {formatMultipleTestingMode(multipleTestingMode)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
           <div className="mt-3 flex flex-wrap gap-2 text-sm">
             {latestIncubationMetric?.decision ? (
               <Badge
@@ -478,60 +550,87 @@ export default function StrategyDetailPage() {
                 最新决策: {latestIncubationMetric.decision}
               </Badge>
             ) : null}
-            {promotionReady ? <Badge variant="success">达到上架条件</Badge> : <Badge variant="warning">仍在孵化观察</Badge>}
-            {openRiskEvents.length > 0 ? <Badge variant="danger">存在实时风控告警</Badge> : <Badge variant="neutral">无实时风控告警</Badge>}
+            {promotionReady ? (
+              <Badge variant="success">达到上架条件</Badge>
+            ) : (
+              <Badge variant="warning">仍在孵化观察</Badge>
+            )}
+            {openRiskEvents.length > 0 ? (
+              <Badge variant="danger">存在实时风控告警</Badge>
+            ) : (
+              <Badge variant="neutral">无实时风控告警</Badge>
+            )}
             {multipleTestingMode ? (
               <Badge variant={multipleTestingMode === 'formal_runtime' ? 'success' : 'warning'}>
                 多重检验: {formatMultipleTestingMode(multipleTestingMode)}
               </Badge>
             ) : null}
             {pboValue != null ? (
-              <Badge variant={pboValue > 0.55 ? 'danger' : 'info'}>
-                PBO {fmtNum(pboValue, 4)}
-              </Badge>
+              <Badge variant={pboValue > 0.55 ? 'danger' : 'info'}>PBO {fmtNum(pboValue, 4)}</Badge>
             ) : null}
             {hansenSpaPvalue != null ? (
-              <Badge variant={hansenSpaPvalue > 0.2 ? 'warning' : 'success'}>
-                SPA p {fmtNum(hansenSpaPvalue, 4)}
-              </Badge>
+              <Badge variant={hansenSpaPvalue > 0.2 ? 'warning' : 'success'}>SPA p {fmtNum(hansenSpaPvalue, 4)}</Badge>
             ) : null}
           </div>
         </SectionCard>
       </div>
 
-      <SectionCard className="p-3">
-        <h3 className="mt-0">可信信息</h3>
-        <KpiGrid cols={3}>
-          <KpiCard title="样本期" value={sampleWindow} />
-          <KpiCard title="最近换手" value={turnoverRate == null ? '-' : fmtPct(turnoverRate)} />
-          <KpiCard title={capacityLabel} value={capacityValue == null ? '-' : fmtNum(capacityValue, 2)} />
-        </KpiGrid>
-        <div className="mt-2 text-xs text-text-secondary">
+      <SectionCard className="p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="mt-0">可信信息</h3>
+            <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
+              合同字段、样本边界与容量口径放在同一层，避免这类“可信来源”被埋在指标流里。
+            </p>
+          </div>
+          <Badge variant="info">Contract First</Badge>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="metric-tile rounded-[24px] p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">样本期</div>
+            <div className="mt-3 text-base font-semibold text-text-primary">{sampleWindow}</div>
+          </div>
+          <div className="metric-tile rounded-[24px] p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">最近换手</div>
+            <div className="mt-3 text-base font-semibold text-text-primary">
+              {turnoverRate == null ? '-' : fmtPct(turnoverRate)}
+            </div>
+          </div>
+          <div className="metric-tile rounded-[24px] p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">{capacityLabel}</div>
+            <div className="mt-3 text-base font-semibold text-text-primary">
+              {capacityValue == null ? '-' : fmtNum(capacityValue, 2)}
+            </div>
+          </div>
+        </div>
+        <div className="mt-3 text-xs leading-6 text-text-secondary">
           样本期优先取策略合同字段，缺失时回退到孵化账户 NAV 区间；容量优先展示合同声明，缺失时回退到模拟盘当前总资产。
         </div>
       </SectionCard>
 
-      {metrics.length > 1 ? (() => {
-        const sorted = [...metrics].sort((a, b) => (a.period ?? '').localeCompare(b.period ?? ''));
-        const periods = sorted.map((m) => m.period ?? '');
-        const returns = sorted.map((m) => Number(m.total_return ?? 0));
-        const sharpes = sorted.map((m) => Number(m.sharpe_ratio ?? 0));
-        return (
-          <SectionCard className="p-3">
-            <h3 className="mt-0">各期表现</h3>
-            <LineChart
-              categories={periods}
-              series={[
-                { name: '总收益', data: returns, color: '#1a73e8' },
-                { name: 'Sharpe', data: sharpes, color: '#f59e0b', yAxisIndex: 1 },
-              ]}
-              height={260}
-              yAxisName="收益率"
-              y2AxisName="Sharpe"
-            />
-          </SectionCard>
-        );
-      })() : null}
+      {metrics.length > 1
+        ? (() => {
+            const sorted = [...metrics].sort((a, b) => (a.period ?? '').localeCompare(b.period ?? ''));
+            const periods = sorted.map((m) => m.period ?? '');
+            const returns = sorted.map((m) => Number(m.total_return ?? 0));
+            const sharpes = sorted.map((m) => Number(m.sharpe_ratio ?? 0));
+            return (
+              <SectionCard className="p-3">
+                <h3 className="mt-0">各期表现</h3>
+                <LineChart
+                  categories={periods}
+                  series={[
+                    { name: '总收益', data: returns, color: '#1a73e8' },
+                    { name: 'Sharpe', data: sharpes, color: '#f59e0b', yAxisIndex: 1 },
+                  ]}
+                  height={260}
+                  yAxisName="收益率"
+                  y2AxisName="Sharpe"
+                />
+              </SectionCard>
+            );
+          })()
+        : null}
 
       {factorBars.length > 0 ? (
         <SectionCard className="p-3">
@@ -543,7 +642,7 @@ export default function StrategyDetailPage() {
         </SectionCard>
       ) : null}
 
-      <SectionCard className="p-3">
+      <SectionCard className="p-4 sm:p-5">
         <h3 className="mt-0">
           用户评价
           {strategy.avg_rating != null ? (
@@ -553,39 +652,45 @@ export default function StrategyDetailPage() {
           ) : null}
         </h3>
 
-        <div className="mb-3 flex items-center gap-2">
-          <select
-            value={rating}
-            onChange={(event) => setRating(Number(event.target.value))}
-            className="rounded border border-border px-2 py-1 text-sm"
-          >
-            {[5, 4, 3, 2, 1].map((value) => (
-              <option key={value} value={value}>
-                {value} 星
-              </option>
-            ))}
-          </select>
-          <input
-            value={comment}
-            onChange={(event) => setComment(event.target.value)}
-            placeholder="写一条评价..."
-            className="flex-1 rounded border border-border px-2 py-1 text-sm"
-          />
-          <button
-            onClick={handleReview}
-            disabled={reviewPending || !userId}
-            className="cursor-pointer rounded bg-primary px-3 py-1 text-sm text-white disabled:opacity-50"
-          >
-            {reviewPending ? '提交中...' : !userId ? '登录后可评价' : '提交'}
-          </button>
+        <div className="panel-soft mb-4 rounded-[24px] p-3 sm:p-4">
+          <div className="mb-3 text-xs leading-6 text-text-secondary">
+            用更轻的 glass 表单承接评分与短评，既保留互动感，也不会把整块界面拉回传统后台风格。
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={rating}
+              onChange={(event) => setRating(Number(event.target.value))}
+              className="w-auto min-w-[104px] text-sm"
+            >
+              {[5, 4, 3, 2, 1].map((value) => (
+                <option key={value} value={value}>
+                  {value} 星
+                </option>
+              ))}
+            </select>
+            <input
+              value={comment}
+              onChange={(event) => setComment(event.target.value)}
+              placeholder="写一条评价..."
+              className="min-w-[220px] flex-1 text-sm"
+            />
+            <button onClick={handleReview} disabled={reviewPending || !userId} className={heroPrimaryButtonCls}>
+              {reviewPending ? '提交中...' : !userId ? '登录后可评价' : '提交'}
+            </button>
+          </div>
         </div>
 
         {reviews.length ? (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {reviews.map((review, index) => (
-              <div key={`${review.user_id}-${review.created_at ?? index}`} className="border-b border-border pb-2 text-sm">
-                <span className="text-amber-400">{'★'.repeat(review.rating)}</span>
-                <span className="ml-2 text-text-secondary">{review.user_id}</span>
+              <div
+                key={`${review.user_id}-${review.created_at ?? index}`}
+                className="panel-soft rounded-[22px] p-4 text-sm"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-amber-400">{'★'.repeat(review.rating)}</span>
+                  <span className="text-text-secondary">{review.user_id}</span>
+                </div>
                 {review.comment ? <p className="mt-1 text-text-secondary">{review.comment}</p> : null}
               </div>
             ))}
@@ -607,7 +712,7 @@ export default function StrategyDetailPage() {
 
   const secondaryContent = (
     <div className="space-y-4 xl:h-full xl:overflow-y-auto xl:pl-1">
-      <SectionCard className="mt-0 p-4">
+      <div className={sidePanelCls}>
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前策略</div>
         <div className="mt-3 text-base font-semibold text-text-primary">{strategy.name}</div>
         <div className="mt-3 flex flex-wrap gap-2">
@@ -616,82 +721,151 @@ export default function StrategyDetailPage() {
             {promotionReady ? '达到上架条件' : '仍在孵化观察'}
           </Badge>
         </div>
-        <div className="mt-4 space-y-2 text-xs leading-6 text-text-secondary">
-          <div>样本期：<span className="font-medium text-text-primary">{sampleWindow}</span></div>
-          <div>订阅数：<span className="font-medium text-text-primary">{strategy.subscriber_count ?? 0}</span></div>
-          <div>风险事件：<span className="font-medium text-text-primary">{openRiskEvents.length}</span></div>
-          <div>向量画像：<span className="font-medium text-text-primary">{vectorProfiles.length}</span></div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+          <div className={sideMetricCls}>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">样本期</div>
+            <div className="mt-2 text-sm font-medium text-text-primary">{sampleWindow}</div>
+          </div>
+          <div className={sideMetricCls}>
+            <div className="grid grid-cols-3 gap-3 text-center">
+              <div>
+                <div className="text-lg font-semibold text-text-primary">{strategy.subscriber_count ?? 0}</div>
+                <div className="mt-1 text-[11px] text-text-secondary">订阅</div>
+              </div>
+              <div>
+                <div className="text-lg font-semibold text-text-primary">{openRiskEvents.length}</div>
+                <div className="mt-1 text-[11px] text-text-secondary">风险</div>
+              </div>
+              <div>
+                <div className="text-lg font-semibold text-text-primary">{vectorProfiles.length}</div>
+                <div className="mt-1 text-[11px] text-text-secondary">画像</div>
+              </div>
+            </div>
+          </div>
         </div>
-      </SectionCard>
+      </div>
 
-      <SectionCard className="mt-0 p-4">
+      <div className={sidePanelCls}>
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前工作流</div>
         <div className="mt-3 text-base font-semibold text-text-primary">{activeTabLabel}</div>
-        <div className="mt-3 space-y-2 text-xs leading-6 text-text-secondary">
+        <div className="mt-4 space-y-3">
           {activeTab === 'overview' ? (
-            <>
-              <div>质量评级：<span className="font-medium text-text-primary">{latestQualityReport?.summary?.validation_grade ?? '-'}</span></div>
-              <div>最新孵化决策：<span className="font-medium text-text-primary">{latestIncubationMetric?.decision ?? '-'}</span></div>
-              <div>多重检验：<span className="font-medium text-text-primary">{formatMultipleTestingMode(multipleTestingMode)}</span></div>
-            </>
+            <div className={sideMetricCls}>
+              <div className="space-y-2 text-xs leading-6 text-text-secondary">
+                <div>
+                  质量评级：
+                  <span className="font-medium text-text-primary">
+                    {latestQualityReport?.summary?.validation_grade ?? '-'}
+                  </span>
+                </div>
+                <div>
+                  最新孵化决策：
+                  <span className="font-medium text-text-primary">{latestIncubationMetric?.decision ?? '-'}</span>
+                </div>
+                <div>
+                  多重检验：
+                  <span className="font-medium text-text-primary">
+                    {formatMultipleTestingMode(multipleTestingMode)}
+                  </span>
+                </div>
+              </div>
+            </div>
           ) : null}
           {activeTab === 'tracking' ? (
-            <>
-              <div>总信号数：<span className="font-medium text-text-primary">{trackingPanelProps.stats?.total_signals ?? 0}</span></div>
-              <div>信号订阅：<span className="font-medium text-text-primary">{trackingPanelProps.signals?.subscriber === false ? '延迟模式' : '实时订阅'}</span></div>
-              <div>当前建议：<span className="font-medium text-text-primary">先看命中率，再看前向 IC / Sharpe。</span></div>
-            </>
+            <div className={sideMetricCls}>
+              <div className="space-y-2 text-xs leading-6 text-text-secondary">
+                <div>
+                  总信号数：
+                  <span className="font-medium text-text-primary">{trackingPanelProps.stats?.total_signals ?? 0}</span>
+                </div>
+                <div>
+                  信号订阅：
+                  <span className="font-medium text-text-primary">
+                    {trackingPanelProps.signals?.subscriber === false ? '延迟模式' : '实时订阅'}
+                  </span>
+                </div>
+                <div>
+                  当前建议：<span className="font-medium text-text-primary">先看命中率，再看前向 IC / Sharpe。</span>
+                </div>
+              </div>
+            </div>
           ) : null}
           {activeTab === 'factory' ? (
-            <>
-              <div>当前分区：<span className="font-medium text-text-primary">{factoryPanelProps.activeSection}</span></div>
-              <div>运行告警：<span className="font-medium text-text-primary">{factoryPanelProps.runtimeAlerts.length}</span></div>
-              <div>实验任务：<span className="font-medium text-text-primary">{factoryPanelProps.taskRuns.length}</span></div>
-            </>
+            <div className={sideMetricCls}>
+              <div className="space-y-2 text-xs leading-6 text-text-secondary">
+                <div>
+                  当前分区：<span className="font-medium text-text-primary">{factoryPanelProps.activeSection}</span>
+                </div>
+                <div>
+                  运行告警：
+                  <span className="font-medium text-text-primary">{factoryPanelProps.runtimeAlerts.length}</span>
+                </div>
+                <div>
+                  实验任务：<span className="font-medium text-text-primary">{factoryPanelProps.taskRuns.length}</span>
+                </div>
+              </div>
+            </div>
           ) : null}
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => router.push('/strategy-market')}
-            className="rounded-full border border-glass-border px-3 py-1 text-[11px] text-text-primary"
-          >
+          <button type="button" onClick={() => router.push('/strategy-market')} className={chipButtonCls}>
             回策略超市
           </button>
-          <button
-            type="button"
-            onClick={() => router.push(portfolioHref)}
-            className="rounded-full border border-glass-border px-3 py-1 text-[11px] text-text-primary"
-          >
+          <button type="button" onClick={() => router.push(portfolioHref)} className={chipButtonCls}>
             去组合页
           </button>
-          <button
-            type="button"
-            onClick={() => router.push(paperHref)}
-            className="rounded-full border border-glass-border px-3 py-1 text-[11px] text-text-primary"
-          >
+          <button type="button" onClick={() => router.push(paperHref)} className={chipButtonCls}>
             去模拟交易
           </button>
         </div>
-      </SectionCard>
+      </div>
 
-      <SectionCard className="mt-0 p-4">
+      <div className={sidePanelCls}>
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">可信指标</div>
-        <div className="mt-3 space-y-2 text-xs leading-6 text-text-secondary">
-          <div>DSR：<span className="font-medium text-text-primary">{deflatedSharpeRatio == null ? '-' : fmtNum(deflatedSharpeRatio, 4)}</span></div>
-          <div>PBO：<span className="font-medium text-text-primary">{pboValue == null ? '-' : fmtNum(pboValue, 4)}</span></div>
-          <div>SPA p-value：<span className="font-medium text-text-primary">{hansenSpaPvalue == null ? '-' : fmtNum(hansenSpaPvalue, 4)}</span></div>
-          <div>White RC：<span className="font-medium text-text-primary">{whiteRealityCheckPvalue == null ? '-' : fmtNum(whiteRealityCheckPvalue, 4)}</span></div>
-          <div>{capacityLabel}：<span className="font-medium text-text-primary">{capacityValue == null ? '-' : fmtNum(capacityValue, 2)}</span></div>
+        <div className="mt-4 grid gap-3">
+          <div className={sideMetricCls}>
+            <div className="grid grid-cols-2 gap-3 text-xs text-text-secondary">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.16em] text-text-muted">DSR</div>
+                <div className="mt-1 text-sm font-medium text-text-primary">
+                  {deflatedSharpeRatio == null ? '-' : fmtNum(deflatedSharpeRatio, 4)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.16em] text-text-muted">PBO</div>
+                <div className="mt-1 text-sm font-medium text-text-primary">
+                  {pboValue == null ? '-' : fmtNum(pboValue, 4)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.16em] text-text-muted">SPA p</div>
+                <div className="mt-1 text-sm font-medium text-text-primary">
+                  {hansenSpaPvalue == null ? '-' : fmtNum(hansenSpaPvalue, 4)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.16em] text-text-muted">White RC</div>
+                <div className="mt-1 text-sm font-medium text-text-primary">
+                  {whiteRealityCheckPvalue == null ? '-' : fmtNum(whiteRealityCheckPvalue, 4)}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className={sideMetricCls}>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">{capacityLabel}</div>
+            <div className="mt-2 text-base font-semibold text-text-primary">
+              {capacityValue == null ? '-' : fmtNum(capacityValue, 2)}
+            </div>
+          </div>
         </div>
-      </SectionCard>
+      </div>
     </div>
   );
 
   return (
     <PageContainer className="space-y-4">
-      <section className="mb-4 overflow-hidden rounded-[32px] border border-white/45 bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.3),_rgba(255,255,255,0.08)_34%,_rgba(214,236,255,0.22)_72%,_rgba(180,211,255,0.08)_100%)] p-5 shadow-[0_24px_80px_-40px_rgba(34,86,150,0.45)] backdrop-blur-xl sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_360px]">
+      <section className="page-hero p-5 sm:p-6">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
           <div>
             <Link href="/strategy-market" className="text-xs text-text-secondary no-underline hover:text-primary">
               &larr; 返回策略超市
@@ -714,22 +888,18 @@ export default function StrategyDetailPage() {
                 onClick={() => {
                   addStrategyToCart();
                 }}
-                className="cursor-pointer rounded-full bg-primary px-4 py-2 text-sm text-white shadow-sm"
+                className={heroPrimaryButtonCls}
               >
                 加入组合
               </button>
               <button
                 onClick={handleSubscribe}
                 disabled={subscribePending || !userId}
-                className={`cursor-pointer rounded-full px-4 py-2 text-sm shadow-sm disabled:opacity-50 ${isSubscribed ? 'border border-primary bg-primary/10 text-primary' : 'border border-glass-border bg-white/35 text-text-primary'}`}
+                className={`${heroSecondaryButtonCls} ${isSubscribed ? 'border-primary/35 bg-primary/12 text-primary' : ''}`}
               >
                 {subscribePending ? '处理中...' : !userId ? '登录后订阅' : isSubscribed ? '取消订阅' : '订阅策略'}
               </button>
-              <button
-                type="button"
-                onClick={() => router.push(portfolioHref)}
-                className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm"
-              >
+              <button type="button" onClick={() => router.push(portfolioHref)} className={heroSecondaryButtonCls}>
                 去组合页配置
               </button>
             </div>
@@ -765,35 +935,84 @@ export default function StrategyDetailPage() {
           </div>
 
           <div className="grid gap-3">
-            <div className="rounded-[28px] border border-white/45 bg-white/34 p-4 shadow-[0_22px_50px_-36px_rgba(36,74,144,0.44)] backdrop-blur-xl">
+            <div className={sidePanelCls}>
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前策略</div>
               <div className="mt-3 text-base font-semibold text-text-primary">{strategy.name}</div>
-              <div className="mt-3 space-y-2 text-xs leading-6 text-text-secondary">
-                <div>作者：<span className="font-medium text-text-primary">{strategy.author_id ?? '-'}</span></div>
-                <div>质量评级：<span className="font-medium text-text-primary">{latestQualityReport?.summary?.validation_grade ?? '-'}</span></div>
-                <div>最新孵化决策：<span className="font-medium text-text-primary">{latestIncubationMetric?.decision ?? '-'}</span></div>
-                <div>多重检验：<span className="font-medium text-text-primary">{formatMultipleTestingMode(multipleTestingMode)}</span></div>
+              <div className="mt-4 grid gap-3">
+                <div className={sideMetricCls}>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">
+                    作者与评级
+                  </div>
+                  <div className="mt-2 space-y-2 text-xs leading-6 text-text-secondary">
+                    <div>
+                      作者：<span className="font-medium text-text-primary">{strategy.author_id ?? '-'}</span>
+                    </div>
+                    <div>
+                      质量评级：
+                      <span className="font-medium text-text-primary">
+                        {latestQualityReport?.summary?.validation_grade ?? '-'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div className={sideMetricCls}>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-muted">当前决策</div>
+                  <div className="mt-2 space-y-2 text-xs leading-6 text-text-secondary">
+                    <div>
+                      最新孵化决策：
+                      <span className="font-medium text-text-primary">{latestIncubationMetric?.decision ?? '-'}</span>
+                    </div>
+                    <div>
+                      多重检验：
+                      <span className="font-medium text-text-primary">
+                        {formatMultipleTestingMode(multipleTestingMode)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
-            <div className="rounded-[28px] border border-dashed border-white/40 bg-white/20 p-4 backdrop-blur-xl">
+            <div className={sidePanelCls}>
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">下一步建议</div>
-              <ul className="mb-0 mt-3 space-y-2 pl-4 text-xs leading-6 text-text-secondary">
-                <li>{activeTab === 'overview' ? '先确认质量门、DSR、PBO，再决定是否值得继续跟踪。' : activeTab === 'tracking' ? '先看命中率和前向 Sharpe，再决定是否需要回工厂审查。' : '先排运行告警，再检查实验与向量分区是否存在偏差。'}</li>
-                <li>{promotionReady ? '当前策略已接近上架条件，适合继续联动组合页做配置模拟。' : '当前策略仍处孵化观察阶段，建议不要直接跳到配置，先补完工厂审查。'}</li>
-                <li>{isSubscribed ? '你已订阅该策略，可继续留在当前页做深度复盘。' : '若准备持续跟踪，建议先订阅，再把它加入组合购物车。'}</li>
-              </ul>
+              <div className="mt-4 space-y-3">
+                <div className={sideMetricCls}>
+                  {activeTab === 'overview'
+                    ? '先确认质量门、DSR、PBO，再决定是否值得继续跟踪。'
+                    : activeTab === 'tracking'
+                      ? '先看命中率和前向 Sharpe，再决定是否需要回工厂审查。'
+                      : '先排运行告警，再检查实验与向量分区是否存在偏差。'}
+                </div>
+                <div className={sideMetricCls}>
+                  {promotionReady
+                    ? '当前策略已接近上架条件，适合继续联动组合页做配置模拟。'
+                    : '当前策略仍处孵化观察阶段，建议不要直接跳到配置，先补完工厂审查。'}
+                </div>
+                <div className={sideMetricCls}>
+                  {isSubscribed
+                    ? '你已订阅该策略，可继续留在当前页做深度复盘。'
+                    : '若准备持续跟踪，建议先订阅，再把它加入组合购物车。'}
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleSubscribe}
+                  disabled={subscribePending || !userId}
+                  className={chipButtonCls}
+                >
+                  {isSubscribed ? '取消订阅' : '立即订阅'}
+                </button>
+                <button type="button" onClick={() => router.push(paperHref)} className={chipButtonCls}>
+                  查看模拟交易
+                </button>
+              </div>
             </div>
           </div>
         </div>
       </section>
 
-      <WorkspaceToolbar
-        pageKey={pageKey}
-        currentView={currentView}
-        onApplyView={applyView}
-        supportsPagePanels
-      />
+      <WorkspaceToolbar pageKey={pageKey} currentView={currentView} onApplyView={applyView} supportsPagePanels />
 
       <TabBar tabs={DETAIL_TABS} active={activeTab} onChange={setActiveTab} />
 

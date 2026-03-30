@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from 'react';
 import Link from 'next/link';
+import { Badge } from '@/components/ui';
 import { setLoggedIn } from '@/lib/auth';
 import { useHydrated } from '@/hooks/use-hydrated';
 
@@ -61,38 +62,44 @@ export default function LoginPage() {
   return (
     <main className="mx-auto min-h-screen w-full max-w-[1180px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.14fr)_420px]">
-        <section className="rounded-[28px] border border-border bg-surface p-6 shadow-sm sm:p-8">
-          <div className="eyebrow">Login Workspace</div>
+        <section className="page-hero p-6 sm:p-8">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="info">Login Workspace</Badge>
+            <Badge variant="neutral">AIASK Access</Badge>
+          </div>
           <h1 className="mt-3">继续你的行情、研究与交易工作流。</h1>
           <p className="page-lead mt-3 mb-0">
-            登录页改成更克制的金融工作台入口。左侧只说明登录后的核心收益，右侧专注账号输入，不再用大面积渐变和装饰性玻璃效果制造噪音。
+            登录页现在接入和站内一致的玻璃化层级。左侧负责解释登录后能恢复什么工作流，右侧保持输入区专注，整体更轻、更通透，也更像一套连续的专业终端。
           </p>
 
           <div className="mt-6 grid gap-3 md:grid-cols-3">
             {LOGIN_HIGHLIGHTS.map((item) => (
-              <div key={item.title} className="rounded-[20px] border border-border bg-surface-alt/72 px-4 py-4">
+              <div key={item.title} className="metric-tile rounded-[22px] px-4 py-4">
                 <div className="metric-label">{item.title}</div>
                 <p className="mb-0 mt-3 text-sm leading-6 text-text-secondary">{item.description}</p>
               </div>
             ))}
           </div>
 
-          <div className="mt-6 rounded-[24px] border border-border bg-surface-alt/72 p-5">
+          <div className="panel-soft mt-6 rounded-[28px] p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="eyebrow">登录后可用</div>
                 <h2 className="mt-2">一个入口，继续完整投研链路</h2>
               </div>
-              <Link href="/" className="rounded-full border border-border bg-surface px-4 py-2 text-sm no-underline text-text-secondary">
+              <Link
+                href="/"
+                className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-secondary no-underline shadow-sm"
+              >
                 返回首页
               </Link>
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-[18px] border border-border bg-surface px-4 py-3">
+              <div className="metric-tile rounded-[20px] px-4 py-3">
                 <div className="metric-label">高频模块</div>
                 <div className="mt-2 text-sm font-semibold text-text-primary">行情、策略、模拟交易、AI 工作台</div>
               </div>
-              <div className="rounded-[18px] border border-border bg-surface px-4 py-3">
+              <div className="metric-tile rounded-[20px] px-4 py-3">
                 <div className="metric-label">状态恢复</div>
                 <div className="mt-2 text-sm font-semibold text-text-primary">继续上次视图、上下文跳转和自选动作</div>
               </div>
@@ -100,8 +107,11 @@ export default function LoginPage() {
           </div>
         </section>
 
-        <section className="rounded-[28px] border border-border bg-surface p-6 shadow-sm sm:p-8">
-          <div className="eyebrow">账户登录</div>
+        <section className="panel-solid rounded-[30px] p-6 sm:p-8">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="warning">账户登录</Badge>
+            <Badge variant="neutral">Secure Entry</Badge>
+          </div>
           <h2 className="mt-2">登录账号</h2>
           <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">
             表单只保留必要字段。Hydration 完成前按钮保持禁用，避免浏览器回退为错误的原生提交体验。
@@ -137,7 +147,10 @@ export default function LoginPage() {
             </label>
 
             {error ? (
-              <p className="m-0 rounded-[18px] border border-danger/18 bg-danger/8 px-3 py-2 text-sm text-error" role="alert">
+              <p
+                className="m-0 rounded-[18px] border border-danger/18 bg-danger/8 px-3 py-2 text-sm text-error"
+                role="alert"
+              >
                 {error}
               </p>
             ) : null}
@@ -145,13 +158,13 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={!hydrated || loading}
-              className="min-h-11 rounded-xl bg-primary px-4 py-2.5 text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+              className="min-h-11 rounded-full bg-primary px-4 py-2.5 text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
             >
               {!hydrated ? '页面初始化中...' : loading ? '登录中...' : '登录'}
             </button>
           </form>
 
-          <div className="mt-4 rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3 text-xs leading-5 text-text-secondary">
+          <div className="panel-soft mt-4 rounded-[20px] px-4 py-3 text-xs leading-5 text-text-secondary">
             登录成功后会维持现有跳转逻辑：优先回到 `redirect` 指定页面，否则进入 `/market`。
           </div>
 

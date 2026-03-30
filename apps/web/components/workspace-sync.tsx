@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef } from 'react';
+import { useBffAvailability } from '@/lib/bff-availability';
 import { hasLoggedInHint } from '@/lib/auth';
 import { useWorkbenchStore } from '@/store/workbench-store';
 
@@ -21,6 +22,7 @@ export function WorkspaceSync() {
   const workspaces = useWorkbenchStore((state) => state.workspaces);
   const syncFromServer = useWorkbenchStore((state) => state.syncFromServer);
   const pushToServer = useWorkbenchStore((state) => state.pushToServer);
+  const bffAvailability = useBffAvailability();
 
   const initialSyncStartedRef = useRef(false);
   const lastPushedSignatureRef = useRef<string | null>(null);
@@ -37,6 +39,7 @@ export function WorkspaceSync() {
   useEffect(() => {
     if (!hydrated || initialSyncStartedRef.current) return;
     if (!hasLoggedInHint()) return;
+    if (!bffAvailability.reachable) return;
 
     initialSyncStartedRef.current = true;
     void syncFromServer().finally(() => {
@@ -45,11 +48,12 @@ export function WorkspaceSync() {
         lastPushedSignatureRef.current = snapshotSignature();
       }
     });
-  }, [hydrated, syncFromServer]);
+  }, [bffAvailability.reachable, hydrated, syncFromServer]);
 
   useEffect(() => {
     if (!hydrated || !remoteReady || syncing) return;
     if (!hasLoggedInHint()) return;
+    if (!bffAvailability.reachable) return;
     if (currentSignature === lastPushedSignatureRef.current) return;
 
     const timer = window.setTimeout(() => {
@@ -61,7 +65,7 @@ export function WorkspaceSync() {
     }, 900);
 
     return () => window.clearTimeout(timer);
-  }, [currentSignature, hydrated, lastSyncedAt, pushToServer, remoteReady, syncing]);
+  }, [bffAvailability.reachable, currentSignature, hydrated, lastSyncedAt, pushToServer, remoteReady, syncing]);
 
   return null;
 }

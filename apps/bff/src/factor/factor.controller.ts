@@ -90,9 +90,10 @@ class BatchComputeDto {
 }
 
 class LlmFactorMiningDto {
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
-  stock_codes!: string[];
+  stock_codes?: string[];
 
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(16) candidate_count?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(120) @Max(360) lookback_bars?: number;

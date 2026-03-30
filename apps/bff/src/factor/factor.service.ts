@@ -121,7 +121,7 @@ export class FactorService {
   }
 
   async llmFactorMining(body: {
-    stock_codes: string[];
+    stock_codes?: string[];
     candidate_count?: number;
     lookback_bars?: number;
     alternative_lookback_days?: number;
@@ -137,7 +137,7 @@ export class FactorService {
     startup_warmup_task_type?: string;
   }) {
     const payload = await this.callQuantManager('llm_factor_mining', {
-      codes: body.stock_codes,
+      codes: body.stock_codes?.length ? body.stock_codes : undefined,
       candidate_count: body.candidate_count,
       lookback_bars: body.lookback_bars,
       alternative_lookback_days: body.alternative_lookback_days,

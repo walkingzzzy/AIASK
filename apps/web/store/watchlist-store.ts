@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { ensureBffAvailability, markBffAvailable, markBffUnavailable } from '@/lib/bff-availability';
 import { getBffBaseUrl } from '@/lib/bff-base';
 import { clearLoggedIn, hasLoggedInHint, refreshAuth } from '@/lib/auth';
 
@@ -6,7 +7,6 @@ export type WatchItem = { code: string; name: string; addedAt: number };
 export type WatchGroup = { id: string; name: string; color: string; items: WatchItem[] };
 
 const LS_KEY = 'aiask_watchlist';
-
 
 /* ── LocalStorage helpers ── */
 
@@ -30,7 +30,7 @@ function saveLocal(groups: WatchGroup[]) {
   if (typeof window === 'undefined') return;
   try {
     localStorage.setItem(LS_KEY, JSON.stringify(groups));
-  } catch { }
+  } catch {}
 }
 
 function defaultGroup(): WatchGroup {
@@ -54,14 +54,17 @@ function notifySyncError(detail: string) {
   if (now - _lastErrorTs < 30_000) return;
   _lastErrorTs = now;
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(
-      new CustomEvent('watchlist:sync-error', { detail }),
-    );
+    window.dispatchEvent(new CustomEvent('watchlist:sync-error', { detail }));
     console.warn(`[Watchlist] 同步失败: ${detail}`);
   }
 }
 
 async function fetchServer(path: string, options?: RequestInit): Promise<unknown> {
+  const reachable = await ensureBffAvailability();
+  if (!reachable) {
+    return null;
+  }
+
   const requestInit: RequestInit = {
     credentials: 'include',
     ...options,
@@ -70,10 +73,12 @@ async function fetchServer(path: string, options?: RequestInit): Promise<unknown
   try {
     const bffBase = getBffBaseUrl();
     let res = await fetch(`${bffBase}/watchlist${path}`, requestInit);
+    markBffAvailable();
     if (res.status === 401) {
       const refreshed = await refreshAuth();
       if (refreshed) {
         res = await fetch(`${bffBase}/watchlist${path}`, requestInit);
+        markBffAvailable();
       } else {
         clearLoggedIn();
         notifySyncError('HTTP 401');
@@ -85,9 +90,10 @@ async function fetchServer(path: string, options?: RequestInit): Promise<unknown
       return null;
     }
     const json = await res.json();
-    const payload = json && typeof json === 'object' ? json as Record<string, unknown> : {};
+    const payload = json && typeof json === 'object' ? (json as Record<string, unknown>) : {};
     return payload.data ?? null;
   } catch (err) {
+    markBffUnavailable();
     if (isAbortLikeError(err)) {
       return null;
     }
@@ -237,7 +243,8 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
       targetGroupIds.map((id) =>
         fetchServer(`/stocks/remove?group=${encodeURIComponent(id)}&code=${encodeURIComponent(c)}`, {
           method: 'DELETE',
-        })),
+        }),
+      ),
     );
 
     if (results.some((result) => result == null)) {
@@ -300,9 +307,12 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
     saveLocal(next);
     set({ groups: next });
     if (group) {
-      const deleted = await fetchServer(`/groups/delete?id=${encodeURIComponent(group.id)}&name=${encodeURIComponent(group.name)}`, {
-        method: 'DELETE',
-      });
+      const deleted = await fetchServer(
+        `/groups/delete?id=${encodeURIComponent(group.id)}&name=${encodeURIComponent(group.name)}`,
+        {
+          method: 'DELETE',
+        },
+      );
       if (deleted == null) {
         saveLocal(prev);
         set({ groups: prev });
@@ -330,13 +340,24 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
     set({ syncing: true });
     _syncPromise = (async () => {
       try {
+        const reachable = await ensureBffAvailability();
+        if (!reachable) {
+          set({ syncing: false });
+          return;
+        }
+
         const localGroups = get().groups;
         const serverGroups = await fetchServer('/groups');
         if (!hasLoggedInHint()) {
           set({ synced: true, syncing: false });
           return;
         }
-        if (serverGroups && Array.isArray(serverGroups) && serverGroups.length > 0) {
+        if (serverGroups == null) {
+          set({ syncing: false });
+          return;
+        }
+
+        if (Array.isArray(serverGroups) && serverGroups.length > 0) {
           const normalized: WatchGroup[] = serverGroups.map((group) => {
             const record = readWatchlistRecord(group);
             return {
@@ -345,13 +366,13 @@ export const useWatchlistStore = create<WatchlistState>((set, get) => ({
               color: String(record.color ?? '#6366f1'),
               items: Array.isArray(record.items)
                 ? record.items.map((item) => {
-                  const watchItem = readWatchlistRecord(item);
-                  return {
-                    code: String(watchItem.code ?? ''),
-                    name: String(watchItem.name ?? ''),
-                    addedAt: normalizeAddedAt(watchItem.addedAt),
-                  };
-                })
+                    const watchItem = readWatchlistRecord(item);
+                    return {
+                      code: String(watchItem.code ?? ''),
+                      name: String(watchItem.name ?? ''),
+                      addedAt: normalizeAddedAt(watchItem.addedAt),
+                    };
+                  })
                 : [],
             };
           });

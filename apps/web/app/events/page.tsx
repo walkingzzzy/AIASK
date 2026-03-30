@@ -295,7 +295,7 @@ export default function EventsPage() {
   return (
     <PageContainer>
       <section className="mb-4 overflow-hidden rounded-[32px] border border-white/45 bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.28),_rgba(255,255,255,0.08)_35%,_rgba(207,226,255,0.18)_68%,_rgba(190,211,255,0.08)_100%)] p-5 shadow-[0_24px_80px_-40px_rgba(34,86,160,0.42)] backdrop-blur-xl sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_360px]">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_clamp(280px,25vw,380px)]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="info">Event Workspace</Badge>

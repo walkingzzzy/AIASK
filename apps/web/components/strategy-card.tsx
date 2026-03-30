@@ -42,7 +42,7 @@ export function StrategyCard({ s, onAdd }: { s: Strategy; onAdd?: (s: Strategy) 
   return (
     <Link
       href={`/strategy-market/${s.id}`}
-      className="flex flex-col gap-3 rounded-[22px] border border-border bg-surface p-4 no-underline text-inherit shadow-sm transition-transform hover:-translate-y-0.5 hover:shadow-md"
+      className="panel-solid glass-hover flex flex-col gap-4 rounded-[28px] p-5 no-underline text-inherit"
     >
       <div className="flex items-center justify-between">
         <span className="truncate text-sm font-semibold text-text-primary">{s.name}</span>

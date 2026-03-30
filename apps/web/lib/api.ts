@@ -1,4 +1,5 @@
 import { refreshAuth, clearLoggedIn, redirectToLogin } from './auth';
+import { markBffAvailable, markBffUnavailable } from './bff-availability';
 import { getBffBaseUrl } from './bff-base';
 import type { CacheMeta, Envelope } from '@aiask/shared-types';
 
@@ -17,16 +18,14 @@ async function redirectAfterAuthExpired(): Promise<never> {
     redirecting = true;
     clearLoggedIn();
     redirectToLogin();
-    setTimeout(() => { redirecting = false; }, 3000);
+    setTimeout(() => {
+      redirecting = false;
+    }, 3000);
   }
   throw new Error('登录已过期');
 }
 
-async function authedFetchCore(
-  path: string,
-  init?: RequestInit,
-  opts?: AuthFetchOptions,
-): Promise<Response> {
+async function authedFetchCore(path: string, init?: RequestInit, opts?: AuthFetchOptions): Promise<Response> {
   const headers: Record<string, string> = {};
   if (init?.headers) Object.assign(headers, init.headers);
 
@@ -34,15 +33,30 @@ async function authedFetchCore(
     ...init,
     headers,
     credentials: 'include',
-    ...(opts?.noStore ? { cache: init?.cache ?? 'no-store' as RequestCache } : {}),
+    ...(opts?.noStore ? { cache: init?.cache ?? ('no-store' as RequestCache) } : {}),
   };
   const bffBase = getBffBaseUrl();
 
-  const resp = await fetch(`${bffBase}${path}`, requestInit);
+  let resp: Response;
+  try {
+    resp = await fetch(`${bffBase}${path}`, requestInit);
+    markBffAvailable();
+  } catch (error) {
+    markBffUnavailable();
+    throw new Error(error instanceof Error ? '数据服务暂不可用' : '请求失败');
+  }
+
   if (resp.status === 401) {
     const refreshed = await refreshAuth();
     if (refreshed) {
-      return fetch(`${bffBase}${path}`, requestInit);
+      try {
+        const retryResp = await fetch(`${bffBase}${path}`, requestInit);
+        markBffAvailable();
+        return retryResp;
+      } catch {
+        markBffUnavailable();
+        throw new Error('数据服务暂不可用');
+      }
     }
     if (opts?.redirectOnUnauthorized === false) {
       clearLoggedIn();
@@ -54,12 +68,20 @@ async function authedFetchCore(
 }
 
 /** Authenticated fetch wrapper — relies on HttpOnly cookies, handles 401 auto-refresh */
-export async function authedFetch(path: string, init?: RequestInit, opts?: Omit<AuthFetchOptions, 'noStore'>): Promise<Response> {
+export async function authedFetch(
+  path: string,
+  init?: RequestInit,
+  opts?: Omit<AuthFetchOptions, 'noStore'>,
+): Promise<Response> {
   return authedFetchCore(path, init, opts);
 }
 
 /** Authenticated streaming fetch wrapper — aligns chat/SSE requests with authedFetch auth semantics. */
-export async function authedStreamFetch(path: string, init?: RequestInit, opts?: Omit<AuthFetchOptions, 'noStore'>): Promise<Response> {
+export async function authedStreamFetch(
+  path: string,
+  init?: RequestInit,
+  opts?: Omit<AuthFetchOptions, 'noStore'>,
+): Promise<Response> {
   return authedFetchCore(path, init, { ...opts, noStore: true });
 }
 
@@ -99,14 +121,15 @@ function unwrapRedundantDataLayers(payload: unknown): unknown {
     }
 
     const keys = Object.keys(record);
-    const wrapperOnly = keys.every((key) => (
-      key === 'data'
-      || key === 'success'
-      || key === 'ok'
-      || key === 'traceId'
-      || key === 'message'
-      || key === 'error'
-    ));
+    const wrapperOnly = keys.every(
+      (key) =>
+        key === 'data' ||
+        key === 'success' ||
+        key === 'ok' ||
+        key === 'traceId' ||
+        key === 'message' ||
+        key === 'error',
+    );
 
     if (!wrapperOnly) {
       return current;
@@ -118,7 +141,9 @@ function unwrapRedundantDataLayers(payload: unknown): unknown {
   return current;
 }
 
-export function unwrapApiEnvelope<T = unknown>(payload: unknown): {
+export function unwrapApiEnvelope<T = unknown>(
+  payload: unknown,
+): {
   data: unknown;
   traceId?: string;
   errorMessage?: string;
@@ -129,11 +154,12 @@ export function unwrapApiEnvelope<T = unknown>(payload: unknown): {
 
   const envelope = payload as Envelope<T> & Record<string, unknown>;
   const traceId = typeof envelope.traceId === 'string' ? envelope.traceId : undefined;
-  const statusFlag = typeof envelope.success === 'boolean'
-    ? envelope.success
-    : typeof envelope.ok === 'boolean'
-      ? envelope.ok
-      : undefined;
+  const statusFlag =
+    typeof envelope.success === 'boolean'
+      ? envelope.success
+      : typeof envelope.ok === 'boolean'
+        ? envelope.ok
+        : undefined;
 
   if (statusFlag === false) {
     return {

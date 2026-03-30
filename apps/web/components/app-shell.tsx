@@ -7,6 +7,7 @@ import CopilotDock from '@/components/copilot-dock';
 import { NotificationBell } from '@/components/notification-bell';
 import { Onboarding } from '@/components/onboarding';
 import { useHydrated } from '@/hooks/use-hydrated';
+import { useBffAvailability } from '@/lib/bff-availability';
 import { useTheme } from '@/hooks/use-theme';
 import { hasLoggedInHint, probeAuthSession } from '@/lib/auth';
 import { pageActionBus, type PageActionDefinition } from '@/lib/page-action-bus';
@@ -18,11 +19,11 @@ import { useStockContext } from '@/store/stock-context';
 import { resolveWorkspaceLayout, selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 
 type NavItem = { href: string; label: string };
-type NavGroup = { label: string; icon: string; items: NavItem[] };
+type NavGroup = { label: string; icon: string; svgPath: string; items: NavItem[] };
 
 const TOUR_ATTRS: Record<string, string> = {
   '/': 'dashboard',
-  '/chat': 'chat',
+  '/assistant': 'ai-center',
   '/watchlist': 'watchlist',
   '/paper-trading': 'paper-trading',
   '/settings': 'settings',
@@ -32,6 +33,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: '看盘',
     icon: 'MK',
+    svgPath: 'M3 3v18h18M9 17V9m4 8V5m4 12v-4',
     items: [
       { href: '/', label: '首页' },
       { href: '/market', label: '行情看板' },
@@ -41,6 +43,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: '研究',
     icon: 'RS',
+    svgPath: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
     items: [
       { href: '/research', label: '研报公告' },
       { href: '/fundamental', label: '基本面' },
@@ -51,6 +54,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: '策略',
     icon: 'ST',
+    svgPath: 'M13 7h8m0 0v8m0-8l-8 8-4-4-6 6',
     items: [
       { href: '/strategy-market', label: '策略超市' },
       { href: '/backtest', label: '回测分析' },
@@ -60,6 +64,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: '交易',
     icon: 'TR',
+    svgPath: 'M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4',
     items: [
       { href: '/paper-trading', label: '模拟交易' },
       { href: '/portfolio', label: '组合管理' },
@@ -69,9 +74,9 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'AI',
     icon: 'AI',
+    svgPath: 'M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z',
     items: [
-      { href: '/assistant', label: '智能助手' },
-      { href: '/chat', label: 'AI 对话' },
+      { href: '/assistant', label: 'AI 中心' },
       { href: '/search', label: '智能搜索' },
     ],
   },
@@ -93,10 +98,26 @@ const FALLBACK_PAGE_LABELS: Record<string, string> = {
 };
 
 const STOCK_AWARE_PATHS = new Set([
-  '/stock', '/market', '/watchlist', '/fundamental', '/technical', '/fund-flow',
-  '/sentiment', '/research', '/valuation', '/backtest', '/factor-analysis',
-  '/paper-trading', '/alerts', '/assistant', '/search', '/data', '/events',
-  '/execution', '/performance', '/decision',
+  '/stock',
+  '/market',
+  '/watchlist',
+  '/fundamental',
+  '/technical',
+  '/fund-flow',
+  '/sentiment',
+  '/research',
+  '/valuation',
+  '/backtest',
+  '/factor-analysis',
+  '/paper-trading',
+  '/alerts',
+  '/assistant',
+  '/search',
+  '/data',
+  '/events',
+  '/execution',
+  '/performance',
+  '/decision',
 ]);
 
 const WS_STATUS_MAP: Record<WsConnectionStatus, { color: string; label: string }> = {
@@ -138,6 +159,54 @@ function findNavLabel(path: string) {
   return path === '/' ? '首页总览' : path;
 }
 
+function resolveShellTheme(path: string) {
+  if (
+    path === '/' ||
+    path.startsWith('/market') ||
+    path.startsWith('/stock') ||
+    path.startsWith('/watchlist') ||
+    path.startsWith('/fund-flow') ||
+    path.startsWith('/technical') ||
+    path.startsWith('/sentiment') ||
+    path.startsWith('/macro') ||
+    path.startsWith('/options')
+  ) {
+    return 'market';
+  }
+
+  if (
+    path.startsWith('/research') ||
+    path.startsWith('/fundamental') ||
+    path.startsWith('/valuation') ||
+    path.startsWith('/search') ||
+    path.startsWith('/assistant') ||
+    path.startsWith('/chat') ||
+    path.startsWith('/skills') ||
+    path.startsWith('/workspace-templates')
+  ) {
+    return 'research';
+  }
+
+  if (path.startsWith('/strategy') || path.startsWith('/factor') || path.startsWith('/backtest')) {
+    return 'strategy';
+  }
+
+  if (
+    path.startsWith('/paper-trading') ||
+    path.startsWith('/portfolio') ||
+    path.startsWith('/risk') ||
+    path.startsWith('/alerts') ||
+    path.startsWith('/notifications') ||
+    path.startsWith('/decision') ||
+    path.startsWith('/execution') ||
+    path.startsWith('/performance')
+  ) {
+    return 'trade';
+  }
+
+  return 'default';
+}
+
 function ThemeToggle() {
   const { theme, setTheme } = useTheme();
   const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light';
@@ -146,7 +215,7 @@ function ThemeToggle() {
     <button
       type="button"
       onClick={() => setTheme(next)}
-      className="rounded-full border border-border bg-surface px-2.5 py-1 text-sm shadow-sm"
+      className="rounded-full border border-glass-border bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(246,250,255,0.4))] px-2.5 py-1 text-sm shadow-[0_12px_26px_-20px_rgba(15,23,42,0.28)] backdrop-blur-xl"
       title={`当前: ${theme}，点击切换`}
     >
       {label}
@@ -160,7 +229,10 @@ function WsIndicator() {
   const { color, label } = hydrated ? WS_STATUS_MAP[status] : WS_STATUS_MAP.connecting;
 
   return (
-    <span className="flex items-center gap-1 rounded-full border border-border bg-surface px-2.5 py-1 text-xs text-text-secondary" title={`WebSocket: ${label}`}>
+    <span
+      className="flex items-center gap-1 rounded-full border border-glass-border bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(246,250,255,0.4))] px-2.5 py-1 text-xs text-text-secondary backdrop-blur-xl"
+      title={`WebSocket: ${label}`}
+    >
       <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, display: 'inline-block' }} />
       <span className="hidden sm:inline">{label}</span>
     </span>
@@ -182,9 +254,24 @@ function NavSection({
 
   return (
     <div className="mb-5">
-      <div className={`mb-2 flex items-center gap-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${isActive ? 'text-nav-active' : 'text-text-muted'}`}>
-        <span aria-hidden="true" className="inline-flex h-6 min-w-6 items-center justify-center rounded-full border border-border bg-surface-alt px-1.5 text-[10px] tracking-[0.08em]">
-          {group.icon}
+      <div
+        className={`mb-2 flex items-center gap-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${isActive ? 'text-nav-active' : 'text-text-muted'}`}
+      >
+        <span
+          aria-hidden="true"
+          className={`inline-flex h-6 min-w-6 items-center justify-center rounded-full border px-1.5 transition-colors ${isActive ? 'border-primary/20 bg-[rgba(11,107,203,0.10)]' : 'border-border bg-surface-alt'}`}
+        >
+          <svg
+            className={`h-3.5 w-3.5 ${isActive ? 'text-nav-active' : 'text-text-muted'}`}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            viewBox="0 0 24 24"
+          >
+            <path d={group.svgPath} />
+          </svg>
         </span>
         <span>{group.label}</span>
       </div>
@@ -197,9 +284,10 @@ function NavSection({
               href={buildHref(item.href, stockCode)}
               data-tour={getTourAttr(item.href)}
               onClick={onNavigate}
-              className={`rounded-2xl px-3 py-2.5 text-sm no-underline transition ${active
-                ? 'bg-nav-active-bg text-nav-active shadow-sm'
-                : 'text-nav-text hover:bg-surface hover:text-text-primary'
+              className={`rounded-2xl px-3 py-2.5 text-sm no-underline transition ${
+                active
+                  ? 'border border-primary/18 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(229,241,255,0.68))] text-nav-active shadow-[0_18px_34px_-26px_rgba(11,107,203,0.42)]'
+                  : 'border border-transparent text-nav-text hover:bg-white/55 hover:text-text-primary'
               }`}
             >
               {item.label}
@@ -232,7 +320,9 @@ function CompactNav({
               onClick={onNavigate}
               title={item.label}
               className={`flex h-11 items-center justify-center rounded-2xl no-underline text-xs transition ${
-                active ? 'bg-nav-active-bg text-nav-active shadow-sm' : 'text-nav-text hover:bg-surface'
+                active
+                  ? 'border border-primary/18 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(229,241,255,0.68))] text-nav-active shadow-[0_18px_34px_-26px_rgba(11,107,203,0.42)]'
+                  : 'border border-transparent text-nav-text hover:bg-white/55'
               }`}
             >
               <span className="font-medium tracking-[0.08em]">{item.label.slice(0, 2)}</span>
@@ -266,19 +356,22 @@ export default function AppShell({ children }: { children: ReactNode }) {
     () => selectActiveWorkspace({ activeWorkspaceId, workspaces }),
     [activeWorkspaceId, workspaces],
   );
+  const bffAvailability = useBffAvailability({ probeOnMount: !isAuthPage });
   const layout = useMemo(() => resolveWorkspaceLayout(activeWorkspace.layout), [activeWorkspace.layout]);
-  const currentStockCode = hydrated ? (storeCode || activeWorkspace.context.stockCode || '') : '';
-  const desktopDockVisible = layout.dockVisible || dockOpen;
+  const currentStockCode = hydrated ? storeCode || activeWorkspace.context.stockCode || '' : '';
+  const isAiCenterPage = pathname === '/assistant' || pathname.startsWith('/assistant/');
+  const desktopDockVisible = hydrated && !isAiCenterPage && (layout.dockVisible || dockOpen);
 
   useEffect(() => {
     if (isAuthPage || user) return;
     if (!hasLoggedInHint()) return;
+    if (!bffAvailability.reachable) return;
     probeAuthSession<{ authenticated?: boolean; user?: User }>()
       .then((data) => {
         if (data?.authenticated && data.user) setUser(data.user);
       })
       .catch(() => {});
-  }, [isAuthPage, setUser, user]);
+  }, [bffAvailability.reachable, isAuthPage, setUser, user]);
 
   useEffect(() => {
     if (dockOpen && !layout.dockVisible) {
@@ -286,86 +379,89 @@ export default function AppShell({ children }: { children: ReactNode }) {
     }
   }, [dockOpen, layout.dockVisible, updateLayout]);
 
-  const globalActions = useMemo<PageActionDefinition[]>(() => [
-    {
-      id: 'global.open-home',
-      label: '打开首页',
-      description: '跳转到首页总览',
-      keywords: ['首页', '总览'],
-      scope: 'global',
-      run: () => {
-        router.push('/');
-        return { message: '已打开首页' };
+  const globalActions = useMemo<PageActionDefinition[]>(
+    () => [
+      {
+        id: 'global.open-home',
+        label: '打开首页',
+        description: '跳转到首页总览',
+        keywords: ['首页', '总览'],
+        scope: 'global',
+        run: () => {
+          router.push('/');
+          return { message: '已打开首页' };
+        },
       },
-    },
-    {
-      id: 'global.open-watchlist',
-      label: '打开自选股',
-      description: '跳转到自选股页',
-      keywords: ['自选', 'watchlist'],
-      scope: 'global',
-      run: () => {
-        router.push('/watchlist');
-        return { message: '已打开自选股' };
+      {
+        id: 'global.open-watchlist',
+        label: '打开自选股',
+        description: '跳转到自选股页',
+        keywords: ['自选', 'watchlist'],
+        scope: 'global',
+        run: () => {
+          router.push('/watchlist');
+          return { message: '已打开自选股' };
+        },
       },
-    },
-    {
-      id: 'global.open-search',
-      label: '打开智能搜索',
-      description: '跳转到智能搜索页',
-      keywords: ['搜索', 'search'],
-      scope: 'global',
-      run: () => {
-        router.push('/search');
-        return { message: '已打开智能搜索' };
+      {
+        id: 'global.open-search',
+        label: '打开智能搜索',
+        description: '跳转到智能搜索页',
+        keywords: ['搜索', 'search'],
+        scope: 'global',
+        run: () => {
+          router.push('/search');
+          return { message: '已打开智能搜索' };
+        },
       },
-    },
-    {
-      id: 'global.open-workspace-templates',
-      label: '打开工作区模板',
-      description: '查看工作区模板与编排入口',
-      keywords: ['工作区', '模板'],
-      scope: 'global',
-      run: () => {
-        router.push('/workspace-templates');
-        return { message: '已打开工作区模板' };
+      {
+        id: 'global.open-workspace-templates',
+        label: '打开工作区模板',
+        description: '查看工作区模板与编排入口',
+        keywords: ['工作区', '模板'],
+        scope: 'global',
+        run: () => {
+          router.push('/workspace-templates');
+          return { message: '已打开工作区模板' };
+        },
       },
-    },
-    {
-      id: 'global.new-workspace',
-      label: '新建工作区',
-      description: '创建一个新的工作区',
-      keywords: ['工作区', '新建'],
-      scope: 'global',
-      run: () => {
-        createWorkspace();
-        return { message: '已新建工作区' };
+      {
+        id: 'global.new-workspace',
+        label: '新建工作区',
+        description: '创建一个新的工作区',
+        keywords: ['工作区', '新建'],
+        scope: 'global',
+        run: () => {
+          createWorkspace();
+          return { message: '已新建工作区' };
+        },
       },
-    },
-    {
-      id: 'global.toggle-nav',
-      label: layout.navCollapsed ? '展开导航' : '收起导航',
-      description: '切换左侧导航栏显示状态',
-      keywords: ['导航', '折叠'],
-      scope: 'global',
-      run: () => {
-        updateLayout({ navCollapsed: !layout.navCollapsed });
-        return { message: layout.navCollapsed ? '已展开导航' : '已收起导航' };
+      {
+        id: 'global.toggle-nav',
+        label: layout.navCollapsed ? '展开导航' : '收起导航',
+        description: '切换左侧导航栏显示状态',
+        keywords: ['导航', '折叠'],
+        scope: 'global',
+        run: () => {
+          updateLayout({ navCollapsed: !layout.navCollapsed });
+          return { message: layout.navCollapsed ? '已展开导航' : '已收起导航' };
+        },
       },
-    },
-    {
-      id: 'global.open-copilot',
-      label: desktopDockVisible ? '聚焦 Copilot' : '打开 Copilot',
-      description: '打开右侧 Copilot 面板',
-      keywords: ['copilot', 'ai', '助手'],
-      scope: 'global',
-      run: () => {
-        updateLayout({ dockVisible: true });
-        setDockOpen(true);
-        return { message: '已打开 Copilot' };
+      {
+        id: 'global.open-copilot',
+        label: desktopDockVisible ? '聚焦 Copilot' : '打开 Copilot',
+        description: '打开右侧 Copilot 面板',
+        keywords: ['copilot', 'ai', '助手'],
+        scope: 'global',
+        run: () => {
+          updateLayout({ dockVisible: true });
+          setDockOpen(true);
+          return { message: '已打开 Copilot' };
+        },
       },
-    },
-  ], [createWorkspace, desktopDockVisible, layout.navCollapsed, router, setDockOpen, updateLayout]);
+    ],
+    [createWorkspace, desktopDockVisible, layout.navCollapsed, router, setDockOpen, updateLayout],
+  );
 
   useEffect(() => {
     setGlobalActions(globalActions.map(({ run: _run, ...meta }) => meta));
@@ -380,19 +476,19 @@ export default function AppShell({ children }: { children: ReactNode }) {
     return <>{children}</>;
   }
 
-  const navRailWidth = layout.navCollapsed ? 84 : layout.navWidth;
-  const pageWidthClass = layout.pageWidth === 'focused' ? 'mx-auto max-w-[1180px]' : 'mx-auto max-w-[1720px]';
-  const desktopDockWidth = `clamp(300px, 24vw, ${layout.dockWidth}px)`;
+  // 在水合完成前使用默认布局值，避免持久化 store 与 SSR 默认值不一致导致结构性 hydration 错误
+  const navRailWidth = hydrated ? (layout.navCollapsed ? 84 : layout.navWidth) : layout.navWidth;
+  const navCollapsed = hydrated && layout.navCollapsed;
+  const pageWidthClass = layout.pageWidth === 'focused' ? 'mx-auto max-w-7xl' : 'mx-auto max-w-[1820px]';
+  const desktopDockWidth = `clamp(280px, 22vw, ${layout.dockWidth}px)`;
   const syncText = lastSyncedAt
     ? `同步 ${new Date(lastSyncedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
     : '本地工作区';
   const activePageLabel = findNavLabel(pathname);
+  const shellTheme = resolveShellTheme(pathname);
 
   const desktopNav = (
-    <aside
-      className="hidden shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col"
-      style={{ width: navRailWidth }}
-    >
+    <aside className="app-shell-sidebar hidden shrink-0 md:flex md:flex-col" style={{ width: navRailWidth }}>
       <div className="border-b border-sidebar-border px-4 py-4">
         <div className="eyebrow mb-2">AIASK Workspace</div>
         <div className="flex items-center justify-between gap-2">
@@ -403,32 +499,30 @@ export default function AppShell({ children }: { children: ReactNode }) {
             type="button"
             onClick={() => updateLayout({ navCollapsed: !layout.navCollapsed })}
             className="rounded-full border border-border bg-surface px-2 py-1 text-xs shadow-sm"
-            aria-label={layout.navCollapsed ? '展开导航' : '收起导航'}
+            aria-label={navCollapsed ? '展开导航' : '收起导航'}
+            suppressHydrationWarning
           >
-            {layout.navCollapsed ? '»' : '«'}
+            {navCollapsed ? '»' : '«'}
           </button>
         </div>
-        {!layout.navCollapsed ? (
+        {!navCollapsed ? (
           <p className="mb-0 mt-3 text-xs leading-5 text-text-secondary">
             用工作流而不是功能目录完成看盘、研究、策略和交易任务。
           </p>
         ) : null}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
-        {layout.navCollapsed ? (
+        {navCollapsed ? (
           <CompactNav pathname={pathname} stockCode={currentStockCode} />
         ) : (
           <>
             {NAV_GROUPS.map((group) => (
-              <NavSection
-                key={group.label}
-                group={group}
-                pathname={pathname}
-                stockCode={currentStockCode}
-              />
+              <NavSection key={group.label} group={group} pathname={pathname} stockCode={currentStockCode} />
             ))}
             <div className="mt-6 border-t border-sidebar-border pt-4">
-              <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">辅助入口</div>
+              <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+                辅助入口
+              </div>
               <div className="grid gap-1">
                 {UTILITY_LINKS.map((item) => {
                   const active = pathname.startsWith(item.href);
@@ -436,9 +530,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
                     <Link
                       key={item.href}
                       href={buildHref(item.href, currentStockCode)}
-                      className={`rounded-2xl px-3 py-2 text-sm no-underline transition ${active
-                        ? 'bg-nav-active-bg text-nav-active shadow-sm'
-                        : 'text-nav-text hover:bg-surface hover:text-text-primary'
+                      className={`rounded-2xl px-3 py-2 text-sm no-underline transition ${
+                        active
+                          ? 'border border-primary/18 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(229,241,255,0.68))] text-nav-active shadow-[0_18px_34px_-26px_rgba(11,107,203,0.42)]'
+                          : 'border border-transparent text-nav-text hover:bg-white/55 hover:text-text-primary'
                       }`}
                     >
                       {item.label}
@@ -451,12 +546,22 @@ export default function AppShell({ children }: { children: ReactNode }) {
         )}
       </div>
       <div className="border-t border-sidebar-border px-4 py-4 text-xs text-text-secondary">
-        <div className="font-medium text-text-primary">{activeWorkspace.name}</div>
-        <div className="mt-1">{syncText}</div>
-        {!layout.navCollapsed ? (
+        <div className="font-medium text-text-primary" suppressHydrationWarning>{activeWorkspace.name}</div>
+        <div className="mt-1" suppressHydrationWarning>{syncText}</div>
+        {!navCollapsed ? (
           <div className="mt-3 flex flex-wrap gap-2">
-            <Link href="/settings" className="rounded-full border border-border bg-surface px-3 py-1 no-underline text-inherit">设置</Link>
-            <Link href="/skills" className="rounded-full border border-border bg-surface px-3 py-1 no-underline text-inherit">技能中心</Link>
+            <Link
+              href="/settings"
+              className="rounded-full border border-border bg-surface px-3 py-1 no-underline text-inherit"
+            >
+              设置
+            </Link>
+            <Link
+              href="/skills"
+              className="rounded-full border border-border bg-surface px-3 py-1 no-underline text-inherit"
+            >
+              技能中心
+            </Link>
           </div>
         ) : null}
       </div>
@@ -466,13 +571,21 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const mobileDrawer = drawerOpen ? (
     <div className="fixed inset-0 z-50 flex md:hidden">
       <div className="absolute inset-0 bg-black/40" onClick={() => setDrawerOpen(false)} />
-      <nav className="relative z-10 flex w-[280px] flex-col border-r border-sidebar-border bg-sidebar shadow-xl">
+      <nav className="relative z-10 flex w-[85vw] max-w-[320px] flex-col rounded-r-lg border border-sidebar-border bg-[linear-gradient(180deg,rgba(255,255,255,0.72),rgba(244,249,255,0.58))] shadow-[0_32px_72px_-32px_rgba(15,23,42,0.42)] backdrop-blur-2xl">
         {/* 头部 */}
         <div className="flex items-center justify-between border-b border-sidebar-border px-4 py-4">
-          <Link href="/" onClick={() => setDrawerOpen(false)} className="no-underline text-base font-semibold text-text-primary">
+          <Link
+            href="/"
+            onClick={() => setDrawerOpen(false)}
+            className="no-underline text-base font-semibold text-text-primary"
+          >
             AIASK
           </Link>
-          <button type="button" onClick={() => setDrawerOpen(false)} className="rounded-full border border-border bg-surface px-3 py-1 text-sm">
+          <button
+            type="button"
+            onClick={() => setDrawerOpen(false)}
+            className="rounded-full border border-border bg-surface px-3 py-1 text-sm"
+          >
             关闭
           </button>
         </div>
@@ -495,9 +608,11 @@ export default function AppShell({ children }: { children: ReactNode }) {
                       : 'border-border bg-surface text-text-secondary hover:border-border hover:bg-surface-alt hover:text-text-primary'
                   }`}
                 >
-                  <span className={`flex h-8 w-8 items-center justify-center rounded-full border text-[11px] font-bold tracking-wider ${
-                    isActive ? 'border-primary/20 bg-primary/10 text-primary' : 'border-border bg-surface-alt'
-                  }`}>
+                  <span
+                    className={`flex h-8 w-8 items-center justify-center rounded-full border text-[11px] font-bold tracking-wider ${
+                      isActive ? 'border-primary/20 bg-primary/10 text-primary' : 'border-border bg-surface-alt'
+                    }`}
+                  >
                     {group.icon}
                   </span>
                   <span className="text-xs font-medium">{group.label}</span>
@@ -510,7 +625,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
         {/* 当前工作流的子页面 */}
         {NAV_GROUPS.filter((g) => groupContainsPath(g, pathname)).map((group) => (
           <div key={group.label} className="border-t border-sidebar-border px-4 py-3">
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">{group.label} 页面</div>
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+              {group.label} 页面
+            </div>
             <div className="grid gap-1">
               {group.items.map((item) => {
                 const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
@@ -545,7 +662,11 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 {item.label}
               </Link>
             ))}
-            <Link href="/settings" onClick={() => setDrawerOpen(false)} className="rounded-2xl px-3 py-2 text-sm no-underline text-nav-text hover:bg-surface">
+            <Link
+              href="/settings"
+              onClick={() => setDrawerOpen(false)}
+              className="rounded-2xl px-3 py-2 text-sm no-underline text-nav-text hover:bg-surface"
+            >
               设置中心
             </Link>
           </div>
@@ -554,16 +675,20 @@ export default function AppShell({ children }: { children: ReactNode }) {
     </div>
   ) : null;
 
-  const mobileDock = dockOpen ? (
+  const mobileDock = dockOpen && !isAiCenterPage ? (
     <div className="fixed inset-0 z-50 flex justify-end xl:hidden">
       <div className="absolute inset-0 bg-black/40" onClick={() => setDockOpen(false)} />
-      <div className="relative z-10 h-full w-full max-w-[420px] border-l border-border bg-surface shadow-2xl">
+      <div className="relative z-10 h-full w-[90vw] max-w-[420px] rounded-l-lg border border-border bg-[linear-gradient(180deg,rgba(255,255,255,0.76),rgba(244,249,255,0.58))] shadow-[0_32px_72px_-32px_rgba(15,23,42,0.42)] backdrop-blur-2xl">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div>
             <div className="text-sm font-medium text-text-primary">AI 工作台</div>
             <div className="text-xs text-text-secondary">按需展开，不常驻占据主画布</div>
           </div>
-          <button type="button" onClick={() => setDockOpen(false)} className="rounded-full border border-border px-3 py-1 text-xs">
+          <button
+            type="button"
+            onClick={() => setDockOpen(false)}
+            className="rounded-full border border-border px-3 py-1 text-xs"
+          >
             关闭
           </button>
         </div>
@@ -575,50 +700,68 @@ export default function AppShell({ children }: { children: ReactNode }) {
   ) : null;
 
   return (
-    <div className="min-h-screen">
+    <div className={`app-shell-root app-theme-${shellTheme}`}>
+      <div className="app-shell-ambient" aria-hidden="true">
+        <span className="app-shell-orb app-shell-orb-1" />
+        <span className="app-shell-orb app-shell-orb-2" />
+        <span className="app-shell-orb app-shell-orb-3" />
+      </div>
       <Onboarding />
       {mobileDrawer}
       {mobileDock}
-      <div className="flex min-h-screen">
+      <div className="app-shell-frame">
         {desktopNav}
-        <div className="flex min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-border bg-[color-mix(in_srgb,var(--color-surface)_88%,transparent)] px-4 backdrop-blur-xl sm:px-6">
+        <div className="app-shell-main-column flex flex-1 flex-col">
+          <header className="app-shell-header sticky top-4 z-30 flex items-center justify-between px-4 sm:px-6">
             <div className="flex min-w-0 items-center gap-3">
-              <button type="button" onClick={() => setDrawerOpen(true)} className="rounded-full border border-border bg-surface px-3 py-1.5 text-lg shadow-sm md:hidden" aria-label="打开导航">
+              <button
+                type="button"
+                onClick={() => setDrawerOpen(true)}
+                className="rounded-full border border-border bg-surface px-3 py-1.5 text-lg shadow-sm md:hidden"
+                aria-label="打开导航"
+              >
                 ☰
               </button>
               <div className="min-w-0">
-                <div className="truncate text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">当前工作区</div>
+                <div className="truncate text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">
+                  当前工作区
+                </div>
                 <div className="truncate text-base font-semibold text-text-primary">{activePageLabel}</div>
-                <div className="truncate text-[11px] text-text-secondary">
+                <div className="truncate text-[11px] text-text-secondary" suppressHydrationWarning>
                   {activeWorkspace.name}
                   {currentStockCode ? <span className="ml-2 font-mono text-primary">{currentStockCode}</span> : null}
                 </div>
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  if (desktopDockVisible) {
-                    updateLayout({ dockVisible: false });
-                    setDockOpen(false);
-                    return;
-                  }
-                  updateLayout({ dockVisible: true });
-                  setDockOpen(true);
-                }}
-                className="hidden rounded-full border border-border bg-surface px-3 py-1.5 text-xs shadow-sm lg:inline-flex"
-              >
-                {desktopDockVisible ? '收起 AI' : '打开 AI'}
-              </button>
+              {!isAiCenterPage ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (desktopDockVisible) {
+                      updateLayout({ dockVisible: false });
+                      setDockOpen(false);
+                      return;
+                    }
+                    updateLayout({ dockVisible: true });
+                    setDockOpen(true);
+                  }}
+                  className="hidden rounded-full border border-border bg-surface px-3 py-1.5 text-xs shadow-sm lg:inline-flex"
+                >
+                  {desktopDockVisible ? '收起 AI' : '打开 AI'}
+                </button>
+              ) : null}
               <WsIndicator />
               <NotificationBell />
               <ThemeToggle />
               {user ? (
                 <Link href="/settings" className="flex items-center gap-2 no-underline text-inherit">
                   {user.avatarUrl ? (
-                    <img src={user.avatarUrl} alt="用户头像" className="h-8 w-8 rounded-full border border-border object-cover" />
+                    <img
+                      src={user.avatarUrl}
+                      alt="用户头像"
+                      className="h-8 w-8 rounded-full border border-border object-cover"
+                    />
                   ) : (
                     <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-white shadow-sm">
                       {(user.nickname ?? user.username).slice(0, 1).toUpperCase()}
@@ -642,15 +785,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
             </div>
           </header>
 
-          <div className="flex min-h-0 flex-1">
-            <main className="mobile-safe-bottom min-w-0 flex-1 overflow-auto">
-              <div className={`${pageWidthClass} w-full px-4 py-5 sm:px-6 lg:px-8`}>{children}</div>
+          <div className="app-shell-main">
+            <main className="app-shell-content mobile-safe-bottom min-w-0 flex-1 overflow-auto">
+              <div className={`${pageWidthClass} w-full px-2 py-2 sm:px-4 md:px-5 lg:px-6`}>{children}</div>
             </main>
             {desktopDockVisible ? (
-              <aside
-                className="hidden shrink-0 border-l border-border bg-[color-mix(in_srgb,var(--color-surface)_90%,transparent)] backdrop-blur-2xl xl:flex"
-                style={{ width: desktopDockWidth }}
-              >
+              <aside className="app-shell-dock hidden shrink-0 xl:flex" style={{ width: desktopDockWidth }}>
                 <CopilotDock />
               </aside>
             ) : null}

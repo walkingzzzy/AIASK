@@ -460,6 +460,14 @@ export default function ExecutionPage() {
     return notes;
   })();
 
+  const heroPrimaryButtonCls =
+    'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
+  const heroSecondaryButtonCls =
+    'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
+  const chipButtonCls = 'action-chip cursor-pointer text-xs text-text-primary';
+  const noteCardCls = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
+  const sidePanelCls = 'panel-soft rounded-[28px] p-4 sm:p-5';
+
   async function refreshLiveGateway() {
     await liveGatewayQ.refetch();
     if (liveGatewayReady) {
@@ -1120,7 +1128,7 @@ export default function ExecutionPage() {
 
   return (
     <PageContainer>
-      <section className="mb-4 overflow-hidden rounded-[32px] border border-white/45 bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.3),_rgba(255,255,255,0.08)_32%,_rgba(212,234,255,0.22)_70%,_rgba(176,205,255,0.08)_100%)] p-5 shadow-[0_24px_80px_-40px_rgba(32,84,152,0.45)] backdrop-blur-xl sm:p-6">
+      <section className="page-hero p-5 sm:p-6">
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_380px]">
           <div>
             <div className="flex flex-wrap items-center gap-2">
@@ -1139,25 +1147,17 @@ export default function ExecutionPage() {
               这里负责把下单参数、执行回执、实时网关和复盘入口收进一个操作面。重点不是替代模拟交易页，而是把一次执行后的状态、告警与后续动作压缩到可连续处理的首屏里。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => openPerformanceReview()}
-                className="rounded-full bg-primary px-4 py-2 text-sm text-white shadow-sm"
-              >
+              <button type="button" onClick={() => openPerformanceReview()} className={heroPrimaryButtonCls}>
                 去绩效中心复盘
               </button>
-              <button
-                type="button"
-                onClick={() => openRiskReview()}
-                className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm"
-              >
+              <button type="button" onClick={() => openRiskReview()} className={heroSecondaryButtonCls}>
                 去风险中心核查
               </button>
               {activeExecutionCode ? (
                 <button
                   type="button"
                   onClick={() => openStockDetail(activeExecutionCode)}
-                  className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm"
+                  className={heroSecondaryButtonCls}
                 >
                   打开个股详情
                 </button>
@@ -1166,7 +1166,7 @@ export default function ExecutionPage() {
                 <button
                   type="button"
                   onClick={() => openArtifactDetail(currentArtifactId)}
-                  className="rounded-full border border-glass-border bg-white/35 px-4 py-2 text-sm text-text-primary shadow-sm"
+                  className={heroSecondaryButtonCls}
                 >
                   查看 Artifact
                 </button>
@@ -1187,7 +1187,11 @@ export default function ExecutionPage() {
                   {estimatedAmount != null ? fmtNum(estimatedAmount) : '-'}
                 </div>
                 <div className="mt-1 text-xs text-text-secondary">
-                  {orderType === 'market' ? '市价单以实时价格成交' : orderType === 'limit' ? '按限价约束成交' : '按止损条件触发'}
+                  {orderType === 'market'
+                    ? '市价单以实时价格成交'
+                    : orderType === 'limit'
+                      ? '按限价约束成交'
+                      : '按止损条件触发'}
                 </div>
               </div>
               <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
@@ -1210,38 +1214,43 @@ export default function ExecutionPage() {
           </div>
 
           <div className="grid gap-3">
-            <div className="rounded-[28px] border border-white/45 bg-white/34 p-4 shadow-[0_22px_50px_-36px_rgba(32,74,144,0.44)] backdrop-blur-xl">
+            <div className={sidePanelCls}>
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前执行摘要</div>
               <div className="mt-3 text-base font-semibold text-text-primary">
-                {executionInsight ? briefSummary(executionWorkbench?.result ?? latestExecution ?? executionInsight) : '尚未形成执行结果'}
+                {executionInsight
+                  ? briefSummary(executionWorkbench?.result ?? latestExecution ?? executionInsight)
+                  : '尚未形成执行结果'}
               </div>
-              <div className="mt-3 space-y-2 text-xs leading-6 text-text-secondary">
-                <div>挂单数量：<span className="font-medium text-text-primary">{pendingOrders.length}</span></div>
-                <div>最近 Artifact：<span className="font-medium text-text-primary">{currentArtifactId || '-'}</span></div>
-                <div>真实订单 / 成交：<span className="font-medium text-text-primary">{liveOrders.length} / {liveFills.length}</span></div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+                <div className={noteCardCls}>
+                  挂单数量：<span className="font-medium text-text-primary">{pendingOrders.length}</span>
+                </div>
+                <div className={noteCardCls}>
+                  最近 Artifact：<span className="font-medium text-text-primary">{currentArtifactId || '-'}</span>
+                </div>
+                <div className={noteCardCls}>
+                  真实订单 / 成交：
+                  <span className="font-medium text-text-primary">
+                    {liveOrders.length} / {liveFills.length}
+                  </span>
+                </div>
               </div>
             </div>
 
-            <div className="rounded-[28px] border border-dashed border-white/40 bg-white/20 p-4 backdrop-blur-xl">
+            <div className={sidePanelCls}>
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">复盘建议</div>
-              <ul className="mb-0 mt-3 space-y-2 pl-4 text-xs leading-6 text-text-secondary">
+              <div className="mt-4 space-y-3">
                 {executionGuidance.slice(0, 3).map((item) => (
-                  <li key={item}>{item}</li>
+                  <div key={item} className={noteCardCls}>
+                    {item}
+                  </div>
                 ))}
-              </ul>
+              </div>
               <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleStatusQuery()}
-                  className="rounded-full border border-glass-border px-3 py-1 text-[11px] text-text-primary"
-                >
+                <button type="button" onClick={() => handleStatusQuery()} className={chipButtonCls}>
                   查询执行状态
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void refreshLiveGateway()}
-                  className="rounded-full border border-glass-border px-3 py-1 text-[11px] text-text-primary"
-                >
+                <button type="button" onClick={() => void refreshLiveGateway()} className={chipButtonCls}>
                   刷新网关
                 </button>
               </div>
@@ -1279,11 +1288,7 @@ export default function ExecutionPage() {
                     当前产品侧已接入真实券商网关主入口。默认只读预览，只有在网关显式开启写权限时才会真正下单或撤单。
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void refreshLiveGateway()}
-                  className="rounded border border-glass-border px-3 py-1 text-xs"
-                >
+                <button type="button" onClick={() => void refreshLiveGateway()} className={chipButtonCls}>
                   {liveGatewayQ.isFetching ||
                   liveAccountQ.isFetching ||
                   livePositionsQ.isFetching ||
@@ -1304,7 +1309,7 @@ export default function ExecutionPage() {
               </KpiGrid>
 
               <div className="mt-4 grid gap-4 2xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
-                <div className="rounded-xl border border-border bg-surface p-4">
+                <div className="panel-soft rounded-[24px] p-4">
                   <div className="text-sm font-medium text-text-primary">网关状态与账户</div>
                   <div className="mt-2 grid gap-2 text-xs text-text-secondary sm:grid-cols-2">
                     <div>Base URL：{liveGateway?.base_url || '-'}</div>
@@ -1318,44 +1323,55 @@ export default function ExecutionPage() {
                   {liveAccountQ.error ? <p className="mt-2 mb-0 text-xs text-danger">{liveAccountQ.error}</p> : null}
                 </div>
 
-                <div className="rounded-xl border border-border bg-surface-alt/40 p-4">
-                  <div className="text-sm font-medium text-text-primary">真实订单预览 / 提交</div>
-                  <div className="mt-3 grid grid-cols-2 gap-3">
-                    <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                <div className="panel-soft rounded-[26px] p-4 sm:p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-text-primary">真实订单预览 / 提交</div>
+                      <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
+                        把真实网关的订单参数、dry-run 和镜像动作收在一块更松弛的 glass 表单里，减少“配置区 +
+                        结果区”割裂感。
+                      </p>
+                    </div>
+                    <Badge variant={liveDryRun ? 'info' : 'warning'}>
+                      {liveDryRun ? '当前为预览模式' : '当前允许真实动作'}
+                    </Badge>
+                  </div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <label className="flex flex-col gap-2 text-xs text-text-secondary">
                       <span>标的</span>
                       <input
                         value={liveSymbol}
                         onChange={(event) => setLiveSymbol(event.target.value)}
-                        className="rounded border border-border px-2 py-1.5 text-sm"
+                        className="text-sm"
                       />
                     </label>
-                    <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                    <label className="flex flex-col gap-2 text-xs text-text-secondary">
                       <span>方向</span>
                       <select
                         value={liveSide}
                         onChange={(event) => setLiveSide(event.target.value as 'buy' | 'sell')}
-                        className="rounded border border-border px-2 py-1.5 text-sm"
+                        className="text-sm"
                       >
                         <option value="buy">buy</option>
                         <option value="sell">sell</option>
                       </select>
                     </label>
-                    <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                    <label className="flex flex-col gap-2 text-xs text-text-secondary">
                       <span>数量</span>
                       <input
                         type="number"
                         min={1}
                         value={liveQty}
                         onChange={(event) => setLiveQty(event.target.value)}
-                        className="rounded border border-border px-2 py-1.5 text-sm"
+                        className="text-sm"
                       />
                     </label>
-                    <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                    <label className="flex flex-col gap-2 text-xs text-text-secondary">
                       <span>订单类型</span>
                       <select
                         value={liveOrderType}
                         onChange={(event) => setLiveOrderType(event.target.value as 'market' | 'limit' | 'stop')}
-                        className="rounded border border-border px-2 py-1.5 text-sm"
+                        className="text-sm"
                       >
                         <option value="market">market</option>
                         <option value="limit">limit</option>
@@ -1363,32 +1379,32 @@ export default function ExecutionPage() {
                       </select>
                     </label>
                     {liveOrderType === 'limit' ? (
-                      <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                      <label className="flex flex-col gap-2 text-xs text-text-secondary">
                         <span>Limit Price</span>
                         <input
                           type="number"
                           step="0.01"
                           value={liveLimitPrice}
                           onChange={(event) => setLiveLimitPrice(event.target.value)}
-                          className="rounded border border-border px-2 py-1.5 text-sm"
+                          className="text-sm"
                         />
                       </label>
                     ) : null}
                     {liveOrderType === 'stop' ? (
-                      <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                      <label className="flex flex-col gap-2 text-xs text-text-secondary">
                         <span>Stop Price</span>
                         <input
                           type="number"
                           step="0.01"
                           value={liveStopPrice}
                           onChange={(event) => setLiveStopPrice(event.target.value)}
-                          className="rounded border border-border px-2 py-1.5 text-sm"
+                          className="text-sm"
                         />
                       </label>
                     ) : null}
                   </div>
-                  <div className="mt-3 flex flex-wrap gap-3 text-xs text-text-secondary">
-                    <label className="flex items-center gap-2">
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <label className={`${noteCardCls} flex items-center gap-2`}>
                       <input
                         type="checkbox"
                         checked={liveDryRun}
@@ -1396,7 +1412,7 @@ export default function ExecutionPage() {
                       />
                       dry_run / 预览模式
                     </label>
-                    <label className="flex items-center gap-2">
+                    <label className={`${noteCardCls} flex items-center gap-2`}>
                       <input
                         type="checkbox"
                         checked={liveMirrorExecute}
@@ -1410,7 +1426,7 @@ export default function ExecutionPage() {
                       type="button"
                       onClick={() => void handleLiveSubmitOrder()}
                       disabled={liveSubmitApi.isPending}
-                      className="rounded bg-primary px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                      className={heroPrimaryButtonCls}
                     >
                       {liveSubmitApi.isPending ? '处理中...' : '预览 / 提交订单'}
                     </button>
@@ -1418,28 +1434,28 @@ export default function ExecutionPage() {
                       type="button"
                       onClick={() => void handleLiveMirrorToPaper()}
                       disabled={liveMirrorApi.isPending}
-                      className="rounded border border-glass-border px-3 py-1.5 text-xs"
+                      className={chipButtonCls}
                     >
                       {liveMirrorApi.isPending ? '镜像中...' : '镜像到 Paper'}
                     </button>
                   </div>
                   <form onSubmit={handleLiveOrderQuery} className="mt-3 flex flex-wrap items-end gap-2">
-                    <label className="flex min-w-[220px] flex-col gap-1 text-xs text-text-secondary">
+                    <label className="flex min-w-[220px] flex-1 flex-col gap-2 text-xs text-text-secondary">
                       <span>order_id</span>
                       <input
                         value={liveOrderIdInput}
                         onChange={(event) => setLiveOrderIdInput(event.target.value)}
-                        className="rounded border border-border px-2 py-1.5 text-sm"
+                        className="text-sm"
                       />
                     </label>
-                    <button type="submit" className="rounded border border-glass-border px-3 py-1.5 text-xs">
+                    <button type="submit" className={chipButtonCls}>
                       查询订单
                     </button>
                     <button
                       type="button"
                       onClick={() => void handleLiveCancelOrder()}
                       disabled={liveCancelApi.isPending}
-                      className="rounded border border-glass-border px-3 py-1.5 text-xs"
+                      className={chipButtonCls}
                     >
                       {liveCancelApi.isPending ? '处理中...' : '预览 / 撤单'}
                     </button>
@@ -1492,7 +1508,7 @@ export default function ExecutionPage() {
                       <select
                         value={liveOrdersStatus}
                         onChange={(event) => setLiveOrdersStatus(event.target.value)}
-                        className="rounded border border-border px-2 py-1 text-xs"
+                        className="w-auto min-w-[92px] text-xs"
                       >
                         <option value="open">open</option>
                         <option value="closed">closed</option>
@@ -1527,13 +1543,13 @@ export default function ExecutionPage() {
                   </p>
                   {liveOrdersQ.error ? <p className="mt-2 mb-0 text-xs text-danger">{liveOrdersQ.error}</p> : null}
                   {liveOrderStatus ? (
-                    <div className="mt-3 rounded-xl border border-border bg-surface p-3 text-xs text-text-secondary">
+                    <div className={`${noteCardCls} mt-3`}>
                       订单 {liveOrderStatus.order_id || '-'} · {liveOrderStatus.symbol || '-'} ·{' '}
                       {liveOrderStatus.status || '-'} · 已成交 {liveOrderStatus.filled_qty ?? '-'}
                     </div>
                   ) : null}
                   {liveReceipt ? (
-                    <div className="mt-3 rounded-xl border border-border bg-surface-alt/40 p-3 text-xs text-text-secondary">
+                    <div className={`${noteCardCls} mt-3`}>
                       券商回执 {liveReceipt.message_type || '-'} · {liveReceipt.status || '-'} ·{' '}
                       {liveReceipt.reason || '无补充原因'}
                     </div>
@@ -1543,14 +1559,14 @@ export default function ExecutionPage() {
                   ) : null}
                   {liveReceiptQ.error ? <p className="mt-2 mb-0 text-xs text-danger">{liveReceiptQ.error}</p> : null}
                   {liveSubmitApi.data ? (
-                    <div className="mt-3 rounded-xl border border-border bg-surface p-3 text-xs text-text-secondary">
+                    <div className={`${noteCardCls} mt-3`}>
                       {liveSubmitApi.data.submitted
                         ? `真实订单已提交：${liveSubmitApi.data.order?.order_id || '-'}`
                         : `当前返回为 ${liveSubmitApi.data.mode || 'preview'}，未真正提交真实订单。`}
                     </div>
                   ) : null}
                   {liveMirrorApi.data ? (
-                    <div className="mt-3 rounded-xl border border-border bg-surface p-3 text-xs text-text-secondary">
+                    <div className={`${noteCardCls} mt-3`}>
                       {liveMirrorApi.data.message ? (
                         <span>{liveMirrorApi.data.message}</span>
                       ) : (
@@ -1563,7 +1579,7 @@ export default function ExecutionPage() {
                     </div>
                   ) : null}
                   {liveSyncEventsApi.data?.artifact_id ? (
-                    <div className="mt-3 rounded-xl border border-border bg-surface p-3 text-xs text-text-secondary">
+                    <div className={`${noteCardCls} mt-3`}>
                       事件快照已同步，artifact {liveSyncEventsApi.data.artifact_id}。
                     </div>
                   ) : null}
@@ -1618,7 +1634,7 @@ export default function ExecutionPage() {
                         <button
                           type="button"
                           onClick={() => openArtifactDetail(liveEventArtifactId)}
-                          className="rounded border border-glass-border px-3 py-1 text-xs"
+                          className={chipButtonCls}
                         >
                           查看 artifact 详情
                         </button>
@@ -1627,7 +1643,7 @@ export default function ExecutionPage() {
                         type="button"
                         onClick={() => void handleLiveSyncEvents()}
                         disabled={liveSyncEventsApi.isPending}
-                        className="rounded border border-glass-border px-3 py-1 text-xs"
+                        className={chipButtonCls}
                       >
                         {liveSyncEventsApi.isPending ? '同步中...' : '同步事件快照'}
                       </button>
@@ -1645,7 +1661,7 @@ export default function ExecutionPage() {
                         <KpiCard title="同步 artifact" value={liveSyncEventsApi.data?.artifact_id || '-'} />
                       </KpiGrid>
                       {liveEventArtifactId ? (
-                        <div className="mb-3 rounded-xl border border-border bg-surface-alt/30 p-3 text-xs text-text-secondary">
+                        <div className={`${noteCardCls} mb-3`}>
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div>
                               当前事件链快照已写入 artifact {liveEventArtifactId}，已收集 {liveEventArtifactCount}{' '}
@@ -1658,14 +1674,14 @@ export default function ExecutionPage() {
                                   setArtifactIdInput(liveEventArtifactId);
                                   setSubmittedArtifactId(liveEventArtifactId);
                                 }}
-                                className="rounded border border-glass-border px-3 py-1 text-xs"
+                                className={chipButtonCls}
                               >
                                 回填到 artifact 查询
                               </button>
                               <button
                                 type="button"
                                 onClick={() => openArtifactDetail(liveEventArtifactId)}
-                                className="rounded border border-glass-border px-3 py-1 text-xs"
+                                className={chipButtonCls}
                               >
                                 打开详情页
                               </button>
@@ -1693,7 +1709,7 @@ export default function ExecutionPage() {
                       />
                     </>
                   ) : (
-                    <div className="rounded-xl border border-dashed border-border bg-surface p-4 text-xs text-text-secondary">
+                    <div className={`${noteCardCls} p-4`}>
                       输入 `order_id` 并查询订单后，这里会显示提交、回执、成交、撤单的完整事件链。
                     </div>
                   )}
@@ -1708,7 +1724,10 @@ export default function ExecutionPage() {
               <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
                 <div>
                   <h3 className="m-0 font-medium">智能执行参数</h3>
-                  <form onSubmit={handleRouteExecution} className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <p className="mb-0 mt-2 text-xs leading-6 text-text-secondary">
+                    这里把模拟执行的输入参数、账户上下文和 artifact 关联一起整理成更松弛的表单栅格，减少旧式后台感。
+                  </p>
+                  <form onSubmit={handleRouteExecution} className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                     <StockCodeInput
                       id="execution-code"
                       label="股票代码"
@@ -1716,44 +1735,44 @@ export default function ExecutionPage() {
                       onChange={setCode}
                       error={codeError}
                     />
-                    <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                    <label className="flex flex-col gap-2 text-xs text-text-secondary">
                       <span>方向</span>
                       <select
                         value={direction}
                         onChange={(event) => setDirection(event.target.value as 'buy' | 'sell')}
-                        className="rounded border border-border px-2 py-1.5 text-sm"
+                        className="text-sm"
                       >
                         <option value="buy">买入</option>
                         <option value="sell">卖出</option>
                       </select>
                     </label>
-                    <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                    <label className="flex flex-col gap-2 text-xs text-text-secondary">
                       <span>数量</span>
                       <input
                         type="number"
                         min={1}
                         value={quantity}
                         onChange={(event) => setQuantity(event.target.value)}
-                        className="rounded border border-border px-2 py-1.5 text-sm"
+                        className="text-sm"
                       />
                     </label>
-                    <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                    <label className="flex flex-col gap-2 text-xs text-text-secondary">
                       <span>执行模式</span>
                       <select
                         value={urgency}
                         onChange={(event) => setUrgency(event.target.value as 'normal' | 'high')}
-                        className="rounded border border-border px-2 py-1.5 text-sm"
+                        className="text-sm"
                       >
                         <option value="normal">标准 TWAP</option>
                         <option value="high">高优先级 VWAP</option>
                       </select>
                     </label>
-                    <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                    <label className="flex flex-col gap-2 text-xs text-text-secondary">
                       <span>订单类型</span>
                       <select
                         value={orderType}
                         onChange={(event) => setOrderType(event.target.value as 'market' | 'limit' | 'stop')}
-                        className="rounded border border-border px-2 py-1.5 text-sm"
+                        className="text-sm"
                       >
                         <option value="market">市价单</option>
                         <option value="limit">限价单</option>
@@ -1761,35 +1780,35 @@ export default function ExecutionPage() {
                       </select>
                     </label>
                     {orderType === 'market' || orderType === 'limit' ? (
-                      <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                      <label className="flex flex-col gap-2 text-xs text-text-secondary">
                         <span>价格</span>
                         <input
                           type="number"
                           step="0.01"
                           value={price}
                           onChange={(event) => setPrice(event.target.value)}
-                          className="rounded border border-border px-2 py-1.5 text-sm"
+                          className="text-sm"
                         />
                       </label>
                     ) : null}
                     {orderType === 'stop' ? (
-                      <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                      <label className="flex flex-col gap-2 text-xs text-text-secondary">
                         <span>止损价</span>
                         <input
                           type="number"
                           step="0.01"
                           value={stopPrice}
                           onChange={(event) => setStopPrice(event.target.value)}
-                          className="rounded border border-border px-2 py-1.5 text-sm"
+                          className="text-sm"
                         />
                       </label>
                     ) : null}
-                    <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                    <label className="flex flex-col gap-2 text-xs text-text-secondary">
                       <span>账户</span>
                       <select
                         value={accountId}
                         onChange={(event) => setAccountId(event.target.value)}
-                        className="rounded border border-border px-2 py-1.5 text-sm"
+                        className="text-sm"
                       >
                         <option value="">默认账户</option>
                         {accounts.map((account, index) => (
@@ -1799,28 +1818,20 @@ export default function ExecutionPage() {
                         ))}
                       </select>
                     </label>
-                    <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                    <label className="flex flex-col gap-2 text-xs text-text-secondary">
                       <span>artifact_id</span>
                       <input
                         value={artifactIdInput}
                         onChange={(event) => setArtifactIdInput(event.target.value)}
                         placeholder="可选，用于任务编排追踪"
-                        className="rounded border border-border px-2 py-1.5 text-sm"
+                        className="text-sm"
                       />
                     </label>
                     <div className="col-span-2 flex items-end gap-2 sm:col-span-4">
-                      <button
-                        type="submit"
-                        disabled={routeExecutionApi.isPending}
-                        className="rounded bg-primary px-4 py-2 text-sm text-white disabled:opacity-50"
-                      >
+                      <button type="submit" disabled={routeExecutionApi.isPending} className={heroPrimaryButtonCls}>
                         {routeExecutionApi.isPending ? '执行中...' : '提交执行'}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => loadExample('600519')}
-                        className="rounded border border-glass-border px-3 py-2 text-sm"
-                      >
+                      <button type="button" onClick={() => loadExample('600519')} className={chipButtonCls}>
                         载入示例
                       </button>
                     </div>
@@ -1831,16 +1842,18 @@ export default function ExecutionPage() {
                   ) : null}
                 </div>
 
-                <div className="rounded-2xl border border-border bg-surface-alt/40 p-4">
+                <div className={sidePanelCls}>
                   <div className="text-sm font-medium text-text-primary">提交前提醒</div>
-                  <ul className="mb-0 mt-2 space-y-2 pl-4 text-xs leading-5 text-text-secondary">
-                    <li>
+                  <div className="mt-4 space-y-3">
+                    <div className={noteCardCls}>
                       执行中心会同时调用智能路由和模拟盘下单，所以它属于真实的交易模拟动作，不建议让 AI 自动提交。
-                    </li>
-                    <li>高优先级模式会优先走 `VWAP`，标准模式走 `TWAP`。</li>
-                    <li>执行结果中的 `execution_id` 可继续用于查询状态。</li>
-                    <li>预估金额：{estimatedAmount != null ? fmtNum(estimatedAmount) : '待输入价格后计算'}。</li>
-                  </ul>
+                    </div>
+                    <div className={noteCardCls}>高优先级模式会优先走 `VWAP`，标准模式走 `TWAP`。</div>
+                    <div className={noteCardCls}>执行结果中的 `execution_id` 可继续用于查询状态。</div>
+                    <div className={noteCardCls}>
+                      预估金额：{estimatedAmount != null ? fmtNum(estimatedAmount) : '待输入价格后计算'}。
+                    </div>
+                  </div>
                 </div>
               </div>
             </SectionCard>
@@ -1861,10 +1874,10 @@ export default function ExecutionPage() {
                   <input
                     value={executionIdInput}
                     onChange={(event) => setExecutionIdInput(event.target.value)}
-                    className="rounded border border-border px-2 py-1.5 text-sm"
+                    className="text-sm"
                   />
                 </label>
-                <button type="submit" className="rounded border border-glass-border px-3 py-2 text-sm">
+                <button type="submit" className={chipButtonCls}>
                   查询状态
                 </button>
               </form>
@@ -1874,10 +1887,10 @@ export default function ExecutionPage() {
                   <input
                     value={artifactIdInput}
                     onChange={(event) => setArtifactIdInput(event.target.value)}
-                    className="rounded border border-border px-2 py-1.5 text-sm"
+                    className="text-sm"
                   />
                 </label>
-                <button type="submit" className="rounded border border-glass-border px-3 py-2 text-sm">
+                <button type="submit" className={chipButtonCls}>
                   查询 artifact
                 </button>
               </form>
@@ -1887,12 +1900,10 @@ export default function ExecutionPage() {
               {taskDetailQ.error ? <p className="mt-2 text-xs font-medium text-danger">{taskDetailQ.error}</p> : null}
               {artifactQ.error ? <p className="mt-2 text-xs font-medium text-danger">{artifactQ.error}</p> : null}
               {workbenchMessage && !executionWorkbench?.overview ? (
-                <div className="mt-3 rounded-xl border border-border bg-surface p-3 text-xs text-text-secondary">
-                  {workbenchMessage}
-                </div>
+                <div className={`${noteCardCls} mt-3`}>{workbenchMessage}</div>
               ) : null}
               {latestExecution ? (
-                <div className="mt-3 rounded-xl border border-border bg-surface p-3">
+                <div className={`${sidePanelCls} mt-3`}>
                   <div className="text-sm font-medium text-text-primary">最近一次执行返回</div>
                   <div className="mt-2 text-xs text-text-secondary">
                     {briefSummary((latestExecution as Record<string, unknown>).execution ?? latestExecution)}
@@ -1906,13 +1917,13 @@ export default function ExecutionPage() {
                 </div>
               ) : null}
               {executionWorkbench?.overview ? (
-                <div className="mt-3 rounded-xl border border-border bg-surface p-3">
+                <div className={`${sidePanelCls} mt-3`}>
                   <div className="text-sm font-medium text-text-primary">执行工作台结果</div>
                   <div className="mt-2 text-xs text-text-secondary">
                     {workbenchMessage || briefSummary(statusPayload)}
                   </div>
                   <div className="mt-3 grid gap-3 2xl:grid-cols-[minmax(0,1fr)_minmax(280px,0.9fr)]">
-                    <div className="rounded-xl border border-border bg-surface-alt/30 p-3">
+                    <div className={noteCardCls}>
                       <div className="text-xs font-medium text-text-primary">结构化摘要</div>
                       <div className="mt-2 text-xs leading-6 text-text-secondary">
                         任务 {executionWorkbench.overview.executionId || '-'}，状态{' '}
@@ -1922,7 +1933,7 @@ export default function ExecutionPage() {
                       {workbenchWarnings.length > 0 ? (
                         <div className="mt-3 space-y-2">
                           {workbenchWarnings.slice(0, 3).map((item) => (
-                            <div key={item.id} className="rounded-lg border border-border bg-surface px-3 py-2">
+                            <div key={item.id} className="panel-soft rounded-[18px] px-3 py-2">
                               <div className="flex items-center justify-between gap-2">
                                 <div className="text-xs font-medium text-text-primary">{item.title}</div>
                                 <Badge
@@ -1945,7 +1956,7 @@ export default function ExecutionPage() {
                         </div>
                       ) : null}
                     </div>
-                    <div className="rounded-xl border border-border bg-surface-alt/30 p-3">
+                    <div className={noteCardCls}>
                       <div className="text-xs font-medium text-text-primary">账户上下文</div>
                       <div className="mt-2 space-y-2 text-xs text-text-secondary">
                         <div>账户：{executionWorkbench.orderContext?.accountId || '-'}</div>
@@ -1959,7 +1970,7 @@ export default function ExecutionPage() {
                         </div>
                       </div>
                       {workbenchOrders.length > 0 ? (
-                        <div className="mt-3 rounded-lg border border-border bg-surface p-2">
+                        <div className="panel-soft mt-3 rounded-[18px] p-2">
                           <div className="text-xs font-medium text-text-primary">最近订单</div>
                           <div className="mt-2 space-y-2">
                             {workbenchOrders.slice(0, 3).map((item) => (
@@ -1991,7 +2002,7 @@ export default function ExecutionPage() {
                 <p className="mt-3 text-sm text-text-secondary">查询执行状态中...</p>
               ) : null}
               {artifactQ.data ? (
-                <div className="mt-3 rounded-xl border border-border bg-surface p-3">
+                <div className={`${sidePanelCls} mt-3`}>
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-sm font-medium text-text-primary">Artifact 关联执行</div>
                     <Badge variant={artifactQ.data.count > 0 ? 'success' : 'neutral'}>
@@ -2006,7 +2017,7 @@ export default function ExecutionPage() {
                       <button
                         type="button"
                         onClick={() => openArtifactDetail(artifactQ.data?.artifactId || currentArtifactId)}
-                        className="rounded border border-glass-border px-3 py-1 text-xs"
+                        className={chipButtonCls}
                       >
                         打开 artifact 详情页
                       </button>
@@ -2032,11 +2043,7 @@ export default function ExecutionPage() {
                     这里直接映射 execution_manager.list，点选任务后会刷新当前详情和 artifact 结果。
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => tasksQ.refetch()}
-                  className="rounded border border-glass-border px-3 py-1 text-xs"
-                >
+                <button type="button" onClick={() => tasksQ.refetch()} className={chipButtonCls}>
                   刷新任务
                 </button>
               </div>
@@ -2121,7 +2128,7 @@ export default function ExecutionPage() {
               </KpiGrid>
 
               <div className="mt-4 grid gap-4 2xl:grid-cols-[minmax(0,1.1fr)_minmax(280px,0.9fr)]">
-                <div className="rounded-xl border border-border bg-surface p-4">
+                <div className="panel-soft rounded-[24px] p-4">
                   <div className="text-sm font-medium text-text-primary">当前摘要</div>
                   <div className="mt-2 text-xs leading-6 text-text-secondary">
                     {executionInsight
@@ -2129,25 +2136,17 @@ export default function ExecutionPage() {
                       : '提交执行或输入 execution_id 后，这里会汇总执行计划、告警和复盘入口。'}
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => openPerformanceReview()}
-                      className="rounded border border-glass-border px-3 py-1 text-xs"
-                    >
+                    <button type="button" onClick={() => openPerformanceReview()} className={chipButtonCls}>
                       打开绩效复盘
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => openRiskReview()}
-                      className="rounded border border-glass-border px-3 py-1 text-xs"
-                    >
+                    <button type="button" onClick={() => openRiskReview()} className={chipButtonCls}>
                       打开风险中心
                     </button>
                     {activeExecutionCode ? (
                       <button
                         type="button"
                         onClick={() => openStockDetail(activeExecutionCode)}
-                        className="rounded border border-glass-border px-3 py-1 text-xs"
+                        className={chipButtonCls}
                       >
                         打开个股详情
                       </button>
@@ -2155,7 +2154,7 @@ export default function ExecutionPage() {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-border bg-surface-alt/40 p-4">
+                <div className="panel-soft rounded-[24px] p-4">
                   <div className="text-sm font-medium text-text-primary">下一步建议</div>
                   <ul className="mb-0 mt-2 space-y-2 pl-4 text-xs leading-5 text-text-secondary">
                     {executionGuidance.map((item) => (
@@ -2169,11 +2168,7 @@ export default function ExecutionPage() {
             <SectionCard>
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <h3 className="m-0 font-medium">当前挂单</h3>
-                <button
-                  type="button"
-                  onClick={() => pendingQ.refetch()}
-                  className="rounded border border-glass-border px-3 py-1 text-xs"
-                >
+                <button type="button" onClick={() => pendingQ.refetch()} className={chipButtonCls}>
                   刷新挂单
                 </button>
               </div>

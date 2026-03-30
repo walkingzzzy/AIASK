@@ -37,13 +37,21 @@ export interface DashboardCardsProps {
 /* Dashboard Cards Grid                                                */
 /* ------------------------------------------------------------------ */
 
-function CardGrid({ mounted, dashboardVisibility, dashboardCards }: Pick<DashboardCardsProps, 'mounted' | 'dashboardVisibility' | 'dashboardCards'>) {
+function CardGrid({
+  mounted,
+  dashboardVisibility,
+  dashboardCards,
+}: Pick<DashboardCardsProps, 'mounted' | 'dashboardVisibility' | 'dashboardCards'>) {
   if (!mounted) {
     return (
       <div className="grid grid-cols-1 gap-4 mb-4 sm:grid-cols-3">
         {Array.from({ length: 3 }).map((_, index) => (
           <SectionCard key={`dashboard-skeleton-${index}`} className="min-h-[220px] p-4">
-            <KpiGrid cols={3}><SkeletonCard /><SkeletonCard /><SkeletonCard /></KpiGrid>
+            <KpiGrid cols={3}>
+              <SkeletonCard />
+              <SkeletonCard />
+              <SkeletonCard />
+            </KpiGrid>
           </SectionCard>
         ))}
       </div>
@@ -53,21 +61,32 @@ function CardGrid({ mounted, dashboardVisibility, dashboardCards }: Pick<Dashboa
   if (visible.length === 0) return null;
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+    <div className="mb-5 grid grid-cols-1 gap-5 sm:grid-cols-3">
       {visible.map((card) => (
-        <SectionCard key={card.key} className="min-h-[220px]">
-          <div className="flex items-center justify-between mb-2">
+        <SectionCard key={card.key} className="min-h-[220px] p-5">
+          <div className="mb-3 flex items-start justify-between gap-3">
             <div>
-              <div className="eyebrow">监控卡片</div>
+              <div className="eyebrow">Home Modules</div>
               <h2 className="mt-2">{card.title}</h2>
             </div>
-            <Link href={card.href} className="text-sm text-primary no-underline">查看详情</Link>
+            <Link href={card.href} className="action-chip text-sm no-underline text-inherit">
+              查看详情
+            </Link>
           </div>
-          {card.error ? <ErrorState text={card.error} />
-            : card.pending ? <KpiGrid cols={3}><SkeletonCard /><SkeletonCard /><SkeletonCard /></KpiGrid>
-              : card.empty ? <EmptyState text={card.emptyText ?? '暂无可展示数据'} hint={card.emptyHint} action={card.emptyAction} />
-                : card.content}
-          {card.footer}
+          {card.error ? (
+            <ErrorState text={card.error} />
+          ) : card.pending ? (
+            <KpiGrid cols={3}>
+              <SkeletonCard />
+              <SkeletonCard />
+              <SkeletonCard />
+            </KpiGrid>
+          ) : card.empty ? (
+            <EmptyState text={card.emptyText ?? '暂无可展示数据'} hint={card.emptyHint} action={card.emptyAction} />
+          ) : (
+            card.content
+          )}
+          {card.footer ? <div className="mt-3">{card.footer}</div> : null}
         </SectionCard>
       ))}
     </div>
@@ -78,12 +97,15 @@ function CardGrid({ mounted, dashboardVisibility, dashboardCards }: Pick<Dashboa
 /* Market Anomaly Feed                                                 */
 /* ------------------------------------------------------------------ */
 
-function AnomalyFeed({ marketAnomalies, anomalyDegraded }: Pick<DashboardCardsProps, 'marketAnomalies' | 'anomalyDegraded'>) {
+function AnomalyFeed({
+  marketAnomalies,
+  anomalyDegraded,
+}: Pick<DashboardCardsProps, 'marketAnomalies' | 'anomalyDegraded'>) {
   return (
-    <SectionCard className="min-h-[160px]">
+    <SectionCard className="min-h-[160px] p-5">
       <div className="mb-4 flex items-end justify-between gap-3">
         <div>
-          <div className="eyebrow">异动提醒</div>
+          <div className="eyebrow">Anomaly Feed</div>
           <h2 className="mt-2">市场异动榜</h2>
         </div>
       </div>
@@ -93,10 +115,18 @@ function AnomalyFeed({ marketAnomalies, anomalyDegraded }: Pick<DashboardCardsPr
       {marketAnomalies.length > 0 ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {marketAnomalies.map((item) => (
-            <Link key={`${item.title}-${item.href}`} href={item.href} className="flex items-center justify-between rounded-[18px] border border-border bg-surface-alt/72 px-4 py-3 no-underline text-inherit shadow-sm">
+            <Link
+              key={`${item.title}-${item.href}`}
+              href={item.href}
+              className="metric-tile glass-hover flex items-center justify-between px-4 py-3 no-underline text-inherit"
+            >
               <div>
                 <div className="text-sm font-medium text-text-primary">{item.title}</div>
-                <div className={`text-xs ${item.tone === 'danger' ? 'text-danger' : item.tone === 'success' ? 'text-success' : item.tone === 'warning' ? 'text-warning' : 'text-primary'}`}>{item.value}</div>
+                <div
+                  className={`text-xs ${item.tone === 'danger' ? 'text-danger' : item.tone === 'success' ? 'text-success' : item.tone === 'warning' ? 'text-warning' : 'text-primary'}`}
+                >
+                  {item.value}
+                </div>
               </div>
               <span className="text-xs text-text-secondary">查看</span>
             </Link>
@@ -116,7 +146,11 @@ function AnomalyFeed({ marketAnomalies, anomalyDegraded }: Pick<DashboardCardsPr
 export function DashboardCards(props: DashboardCardsProps) {
   return (
     <>
-      <CardGrid mounted={props.mounted} dashboardVisibility={props.dashboardVisibility} dashboardCards={props.dashboardCards} />
+      <CardGrid
+        mounted={props.mounted}
+        dashboardVisibility={props.dashboardVisibility}
+        dashboardCards={props.dashboardCards}
+      />
       <AnomalyFeed marketAnomalies={props.marketAnomalies} anomalyDegraded={props.anomalyDegraded} />
     </>
   );

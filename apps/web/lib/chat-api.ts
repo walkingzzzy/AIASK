@@ -38,6 +38,16 @@ export async function getModelPresets(): Promise<ModelPreset[]> {
   return d?.data ?? [];
 }
 
+export async function probeModels(baseUrl: string, apiKey: string): Promise<{ success: boolean; models: string[]; error?: string }> {
+  const r = await authedFetch('/chat/probe-models', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ baseUrl: baseUrl.trim(), apiKey: apiKey.trim() }),
+  });
+  const d = await r.json();
+  return { success: d?.success ?? false, models: d?.models ?? [], error: d?.error };
+}
+
 export async function streamChat(
   messages: Array<{ role: string; content: string }>,
   onEvent: (event: ChatEvent) => void,
