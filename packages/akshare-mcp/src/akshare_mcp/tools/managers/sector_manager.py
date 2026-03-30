@@ -1,5 +1,6 @@
 """板块管理器 - 板块轮动、板块分析"""
 
+from typing import Any
 import time
 import numpy as np
 from ...storage import get_db
@@ -77,7 +78,7 @@ def register_sector_manager(mcp):
     """注册板块管理器工具"""
     
     @mcp.tool()
-    async def sector_manager(action: str, **kwargs):
+    async def sector_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """板块管理器（统一 action + kwargs 协议）
 
         Args:
@@ -105,7 +106,7 @@ def register_sector_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
 
             def _ok(data: dict, source_chain=None):
                 return ok_with_meta(

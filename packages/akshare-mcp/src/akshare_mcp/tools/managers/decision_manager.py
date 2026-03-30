@@ -1,5 +1,6 @@
 """决策管理器 - AI辅助决策（增强版）"""
 
+from typing import Any
 import json
 import logging
 import time
@@ -12,6 +13,7 @@ from ...storage import get_db
 from ...tools.market.helpers import get_stock_list_cached
 from ...utils import normalize_code
 from ..manager_protocol import (
+    normalize_manager_payload,
     extract_common_meta,
     fail_with_meta,
     normalize_manager_kwargs,
@@ -25,7 +27,7 @@ def register_decision_manager(mcp):
     """注册决策管理器工具"""
     
     @mcp.tool()
-    async def decision_manager(action: str, **kwargs):
+    async def decision_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """决策管理器（统一 action + kwargs 协议）
 
         Args:

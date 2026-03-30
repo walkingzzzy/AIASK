@@ -2,7 +2,7 @@
 
 import calendar
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 import json
 from ...utils import ok, fail
 
@@ -73,7 +73,7 @@ def register_options_manager(mcp):
     """注册期权管理器工具"""
     
     @mcp.tool()
-    async def options_manager(action: str, **kwargs):
+    async def options_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """期权管理器（统一 action + kwargs 协议）
 
         Args:
@@ -97,7 +97,7 @@ def register_options_manager(mcp):
             options_manager(action="implied_volatility", kwargs='{"S":3.5,"K":3.0,"T":0.25,"r":0.03,"market_price":0.6,"option_type":"call"}')
         """
         try:
-            kwargs = _normalize_kwargs(kwargs)
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             if action == 'help':
                 return ok({
                     'supported_actions': {

@@ -1095,6 +1095,38 @@ class VectorUnifiedMixin:
             await conn.execute(sql)
         return idx_name
 
+    async def list_vector_hnsw_indexes(
+        self,
+        *,
+        collection_name: Optional[str] = None,
+        index_version: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[dict]:
+        async with self.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT schemaname, tablename, indexname, indexdef
+                FROM pg_indexes
+                WHERE tablename IN ('vector_profile_store', 'vector_index_item_store')
+                  AND indexdef ILIKE '%USING hnsw%'
+                ORDER BY tablename, indexname
+                LIMIT $1
+                """,
+                max(1, min(int(limit or 200), 1000)),
+            )
+        items = [dict(row) for row in rows]
+        def _fallback_sql_quote(value: Any) -> str:
+            return "'" + str(value).replace("'", "''") + "'"
+
+        sql_quote = getattr(self, "_sql_quote", _fallback_sql_quote)
+        if collection_name:
+            quoted = sql_quote(collection_name)
+            items = [row for row in items if quoted in str(row.get("indexdef") or "")]
+        if index_version:
+            quoted = sql_quote(index_version)
+            items = [row for row in items if quoted in str(row.get("indexdef") or "")]
+        return items
+
     async def search_vector_profiles_by_embedding(
         self,
         *,

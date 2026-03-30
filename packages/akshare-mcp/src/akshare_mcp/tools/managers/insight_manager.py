@@ -605,7 +605,7 @@ def register_insight_manager(mcp):
     """Register insight manager tool."""
 
     @mcp.tool()
-    async def insight_manager(action: str, **kwargs):
+    async def insight_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """
         Insight manager with unified action + kwargs protocol.
 
@@ -618,7 +618,7 @@ def register_insight_manager(mcp):
         """
         start_time = time.perf_counter()
         try:
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
 
             def _ok(data: dict, source_chain=None):
                 return ok_with_meta(

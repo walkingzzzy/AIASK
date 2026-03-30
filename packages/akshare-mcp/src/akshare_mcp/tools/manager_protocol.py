@@ -61,6 +61,55 @@ def normalize_manager_kwargs(
     return normalized
 
 
+def normalize_manager_payload(
+    *,
+    params: Any = None,
+    kwargs: Any = None,
+    code: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Unified entry point for Manager parameter normalization.
+
+    Merge priority (later wins): kwargs → params → extra → explicit code.
+
+    Accepts BFF legacy calls (kwargs as JSON string) and new structured
+    MCP calls (params as dict) transparently.
+    """
+    merged: dict[str, Any] = {}
+
+    # 1. merge kwargs (legacy compat: may be JSON string or dict)
+    merged.update(_merge_json_like_payload(kwargs))
+
+    # 2. merge params (structured MCP input)
+    merged.update(_merge_json_like_payload(params))
+
+    # 3. merge explicit extra fields
+    if extra and isinstance(extra, dict):
+        merged.update(extra)
+
+    # 4. resolve code from explicit param or merged payload
+    if code and isinstance(code, str) and code.strip():
+        merged["code"] = code.strip()
+    elif "code" not in merged or merged.get("code") in (None, ""):
+        for alias in DEFAULT_CODE_KEYS:
+            value = merged.get(alias)
+            if value not in (None, ""):
+                merged["code"] = value
+                break
+
+    # 5. apply standard alias resolution
+    for canonical, candidates in DEFAULT_LIST_KEYS.items():
+        if merged.get(canonical) not in (None, "", []):
+            continue
+        for alias in candidates:
+            value = merged.get(alias)
+            if value not in (None, "", []):
+                merged[canonical] = value
+                break
+
+    return merged
+
+
 def normalize_manager_code(
     code: Optional[str],
     kwargs: dict[str, Any],
@@ -147,8 +196,9 @@ def fail_with_meta(
     tool_version: str = "v1.1",
     cached: bool = False,
     extra_meta: Optional[dict[str, Any]] = None,
+    error_code: Optional[str] = None,
 ) -> dict[str, Any]:
-    response = fail(error)
+    response = fail(error, error_code=error_code)
     response["meta"] = build_manager_meta(
         tool_name=tool_name,
         action=action,
@@ -160,3 +210,11 @@ def fail_with_meta(
         extra=extra_meta,
     )
     return response
+
+
+# T07: Standard error code constants
+ERR_PARAM = "PARAM_ERROR"
+ERR_NOT_FOUND = "NOT_FOUND"
+ERR_AUTH = "AUTH_ERROR"
+ERR_UPSTREAM = "UPSTREAM_ERROR"
+ERR_INTERNAL = "INTERNAL_ERROR"

@@ -6,6 +6,7 @@
 - sync_daily/sync_init.py 是独立脚本，用于深度历史全量回填
 """
 
+from typing import Any
 import argparse
 import contextlib
 import importlib.util
@@ -742,7 +743,7 @@ def register_data_sync_manager(mcp):
     """注册数据同步管理器工具"""
     
     @mcp.tool()
-    async def data_sync_manager(action: str, **kwargs):
+    async def data_sync_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """数据同步管理器（统一 action + kwargs 协议）
 
         Args:
@@ -771,7 +772,7 @@ def register_data_sync_manager(mcp):
         """
         try:
             db = get_db()
-            kwargs = _normalize_kwargs(kwargs)
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
 
             if action == 'list':
                 action = 'list_tasks'

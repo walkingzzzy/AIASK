@@ -28,6 +28,9 @@ __pycache__/
 .benchmarks/
 .mcp_cache/
 
+# MCP local config (contains real credentials)
+.mcp.local.json
+
 # Claude worktrees
 .claude/worktrees/
 .playwright-mcp/

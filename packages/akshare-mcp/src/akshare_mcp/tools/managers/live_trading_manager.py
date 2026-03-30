@@ -12,6 +12,7 @@ from ...services.live_broker import (
     get_live_broker_adapter,
 )
 from ...utils import fail, ok
+from ..risk_guard import audit_event, require_confirmation_if_needed
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
@@ -238,7 +239,25 @@ async def _dispatch_action(action: str, kwargs: dict[str, Any]) -> dict:
                 }
                 return _with_meta(data, adapter)
 
+            # T05: confirmation gate before real broker call
+            confirmed, gate_msg = require_confirmation_if_needed(
+                "submit_order", kwargs.get("confirm_token")
+            )
+            if not confirmed:
+                audit_event(
+                    "live_trading:submit_order",
+                    {"symbol": preview["symbol"], "qty": preview["qty"]},
+                    {"success": False},
+                    reason="confirmation_required",
+                )
+                return fail(gate_msg)
+
             order = await adapter.submit_order(kwargs)
+            audit_event(
+                "live_trading:submit_order",
+                {"symbol": preview["symbol"], "qty": preview["qty"], "side": preview["side"]},
+                {"success": True, "order_id": order.get("order_id")},
+            )
             data = {
                 "accepted": True,
                 "submitted": True,
@@ -265,7 +284,25 @@ async def _dispatch_action(action: str, kwargs: dict[str, Any]) -> dict:
                 }
                 return _with_meta(data, adapter)
 
+            # T05: confirmation gate before real broker call
+            confirmed, gate_msg = require_confirmation_if_needed(
+                "cancel_order", kwargs.get("confirm_token")
+            )
+            if not confirmed:
+                audit_event(
+                    "live_trading:cancel_order",
+                    {"order_id": order_id},
+                    {"success": False},
+                    reason="confirmation_required",
+                )
+                return fail(gate_msg)
+
             cancelled = await adapter.cancel_order(order_id)
+            audit_event(
+                "live_trading:cancel_order",
+                {"order_id": order_id},
+                {"success": bool(cancelled.get("cancelled", True))},
+            )
             data = {
                 "cancelled": bool(cancelled.get("cancelled", True)),
                 "message": "撤单请求已发送到经纪商网关",
@@ -350,10 +387,10 @@ def register_live_trading_manager(mcp):
     """Register live trading manager tool."""
 
     @mcp.tool()
-    async def live_trading_manager(action: str, **kwargs):
+    async def live_trading_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """Live trading manager with broker-backed monitoring and execution actions."""
 
-        kwargs = _normalize_kwargs(dict(kwargs))
+        kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
         if action == "help":
             return ok(
                 {

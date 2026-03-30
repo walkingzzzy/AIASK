@@ -1,12 +1,13 @@
 """向量搜索管理器 - 相似K线形态、相似股票"""
 
-from typing import Optional
+from typing import Any, Optional
 import time
 
 from ...storage import get_db
 from ...utils import normalize_code
 from ...services.retrieval_eval import summarize_ranked_results
 from ..manager_protocol import (
+    normalize_manager_payload,
     fail_with_meta,
     normalize_manager_code,
     normalize_manager_kwargs,
@@ -25,7 +26,7 @@ def register_vector_search_manager(mcp):
         return result if isinstance(result, dict) else {"success": False, "error": f"Unexpected result type from {tool_name}"}
     
     @mcp.tool()
-    async def vector_search_manager(action: str, code: Optional[str] = None, **kwargs):
+    async def vector_search_manager(action: str, params: dict | None = None, kwargs: Any = None, code: str | None = None):
         """向量搜索管理器（统一 action + kwargs 协议）
 
         Args:

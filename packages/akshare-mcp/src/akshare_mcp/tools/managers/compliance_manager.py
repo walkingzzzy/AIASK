@@ -1,5 +1,6 @@
 """合规管理器 - 交易限制、合规检查"""
 
+from typing import Any
 import json
 from datetime import datetime, timedelta, timezone
 from ...utils import ok, fail, normalize_code
@@ -262,7 +263,7 @@ def register_compliance_manager(mcp):
     """注册合规管理器工具"""
 
     @mcp.tool()
-    async def compliance_manager(action: str, **kwargs):
+    async def compliance_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """合规管理器（统一 action + kwargs 协议）
 
         Args:
@@ -288,7 +289,7 @@ def register_compliance_manager(mcp):
             compliance_manager(action="rules", kwargs="{}")
         """
         try:
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             SUPPORTED_ACTIONS = {
                 'check_order': '检查订单合规',
                 'get_restrictions': '获取交易限制',

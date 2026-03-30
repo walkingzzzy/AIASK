@@ -1,11 +1,13 @@
 """告警管理器 - 创建、查询、更新、删除告警（增强版）
 
-统一使用 alerts.py 的进程内存存储 _alerts_store，
-确保 alerts_manager 与 create_indicator_alert / check_all_alerts 数据一致。
+T09: DB-first 模式 — 所有 CRUD 操作以 DB 为 source of truth，
+_alerts_store 仅作为进程内读缓存，每次操作前先从 DB 同步。
 """
 
+from typing import Any
 import json
 from ...utils import ok, fail, normalize_code
+from ..manager_protocol import normalize_manager_payload
 import logging
 
 logger = logging.getLogger(__name__)
@@ -54,7 +56,7 @@ def register_alerts_manager(mcp):
     """注册告警管理器工具"""
 
     @mcp.tool()
-    async def alerts_manager(action: str, **kwargs):
+    async def alerts_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """告警管理器（统一 action + kwargs 协议）
 
         Args:
@@ -84,7 +86,7 @@ def register_alerts_manager(mcp):
         """
         try:
             # 解析 MCP 传入的 kwargs JSON 字符串
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
 
             # 统一使用 alerts.py 的进程内存存储与评估逻辑
             from ..alerts import _alerts_store, _evaluate_combo, _evaluate_indicator
@@ -104,6 +106,35 @@ def register_alerts_manager(mcp):
 
             elif action == 'list':
                 status = kwargs.get('status', 'active')
+
+                # T09: DB-first – sync alerts from DB before listing
+                try:
+                    import json as _json
+                    from ...storage import get_db
+                    db = get_db()
+                    async with db.acquire() as conn:
+                        rows = await conn.fetch("SELECT * FROM alerts WHERE status='active'")
+                        for r in rows:
+                            aid = _make_alert_id(
+                                _safe_user_id(r.get('user_id', 'default')),
+                                r.get('code', ''),
+                                r.get('indicator', ''),
+                                r.get('condition', ''),
+                            )
+                            _alerts_store[aid] = {
+                                'alert_id': aid,
+                                'user_id': _safe_user_id(r.get('user_id', 'default')),
+                                'code': r.get('code', ''),
+                                'indicator': r.get('indicator', 'price'),
+                                'condition': r.get('condition', '>'),
+                                'value': float(r.get('value', 0)),
+                                'active': True,
+                                'type': 'indicator',
+                                'triggered': False,
+                            }
+                except Exception as e:
+                    logger.warning("[AlertsManager] DB sync failed: %s", e)
+
                 alerts = _list_user_alerts(_alerts_store, user_id)
 
                 if status == 'active':
@@ -146,6 +177,21 @@ def register_alerts_manager(mcp):
                     'type': 'indicator',
                     'triggered': False,
                 }
+
+                # T09: DB-first — persist to DB, then update cache
+                try:
+                    from ...storage import get_db
+                    db = get_db()
+                    async with db.acquire() as conn:
+                        await conn.execute(
+                            """INSERT INTO alerts (user_id, code, indicator, condition, value, status)
+                               VALUES ($1, $2, $3, $4, $5, 'active')
+                               ON CONFLICT DO NOTHING""",
+                            user_id, code, indicator, condition, float(value)
+                        )
+                except Exception as e:
+                    logger.warning("[AlertsManager] DB persist failed: %s", e)
+
                 _alerts_store[alert_id] = alert
                 logger.info(f"[AlertsManager] 创建告警: {alert_id}")
 
@@ -222,6 +268,27 @@ def register_alerts_manager(mcp):
                 elif kwargs.get('active') is not None:
                     alert['active'] = bool(kwargs.get('active'))
 
+                # T09: DB-first — sync updated state back to DB
+                try:
+                    from ...storage import get_db
+                    db = get_db()
+                    db_status = 'active' if alert.get('active', True) else 'inactive'
+                    async with db.acquire() as conn:
+                        await conn.execute(
+                            """UPDATE alerts SET
+                                   code = $1, indicator = $2, condition = $3,
+                                   value = $4, status = $5
+                               WHERE user_id = $6 AND code = $7 AND indicator = $8 AND condition = $9""",
+                            alert.get('code', ''), alert.get('indicator', ''),
+                            alert.get('condition', ''), float(alert.get('value', 0)),
+                            db_status, user_id,
+                            # Use original fields to locate the row
+                            alert.get('code', ''), alert.get('indicator', ''),
+                            alert.get('condition', ''),
+                        )
+                except Exception as e:
+                    logger.warning("[AlertsManager] DB update failed: %s", e)
+
                 status = 'active' if alert.get('active', True) else 'inactive'
                 return ok({'alert_id': alert_id, 'status': status, 'alert': alert})
 
@@ -232,6 +299,22 @@ def register_alerts_manager(mcp):
                 removed = _alerts_store.get(alert_id)
                 if removed is None or not _belongs_to_user(removed, user_id):
                     return fail(f'告警不存在: {alert_id}')
+
+                # T09: DB-first — delete from DB, then evict cache
+                try:
+                    from ...storage import get_db
+                    db = get_db()
+                    async with db.acquire() as conn:
+                        await conn.execute(
+                            """DELETE FROM alerts
+                               WHERE user_id = $1 AND code = $2 AND indicator = $3 AND condition = $4""",
+                            _safe_user_id(removed.get('user_id', 'default')),
+                            removed.get('code', ''), removed.get('indicator', ''),
+                            removed.get('condition', ''),
+                        )
+                except Exception as e:
+                    logger.warning("[AlertsManager] DB delete failed: %s", e)
+
                 _alerts_store.pop(alert_id, None)
                 return ok({'alert_id': alert_id, 'deleted': True})
 

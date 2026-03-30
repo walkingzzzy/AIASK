@@ -1,5 +1,6 @@
 """事件管理器 - 财报、分红、重组"""
 
+from typing import Any
 from datetime import date, timedelta
 import time
 
@@ -111,7 +112,7 @@ def register_event_manager(mcp):
     """注册事件管理器工具"""
     
     @mcp.tool()
-    async def event_manager(action: str, **kwargs):
+    async def event_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """事件管理器（统一 action + kwargs 协议）
 
         Args:
@@ -138,7 +139,7 @@ def register_event_manager(mcp):
         """
         start_time = time.perf_counter()
         try:
-            kwargs = _normalize_kwargs(kwargs)
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             code, kwargs = normalize_manager_code(None, kwargs)
 
             def _ok(data: dict, source_chain=None):

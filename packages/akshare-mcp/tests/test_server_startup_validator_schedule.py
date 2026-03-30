@@ -42,6 +42,10 @@ def test_main_schedules_startup_validator_via_helper(monkeypatch):
     monkeypatch.setenv("STARTUP_VALIDATION_ENABLED", "true")
 
     monkeypatch.setattr(server_mod, "_enforce_http_security_baseline", lambda: None)
+    monkeypatch.setattr(server_mod, "_acquire_background_services_leader", lambda: True)
+    monkeypatch.setattr(server_mod, "_release_background_services_leader", lambda: None)
+    monkeypatch.setattr(server_mod, "_shutdown_completed", False)
+    server_mod._started_background_services.clear()
 
     def _fake_schedule():
         scheduled["startup_validator"] = True
@@ -57,4 +61,41 @@ def test_main_schedules_startup_validator_via_helper(monkeypatch):
     server_mod.main()
 
     assert scheduled["startup_validator"] is True
+    assert scheduled["mcp_run"] is True
+
+
+def test_main_skips_background_services_when_not_leader(monkeypatch):
+    scheduled = {}
+
+    monkeypatch.setenv("AKSHARE_MCP_STARTUP_PROFILE", "full")
+    monkeypatch.setenv("FACTOR_SCHEDULER_ENABLED", "true")
+    monkeypatch.setenv("MATCHING_ENGINE_ENABLED", "false")
+    monkeypatch.setenv("NAV_ENGINE_ENABLED", "false")
+    monkeypatch.setenv("SIGNAL_TRACKER_ENABLED", "false")
+    monkeypatch.setenv("STRATEGY_FACTORY_ENABLED", "false")
+    monkeypatch.setenv("DATA_SYNC_SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("STARTUP_VALIDATION_ENABLED", "true")
+
+    monkeypatch.setattr(server_mod, "_enforce_http_security_baseline", lambda: None)
+    monkeypatch.setattr(server_mod, "_acquire_background_services_leader", lambda: False)
+    monkeypatch.setattr(server_mod, "_release_background_services_leader", lambda: None)
+    monkeypatch.setattr(server_mod, "_shutdown_completed", False)
+    server_mod._started_background_services.clear()
+
+    class _DummyScheduler:
+        def start(self):
+            scheduled["scheduler_started"] = True
+
+    monkeypatch.setattr(server_mod, "get_factor_scheduler", lambda: _DummyScheduler())
+    monkeypatch.setattr(server_mod, "_start_startup_validator_background", lambda: scheduled.setdefault("startup_validator", True))
+
+    async def _noop_transport(*_args, **_kwargs):
+        scheduled["mcp_run"] = True
+
+    monkeypatch.setattr(server_mod, "_run_mcp_transport_async", _noop_transport)
+
+    server_mod.main()
+
+    assert "scheduler_started" not in scheduled
+    assert "startup_validator" not in scheduled
     assert scheduled["mcp_run"] is True

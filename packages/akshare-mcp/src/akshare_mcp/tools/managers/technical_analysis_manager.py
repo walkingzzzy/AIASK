@@ -12,7 +12,7 @@ from ...utils import normalize_code
 from ..manager_protocol import (
     extract_common_meta,
     fail_with_meta,
-    normalize_manager_kwargs,
+    normalize_manager_payload,
     ok_with_meta,
 )
 
@@ -174,11 +174,12 @@ def register_technical_analysis_manager(mcp):
     @mcp.tool()
     async def technical_analysis_manager(
         action: str,
-        code: Optional[str] = None,
+        params: dict | None = None,
+        kwargs: Any = None,
+        code: str | None = None,
         indicators: Optional[List[str]] = None,
         period: str = 'daily',
         limit: int = 250,
-        **kwargs
     ):
         """
         技术分析管理器（统一 action + kwargs 协议，连接真实服务）
@@ -209,7 +210,7 @@ def register_technical_analysis_manager(mcp):
         """
         start_time = time.perf_counter()
         try:
-            kwargs = normalize_manager_kwargs(kwargs)
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs, code=code)
             action = (action or '').strip()
             code = code or kwargs.get("code") or kwargs.get("Code") or kwargs.get("stock_code") or kwargs.get("symbol")
             if indicators is None:

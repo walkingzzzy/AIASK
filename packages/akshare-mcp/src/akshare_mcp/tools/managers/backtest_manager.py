@@ -1,5 +1,6 @@
 """回测管理器 - 运行、保存、查询回测结果（增强版）"""
 
+from typing import Any
 import uuid
 import json
 import time
@@ -265,7 +266,7 @@ def register_backtest_manager(mcp):
     """注册回测管理器工具"""
     
     @mcp.tool()
-    async def backtest_manager(action: str, **kwargs):
+    async def backtest_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """回测管理器（统一 action + kwargs 协议）
 
         Args:
@@ -296,7 +297,7 @@ def register_backtest_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
-            kwargs = _normalize_kwargs(kwargs)
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             code, kwargs = normalize_manager_code(None, kwargs)
             if code:
                 kwargs["code"] = code

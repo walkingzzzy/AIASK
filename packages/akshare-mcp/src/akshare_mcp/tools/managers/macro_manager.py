@@ -1,12 +1,18 @@
 """宏观管理器 - 宏观经济数据"""
 
+from typing import Any
 import logging
 import time
 
 from ...data_source import data_source
 from ...storage import get_db
 from ...utils import parse_numeric
-from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
+from ..manager_protocol import (
+    normalize_manager_payload,
+    fail_with_meta,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 
 logger = logging.getLogger(__name__)
 def _breadth_from_pct_list(values: list[float]) -> dict:
@@ -211,7 +217,7 @@ def register_macro_manager(mcp):
     """注册宏观管理器工具"""
     
     @mcp.tool()
-    async def macro_manager(action: str, **kwargs):
+    async def macro_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """宏观管理器（统一 action + kwargs 协议）
 
         Args:

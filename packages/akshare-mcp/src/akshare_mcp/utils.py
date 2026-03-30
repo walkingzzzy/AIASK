@@ -35,8 +35,8 @@ def ok(data: Any, *, cached: bool = False) -> dict:
     }
 
 
-def fail(error: Any) -> dict:
-    return {
+def fail(error: Any, *, error_code: str | None = None) -> dict:
+    result = {
         "success": False,
         "data": None,
         "error": str(error),
@@ -44,6 +44,9 @@ def fail(error: Any) -> dict:
         "cached": False,
         "timestamp": now_iso(),
     }
+    if error_code:
+        result["error_code"] = error_code
+    return result
 
 
 def safe_stderr_print(*args: Any, sep: str = " ", end: str = "\n") -> None:

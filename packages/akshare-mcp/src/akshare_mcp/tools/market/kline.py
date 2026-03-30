@@ -13,7 +13,7 @@ from ..market.helpers import (
 )
 from ...core.cache_manager import cached
 from ...core.rate_limiter import get_limiter
-from ...core.validators import validate_kline
+from ...core.validators import validate_kline_list
 from ...data_source import data_source
 from ...storage import get_db
 from ...utils import safe_stderr_print
@@ -87,6 +87,10 @@ def _kline_rows_usable(rows: list[dict]) -> bool:
 def _is_fund_like_code(code: str) -> bool:
     normalized = normalize_code(code)
     return normalized.startswith(("1", "5"))
+
+
+def _validated_kline_rows(rows: list[dict]) -> list[dict]:
+    return validate_kline_list(rows)
 
 
 def _ok_kline_response(
@@ -222,7 +226,7 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
             db = get_db()
             db_data = await db.get_klines(code, limit=limit)
             if db_data:
-                validated_results = [validate_kline(item).model_dump() for item in db_data]
+                validated_results = _validated_kline_rows(db_data)
                 has_turnover = any(item.get('turnover') is not None for item in validated_results)
                 if has_turnover or (_is_fund_like_code(code) and _kline_rows_usable(validated_results)):
                     return _ok_kline_response(validated_results, source="timescaledb", source_chain=["db.get_klines"], started_at=started_at)
@@ -241,7 +245,7 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
         # 1. DataSource 优先：Tushare / 公开源（仅当结果包含换手率时才直接返回）
         ds_results = data_source.get_kline(code, period, limit)
         if ds_results:
-            validated_results = [validate_kline(item).model_dump() for item in ds_results]
+            validated_results = _validated_kline_rows(ds_results)
             ds_has_turnover = any(item.get('turnover') is not None for item in validated_results)
             await _async_save_klines_to_db(code, validated_results)
             if ds_has_turnover or (_is_fund_like_code(code) and _kline_rows_usable(validated_results)):
@@ -282,7 +286,7 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
                         "change_pct": safe_float(row.get("pctChg")),
                         "source": "baostock"
                     })
-                validated_results = [validate_kline(item).model_dump() for item in results]
+                validated_results = _validated_kline_rows(results)
                 await _async_save_klines_to_db(code, validated_results)
                 return _ok_kline_response(
                     validated_results,
@@ -343,7 +347,7 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
                 df = df.tail(int(limit))
                 results = _process_kline_akshare(df, code)
                 if results:
-                    validated_results = [validate_kline(item).model_dump() for item in results]
+                    validated_results = _validated_kline_rows(results)
                     await _async_save_klines_to_db(code, validated_results)
                     return _ok_kline_response(
                         validated_results,
@@ -382,7 +386,7 @@ async def get_kline(stock_code: str, period: str = "daily", limit: int = 100) ->
                             "source": "tencent",
                         })
                     if results:
-                        validated_results = [validate_kline(item).model_dump() for item in results]
+                        validated_results = _validated_kline_rows(results)
                         await _async_save_klines_to_db(code, validated_results)
                         return _ok_kline_response(
                             validated_results,
@@ -545,7 +549,7 @@ def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> d
             # 验证返回的确实是分钟数据（日期字段应包含时间部分）
             sample_date = str(ds_results[0].get('date', ''))
             if len(sample_date) > 10:  # 分钟数据日期格式: "2026-02-06 14:30:00"
-                validated_results = [validate_kline(item).model_dump() for item in ds_results]
+                validated_results = _validated_kline_rows(ds_results)
                 return _ok_kline_response(validated_results, source="data_source", source_chain=list(source_chain), started_at=started_at)
             # 如果返回的是日线数据（仅日期），跳过
             fallback_reason.append("data_source.get_kline returned non_intraday rows")
@@ -570,7 +574,7 @@ def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> d
             started_at=started_at,
         )
 
-    validated_results = [validate_kline(item).model_dump() for item in results]
+    validated_results = _validated_kline_rows(results)
     resolved_source = "akshare_minute" if str((validated_results or [{}])[0].get("source") or "").startswith("akshare") else "sina"
     return _ok_kline_response(validated_results, source=resolved_source, source_chain=list(source_chain), fallback_reason=fallback_reason, started_at=started_at)
 
@@ -645,7 +649,7 @@ async def get_kline_data(
                 ed_fmt = f"{ed_norm[:4]}-{ed_norm[4:6]}-{ed_norm[6:8]}" if len(ed_norm) >= 8 else None
                 db_data = await db.get_klines(code_normalized, start_date=sd_fmt, end_date=ed_fmt)
                 if db_data:
-                    validated_results = [validate_kline(item).model_dump() for item in db_data]
+                    validated_results = _validated_kline_rows(db_data)
                     return _ok_kline_response(validated_results, source="timescaledb", source_chain=list(source_chain), started_at=started_at)
             except Exception as e_db:
                 safe_stderr_print(f"TimescaleDB K-line (date range) query failed for {code_normalized}: {e_db}")
@@ -666,7 +670,7 @@ async def get_kline_data(
                 end_norm = end_d[:4] + "-" + end_d[4:6] + "-" + end_d[6:8]
                 filtered = [r for r in ds_results if start_norm <= (r.get("date") or "")[:10] <= end_norm]
                 if filtered:
-                    validated_results = [validate_kline(item).model_dump() for item in filtered]
+                    validated_results = _validated_kline_rows(filtered)
                     await _async_save_klines_to_db(code_normalized, validated_results)
                     return _ok_kline_response(
                         validated_results,
@@ -704,7 +708,7 @@ async def get_kline_data(
                     started_at=started_at,
                 )
             results = _process_kline_akshare(df, code_normalized)
-            validated_results = [validate_kline(item).model_dump() for item in results]
+            validated_results = _validated_kline_rows(results)
             await _async_save_klines_to_db(code_normalized, validated_results)
             return _ok_kline_response(
                 validated_results,
@@ -776,7 +780,7 @@ async def get_index_kline(index_code: str, period: str = "daily", limit: int = 6
             db = get_db()
             db_data = await db.get_klines(ak_symbol, limit=limit)
             if db_data:
-                validated_results = [validate_kline(item).model_dump() for item in db_data]
+                validated_results = _validated_kline_rows(db_data)
                 return ok(validated_results)
         except Exception as e_db:
             safe_stderr_print(f"TimescaleDB index K-line query failed for {ak_symbol}: {e_db}")

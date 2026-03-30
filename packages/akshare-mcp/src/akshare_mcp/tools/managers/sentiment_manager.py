@@ -1,11 +1,13 @@
 """情绪分析管理器（增强版）"""
 
+from typing import Any
 import time
 
 from ...utils import normalize_code
 from ...storage import get_db
 from ...data_source import data_source
 from ..manager_protocol import (
+    normalize_manager_payload,
     fail_with_meta,
     normalize_manager_code,
     normalize_manager_kwargs,
@@ -67,7 +69,7 @@ def register_sentiment_manager(mcp):
     """注册情绪分析管理器工具"""
     
     @mcp.tool()
-    async def sentiment_manager(action: str, **kwargs):
+    async def sentiment_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """情绪分析管理器（统一 action + kwargs 协议）
 
         Args:

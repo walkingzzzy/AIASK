@@ -62,13 +62,7 @@ export class McpGatewayService implements OnModuleDestroy {
       1,
       Number(this.configService.get<string>('MCP_POOL_SIZE', '8')),
     );
-    this.fullProfilePoolSlots = Math.max(
-      0,
-      Math.min(
-        this.poolSize,
-        Number(this.configService.get<string>('MCP_FULL_PROFILE_POOL_SLOTS', '0')),
-      ),
-    );
+    this.fullProfilePoolSlots = this.resolveConfiguredFullProfilePoolSlots();
     this.poolAcquireTimeoutMs = Math.max(
       1000,
       Number(this.configService.get<string>('MCP_POOL_ACQUIRE_TIMEOUT_MS', '5000')),
@@ -487,6 +481,21 @@ export class McpGatewayService implements OnModuleDestroy {
       .split(' ')
       .map((part) => part.trim())
       .filter((part) => part.length > 0);
+  }
+
+  private resolveConfiguredFullProfilePoolSlots(): number {
+    const configured = this.configService.get<string>('MCP_FULL_PROFILE_POOL_SLOTS');
+    const startupProfile = this.configService.get<string>('MCP_STDIO_STARTUP_PROFILE', 'balanced').trim().toLowerCase();
+    let fallback = 1;
+    if (startupProfile === 'tool-only' || startupProfile === 'tool_only' || startupProfile === 'worker') {
+      fallback = 0;
+    } else if (startupProfile === 'full') {
+      fallback = this.poolSize;
+    }
+    const raw = configured != null && configured.trim().length > 0 ? configured : String(fallback);
+    const parsed = Number(raw);
+    const resolved = Number.isFinite(parsed) ? parsed : fallback;
+    return Math.max(0, Math.min(this.poolSize, resolved));
   }
 
   private resolveStartupProfile(id: number): McpStartupProfile {

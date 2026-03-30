@@ -12,17 +12,42 @@ import asyncio
 import asyncpg
 import os
 import json
+import sys
 from datetime import datetime, date
 from pathlib import Path
 
-# 配置信息
-DB_CONFIG = {
-    'user': 'postgres',
-    'password': 'stockdb123',
-    'database': 'stockdb',
-    'host': '127.0.0.1',
-    'port': 5432
-}
+_SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
+try:
+    from akshare_mcp.env_loader import load_mcp_env
+except Exception:
+    load_mcp_env = None
+
+if callable(load_mcp_env):
+    load_mcp_env(override=False, only_prefixes=("DB_",))
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    try:
+        return int(str(raw).strip()) if raw is not None else int(default)
+    except Exception:
+        return int(default)
+
+
+def _load_db_config() -> dict:
+    return {
+        'user': os.getenv('DB_USER', 'postgres'),
+        'password': os.getenv('DB_PASSWORD') or None,
+        'database': os.getenv('DB_NAME', 'postgres'),
+        'host': os.getenv('DB_HOST', '127.0.0.1'),
+        'port': _env_int('DB_PORT', 5432),
+    }
+
+
+DB_CONFIG = _load_db_config()
 
 class DataAuditor:
     def __init__(self):

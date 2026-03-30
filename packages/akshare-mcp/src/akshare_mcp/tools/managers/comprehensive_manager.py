@@ -1,6 +1,6 @@
 """综合管理器 - 一站式分析"""
 
-from typing import Optional
+from typing import Any, Optional
 import json
 import logging
 import time
@@ -9,6 +9,7 @@ from ...utils import normalize_code
 from ...data_source import data_source
 from ..market import get_kline, get_realtime_quote
 from ..manager_protocol import (
+    normalize_manager_payload,
     fail_with_meta,
     normalize_manager_code,
     normalize_manager_kwargs,
@@ -46,7 +47,7 @@ def register_comprehensive_manager(mcp):
     """注册综合管理器工具"""
     
     @mcp.tool()
-    async def comprehensive_manager(action: str, code: Optional[str] = None, **kwargs):
+    async def comprehensive_manager(action: str, params: dict | None = None, kwargs: Any = None, code: str | None = None):
         """综合管理器（统一 action + kwargs 协议）
 
         Args:

@@ -1,12 +1,13 @@
 """基本面分析管理器 - 杜邦分析、同行对比、内在价值（增强版）"""
 
-from typing import Optional
+from typing import Any, Optional
 import math
 import time
 from ...storage import get_db
 from ...utils import normalize_code
 from ...data_source import data_source
 from ..manager_protocol import (
+    normalize_manager_payload,
     fail_with_meta,
     normalize_manager_code,
     normalize_manager_kwargs,
@@ -236,7 +237,7 @@ def register_fundamental_analysis_manager(mcp):
     """注册基本面分析管理器工具"""
     
     @mcp.tool()
-    async def fundamental_analysis_manager(action: str, code: Optional[str] = None, **kwargs):
+    async def fundamental_analysis_manager(action: str, params: dict | None = None, kwargs: Any = None, code: str | None = None):
         """基本面分析管理器（统一 action + kwargs 协议）
 
         Args:

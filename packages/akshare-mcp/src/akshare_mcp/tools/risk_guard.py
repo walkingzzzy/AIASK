@@ -90,3 +90,35 @@ def risk_audited(action: str) -> Callable[[Callable[..., dict]], Callable[..., d
 
     return _decorator
 
+
+def risk_audited_async(action: str) -> Callable:
+    """Async decorator: confirmation gate + audit record for async tool functions."""
+
+    def _decorator(func: Callable) -> Callable:
+        sig = inspect.signature(func)
+
+        @wraps(func)
+        async def _wrapper(*args: Any, **kwargs: Any) -> dict:
+            bound = sig.bind_partial(*args, **kwargs)
+            params = {k: v for k, v in bound.arguments.items() if k != "confirm_token"}
+            confirm_token = bound.arguments.get("confirm_token")
+
+            allowed, message = require_confirmation_if_needed(action, confirm_token)
+            if not allowed:
+                rejected = {"success": False, "message": message}
+                audit_event(action, params, rejected, reason="confirmation_required")
+                return rejected
+
+            result = await func(*args, **kwargs)
+            if isinstance(result, dict):
+                audit_event(action, params, result)
+                return result
+
+            wrapped = {"success": False, "message": "工具返回格式异常"}
+            audit_event(action, params, wrapped, reason="invalid_result")
+            return wrapped
+
+        return _wrapper
+
+    return _decorator
+

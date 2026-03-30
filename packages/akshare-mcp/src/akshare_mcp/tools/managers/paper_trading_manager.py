@@ -1,5 +1,6 @@
 """模拟交易管理器 — P3 订单生命周期 + 佣金 + 风控"""
 
+from typing import Any
 import json
 import uuid
 import logging
@@ -658,7 +659,7 @@ def register_paper_trading_manager(mcp):
     """注册模拟交易管理器工具"""
 
     @mcp.tool()
-    async def paper_trading_manager(action: str, **kwargs):
+    async def paper_trading_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """模拟交易管理器（统一 action + kwargs 协议）
 
         Args:
@@ -672,7 +673,7 @@ def register_paper_trading_manager(mcp):
         """
         try:
             db = get_db()
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             user_id = kwargs.get('user_id', 'default')
 
             SUPPORTED_ACTIONS = {

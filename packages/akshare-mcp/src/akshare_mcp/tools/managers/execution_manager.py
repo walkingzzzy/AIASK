@@ -689,7 +689,7 @@ def register_execution_manager(mcp):
     """Register execution manager tool."""
 
     @mcp.tool()
-    async def execution_manager(action: str, **kwargs):
+    async def execution_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """
         Execution manager with unified action + kwargs protocol.
         Supports structured ``params`` in addition to legacy ``kwargs`` payloads.
@@ -740,7 +740,7 @@ def register_execution_manager(mcp):
         - execution_manager(action="summary", kwargs='{"task_id":"exec_xxx"}')
         """
         try:
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             supported_actions = {
                 "twap": "TWAP execution planning (time-weighted average price)",
                 "vwap": "VWAP execution planning (volume-weighted average price)",

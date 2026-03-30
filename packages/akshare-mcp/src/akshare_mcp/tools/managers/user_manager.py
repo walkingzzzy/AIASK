@@ -1,10 +1,15 @@
 """用户管理器"""
 
+from typing import Any
 import json
 import time
 from ...storage import get_db
 from ...services.kyc_dynamic import kyc_service
-from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
+from ..manager_protocol import (
+    normalize_manager_payload,
+    fail_with_meta,
+    ok_with_meta,
+)
 
 
 def _normalize_limit(value, default: int = 50, minimum: int = 1, maximum: int = 200) -> int:
@@ -19,7 +24,7 @@ def register_user_manager(mcp):
     """注册用户管理器工具"""
 
     @mcp.tool()
-    async def user_manager(action: str, kwargs: str = '{}', **extra_kwargs):
+    async def user_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """用户管理器（统一 action + kwargs 协议）
 
         Args:
@@ -49,9 +54,7 @@ def register_user_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
-            raw_kwargs = dict(extra_kwargs)
-            raw_kwargs["kwargs"] = kwargs
-            params = normalize_manager_kwargs(raw_kwargs)
+            _params = normalize_manager_payload(params=params, kwargs=kwargs)
 
             def _ok(data: dict, source_chain=None):
                 return ok_with_meta(
@@ -84,10 +87,10 @@ def register_user_manager(mcp):
                 return _ok({'supported_actions': SUPPORTED_ACTIONS}, source_chain=['user_manager'])
             
             elif action == 'get_profile':
-                user_id = params.get('user_id', 'default')
+                user_id = _params.get('user_id', 'default')
                 async with db.acquire() as conn:
                     user = await conn.fetchrow(
-                        "SELECT * FROM users WHERE id = $1",
+                        "SELECT id, username, settings, created_at FROM users WHERE id = $1",
                         user_id
                     )
                     if not user:
@@ -97,8 +100,8 @@ def register_user_manager(mcp):
                 return _ok(profile, source_chain=['user_manager', 'db.users'])
             
             elif action == 'update_preferences':
-                user_id = params.get('user_id', 'default')
-                preferences = params.get('preferences', {})
+                user_id = _params.get('user_id', 'default')
+                preferences = _params.get('preferences', {})
                 if not isinstance(preferences, dict):
                     return _fail('preferences 必须为对象', source_chain=['user_manager'])
                 
@@ -130,17 +133,17 @@ def register_user_manager(mcp):
                 )
             
             elif action in ['list', 'list_users']:
-                limit = _normalize_limit(params.get('limit', 50))
+                limit = _normalize_limit(_params.get('limit', 50))
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
-                        "SELECT id, username, email, created_at FROM users ORDER BY created_at DESC LIMIT $1",
+                        "SELECT id, username, created_at FROM users ORDER BY created_at DESC LIMIT $1",
                         limit
                     )
                     users = [dict(row) for row in rows]
                 return _ok({'users': users, 'count': len(users)}, source_chain=['user_manager', 'db.users'])
 
             elif action == 'assess_kyc':
-                user_id = params.get('user_id', 'default')
+                user_id = _params.get('user_id', 'default')
                 result = await kyc_service.assess_risk_level(user_id, db)
                 # Persist KYC level to users.settings
                 async with db.acquire() as conn:

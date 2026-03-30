@@ -476,6 +476,30 @@ export class MarketService {
       .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
   }
 
+  private extractToolError(payload: unknown): string | null {
+    if (typeof payload === 'string') {
+      const message = payload.trim();
+      return /error executing tool|validation error|failed|exception/i.test(message) ? message : null;
+    }
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+    const record = payload as Record<string, unknown>;
+    if (record.success === false && typeof record.error === 'string' && record.error.trim()) {
+      return record.error;
+    }
+    if (record.success === false && typeof record.message === 'string' && record.message.trim()) {
+      return record.message;
+    }
+    if (record.success === false && record.error && typeof record.error === 'object') {
+      const nested = record.error as Record<string, unknown>;
+      if (typeof nested.message === 'string' && nested.message.trim()) {
+        return nested.message;
+      }
+    }
+    return null;
+  }
+
   private async callWithArgs(
     primaryTool: string,
     attempts: Array<Record<string, unknown>>,
@@ -485,6 +509,10 @@ export class MarketService {
     for (const args of attempts) {
       try {
         const payload = await this.mcpGatewayService.callTool(primaryTool, args);
+        const toolError = this.extractToolError(payload);
+        if (toolError) {
+          throw new Error(toolError);
+        }
         return { payload, argsMatched: args };
       } catch (error) {
         lastError = error;
@@ -493,6 +521,10 @@ export class MarketService {
       if (fallbackTool) {
         try {
           const payload = await this.mcpGatewayService.callTool(fallbackTool, args);
+          const toolError = this.extractToolError(payload);
+          if (toolError) {
+            throw new Error(toolError);
+          }
           return { payload, argsMatched: args };
         } catch (error) {
           lastError = error;
@@ -509,7 +541,12 @@ export class MarketService {
 
   private async callTool(name: string, args: Record<string, unknown>) {
     try {
-      return await this.mcpGatewayService.callTool(name, args);
+      const payload = await this.mcpGatewayService.callTool(name, args);
+      const toolError = this.extractToolError(payload);
+      if (toolError) {
+        throw new Error(toolError);
+      }
+      return payload;
     } catch (error) {
       throw new BadGatewayException({
         success: false,

@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+    "akshare-mcp": {
+      "command": "/Users/mac/Desktop/股票/packages/akshare-mcp/.venv/bin/python",
+      "args": ["-m", "akshare_mcp.server"],
+      "cwd": "/Users/mac/Desktop/股票/packages/akshare-mcp",
+      "env": {
+        "TUSHARE_TOKEN": "<your-real-tushare-token>",
+        "TUSHARE_HTTP_URL": "http://lianghua.nanyangqiankun.top",
+        "TDX_ENABLED": "false",
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_USER": "postgres",
+        "DB_PASSWORD": "<your-real-db-password>",
+        "DB_NAME": "stockdb",
+        "PYTHONIOENCODING": "utf-8",
+        "NO_PROXY": "*",
+        "DATA_SYNC_SCHEDULER_ENABLED": "false",
+        "MATCHING_ENGINE_ENABLED": "false",
+        "NAV_ENGINE_ENABLED": "false",
+        "SIGNAL_TRACKER_ENABLED": "true",
+        "STRATEGY_FACTORY_ENABLED": "false",
+        "FACTOR_SCHEDULER_ENABLED": "false"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@anthropic-ai/mcp-playwright"]
+    }
+  }
+}

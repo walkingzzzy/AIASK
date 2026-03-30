@@ -150,7 +150,7 @@ def _normalize_strategy_manager_failure(action: str, result: dict) -> dict:
     return normalized
 
 
-# ── Action dispatch table ────────────────────────────────────────────────────
+# ── Action dispatch table (supported_actions) ───────────────────────────────
 # Maps action name -> async handler(db, params) -> dict
 # Vector / AI actions are defined inline below because they're short and
 # tightly coupled to register_strategy_manager.

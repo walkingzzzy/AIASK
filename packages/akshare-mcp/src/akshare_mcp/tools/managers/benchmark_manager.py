@@ -297,7 +297,7 @@ def register_benchmark_manager(mcp):
     """注册 benchmark_manager 工具"""
 
     @mcp.tool()
-    async def benchmark_manager(action: str, **kwargs):
+    async def benchmark_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """基准评测管理器（统一 action + kwargs 协议）
 
         Args:
@@ -305,7 +305,7 @@ def register_benchmark_manager(mcp):
             kwargs: JSON字符串或关键字参数
         """
         try:
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             db = get_db()
 
             if action == "help":

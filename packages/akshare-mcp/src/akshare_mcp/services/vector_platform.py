@@ -1325,7 +1325,6 @@ class StrategyVectorPlatform:
         limit_versions: int,
         include_hnsw_indexes: bool,
     ) -> Optional[dict]:
-        del include_hnsw_indexes
         collections = await self._list_unified_strategy_collections(db, index_name=index_name)
         if not collections or not hasattr(db, 'list_vector_index_snapshots'):
             return None
@@ -1409,6 +1408,25 @@ class StrategyVectorPlatform:
             ),
             reverse=True,
         )
+        hnsw_indexes: List[dict] = []
+        if include_hnsw_indexes and hasattr(db, 'list_vector_hnsw_indexes'):
+            seen_index_names: set[str] = set()
+            for collection in collections:
+                try:
+                    rows = await db.list_vector_hnsw_indexes(
+                        collection_name=collection.get('collection_name'),
+                        limit=500,
+                    )
+                except Exception:
+                    rows = []
+                for row in list(rows or []):
+                    item = dict(row or {})
+                    index_key = str(item.get('indexname') or '')
+                    if index_key and index_key in seen_index_names:
+                        continue
+                    if index_key:
+                        seen_index_names.add(index_key)
+                    hnsw_indexes.append(item)
         return {
             'index_name': index_name,
             'backend': self._pgvector_backend_family(getattr(db, 'get_vector_backend', lambda: 'pgvector')()),
@@ -1424,8 +1442,8 @@ class StrategyVectorPlatform:
             'counts': counts,
             'latest_snapshot': latest_snapshot,
             'versions': versions[: max(1, min(int(limit_versions or 20), 200))],
-            'hnsw_indexes': [],
-            'hnsw_index_count': 0,
+            'hnsw_indexes': hnsw_indexes,
+            'hnsw_index_count': len(hnsw_indexes),
             'recommended_cleanup_versions': [row.get('index_version') for row in versions[1:] if row.get('index_version')],
             'health_mode': 'unified',
         }

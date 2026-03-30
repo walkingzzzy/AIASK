@@ -1,5 +1,6 @@
 """绩效管理器 - 归因分析、绩效评估"""
 
+from typing import Any
 import time
 from datetime import datetime, timezone
 import numpy as np
@@ -383,7 +384,7 @@ def register_performance_manager(mcp):
     """注册绩效管理器工具"""
 
     @mcp.tool()
-    async def performance_manager(action: str, **kwargs):
+    async def performance_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """绩效管理器（统一 action + kwargs 协议）
 
         Args:
@@ -415,7 +416,7 @@ def register_performance_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
 
             def _ok(data: dict, source_chain=None):
                 return ok_with_meta(

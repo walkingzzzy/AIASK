@@ -1,9 +1,15 @@
 """市场洞察管理器 - 市场趋势、板块分析（接入真实行情与资金流）"""
 
+from typing import Any
 import logging
 import time
 import numpy as np
-from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
+from ..manager_protocol import (
+    normalize_manager_payload,
+    fail_with_meta,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +46,7 @@ def register_market_insight_manager(mcp):
     """注册市场洞察管理器工具"""
 
     @mcp.tool()
-    async def market_insight_manager(action: str, **kwargs):
+    async def market_insight_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """市场洞察管理器（统一 action + kwargs 协议）
 
         Args:

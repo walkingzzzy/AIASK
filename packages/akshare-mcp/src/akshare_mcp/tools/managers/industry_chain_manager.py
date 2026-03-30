@@ -1,10 +1,16 @@
 """产业链管理器 - 产业链分析和关联股票"""
 
+from typing import Any
 import logging
 import time
 from ...utils import fail, normalize_code
 from ...storage import get_db
-from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
+from ..manager_protocol import (
+    normalize_manager_payload,
+    fail_with_meta,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +106,7 @@ def register_industry_chain_manager(mcp):
     """注册产业链管理器工具"""
     
     @mcp.tool()
-    async def industry_chain_manager(action: str, **kwargs):
+    async def industry_chain_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """产业链管理器（统一 action + kwargs 协议）
 
         Args:

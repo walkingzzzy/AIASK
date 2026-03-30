@@ -1,5 +1,6 @@
 """自选股管理器"""
 
+from typing import Any
 import json
 import uuid
 
@@ -100,7 +101,7 @@ def register_watchlist_manager(mcp):
     """注册自选股管理器工具"""
 
     @mcp.tool()
-    async def watchlist_manager(action: str, **kwargs):
+    async def watchlist_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """自选股管理器（统一 action + kwargs 协议）
 
         Args:
@@ -112,7 +113,7 @@ def register_watchlist_manager(mcp):
         """
         try:
             db = get_db()
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             user_id = str(kwargs.get("user_id") or "default").strip() or "default"
 
             if action == "list":

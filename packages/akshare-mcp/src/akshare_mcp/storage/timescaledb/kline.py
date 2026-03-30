@@ -4,8 +4,14 @@ TimescaleDB 适配器 — K线数据 Mixin
 提供 get_klines / save_klines / get_limit_up_stats 方法。
 """
 
+import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
+
+from ...core.validators import validate_kline
+
+
+logger = logging.getLogger(__name__)
 
 
 class KlineMixin:
@@ -102,11 +108,6 @@ class KlineMixin:
         if not klines_list:
             return 0
 
-        if code:
-            for k in klines_list:
-                if isinstance(k, dict) and not k.get("code"):
-                    k["code"] = code
-
         def _parse_date(val):
             """安全解析日期，兼容多种格式"""
             if isinstance(val, (_dt, _date)):
@@ -140,21 +141,32 @@ class KlineMixin:
             """
 
             rows = []
-            for k in klines_list:
-                parsed_date = _parse_date(k.get('date'))
+            for idx, k in enumerate(klines_list):
+                if not isinstance(k, dict):
+                    continue
+                payload = dict(k)
+                if code and not payload.get("code"):
+                    payload["code"] = code
+                try:
+                    validated = validate_kline(payload).model_dump()
+                except ValueError as exc:
+                    logger.warning("Skip invalid kline row #%d for %s: %s", idx, code or payload.get("code") or "unknown", exc)
+                    continue
+
+                parsed_date = _parse_date(validated.get('date'))
                 if parsed_date is None:
                     continue
-                code = k.get('code')
-                open_ = k.get('open')
-                high = k.get('high')
-                low = k.get('low')
-                close = k.get('close')
-                volume = k.get('volume')
-                if code is None or open_ is None or high is None or low is None or close is None or volume is None:
+                row_code = validated.get('code')
+                open_ = validated.get('open')
+                high = validated.get('high')
+                low = validated.get('low')
+                close = validated.get('close')
+                volume = validated.get('volume')
+                if row_code is None or open_ is None or high is None or low is None or close is None or volume is None:
                     continue
                 rows.append((
-                    parsed_date, code, open_, high, low, close,
-                    volume, k.get('amount'), k.get('turnover'), k.get('change_pct')
+                    parsed_date, row_code, open_, high, low, close,
+                    volume, validated.get('amount'), validated.get('turnover'), validated.get('change_pct')
                 ))
 
             if rows:

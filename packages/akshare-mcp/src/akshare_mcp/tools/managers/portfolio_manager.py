@@ -1,5 +1,6 @@
 """组合管理器 - 创建、调整、查询组合"""
 
+from typing import Any
 import json
 import time
 
@@ -66,7 +67,7 @@ def register_portfolio_manager(mcp):
     """注册组合管理器工具"""
 
     @mcp.tool()
-    async def portfolio_manager(action: str, **kwargs):
+    async def portfolio_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """组合管理器（统一 action + kwargs 协议）
 
         Args:
@@ -100,7 +101,7 @@ def register_portfolio_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             _, kwargs = normalize_manager_code(None, kwargs)
             user_id = str(kwargs.get('user_id') or 'default').strip() or 'default'
 

@@ -9,10 +9,16 @@ import atexit
 import inspect
 import logging
 import os
+import tempfile
 import threading
 from pathlib import Path
 
 import anyio
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback path
+    fcntl = None
 
 from .env_loader import load_mcp_env
 
@@ -34,37 +40,52 @@ for _log_name in ("mcp", "mcp.server", "mcp.server.server", "fastmcp", "uvicorn"
 
 from mcp.server.fastmcp import FastMCP
 
-# 分步导入以便 UnicodeDecodeError 时定位到具体子模块
-_base_tool_names = (
+# T10: Split tool imports into core (eager) + heavy (deferred) to reduce
+# cold-start overhead for tool-only profile.  Heavy modules (quant 131KB,
+# data_sync 67KB, etc.) are loaded on demand during register().
+import importlib as _importlib
+
+# --- Core lightweight tools: import eagerly (essential for all profiles) ---
+_core_tool_names = (
     "market", "finance", "fund_flow", "macro", "news", "options",
     "technical", "backtest", "portfolio", "valuation", "decision",
     "search", "semantic", "data_warmup", "alerts",
-    "vector", "skills", "quant", "sentiment", "market_blocks",
-    "basic_data", "data_sync", "managers",
-    "factor_profile", "research",
+    "market_blocks", "basic_data", "managers", "research",
 )
-_tool_names = _base_tool_names
 try:
     from .tools import (
         market, finance, fund_flow, macro, news, options,
         technical, backtest, portfolio, valuation, decision,
         search, semantic, data_warmup, alerts,
-        vector, skills, quant, sentiment, market_blocks,
-        basic_data, data_sync, managers,
-        factor_profile, research,
+        market_blocks, basic_data, managers, research,
     )
 except UnicodeDecodeError as e:
-    # 定位是哪个子模块触发的解码错误（多为路径或插件内文件编码问题）
-    import importlib
-    for _n in _tool_names:
+    for _n in _core_tool_names:
         try:
-            importlib.import_module(f"akshare_mcp.tools.{_n}")
+            _importlib.import_module(f"akshare_mcp.tools.{_n}")
         except UnicodeDecodeError:
             raise RuntimeError(
                 f"UnicodeDecodeError when loading akshare_mcp.tools.{_n}. "
                 "Ensure all .py files are UTF-8 and start with: python -X utf8 start_server.py"
             ) from e
     raise
+
+# --- Heavy tool modules: deferred import via importlib ---
+_heavy_tool_names = ("vector", "skills", "quant", "sentiment", "data_sync", "factor_profile")
+_heavy_modules: dict[str, object] = {}
+
+
+def _load_heavy_module(name: str) -> object:
+    """Lazily import a heavy tool module and cache it."""
+    if name not in _heavy_modules:
+        try:
+            _heavy_modules[name] = _importlib.import_module(f".tools.{name}", package="akshare_mcp")
+        except UnicodeDecodeError as e:
+            raise RuntimeError(
+                f"UnicodeDecodeError when loading akshare_mcp.tools.{name}. "
+                "Ensure all .py files are UTF-8 and start with: python -X utf8 start_server.py"
+            ) from e
+    return _heavy_modules[name]
 
 
 from .services.data_sync import data_sync_service
@@ -78,6 +99,7 @@ from .storage import close_db
 _started_background_services: list[tuple[str, object]] = []
 _shutdown_lock = threading.Lock()
 _shutdown_completed = False
+_background_services_lock_handle = None
 
 
 def _remember_started_service(name: str, service: object) -> object:
@@ -125,6 +147,72 @@ def _start_startup_validator_background() -> threading.Thread:
     return _run_async_task_in_daemon_thread(validator.run_async, "startup-validator")
 
 
+def _background_services_lock_path() -> Path:
+    raw = str(os.getenv("AKSHARE_MCP_BACKGROUND_SERVICES_LOCK_PATH", "")).strip()
+    if raw:
+        return Path(raw)
+    return Path(tempfile.gettempdir()) / "akshare-mcp-background-services.lock"
+
+
+def _acquire_background_services_leader() -> bool:
+    """Ensure only one local MCP process starts autonomous background services."""
+    global _background_services_lock_handle
+
+    logger = logging.getLogger(__name__)
+    handle = None
+    if _background_services_lock_handle is not None:
+        return True
+    if fcntl is None:  # pragma: no cover - platform-specific safeguard
+        logger.warning("[Server] background leader lock unavailable on this platform; proceeding without single-leader guard")
+        return True
+
+    lock_path = _background_services_lock_path()
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "a+", encoding="utf-8")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid={os.getpid()}\n")
+        handle.flush()
+        _background_services_lock_handle = handle
+        logger.info("[Server] acquired background services leader lock: %s", lock_path)
+        return True
+    except BlockingIOError:
+        try:
+            handle.close()
+        except Exception:
+            pass
+        logger.info("[Server] background services leader lock already held: %s", lock_path)
+        return False
+    except Exception as exc:
+        try:
+            handle.close()
+        except Exception:
+            pass
+        logger.warning("[Server] background services leader lock failed: %s", exc)
+        return False
+
+
+def _release_background_services_leader() -> None:
+    global _background_services_lock_handle
+
+    handle = _background_services_lock_handle
+    if handle is None:
+        return
+    _background_services_lock_handle = None
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except Exception as exc:  # pragma: no cover - defensive cleanup logging
+        logging.getLogger(__name__).warning("[Server] background leader unlock failed: %s", exc)
+    finally:
+        try:
+            handle.close()
+        except Exception:
+            pass
+
+
 async def _shutdown_services_async() -> None:
     """按依赖顺序关闭后台服务，避免先关 DB 导致后续关闭失败。"""
     global _shutdown_completed
@@ -155,6 +243,7 @@ async def _shutdown_services_async() -> None:
         logger.warning(
             "[Server] db shutdown failed", extra={"error": str(e)}
         )
+    _release_background_services_leader()
 
 
 def _safe_shutdown_services() -> None:
@@ -172,8 +261,20 @@ atexit.register(_safe_shutdown_services)
 
 
 # ===== FastMCP app =====
+# T04: Configure host/port for HTTP transports from env vars
+# Note: FastMCP AuthSettings requires full OAuth issuer_url flow;
+# for simple API-key/bearer auth, use an ASGI middleware (future work).
+# Current baseline: _enforce_http_security_baseline() validates env vars
+# at startup and blocks insecure configurations.
 
-mcp = FastMCP("AKShare Stock Data Server v2")
+_mcp_host = str(os.getenv("MCP_HOST", "127.0.0.1")).strip() or "127.0.0.1"
+_mcp_port = int(os.getenv("MCP_PORT", "8000"))
+
+mcp = FastMCP(
+    "AKShare Stock Data Server v2",
+    host=_mcp_host,
+    port=_mcp_port,
+)
 
 market.register(mcp)
 finance.register(mcp)
@@ -192,19 +293,27 @@ research.register(mcp)
 data_warmup.register(mcp)
 alerts.register(mcp)
 managers.register(mcp)  # Phase 5: 统一注册，消除重复
-vector.register(mcp)
-skills.register(mcp)
-quant.register(mcp)
-sentiment.register(mcp)
 
-# 注册因子画像工具 (Phase 3)
-factor_profile.register(mcp)
+# T08: Capability statement —
+# This server currently provides Tools only.
+# Resources (resource://) and Prompts (prompt://) are NOT implemented.
+# list_resources / list_prompts will return empty results.
+# See MCP_MANAGER_CONTRACT.md for the current contract.
+
+# T10: Heavy tool modules – loaded on demand via _load_heavy_module()
+_load_heavy_module("vector").register(mcp)
+_load_heavy_module("skills").register(mcp)
+_load_heavy_module("quant").register(mcp)
+_load_heavy_module("sentiment").register(mcp)
+
+# 注册因子画像工具 (Phase 3) — deferred
+_load_heavy_module("factor_profile").register(mcp)
 
 # 注册基础数据工具 (Phase 3)
 basic_data.register(mcp)
 
-# 注册数据同步工具 (Phase 4)
-data_sync.register(mcp)
+# 注册数据同步工具 (Phase 4) — deferred
+_load_heavy_module("data_sync").register(mcp)
 
 # 注册市场板块工具
 @mcp.tool()
@@ -328,12 +437,17 @@ async def _run_mcp_transport_async(transport: str, mount_path: str | None) -> No
 
 
 async def _main_async(transport: str, mount_path: str | None) -> None:
+    global _shutdown_completed
+    with _shutdown_lock:
+        _shutdown_completed = False
     startup_profile = _resolve_startup_profile()
     logger = logging.getLogger(__name__)
     logger.info("[Server] startup profile=%s transport=%s", startup_profile, transport)
 
     if startup_profile == "tool-only":
         logger.info("[Server] tool-only profile active, background schedulers and startup validators are disabled")
+    elif not _acquire_background_services_leader():
+        logger.info("[Server] full profile active, but this process is not the background-services leader; autonomous services stay disabled")
     else:
         # Start factor scheduler if enabled (default: enabled)
         if _as_bool(os.getenv("FACTOR_SCHEDULER_ENABLED", "true")):

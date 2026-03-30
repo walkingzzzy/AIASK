@@ -1,5 +1,6 @@
 """选股器管理器 - 多因子选股"""
 
+from typing import Any
 import json
 import time
 import asyncio
@@ -210,11 +211,11 @@ def register_screener_manager(mcp):
     """注册选股器管理器工具"""
     
     @mcp.tool()
-    async def screener_manager(action: str, **kwargs):
+    async def screener_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """选股器管理器 - 多因子选股"""
         try:
             db = get_db()
-            kwargs = _normalize_kwargs(dict(kwargs))
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             
             if action == 'help':
                 return ok({

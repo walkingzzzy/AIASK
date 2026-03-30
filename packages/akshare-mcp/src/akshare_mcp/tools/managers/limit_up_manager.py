@@ -1,11 +1,17 @@
 """涨停板管理器"""
 
+from typing import Any
 from datetime import datetime
 import logging
 from ...data_source import data_source
 import time
 
-from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
+from ..manager_protocol import (
+    normalize_manager_payload,
+    fail_with_meta,
+    normalize_manager_kwargs,
+    ok_with_meta,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +37,7 @@ def register_limit_up_manager(mcp):
     """注册涨停板管理器工具"""
     
     @mcp.tool()
-    async def limit_up_manager(action: str, **kwargs):
+    async def limit_up_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """涨停板管理器（统一 action + kwargs 协议）
 
         Args:

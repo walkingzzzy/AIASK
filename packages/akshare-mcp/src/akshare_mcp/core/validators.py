@@ -4,7 +4,7 @@
 """
 
 from typing import Optional
-from pydantic import BaseModel, Field, ConfigDict, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 
 class StockQuote(BaseModel):
@@ -107,43 +107,18 @@ class KlineData(BaseModel):
             raise ValueError('成交量不能为负')
         return v
 
-    @field_validator('high')
-    @classmethod
-    def high_must_be_highest(cls, v, info: ValidationInfo):
-        """最高价必须是最高的"""
-        if v is None:
-            return v
+    @model_validator(mode='after')
+    def validate_ohlc_relationships(self):
+        """确保 high/low 与 open/close 之间满足基本 OHLC 约束。"""
+        upper_bounds = [value for value in (self.open, self.close, self.low) if value is not None]
+        if self.high is not None and upper_bounds and self.high < max(upper_bounds):
+            raise ValueError('最高价不能低于开盘价、收盘价或最低价')
 
-        data = info.data or {}
-        open_price = data.get('open')
-        close_price = data.get('close')
-        low_price = data.get('low')
+        lower_bounds = [value for value in (self.open, self.close, self.high) if value is not None]
+        if self.low is not None and lower_bounds and self.low > min(lower_bounds):
+            raise ValueError('最低价不能高于开盘价、收盘价或最高价')
 
-        prices = [p for p in [open_price, close_price, low_price] if p is not None]
-        if prices and v < max(prices):
-            # 警告但不抛出异常（数据可能有误差）
-            pass
-
-        return v
-
-    @field_validator('low')
-    @classmethod
-    def low_must_be_lowest(cls, v, info: ValidationInfo):
-        """最低价必须是最低的"""
-        if v is None:
-            return v
-
-        data = info.data or {}
-        open_price = data.get('open')
-        close_price = data.get('close')
-        high_price = data.get('high')
-
-        prices = [p for p in [open_price, close_price, high_price] if p is not None]
-        if prices and v > min(prices):
-            # 警告但不抛出异常（数据可能有误差）
-            pass
-
-        return v
+        return self
 
 
 def validate_quote(data: dict) -> StockQuote:

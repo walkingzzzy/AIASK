@@ -1,11 +1,12 @@
 """研究管理器 - 研报、评级"""
 
-from typing import Optional
+from typing import Any, Optional
 import time
 
 from ...storage import get_db
 from ...utils import normalize_code
 from ..manager_protocol import (
+    normalize_manager_payload,
     fail_with_meta,
     normalize_manager_code,
     normalize_manager_kwargs,
@@ -25,7 +26,7 @@ def register_research_manager(mcp):
     """注册研究管理器工具"""
     
     @mcp.tool()
-    async def research_manager(action: str, code: Optional[str] = None, **kwargs):
+    async def research_manager(action: str, params: dict | None = None, kwargs: Any = None, code: str | None = None):
         """研究管理器（统一 action + kwargs 协议）
 
         Args:

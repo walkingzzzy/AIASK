@@ -1,11 +1,13 @@
 """交易数据管理器 - 龙虎榜、大单追踪"""
 
+from typing import Any
 from datetime import datetime
 import logging
 import time
 from ...storage import get_db
 from ...utils import normalize_code
 from ..manager_protocol import (
+    normalize_manager_payload,
     fail_with_meta,
     normalize_manager_code,
     normalize_manager_kwargs,
@@ -30,7 +32,7 @@ def register_trading_data_manager(mcp):
     """注册交易数据管理器工具"""
     
     @mcp.tool()
-    async def trading_data_manager(action: str, **kwargs):
+    async def trading_data_manager(action: str, params: dict | None = None, kwargs: Any = None):
         """交易数据管理器（统一 action + kwargs 协议）
 
         Args:

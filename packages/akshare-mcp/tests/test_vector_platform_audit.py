@@ -19,6 +19,62 @@ class _VectorAuditDb:
         }
 
 
+class _UnifiedHealthDb:
+    def supports_pgvector(self):
+        return True
+
+    def get_vector_backend(self):
+        return "pgvector"
+
+    async def list_vector_collections(self, **_kwargs):
+        return [
+            {
+                "collection_name": "strategy_behavior__behavior__model_a__cosine__unit",
+                "entity_family": "strategy_behavior",
+                "active_version": "v_health",
+                "model_id": "model_a",
+                "metric": "cosine",
+            }
+        ]
+
+    async def list_vector_profiles(self, **_kwargs):
+        return [
+            {"version": "v_health"},
+            {"version": "v_health"},
+        ]
+
+    async def list_vector_index_snapshots(self, **_kwargs):
+        return [
+            {
+                "index_version": "v_health",
+                "status": "active",
+                "profile_count": 2,
+                "bucket_count": 1,
+                "vector_dim": 3,
+                "model_id": "model_a",
+                "built_at": "2026-03-08T00:00:00+00:00",
+                "activated_at": "2026-03-08T00:00:00+00:00",
+                "backend": "pgvector",
+            }
+        ]
+
+    async def list_vector_index_items(self, **_kwargs):
+        return [
+            {"entity_id": "sid_1"},
+            {"entity_id": "sid_2"},
+        ]
+
+    async def list_vector_hnsw_indexes(self, **_kwargs):
+        return [
+            {
+                "schemaname": "public",
+                "tablename": "vector_profile_store",
+                "indexname": "idx_vps_pg_hnsw_demo",
+                "indexdef": "CREATE INDEX idx_vps_pg_hnsw_demo ON vector_profile_store USING hnsw (embedding) WHERE collection_name = 'strategy_behavior__behavior__model_a__cosine__unit'",
+            }
+        ]
+
+
 @pytest.mark.asyncio
 async def test_search_similar_marks_backend_mismatch_as_fallback(monkeypatch):
     platform = StrategyVectorPlatform()
@@ -90,6 +146,22 @@ async def test_health_check_marks_backend_mismatch_as_fallback(monkeypatch):
     assert result["production_backend_standard"] == "pgvector_with_observable_fallback"
     assert result["fallback_allowed"] is True
     assert result["latency_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_unified_health_check_reports_hnsw_indexes():
+    platform = StrategyVectorPlatform()
+    db = _UnifiedHealthDb()
+
+    result = await platform.health_check(
+        db,
+        index_name="strategy_behavior",
+        include_hnsw_indexes=True,
+    )
+
+    assert result["health_mode"] == "unified"
+    assert result["hnsw_index_count"] == 1
+    assert result["hnsw_indexes"][0]["indexname"] == "idx_vps_pg_hnsw_demo"
 
 
 @pytest.mark.asyncio
