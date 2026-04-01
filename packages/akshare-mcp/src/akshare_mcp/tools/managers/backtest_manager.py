@@ -11,7 +11,13 @@ from ...data_source import data_source
 from ...services.cost_model import build_cost_model
 from ...services.artifact_registry import register_artifact
 from ...services.signal_dsl import build_signal_definition
-from ..manager_protocol import fail_with_meta, normalize_manager_code, normalize_manager_kwargs, ok_with_meta
+from ..manager_protocol import (
+    fail_with_meta,
+    normalize_manager_code,
+    normalize_manager_kwargs,
+    normalize_manager_payload,
+    ok_with_meta,
+)
 import logging
 
 logger = logging.getLogger(__name__)

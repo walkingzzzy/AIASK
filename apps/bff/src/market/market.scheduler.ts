@@ -12,8 +12,10 @@ import { WsGateway } from '../ws/ws.gateway';
 @Injectable()
 export class MarketScheduler implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(MarketScheduler.name);
+    private static readonly QUOTE_BATCH_SIZE = 50;
     private quoteTimer: NodeJS.Timeout | null = null;
     private indexTimer: NodeJS.Timeout | null = null;
+    private nextQuoteCursor = 0;
 
     /** 常用指数代码 */
     private readonly INDEX_CODES = ['000001', '399001', '399006'];
@@ -65,6 +67,11 @@ export class MarketScheduler implements OnModuleInit, OnModuleDestroy {
             .map((c) => String(c).trim())
             .filter(Boolean)
             .forEach((c) => this.subscribedCodes.delete(c));
+        if (this.subscribedCodes.size === 0) {
+            this.nextQuoteCursor = 0;
+        } else {
+            this.nextQuoteCursor %= this.subscribedCodes.size;
+        }
     }
 
     private async pushBatchQuotes() {
@@ -72,7 +79,8 @@ export class MarketScheduler implements OnModuleInit, OnModuleDestroy {
         if (codes.length === 0) return;
 
         try {
-            const data = await this.marketService.getBatchQuotes(codes.slice(0, 50));
+            const batchCodes = this.selectBatchCodes(codes);
+            const data = await this.marketService.getBatchQuotes(batchCodes);
             const items = this.extractQuoteItems(data);
             if (items.length > 0) {
                 for (const item of items) {
@@ -106,5 +114,21 @@ export class MarketScheduler implements OnModuleInit, OnModuleDestroy {
         const arr = d.quotes ?? d.items ?? d.data;
         if (Array.isArray(arr)) return arr as Array<Record<string, unknown>>;
         return [];
+    }
+
+    private selectBatchCodes(codes: string[]): string[] {
+        if (codes.length <= MarketScheduler.QUOTE_BATCH_SIZE) {
+            this.nextQuoteCursor = 0;
+            return codes;
+        }
+
+        const batchSize = Math.min(MarketScheduler.QUOTE_BATCH_SIZE, codes.length);
+        const start = this.nextQuoteCursor % codes.length;
+        const window: string[] = [];
+        for (let offset = 0; offset < batchSize; offset += 1) {
+            window.push(codes[(start + offset) % codes.length]);
+        }
+        this.nextQuoteCursor = (start + batchSize) % codes.length;
+        return window;
     }
 }

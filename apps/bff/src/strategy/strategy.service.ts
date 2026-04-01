@@ -366,6 +366,56 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return data;
   }
 
+  private async callQuantManager(action: string, params: Record<string, unknown> = {}) {
+    return this.mcp.callTool('quant_manager', {
+      action,
+      params,
+    });
+  }
+
+  private flattenMcpResult(payload: unknown): Record<string, unknown> {
+    if (!payload || typeof payload !== 'object') return { raw: payload };
+    const obj = payload as Record<string, unknown>;
+    if (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.data)) {
+      const { data: inner, ...rest } = obj;
+      return { ...rest, ...(inner as Record<string, unknown>) };
+    }
+    return obj;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private asRecordArray(value: unknown): Record<string, unknown>[] {
+    if (!Array.isArray(value)) return [];
+    return value.filter(
+      (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item),
+    );
+  }
+
+  private toNum(value: unknown): number | null {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  }
+
+  private unwrapSettledObject(
+    result: PromiseSettledResult<unknown>,
+    section: string,
+  ): { data: Record<string, unknown>; error: string | null } {
+    if (result.status === 'fulfilled') {
+      return { data: this.asRecord(result.value), error: null };
+    }
+    const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    return {
+      data: {},
+      error: `${section}: ${message}`,
+    };
+  }
+
   async list(params: { status?: string; strategy_type?: string; limit?: number; offset?: number }) {
     return this.call('list', params);
   }
@@ -508,6 +558,98 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
 
   async factoryRunDetail(runId: string) {
     return this.fetchFactoryRunDetailWithCache(runId);
+  }
+
+  async factoryObservability() {
+    const sections = await Promise.allSettled([
+      this.factoryStatus(),
+      this.factoryRuns(5),
+      this.callQuantManager('scheduler_status').then((payload) => this.flattenMcpResult(payload)),
+      this.callQuantManager('factor_candidate_registry', { op: 'summary', limit: 200 }).then((payload) =>
+        this.flattenMcpResult(payload),
+      ),
+      this.callQuantManager('factor_candidate_registry', { op: 'active_pool', limit: 20 }).then((payload) =>
+        this.flattenMcpResult(payload),
+      ),
+      this.callQuantManager('model_registry', { op: 'summary', limit: 200 }).then((payload) =>
+        this.flattenMcpResult(payload),
+      ),
+      this.callQuantManager('model_registry', { op: 'retrain_summary', limit: 200 }).then((payload) =>
+        this.flattenMcpResult(payload),
+      ),
+      this.callQuantManager('model_registry', { op: 'retrain_list', limit: 5 }).then((payload) =>
+        this.flattenMcpResult(payload),
+      ),
+    ]);
+
+    const factoryStatus = this.unwrapSettledObject(sections[0], 'factory_status');
+    const factoryRuns = this.unwrapSettledObject(sections[1], 'factory_runs');
+    const scheduler = this.unwrapSettledObject(sections[2], 'scheduler_status');
+    const registrySummaryRoot = this.unwrapSettledObject(sections[3], 'registry_summary');
+    const activePoolRoot = this.unwrapSettledObject(sections[4], 'active_pool');
+    const modelRoot = this.unwrapSettledObject(sections[5], 'model_registry_summary');
+    const retrainSummaryRoot = this.unwrapSettledObject(sections[6], 'retrain_summary');
+    const retrainQueueRoot = this.unwrapSettledObject(sections[7], 'retrain_queue');
+
+    const factorySummary = this.asRecord(factoryStatus.data.last_summary);
+    const latestRun =
+      this.asRecord(factoryRuns.data.latest).run_id != null
+        ? this.asRecord(factoryRuns.data.latest)
+        : (this.asRecordArray(factoryRuns.data.items)[0] ?? {});
+    const registrySummary = this.asRecord(registrySummaryRoot.data.summary);
+    const activePool = this.asRecord(activePoolRoot.data.active_pool);
+    const modelRegistrySummary = this.asRecord(modelRoot.data.summary);
+    const retrainSummary = this.asRecord(retrainSummaryRoot.data.summary);
+    const retrainQueue = this.asRecordArray(retrainQueueRoot.data.items);
+    const schedulerLastResult = this.asRecord(scheduler.data.last_result);
+    const recentValidation = this.asRecord(schedulerLastResult.llm_validation);
+
+    return {
+      overview: {
+        factory_running: Boolean(factoryStatus.data.running),
+        latest_factory_run_id: latestRun.run_id ?? factorySummary.run_id ?? null,
+        latest_factory_status: latestRun.status ?? factorySummary.status ?? null,
+        scheduler_quality_status: scheduler.data.quality_status ?? null,
+        scheduler_stale: Boolean(scheduler.data.stale),
+        active_factor_count: this.toNum(activePool.count) ?? this.toNum(registrySummary.active_count) ?? 0,
+        blocked_factor_count: this.toNum(registrySummary.blocked_count) ?? 0,
+        governed_factor_count: this.toNum(registrySummary.governed_active_count) ?? 0,
+        champion_count: this.toNum(modelRegistrySummary.champion_count) ?? 0,
+        challenger_count: this.toNum(modelRegistrySummary.challenger_count) ?? 0,
+        candidates_spawned: this.toNum(factorySummary.candidates_spawned) ?? 0,
+        passed_quality_gate: this.toNum(factorySummary.passed_quality_gate) ?? 0,
+        recent_generated_candidate_count: this.toNum(recentValidation.generated_candidate_count) ?? 0,
+        recent_validated_candidate_count: this.toNum(recentValidation.validated_candidate_count) ?? 0,
+        recent_governed_active_count_after_run: this.toNum(recentValidation.governed_active_count_after_run) ?? 0,
+        retrain_plan_count: this.toNum(retrainSummary.count) ?? 0,
+        retrain_pending_count: this.toNum(this.asRecord(retrainSummary.status_counts).planned) ?? 0,
+      },
+      factory: {
+        status: factoryStatus.data,
+        latest_run: latestRun,
+        runs: this.asRecordArray(factoryRuns.data.items).slice(0, 5),
+      },
+      factor_governance: {
+        scheduler: scheduler.data,
+        registry_summary: registrySummary,
+        active_pool: activePool,
+        model_registry_summary: modelRegistrySummary,
+        retrain_summary: retrainSummary,
+        retrain_queue: retrainQueue,
+        recent_run: recentValidation,
+      },
+      degraded: sections.some((section) => section.status === 'rejected'),
+      errors: [
+        factoryStatus.error,
+        factoryRuns.error,
+        scheduler.error,
+        registrySummaryRoot.error,
+        activePoolRoot.error,
+        modelRoot.error,
+        retrainSummaryRoot.error,
+        retrainQueueRoot.error,
+      ].filter(Boolean),
+    };
   }
 
   async getSignals(id: string, userId: string, params: { limit?: number } = {}) {

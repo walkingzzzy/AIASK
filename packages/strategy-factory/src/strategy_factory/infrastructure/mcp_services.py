@@ -63,8 +63,17 @@ def get_runtime_warmup_runner():
     return import_module("akshare_mcp.tools.managers.data_sync_manager").run_runtime_data_warmup
 
 
+def get_event_context_builder():
+    return import_module("akshare_mcp.services.decision_event_builder").build_event_context
+
+
 def get_sentiment_analyzer():
     return import_module("akshare_mcp.services.sentiment").sentiment_analyzer
+
+
+def get_financial_semantic_service_factory():
+    module = import_module("akshare_mcp.services.financial_semantic_service")
+    return module.get_financial_semantic_service
 
 
 def get_db_provider():
@@ -121,7 +130,9 @@ __all__ = [
     "get_autonomy_lifecycle_runtime",
     "get_backtest_engine_class",
     "get_db_provider",
+    "get_event_context_builder",
     "get_factor_scheduler_singleton",
+    "get_financial_semantic_service_factory",
     "get_quant_manager_callable",
     "get_runtime_warmup_runner",
     "get_index_kline_provider",

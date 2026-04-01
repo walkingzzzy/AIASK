@@ -26,7 +26,7 @@ def register_vector_search_manager(mcp):
         return result if isinstance(result, dict) else {"success": False, "error": f"Unexpected result type from {tool_name}"}
     
     @mcp.tool()
-    async def vector_search_manager(action: str, params: dict | None = None, kwargs: Any = None, code: str | None = None):
+    async def vector_search_manager(action: str, params: dict | None = None, kwargs: Any = None, code: str | None = None, query: str | None = None, top_n: int | None = None, days: int | None = None, similarity_type: str | None = None, doc_types: list[str] | None = None, limit: int | None = None, search_backend: str | None = None):
         """向量搜索管理器（统一 action + kwargs 协议）
 
         Args:
@@ -52,6 +52,20 @@ def register_vector_search_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
+            kwargs = normalize_manager_payload(
+                params=params,
+                kwargs=kwargs,
+                extra={
+                    "code": code,
+                    "query": query,
+                    "top_n": top_n,
+                    "days": days,
+                    "similarity_type": similarity_type,
+                    "doc_types": doc_types,
+                    "limit": limit,
+                    "search_backend": search_backend,
+                },
+            )
             kwargs = normalize_manager_kwargs(kwargs)
             code, kwargs = normalize_manager_code(code, kwargs)
 

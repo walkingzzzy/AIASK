@@ -1,34 +1,23 @@
-"""告警管理器 - 创建、查询、更新、删除告警（增强版）
+"""Alert manager with DB-first lifecycle handling.
 
-T09: DB-first 模式 — 所有 CRUD 操作以 DB 为 source of truth，
-_alerts_store 仅作为进程内读缓存，每次操作前先从 DB 同步。
+CRUD and check operations treat the database as the primary source of truth.
+The shared ``_alerts_store`` is kept only as a best-effort process-local cache
+for degraded-mode fallback and for sharing evaluated alert state with
+``tools.alerts``.
 """
 
-from typing import Any
-import json
-from ...utils import ok, fail, normalize_code
-from ..manager_protocol import normalize_manager_payload
+from __future__ import annotations
+
 import logging
+from typing import Any
+
+from ...utils import fail, normalize_code, ok
+from ..manager_protocol import normalize_manager_payload
 
 logger = logging.getLogger(__name__)
 
-
-def _normalize_kwargs(kwargs: dict) -> dict:
-    """统一解析 kwargs 参数（兼容 JSON 字符串和 dict）"""
-    params = kwargs.get("params")
-    if isinstance(params, dict):
-        kwargs = {**kwargs, **params}
-    raw = kwargs.get("kwargs")
-    if isinstance(raw, dict):
-        kwargs = {**kwargs, **raw}
-    elif isinstance(raw, str):
-        try:
-            extra = json.loads(raw or "{}")
-            if isinstance(extra, dict):
-                kwargs = {**kwargs, **extra}
-        except Exception:
-            pass
-    return kwargs
+_VALID_INDICATORS = ("price", "change_pct", "volume", "ma5", "ma20", "rsi", "macd")
+_VALID_CONDITIONS = (">", "<", ">=", "<=", "==")
 
 
 def _safe_user_id(value: object) -> str:
@@ -48,279 +37,468 @@ def _belongs_to_user(alert: dict, user_id: str) -> bool:
     return _safe_user_id(alert.get("user_id")) == _safe_user_id(user_id)
 
 
-def _list_user_alerts(alerts_store: dict, user_id: str) -> list[dict]:
-    return [alert for alert in alerts_store.values() if _belongs_to_user(alert, user_id)]
+def _status_from_active(active: object) -> str:
+    return "active" if bool(active) else "inactive"
+
+
+def _active_from_status(status: object) -> bool:
+    return str(status or "active").strip().lower() != "inactive"
+
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+
+def _list_cached_user_alerts(alerts_store: dict, user_id: str) -> list[dict]:
+    return [dict(alert) for alert in alerts_store.values() if _belongs_to_user(alert, user_id)]
+
+
+def _replace_cached_user_alerts(alerts_store: dict, user_id: str, alerts: list[dict]) -> None:
+    stale_ids = [aid for aid, alert in alerts_store.items() if _belongs_to_user(alert, user_id)]
+    for aid in stale_ids:
+        alerts_store.pop(aid, None)
+    for alert in alerts:
+        aid = str(alert.get("alert_id") or "").strip()
+        if aid:
+            alerts_store[aid] = dict(alert)
+
+
+def _store_cached_alert(alerts_store: dict, alert: dict, previous_alert_id: str | None = None) -> None:
+    current_id = str(alert.get("alert_id") or "").strip()
+    if previous_alert_id and previous_alert_id != current_id:
+        alerts_store.pop(previous_alert_id, None)
+    if current_id:
+        alerts_store[current_id] = dict(alert)
+
+
+def _alert_from_row(row: Any) -> dict:
+    user_id = _safe_user_id(_row_value(row, "user_id", "default"))
+    code = normalize_code(str(_row_value(row, "code", "") or ""))
+    indicator = str(_row_value(row, "indicator", "price") or "price").strip() or "price"
+    condition = str(_row_value(row, "condition", ">") or ">").strip() or ">"
+    value = float(_row_value(row, "value", 0) or 0)
+    active = _active_from_status(_row_value(row, "status", "active"))
+    return {
+        "alert_id": _make_alert_id(user_id, code, indicator, condition),
+        "db_id": _row_value(row, "id"),
+        "user_id": user_id,
+        "code": code,
+        "indicator": indicator,
+        "condition": condition,
+        "value": value,
+        "active": active,
+        "type": "indicator",
+        "triggered": False,
+    }
+
+
+async def _fetch_user_alerts_from_db(user_id: str, *, status: str | None = None) -> list[dict] | None:
+    try:
+        from ...storage import get_db
+
+        db = get_db()
+        async with db.acquire() as conn:
+            if status in {"active", "inactive"}:
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM alerts
+                    WHERE user_id = $1 AND status = $2
+                    ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+                    """,
+                    user_id,
+                    status,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM alerts
+                    WHERE user_id = $1
+                    ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST, id DESC
+                    """,
+                    user_id,
+                )
+    except Exception as exc:
+        logger.warning("[AlertsManager] DB load failed for user=%s status=%s: %s", user_id, status, exc)
+        return None
+
+    return [_alert_from_row(row) for row in rows]
+
+
+async def _load_user_alerts(user_id: str, *, status: str | None = None) -> list[dict]:
+    from ..alerts import _alerts_store
+
+    alerts = await _fetch_user_alerts_from_db(user_id, status=status)
+    if alerts is not None:
+        _replace_cached_user_alerts(_alerts_store, user_id, alerts)
+        return alerts
+
+    cached = _list_cached_user_alerts(_alerts_store, user_id)
+    if status == "active":
+        return [alert for alert in cached if alert.get("active", True)]
+    if status == "inactive":
+        return [alert for alert in cached if not alert.get("active", True)]
+    return cached
+
+
+async def _load_alert_by_id(user_id: str, alert_id: str) -> dict | None:
+    resolved_alert_id = str(alert_id or "").strip()
+    if not resolved_alert_id:
+        return None
+    alerts = await _load_user_alerts(user_id)
+    for alert in alerts:
+        if str(alert.get("alert_id") or "").strip() == resolved_alert_id:
+            return alert
+    return None
+
+
+async def _persist_new_alert(user_id: str, code: str, indicator: str, condition: str, value: float) -> dict | None:
+    try:
+        from ...storage import get_db
+
+        db = get_db()
+        async with db.acquire() as conn:
+            fetchrow = getattr(conn, "fetchrow", None)
+            if callable(fetchrow):
+                row = await fetchrow(
+                    """
+                    INSERT INTO alerts (user_id, code, indicator, condition, value, status)
+                    VALUES ($1, $2, $3, $4, $5, 'active')
+                    RETURNING id, user_id, code, indicator, condition, value, status
+                    """,
+                    user_id,
+                    code,
+                    indicator,
+                    condition,
+                    value,
+                )
+                if row is not None:
+                    return _alert_from_row(row)
+
+            await conn.execute(
+                """
+                INSERT INTO alerts (user_id, code, indicator, condition, value, status)
+                VALUES ($1, $2, $3, $4, $5, 'active')
+                """,
+                user_id,
+                code,
+                indicator,
+                condition,
+                value,
+            )
+    except Exception as exc:
+        logger.warning("[AlertsManager] DB persist failed for %s/%s/%s: %s", code, indicator, condition, exc)
+        return None
+
+    return None
+
+
+async def _persist_updated_alert(previous_alert: dict, updated_alert: dict) -> None:
+    try:
+        from ...storage import get_db
+
+        db = get_db()
+        async with db.acquire() as conn:
+            db_id = updated_alert.get("db_id") or previous_alert.get("db_id")
+            if db_id is not None:
+                await conn.execute(
+                    """
+                    UPDATE alerts
+                    SET code = $1,
+                        indicator = $2,
+                        condition = $3,
+                        value = $4,
+                        status = $5,
+                        updated_at = NOW()
+                    WHERE id = $6
+                    """,
+                    updated_alert.get("code", ""),
+                    updated_alert.get("indicator", ""),
+                    updated_alert.get("condition", ""),
+                    float(updated_alert.get("value", 0) or 0),
+                    _status_from_active(updated_alert.get("active", True)),
+                    db_id,
+                )
+                return
+
+            await conn.execute(
+                """
+                UPDATE alerts
+                SET code = $1,
+                    indicator = $2,
+                    condition = $3,
+                    value = $4,
+                    status = $5,
+                    updated_at = NOW()
+                WHERE user_id = $6 AND code = $7 AND indicator = $8 AND condition = $9
+                """,
+                updated_alert.get("code", ""),
+                updated_alert.get("indicator", ""),
+                updated_alert.get("condition", ""),
+                float(updated_alert.get("value", 0) or 0),
+                _status_from_active(updated_alert.get("active", True)),
+                _safe_user_id(previous_alert.get("user_id")),
+                previous_alert.get("code", ""),
+                previous_alert.get("indicator", ""),
+                previous_alert.get("condition", ""),
+            )
+    except Exception as exc:
+        logger.warning(
+            "[AlertsManager] DB update failed for alert_id=%s: %s",
+            previous_alert.get("alert_id"),
+            exc,
+        )
+
+
+async def _delete_alert_from_db(alert: dict) -> None:
+    try:
+        from ...storage import get_db
+
+        db = get_db()
+        async with db.acquire() as conn:
+            db_id = alert.get("db_id")
+            if db_id is not None:
+                await conn.execute("DELETE FROM alerts WHERE id = $1", db_id)
+                return
+
+            await conn.execute(
+                """
+                DELETE FROM alerts
+                WHERE user_id = $1 AND code = $2 AND indicator = $3 AND condition = $4
+                """,
+                _safe_user_id(alert.get("user_id", "default")),
+                alert.get("code", ""),
+                alert.get("indicator", ""),
+                alert.get("condition", ""),
+            )
+    except Exception as exc:
+        logger.warning("[AlertsManager] DB delete failed for alert_id=%s: %s", alert.get("alert_id"), exc)
 
 
 def register_alerts_manager(mcp):
-    """注册告警管理器工具"""
+    """Register the unified alerts manager tool."""
 
     @mcp.tool()
-    async def alerts_manager(action: str, params: dict | None = None, kwargs: Any = None):
-        """告警管理器（统一 action + kwargs 协议）
-
-        Args:
-            action (str, required): 操作类型，可选 help/list/create/check/update/delete
-            kwargs: 支持 structured ``params``、JSON 字符串 ``kwargs`` 或关键字参数，不同 action 所需参数:
-                - help: 无需额外参数
-                - list: status(str, optional, "active"/"inactive"/"all")
-                - create: code(str), indicator(str, "price"/"rsi"/"macd"等), condition(str, ">"/"<"/">="/"<="/"=="), value(float)
-                - check: 无需额外参数（检查所有活跃告警）
-                - update: alert_id(str), 以及需要更新的字段
-                - delete: alert_id(str)
-
-        Returns:
-            dict: {"success": bool, "data": {...}, "error": str|None}
-
-        Examples:
-            # 查看帮助
-            alerts_manager(action="help", kwargs="{}")
-            # 创建价格告警
-            alerts_manager(action="create", kwargs='{"code":"600519","indicator":"price","condition":">","value":1800}')
-            # 检查所有活跃告警
-            alerts_manager(action="check", kwargs="{}")
-            # 列出告警
-            alerts_manager(action="list", kwargs='{"status":"active"}')
-            # 删除告警
-            alerts_manager(action="delete", kwargs='{"alert_id":"alert_600519_price_>"}')
-        """
+    async def alerts_manager(
+        action: str,
+        params: dict | None = None,
+        kwargs: Any = None,
+        user_id: str | None = None,
+        status: str | None = None,
+        code: str | None = None,
+        indicator: str | None = None,
+        condition: str | None = None,
+        value: float | None = None,
+        alert_id: str | None = None,
+    ):
+        """Alert lifecycle manager using the unified action + kwargs protocol."""
         try:
-            # 解析 MCP 传入的 kwargs JSON 字符串
-            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
+            kwargs = normalize_manager_payload(
+                params=params,
+                kwargs=kwargs,
+                extra={
+                    "user_id": user_id,
+                    "status": status,
+                    "code": code,
+                    "indicator": indicator,
+                    "condition": condition,
+                    "value": value,
+                    "alert_id": alert_id,
+                },
+            )
 
-            # 统一使用 alerts.py 的进程内存存储与评估逻辑
             from ..alerts import _alerts_store, _evaluate_combo, _evaluate_indicator
+
             user_id = _safe_user_id(kwargs.get("user_id"))
 
-            if action == 'help':
-                return ok({
-                    'supported_actions': {
-                        'list': '列出告警',
-                        'create': '创建告警（需要 code, indicator, condition, value）',
-                        'check': '检查告警状态',
-                        'update': '更新告警（需要 alert_id）',
-                        'delete': '删除告警（需要 alert_id）',
-                        'help': '显示帮助信息',
+            if action == "help":
+                return ok(
+                    {
+                        "supported_actions": {
+                            "list": "列出告警",
+                            "create": "创建告警（需要 code, indicator, condition, value）",
+                            "check": "检查告警状态",
+                            "update": "更新告警（需要 alert_id）",
+                            "delete": "删除告警（需要 alert_id）",
+                            "help": "显示帮助信息",
+                        }
                     }
-                })
+                )
 
-            elif action == 'list':
-                status = kwargs.get('status', 'active')
+            if action == "list":
+                resolved_status = str(kwargs.get("status", "active") or "active").strip().lower()
+                alerts = await _load_user_alerts(user_id)
+                if resolved_status == "active":
+                    alerts = [alert for alert in alerts if alert.get("active", True)]
+                elif resolved_status == "inactive":
+                    alerts = [alert for alert in alerts if not alert.get("active", True)]
+                return ok({"alerts": alerts, "count": len(alerts)})
 
-                # T09: DB-first – sync alerts from DB before listing
-                try:
-                    import json as _json
-                    from ...storage import get_db
-                    db = get_db()
-                    async with db.acquire() as conn:
-                        rows = await conn.fetch("SELECT * FROM alerts WHERE status='active'")
-                        for r in rows:
-                            aid = _make_alert_id(
-                                _safe_user_id(r.get('user_id', 'default')),
-                                r.get('code', ''),
-                                r.get('indicator', ''),
-                                r.get('condition', ''),
-                            )
-                            _alerts_store[aid] = {
-                                'alert_id': aid,
-                                'user_id': _safe_user_id(r.get('user_id', 'default')),
-                                'code': r.get('code', ''),
-                                'indicator': r.get('indicator', 'price'),
-                                'condition': r.get('condition', '>'),
-                                'value': float(r.get('value', 0)),
-                                'active': True,
-                                'type': 'indicator',
-                                'triggered': False,
-                            }
-                except Exception as e:
-                    logger.warning("[AlertsManager] DB sync failed: %s", e)
-
-                alerts = _list_user_alerts(_alerts_store, user_id)
-
-                if status == 'active':
-                    alerts = [a for a in alerts if a.get('active', True)]
-                elif status == 'inactive':
-                    alerts = [a for a in alerts if not a.get('active', True)]
-                # status == 'all' → no filter
-
-                return ok({'alerts': alerts, 'count': len(alerts)})
-
-            elif action == 'create':
-                code = kwargs.get('code')
-                indicator = kwargs.get('indicator')
-                condition = kwargs.get('condition')
-                value = kwargs.get('value')
-
+            if action == "create":
+                code = kwargs.get("code")
+                indicator = kwargs.get("indicator")
+                condition = kwargs.get("condition")
+                value = kwargs.get("value")
                 if not all([code, indicator, condition, value is not None]):
-                    return fail('需要提供 code, indicator, condition, value')
+                    return fail("需要提供 code, indicator, condition, value")
 
                 code = normalize_code(code)
+                indicator = str(indicator).strip()
+                condition = str(condition).strip()
+                if indicator not in _VALID_INDICATORS:
+                    return fail(f"不支持的指标: {indicator}. 支持: {', '.join(_VALID_INDICATORS)}")
+                if condition not in _VALID_CONDITIONS:
+                    return fail(f"不支持的条件: {condition}. 支持: {', '.join(_VALID_CONDITIONS)}")
 
-                valid_indicators = ['price', 'change_pct', 'volume', 'ma5', 'ma20', 'rsi', 'macd']
-                valid_conditions = ['>', '<', '>=', '<=', '==']
-
-                if indicator not in valid_indicators:
-                    return fail(f'不支持的指标: {indicator}. 支持: {", ".join(valid_indicators)}')
-
-                if condition not in valid_conditions:
-                    return fail(f'不支持的条件: {condition}. 支持: {", ".join(valid_conditions)}')
-
-                alert_id = _make_alert_id(user_id, code, indicator, condition)
-                alert = {
-                    'alert_id': alert_id,
-                    'user_id': user_id,
-                    'code': code,
-                    'indicator': indicator,
-                    'condition': condition,
-                    'value': float(value),
-                    'active': True,
-                    'type': 'indicator',
-                    'triggered': False,
-                }
-
-                # T09: DB-first — persist to DB, then update cache
                 try:
-                    from ...storage import get_db
-                    db = get_db()
-                    async with db.acquire() as conn:
-                        await conn.execute(
-                            """INSERT INTO alerts (user_id, code, indicator, condition, value, status)
-                               VALUES ($1, $2, $3, $4, $5, 'active')
-                               ON CONFLICT DO NOTHING""",
-                            user_id, code, indicator, condition, float(value)
-                        )
-                except Exception as e:
-                    logger.warning("[AlertsManager] DB persist failed: %s", e)
+                    threshold = float(value)
+                except Exception:
+                    return fail("value 必须是数字")
 
-                _alerts_store[alert_id] = alert
-                logger.info(f"[AlertsManager] 创建告警: {alert_id}")
+                persisted = await _persist_new_alert(user_id, code, indicator, condition, threshold)
+                alert = persisted or {
+                    "alert_id": _make_alert_id(user_id, code, indicator, condition),
+                    "user_id": user_id,
+                    "code": code,
+                    "indicator": indicator,
+                    "condition": condition,
+                    "value": threshold,
+                    "active": True,
+                    "type": "indicator",
+                    "triggered": False,
+                }
+                _store_cached_alert(_alerts_store, alert)
+                logger.info("[AlertsManager] created alert_id=%s", alert["alert_id"])
+                return ok(
+                    {
+                        "alert_id": alert["alert_id"],
+                        "code": alert["code"],
+                        "indicator": alert["indicator"],
+                        "condition": alert["condition"],
+                        "value": alert["value"],
+                        "status": "created",
+                    }
+                )
 
-                return ok({
-                    'alert_id': alert_id,
-                    'code': code,
-                    'indicator': indicator,
-                    'condition': condition,
-                    'value': float(value),
-                    'status': 'created'
-                })
-
-            elif action == 'check':
-                alerts = [a for a in _list_user_alerts(_alerts_store, user_id) if a.get('active', True)]
+            if action == "check":
+                alerts = [alert for alert in await _load_user_alerts(user_id, status="active") if alert.get("active", True)]
                 triggered = []
-                quote_cache = {}
+                quote_cache: dict[str, Any] = {}
 
                 for alert in alerts:
                     try:
-                        if alert.get('type') == 'combo':
+                        if alert.get("type") == "combo":
                             evaluated = await _evaluate_combo(alert, quote_cache)
                         else:
                             evaluated = await _evaluate_indicator(alert, quote_cache)
                     except Exception as exc:
-                        logger.debug(f"[AlertsManager] 检查告警失败: {exc}")
+                        logger.debug("[AlertsManager] check failed for alert_id=%s: %s", alert.get("alert_id"), exc)
                         continue
 
-                    alert_id = str(alert.get('alert_id') or '')
-                    if alert_id:
-                        _alerts_store[alert_id] = {**alert, **evaluated, 'user_id': user_id}
+                    evaluated["user_id"] = _safe_user_id(evaluated.get("user_id") or user_id)
+                    _store_cached_alert(_alerts_store, evaluated)
 
-                    if evaluated.get('triggered') is True:
-                        code = str(evaluated.get('code') or '')
-                        indicator = str(evaluated.get('indicator') or '')
-                        condition = str(evaluated.get('condition') or '')
-                        target_value = evaluated.get('value')
-                        current_value = evaluated.get('current_value')
-                        triggered.append({
-                            'alert_id': evaluated.get('alert_id'),
-                            'code': code,
-                            'indicator': indicator,
-                            'condition': condition,
-                            'target_value': target_value,
-                            'current_value': current_value,
-                            'message': f'{code} {indicator} {condition} {target_value} (当前: {current_value})'
-                        })
+                    if evaluated.get("triggered") is True:
+                        code = str(evaluated.get("code") or "")
+                        indicator = str(evaluated.get("indicator") or "")
+                        condition = str(evaluated.get("condition") or "")
+                        target_value = evaluated.get("value")
+                        current_value = evaluated.get("current_value")
+                        triggered.append(
+                            {
+                                "alert_id": evaluated.get("alert_id"),
+                                "code": code,
+                                "indicator": indicator,
+                                "condition": condition,
+                                "target_value": target_value,
+                                "current_value": current_value,
+                                "message": f"{code} {indicator} {condition} {target_value} (当前: {current_value})",
+                            }
+                        )
 
-                return ok({
-                    'triggered': triggered,
-                    'count': len(triggered)
-                })
+                return ok({"triggered": triggered, "count": len(triggered)})
 
-            elif action == 'update':
-                alert_id = kwargs.get('alert_id')
-                if not alert_id:
-                    return fail('需要提供 alert_id')
-                alert = _alerts_store.get(alert_id)
-                if not alert or not _belongs_to_user(alert, user_id):
-                    return fail(f'告警不存在: {alert_id}')
-                if 'code' in kwargs and kwargs.get('code'):
-                    alert['code'] = normalize_code(kwargs.get('code'))
-                if 'indicator' in kwargs and kwargs.get('indicator'):
-                    alert['indicator'] = kwargs.get('indicator')
-                if 'condition' in kwargs and kwargs.get('condition'):
-                    alert['condition'] = kwargs.get('condition')
-                if 'value' in kwargs and kwargs.get('value') is not None:
+            if action == "update":
+                resolved_alert_id = str(kwargs.get("alert_id") or "").strip()
+                if not resolved_alert_id:
+                    return fail("需要提供 alert_id")
+
+                alert = await _load_alert_by_id(user_id, resolved_alert_id)
+                if not alert:
+                    return fail(f"告警不存在: {resolved_alert_id}")
+
+                updated_alert = dict(alert)
+
+                if kwargs.get("code"):
+                    updated_alert["code"] = normalize_code(kwargs.get("code"))
+
+                if kwargs.get("indicator"):
+                    candidate_indicator = str(kwargs.get("indicator")).strip()
+                    if candidate_indicator not in _VALID_INDICATORS:
+                        return fail(f"不支持的指标: {candidate_indicator}. 支持: {', '.join(_VALID_INDICATORS)}")
+                    updated_alert["indicator"] = candidate_indicator
+
+                if kwargs.get("condition"):
+                    candidate_condition = str(kwargs.get("condition")).strip()
+                    if candidate_condition not in _VALID_CONDITIONS:
+                        return fail(f"不支持的条件: {candidate_condition}. 支持: {', '.join(_VALID_CONDITIONS)}")
+                    updated_alert["condition"] = candidate_condition
+
+                if "value" in kwargs and kwargs.get("value") is not None:
                     try:
-                        alert['value'] = float(kwargs.get('value'))
+                        updated_alert["value"] = float(kwargs.get("value"))
                     except Exception:
-                        return fail('value 必须是数字')
+                        return fail("value 必须是数字")
 
-                if kwargs.get('status') is not None:
-                    alert['active'] = str(kwargs.get('status')).lower() == 'active'
-                elif kwargs.get('active') is not None:
-                    alert['active'] = bool(kwargs.get('active'))
+                if kwargs.get("status") is not None:
+                    updated_alert["active"] = str(kwargs.get("status")).strip().lower() == "active"
+                elif kwargs.get("active") is not None:
+                    updated_alert["active"] = bool(kwargs.get("active"))
 
-                # T09: DB-first — sync updated state back to DB
-                try:
-                    from ...storage import get_db
-                    db = get_db()
-                    db_status = 'active' if alert.get('active', True) else 'inactive'
-                    async with db.acquire() as conn:
-                        await conn.execute(
-                            """UPDATE alerts SET
-                                   code = $1, indicator = $2, condition = $3,
-                                   value = $4, status = $5
-                               WHERE user_id = $6 AND code = $7 AND indicator = $8 AND condition = $9""",
-                            alert.get('code', ''), alert.get('indicator', ''),
-                            alert.get('condition', ''), float(alert.get('value', 0)),
-                            db_status, user_id,
-                            # Use original fields to locate the row
-                            alert.get('code', ''), alert.get('indicator', ''),
-                            alert.get('condition', ''),
-                        )
-                except Exception as e:
-                    logger.warning("[AlertsManager] DB update failed: %s", e)
+                updated_alert["user_id"] = user_id
+                updated_alert["alert_id"] = _make_alert_id(
+                    user_id,
+                    updated_alert.get("code", ""),
+                    updated_alert.get("indicator", ""),
+                    updated_alert.get("condition", ""),
+                )
+                updated_alert["type"] = "indicator"
+                updated_alert["triggered"] = False
 
-                status = 'active' if alert.get('active', True) else 'inactive'
-                return ok({'alert_id': alert_id, 'status': status, 'alert': alert})
+                await _persist_updated_alert(alert, updated_alert)
+                _store_cached_alert(_alerts_store, updated_alert, previous_alert_id=resolved_alert_id)
 
-            elif action == 'delete':
-                alert_id = kwargs.get('alert_id')
-                if not alert_id:
-                    return fail('需要提供 alert_id')
-                removed = _alerts_store.get(alert_id)
-                if removed is None or not _belongs_to_user(removed, user_id):
-                    return fail(f'告警不存在: {alert_id}')
+                response = {
+                    "alert_id": updated_alert["alert_id"],
+                    "status": _status_from_active(updated_alert.get("active", True)),
+                    "alert": updated_alert,
+                }
+                if updated_alert["alert_id"] != resolved_alert_id:
+                    response["previous_alert_id"] = resolved_alert_id
+                return ok(response)
 
-                # T09: DB-first — delete from DB, then evict cache
-                try:
-                    from ...storage import get_db
-                    db = get_db()
-                    async with db.acquire() as conn:
-                        await conn.execute(
-                            """DELETE FROM alerts
-                               WHERE user_id = $1 AND code = $2 AND indicator = $3 AND condition = $4""",
-                            _safe_user_id(removed.get('user_id', 'default')),
-                            removed.get('code', ''), removed.get('indicator', ''),
-                            removed.get('condition', ''),
-                        )
-                except Exception as e:
-                    logger.warning("[AlertsManager] DB delete failed: %s", e)
+            if action == "delete":
+                resolved_alert_id = str(kwargs.get("alert_id") or "").strip()
+                if not resolved_alert_id:
+                    return fail("需要提供 alert_id")
 
-                _alerts_store.pop(alert_id, None)
-                return ok({'alert_id': alert_id, 'deleted': True})
+                alert = await _load_alert_by_id(user_id, resolved_alert_id)
+                if not alert:
+                    return fail(f"告警不存在: {resolved_alert_id}")
 
-            else:
-                return fail(f'Unknown action: {action}. Supported: help, list, create, check, update, delete')
+                await _delete_alert_from_db(alert)
+                _alerts_store.pop(resolved_alert_id, None)
+                return ok({"alert_id": resolved_alert_id, "deleted": True})
 
-        except Exception as e:
-            logger.error(f"[AlertsManager] Error: {e}")
-            return fail(str(e))
+            return fail(f"Unknown action: {action}. Supported: help, list, create, check, update, delete")
+        except Exception as exc:
+            logger.error("[AlertsManager] Error: %s", exc)
+            return fail(str(exc))

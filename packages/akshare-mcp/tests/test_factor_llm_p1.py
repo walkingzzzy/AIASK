@@ -104,6 +104,9 @@ async def test_validate_factor_candidate_pipeline_produces_metrics():
     assert result["similarity"]["available"] is True
     assert result["cost_capacity"]["available"] is True
     assert result["factor_validation_report"]["rating"]["grade"] in {"A", "B"}
+    assert result["rating"]["governance"]["admission_blocked"] is False
+    assert result["rating"]["governance"]["registry_stage"] == "governed"
+    assert result["rating"]["component_scores"]["governance"] > 0.0
 
 
 @pytest.mark.asyncio
@@ -153,6 +156,10 @@ async def test_quant_manager_validate_factor_candidate_from_artifact(monkeypatch
     assert result["data"]["factor_validation_report"]["multiple_testing"]["available"] is True
     assert result["data"]["factor_validation_report"]["robustness"]["available"] is True
     assert result["data"]["rating"]["grade"] in {"A", "B"}
+    assert result["data"]["governance"]["admission_blocked"] is False
+    assert result["data"]["registry_stage"] == "governed"
+    assert result["data"]["lineage"]["source_generation_artifact_id"] == artifact_id
+    assert result["data"]["lineage"]["source_validation_artifact_id"] == result["data"]["artifact_id"]
 
 
 @pytest.mark.asyncio
@@ -173,3 +180,30 @@ async def test_validate_factor_candidate_pipeline_flags_suspicious_future_litera
     assert result["lookahead_audit"]["risk_level"] == "high"
     assert "negative_delay_or_delta_literal" in result["lookahead_audit"]["candidate_expression"]["suspicious_tokens"]
     assert "lookahead_audit_failed" in result["warnings"]
+    assert result["rating"]["governance"]["admission_blocked"] is True
+    assert "lookahead_risk_high" in result["rating"]["governance"]["admission_block_reasons"]
+
+
+def test_validation_rating_blocks_admission_when_multiple_testing_is_unavailable():
+    from akshare_mcp.services.factor_validation_pipeline import _build_validation_rating
+
+    rating = _build_validation_rating(
+        {"rank_ic_mean": 0.12},
+        {
+            "available": True,
+            "rating": {"total_score": 80.0},
+            "walk_forward": {"stability_ratio": 0.61, "degradation": 0.04},
+            "purged_kfold": {"stability_ratio": 0.58, "degradation": 0.05},
+        },
+        {"available": True, "robustness_score": 0.72},
+        {"available": True, "top_similar_basis": [{"correlation": 0.21}]},
+        {"available": True, "estimated_cost_rate": 0.0015, "execution_score": 0.82},
+        {"available": True, "risk_level": "low"},
+        {"available": False, "reason": "insufficient_panel_shape"},
+    )
+
+    assert rating["grade"] in {"A", "B", "C"}
+    assert rating["governance"]["admission_blocked"] is True
+    assert rating["governance"]["registry_stage"] == "validated"
+    assert "multiple_testing_unavailable" in rating["governance"]["admission_block_reasons"]
+    assert rating["governance"]["governance_recommendation"] == "watch"

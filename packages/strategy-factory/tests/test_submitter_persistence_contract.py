@@ -32,9 +32,24 @@ def test_build_strategy_data_persists_extended_strategy_contract():
             "targeting_policy": {"target_symbol_policy": "strict_intersection"},
             "constraint_check": {"intersection_ratio": 1.0},
             "source_candidate_artifact_id": "candidate_001",
+            "source_generation_artifact_id": "llm_episode_001",
+            "source_validation_artifact_id": "candidate_validation_001",
+            "memory_record_id": "memory_001",
             "candidate_family": "sentiment",
+            "candidate_registry_stage": "governed",
             "validation_score": 83.5,
             "expected_regime": ["trend", "event"],
+            "expected_holding_period": 10,
+            "latest_validation_at": "2026-03-20T08:30:00+08:00",
+            "latest_validation_age_days": 1,
+            "admission_block_reasons": [],
+            "candidate_evidence_status": {
+                "required_audits_complete": True,
+                "lookahead_available": True,
+                "multiple_testing_available": True,
+                "overall_risk_level": "low",
+                "blocked": False,
+            },
         },
         {},
     )
@@ -51,10 +66,22 @@ def test_build_strategy_data_persists_extended_strategy_contract():
     assert params["targeting_policy"]["target_symbol_policy"] == "strict_intersection"
     assert params["task_signature"].startswith("event_driven|evt_1|ai|")
     assert params["candidate_provenance"]["source_candidate_artifact_id"] == "candidate_001"
+    assert params["candidate_provenance"]["source_generation_artifact_id"] == "llm_episode_001"
+    assert params["candidate_provenance"]["source_validation_artifact_id"] == "candidate_validation_001"
+    assert params["candidate_provenance"]["memory_record_id"] == "memory_001"
     assert params["candidate_provenance"]["candidate_family"] == "sentiment"
+    assert params["candidate_provenance"]["candidate_registry_stage"] == "governed"
     assert params["candidate_provenance"]["validation_score"] == 83.5
     assert params["candidate_provenance"]["expected_regime"] == ["trend", "event"]
+    assert params["candidate_provenance"]["expected_holding_period"] == 10
+    assert params["candidate_provenance"]["latest_validation_age_days"] == 1
     assert params["source_candidate_artifact_id"] == "candidate_001"
+    assert params["source_generation_artifact_id"] == "llm_episode_001"
+    assert params["source_validation_artifact_id"] == "candidate_validation_001"
+    assert params["candidate_memory_record_id"] == "memory_001"
     assert params["candidate_family"] == "sentiment"
+    assert params["candidate_registry_stage"] == "governed"
     assert params["candidate_validation_score"] == 83.5
     assert params["expected_regime"] == ["trend", "event"]
+    assert params["expected_holding_period"] == 10
+    assert params["candidate_latest_validation_age_days"] == 1

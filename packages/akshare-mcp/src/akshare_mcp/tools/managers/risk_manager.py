@@ -8,7 +8,7 @@ from typing import Any
 
 from ...storage import get_db
 from ...utils import normalize_code
-from ..manager_protocol import fail_with_meta, ok_with_meta
+from ..manager_protocol import fail_with_meta, normalize_manager_payload, ok_with_meta
 
 from .risk_mgr_helpers import (
     _classify_size_bucket,
@@ -25,96 +25,13 @@ from .risk_mgr_helpers import (
     _safe_portfolio_id,
 )
 
-
-def _extract_holding_code(holding: dict) -> str:
-    return normalize_code(
-        str(
-            holding.get("code")
-            or holding.get("stock_code")
-            or holding.get("symbol")
-            or ""
-        )
-    )
-
-
-def _extract_holding_shares(holding: dict) -> float:
-    raw = holding.get("shares")
-    if raw is None:
-        raw = holding.get("quantity")
-    if raw is None:
-        raw = holding.get("qty")
-    return float(raw or 0)
-
-
-async def _load_portfolio_holdings(conn, portfolio_id: Any) -> list[dict]:
-    rows = await conn.fetch("SELECT * FROM holdings WHERE portfolio_id = $1", portfolio_id)
-    holdings = []
-    for row in rows:
-        item = dict(row)
-        code = _extract_holding_code(item)
-        shares = _extract_holding_shares(item)
-        if not code or shares <= 0:
-            continue
-        holdings.append({**item, "code": code, "shares": shares})
-    return holdings
-
-
-async def _get_klines_with_fallback(db, code: str, limit: int) -> list[dict]:
-    try:
-        klines = await db.get_klines(code, limit=limit)
-        if klines:
-            return klines, ["db.get_klines"]
-    except Exception:
-        pass
-
-    try:
-        from ..market import get_kline
-
-        res = await get_kline(code, "daily", limit)
-        if res.get("success") and isinstance(res.get("data"), list):
-            return res["data"], ["tools.market.get_kline"]
-    except Exception:
-        pass
-    return [], []
-
-
-async def _get_stock_info_with_fallback(db, code: str) -> dict:
-    try:
-        payload = await db.get_stock_info(code)
-        if isinstance(payload, dict):
-            return payload, ["db.get_stock_info"]
-    except Exception:
-        pass
-    return {}, []
-
-
-async def _get_financials_with_fallback(db, code: str):
-    try:
-        payload = await db.get_financials(code, limit=1)
-        if isinstance(payload, (list, dict)):
-            return payload, ["db.get_financials"]
-    except Exception:
-        pass
-    return [], []
-
-
-def _dedupe_chain(values: list[str]) -> list[str]:
-    chain = []
-    seen = set()
-    for value in values:
-        label = str(value or "").strip()
-        if not label or label in seen:
-            continue
-        chain.append(label)
-        seen.add(label)
-    return chain
-
+from ._risk_manager_support import *
 
 def register_risk_manager(mcp):
     """Register risk manager tool."""
 
     @mcp.tool()
-    async def risk_manager(action: str, params: dict | None = None, kwargs: Any = None):
+    async def risk_manager(action: str, params: dict | None = None, kwargs: Any = None, portfolio_id: str | int | None = None, codes: list[str] | None = None, weights: list[float] | None = None, scenario: str | None = None, scenarios: list[str] | None = None, confidence: float | None = None, method: str | None = None, lookback_days: int | None = None, portfolio_value: float | None = None):
         """
         Risk manager with unified action + kwargs protocol.
 
@@ -128,7 +45,21 @@ def register_risk_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
-            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
+            kwargs = normalize_manager_payload(
+                params=params,
+                kwargs=kwargs,
+                extra={
+                    "portfolio_id": portfolio_id,
+                    "codes": codes,
+                    "weights": weights,
+                    "scenario": scenario,
+                    "scenarios": scenarios,
+                    "confidence": confidence,
+                    "method": method,
+                    "lookback_days": lookback_days,
+                    "portfolio_value": portfolio_value,
+                },
+            )
 
             def _ok(data: dict, source_chain=None):
                 return ok_with_meta(

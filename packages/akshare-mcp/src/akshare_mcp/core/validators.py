@@ -3,8 +3,12 @@
 确保返回数据的完整性和正确性
 """
 
-from typing import Optional
+import logging
+import os
+from typing import Any, Optional
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
+
+_logger = logging.getLogger(__name__)
 
 
 class StockQuote(BaseModel):
@@ -159,7 +163,21 @@ def validate_kline(data: dict) -> KlineData:
         raise ValueError(f"K线数据验证失败: {e}")
 
 
-def validate_kline_list(data_list: list) -> list:
+class ValidatedKlineRows(list):
+    """携带批量验证摘要的结果列表。"""
+
+    def __init__(self, rows: list[dict], report: dict):
+        super().__init__(rows)
+        self.validation_report = report
+
+
+def validate_kline_list(
+    data_list: list,
+    *,
+    strict: bool = False,
+    return_report: bool = False,
+    min_accept_ratio: Optional[float] = None,
+) -> list | dict:
     """
     批量验证K线数据
     
@@ -170,14 +188,48 @@ def validate_kline_list(data_list: list) -> list:
         验证后的数据列表（跳过无效数据）
     """
     validated = []
+    rejected: list[dict[str, Any]] = []
+    total_count = len(list(data_list or []))
+    threshold = min_accept_ratio
+    if threshold is None:
+        try:
+            threshold = float(os.getenv("KLINE_MIN_ACCEPT_RATIO", "0.8"))
+        except Exception:
+            threshold = 0.8
+    threshold = max(0.0, min(float(threshold), 1.0))
+
     for i, data in enumerate(data_list):
         try:
             validated_data = validate_kline(data)
             validated.append(validated_data.model_dump())
         except ValueError as e:
-            # 跳过无效数据，记录警告
-            import sys
-            print(f"Warning: K线数据第{i}条验证失败: {e}", file=sys.stderr)
-            continue
-    
-    return validated
+            _logger.warning("K线数据第%d条验证失败: %s", i, e)
+            rejected.append({
+                "index": i,
+                "reason": str(e),
+                "row": data if isinstance(data, dict) else {"raw": data},
+            })
+
+    accepted_count = len(validated)
+    rejected_count = len(rejected)
+    accept_ratio = accepted_count / total_count if total_count > 0 else 1.0
+    report = {
+        "accepted": validated,
+        "accepted_count": accepted_count,
+        "rejected": rejected,
+        "rejected_count": rejected_count,
+        "total_count": total_count,
+        "accept_ratio": round(float(accept_ratio), 6),
+        "minimum_quality_threshold": threshold,
+        "minimum_quality_passed": bool(accept_ratio >= threshold),
+    }
+
+    if strict and rejected_count > 0:
+        first_reason = str(rejected[0].get("reason") or "unknown_validation_error")
+        raise ValueError(
+            f"K线数据批量验证失败: rejected_count={rejected_count}, accepted_count={accepted_count}, first_error={first_reason}"
+        )
+
+    if return_report:
+        return report
+    return ValidatedKlineRows(validated, report)

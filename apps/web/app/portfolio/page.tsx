@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AskAiButton } from '@/components/ask-ai-button';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
-import { PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, StockCodeInput, Badge } from '@/components/ui';
+import { ConfirmDialog, PageContainer, SectionCard, KpiCard, KpiGrid, DataTable, StockCodeInput, Badge } from '@/components/ui';
 import { PieChart, BarChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
@@ -14,33 +14,17 @@ import { apiKeys } from '@/lib/query-keys';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { readTransactionConfirmations } from '@/lib/transaction-confirmations';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ensureRecord, ensureRecordOrArray } from '@/lib/query-parse';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
-
-type OptData = {
-  optimization?: {
-    expectedReturn?: number;
-    expectedRisk?: number;
-    sharpe?: number;
-    weights?: Record<string, number> | Array<{ code: string; weight: number }>;
-  };
-};
-type RiskData = {
-  riskMetrics?: {
-    var95?: number;
-    var99?: number;
-    cvar?: number;
-    beta?: number;
-    volatility?: number;
-    riskContribution?: Record<string, number>;
-  };
-};
-type StressScenario = { name?: string; impact?: number; description?: string };
-type StressData = { stressResult?: { scenarios?: StressScenario[] } };
-type PortfolioDetailRecord = Record<string, unknown> & {
-  strategyAllocations?: Array<Record<string, unknown>>;
-};
+import type {
+  OptData,
+  PendingPortfolioAction,
+  PortfolioDetailRecord,
+  RiskData,
+  StressData,
+} from './portfolio-page.types';
 
 export default function PortfolioPage() {
   const workbenchHydrated = useWorkbenchStore((state) => state.hydrated);
@@ -50,12 +34,14 @@ export default function PortfolioPage() {
   const lastWorkspaceIdRef = useRef<string | null>(null);
   const [portfolioId, setPortfolioId] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingPortfolioAction | null>(null);
 
   // Create portfolio
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newCapital, setNewCapital] = useState('1000000');
   const createApi = useApiMutation<unknown>({ invalidates: [[...apiKeys.portfolio()]] });
+  const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
 
   // Add holding
   const {
@@ -86,6 +72,7 @@ export default function PortfolioPage() {
   const stressApi = useApiMutation<StressData>({ parse: (raw) => ensureRecord(raw, '压力测试') as StressData });
 
   const loading =
+    profileQ.isFetching ||
     listQ.isFetching ||
     detailQ.isFetching ||
     optimizeApi.isPending ||
@@ -102,6 +89,7 @@ export default function PortfolioPage() {
     stressApi.error ||
     createApi.error ||
     addHoldingApi.error;
+  const confirmPrefs = useMemo(() => readTransactionConfirmations(profileQ.data), [profileQ.data]);
 
   const optimize = useCallback(() => {
     if (!portfolioId.trim()) return setFormError('请输入 portfolioId');
@@ -115,51 +103,81 @@ export default function PortfolioPage() {
     if (!portfolioId.trim()) return setFormError('请输入 portfolioId');
     stressApi.trigger('/portfolio/stress-test', { method: 'POST' }, { portfolioId: portfolioId.trim() });
   }, [portfolioId, stressApi]);
+  async function executeCreatePortfolio(payload: { name: string; description: string; initialCapital: string }) {
+    const data = await createApi.triggerAsync('/portfolio/create', { method: 'POST' }, payload);
+    const createdId =
+      data && typeof data === 'object' && 'portfolioId' in data
+        ? String((data as { portfolioId?: unknown }).portfolioId ?? '')
+        : '';
+    if (createdId) {
+      setPortfolioId(createdId);
+    }
+    setNewName('');
+    setNewDesc('');
+  }
+
   async function handleCreate() {
     if (!newName.trim()) return setFormError('请输入组合名称');
+    const payload = {
+      name: newName.trim(),
+      description: newDesc.trim(),
+      initialCapital: newCapital.trim() || '1000000',
+    };
     try {
-      const data = await createApi.triggerAsync(
-        '/portfolio/create',
-        { method: 'POST' },
-        {
-          name: newName.trim(),
-          description: newDesc.trim(),
-          initialCapital: newCapital.trim() || '1000000',
-        },
-      );
-      const createdId =
-        data && typeof data === 'object' && 'portfolioId' in data
-          ? String((data as { portfolioId?: unknown }).portfolioId ?? '')
-          : '';
-      if (createdId) {
-        setPortfolioId(createdId);
+      if (confirmPrefs.portfolioRebalance) {
+        setPendingAction({
+          type: 'create',
+          summary: `${payload.name} · 初始资金 ${payload.initialCapital}`,
+          payload,
+        });
+        return;
       }
-      setNewName('');
-      setNewDesc('');
+      await executeCreatePortfolio(payload);
     } catch {
       /* captured */
     }
   }
+
+  async function executeAddHolding(payload: { portfolioId: string; code: string; shares: string; costPrice?: string }) {
+    await addHoldingApi.triggerAsync('/portfolio/add-holding', { method: 'POST' }, payload);
+    setHoldCode('');
+    setHoldShares('100');
+    setHoldCost('');
+  }
+
   async function handleAddHolding() {
     if (!portfolioId.trim()) return setFormError('请先输入 portfolioId');
     if (!validateHold()) return;
+    const payload = {
+      portfolioId: portfolioId.trim(),
+      code: holdTrimmed,
+      shares: holdShares.trim() || '100',
+      ...(holdCost.trim() ? { costPrice: holdCost.trim() } : {}),
+    };
     try {
-      await addHoldingApi.triggerAsync(
-        '/portfolio/add-holding',
-        { method: 'POST' },
-        {
-          portfolioId: portfolioId.trim(),
-          code: holdTrimmed,
-          shares: holdShares.trim() || '100',
-          ...(holdCost.trim() ? { costPrice: holdCost.trim() } : {}),
-        },
-      );
-      setHoldCode('');
-      setHoldShares('100');
-      setHoldCost('');
+      if (confirmPrefs.portfolioRebalance) {
+        setPendingAction({
+          type: 'addHolding',
+          summary: `组合 ${payload.portfolioId} · ${payload.code} · ${payload.shares} 股`,
+          payload,
+        });
+        return;
+      }
+      await executeAddHolding(payload);
     } catch {
       /* captured */
     }
+  }
+
+  async function handleConfirmAction() {
+    if (!pendingAction) return;
+    const action = pendingAction;
+    setPendingAction(null);
+    if (action.type === 'create') {
+      await executeCreatePortfolio(action.payload);
+      return;
+    }
+    await executeAddHolding(action.payload);
   }
 
   const detailObj = useMemo(() => {
@@ -955,6 +973,21 @@ export default function PortfolioPage() {
     <PageContainer>
       <WorkspaceToolbar pageKey="portfolio" currentView={currentView} onApplyView={applyView} supportsPagePanels />
       <WorkspaceSplitLayout pageKey="portfolio" primary={primaryContent} secondary={secondaryContent} />
+      <ConfirmDialog
+        open={pendingAction != null}
+        title={pendingAction?.type === 'create' ? '确认创建组合' : '确认添加持仓'}
+        confirmText={pendingAction?.type === 'create' ? '确认创建' : '确认添加'}
+        onCancel={() => setPendingAction(null)}
+        onConfirm={() => { void handleConfirmAction(); }}
+      >
+        <div className="space-y-2">
+          <div>当前操作已开启“组合调仓”二次确认。</div>
+          <div className="text-xs text-text-secondary">
+            即将执行：
+            <span className="ml-1 font-medium text-text-primary">{pendingAction?.summary ?? '-'}</span>
+          </div>
+        </div>
+      </ConfirmDialog>
     </PageContainer>
   );
 }

@@ -295,9 +295,23 @@ async def test_submitter_persists_candidate_provenance_into_summary_and_quality_
                     "task_id": "task_candidate_1",
                     "task_source": "snapshot",
                     "source_candidate_artifact_id": "candidate_001",
+                    "source_generation_artifact_id": "llm_episode_001",
+                    "source_validation_artifact_id": "candidate_validation_001",
+                    "memory_record_id": "memory_001",
                     "candidate_family": "sentiment",
+                    "candidate_registry_stage": "governed",
                     "validation_score": 82.0,
                     "expected_regime": ["trend"],
+                    "expected_holding_period": 10,
+                    "latest_validation_at": "2026-03-20T08:30:00+08:00",
+                    "latest_validation_age_days": 1,
+                    "candidate_evidence_status": {
+                        "required_audits_complete": True,
+                        "lookahead_available": True,
+                        "multiple_testing_available": True,
+                        "overall_risk_level": "low",
+                        "blocked": False,
+                    },
                 },
             }
         ],
@@ -306,17 +320,26 @@ async def test_submitter_persists_candidate_provenance_into_summary_and_quality_
     )
 
     assert result["strategies"][0]["source_candidate_artifact_id"] == "candidate_001"
+    assert result["strategies"][0]["source_generation_artifact_id"] == "llm_episode_001"
+    assert result["strategies"][0]["source_validation_artifact_id"] == "candidate_validation_001"
     assert result["strategies"][0]["candidate_family"] == "sentiment"
+    assert result["strategies"][0]["candidate_registry_stage"] == "governed"
     assert result["strategies"][0]["candidate_validation_score"] == 82.0
     assert result["strategies"][0]["expected_regime"] == ["trend"]
+    assert result["strategies"][0]["expected_holding_period"] == 10
+    assert result["strategies"][0]["candidate_latest_validation_age_days"] == 1
 
     saved_payload = db.save_strategy.await_args.args[0]
     assert saved_payload["params"]["candidate_provenance"]["source_candidate_artifact_id"] == "candidate_001"
+    assert saved_payload["params"]["candidate_provenance"]["source_generation_artifact_id"] == "llm_episode_001"
     assert saved_payload["params"]["candidate_provenance"]["candidate_family"] == "sentiment"
+    assert saved_payload["params"]["candidate_provenance"]["candidate_registry_stage"] == "governed"
+    assert saved_payload["params"]["candidate_provenance"]["expected_holding_period"] == 10
 
     quality_report = db.save_strategy_quality_report.await_args.args[2]
     assert quality_report["candidate_provenance"]["source_candidate_artifact_id"] == "candidate_001"
     assert quality_report["candidate_provenance"]["candidate_family"] == "sentiment"
+    assert quality_report["candidate_provenance"]["latest_validation_age_days"] == 1
 
 
 @pytest.mark.asyncio
@@ -353,9 +376,16 @@ async def test_submitter_records_candidate_provenance_into_generation_experiment
                     "task_source": "snapshot",
                 },
                 "source_candidate_artifact_id": "candidate_002",
+                "source_generation_artifact_id": "llm_episode_002",
+                "source_validation_artifact_id": "candidate_validation_002",
+                "memory_record_id": "memory_002",
                 "candidate_family": "capital_flow",
+                "candidate_registry_stage": "governed",
                 "validation_score": 79.0,
                 "expected_regime": ["trend", "rotation"],
+                "expected_holding_period": 15,
+                "latest_validation_at": "2026-03-20T08:30:00+08:00",
+                "latest_validation_age_days": 1,
             }
         ],
         {"date": "2026-03-19", "fg_level": "neutral", "fear_greed_index": 50},
@@ -364,5 +394,7 @@ async def test_submitter_records_candidate_provenance_into_generation_experiment
 
     experiment_payload = db.save_strategy_generation_experiment.await_args.args[0]
     assert experiment_payload["strategy_spec"]["candidate_provenance"]["source_candidate_artifact_id"] == "candidate_002"
+    assert experiment_payload["strategy_spec"]["candidate_provenance"]["source_generation_artifact_id"] == "llm_episode_002"
     assert experiment_payload["evaluation"]["candidate_provenance"]["candidate_family"] == "capital_flow"
     assert experiment_payload["result"]["candidate_provenance"]["expected_regime"] == ["trend", "rotation"]
+    assert experiment_payload["result"]["candidate_provenance"]["expected_holding_period"] == 15

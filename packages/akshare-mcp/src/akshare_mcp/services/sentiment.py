@@ -159,9 +159,163 @@ class SentimentAnalyzer:
             },
         }
 
-    # ── 分量 2: 新闻情绪（30%权重） ──
     @staticmethod
-    def _news_sentiment_score(headlines: List[str], decay_half_life: int = 5) -> float:
+    def _classify_headline(title: str) -> str:
+        """Classify a headline into bullish / neutral / bearish by keyword balance."""
+        text = str(title or "").strip()
+        if not text:
+            return "neutral"
+
+        bullish_hits = sum(1 for keyword in _BULLISH_KEYWORDS if keyword in text)
+        bearish_hits = sum(1 for keyword in _BEARISH_KEYWORDS if keyword in text)
+
+        if bullish_hits > bearish_hits:
+            return "bullish"
+        if bearish_hits > bullish_hits:
+            return "bearish"
+        return "neutral"
+
+    @staticmethod
+    def _empty_news_oos_bucket_stats() -> Dict[str, Dict[str, Dict[str, float | int | None]]]:
+        return {
+            bucket: {
+                period_key: {
+                    "samples": 0,
+                    "hit_rate": None,
+                    "avg_return": None,
+                    "median_return": None,
+                    "lower_return": None,
+                    "upper_return": None,
+                }
+                for period_key in ("5d", "10d", "20d")
+            }
+            for bucket in ("bullish", "neutral", "bearish")
+        }
+
+    @classmethod
+    def _build_news_sentiment_oos_validation(
+        cls,
+        klines: List[Dict[str, Any]],
+        *,
+        proxy_lookback: int = 5,
+        forward_days: tuple[int, ...] = (5, 10, 20),
+    ) -> Dict[str, Any]:
+        """Build a lightweight OOS validation proxy for headline sentiment.
+
+        The repository does not yet persist timestamped headline labels per bar,
+        so we use recent price-path buckets as a proxy signal to estimate whether
+        bullish / neutral / bearish headline states have differentiated forward
+        returns in recent history.
+        """
+        ordered_klines = cls._sort_klines(klines)
+        empty_bucket_stats = cls._empty_news_oos_bucket_stats()
+        min_points = max(60, proxy_lookback + max(int(day) for day in forward_days) + 20)
+        if len(ordered_klines) < min_points:
+            return {
+                "available": False,
+                "reason": f"insufficient_kline:{len(ordered_klines)}<{min_points}",
+                "method": "headline_bucket_price_proxy",
+                "bucket_stats": empty_bucket_stats,
+                "alpha_5d_bull_vs_bear": None,
+                "signal_stability": "unknown",
+                "decay_analysis": {
+                    "decay_note": "insufficient_history",
+                    "alpha_curve": {},
+                },
+            }
+
+        closes = [float(item.get("close", 0) or 0) for item in ordered_klines]
+        bucket_forward_map: dict[str, dict[int, list[float]]] = {
+            bucket: {int(day): [] for day in forward_days}
+            for bucket in ("bullish", "neutral", "bearish")
+        }
+
+        max_forward = max(int(day) for day in forward_days)
+        for idx in range(proxy_lookback, len(closes) - max_forward):
+            base_price = closes[idx - proxy_lookback]
+            current_price = closes[idx]
+            if base_price <= 0 or current_price <= 0:
+                continue
+
+            recent_return = (current_price - base_price) / base_price
+            if recent_return >= 0.02:
+                bucket = "bullish"
+            elif recent_return <= -0.02:
+                bucket = "bearish"
+            else:
+                bucket = "neutral"
+
+            for day in forward_days:
+                future_price = closes[idx + int(day)]
+                if future_price <= 0:
+                    continue
+                bucket_forward_map[bucket][int(day)].append((future_price - current_price) / current_price)
+
+        bucket_stats = {
+            bucket: {
+                f"{int(day)}d": cls._summarize_forward_returns(values)
+                for day, values in day_map.items()
+            }
+            for bucket, day_map in bucket_forward_map.items()
+        }
+
+        def _avg(bucket: str, period_key: str) -> float | None:
+            value = bucket_stats.get(bucket, {}).get(period_key, {}).get("avg_return")
+            return float(value) if value is not None else None
+
+        alpha_curve = {
+            period_key: (
+                round(float(_avg("bullish", period_key) - _avg("bearish", period_key)), 4)
+                if _avg("bullish", period_key) is not None and _avg("bearish", period_key) is not None
+                else None
+            )
+            for period_key in ("5d", "10d", "20d")
+        }
+        alpha_5d = alpha_curve.get("5d")
+        alpha_10d = alpha_curve.get("10d")
+        alpha_20d = alpha_curve.get("20d")
+
+        if alpha_5d is None:
+            signal_stability = "unknown"
+        elif (alpha_10d is None and alpha_20d is None) or (
+            alpha_5d > 0 and (alpha_10d is None or alpha_10d >= 0) and (alpha_20d is None or alpha_20d >= 0)
+        ):
+            signal_stability = "stable"
+        else:
+            signal_stability = "degraded"
+
+        if alpha_5d is None:
+            decay_note = "alpha_unavailable"
+        elif alpha_20d is None:
+            decay_note = "long_horizon_insufficient_samples"
+        elif alpha_20d >= alpha_5d:
+            decay_note = "signal_persists_or_strengthens"
+        elif alpha_20d >= 0:
+            decay_note = "signal_decays_but_remains_positive"
+        else:
+            decay_note = "signal_reverses_on_longer_horizon"
+
+        available = any(
+            (bucket_stats.get(bucket, {}).get("5d", {}).get("samples") or 0) > 0
+            for bucket in ("bullish", "neutral", "bearish")
+        )
+
+        return {
+            "available": available,
+            "method": "headline_bucket_price_proxy",
+            "proxy_component": "recent_return_regime",
+            "bucket_stats": bucket_stats,
+            "alpha_5d_bull_vs_bear": alpha_5d,
+            "signal_stability": signal_stability,
+            "decay_analysis": {
+                "decay_note": decay_note,
+                "alpha_curve": alpha_curve,
+            },
+        }
+
+    # ── 分量 2: 新闻情绪（30%权重） ──
+    @classmethod
+    def _news_sentiment_score(cls, headlines: List[str], decay_half_life: int = 5) -> float:
         """基于关键词匹配 + 时间衰减计算新闻情绪得分 0~100
         headlines 按时间倒序排列（最新在前）"""
         if not headlines:
@@ -172,12 +326,13 @@ class SentimentAnalyzer:
         for i, title in enumerate(headlines):
             w = math.exp(-decay_rate * i)
             total_weight += w
-            bull = sum(1 for kw in _BULLISH_KEYWORDS if kw in title)
-            bear = sum(1 for kw in _BEARISH_KEYWORDS if kw in title)
-            if bull + bear == 0:
-                s = 50.0
+            label = cls._classify_headline(title)
+            if label == "bullish":
+                s = 80.0
+            elif label == "bearish":
+                s = 20.0
             else:
-                s = 50.0 + 50.0 * (bull - bear) / (bull + bear)
+                s = 50.0
             weighted_score += w * s
         return max(0.0, min(100.0, weighted_score / max(total_weight, 1e-9)))
 
@@ -226,6 +381,7 @@ class SentimentAnalyzer:
         ns = self._news_sentiment_score(news_headlines or [])
         ff = self._fund_flow_score(fund_flow_data)
         ordered_klines = self._sort_klines(klines)
+        news_oos_validation = self._build_news_sentiment_oos_validation(ordered_klines)
 
         # 加权复合
         composite = pm * 0.4 + ns * 0.3 + ff * 0.3
@@ -252,11 +408,13 @@ class SentimentAnalyzer:
             },
             'weights': {'price_momentum': 0.4, 'news_sentiment': 0.3, 'fund_flow': 0.3},
             'historical_validation': historical_validation,
+            'news_oos_validation': news_oos_validation,
             'data_quality': {
                 'headline_count': len(news_headlines or []),
                 'fund_flow_available': bool(fund_flow_data),
                 'price_history_points': len(ordered_klines),
                 'historical_validation_available': bool(historical_validation.get('available')),
+                'news_oos_validation_available': bool(news_oos_validation.get('available')),
             },
         }
     

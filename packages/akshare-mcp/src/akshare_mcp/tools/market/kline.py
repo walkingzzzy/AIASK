@@ -93,6 +93,12 @@ def _validated_kline_rows(rows: list[dict]) -> list[dict]:
     return validate_kline_list(rows)
 
 
+def _has_validated_kline_rows(rows: list[dict]) -> bool:
+    report = getattr(rows, "validation_report", {}) if rows is not None else {}
+    accepted_count = int(report.get("accepted_count") or len(rows or []))
+    return accepted_count > 0
+
+
 def _ok_kline_response(
     rows: list[dict],
     *,
@@ -103,6 +109,11 @@ def _ok_kline_response(
 ) -> dict:
     response = ok(rows)
     latest_row = _latest_kline_row(rows)
+    validation_report = getattr(rows, "validation_report", {}) if rows is not None else {}
+    accepted_count = validation_report.get("accepted_count")
+    rejected_count = validation_report.get("rejected_count")
+    minimum_quality_threshold = validation_report.get("minimum_quality_threshold")
+    minimum_quality_passed = validation_report.get("minimum_quality_passed")
     resolved_source = str(
         source
         or latest_row.get("source")
@@ -116,9 +127,13 @@ def _ok_kline_response(
             fallback_reason=fallback_reason,
             asof_value=latest_row.get("date"),
             missing_fields=_kline_missing_fields(rows),
-            degraded=bool(_kline_missing_fields(rows)),
+            degraded=bool(_kline_missing_fields(rows)) or minimum_quality_passed is False,
             success=True,
             started_at=started_at,
+            accepted_count=accepted_count,
+            rejected_count=rejected_count,
+            minimum_quality_threshold=minimum_quality_threshold,
+            minimum_quality_passed=minimum_quality_passed,
         )
     )
     return response
@@ -550,7 +565,8 @@ def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> d
             sample_date = str(ds_results[0].get('date', ''))
             if len(sample_date) > 10:  # 分钟数据日期格式: "2026-02-06 14:30:00"
                 validated_results = _validated_kline_rows(ds_results)
-                return _ok_kline_response(validated_results, source="data_source", source_chain=list(source_chain), started_at=started_at)
+                if _has_validated_kline_rows(validated_results):
+                    return _ok_kline_response(validated_results, source="data_source", source_chain=list(source_chain), started_at=started_at)
             # 如果返回的是日线数据（仅日期），跳过
             fallback_reason.append("data_source.get_kline returned non_intraday rows")
     except Exception as e:
@@ -575,6 +591,13 @@ def get_minute_kline(stock_code: str, period: str = "5m", limit: int = 300) -> d
         )
 
     validated_results = _validated_kline_rows(results)
+    if not _has_validated_kline_rows(validated_results):
+        return _fail_kline_response(
+            f"所有数据源均返回了无效的 {code} {minutes}分钟K线数据",
+            source_chain=list(source_chain),
+            fallback_reason=fallback_reason + ["all_intraday_rows_rejected"],
+            started_at=started_at,
+        )
     resolved_source = "akshare_minute" if str((validated_results or [{}])[0].get("source") or "").startswith("akshare") else "sina"
     return _ok_kline_response(validated_results, source=resolved_source, source_chain=list(source_chain), fallback_reason=fallback_reason, started_at=started_at)
 
@@ -650,7 +673,8 @@ async def get_kline_data(
                 db_data = await db.get_klines(code_normalized, start_date=sd_fmt, end_date=ed_fmt)
                 if db_data:
                     validated_results = _validated_kline_rows(db_data)
-                    return _ok_kline_response(validated_results, source="timescaledb", source_chain=list(source_chain), started_at=started_at)
+                    if _has_validated_kline_rows(validated_results):
+                        return _ok_kline_response(validated_results, source="timescaledb", source_chain=list(source_chain), started_at=started_at)
             except Exception as e_db:
                 safe_stderr_print(f"TimescaleDB K-line (date range) query failed for {code_normalized}: {e_db}")
                 fallback_reason.append(f"db.get_klines failed: {e_db}")
@@ -671,14 +695,15 @@ async def get_kline_data(
                 filtered = [r for r in ds_results if start_norm <= (r.get("date") or "")[:10] <= end_norm]
                 if filtered:
                     validated_results = _validated_kline_rows(filtered)
-                    await _async_save_klines_to_db(code_normalized, validated_results)
-                    return _ok_kline_response(
-                        validated_results,
-                        source="data_source",
-                        source_chain=list(source_chain),
-                        fallback_reason=fallback_reason,
-                        started_at=started_at,
-                    )
+                    if _has_validated_kline_rows(validated_results):
+                        await _async_save_klines_to_db(code_normalized, validated_results)
+                        return _ok_kline_response(
+                            validated_results,
+                            source="data_source",
+                            source_chain=list(source_chain),
+                            fallback_reason=fallback_reason,
+                            started_at=started_at,
+                        )
         except Exception as e_ds:
             safe_stderr_print(f"DataSource K-line (date range) failed for {code_normalized}: {e_ds}")
             fallback_reason.append(f"data_source.get_kline failed: {e_ds}")
@@ -709,14 +734,15 @@ async def get_kline_data(
                 )
             results = _process_kline_akshare(df, code_normalized)
             validated_results = _validated_kline_rows(results)
-            await _async_save_klines_to_db(code_normalized, validated_results)
-            return _ok_kline_response(
-                validated_results,
-                source="akshare",
-                source_chain=list(source_chain),
-                fallback_reason=fallback_reason,
-                started_at=started_at,
-            )
+            if _has_validated_kline_rows(validated_results):
+                await _async_save_klines_to_db(code_normalized, validated_results)
+                return _ok_kline_response(
+                    validated_results,
+                    source="akshare",
+                    source_chain=list(source_chain),
+                    fallback_reason=fallback_reason,
+                    started_at=started_at,
+                )
         except Exception as e:
             fallback_reason.append(str(e))
             return _fail_kline_response(
@@ -781,7 +807,8 @@ async def get_index_kline(index_code: str, period: str = "daily", limit: int = 6
             db_data = await db.get_klines(ak_symbol, limit=limit)
             if db_data:
                 validated_results = _validated_kline_rows(db_data)
-                return ok(validated_results)
+                if _has_validated_kline_rows(validated_results):
+                    return ok(validated_results)
         except Exception as e_db:
             safe_stderr_print(f"TimescaleDB index K-line query failed for {ak_symbol}: {e_db}")
 

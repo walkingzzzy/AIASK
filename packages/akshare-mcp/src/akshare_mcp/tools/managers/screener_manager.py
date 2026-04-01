@@ -7,6 +7,7 @@ import asyncio
 import logging
 from ...storage import get_db
 from ...utils import ok, fail, normalize_code
+from ..manager_protocol import normalize_manager_payload
 
 logger = logging.getLogger(__name__)
 

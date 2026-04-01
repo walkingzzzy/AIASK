@@ -26,6 +26,12 @@ class VectorSearchEngine:
     def __init__(self, backend: Optional[str] = None, allow_fallback: Optional[bool] = None):
         self.scaler = StandardScaler()
         self.pattern_cache = {}
+        self._index_matrix: Optional[np.ndarray] = None
+        self._index_codes: list[str] = []
+        self._index_norms: Optional[np.ndarray] = None
+        self._index_signature: Optional[str] = None
+        self._index_reused_last_build = False
+        self._index_build_ms_last = 0.0
         env_backend = os.getenv('VECTOR_SEARCH_BACKEND', 'python').strip().lower()
         self.backend = (backend or env_backend or 'python').strip().lower()
         if self.backend not in {'python', 'index'}:
@@ -43,6 +49,7 @@ class VectorSearchEngine:
             'fallback_used': False,
             'fallback_reason': None,
             'latency_ms': 0.0,
+            'candidate_count': 0,
         }
 
     def set_backend(self, backend: str, allow_fallback: Optional[bool] = None) -> None:
@@ -231,20 +238,37 @@ class VectorSearchEngine:
             backend_requested = 'python'
         fallback_enabled = self.allow_fallback if allow_fallback is None else bool(allow_fallback)
 
-        def _build_meta(*, backend_used: str, fallback_used: bool, fallback_reason: Optional[str]) -> Dict[str, Any]:
+        def _build_meta(
+            *,
+            backend_used: str,
+            fallback_used: bool,
+            fallback_reason: Optional[str],
+            candidate_count: int = 0,
+        ) -> Dict[str, Any]:
             return {
                 'backend_requested': backend_requested,
                 'backend_used': backend_used,
                 'fallback_used': fallback_used,
                 'fallback_reason': fallback_reason,
                 'latency_ms': round((time.perf_counter() - started_at) * 1000, 3),
+                'candidate_count': candidate_count,
+                'is_ann': False,
             }
 
-        def _decorate(items: List[Dict[str, Any]], *, backend_used: str, fallback_used: bool, fallback_reason: Optional[str], source: Optional[str] = None) -> List[Dict[str, Any]]:
+        def _decorate(
+            items: List[Dict[str, Any]],
+            *,
+            backend_used: str,
+            fallback_used: bool,
+            fallback_reason: Optional[str],
+            source: Optional[str] = None,
+            candidate_count: int = 0,
+        ) -> List[Dict[str, Any]]:
             meta = _build_meta(
                 backend_used=backend_used,
                 fallback_used=fallback_used,
                 fallback_reason=fallback_reason,
+                candidate_count=candidate_count,
             )
             self.last_backend_used = backend_used
             self.last_meta = meta
@@ -253,33 +277,54 @@ class VectorSearchEngine:
                 enriched = dict(item)
                 if source is not None:
                     enriched['source'] = source
+                # preserve per-item candidate_count if explicitly set (index path)
+                item_candidate_count = enriched.get('candidate_count')
                 enriched.update(meta)
+                if item_candidate_count is not None:
+                    enriched['candidate_count'] = item_candidate_count
                 decorated.append(enriched)
             return decorated
 
         query_vector = self.kline_to_vector(query_klines, method)
         if len(query_vector) == 0:
-            return _decorate([], backend_used=backend_requested, fallback_used=False, fallback_reason='empty_query_vector')
+            return _decorate(
+                [],
+                backend_used=backend_requested,
+                fallback_used=False,
+                fallback_reason='empty_query_vector',
+                candidate_count=len(candidate_klines_dict),
+            )
 
-        similarities = []
-        for code, klines in candidate_klines_dict.items():
-            if len(klines) < len(query_klines):
-                continue
+        similarities_cache: Optional[List[Dict[str, Any]]] = None
 
-            candidate_klines = klines[-len(query_klines):]
-            candidate_vector = self.kline_to_vector(candidate_klines, method)
-            if len(candidate_vector) != len(query_vector):
-                continue
+        def _compute_python_similarities() -> List[Dict[str, Any]]:
+            nonlocal similarities_cache
+            if similarities_cache is not None:
+                return similarities_cache
 
-            similarity = self.calculate_similarity(query_vector, candidate_vector, metric)
-            similarities.append({
-                'code': code,
-                'similarity': similarity,
-                'klines': candidate_klines,
-                'source': 'python',
-            })
+            similarities: List[Dict[str, Any]] = []
+            for code, klines in candidate_klines_dict.items():
+                if len(klines) < len(query_klines):
+                    continue
+
+                candidate_klines = klines[-len(query_klines):]
+                candidate_vector = self.kline_to_vector(candidate_klines, method)
+                if len(candidate_vector) != len(query_vector):
+                    continue
+
+                similarity = self.calculate_similarity(query_vector, candidate_vector, metric)
+                similarities.append({
+                    'code': code,
+                    'similarity': similarity,
+                    'klines': candidate_klines,
+                    'source': 'python',
+                })
+
+            similarities_cache = similarities
+            return similarities
 
         def _python_results(*, backend_used: str = 'python', fallback_used: bool = False, fallback_reason: Optional[str] = None, source: str = 'python') -> List[Dict[str, Any]]:
+            similarities = _compute_python_similarities()
             similarities.sort(key=lambda x: x['similarity'], reverse=True)
             return _decorate(
                 similarities[:top_k],
@@ -287,6 +332,7 @@ class VectorSearchEngine:
                 fallback_used=fallback_used,
                 fallback_reason=fallback_reason,
                 source=source,
+                candidate_count=len(similarities),
             )
 
         if backend_requested == 'python':
@@ -313,8 +359,18 @@ class VectorSearchEngine:
                         'similarity': item.get('similarity', 0.0),
                         'klines': candidate_klines,
                         'source': 'index',
+                        'candidate_count': int(item.get('candidate_count') or len(self._index_codes)),
+                        'index_reused': bool(item.get('index_reused', self._index_reused_last_build)),
+                        'index_build_ms': float(item.get('index_build_ms', self._index_build_ms_last)),
                     })
-                return _decorate(enriched, backend_used='index', fallback_used=False, fallback_reason=None, source='index')
+                return _decorate(
+                    enriched,
+                    backend_used='index',
+                    fallback_used=False,
+                    fallback_reason=None,
+                    source='index',
+                    candidate_count=len(self._index_codes),
+                )
 
             if fallback_enabled:
                 return _python_results(
@@ -323,7 +379,13 @@ class VectorSearchEngine:
                     fallback_reason='index_empty_result',
                     source='python_fallback',
                 )
-            return _decorate([], backend_used='index', fallback_used=False, fallback_reason='index_empty_result')
+            return _decorate(
+                [],
+                backend_used='index',
+                fallback_used=False,
+                fallback_reason='index_empty_result',
+                candidate_count=len(self._index_codes),
+            )
         except Exception as exc:
             if fallback_enabled:
                 return _python_results(
@@ -332,7 +394,13 @@ class VectorSearchEngine:
                     fallback_reason=f'index_exception:{type(exc).__name__}',
                     source='python_fallback',
                 )
-            return _decorate([], backend_used='index_error', fallback_used=False, fallback_reason=f'index_exception:{type(exc).__name__}')
+            return _decorate(
+                [],
+                backend_used='index_error',
+                fallback_used=False,
+                fallback_reason=f'index_exception:{type(exc).__name__}',
+                candidate_count=len(candidate_klines_dict),
+            )
 
     # ========== 形态识别 ==========
     
@@ -410,6 +478,20 @@ class VectorSearchEngine:
         Returns:
             向量索引 {code: vector}
         """
+        import time
+
+        started_at = time.perf_counter()
+        signature = self._build_index_signature(klines_dict, pattern_length, method)
+        if (
+            signature == self._index_signature
+            and self.pattern_cache
+            and self._index_matrix is not None
+            and len(self._index_codes) == len(self.pattern_cache)
+        ):
+            self._index_reused_last_build = True
+            self._index_build_ms_last = 0.0
+            return self.pattern_cache
+
         index = {}
         
         for code, klines in klines_dict.items():
@@ -424,8 +506,50 @@ class VectorSearchEngine:
                 index[code] = vector
         
         self.pattern_cache = index
+        self._index_signature = signature
+        self._index_reused_last_build = False
+        self._index_build_ms_last = round((time.perf_counter() - started_at) * 1000, 3)
+        self._hydrate_index_structures()
         self._save_index_cache(index)
         return index
+
+    @staticmethod
+    def _build_index_signature(
+        klines_dict: Dict[str, List[Dict[str, Any]]],
+        pattern_length: int,
+        method: str,
+    ) -> str:
+        digest = hashlib.sha1()
+        digest.update(str(pattern_length).encode('utf-8'))
+        digest.update(b'|')
+        digest.update(str(method or '').encode('utf-8'))
+        for code in sorted(klines_dict.keys()):
+            klines = klines_dict.get(code) or []
+            tail = klines[-pattern_length:] if len(klines) >= pattern_length else klines
+            last_row = tail[-1] if tail else {}
+            digest.update(f'|{code}|{len(tail)}|{last_row.get("date") or last_row.get("time") or ""}'.encode('utf-8'))
+        return digest.hexdigest()
+
+    def _hydrate_index_structures(self) -> None:
+        codes: list[str] = []
+        vectors: list[np.ndarray] = []
+        for code, vector in self.pattern_cache.items():
+            arr = np.asarray(vector, dtype=np.float64)
+            if arr.ndim != 1 or arr.size == 0:
+                continue
+            codes.append(code)
+            vectors.append(arr)
+
+        if not vectors:
+            self._index_codes = []
+            self._index_matrix = None
+            self._index_norms = None
+            return
+
+        matrix = np.vstack(vectors).astype(np.float64, copy=False)
+        self._index_codes = codes
+        self._index_matrix = matrix
+        self._index_norms = np.linalg.norm(matrix, axis=1)
 
     def _index_cache_path(self) -> Optional[Path]:
         cache_dir = os.getenv("VECTOR_SEARCH_CACHE_DIR", "").strip()
@@ -440,7 +564,11 @@ class VectorSearchEngine:
         if path is None:
             return
         try:
-            serializable = {k: v.tolist() for k, v in index.items()}
+            serializable = {
+                'version': 2,
+                'signature': self._index_signature,
+                'vectors': {k: v.tolist() for k, v in index.items()},
+            }
             path.write_text(_json.dumps(serializable), encoding="utf-8")
             _vs_logger.info("Vector index persisted to %s (%d entries)", path, len(index))
         except Exception as e:
@@ -453,7 +581,14 @@ class VectorSearchEngine:
             return False
         try:
             data = _json.loads(path.read_text(encoding="utf-8"))
-            self.pattern_cache = {k: np.array(v) for k, v in data.items()}
+            if isinstance(data, dict) and isinstance(data.get("vectors"), dict):
+                self._index_signature = str(data.get("signature") or '') or None
+                vectors = data.get("vectors") or {}
+            else:
+                self._index_signature = None
+                vectors = data
+            self.pattern_cache = {k: np.array(v) for k, v in dict(vectors or {}).items()}
+            self._hydrate_index_structures()
             _vs_logger.info("Vector index loaded from %s (%d entries)", path, len(self.pattern_cache))
             return True
         except Exception as e:
@@ -479,21 +614,56 @@ class VectorSearchEngine:
         """
         if not self.pattern_cache:
             return []
-        
-        similarities = []
-        
-        for code, vector in self.pattern_cache.items():
-            if len(vector) != len(query_vector):
-                continue
-            
-            similarity = self.calculate_similarity(query_vector, vector, metric)
-            similarities.append({
-                'code': code,
-                'similarity': similarity,
+
+        if self._index_matrix is None or len(self._index_codes) != len(self.pattern_cache):
+            self._hydrate_index_structures()
+        if self._index_matrix is None or self._index_matrix.size == 0:
+            return []
+
+        query = np.asarray(query_vector, dtype=np.float64)
+        if query.ndim != 1 or query.size == 0:
+            return []
+        if self._index_matrix.shape[1] != query.shape[0]:
+            return []
+
+        if metric == 'cosine':
+            query_norm = float(np.linalg.norm(query))
+            if query_norm <= 1e-12:
+                return []
+            norms = self._index_norms if self._index_norms is not None else np.linalg.norm(self._index_matrix, axis=1)
+            denom = np.maximum(norms * query_norm, 1e-12)
+            similarities = (self._index_matrix @ query) / denom
+        elif metric == 'euclidean':
+            distances = np.linalg.norm(self._index_matrix - query, axis=1)
+            similarities = 1.0 / (1.0 + distances)
+        elif metric == 'correlation':
+            centered_matrix = self._index_matrix - self._index_matrix.mean(axis=1, keepdims=True)
+            centered_query = query - query.mean()
+            denom = np.maximum(
+                np.linalg.norm(centered_matrix, axis=1) * float(np.linalg.norm(centered_query)),
+                1e-12,
+            )
+            similarities = ((centered_matrix @ centered_query) / denom + 1.0) / 2.0
+        else:
+            raise ValueError(f"Unknown metric: {metric}")
+
+        candidate_count = int(len(self._index_codes))
+        if top_k >= candidate_count:
+            ranked = np.argsort(similarities)[::-1]
+        else:
+            ranked = np.argpartition(similarities, -top_k)[-top_k:]
+            ranked = ranked[np.argsort(similarities[ranked])[::-1]]
+
+        results: List[Dict[str, Any]] = []
+        for idx in ranked[:top_k]:
+            results.append({
+                'code': self._index_codes[int(idx)],
+                'similarity': float(similarities[int(idx)]),
+                'candidate_count': candidate_count,
+                'index_reused': self._index_reused_last_build,
+                'index_build_ms': self._index_build_ms_last,
             })
-        
-        similarities.sort(key=lambda x: x['similarity'], reverse=True)
-        return similarities[:top_k]
+        return results
     
     # ========== DTW动态时间规整 ==========
     

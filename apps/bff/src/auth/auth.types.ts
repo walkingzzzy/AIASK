@@ -12,6 +12,7 @@ export type Session = {
   user: Omit<AppUser, 'passwordHash'>;
   accessJti: string;
   refreshToken: string;
+  mfaVerified: boolean;
   accessExpiresAt: number;
   refreshExpiresAt: number;
   revoked: boolean;
@@ -24,6 +25,7 @@ export type AccessPayload = {
   username: string;
   role: Role;
   jti: string;
+  mfa?: boolean;
   typ: 'access';
   exp: number;
   iat: number;

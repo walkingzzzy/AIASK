@@ -63,7 +63,7 @@ export class AuthController {
   @Public()
   @Post('login')
   async login(@Req() req: Request, @Body() body: LoginDto, @Res({ passthrough: true }) res: Response) {
-    const result = await this.authService.login(body.username, body.password);
+    const result = await this.authService.login(body.username, body.password, body.otpCode);
     this.setCookies(req, res, result.accessToken, result.refreshToken, result.expiresIn);
     return { success: true, data: { user: result.user, expiresIn: result.expiresIn, tokenDelivery: 'cookie' } };
   }
@@ -175,7 +175,7 @@ export class AuthController {
   }
 
   @Post('2fa/verify')
-  async verify2fa(@Req() req: { user?: { id?: string; sub?: string } }, @Body() body: Verify2faDto) {
+  async verify2fa(@Req() req: { user?: { id?: string; sub?: string; jti?: string } }, @Body() body: Verify2faDto) {
     const userId = this.currentUserId(req);
     const prefs = await this.preferencesService.getUserPreferences(userId);
     const secret = (prefs as { totpSecret?: string }).totpSecret;
@@ -185,6 +185,7 @@ export class AuthController {
     }
     const updated = { ...prefs, totpEnabled: true };
     await this.preferencesService.setUserPreferences(userId, updated);
+    await this.authService.markCurrentSessionMfaVerified(req.user?.jti);
     return { success: true };
   }
 

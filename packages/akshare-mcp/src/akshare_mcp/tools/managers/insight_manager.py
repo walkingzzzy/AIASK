@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
+from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, normalize_manager_payload, ok_with_meta
 
 
 _PLACEHOLDER_PATTERN = re.compile(r"\{([a-zA-Z0-9_]+)\}")

@@ -12,6 +12,7 @@ from ...services.live_broker import (
     get_live_broker_adapter,
 )
 from ...utils import fail, ok
+from ..manager_protocol import normalize_manager_payload
 from ..risk_guard import audit_event, require_confirmation_if_needed
 
 
@@ -387,10 +388,38 @@ def register_live_trading_manager(mcp):
     """Register live trading manager tool."""
 
     @mcp.tool()
-    async def live_trading_manager(action: str, params: dict | None = None, kwargs: Any = None):
+    async def live_trading_manager(action: str, params: dict | None = None, kwargs: Any = None, code: str | None = None, symbol: str | None = None, order_id: str | None = None, status: str | None = None, limit: int | None = None, symbols: list[str] | None = None, confirm_token: str | None = None, dry_run: bool | None = None, side: str | None = None, qty: float | None = None, quantity: float | None = None, notional: float | None = None, type: str | None = None, time_in_force: str | None = None, limit_price: float | None = None, stop_price: float | None = None, client_order_id: str | None = None, extended_hours: bool | None = None, artifact_id: str | None = None, output_artifact_id: str | None = None, paper_account_id: str | None = None, execute: bool | None = None, persist_artifact: bool | None = None):
         """Live trading manager with broker-backed monitoring and execution actions."""
 
-        kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
+        kwargs = normalize_manager_payload(
+            params=params,
+            kwargs=kwargs,
+            extra={
+                "code": code,
+                "symbol": symbol,
+                "order_id": order_id,
+                "status": status,
+                "limit": limit,
+                "symbols": symbols,
+                "confirm_token": confirm_token,
+                "dry_run": dry_run,
+                "side": side,
+                "qty": qty,
+                "quantity": quantity,
+                "notional": notional,
+                "type": type,
+                "time_in_force": time_in_force,
+                "limit_price": limit_price,
+                "stop_price": stop_price,
+                "client_order_id": client_order_id,
+                "extended_hours": extended_hours,
+                "artifact_id": artifact_id,
+                "output_artifact_id": output_artifact_id,
+                "paper_account_id": paper_account_id,
+                "execute": execute,
+                "persist_artifact": persist_artifact,
+            },
+        )
         if action == "help":
             return ok(
                 {

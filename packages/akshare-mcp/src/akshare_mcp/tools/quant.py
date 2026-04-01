@@ -151,7 +151,12 @@ def register(mcp):
         return ok(payload)
 
     @mcp.tool()
-    async def calculate_factor(code: str, factor: str):
+    async def calculate_factor(
+        code: str,
+        factor: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ):
         """计算单只股票的单个因子值。
 
         Args:
@@ -167,7 +172,7 @@ def register(mcp):
                 return fail(f"Unsupported factor: {factor_name}. Supported: {', '.join(sorted(SUPPORTED_FACTORS.keys()))}")
 
             db = get_db()
-            klines = await db.get_klines(code, limit=100)
+            klines = await db.get_klines(code, start_date=start_date, end_date=end_date, limit=100)
             if not klines:
                 return fail("No kline data")
 
@@ -239,6 +244,8 @@ def register(mcp):
                     "value": float(value),
                     "requires_financials": SUPPORTED_FACTORS[factor_name]["requires_financials"],
                     "sample_size": len(closes),
+                    "start_date": start_date,
+                    "end_date": end_date,
                 }
             )
         except Exception as e:
@@ -281,6 +288,8 @@ def register(mcp):
         is_st: bool = False,
         rebalance_step: int = 0,
         max_periods: int = 0,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         include_perf_breakdown: bool = True,
     ):
         """Run grouped factor backtest on a stock universe."""
@@ -298,6 +307,8 @@ def register(mcp):
                 is_st=is_st,
                 rebalance_step=rebalance_step,
                 max_periods=max_periods,
+                start_date=start_date,
+                end_date=end_date,
                 include_perf_breakdown=include_perf_breakdown,
             )
         except Exception as e:
@@ -320,6 +331,8 @@ def register(mcp):
         validation_parallel: bool = True,
         max_workers: int = 0,
         bootstrap_mode: str = "",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         include_perf_breakdown: bool = True,
     ):
         """P0-A: Unified OOS validation (Walk-Forward + Purged KFold + Bootstrap CI)."""
@@ -340,6 +353,8 @@ def register(mcp):
                 validation_parallel=validation_parallel,
                 max_workers=(None if int(max_workers or 0) <= 0 else int(max_workers)),
                 bootstrap_mode=bootstrap_mode,
+                start_date=start_date,
+                end_date=end_date,
                 include_perf_breakdown=include_perf_breakdown,
             )
         except Exception as e:
@@ -465,6 +480,8 @@ def register(mcp):
         factor: str,
         windows: list = None,
         param_variations: list = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         include_perf_breakdown: bool = True,
     ):
         """P2-2: Factor robustness check — multi-window IC stability, parameter sensitivity, sub-sample consistency."""
@@ -474,6 +491,8 @@ def register(mcp):
                 factor=factor,
                 windows=windows,
                 param_variations=param_variations,
+                start_date=start_date,
+                end_date=end_date,
                 include_perf_breakdown=include_perf_breakdown,
             )
         except Exception as e:

@@ -48,6 +48,20 @@ const STRATEGY_TYPE_LABELS: Record<string, string> = {
   dsl_rule: 'DSL',
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function countRows(value: unknown, keyLabel: string) {
+  if (!isRecord(value)) return [];
+  return Object.entries(value)
+    .map(([key, count]) => ({
+      [keyLabel]: key,
+      count: Number(count ?? 0),
+    }))
+    .sort((left, right) => Number(right.count ?? 0) - Number(left.count ?? 0));
+}
+
 function resolveCategoryLabel(key?: string | null) {
   const type = String(key ?? 'all');
   if (STRATEGY_TYPE_LABELS[type]) return STRATEGY_TYPE_LABELS[type];
@@ -71,6 +85,7 @@ export default function StrategyMarketPage() {
   const capabilitiesQ = useApiQuery<CapabilityResponse>('/strategy-market/capabilities');
   const dailySnapshotQ = useApiQuery<DailySnapshotResponse>('/strategy-market/daily-snapshot');
   const factoryRunsQ = useApiQuery<FactoryRunsResponse>('/strategy-market/factory/runs?limit=5');
+  const factoryObservabilityQ = useApiQuery<unknown>('/strategy-market/factory/observability', { staleTime: 15_000 });
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [runStatusFilter, setRunStatusFilter] = useState<RunStatusFilter>('all');
   const [trendMetricKey, setTrendMetricKey] = useState<TrendMetricKey>('candidates_spawned');
@@ -196,6 +211,64 @@ export default function StrategyMarketPage() {
     [capabilityBadges],
   );
   const activeCategoryLabel = useMemo(() => resolveCategoryLabel(category), [category]);
+  const factoryObservabilityRoot = useMemo(
+    () => (isRecord(factoryObservabilityQ.data) ? factoryObservabilityQ.data : {}),
+    [factoryObservabilityQ.data],
+  );
+  const factoryObservabilityOverview = useMemo(
+    () => (isRecord(factoryObservabilityRoot.overview) ? factoryObservabilityRoot.overview : {}),
+    [factoryObservabilityRoot],
+  );
+  const factoryObservabilityFactory = useMemo(
+    () => (isRecord(factoryObservabilityRoot.factory) ? factoryObservabilityRoot.factory : {}),
+    [factoryObservabilityRoot],
+  );
+  const factoryObservabilityGovernance = useMemo(
+    () => (isRecord(factoryObservabilityRoot.factor_governance) ? factoryObservabilityRoot.factor_governance : {}),
+    [factoryObservabilityRoot],
+  );
+  const factoryObservabilityScheduler = useMemo(
+    () => (isRecord(factoryObservabilityGovernance.scheduler) ? factoryObservabilityGovernance.scheduler : {}),
+    [factoryObservabilityGovernance],
+  );
+  const factoryObservabilityRecentRun = useMemo(
+    () => (isRecord(factoryObservabilityGovernance.recent_run) ? factoryObservabilityGovernance.recent_run : {}),
+    [factoryObservabilityGovernance],
+  );
+  const factoryObservabilityRegistrySummary = useMemo(
+    () =>
+      isRecord(factoryObservabilityGovernance.registry_summary) ? factoryObservabilityGovernance.registry_summary : {},
+    [factoryObservabilityGovernance],
+  );
+  const factoryObservabilityActivePool = useMemo(
+    () => (isRecord(factoryObservabilityGovernance.active_pool) ? factoryObservabilityGovernance.active_pool : {}),
+    [factoryObservabilityGovernance],
+  );
+  const factoryObservabilityRetrainSummary = useMemo(
+    () =>
+      isRecord(factoryObservabilityGovernance.retrain_summary) ? factoryObservabilityGovernance.retrain_summary : {},
+    [factoryObservabilityGovernance],
+  );
+  const factoryObservabilityRetrainQueue = useMemo(
+    () => extractArray(factoryObservabilityGovernance, 'retrain_queue'),
+    [factoryObservabilityGovernance],
+  );
+  const factoryObservabilityErrors = useMemo(
+    () => (Array.isArray(factoryObservabilityRoot.errors) ? factoryObservabilityRoot.errors : []),
+    [factoryObservabilityRoot],
+  );
+  const factoryObservabilityFamilyRows = useMemo(
+    () => extractArray(factoryObservabilityActivePool, 'family_summary'),
+    [factoryObservabilityActivePool],
+  );
+  const factoryObservabilityRegimeRows = useMemo(
+    () => extractArray(factoryObservabilityActivePool, 'regime_summary'),
+    [factoryObservabilityActivePool],
+  );
+  const factoryObservabilityStageRows = useMemo(
+    () => countRows(factoryObservabilityRegistrySummary.registry_stage_counts, 'registry_stage'),
+    [factoryObservabilityRegistrySummary],
+  );
   const primaryRoundButtonCls =
     'rounded-full bg-[linear-gradient(135deg,#0b6bcb,#2f8cff)] px-4 py-2 text-sm text-white shadow-[0_18px_32px_-20px_rgba(11,107,203,0.64)] disabled:opacity-50';
   const secondaryRoundButtonCls =
@@ -491,6 +564,228 @@ export default function StrategyMarketPage() {
           <span className={summaryChipCls}>失败原因 {snapshotFailureCount}</span>
           <span className={summaryChipCls}>最近失败运行 {failedRuns.length}</span>
         </div>
+      </SectionCard>
+
+      <SectionCard className="mt-0">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="eyebrow">联动观测</div>
+            <h2 className="mt-2">工厂运行与因子治理是否真正接通</h2>
+            <p className="mb-0 mt-2 text-sm text-text-secondary">
+              这里把 factory 状态和 factor governed pool 放在一起看，避免出现“工厂看起来正常，但 active_pool
+              其实是空的或陈旧的”假阳性。
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge variant={factoryObservabilityOverview.scheduler_stale ? 'warning' : 'success'}>
+              {factoryObservabilityOverview.scheduler_stale ? '因子调度陈旧' : '因子调度新鲜'}
+            </Badge>
+            <Badge variant={Number(factoryObservabilityOverview.active_factor_count ?? 0) > 0 ? 'success' : 'warning'}>
+              {Number(factoryObservabilityOverview.active_factor_count ?? 0) > 0
+                ? 'governed pool 已就绪'
+                : 'governed pool 为空'}
+            </Badge>
+            <Badge variant={factoryObservabilityRoot.degraded ? 'warning' : 'info'}>
+              {factoryObservabilityRoot.degraded ? '聚合存在降级' : '聚合链路完整'}
+            </Badge>
+          </div>
+        </div>
+
+        {factoryObservabilityQ.isPending ? <LoadingState text="加载工厂联动观测..." /> : null}
+        {factoryObservabilityQ.error ? <ErrorState text={factoryObservabilityQ.error} /> : null}
+
+        {!factoryObservabilityQ.isPending && !factoryObservabilityQ.error ? (
+          <>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <div className="metric-tile rounded-[24px] px-4 py-4">
+                <div className="metric-label">最新工厂状态</div>
+                <div className="mt-2 text-base font-semibold text-text-primary">
+                  {String(factoryObservabilityOverview.latest_factory_status ?? '-')}
+                </div>
+              </div>
+              <div className="metric-tile rounded-[24px] px-4 py-4">
+                <div className="metric-label">活跃因子数</div>
+                <div className="mt-2 text-base font-semibold text-text-primary">
+                  {String(factoryObservabilityOverview.active_factor_count ?? '-')}
+                </div>
+              </div>
+              <div className="metric-tile rounded-[24px] px-4 py-4">
+                <div className="metric-label">治理通过</div>
+                <div className="mt-2 text-base font-semibold text-text-primary">
+                  {String(factoryObservabilityOverview.governed_factor_count ?? '-')}
+                </div>
+              </div>
+              <div className="metric-tile rounded-[24px] px-4 py-4">
+                <div className="metric-label">质量门通过</div>
+                <div className="mt-2 text-base font-semibold text-text-primary">
+                  {String(factoryObservabilityOverview.passed_quality_gate ?? '-')}
+                </div>
+              </div>
+              <div className="metric-tile rounded-[24px] px-4 py-4">
+                <div className="metric-label">Champion / Challenger</div>
+                <div className="mt-2 text-base font-semibold text-text-primary">
+                  {String(factoryObservabilityOverview.champion_count ?? 0)} /{' '}
+                  {String(factoryObservabilityOverview.challenger_count ?? 0)}
+                </div>
+              </div>
+              <div className="metric-tile rounded-[24px] px-4 py-4">
+                <div className="metric-label">调度质量</div>
+                <div className="mt-2 text-base font-semibold text-text-primary">
+                  {String(factoryObservabilityOverview.scheduler_quality_status ?? '-')}
+                </div>
+              </div>
+              <div className="metric-tile rounded-[24px] px-4 py-4">
+                <div className="metric-label">本轮自动生成</div>
+                <div className="mt-2 text-base font-semibold text-text-primary">
+                  {String(factoryObservabilityOverview.recent_generated_candidate_count ?? '-')}
+                </div>
+              </div>
+              <div className="metric-tile rounded-[24px] px-4 py-4">
+                <div className="metric-label">本轮验证通过</div>
+                <div className="mt-2 text-base font-semibold text-text-primary">
+                  {String(factoryObservabilityOverview.recent_validated_candidate_count ?? '-')}
+                </div>
+              </div>
+              <div className="metric-tile rounded-[24px] px-4 py-4">
+                <div className="metric-label">Retrain 队列</div>
+                <div className="mt-2 text-base font-semibold text-text-primary">
+                  {String(factoryObservabilityOverview.retrain_plan_count ?? '-')}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2 text-xs text-text-secondary">
+              <span className={summaryChipCls}>
+                最新工厂 Run {String(factoryObservabilityOverview.latest_factory_run_id ?? '-')}
+              </span>
+              <span className={summaryChipCls}>
+                调度 freshness{' '}
+                {factoryObservabilityScheduler.freshness_sec == null
+                  ? '-'
+                  : `${fmtNum(factoryObservabilityScheduler.freshness_sec, 1)}s`}
+              </span>
+              <span className={summaryChipCls}>
+                被阻断候选 {String(factoryObservabilityOverview.blocked_factor_count ?? 0)}
+              </span>
+              <span className={summaryChipCls}>
+                工厂最近 5 次 {extractArray(factoryObservabilityFactory, 'runs').length} 条
+              </span>
+              <span className={summaryChipCls}>
+                本轮 governed {String(factoryObservabilityOverview.recent_governed_active_count_after_run ?? 0)}
+              </span>
+              <span className={summaryChipCls}>
+                待执行 Retrain {String(factoryObservabilityOverview.retrain_pending_count ?? 0)}
+              </span>
+            </div>
+
+            {factoryObservabilityErrors.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {factoryObservabilityErrors.map((item, index) => (
+                  <Badge key={`${String(item)}-${index}`} variant="warning">
+                    {String(item)}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="mt-4 grid gap-4 xl:grid-cols-2">
+              <div className="panel-soft rounded-[24px] p-4">
+                <div className="eyebrow">Registry Stage</div>
+                <h3 className="mt-2">候选治理阶段</h3>
+                {factoryObservabilityStageRows.length > 0 ? (
+                  <DataTable
+                    rows={factoryObservabilityStageRows}
+                    columns={[
+                      { key: 'registry_stage', label: '阶段' },
+                      { key: 'count', label: '数量', align: 'right' as const },
+                    ]}
+                  />
+                ) : (
+                  <p className="mb-0 mt-3 text-sm text-text-secondary">暂无 registry 阶段数据。</p>
+                )}
+              </div>
+
+              <div className="panel-soft rounded-[24px] p-4">
+                <div className="eyebrow">Active Pool</div>
+                <h3 className="mt-2">活跃池家族分布</h3>
+                {factoryObservabilityFamilyRows.length > 0 ? (
+                  <DataTable
+                    rows={factoryObservabilityFamilyRows}
+                    columns={[
+                      { key: 'family', label: '家族' },
+                      { key: 'count', label: '候选数', align: 'right' as const },
+                      { key: 'promote_count', label: 'promote', align: 'right' as const },
+                      {
+                        key: 'avg_total_score',
+                        label: '平均分',
+                        align: 'right' as const,
+                        render: (value: unknown) => fmtNum(value, 3),
+                      },
+                    ]}
+                  />
+                ) : (
+                  <p className="mb-0 mt-3 text-sm text-text-secondary">active_pool 暂无家族分布。</p>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 xl:grid-cols-3">
+              <div className="panel-soft rounded-[24px] p-4">
+                <div className="eyebrow">Recent Auto Run</div>
+                <h3 className="mt-2">最近一次自动挖掘</h3>
+                <p className="mb-0 mt-3 text-sm leading-7 text-text-secondary">
+                  生成 {String(factoryObservabilityRecentRun.generated_candidate_count ?? 0)} 个候选，验证通过{' '}
+                  {String(factoryObservabilityRecentRun.validated_candidate_count ?? 0)} 个，运行后 governed active{' '}
+                  {String(factoryObservabilityRecentRun.governed_active_count_after_run ?? 0)} 个。
+                </p>
+              </div>
+
+              <div className="panel-soft rounded-[24px] p-4">
+                <div className="eyebrow">Regime Mix</div>
+                <h3 className="mt-2">活跃池 Regime 分布</h3>
+                {factoryObservabilityRegimeRows.length > 0 ? (
+                  <DataTable
+                    rows={factoryObservabilityRegimeRows}
+                    columns={[
+                      { key: 'regime', label: 'Regime' },
+                      { key: 'count', label: '数量', align: 'right' as const },
+                    ]}
+                  />
+                ) : (
+                  <p className="mb-0 mt-3 text-sm text-text-secondary">当前没有 regime 分布。</p>
+                )}
+              </div>
+
+              <div className="panel-soft rounded-[24px] p-4">
+                <div className="eyebrow">Retrain Queue</div>
+                <h3 className="mt-2">重训练计划队列</h3>
+                {factoryObservabilityRetrainQueue.length > 0 ? (
+                  <DataTable
+                    rows={factoryObservabilityRetrainQueue}
+                    columns={[
+                      { key: 'family', label: '家族' },
+                      { key: 'status', label: '状态' },
+                      { key: 'priority', label: '优先级' },
+                      { key: 'target_model_count', label: '目标模型', align: 'right' as const },
+                    ]}
+                  />
+                ) : (
+                  <p className="mb-0 mt-3 text-sm text-text-secondary">当前没有 retrain 计划。</p>
+                )}
+                <div className="mt-3 text-xs text-text-secondary">
+                  状态分布{' '}
+                  {Object.entries(
+                    isRecord(factoryObservabilityRetrainSummary.status_counts)
+                      ? factoryObservabilityRetrainSummary.status_counts
+                      : {},
+                  )
+                    .map(([status, count]) => `${status}:${count}`)
+                    .join(' / ') || '-'}
+                </div>
+              </div>
+            </div>
+          </>
+        ) : null}
       </SectionCard>
 
       {rankQ.isPending ? <LoadingState text="加载策略列表..." /> : null}

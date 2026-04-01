@@ -1,13 +1,14 @@
 'use client';
 
 import { FormEvent, useMemo, useState } from 'react';
-import { Badge, DataTable, KpiCard, KpiGrid, PageContainer, SectionCard, StockCodeInput } from '@/components/ui';
+import { Badge, ConfirmDialog, DataTable, KpiCard, KpiGrid, PageContainer, SectionCard, StockCodeInput } from '@/components/ui';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import { readTransactionConfirmations } from '@/lib/transaction-confirmations';
 
 type HoldingOp = { portfolioId: string; code: string; shares: string; costPrice: string };
 type BacktestResult = { artifactId?: string; backtestId?: unknown; [k: string]: unknown };
@@ -39,6 +40,10 @@ type StressData = { stressResult?: { scenarios?: StressScenario[] }; [k: string]
 type PortfolioDetailRecord = Record<string, unknown> & {
   strategyAllocations?: Array<Record<string, unknown>>;
 };
+type PendingPortfolioAction =
+  | { type: 'create'; summary: string; payload: { name: string; initialCapital: string } }
+  | { type: 'add'; summary: string; payload: HoldingOp }
+  | { type: 'remove'; summary: string; portfolioId: string; code: string };
 
 function WorkbenchField({
   id,
@@ -81,10 +86,12 @@ export default function StrategyPage() {
     shares: '100',
     costPrice: '1',
   });
+  const [pendingAction, setPendingAction] = useState<PendingPortfolioAction | null>(null);
   const [backtestListPath, setBacktestListPath] = useState<string | null>(null);
   const [portfolioListPath, setPortfolioListPath] = useState<string | null>(null);
   const [portfolioDetailPath, setPortfolioDetailPath] = useState<string | null>(null);
 
+  const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
   const metricsQ = useApiQuery<MetricsData>(
     artifactId ? `/backtest/metrics?artifactId=${encodeURIComponent(artifactId)}` : null,
   );
@@ -100,6 +107,7 @@ export default function StrategyPage() {
 
   const loading =
     backtestApi.isPending ||
+    profileQ.isFetching ||
     metricsQ.isFetching ||
     backtestListQ.isFetching ||
     portfolioListQ.isFetching ||
@@ -119,6 +127,7 @@ export default function StrategyPage() {
     riskAnalysisApi.error ||
     stressTestApi.error ||
     actionApi.error;
+  const confirmPrefs = useMemo(() => readTransactionConfirmations(profileQ.data), [profileQ.data]);
 
   async function runBacktest(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -148,6 +157,23 @@ export default function StrategyPage() {
     else metricsQ.refetch();
   }
 
+  async function executeCreatePortfolio(payload: { name: string; initialCapital: string }) {
+    const data = await actionApi.triggerAsync('/portfolio/create', { method: 'POST' }, payload);
+    const createdId =
+      data && typeof data === 'object' && 'portfolioId' in data
+        ? String((data as { portfolioId?: unknown }).portfolioId ?? '')
+        : '';
+    if (createdId) {
+      setHoldingOp((prev) => ({ ...prev, portfolioId: createdId }));
+      const detailPath = `/portfolio/get?portfolioId=${encodeURIComponent(createdId)}`;
+      if (detailPath === portfolioDetailPath) portfolioDetailQ.refetch();
+      else setPortfolioDetailPath(detailPath);
+    }
+    const listPath = '/portfolio/list';
+    if (listPath === portfolioListPath) portfolioListQ.refetch();
+    else setPortfolioListPath(listPath);
+  }
+
   async function createPortfolio() {
     setFormError(null);
     if (!portfolioName.trim()) {
@@ -155,33 +181,32 @@ export default function StrategyPage() {
       return;
     }
     try {
-      const data = await actionApi.triggerAsync(
-        '/portfolio/create',
-        { method: 'POST' },
-        {
-          name: portfolioName.trim(),
-          initialCapital: '100000',
-        },
-      );
-      const createdId =
-        data && typeof data === 'object' && 'portfolioId' in data
-          ? String((data as { portfolioId?: unknown }).portfolioId ?? '')
-          : '';
-      if (createdId) {
-        setHoldingOp((prev) => ({ ...prev, portfolioId: createdId }));
-        const detailPath = `/portfolio/get?portfolioId=${encodeURIComponent(createdId)}`;
-        if (detailPath === portfolioDetailPath) portfolioDetailQ.refetch();
-        else setPortfolioDetailPath(detailPath);
+      const payload = {
+        name: portfolioName.trim(),
+        initialCapital: '100000',
+      };
+      if (confirmPrefs.portfolioRebalance) {
+        setPendingAction({
+          type: 'create',
+          summary: `${payload.name} · 初始资金 ${payload.initialCapital}`,
+          payload,
+        });
+        return;
       }
-      const listPath = '/portfolio/list';
-      if (listPath === portfolioListPath) portfolioListQ.refetch();
-      else setPortfolioListPath(listPath);
+      await executeCreatePortfolio(payload);
     } catch {
       /* captured */
     }
   }
 
   function loadPortfolios() {
+    const path = '/portfolio/list';
+    if (path === portfolioListPath) portfolioListQ.refetch();
+    else setPortfolioListPath(path);
+  }
+
+  async function executeAddHolding(payload: HoldingOp) {
+    await actionApi.triggerAsync('/portfolio/add-holding', { method: 'POST' }, payload);
     const path = '/portfolio/list';
     if (path === portfolioListPath) portfolioListQ.refetch();
     else setPortfolioListPath(path);
@@ -194,13 +219,28 @@ export default function StrategyPage() {
       return;
     }
     try {
-      await actionApi.triggerAsync('/portfolio/add-holding', { method: 'POST' }, holdingOp);
-      const path = '/portfolio/list';
-      if (path === portfolioListPath) portfolioListQ.refetch();
-      else setPortfolioListPath(path);
+      if (confirmPrefs.portfolioRebalance) {
+        setPendingAction({
+          type: 'add',
+          summary: `组合 ${holdingOp.portfolioId} · ${holdingOp.code} · ${holdingOp.shares} 股`,
+          payload: holdingOp,
+        });
+        return;
+      }
+      await executeAddHolding(holdingOp);
     } catch {
       /* captured */
     }
+  }
+
+  async function executeRemoveHolding(portfolioId: string, code: string) {
+    await actionApi.triggerAsync(
+      `/portfolio/remove-holding?portfolioId=${encodeURIComponent(portfolioId)}&code=${code}`,
+      { method: 'DELETE' },
+    );
+    const path = '/portfolio/list';
+    if (path === portfolioListPath) portfolioListQ.refetch();
+    else setPortfolioListPath(path);
   }
 
   async function removeHolding() {
@@ -210,16 +250,34 @@ export default function StrategyPage() {
       return;
     }
     try {
-      await actionApi.triggerAsync(
-        `/portfolio/remove-holding?portfolioId=${encodeURIComponent(holdingOp.portfolioId)}&code=${holdingOp.code}`,
-        { method: 'DELETE' },
-      );
-      const path = '/portfolio/list';
-      if (path === portfolioListPath) portfolioListQ.refetch();
-      else setPortfolioListPath(path);
+      if (confirmPrefs.portfolioRebalance) {
+        setPendingAction({
+          type: 'remove',
+          summary: `组合 ${holdingOp.portfolioId} · 删除 ${holdingOp.code}`,
+          portfolioId: holdingOp.portfolioId,
+          code: holdingOp.code,
+        });
+        return;
+      }
+      await executeRemoveHolding(holdingOp.portfolioId, holdingOp.code);
     } catch {
       /* captured */
     }
+  }
+
+  async function handleConfirmAction() {
+    if (!pendingAction) return;
+    const action = pendingAction;
+    setPendingAction(null);
+    if (action.type === 'create') {
+      await executeCreatePortfolio(action.payload);
+      return;
+    }
+    if (action.type === 'add') {
+      await executeAddHolding(action.payload);
+      return;
+    }
+    await executeRemoveHolding(action.portfolioId, action.code);
   }
 
   function loadPortfolioDetail() {
@@ -812,6 +870,34 @@ export default function StrategyPage() {
           </div>
         ) : null}
       </SectionCard>
+      <ConfirmDialog
+        open={pendingAction != null}
+        title={
+          pendingAction?.type === 'create'
+            ? '确认创建组合'
+            : pendingAction?.type === 'remove'
+              ? '确认删除持仓'
+              : '确认添加持仓'
+        }
+        confirmText={
+          pendingAction?.type === 'create'
+            ? '确认创建'
+            : pendingAction?.type === 'remove'
+              ? '确认删除'
+              : '确认添加'
+        }
+        danger={pendingAction?.type === 'remove'}
+        onCancel={() => setPendingAction(null)}
+        onConfirm={() => { void handleConfirmAction(); }}
+      >
+        <div className="space-y-2">
+          <div>当前操作已开启“组合调仓”二次确认。</div>
+          <div className="text-xs text-text-secondary">
+            即将执行：
+            <span className="ml-1 font-medium text-text-primary">{pendingAction?.summary ?? '-'}</span>
+          </div>
+        </div>
+      </ConfirmDialog>
     </PageContainer>
   );
 }

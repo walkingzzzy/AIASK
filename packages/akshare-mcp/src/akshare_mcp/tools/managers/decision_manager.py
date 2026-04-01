@@ -27,7 +27,7 @@ def register_decision_manager(mcp):
     """注册决策管理器工具"""
     
     @mcp.tool()
-    async def decision_manager(action: str, params: dict | None = None, kwargs: Any = None):
+    async def decision_manager(action: str, params: dict | None = None, kwargs: Any = None, code: str | None = None, codes: list[str] | None = None, weights: list[float] | None = None, investment_style: str | None = None, criteria: dict | None = None, limit: int | None = None, portfolio_id: str | int | None = None):
         """决策管理器（统一 action + kwargs 协议）
 
         Args:
@@ -54,7 +54,20 @@ def register_decision_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
-            kwargs = normalize_manager_kwargs(dict(kwargs))
+            kwargs = normalize_manager_payload(
+                params=params,
+                kwargs=kwargs,
+                extra={
+                    "code": code,
+                    "codes": codes,
+                    "weights": weights,
+                    "investment_style": investment_style,
+                    "criteria": criteria,
+                    "limit": limit,
+                    "portfolio_id": portfolio_id,
+                },
+            )
+            kwargs = normalize_manager_kwargs(kwargs)
 
             # 统一可选参数（向后兼容）
             meta_defaults = {

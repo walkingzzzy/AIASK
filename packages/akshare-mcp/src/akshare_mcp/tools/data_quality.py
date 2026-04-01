@@ -108,6 +108,10 @@ def build_quality_meta(
     success: bool = True,
     started_at: Optional[datetime] = None,
     stale_after_sec: float = STALE_AFTER_SEC,
+    accepted_count: Optional[int] = None,
+    rejected_count: Optional[int] = None,
+    minimum_quality_threshold: Optional[float] = None,
+    minimum_quality_passed: Optional[bool] = None,
 ) -> dict:
     chain = [str(item).strip() for item in list(source_chain or []) if str(item).strip()]
     reasons = normalize_reason_list(fallback_reason)
@@ -124,6 +128,8 @@ def build_quality_meta(
         flags.append("degraded")
     if not success:
         flags.append("failed")
+    if minimum_quality_passed is False:
+        flags.append("quality_gate_failed")
     if freshness_sec > float(stale_after_sec or STALE_AFTER_SEC):
         flags.append("stale")
     quality_flags = list(dict.fromkeys(flags))
@@ -144,4 +150,12 @@ def build_quality_meta(
         "backend_used": source,
         "degraded": bool(degraded),
         "latency_ms": latency_ms,
+        "accepted_count": int(accepted_count) if accepted_count is not None else None,
+        "rejected_count": int(rejected_count) if rejected_count is not None else None,
+        "minimum_quality_threshold": (
+            round(float(minimum_quality_threshold), 6)
+            if minimum_quality_threshold is not None
+            else None
+        ),
+        "minimum_quality_passed": minimum_quality_passed if minimum_quality_passed is not None else None,
     }

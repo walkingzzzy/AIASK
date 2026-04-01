@@ -54,7 +54,7 @@ function notifyStatus(status: WsConnectionStatus) {
 
 function getSocket(): Socket {
   if (!_socket) {
-    const transports = process.env.NODE_ENV === 'production' ? ['websocket', 'polling'] : ['polling'];
+    const transports = ['websocket', 'polling'];
     _socket = io(`${resolveWsUrl()}/ws`, {
       transports,
       withCredentials: true,

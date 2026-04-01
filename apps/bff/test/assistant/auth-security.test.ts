@@ -35,7 +35,7 @@ test('auth service rejects weak JWT secrets in production mode', () => {
   };
 
   assert.throws(
-    () => new AuthService(configService as never, { enabled: false } as never, {} as never),
+    () => new AuthService(configService as never, { enabled: false } as never, {} as never, {} as never),
     /APP_JWT_SECRET/,
   );
 });

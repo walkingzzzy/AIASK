@@ -2,218 +2,40 @@
 
 import { useState } from 'react';
 import { Badge, DataTable, KpiCard, KpiGrid, SectionCard } from '@/components/ui';
-import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
+import { EmptyState, ErrorState } from '@/components/status-state';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { extractArray, extractObject, fmtNum } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
+import FactorMiningGenerationSection from '@/app/factor/components/factor-mining-generation-section';
+import FactorMiningIntro from '@/app/factor/components/factor-mining-intro';
+import {
+  countRows,
+  flattenMemoryRows,
+  flattenRegistryRows,
+  flattenReplayRows,
+  isRecord,
+  joinList,
+  mcpError,
+  parseOptionalInt,
+  readArtifactId,
+  splitCodes,
+} from '@/app/factor/components/factor-mining-mappers';
+import FactorMiningObservability from '@/app/factor/components/factor-mining-observability';
+import {
+  factorMiningPanelCls,
+  factorMiningPrimaryButtonCls,
+  factorMiningSecondaryButtonCls,
+} from '@/app/factor/components/factor-mining-panel-styles';
+import {
+  BadgeValue,
+  MiningCheckbox,
+  MiningField,
+  MiningSelect,
+  renderWarnings,
+} from '@/app/factor/components/factor-mining-support';
 
 const DEFAULT_MINING_CODES = '600519,000858,300750,601318,000001,600036';
-const PRIMARY_BUTTON_CLS =
-  'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
-const SECONDARY_BUTTON_CLS = 'action-chip cursor-pointer text-xs text-text-primary';
-const PANEL_CLS = 'panel-soft rounded-[26px] p-4 sm:p-5';
-const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function splitCodes(raw: string) {
-  return raw
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function parseOptionalInt(raw: string) {
-  if (!raw.trim()) return undefined;
-  const value = Number(raw);
-  return Number.isFinite(value) ? Math.trunc(value) : undefined;
-}
-
-function joinList(value: unknown) {
-  if (Array.isArray(value))
-    return value
-      .map((item) => String(item))
-      .filter(Boolean)
-      .join(', ');
-  if (value == null) return '-';
-  return String(value);
-}
-
-function readArtifactId(payload: unknown) {
-  const root = extractObject(payload);
-  const value = root.artifact_id;
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
-function mcpError(payload: unknown): string | null {
-  if (!isRecord(payload)) return null;
-  if (payload.success === false && payload.error) return String(payload.error);
-  if (isRecord(payload.data)) return mcpError(payload.data);
-  return null;
-}
-
-function variantForBool(value: unknown) {
-  return value ? 'success' : 'danger';
-}
-
-function BadgeValue({
-  value,
-  trueText = '是',
-  falseText = '否',
-}: {
-  value: unknown;
-  trueText?: string;
-  falseText?: string;
-}) {
-  return <Badge variant={variantForBool(value)}>{value ? trueText : falseText}</Badge>;
-}
-
-function MiningField({
-  id,
-  label,
-  value,
-  onChange,
-  placeholder,
-  type = 'text',
-}: {
-  id: string;
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder: string;
-  type?: 'text' | 'number';
-}) {
-  return (
-    <label htmlFor={id} className="grid gap-1 text-xs text-text-secondary">
-      <span>{label}</span>
-      <input
-        id={id}
-        type={type}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        className="w-full text-sm text-text-primary"
-      />
-    </label>
-  );
-}
-
-function MiningSelect({
-  id,
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  id: string;
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: Array<{ label: string; value: string }>;
-}) {
-  return (
-    <label htmlFor={id} className="grid gap-1 text-xs text-text-secondary">
-      <span>{label}</span>
-      <select
-        id={id}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full text-sm text-text-primary"
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function MiningCheckbox({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <label className="metric-tile flex min-h-[46px] cursor-pointer items-center gap-2 rounded-[20px] px-3 py-2 text-sm text-text-secondary">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-        className="accent-primary"
-      />
-      <span>{label}</span>
-    </label>
-  );
-}
-
-function flattenMemoryRows(rows: Array<Record<string, unknown>>) {
-  return rows.map((row) => {
-    const candidate = isRecord(row.candidate) ? row.candidate : {};
-    const rating = isRecord(row.rating) ? row.rating : {};
-    return {
-      artifact_id: row.artifact_id,
-      status: row.status,
-      name: candidate.name,
-      family: candidate.family,
-      expression_dsl: candidate.expression_dsl ?? candidate.expression,
-      grade: rating.grade,
-      recommendation: rating.recommendation,
-      total_score: rating.total_score,
-      tags: joinList(row.tags),
-    };
-  });
-}
-
-function flattenRegistryRows(rows: Array<Record<string, unknown>>) {
-  return rows.map((row) => {
-    const candidate = isRecord(row.candidate) ? row.candidate : {};
-    const rating = isRecord(row.rating) ? row.rating : {};
-    return {
-      artifact_id: row.artifact_id,
-      name: candidate.name,
-      family: candidate.family,
-      grade: rating.grade,
-      recommendation: rating.recommendation,
-      total_score: rating.total_score,
-      codes: joinList(row.codes),
-      updated_at: row.updated_at ?? row.created_at,
-    };
-  });
-}
-
-function flattenReplayRows(rows: Array<Record<string, unknown>>) {
-  return rows.map((row) => ({
-    artifact_id: row.artifact_id,
-    source_artifact_id: row.source_artifact_id,
-    validated_count: row.validated_count,
-    failed_count: row.failed_count,
-    candidate_limit: row.candidate_limit,
-    codes: joinList(row.codes),
-    created_at: row.created_at,
-  }));
-}
-
-function renderWarnings(warnings: unknown) {
-  if (!Array.isArray(warnings) || warnings.length === 0) return null;
-  return (
-    <div className="mt-3 flex flex-wrap gap-2">
-      {warnings.map((item, index) => (
-        <Badge key={`${String(item)}-${index}`} variant="warning">
-          {String(item)}
-        </Badge>
-      ))}
-    </div>
-  );
-}
 
 export function FactorMiningWorkbench() {
   const [formError, setFormError] = useState<string | null>(null);
@@ -258,6 +80,7 @@ export function FactorMiningWorkbench() {
 
   const [schedulerPath, setSchedulerPath] = useState<string | null>(null);
   const schedulerQ = useApiQuery<unknown>(schedulerPath, { staleTime: 10_000 });
+  const observabilityQ = useApiQuery<unknown>('/factor/observability', { staleTime: 15_000 });
 
   const generationMut = useApiMutation<unknown>({
     onSuccess: (payload) => {
@@ -302,6 +125,20 @@ export function FactorMiningWorkbench() {
   const generationBlocked = extractArray(generationMut.data, 'blocked_candidates');
   const generationDedupSummary = isRecord(generationRoot.dedup_summary) ? generationRoot.dedup_summary : {};
   const generationWarnings = Array.isArray(generationRoot.warnings) ? generationRoot.warnings : [];
+  const generationEpisode = isRecord(generationRoot.research_episode) ? generationRoot.research_episode : {};
+  const generationEpisodeNovelty = isRecord(generationEpisode.novelty_summary) ? generationEpisode.novelty_summary : {};
+  const generationEpisodeMemory = isRecord(generationEpisode.memory_similarity_summary)
+    ? generationEpisode.memory_similarity_summary
+    : {};
+  const generationEpisodePrompt = isRecord(generationEpisode.prompt_context_summary)
+    ? generationEpisode.prompt_context_summary
+    : {};
+  const generationEpisodeWarmup = isRecord(generationEpisode.startup_warmup_summary)
+    ? generationEpisode.startup_warmup_summary
+    : {};
+  const generationEpisodeBlocked = isRecord(generationEpisode.blocked_candidate_summary)
+    ? generationEpisode.blocked_candidate_summary
+    : {};
 
   const validationRoot = extractObject(validationMut.data);
   const validationRating = isRecord(validationRoot.rating) ? validationRoot.rating : {};
@@ -327,6 +164,27 @@ export function FactorMiningWorkbench() {
   const schedulerRoot = extractObject(schedulerQ.data);
   const schedulerLastResult = isRecord(schedulerRoot.last_result) ? schedulerRoot.last_result : {};
   const schedulerRunRoot = extractObject(schedulerRunMut.data);
+  const observabilityRoot = extractObject(observabilityQ.data);
+  const observabilityOverview = isRecord(observabilityRoot.overview) ? observabilityRoot.overview : {};
+  const observabilityScheduler = isRecord(observabilityRoot.scheduler) ? observabilityRoot.scheduler : {};
+  const observabilityRecentRun = isRecord(observabilityRoot.recent_run) ? observabilityRoot.recent_run : {};
+  const observabilityRecentValidation = isRecord(observabilityRecentRun.llm_validation)
+    ? observabilityRecentRun.llm_validation
+    : {};
+  const observabilityRegistrySummary = isRecord(observabilityRoot.registry_summary)
+    ? observabilityRoot.registry_summary
+    : {};
+  const observabilityActivePool = isRecord(observabilityRoot.active_pool) ? observabilityRoot.active_pool : {};
+  const observabilityMemoryStats = isRecord(observabilityRoot.memory_stats) ? observabilityRoot.memory_stats : {};
+  const observabilityRetrainSummary = isRecord(observabilityRoot.retrain_summary)
+    ? observabilityRoot.retrain_summary
+    : {};
+  const observabilityRetrainQueue = extractArray(observabilityRoot, 'retrain_queue');
+  const observabilityErrors = Array.isArray(observabilityRoot.errors) ? observabilityRoot.errors : [];
+  const observabilityFamilyRows = extractArray(observabilityActivePool, 'family_summary');
+  const observabilityRegimeRows = extractArray(observabilityActivePool, 'regime_summary');
+  const observabilityExclusionRows = countRows(observabilityActivePool.exclusion_reason_counts, 'reason');
+  const observabilityStageRows = countRows(observabilityRegistrySummary.registry_stage_counts, 'registry_stage');
 
   function requireCodes(raw: string, minimum = 1) {
     const codes = splitCodes(raw);
@@ -363,182 +221,77 @@ export function FactorMiningWorkbench() {
 
   return (
     <div id="factor-mining-workbench" className="mt-5">
-      <SectionCard className="p-4 sm:p-5">
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_340px]">
-          <div>
-            <div className="eyebrow">AI Mining Workspace</div>
-            <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">AI 因子挖掘工作台</h3>
-            <p className="mt-2 text-sm leading-7 text-text-secondary">
-              这里承接的是候选生成、验证、研究记忆、候选池治理和调度巡检，不等同于上面的普通 IC/回测页面。
-              典型顺序是“生成候选 → 用 artifact 做验证 → 看 registry / memory → 需要时回放 episode”。
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Badge variant="info">候选生成</Badge>
-              <Badge variant="warning">验证与留痕</Badge>
-              <Badge variant="success">治理与活跃池</Badge>
-              <Badge variant="neutral">调度器巡检</Badge>
-            </div>
-          </div>
+      <FactorMiningIntro anyLoading={anyLoading} error={error} />
 
-          <div className={PANEL_CLS}>
-            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">建议顺序</div>
-            <div className="mt-4 space-y-3">
-              <div className={NOTE_CARD_CLS}>1. 先生成候选，观察去重、拦截和降级提示，确认候选池质量。</div>
-              <div className={NOTE_CARD_CLS}>2. 再用 artifact 做验证，把有效结果写入研究记忆并送进候选池治理。</div>
-              <div className={NOTE_CARD_CLS}>3. 只有当候选稳定后，才值得做 episode 回放与 scheduler 巡检。</div>
-            </div>
-          </div>
-        </div>
+      <FactorMiningObservability
+        isPending={observabilityQ.isPending}
+        error={observabilityQ.error}
+        hasData={Boolean(observabilityQ.data)}
+        degraded={Boolean(observabilityRoot.degraded)}
+        observabilityOverview={observabilityOverview}
+        observabilityScheduler={observabilityScheduler}
+        observabilityRecentValidation={observabilityRecentValidation}
+        observabilityMemoryStats={observabilityMemoryStats}
+        observabilityRetrainSummary={observabilityRetrainSummary}
+        observabilityRetrainQueue={observabilityRetrainQueue as Array<Record<string, unknown>>}
+        observabilityErrors={observabilityErrors}
+        observabilityFamilyRows={observabilityFamilyRows as Array<Record<string, unknown>>}
+        observabilityRegimeRows={observabilityRegimeRows as Array<Record<string, unknown>>}
+        observabilityExclusionRows={observabilityExclusionRows as Array<Record<string, unknown>>}
+        observabilityStageRows={observabilityStageRows as Array<Record<string, unknown>>}
+      />
 
-        {anyLoading ? <LoadingState text="AI 因子挖掘处理中..." /> : null}
-        {error ? <ErrorState text={error} hint="请按生成 → 验证 → 治理的顺序检查输入" /> : null}
-      </SectionCard>
-
-      <SectionCard className="p-4 sm:p-5">
-        <h3 className="mt-0">候选生成</h3>
-        <div className={PANEL_CLS}>
-          <div className="grid gap-3 lg:grid-cols-4">
-            <MiningField
-              id="factor-mining-codes"
-              label="股票池"
-              value={generationCodes}
-              onChange={setGenerationCodes}
-              placeholder="多个 6 位代码用英文逗号分隔"
-            />
-            <MiningField
-              id="factor-mining-candidate-count"
-              label="候选数量"
-              type="number"
-              value={generationCandidateCount}
-              onChange={setGenerationCandidateCount}
-              placeholder="默认 6"
-            />
-            <MiningField
-              id="factor-mining-lookback"
-              label="回看 K 线"
-              type="number"
-              value={generationLookbackBars}
-              onChange={setGenerationLookbackBars}
-              placeholder="默认 220"
-            />
-            <MiningField
-              id="factor-mining-artifact-id"
-              label="自定义 artifact"
-              value={generationArtifactId}
-              onChange={setGenerationArtifactId}
-              placeholder="可选"
-            />
-          </div>
-          <div className="mt-3 grid gap-3 lg:grid-cols-[repeat(2,minmax(0,220px))_auto]">
-            <MiningCheckbox
-              label="允许本地 fallback"
-              checked={generationAllowFallback}
-              onChange={setGenerationAllowFallback}
-            />
-            <MiningCheckbox
-              label="持久化 artifact"
-              checked={generationPersistArtifact}
-              onChange={setGenerationPersistArtifact}
-            />
-            <div className="flex items-end">
-              <button
-                type="button"
-                disabled={generationMut.isPending}
-                onClick={() => {
-                  setFormError(null);
-                  const codes = requireCodes(generationCodes, 1);
-                  if (!codes) return;
-                  generationMut.trigger(
-                    '/factor/llm-mining',
-                    { method: 'POST' },
-                    {
-                      stock_codes: codes,
-                      candidate_count: parseOptionalInt(generationCandidateCount),
-                      lookback_bars: parseOptionalInt(generationLookbackBars),
-                      artifact_id: generationArtifactId.trim() || undefined,
-                      allow_fallback: generationAllowFallback,
-                      persist_artifact: generationPersistArtifact,
-                    },
-                  );
-                }}
-                className={`${PRIMARY_BUTTON_CLS} w-full lg:w-auto`}
-              >
-                {generationMut.isPending ? '生成中...' : '生成候选'}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {generationMut.data && mcpError(generationMut.data) ? (
-          <ErrorState text={mcpError(generationMut.data)!} />
-        ) : generationMut.data ? (
-          <>
-            <KpiGrid cols={6}>
-              <KpiCard title="artifact" value={String(generationRoot.artifact_id ?? '-')} />
-              <KpiCard title="保留候选" value={String(generationRoot.candidate_count ?? generationCandidates.length)} />
-              <KpiCard title="生成模式" value={String(generationRoot.generation_mode ?? '-')} />
-              <KpiCard title="去重前" value={String(generationRoot.pre_dedup_candidate_count ?? '-')} />
-              <KpiCard
-                title="去重后"
-                value={String(generationDedupSummary.kept_count ?? generationRoot.candidate_count ?? '-')}
-              />
-              <KpiCard
-                title="被拦截"
-                value={String(generationDedupSummary.blocked_count ?? generationBlocked.length)}
-              />
-            </KpiGrid>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <BadgeValue value={generationRoot.fallback_used} trueText="已使用 fallback" falseText="LLM 主链成功" />
-              <BadgeValue value={generationRoot.degraded} trueText="存在降级/警告" falseText="无降级" />
-            </div>
-            {renderWarnings(generationWarnings)}
-            {generationCandidates.length > 0 ? (
-              <DataTable
-                rows={generationCandidates}
-                searchable
-                columns={[
-                  { key: 'name', label: '候选名称', sortable: true },
-                  {
-                    key: 'family',
-                    label: '因子族',
-                    sortable: true,
-                    render: (value) => (value ? <Badge variant="info">{String(value)}</Badge> : '-'),
-                  },
-                  {
-                    key: 'expression_dsl',
-                    label: '表达式',
-                    render: (value, row) => String(value ?? row.expression ?? '-'),
-                  },
-                  { key: 'expected_regime', label: '适用环境', render: (value) => joinList(value) },
-                  { key: 'novelty_score', label: '新颖度', align: 'right', render: (value) => fmtNum(value, 3) },
-                ]}
-                onExport={() => exportCSV(generationCandidates, 'factor-mining-candidates')}
-              />
-            ) : (
-              <EmptyState text="尚未生成候选因子" />
-            )}
-            {generationBlocked.length > 0 ? (
-              <div className="mt-4">
-                <h4 className="mb-2 text-sm font-medium text-text-primary">被拦截候选</h4>
-                <DataTable
-                  rows={generationBlocked}
-                  searchable
-                  onExport={() => exportCSV(generationBlocked, 'factor-mining-blocked')}
-                />
-              </div>
-            ) : null}
-          </>
-        ) : (
-          <EmptyState text="填好股票池后即可生成候选因子" />
-        )}
-      </SectionCard>
+      <FactorMiningGenerationSection
+        generationCodes={generationCodes}
+        setGenerationCodes={setGenerationCodes}
+        generationCandidateCount={generationCandidateCount}
+        setGenerationCandidateCount={setGenerationCandidateCount}
+        generationLookbackBars={generationLookbackBars}
+        setGenerationLookbackBars={setGenerationLookbackBars}
+        generationArtifactId={generationArtifactId}
+        setGenerationArtifactId={setGenerationArtifactId}
+        generationAllowFallback={generationAllowFallback}
+        setGenerationAllowFallback={setGenerationAllowFallback}
+        generationPersistArtifact={generationPersistArtifact}
+        setGenerationPersistArtifact={setGenerationPersistArtifact}
+        generationPending={generationMut.isPending}
+        onRun={() => {
+          setFormError(null);
+          const codes = requireCodes(generationCodes, 1);
+          if (!codes) return;
+          generationMut.trigger(
+            '/factor/llm-mining',
+            { method: 'POST' },
+            {
+              stock_codes: codes,
+              candidate_count: parseOptionalInt(generationCandidateCount),
+              lookback_bars: parseOptionalInt(generationLookbackBars),
+              artifact_id: generationArtifactId.trim() || undefined,
+              allow_fallback: generationAllowFallback,
+              persist_artifact: generationPersistArtifact,
+            },
+          );
+        }}
+        generationData={generationMut.data}
+        generationRoot={generationRoot}
+        generationCandidates={generationCandidates as Array<Record<string, unknown>>}
+        generationBlocked={generationBlocked as Array<Record<string, unknown>>}
+        generationDedupSummary={generationDedupSummary}
+        generationWarnings={generationWarnings}
+        generationEpisode={generationEpisode}
+        generationEpisodeNovelty={generationEpisodeNovelty}
+        generationEpisodeMemory={generationEpisodeMemory}
+        generationEpisodePrompt={generationEpisodePrompt}
+        generationEpisodeWarmup={generationEpisodeWarmup}
+        generationEpisodeBlocked={generationEpisodeBlocked}
+      />
 
       <SectionCard className="p-4 sm:p-5">
         <h3 className="mt-0">候选验证</h3>
         <p className="mt-2 text-sm text-text-secondary">
           验证优先吃上一步产出的 mining artifact。横截面验证至少需要 3 只股票。
         </p>
-        <div className={PANEL_CLS}>
+        <div className={factorMiningPanelCls}>
           <div className="grid gap-3 lg:grid-cols-3">
             <MiningField
               id="factor-validate-artifact"
@@ -622,7 +375,7 @@ export function FactorMiningWorkbench() {
                   },
                 );
               }}
-              className={PRIMARY_BUTTON_CLS}
+              className={factorMiningPrimaryButtonCls}
             >
               {validationMut.isPending ? '验证中...' : '运行验证'}
             </button>
@@ -682,7 +435,7 @@ export function FactorMiningWorkbench() {
       <SectionCard className="p-4 sm:p-5">
         <h3 className="mt-0">研究记忆与候选池治理</h3>
         <div className="grid gap-6 xl:grid-cols-2">
-          <div className={PANEL_CLS}>
+          <div className={factorMiningPanelCls}>
             <h4 className="mb-2 text-sm font-medium text-text-primary">研究记忆</h4>
             <div className="grid gap-3 lg:grid-cols-2">
               <MiningSelect
@@ -751,7 +504,7 @@ export function FactorMiningWorkbench() {
                     },
                   );
                 }}
-                className={PRIMARY_BUTTON_CLS}
+                className={factorMiningPrimaryButtonCls}
               >
                 {memoryMut.isPending ? '查询中...' : '查询记忆'}
               </button>
@@ -783,7 +536,7 @@ export function FactorMiningWorkbench() {
             ) : null}
           </div>
 
-          <div className={PANEL_CLS}>
+          <div className={factorMiningPanelCls}>
             <h4 className="mb-2 text-sm font-medium text-text-primary">候选池治理</h4>
             <div className="grid gap-3 lg:grid-cols-2">
               <MiningSelect
@@ -848,7 +601,7 @@ export function FactorMiningWorkbench() {
                       },
                     );
                   }}
-                  className={`${PRIMARY_BUTTON_CLS} w-full lg:w-auto`}
+                  className={`${factorMiningPrimaryButtonCls} w-full lg:w-auto`}
                 >
                   {registryMut.isPending ? '查询中...' : '查询候选池'}
                 </button>
@@ -893,7 +646,7 @@ export function FactorMiningWorkbench() {
       <SectionCard className="p-4 sm:p-5">
         <h3 className="mt-0">Episode 回放与调度巡检</h3>
         <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
-          <div className={PANEL_CLS}>
+          <div className={factorMiningPanelCls}>
             <h4 className="mb-2 text-sm font-medium text-text-primary">回放 Episode</h4>
             <div className="grid gap-3 lg:grid-cols-3">
               <MiningSelect
@@ -1016,7 +769,7 @@ export function FactorMiningWorkbench() {
                     },
                   );
                 }}
-                className={PRIMARY_BUTTON_CLS}
+                className={factorMiningPrimaryButtonCls}
               >
                 {replayMut.isPending ? '回放中...' : '执行回放'}
               </button>
@@ -1069,7 +822,7 @@ export function FactorMiningWorkbench() {
             ) : null}
           </div>
 
-          <div className={PANEL_CLS}>
+          <div className={factorMiningPanelCls}>
             <h4 className="mb-2 text-sm font-medium text-text-primary">调度器状态</h4>
             <p className="mt-2 text-sm text-text-secondary">
               `scheduler_status` 直接读取 `factor_scheduler.status()`，`run_now` 会触发一次即时批处理并回写最近结果。
@@ -1079,7 +832,7 @@ export function FactorMiningWorkbench() {
                 type="button"
                 onClick={loadSchedulerStatus}
                 disabled={schedulerQ.isFetching}
-                className={SECONDARY_BUTTON_CLS}
+                className={factorMiningSecondaryButtonCls}
               >
                 {schedulerQ.isFetching ? '刷新中...' : '加载状态'}
               </button>
@@ -1087,7 +840,7 @@ export function FactorMiningWorkbench() {
                 type="button"
                 onClick={() => void runSchedulerNow()}
                 disabled={schedulerRunMut.isPending}
-                className={PRIMARY_BUTTON_CLS}
+                className={factorMiningPrimaryButtonCls}
               >
                 {schedulerRunMut.isPending ? '执行中...' : '立即运行一次'}
               </button>

@@ -13,13 +13,16 @@ import {
 import {
   SessionStore,
   createSession,
+  inspectRefreshSession,
   listSessions,
+  markSessionMfaVerified,
   revokeSession,
   revokeByRefresh,
   revokeByAccess,
   refreshSession,
   verifyAccessTokenSession,
 } from './session.service';
+import { TotpService } from './totp.service';
 
 @Injectable()
 export class AuthService implements OnModuleInit {
@@ -42,6 +45,7 @@ export class AuthService implements OnModuleInit {
     private readonly configService: ConfigService,
     private readonly dbService: DbService,
     private readonly preferencesService: PreferencesService,
+    private readonly totpService: TotpService,
   ) {
     this.accessTtlSec = Math.max(60, Number(this.configService.get('APP_ACCESS_TOKEN_TTL_SECONDS', 7200)));
     this.refreshTtlSec = Math.max(300, Number(this.configService.get('APP_REFRESH_TOKEN_TTL_SECONDS', 604800)));
@@ -87,11 +91,19 @@ export class AuthService implements OnModuleInit {
     await this.hardenSeedUsers();
   }
 
-  async login(username: string, password: string) {
+  async login(username: string, password: string, otpCode?: string) {
     this.store.cleanup();
     const user = await this.verifyCredential(username, password);
+    const prefs = await this.preferencesService.getUserPreferences(user.id);
+    const mfaVerified = await this.verifyTwoFactorIfRequired(user.id, prefs, otpCode);
     const { accessToken, refreshToken, expiresIn } = await createSession(
-      this.store, this.dbService, user, this.accessTtlSec, this.refreshTtlSec, this.jwtSecret,
+      this.store,
+      this.dbService,
+      user,
+      this.accessTtlSec,
+      this.refreshTtlSec,
+      this.jwtSecret,
+      { mfaVerified },
     );
     return {
       user: await this.getProfile(user.id),
@@ -230,13 +242,30 @@ export class AuthService implements OnModuleInit {
 
   async refresh(refreshToken: string) {
     this.store.cleanup();
-    const result = await refreshSession(this.store, this.dbService, refreshToken, this.accessTtlSec, this.jwtSecret);
+    const preview = await inspectRefreshSession(this.store, this.dbService, refreshToken);
+    const prefs = await this.preferencesService.getUserPreferences(preview.user.id);
+    const requireMfa = Boolean((prefs as { totpEnabled?: boolean }).totpEnabled);
+    const result = await refreshSession(
+      this.store,
+      this.dbService,
+      refreshToken,
+      this.accessTtlSec,
+      this.jwtSecret,
+      { requireMfa },
+    );
     return {
       user: await this.getProfile(result.user.id),
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
       expiresIn: result.expiresIn,
     };
+  }
+
+  async markCurrentSessionMfaVerified(accessJti?: string) {
+    if (!accessJti) {
+      return;
+    }
+    await markSessionMfaVerified(this.store, this.dbService, accessJti);
   }
 
   async logout(params: { accessToken?: string; refreshToken?: string }) {
@@ -325,6 +354,9 @@ export class AuthService implements OnModuleInit {
     const riskLevel = this.normalizeOptionalText(prefs.riskLevel) ?? '稳健';
     const nickname = this.normalizeOptionalText(prefs.nickname);
     const avatarUrl = this.normalizeOptionalText(prefs.avatarUrl);
+    const sanitizedPreferences = { ...prefs };
+    delete (sanitizedPreferences as { totpSecret?: unknown }).totpSecret;
+    delete (sanitizedPreferences as { totpBackupCodes?: unknown }).totpBackupCodes;
     return {
       id: user.id,
       username: user.username,
@@ -332,7 +364,7 @@ export class AuthService implements OnModuleInit {
       riskLevel,
       nickname: nickname ?? null,
       avatarUrl: avatarUrl ?? null,
-      preferences: prefs,
+      preferences: sanitizedPreferences,
     };
   }
 
@@ -340,6 +372,41 @@ export class AuthService implements OnModuleInit {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
+  }
+
+  private async verifyTwoFactorIfRequired(
+    userId: string,
+    prefs: Record<string, unknown>,
+    otpCode?: string,
+  ): Promise<boolean> {
+    const enabled = Boolean((prefs as { totpEnabled?: boolean }).totpEnabled);
+    if (!enabled) {
+      return false;
+    }
+
+    const normalizedCode = String(otpCode ?? '').trim().replace(/\s+/g, '').toUpperCase();
+    if (!normalizedCode) {
+      throw new UnauthorizedException('请输入 2FA 验证码');
+    }
+
+    const secret = (prefs as { totpSecret?: string }).totpSecret;
+    if (secret && /^\d{6}$/.test(normalizedCode) && this.totpService.verify(normalizedCode, secret)) {
+      return true;
+    }
+
+    const backupCodes = Array.isArray((prefs as { totpBackupCodes?: unknown[] }).totpBackupCodes)
+      ? ((prefs as { totpBackupCodes?: unknown[] }).totpBackupCodes as unknown[])
+      : [];
+    const matchedBackupCode = backupCodes.find((item) => String(item ?? '').trim().toUpperCase() === normalizedCode);
+    if (matchedBackupCode) {
+      await this.preferencesService.setUserPreferences(userId, {
+        ...prefs,
+        totpBackupCodes: backupCodes.filter((item) => String(item ?? '').trim().toUpperCase() !== normalizedCode),
+      });
+      return true;
+    }
+
+    throw new UnauthorizedException('2FA 验证码无效');
   }
 
   private isProductionEnv(): boolean {

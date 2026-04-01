@@ -19,7 +19,7 @@ const LOGIN_HIGHLIGHTS = [
   },
   {
     title: '稳定提交链路',
-    description: '认证入口保持同源 POST 提交，不改现有登录接口与跳转逻辑。',
+    description: '认证入口保持同源 POST 提交，并把 2FA 校验接回真实登录链路。',
   },
 ] as const;
 
@@ -27,6 +27,7 @@ export default function LoginPage() {
   const hydrated = useHydrated();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [otpCode, setOtpCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,7 +42,7 @@ export default function LoginPage() {
       const response = await fetch(LOGIN_ACTION, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, otpCode: otpCode.trim() || undefined }),
         credentials: 'include',
       });
 
@@ -146,6 +147,20 @@ export default function LoginPage() {
               />
             </label>
 
+            <label htmlFor="login-otp" className="grid gap-1.5">
+              <span className="text-sm font-medium text-text-primary">2FA 验证码（如已启用）</span>
+              <input
+                id="login-otp"
+                type="text"
+                name="otpCode"
+                placeholder="6 位动态码或 8 位恢复码"
+                autoComplete="one-time-code"
+                value={otpCode}
+                onChange={(e) => setOtpCode(e.target.value.replace(/\s+/g, '').slice(0, 8))}
+                className="px-3 py-2.5 text-sm font-mono tracking-[0.25em]"
+              />
+            </label>
+
             {error ? (
               <p
                 className="m-0 rounded-[18px] border border-danger/18 bg-danger/8 px-3 py-2 text-sm text-error"
@@ -165,7 +180,8 @@ export default function LoginPage() {
           </form>
 
           <div className="panel-soft mt-4 rounded-[20px] px-4 py-3 text-xs leading-5 text-text-secondary">
-            登录成功后会维持现有跳转逻辑：优先回到 `redirect` 指定页面，否则进入 `/market`。
+            已启用 2FA 的账户需要填写动态码或恢复码。登录成功后会维持现有跳转逻辑：优先回到 `redirect`
+            指定页面，否则进入 `/market`。
           </div>
 
           <p className="mb-0 mt-4 text-sm text-text-secondary">

@@ -15,6 +15,7 @@ type IcHistoryItem = { date: string; ic_value?: number; rank_ic?: number; stock_
 @Injectable()
 export class FactorService {
   private static readonly LIBRARY_TTL_SECONDS = 3600;
+  private static readonly CALCULATE_FACTOR_CONCURRENCY = 4;
 
   constructor(
     private readonly mcp: McpGatewayService,
@@ -26,43 +27,72 @@ export class FactorService {
     const ttlSeconds = this.cacheService.resolveTtl('factor.library', FactorService.LIBRARY_TTL_SECONDS);
     const cached = await this.cacheService.getWithMeta(cacheKey);
     if (cached.value) {
-      return { ...cached.value as Record<string, unknown>, meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } } };
+      return {
+        ...(cached.value as Record<string, unknown>),
+        meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } },
+      };
     }
 
     const payload = await this.mcp.callTool('get_factor_library', {});
-    const result = { data: this.normalizeLibrary(payload), meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } };
+    const result = {
+      ...this.normalizeLibrary(payload),
+      meta: {
+        fetchedAt: new Date().toISOString(),
+        cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds },
+      },
+    };
     await this.cacheService.set(cacheKey, result, ttlSeconds);
     return result;
   }
 
   async calculateFactor(body: { factor_name: string; stock_codes: string[]; start_date?: string; end_date?: string }) {
-    // calculate_factor accepts a single code + factor; call per stock and merge
-    const results: unknown[] = [];
-    for (const code of body.stock_codes) {
-      const payload = await this.mcp.callTool('calculate_factor', { code, factor: body.factor_name });
+    const stockCodes = this.normalizeCodes(body.stock_codes);
+    const sharedArgs = this.withDateRangeArgs({ factor: body.factor_name }, body);
+    const concurrency = Math.min(FactorService.CALCULATE_FACTOR_CONCURRENCY, Math.max(stockCodes.length, 1));
+    const results = await this.mapWithConcurrency(stockCodes, concurrency, async (code) => {
+      const payload = await this.mcp.callTool('calculate_factor', { code, ...sharedArgs });
       const flat = this.flattenMcpResult(payload);
-      results.push({ stock_code: code, ...flat });
-    }
-    return { data: results };
+      return { stock_code: code, ...flat };
+    });
+    return {
+      factor_name: body.factor_name,
+      start_date: body.start_date ?? null,
+      end_date: body.end_date ?? null,
+      requested_count: stockCodes.length,
+      completed_count: results.length,
+      results,
+    };
   }
 
   async calculateIc(body: { factor_name: string; stock_codes: string[] }) {
-    const payload = await this.mcp.callTool('calculate_factor_ic', { codes: body.stock_codes, factor: body.factor_name });
+    const payload = await this.mcp.callTool('calculate_factor_ic', {
+      codes: body.stock_codes,
+      factor: body.factor_name,
+    });
     return this.flattenMcpResult(payload);
   }
 
   async backtestFactor(body: { factor_name: string; stock_codes: string[]; start_date?: string; end_date?: string }) {
-    const payload = await this.mcp.callTool('backtest_factor', { codes: body.stock_codes, factor: body.factor_name });
+    const payload = await this.mcp.callTool(
+      'backtest_factor',
+      this.withDateRangeArgs({ codes: this.normalizeCodes(body.stock_codes), factor: body.factor_name }, body),
+    );
     return this.flattenMcpResult(payload);
   }
 
   async validateOos(body: { factor_name: string; stock_codes: string[]; start_date?: string; end_date?: string }) {
-    const payload = await this.mcp.callTool('validate_factor_oos', { codes: body.stock_codes, factor: body.factor_name });
+    const payload = await this.mcp.callTool(
+      'validate_factor_oos',
+      this.withDateRangeArgs({ codes: this.normalizeCodes(body.stock_codes), factor: body.factor_name }, body),
+    );
     return this.flattenMcpResult(payload);
   }
 
   async robustnessCheck(body: { factor_name: string; stock_codes: string[]; start_date?: string; end_date?: string }) {
-    const payload = await this.mcp.callTool('factor_robustness_check', { codes: body.stock_codes, factor: body.factor_name });
+    const payload = await this.mcp.callTool(
+      'factor_robustness_check',
+      this.withDateRangeArgs({ codes: this.normalizeCodes(body.stock_codes), factor: body.factor_name }, body),
+    );
     return this.flattenMcpResult(payload);
   }
 
@@ -72,12 +102,12 @@ export class FactorService {
       period: params.period ?? '20',
       limit: params.limit ?? 60,
     });
-    return { data: payload };
+    return payload;
   }
 
   async decay(params: { factor_name: string; period?: string; limit?: number }) {
     const historyResp = await this.icHistory(params);
-    const root = this.flattenMcpResult(historyResp?.data);
+    const root = this.flattenMcpResult(historyResp);
     const raw = Array.isArray(root.history) ? root.history : [];
     const list = raw.map((row) => {
       const record = this.asRecord(row);
@@ -90,26 +120,33 @@ export class FactorService {
     }) as IcHistoryItem[];
     const sorted = list.filter((r) => r.date).sort((a, b) => a.date.localeCompare(b.date));
     const absIc = sorted.map((r) => Math.abs(this.toNum(r.ic_value) ?? 0));
-    const base = absIc.length ? (absIc[0] || 1e-9) : 1e-9;
-    const decayCurve = sorted.map((r, idx) => ({ date: r.date, value: base > 0 ? (absIc[idx] / base) : 0 }));
+    const base = absIc.length ? absIc[0] || 1e-9 : 1e-9;
+    const decayCurve = sorted.map((r, idx) => ({ date: r.date, value: base > 0 ? absIc[idx] / base : 0 }));
 
     let halfLife: number | null = null;
     for (let i = 0; i < decayCurve.length; i += 1) {
-      if ((decayCurve[i]?.value ?? 0) <= 0.5) { halfLife = i; break; }
+      if ((decayCurve[i]?.value ?? 0) <= 0.5) {
+        halfLife = i;
+        break;
+      }
     }
 
     return {
-      data: {
-        factor_name: params.factor_name,
-        period: params.period ?? '20',
-        sample_count: sorted.length,
-        half_life: halfLife,
-        decay_curve: decayCurve,
-      },
+      factor_name: params.factor_name,
+      period: params.period ?? '20',
+      sample_count: sorted.length,
+      half_life: halfLife,
+      decay_curve: decayCurve,
     };
   }
 
-  async batchCompute(params: { codes: string[]; factors?: string[]; persist?: boolean; compute_ic?: boolean; period?: number }) {
+  async batchCompute(params: {
+    codes: string[];
+    factors?: string[];
+    persist?: boolean;
+    compute_ic?: boolean;
+    period?: number;
+  }) {
     const payload = await this.callQuantManager('batch_compute_factors', {
       codes: params.codes,
       factors: params.factors ?? ['momentum', 'value', 'quality'],
@@ -117,7 +154,7 @@ export class FactorService {
       compute_ic: params.compute_ic ?? true,
       period: params.period ?? 20,
     });
-    return { data: payload };
+    return payload;
   }
 
   async llmFactorMining(body: {
@@ -271,6 +308,85 @@ export class FactorService {
     return this.flattenMcpResult(payload);
   }
 
+  async observability() {
+    const sections = await Promise.allSettled([
+      this.schedulerStatus(),
+      this.factorCandidateRegistry({ op: 'summary', limit: 200 }),
+      this.factorCandidateRegistry({ op: 'active_pool', limit: 20 }),
+      this.factorResearchMemory({ op: 'stats', limit: 200 }),
+      this.callQuantManager('model_registry', { op: 'summary', limit: 200 }).then((payload) =>
+        this.flattenMcpResult(payload),
+      ),
+      this.callQuantManager('model_registry', { op: 'retrain_summary', limit: 200 }).then((payload) =>
+        this.flattenMcpResult(payload),
+      ),
+      this.callQuantManager('model_registry', { op: 'retrain_list', limit: 5 }).then((payload) =>
+        this.flattenMcpResult(payload),
+      ),
+    ]);
+
+    const scheduler = this.unwrapSettledObject(sections[0], 'scheduler');
+    const registrySummaryRoot = this.unwrapSettledObject(sections[1], 'registry_summary');
+    const activePoolRoot = this.unwrapSettledObject(sections[2], 'active_pool');
+    const memoryRoot = this.unwrapSettledObject(sections[3], 'memory_stats');
+    const modelRoot = this.unwrapSettledObject(sections[4], 'model_registry_summary');
+    const retrainSummaryRoot = this.unwrapSettledObject(sections[5], 'retrain_summary');
+    const retrainQueueRoot = this.unwrapSettledObject(sections[6], 'retrain_queue');
+
+    const registrySummary = this.asRecord(registrySummaryRoot.data.summary);
+    const activePool = this.asRecord(activePoolRoot.data.active_pool);
+    const memoryStats = this.asRecord(memoryRoot.data.stats);
+    const modelRegistrySummary = this.asRecord(modelRoot.data.summary);
+    const retrainSummary = this.asRecord(retrainSummaryRoot.data.summary);
+    const retrainQueue = this.asRecordArray(retrainQueueRoot.data.items);
+    const lastResult = this.asRecord(scheduler.data.last_result);
+    const lastValidation = this.asRecord(lastResult.llm_validation);
+
+    return {
+      overview: {
+        scheduler_quality_status: scheduler.data.quality_status ?? null,
+        scheduler_stale: Boolean(scheduler.data.stale),
+        candidate_count: this.toNum(registrySummary.count) ?? 0,
+        active_count: this.toNum(registrySummary.active_count) ?? this.toNum(activePool.count) ?? 0,
+        governed_active_count: this.toNum(registrySummary.governed_active_count) ?? 0,
+        blocked_count: this.toNum(registrySummary.blocked_count) ?? 0,
+        excluded_count: this.toNum(activePool.excluded_count) ?? 0,
+        champion_count: this.toNum(modelRegistrySummary.champion_count) ?? 0,
+        challenger_count: this.toNum(modelRegistrySummary.challenger_count) ?? 0,
+        latest_active_candidate_updated_at: activePool.latest_active_candidate_updated_at ?? null,
+        latest_blocked_candidate_updated_at: activePool.latest_blocked_candidate_updated_at ?? null,
+        recent_generated_candidate_count: this.toNum(lastValidation.generated_candidate_count) ?? 0,
+        recent_validated_candidate_count: this.toNum(lastValidation.validated_candidate_count) ?? 0,
+        recent_validation_failed_count: this.toNum(lastValidation.validation_failed_count) ?? 0,
+        recent_active_pool_count_after_run: this.toNum(lastValidation.active_pool_count_after_run) ?? 0,
+        recent_governed_active_count_after_run: this.toNum(lastValidation.governed_active_count_after_run) ?? 0,
+        retrain_plan_count: this.toNum(retrainSummary.count) ?? 0,
+        retrain_pending_count: this.toNum(this.asRecord(retrainSummary.status_counts).planned) ?? 0,
+      },
+      scheduler: scheduler.data,
+      recent_run: {
+        last_result: lastResult,
+        llm_validation: lastValidation,
+      },
+      registry_summary: registrySummary,
+      active_pool: activePool,
+      memory_stats: memoryStats,
+      model_registry_summary: modelRegistrySummary,
+      retrain_summary: retrainSummary,
+      retrain_queue: retrainQueue,
+      degraded: sections.some((section) => section.status === 'rejected'),
+      errors: [
+        scheduler.error,
+        registrySummaryRoot.error,
+        activePoolRoot.error,
+        memoryRoot.error,
+        modelRoot.error,
+        retrainSummaryRoot.error,
+        retrainQueueRoot.error,
+      ].filter(Boolean),
+    };
+  }
+
   private async callQuantManager(action: string, params: Record<string, unknown> = {}) {
     return this.mcp.callTool('quant_manager', {
       action,
@@ -288,7 +404,9 @@ export class FactorService {
         description: String(factor.description ?? factor.desc ?? ''),
         category: String(factor.category ?? factor.group ?? ''),
         default_period: this.toNum(factor.default_period) ?? 20,
-        data_dependency: Array.isArray(factor.data_dependency) ? factor.data_dependency.map((item) => String(item)) : ['kline'],
+        data_dependency: Array.isArray(factor.data_dependency)
+          ? factor.data_dependency.map((item) => String(item))
+          : ['kline'],
       })),
     };
   }
@@ -326,5 +444,75 @@ export class FactorService {
     return value.filter(
       (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item),
     );
+  }
+
+  private unwrapSettledObject(
+    result: PromiseSettledResult<Record<string, unknown>>,
+    section: string,
+  ): { data: Record<string, unknown>; error: string | null } {
+    if (result.status === 'fulfilled') {
+      return { data: result.value ?? {}, error: null };
+    }
+    const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    return {
+      data: {},
+      error: `${section}: ${message}`,
+    };
+  }
+
+  private normalizeCodes(codes: string[]): string[] {
+    const seen = new Set<string>();
+    return codes
+      .map((code) => String(code ?? '').trim())
+      .filter((code) => code.length > 0)
+      .filter((code) => {
+        if (seen.has(code)) return false;
+        seen.add(code);
+        return true;
+      });
+  }
+
+  private withDateRangeArgs<T extends Record<string, unknown>>(
+    base: T,
+    body: { start_date?: string; end_date?: string },
+  ): T & { start_date?: string; end_date?: string } {
+    const result: T & { start_date?: string; end_date?: string } = { ...base };
+    const startDate = body.start_date?.trim();
+    const endDate = body.end_date?.trim();
+    if (startDate) {
+      result.start_date = startDate;
+    }
+    if (endDate) {
+      result.end_date = endDate;
+    }
+    return result;
+  }
+
+  private async mapWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    mapper: (item: T, index: number) => Promise<R>,
+  ): Promise<R[]> {
+    if (items.length === 0) {
+      return [];
+    }
+
+    const results = new Array<R>(items.length);
+    const workerCount = Math.max(1, Math.min(concurrency, items.length));
+    let nextIndex = 0;
+
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        if (currentIndex >= items.length) {
+          return;
+        }
+        results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+      }
+    });
+
+    await Promise.all(workers);
+    return results;
   }
 }

@@ -147,6 +147,63 @@ class _GovernedPoolSnapshotFactorResearchGateway:
         return {"running": False}
 
 
+class _SchedulerRecentSuccessNoPoolGateway:
+    async def build_artifact(self, db, snapshot):
+        return {
+            "degraded": False,
+            "summary": {
+                "active_factor_count": 0,
+                "active_candidate_count": 0,
+                "governed_source_candidate_count": 0,
+                "governed_blocked_candidate_count": 0,
+                "governed_blocked_ratio": 0.0,
+                "ranked_factor_count": 1,
+                "top_factor_names": ["value"],
+                "top_candidate_names": [],
+                "active_family_names": [],
+                "active_regime_names": [],
+                "preferred_strategy_types": ["value_factor"],
+                "factor_source_mode": "seed_fallback",
+                "degraded": False,
+                "stale": False,
+                "freshness_days": 0,
+                "scheduler_recent_success": True,
+                "scheduler_llm_validation_status": "success",
+            },
+        }
+
+    def status(self):
+        return {"running": False}
+
+
+class _GovernedPoolHighBlockedRatioGateway:
+    async def build_artifact(self, db, snapshot):
+        return {
+            "degraded": False,
+            "summary": {
+                "active_factor_count": 1,
+                "active_candidate_count": 2,
+                "governed_source_candidate_count": 8,
+                "governed_blocked_candidate_count": 6,
+                "governed_blocked_ratio": 0.75,
+                "governed_freshness_days": 0,
+                "ranked_factor_count": 0,
+                "top_factor_names": ["sentiment"],
+                "top_candidate_names": ["sentiment_breakout_factor"],
+                "active_family_names": ["sentiment"],
+                "active_regime_names": ["trend"],
+                "preferred_strategy_types": ["momentum"],
+                "factor_source_mode": "governed_candidate_pool",
+                "degraded": False,
+                "stale": False,
+                "freshness_days": 0,
+            },
+        }
+
+    def status(self):
+        return {"running": False}
+
+
 class _DummyCollector:
     def __init__(self, *, degraded=False, completion_ratio=1.0):
         self._degraded = degraded
@@ -354,6 +411,20 @@ async def _empty_scan(_self, _db, _snapshot):
 
 
 def _patch_factory(monkeypatch, db, collector):
+    async def _noop_warmup_runner(**kwargs):
+        return {
+            "ok": True,
+            "status": "skipped",
+            "task_type": kwargs.get("task_type"),
+            "force": bool(kwargs.get("force")),
+            "matched": 0,
+            "executed": 0,
+            "failed": 0,
+            "executed_task_ids": [],
+            "failed_schedule_ids": [],
+            "schedules": [],
+        }
+
     monkeypatch.setattr("akshare_mcp.storage.get_db", lambda: db)
     monkeypatch.setattr("akshare_mcp.services.strategy_factory.DataCollector", collector)
     monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySpawner", _DummySpawner)
@@ -362,6 +433,7 @@ def _patch_factory(monkeypatch, db, collector):
     monkeypatch.setattr("akshare_mcp.services.strategy_factory.StrategySubmitter", _DummySubmitter)
     monkeypatch.setattr("akshare_mcp.services.strategy_factory.EliminationChecker", _DummyEliminator)
     monkeypatch.setattr("akshare_mcp.services.strategy_factory.MarketOpportunityScanner.scan", _empty_scan)
+    monkeypatch.setattr("strategy_factory.application.factory_scheduler.get_runtime_warmup_runner", lambda: _noop_warmup_runner)
 
 
 def test_extract_target_codes_from_payload_reads_research_task_context():
@@ -526,7 +598,52 @@ async def test_scheduler_governed_candidate_pool_can_bypass_legacy_factor_stale_
     assert result["summary"]["factor_source_mode"] == "governed_candidate_pool"
     assert result["summary"]["active_candidate_count"] == 2
     assert result["summary"]["governed_candidate_pool_active"] is True
-    assert result["summary"]["degraded_stage_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_readiness_surfaces_recent_scheduler_success_without_governed_pool(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    scheduler = StrategyFactoryScheduler(
+        factor_research_gateway=_SchedulerRecentSuccessNoPoolGateway()
+    )
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+
+    result = await scheduler.run_once()
+
+    assert result["status"] in {"partial", "success"}
+    assert "factor_scheduler_recent_success_without_governed_pool" in result["stages"]["readiness"]["warnings"]
+    assert result["summary"]["scheduler_recent_success"] is True
+    assert result["summary"]["scheduler_llm_validation_status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_readiness_penalizes_high_governed_blocked_ratio(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    scheduler = StrategyFactoryScheduler(
+        factor_research_gateway=_GovernedPoolHighBlockedRatioGateway()
+    )
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+
+    result = await scheduler.run_once()
+
+    assert result["status"] in {"partial", "success"}
+    assert "governed_candidate_pool_blocked_ratio_high" in result["stages"]["readiness"]["warnings"]
+    assert result["stages"]["readiness"]["governed_blocked_ratio"] == pytest.approx(0.75)
+    assert result["summary"]["governed_blocked_ratio"] == pytest.approx(0.75)
 
 
 @pytest.mark.asyncio

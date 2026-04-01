@@ -11,6 +11,14 @@ import { Badge, KpiCard, KpiGrid, PageContainer, SectionCard, TabBar } from '@/c
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { fmtNum, fmtPct } from '@/lib/data-utils';
+import {
+  DETAIL_TABS,
+  FACTORY_SECTIONS,
+  extractTraceId,
+  firstFiniteNumber,
+  formatMultipleTestingMode,
+  isMissingStrategyError,
+} from '@/app/strategy-market/lib/strategy-detail-view';
 import { useAuthStore } from '@/store/auth-store';
 import { useCartStore } from '@/store/cart-store';
 import { useWorkbenchStore } from '@/store/workbench-store';
@@ -18,50 +26,6 @@ import { FactoryReviewPanel } from '../components/FactoryReviewPanel';
 import { LiveTrackingPanel } from '../components/LiveTrackingPanel';
 import { useStrategyDetailPage } from '../hooks/use-strategy-detail-page';
 import type { FactoryReviewSection } from '../types';
-
-const DETAIL_TABS = [
-  { key: 'overview', label: '策略概览' },
-  { key: 'tracking', label: '实盘跟踪' },
-  { key: 'factory', label: '工厂审查' },
-] as const;
-
-const FACTORY_SECTIONS: FactoryReviewSection[] = ['summary', 'incubation', 'runtime', 'vectors', 'experiments'];
-
-function extractTraceId(text: string | null): string | null {
-  const source = String(text ?? '');
-  const match = source.match(/trace[_-]?[A-Za-z0-9]+/i) ?? source.match(/traceId:\s*([A-Za-z0-9_-]+)/i);
-  if (!match) return null;
-  return match[1] ?? match[0] ?? null;
-}
-
-function isMissingStrategyError(text: string | null): boolean {
-  const source = String(text ?? '').toLowerCase();
-  return (
-    source.includes('404') ||
-    source.includes('not_found') ||
-    source.includes('strategy not found') ||
-    source.includes('不存在') ||
-    source.includes('未找到')
-  );
-}
-
-function firstFiniteNumber(...values: Array<number | null | undefined>) {
-  for (const value of values) {
-    if (value != null && Number.isFinite(Number(value))) {
-      return Number(value);
-    }
-  }
-  return null;
-}
-
-function formatMultipleTestingMode(value?: string | null) {
-  const mode = String(value ?? '').trim();
-  if (!mode) return '-';
-  if (mode === 'formal_runtime') return '正式论文实现';
-  if (mode === 'paper_runtime') return '论文实现';
-  if (mode === 'runtime_proxy') return '运行时代理';
-  return mode.replaceAll('_', ' ');
-}
 
 export default function StrategyDetailPage() {
   const { id } = useParams<{ id: string }>();

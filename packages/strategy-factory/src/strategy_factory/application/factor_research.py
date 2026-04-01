@@ -185,6 +185,72 @@ class FactorResearchBuilder:
         }
 
     @classmethod
+    async def _load_model_registry_lineage(
+        cls,
+        candidates: List[dict[str, Any]],
+    ) -> dict[str, Any]:
+        quant_manager = None
+        try:
+            quant_manager = get_quant_manager_callable()
+        except Exception:
+            quant_manager = None
+        if quant_manager is None:
+            return {"available": False, "reason": "quant_manager_unavailable"}
+
+        validation_ids = list(
+            dict.fromkeys(
+                [
+                    str(item.get("source_validation_artifact_id") or item.get("artifact_id") or "").strip()
+                    for item in list(candidates or [])
+                    if str(item.get("source_validation_artifact_id") or item.get("artifact_id") or "").strip()
+                ]
+            )
+        )
+        generation_ids = list(
+            dict.fromkeys(
+                [
+                    str(item.get("source_generation_artifact_id") or "").strip()
+                    for item in list(candidates or [])
+                    if str(item.get("source_generation_artifact_id") or "").strip()
+                ]
+            )
+        )
+        if not validation_ids and not generation_ids:
+            return {"available": False, "reason": "candidate_lineage_missing"}
+
+        try:
+            result = await quant_manager(
+                action="model_registry",
+                kwargs={
+                    "op": "lineage",
+                    "validation_artifact_ids": validation_ids,
+                    "generation_artifact_ids": generation_ids,
+                    "limit": max(10, len(validation_ids) * 4, len(generation_ids) * 4),
+                    "market_codes_only": True,
+                },
+            )
+        except Exception as exc:
+            return {"available": False, "reason": f"model_registry_lineage_failed:{exc}"}
+
+        if not isinstance(result, dict) or not result.get("success"):
+            return {
+                "available": False,
+                "reason": str((result or {}).get("error") or (result or {}).get("message") or "model_registry_lineage_unavailable"),
+            }
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        items = [dict(item or {}) for item in list(data.get("items") or []) if isinstance(item, dict)]
+        return {
+            "available": True,
+            "summary": dict(data.get("summary") or {}),
+            "items": items,
+            "by_validation_artifact_id": {
+                str(item.get("validation_artifact_id") or "").strip(): item
+                for item in items
+                if str(item.get("validation_artifact_id") or "").strip()
+            },
+        }
+
+    @classmethod
     async def build(cls, db, snapshot: dict[str, Any]) -> dict[str, Any]:
         factor_ic = dict(snapshot.get("factor_ic") or {})
         factor_trend = dict(snapshot.get("factor_ic_trend") or {})
@@ -222,6 +288,9 @@ class FactorResearchBuilder:
             for item in list(active_candidate_pool.get("regime_summary") or [])
             if isinstance(item, dict)
         ]
+        model_registry_lineage = dict(await cls._load_model_registry_lineage(governed_top_candidates[:5]) or {})
+        model_lineage_summary = dict(model_registry_lineage.get("summary") or {})
+        model_lineage_by_validation_id = dict(model_registry_lineage.get("by_validation_artifact_id") or {})
         governed_source_candidate_count = int(
             active_candidate_pool.get("source_count")
             or governed_registry_summary.get("active_count")
@@ -238,8 +307,73 @@ class FactorResearchBuilder:
             for key, value in dict(active_candidate_pool.get("exclusion_reason_counts") or {}).items()
             if str(key).strip()
         }
+        snapshot_date = cls._parse_date(snapshot.get("date"))
+
+        def _enrich_governed_candidate(item: dict[str, Any]) -> dict[str, Any]:
+            payload = dict(item or {})
+            latest_validation_at = payload.get("latest_validation_at") or payload.get("updated_at") or payload.get("created_at")
+            latest_validation_age_days = (
+                cls._days_since(
+                    cls._parse_date(latest_validation_at),
+                    reference_date=snapshot_date,
+                )
+                if snapshot_date is not None
+                else None
+            )
+            expected_regime = [
+                str(value).strip()
+                for value in list(payload.get("expected_regime") or [])
+                if str(value).strip()
+            ]
+            risk_audit = dict(payload.get("risk_audit") or {})
+            evidence_status = {
+                "required_audits_complete": bool(risk_audit.get("required_audits_complete")),
+                "lookahead_available": bool(risk_audit.get("lookahead_available")),
+                "multiple_testing_available": bool(risk_audit.get("multiple_testing_available")),
+                "overall_risk_level": str(risk_audit.get("overall_risk_level") or "").strip().lower() or None,
+                "blocked": bool(risk_audit.get("blocked")),
+            }
+            payload["expected_regime"] = expected_regime
+            payload["expected_holding_period"] = payload.get("expected_holding_period")
+            payload["latest_validation_at"] = latest_validation_at
+            payload["latest_validation_age_days"] = latest_validation_age_days
+            payload["admission_block_reasons"] = list(
+                payload.get("admission_block_reasons") or risk_audit.get("block_reasons") or []
+            )
+            payload["evidence_status"] = evidence_status
+            return payload
+
+        governed_top_candidates = [_enrich_governed_candidate(item) for item in governed_top_candidates]
+        governed_excluded_candidates = [_enrich_governed_candidate(item) for item in governed_excluded_candidates]
+        active_candidate_pool["top_candidates"] = governed_top_candidates
+        active_candidate_pool["excluded_candidates"] = governed_excluded_candidates
+
+        governed_latest_candidate_at = (
+            active_candidate_pool.get("latest_active_candidate_updated_at")
+            or active_candidate_pool.get("latest_candidate_updated_at")
+        )
+        governed_latest_candidate_date = cls._parse_date(governed_latest_candidate_at)
+        governed_freshness_days = cls._days_since(
+            governed_latest_candidate_date,
+            reference_date=snapshot_date,
+        )
+        governed_blocked_ratio = round(
+            governed_blocked_candidate_count / max(governed_source_candidate_count, 1),
+            6,
+        ) if governed_source_candidate_count > 0 else 0.0
         scheduler_status = dict(get_factor_scheduler_singleton().status() or {})
+        scheduler_last_result = dict(scheduler_status.get("last_result") or {})
+        scheduler_llm_validation = dict(scheduler_last_result.get("llm_validation") or {})
         scheduler_quality_flags = list(scheduler_status.get("quality_flags") or [])
+        scheduler_freshness_sec = cls._safe_float(scheduler_status.get("freshness_sec"))
+        scheduler_recent_success = bool(
+            scheduler_status.get("last_run")
+            and scheduler_freshness_sec <= float(getattr(get_factor_scheduler_singleton(), "STALE_AFTER_SEC", 24 * 60 * 60))
+            and "failed" not in scheduler_quality_flags
+        )
+        scheduler_llm_validation_status = (
+            str(scheduler_llm_validation.get("status") or "").strip().lower() or None
+        )
         factor_ic_source = dict((snapshot.get("sources") or {}).get("factor_ic") or {})
 
         for factor_name in names:
@@ -319,6 +453,78 @@ class FactorResearchBuilder:
             for item in governed_top_candidates[:5]
             if str(item.get("name") or "")
         ]
+        top_candidate_lineage = [
+            (
+                lambda entry, lineage_item: {
+                "artifact_id": str(entry.get("artifact_id") or "").strip() or None,
+                "name": str(entry.get("name") or "").strip() or None,
+                "family": str(entry.get("family") or "").strip() or None,
+                "registry_stage": str(entry.get("registry_stage") or "").strip() or None,
+                "expected_regime": [
+                    str(value).strip()
+                    for value in list(entry.get("expected_regime") or [])
+                    if str(value).strip()
+                ],
+                "expected_holding_period": entry.get("expected_holding_period"),
+                "source_generation_artifact_id": str(entry.get("source_generation_artifact_id") or "").strip() or None,
+                "source_validation_artifact_id": (
+                    str(entry.get("source_validation_artifact_id") or entry.get("artifact_id") or "").strip() or None
+                ),
+                "memory_record_id": str(entry.get("memory_record_id") or "").strip() or None,
+                "latest_validation_at": entry.get("latest_validation_at") or entry.get("updated_at") or entry.get("created_at"),
+                "latest_validation_age_days": entry.get("latest_validation_age_days"),
+                "admission_block_reasons": list(entry.get("admission_block_reasons") or []),
+                "evidence_status": dict(entry.get("evidence_status") or {}),
+                "model_registry_artifact_ids": [
+                    str(model_item.get("artifact_id") or "").strip()
+                    for model_item in list((lineage_item or {}).get("model_registry_items") or [])
+                    if str(model_item.get("artifact_id") or "").strip()
+                ],
+                "model_registry_stages": list((lineage_item or {}).get("deployment_stages") or []),
+                "latest_retrain_run_status": (
+                    (lineage_item.get("latest_retrain_run") or {}).get("status")
+                    if isinstance(lineage_item, dict)
+                    else None
+                ),
+                "retrain_plan_statuses": list((lineage_item or {}).get("retrain_statuses") or []),
+                "retrain_plan_ids": [
+                    str(plan.get("artifact_id") or plan.get("plan_id") or "").strip()
+                    for plan in list((lineage_item or {}).get("retrain_plans") or [])
+                    if str(plan.get("artifact_id") or plan.get("plan_id") or "").strip()
+                ],
+                "lineage_available": bool(model_registry_lineage.get("available")),
+            }
+            )(
+                item,
+                model_lineage_by_validation_id.get(
+                    str(item.get("source_validation_artifact_id") or item.get("artifact_id") or "").strip()
+                ),
+            )
+            for item in governed_top_candidates[:5]
+        ]
+        blocked_candidate_lineage = [
+            {
+                "artifact_id": str(item.get("artifact_id") or "").strip() or None,
+                "name": str(item.get("name") or "").strip() or None,
+                "family": str(item.get("family") or "").strip() or None,
+                "registry_stage": str(item.get("registry_stage") or "").strip() or None,
+                "expected_regime": [
+                    str(value).strip()
+                    for value in list(item.get("expected_regime") or [])
+                    if str(value).strip()
+                ],
+                "expected_holding_period": item.get("expected_holding_period"),
+                "source_generation_artifact_id": str(item.get("source_generation_artifact_id") or "").strip() or None,
+                "source_validation_artifact_id": (
+                    str(item.get("source_validation_artifact_id") or item.get("artifact_id") or "").strip() or None
+                ),
+                "latest_validation_at": item.get("latest_validation_at") or item.get("updated_at") or item.get("created_at"),
+                "latest_validation_age_days": item.get("latest_validation_age_days"),
+                "admission_block_reasons": list(item.get("admission_block_reasons") or item.get("reasons") or []),
+                "evidence_status": dict(item.get("evidence_status") or {}),
+            }
+            for item in governed_excluded_candidates[:5]
+        ]
         rationale: List[str] = []
         if active_factors:
             rationale.append(f"活跃因子: {', '.join(active_factors)}")
@@ -330,8 +536,20 @@ class FactorResearchBuilder:
             rationale.append(f"治理候选池存在 {governed_blocked_candidate_count} 个高风险候选，当前未纳入活跃池。")
         elif governed_pool.get("reason"):
             rationale.append(f"治理后候选池未生效，已回退到种子因子: {governed_pool.get('reason')}")
+        if governed_latest_candidate_at:
+            rationale.append(f"治理候选池最近验证时间: {governed_latest_candidate_at}")
+        if model_lineage_summary:
+            rationale.append(
+                "候选已接入 model/retrain 血缘: "
+                f"champion={int(model_lineage_summary.get('champion_count') or 0)} "
+                f"challenger={int(model_lineage_summary.get('challenger_count') or 0)} "
+                f"retrain_plan={int(model_lineage_summary.get('retrain_plan_count') or 0)}"
+            )
+        if governed_blocked_ratio >= 0.40:
+            rationale.append(f"治理候选池 blocked 比例偏高: {round(governed_blocked_ratio * 100, 1)}%")
+        if scheduler_recent_success and not governed_top_candidates:
+            rationale.append("调度器近期已成功运行，但治理活跃池仍为空，建议核查验证与晋级门槛。")
 
-        snapshot_date = cls._parse_date(snapshot.get("date"))
         freshness_days = cls._days_since(latest_factor_date, reference_date=snapshot_date)
         stale = bool(
             ("stale" in scheduler_quality_flags)
@@ -354,8 +572,20 @@ class FactorResearchBuilder:
             quality_flags.append("decay_detected")
         if governed_top_candidates:
             quality_flags.append("governed_candidate_pool_active")
+        if model_registry_lineage.get("available"):
+            quality_flags.append("model_registry_lineage_available")
         if governed_blocked_candidate_count:
             quality_flags.append("governed_candidate_pool_blocked_candidates")
+        if governed_blocked_ratio >= 0.75:
+            quality_flags.append("governed_candidate_pool_blocked_ratio_high")
+        elif governed_blocked_ratio >= 0.40:
+            quality_flags.append("governed_candidate_pool_blocked_ratio_elevated")
+        if governed_freshness_days is None and governed_source_candidate_count > 0:
+            quality_flags.append("governed_candidate_pool_freshness_unknown")
+        elif governed_freshness_days is not None and governed_freshness_days > cls.STALE_AFTER_DAYS:
+            quality_flags.append("governed_candidate_pool_stale")
+        if scheduler_recent_success and not governed_top_candidates:
+            quality_flags.append("scheduler_recent_success_without_governed_pool")
         factor_ic_status = str(factor_ic_source.get("status") or "")
         if factor_ic_status and factor_ic_status != "success":
             quality_flags.append(f"factor_ic_{factor_ic_status}")
@@ -378,6 +608,9 @@ class FactorResearchBuilder:
             "preferred_strategy_types": preferred_strategy_types,
             "governed_candidates": governed_top_candidates,
             "blocked_candidates": governed_excluded_candidates,
+            "top_candidate_lineage": top_candidate_lineage,
+            "blocked_candidate_lineage": blocked_candidate_lineage,
+            "model_registry_lineage": model_registry_lineage,
             "active_candidate_pool": active_candidate_pool,
             "active_family_summary": governed_family_summary,
             "active_regime_summary": governed_regime_summary,
@@ -387,6 +620,7 @@ class FactorResearchBuilder:
                 "snapshot.factor_ic_trend",
                 f"db.factor_ic_history(limit={cls.HISTORY_LIMIT})",
                 "quant_manager.factor_candidate_registry(active_pool)",
+                "quant_manager.model_registry(lineage)",
                 "factor_scheduler.status",
                 "artifact_v2",
             ],
@@ -401,12 +635,17 @@ class FactorResearchBuilder:
                 "last_run": scheduler_status.get("last_run"),
                 "freshness_sec": scheduler_status.get("freshness_sec"),
                 "quality_flags": scheduler_quality_flags,
+                "llm_validation_status": scheduler_llm_validation_status,
+                "recent_success": scheduler_recent_success,
             },
             "summary": {
                 "active_factor_count": len(active_factors),
                 "active_candidate_count": int(active_candidate_pool.get("count") or 0),
                 "governed_source_candidate_count": governed_source_candidate_count,
                 "governed_blocked_candidate_count": governed_blocked_candidate_count,
+                "governed_blocked_ratio": governed_blocked_ratio,
+                "governed_latest_candidate_at": governed_latest_candidate_at,
+                "governed_freshness_days": governed_freshness_days,
                 "ranked_factor_count": len(ranked_factors),
                 "top_factor_names": top_factor_names,
                 "top_candidate_names": top_candidate_names,
@@ -414,7 +653,15 @@ class FactorResearchBuilder:
                 "active_regime_names": [str(item.get("regime") or "") for item in governed_regime_summary if str(item.get("regime") or "")],
                 "preferred_strategy_types": preferred_strategy_types,
                 "factor_source_mode": "governed_candidate_pool" if governed_top_candidates else "seed_fallback",
+                "scheduler_last_run": scheduler_status.get("last_run"),
+                "scheduler_freshness_sec": scheduler_status.get("freshness_sec"),
+                "scheduler_recent_success": scheduler_recent_success,
+                "scheduler_llm_validation_status": scheduler_llm_validation_status,
                 "governed_exclusion_reason_counts": governed_exclusion_reason_counts,
+                "governed_registry_stage_counts": dict(governed_registry_summary.get("registry_stage_counts") or {}),
+                "top_candidate_lineage": top_candidate_lineage,
+                "model_registry_lineage_available": bool(model_registry_lineage.get("available")),
+                "model_registry_lineage_summary": model_lineage_summary,
                 "governed_risk_counts": {
                     "lookahead": dict(governed_registry_summary.get("lookahead_risk_counts") or {}),
                     "multiple_testing": dict(governed_registry_summary.get("multiple_testing_risk_counts") or {}),

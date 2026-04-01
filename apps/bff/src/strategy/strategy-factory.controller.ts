@@ -13,6 +13,12 @@ export class StrategyFactoryController {
     return { success: true, data, traceId: tid(req) };
   }
 
+  @Get('factory/observability')
+  async factoryObservability(@Req() req: Req_) {
+    const data = await this.svc.factoryObservability();
+    return { success: true, data, traceId: tid(req) };
+  }
+
   @Post('factory/run-once')
   @Roles('admin')
   async factoryRunOnce(@Req() req: Req_) {

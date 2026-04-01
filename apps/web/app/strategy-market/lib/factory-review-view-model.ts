@@ -1,0 +1,474 @@
+import { fmtNum, fmtPct } from '@/lib/data-utils';
+import type {
+  AiExperiment,
+  DomainEvent,
+  DomainProjection,
+  EventFilters,
+  FactoryReviewSection,
+  IncubationAccount,
+  IncubationMetric,
+  IncubationOverviewResponse,
+  IncubationPipelineSnapshot,
+  PaperAccount,
+  PaperAccountResponse,
+  PaperNav,
+  PaperOrder,
+  PaperPosition,
+  ProjectionSnapshot,
+  PromotionReview,
+  ReviewReportResponse,
+  RiskEvent,
+  RuntimeAlert,
+  RuntimeControl,
+  RuntimeRiskSnapshot,
+  StrategyEventsResponse,
+  TaskRun,
+  VectorIndexSnapshot,
+  VectorProfile,
+} from '@/app/strategy-market/types';
+
+export const FACTORY_SECTION_TABS: ReadonlyArray<{ key: FactoryReviewSection; label: string }> = [
+  { key: 'summary', label: '工厂摘要' },
+  { key: 'incubation', label: '孵化闭环' },
+  { key: 'runtime', label: '运行风控' },
+  { key: 'vectors', label: '向量检索' },
+  { key: 'experiments', label: '实验事件' },
+];
+
+export function formatDateTime(value?: string | null) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+export function shortText(value: unknown, length = 12) {
+  const text = String(value ?? '');
+  if (!text) return '-';
+  return text.length > length ? `${text.slice(0, length)}…` : text;
+}
+
+function formatObjectSummary(value: Record<string, unknown> | null | undefined, length = 48) {
+  const entries = Object.entries(value ?? {}).filter(([, item]) => {
+    if (item == null || item === '') return false;
+    if (Array.isArray(item)) return item.length > 0;
+    return true;
+  });
+  if (!entries.length) return '-';
+  return shortText(entries.map(([key, item]) => `${key}:${Array.isArray(item) ? item.join(',') : String(item)}`).join(' / '), length);
+}
+
+function formatIssueSummary(values: Array<string | null | undefined>, length = 48) {
+  const issues = values.map((item) => String(item ?? '').trim()).filter(Boolean);
+  if (!issues.length) return '-';
+  return shortText(issues.join(' / '), length);
+}
+
+type BuildFactoryReviewViewModelArgs = {
+  report: ReviewReportResponse | null | undefined;
+  events: StrategyEventsResponse | null | undefined;
+  incubation: IncubationOverviewResponse | null | undefined;
+  currentAccount: IncubationAccount | null | undefined;
+  latestMetric: IncubationMetric | null | undefined;
+  latestPromotionReview: PromotionReview | null | undefined;
+  latestProjectionSnapshot: ProjectionSnapshot | null | undefined;
+  runtimeControl: RuntimeControl | null | undefined;
+  domainProjection: DomainProjection | null | undefined;
+  latestIncubationPipelineSnapshot: IncubationPipelineSnapshot | null | undefined;
+  incubationPipelineSnapshots: IncubationPipelineSnapshot[];
+  paperAccount: PaperAccount | null;
+  paperPositions: PaperPosition[];
+  paperOrderSummary: PaperAccountResponse['order_summary'] | null;
+  latestPaperNav: PaperNav | null;
+  paperOrders: PaperOrder[];
+  paperNavRowsProp: PaperNav[];
+  latestRuntimeRiskSnapshot: RuntimeRiskSnapshot | null | undefined;
+  runtimeAlerts: RuntimeAlert[];
+  runtimeRiskSnapshots: RuntimeRiskSnapshot[];
+  promotionReviews: PromotionReview[];
+  incubationMetrics: IncubationMetric[];
+  riskEvents: RiskEvent[];
+  vectorProfiles: VectorProfile[];
+  similarProfiles: VectorProfile[];
+  vectorIndexSnapshots: VectorIndexSnapshot[];
+  latestVectorIndexSnapshot: VectorIndexSnapshot | null | undefined;
+  domainEvents: DomainEvent[];
+  aiExperiments: AiExperiment[];
+  taskRuns: TaskRun[];
+};
+
+export function buildFactoryReviewViewModel({
+  report,
+  events,
+  incubation,
+  currentAccount,
+  latestMetric,
+  latestPromotionReview,
+  latestProjectionSnapshot,
+  runtimeControl,
+  domainProjection,
+  latestIncubationPipelineSnapshot,
+  incubationPipelineSnapshots,
+  paperAccount,
+  paperPositions,
+  paperOrderSummary,
+  latestPaperNav,
+  paperOrders,
+  paperNavRowsProp,
+  latestRuntimeRiskSnapshot,
+  runtimeAlerts,
+  runtimeRiskSnapshots,
+  promotionReviews,
+  incubationMetrics,
+  riskEvents,
+  vectorProfiles,
+  similarProfiles,
+  vectorIndexSnapshots,
+  latestVectorIndexSnapshot,
+  domainEvents,
+  aiExperiments,
+  taskRuns,
+}: BuildFactoryReviewViewModelArgs) {
+  const review = report && typeof report === 'object' ? report : null;
+
+  const summaryState = {
+    blockers: incubation?.blockers ?? [],
+    riskFlags: incubation?.risk_flags ?? [],
+    forwardRows: (incubation?.forward_returns ?? []).map((item) => ({
+      label: item.label ?? '-',
+      hit_rate: item.hit_rate == null ? '-' : fmtPct(item.hit_rate),
+      forward_ic: item.forward_ic == null ? '-' : fmtNum(item.forward_ic, 4),
+      forward_sharpe: item.forward_sharpe == null ? '-' : fmtNum(item.forward_sharpe, 4),
+    })),
+    eventRows: (events?.events ?? []).map((item, index) => ({
+      id: `${item.created_at ?? index}`,
+      created_at: formatDateTime(item.created_at),
+      transition: `${item.from_status ?? '初始'} → ${item.to_status ?? '-'}`,
+      actor_id: item.actor_id ?? '-',
+      reason: item.reason ?? '-',
+      metadata: Object.entries(item.metadata ?? {}).map(([key, value]) => `${key}: ${String(value)}`).join(' / ') || '-',
+    })),
+    projectionRows: [
+      { item: '当前状态', value: domainProjection?.current_status ?? '-' },
+      { item: '快照版本', value: latestProjectionSnapshot?.aggregate_version ?? '-' },
+      { item: '最近重建时间', value: formatDateTime(latestProjectionSnapshot?.rebuilt_at) },
+      { item: '重建来源', value: latestProjectionSnapshot?.source ?? '-' },
+      { item: '快照任务', value: latestProjectionSnapshot?.task_run_id ?? '-' },
+      { item: '聚合版本', value: domainProjection?.aggregate_version ?? '-' },
+      { item: '状态事件数', value: domainProjection?.status_event_count ?? '-' },
+      { item: '领域事件数', value: domainProjection?.domain_event_count ?? '-' },
+      { item: '开放风险数', value: domainProjection?.open_risk_count ?? '-' },
+      {
+        item: '运行控制',
+        value: `${domainProjection?.runtime_control_mode ?? runtimeControl?.control_mode ?? 'active'} / ${domainProjection?.runtime_control_status ?? runtimeControl?.status ?? '-'}`,
+      },
+      {
+        item: '最近晋级建议',
+        value: `${domainProjection?.latest_promotion_status ?? latestPromotionReview?.status ?? '-'} / ${domainProjection?.latest_promotion_recommendation ?? latestPromotionReview?.recommendation ?? '-'}`,
+      },
+      { item: 'AI 周期数', value: domainProjection?.ai_cycle_count ?? '-' },
+      { item: '运行周期数', value: domainProjection?.runtime_cycle_count ?? '-' },
+      { item: '最近领域事件', value: formatDateTime(domainProjection?.last_domain_event_at) },
+    ],
+  };
+
+  const incubationState = {
+    promotionReviewRows: promotionReviews.map((item) => ({
+      reviewed_at: formatDateTime(item.reviewed_at),
+      status: item.status ?? '-',
+      recommendation: item.recommendation ?? '-',
+      score: fmtNum(item.score, 4),
+      stage: item.stage ?? '-',
+      review_source: item.review_source ?? '-',
+      blockers: shortText((item.blockers ?? []).join(' / ') || '-', 36),
+      risk_flags: shortText((item.risk_flags ?? []).join(' / ') || '-', 36),
+    })),
+    incubationPipelineOverviewRows: [
+      { item: '当前阶段', value: latestIncubationPipelineSnapshot?.pipeline_stage ?? currentAccount?.stage ?? '-' },
+      { item: '流水线状态', value: latestIncubationPipelineSnapshot?.pipeline_status ?? '-' },
+      { item: '最新决策', value: latestIncubationPipelineSnapshot?.latest_decision ?? latestMetric?.decision ?? '-' },
+      { item: '准备度', value: fmtNum(latestIncubationPipelineSnapshot?.readiness_score, 4) },
+      { item: '观察天数', value: latestIncubationPipelineSnapshot?.observed_days ?? '-' },
+      { item: '晋级连击', value: latestIncubationPipelineSnapshot?.promote_streak ?? '-' },
+      { item: '暂停连击', value: latestIncubationPipelineSnapshot?.halt_streak ?? '-' },
+      { item: '下一动作', value: latestIncubationPipelineSnapshot?.next_action ?? '-' },
+      { item: '自动评审', value: latestIncubationPipelineSnapshot?.auto_review ? '是' : '否' },
+      { item: '自动晋级', value: latestIncubationPipelineSnapshot?.auto_promoted ? '是' : '否' },
+      { item: '最近评估', value: formatDateTime(latestIncubationPipelineSnapshot?.evaluated_at) },
+    ],
+    incubationPipelineRows: incubationPipelineSnapshots.map((item) => ({
+      evaluated_at: formatDateTime(item.evaluated_at),
+      pipeline_stage: item.pipeline_stage ?? '-',
+      pipeline_status: item.pipeline_status ?? '-',
+      readiness_score: fmtNum(item.readiness_score, 4),
+      observed_days: item.observed_days ?? 0,
+      promote_streak: item.promote_streak ?? 0,
+      halt_streak: item.halt_streak ?? 0,
+      latest_decision: item.latest_decision ?? '-',
+      next_action: item.next_action ?? '-',
+      auto_review: item.auto_review ? '是' : '否',
+      auto_promoted: item.auto_promoted ? '是' : '否',
+    })),
+    metricRows: incubationMetrics.map((item) => ({
+      metric_date: item.metric_date ?? '-',
+      nav: fmtNum(item.nav, 4),
+      daily_return: fmtPct(item.daily_return),
+      max_drawdown: fmtPct(item.max_drawdown),
+      sharpe_ratio: fmtNum(item.sharpe_ratio, 2),
+      exposure_rate: fmtPct(item.exposure_rate),
+      alpha_decay: fmtNum(item.alpha_decay, 3),
+      drift_score: fmtNum(item.drift_score, 3),
+      decision: item.decision ?? '-',
+    })),
+    paperAccountOverviewRows: [
+      { item: '账户ID', value: paperAccount?.id ?? currentAccount?.account_id ?? '-' },
+      { item: '账户状态', value: paperAccount?.status ?? '-' },
+      { item: '孵化阶段', value: paperAccount?.incubation_stage ?? currentAccount?.stage ?? '-' },
+      { item: '初始资金', value: fmtNum(paperAccount?.initial_capital, 2) },
+      { item: '当前现金', value: fmtNum(paperAccount?.current_capital ?? latestPaperNav?.cash, 2) },
+      { item: '总资产', value: fmtNum(paperAccount?.total_value ?? latestPaperNav?.total_value, 2) },
+      { item: '最新市值', value: fmtNum(latestPaperNav?.market_value, 2) },
+      { item: '可晋级', value: paperAccount?.promotion_candidate ? '是' : '否' },
+      { item: '订单数', value: paperOrderSummary?.total_orders ?? '-' },
+      { item: '成交数', value: paperOrderSummary?.total_trades ?? '-' },
+      { item: '成交额', value: fmtNum(paperOrderSummary?.trade_amount, 2) },
+      { item: '最近NAV日', value: latestPaperNav?.nav_date ?? '-' },
+    ],
+    paperPositionRows: paperPositions.map((item) => ({
+      stock_code: item.stock_code ?? '-',
+      quantity: item.quantity ?? 0,
+      cost_price: fmtNum(item.cost_price, 4),
+      current_price: fmtNum(item.current_price, 4),
+      market_value: fmtNum(item.market_value, 2),
+      profit_rate: fmtPct(item.profit_rate),
+    })),
+    paperOrderRows: paperOrders.map((item) => ({
+      signal_date: item.signal_date ?? '-',
+      code: item.code ?? '-',
+      direction: item.direction === 'buy' ? '买入' : item.direction === 'sell' ? '卖出' : '-',
+      shares: item.shares ?? 0,
+      price: fmtNum(item.price, 4),
+      status: item.status ?? '-',
+      commission: fmtNum(item.commission, 2),
+      source: item.source ?? '-',
+      filled_at: formatDateTime(item.filled_at),
+    })),
+    paperNavTableRows: paperNavRowsProp.map((item) => ({
+      nav_date: item.nav_date ?? '-',
+      total_value: fmtNum(item.total_value, 2),
+      cash: fmtNum(item.cash, 2),
+      market_value: fmtNum(item.market_value, 2),
+      daily_return: fmtPct(item.daily_return),
+    })),
+  };
+
+  const runtimeState = {
+    riskRows: riskEvents.map((item) => ({
+      detected_at: formatDateTime(item.detected_at),
+      severity: item.severity ?? '-',
+      event_type: item.event_type ?? '-',
+      action: item.action ?? '-',
+      status: item.status ?? '-',
+      title: item.title ?? '-',
+      reason: item.reason ?? '-',
+    })),
+    runtimeRiskOverviewRows: [
+      { item: '风险姿态', value: latestRuntimeRiskSnapshot?.posture_level ?? '-' },
+      { item: '升级级别', value: latestRuntimeRiskSnapshot?.escalation_level ?? '-' },
+      { item: '控制模式', value: latestRuntimeRiskSnapshot?.control_mode ?? runtimeControl?.control_mode ?? '-' },
+      { item: '开放事件数', value: latestRuntimeRiskSnapshot?.open_event_count ?? riskEvents.length },
+      { item: '关键事件数', value: latestRuntimeRiskSnapshot?.critical_open_count ?? '-' },
+      { item: '建议动作', value: latestRuntimeRiskSnapshot?.recommended_action ?? '-' },
+      { item: '可恢复', value: latestRuntimeRiskSnapshot?.recovery_eligible ? '是' : '否' },
+      { item: '最近评估', value: formatDateTime(latestRuntimeRiskSnapshot?.evaluated_at) },
+    ],
+    runtimeAlertOverviewRows: [
+      { item: '开放告警数', value: runtimeAlerts.filter((item) => item.status !== 'resolved').length },
+      { item: '已确认数', value: runtimeAlerts.filter((item) => item.status === 'acknowledged').length },
+      { item: '已解决数', value: runtimeAlerts.filter((item) => item.status === 'resolved').length },
+      { item: '最高级别', value: runtimeAlerts[0]?.severity ?? '-' },
+      { item: '最新分类', value: runtimeAlerts[0]?.category ?? '-' },
+      { item: '最近更新时间', value: formatDateTime(runtimeAlerts[0]?.updated_at ?? runtimeAlerts[0]?.created_at) },
+    ],
+    runtimeAlertRows: runtimeAlerts.map((item) => ({
+      alert_id: item.alert_id ?? 0,
+      created_at: formatDateTime(item.created_at),
+      updated_at: formatDateTime(item.updated_at),
+      severity: item.severity ?? '-',
+      category: item.category ?? '-',
+      status: item.status ?? '-',
+      title: item.title ?? '-',
+      message: item.message ?? '-',
+      escalation_level: item.escalation_level ?? 0,
+      acknowledged_by: item.acknowledged_by ?? '-',
+      acknowledged_at: formatDateTime(item.acknowledged_at),
+    })),
+    runtimeRiskSnapshotRows: runtimeRiskSnapshots.map((item) => ({
+      evaluated_at: formatDateTime(item.evaluated_at),
+      posture_level: item.posture_level ?? '-',
+      escalation_level: item.escalation_level ?? 0,
+      control_mode: item.control_mode ?? '-',
+      open_event_count: item.open_event_count ?? 0,
+      critical_open_count: item.critical_open_count ?? 0,
+      warning_open_count: item.warning_open_count ?? 0,
+      recommended_action: item.recommended_action ?? '-',
+      recovery_eligible: item.recovery_eligible ? '是' : '否',
+    })),
+  };
+
+  const vectorState = {
+    profileRows: vectorProfiles.map((item) => ({
+      profile_type: item.profile_type ?? '-',
+      vector_method: item.vector_method ?? '-',
+      metric: item.metric ?? '-',
+      vector_dim: item.vector_dim ?? 0,
+      backend: item.backend ?? '-',
+      index_version: item.index_version ?? '-',
+      signature: shortText(item.signature, 16),
+    })),
+    vectorIndexOverviewRows: [
+      { item: '当前索引版本', value: latestVectorIndexSnapshot?.index_version ?? '-' },
+      { item: '索引状态', value: latestVectorIndexSnapshot?.status ?? '-' },
+      { item: '画像数', value: latestVectorIndexSnapshot?.profile_count ?? '-' },
+      { item: '桶数', value: latestVectorIndexSnapshot?.bucket_count ?? '-' },
+      { item: '向量维度', value: latestVectorIndexSnapshot?.vector_dim ?? '-' },
+      { item: '激活时间', value: formatDateTime(latestVectorIndexSnapshot?.activated_at ?? latestVectorIndexSnapshot?.built_at) },
+    ],
+    indexSnapshotRows: vectorIndexSnapshots.map((item) => ({
+      built_at: formatDateTime(item.built_at ?? item.created_at),
+      index_version: item.index_version ?? '-',
+      status: item.status ?? '-',
+      profile_count: item.profile_count ?? 0,
+      bucket_count: item.bucket_count ?? 0,
+      vector_dim: item.vector_dim ?? 0,
+      backend: item.backend ?? '-',
+      source: item.source ?? '-',
+    })),
+    similarProfileRows: similarProfiles.map((item) => ({
+      strategy_id: item.strategy_id ?? '-',
+      profile_type: item.profile_type ?? '-',
+      similarity: item.similarity == null ? '-' : fmtNum(item.similarity, 4),
+      coarse_score: item.coarse_score == null ? '-' : fmtNum(item.coarse_score, 4),
+      bucket_id: item.bucket_id ?? '-',
+      query_bucket_id: item.query_bucket_id ?? '-',
+      candidate_count: item.candidate_count ?? 0,
+      retrieval_mode: item.retrieval_mode ?? '-',
+      backend: item.backend ?? '-',
+      index_version: item.index_version ?? '-',
+      signature: shortText(item.signature, 16),
+    })),
+  };
+
+  const experimentState = {
+    experimentRows: aiExperiments.map((item) => {
+      const committeeReview = (item.evaluation?.committee_review ?? {}) as NonNullable<AiExperiment['evaluation']>['committee_review'];
+      const alignmentIssues = Array.isArray(committeeReview?.alignment_issues) ? committeeReview.alignment_issues : [];
+      const executionIssues = Array.isArray(committeeReview?.execution_issues) ? committeeReview.execution_issues : [];
+      const capacityIssues = Array.isArray(committeeReview?.capacity_issues) ? committeeReview.capacity_issues : [];
+      return {
+        experiment_id: item.experiment_id ?? '-',
+        lineage: `${shortText(item.parent_strategy_id ?? item.strategy_id, 10)} → ${shortText(item.generated_strategy_id, 10)}`,
+        source: item.source ?? '-',
+        generator_type: item.generator_type ?? '-',
+        optimizer_type: item.optimizer_type ?? '-',
+        score: committeeReview?.final_score == null ? '-' : fmtNum(committeeReview.final_score, 4),
+        review_decision: committeeReview?.decision ?? '-',
+        review_breakdown: [
+          `执行 ${fmtNum(committeeReview?.execution_score, 2)}`,
+          `容量 ${fmtNum(committeeReview?.capacity_score, 2)}`,
+          `对齐 ${fmtNum(committeeReview?.task_alignment_score, 2)}`,
+          `新颖 ${fmtNum(committeeReview?.novelty_score, 2)}`,
+        ].join(' / '),
+        review_issues: formatIssueSummary([...alignmentIssues, ...executionIssues, ...capacityIssues], 56),
+        rank: committeeReview?.rank ?? '-',
+        champion: committeeReview?.is_champion ? '是' : '否',
+        status: item.status ?? '-',
+        hypothesis: shortText(item.hypothesis, 28),
+        created_at: formatDateTime(item.created_at),
+      };
+    }),
+    taskRunRows: taskRuns.map((item) => ({
+      started_at: formatDateTime(item.started_at),
+      completed_at: formatDateTime(item.completed_at),
+      task_name: item.task_name ?? '-',
+      task_scope: item.task_scope ?? '-',
+      status: item.status ?? '-',
+      trace_id: shortText(item.trace_id, 14),
+      result: shortText(Object.entries(item.result ?? {}).slice(0, 4).map(([key, value]) => `${key}:${String(value)}`).join(' / '), 48),
+      error: shortText(item.error ?? '-', 28),
+    })),
+    domainEventRows: domainEvents.map((item) => ({
+      created_at: formatDateTime(item.created_at),
+      event_type: item.event_type ?? '-',
+      source: item.source ?? '-',
+      severity: item.severity ?? '-',
+      aggregate: `${item.aggregate_type ?? '-'} / ${shortText(item.aggregate_id, 12)}`,
+      payload: shortText(Object.entries(item.payload ?? {}).map(([key, value]) => `${key}:${String(value)}`).join(' / '), 48),
+    })),
+  };
+
+  const validationProfile = review?.validation_profile ?? {};
+  const constraintCheck = review?.constraint_check ?? {};
+  const attemptAdjustment = review?.attempt_adjustment ?? {};
+  const taskPreference = review?.task_preference ?? {};
+  const reviewAuditRows = [
+    { item: 'Bootstrap CI 下界', value: fmtNum(review?.quality_gate?.bootstrap_ci_lower, 4) },
+    { item: '参数敏感性', value: fmtPct(review?.quality_gate?.param_sensitivity) },
+    { item: '多重检验模式', value: review?.run_correction?.multiple_testing_mode ?? review?.quality_gate?.multiple_testing_mode ?? '-' },
+    { item: 'Deflated Sharpe Ratio', value: fmtNum(review?.run_correction?.deflated_sharpe_ratio ?? review?.quality_gate?.deflated_sharpe_ratio, 4) },
+    { item: 'PBO', value: fmtNum(review?.run_correction?.pbo ?? review?.quality_gate?.pbo, 4) },
+    { item: 'White Reality Check p-value', value: fmtNum(review?.run_correction?.white_reality_check_pvalue ?? review?.quality_gate?.white_reality_check_pvalue, 4) },
+    { item: 'Hansen SPA p-value', value: fmtNum(review?.run_correction?.hansen_spa_pvalue ?? review?.quality_gate?.hansen_spa_pvalue, 4) },
+    { item: '验证画像', value: `${validationProfile.profile ?? '-'} / ${validationProfile.validation_focus ?? '-'}` },
+    { item: '主验证层', value: review?.summary?.primary_validation_layer ?? validationProfile.primary_validation_layer ?? '-' },
+    { item: 'Refresh 模式', value: review?.summary?.refresh_mode ?? review?.refresh_mode ?? '-' },
+    {
+      item: '约束审计',
+      value: formatIssueSummary([
+        constraintCheck.constraint_violation ? `violation:${constraintCheck.constraint_violation}` : '',
+        constraintCheck.intersection_ratio == null ? '' : `intersection:${fmtPct(constraintCheck.intersection_ratio)}`,
+        constraintCheck.expansion_applied ? `expansion:${constraintCheck.expansion_reason ?? 'applied'}` : '',
+      ], 64),
+    },
+    { item: '仓位假设', value: review?.position_assumption ?? '-' },
+    { item: '成本假设', value: formatObjectSummary(review?.cost_assumptions, 64) },
+    { item: '显式成本拆分', value: formatObjectSummary(review?.explicit_cost_breakdown, 64) },
+    { item: '隐式成本拆分', value: formatObjectSummary(review?.implicit_cost_breakdown, 64) },
+    {
+      item: '尝试惩罚',
+      value: formatIssueSummary([
+        attemptAdjustment.penalty == null ? '' : `penalty:${fmtNum(attemptAdjustment.penalty, 4)}`,
+        attemptAdjustment.selection_ratio == null ? '' : `selection:${fmtPct(attemptAdjustment.selection_ratio)}`,
+        attemptAdjustment.attempt_count == null ? '' : `attempts:${attemptAdjustment.attempt_count}`,
+      ], 64),
+    },
+    {
+      item: '任务偏好',
+      value: formatIssueSummary([
+        taskPreference.preference_strength ?? '',
+        Array.isArray(taskPreference.preferred_strategy_types) && taskPreference.preferred_strategy_types.length
+          ? taskPreference.preferred_strategy_types.join(',')
+          : '',
+        taskPreference.override_applied ? 'override' : '',
+      ], 64),
+    },
+    { item: '偏好原因', value: taskPreference.preference_reason ?? '-' },
+    { item: '任务签名', value: shortText(review?.task_signature, 64) },
+    { item: '去重匹配类型', value: review?.dedup_report?.match_type ?? '唯一候选' },
+    { item: '参数相似度', value: fmtNum(review?.dedup_report?.param_similarity, 4) },
+    { item: '向量相似度', value: fmtNum(review?.dedup_report?.vector_similarity, 4) },
+    { item: '去重说明', value: review?.dedup_report?.reason ?? '-' },
+    { item: '审查来源', value: review?.summary?.review_source ?? '-' },
+    { item: '当前报告类型', value: review?.report_type ?? '-' },
+  ];
+
+  return {
+    review,
+    summaryState,
+    incubationState,
+    runtimeState,
+    vectorState,
+    experimentState,
+    reviewAuditRows,
+  };
+}

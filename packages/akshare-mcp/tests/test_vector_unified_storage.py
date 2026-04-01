@@ -131,6 +131,37 @@ class _Adapter(VectorUnifiedMixin):
     def _pgvector_distance_sql(_column, _metric, _dim):
         return "0.01", "0.99"
 
+    @staticmethod
+    def _pgvector_opclass(metric):
+        return "vector_l2_ops" if str(metric or "cosine").lower() == "euclidean" else "vector_cosine_ops"
+
+    @staticmethod
+    def _pgvector_partial_index_name(prefix, *parts):
+        suffix = "_".join(str(part or "x") for part in parts)
+        return f"{prefix}_{suffix}".replace(".", "_").replace("|", "_")
+
+    @staticmethod
+    def _coerce_positive_int(value, default):
+        try:
+            resolved = int(value)
+        except Exception:
+            resolved = int(default)
+        return max(1, resolved)
+
+    @classmethod
+    def _resolve_pgvector_hnsw_params(cls, index_params=None):
+        params = dict(index_params or {})
+        return {
+            "m": cls._coerce_positive_int(params.get("m") or 16, 16),
+            "ef_construction": cls._coerce_positive_int(params.get("ef_construction") or 64, 64),
+            "ef_search": cls._coerce_positive_int(params.get("ef_search") or 80, 80),
+        }
+
+    @classmethod
+    def _pgvector_hnsw_with_clause(cls, index_params=None):
+        params = cls._resolve_pgvector_hnsw_params(index_params)
+        return f" WITH (m = {params['m']}, ef_construction = {params['ef_construction']})"
+
 
 class _WindowConn:
     def __init__(self):
@@ -157,6 +188,61 @@ class _WindowConn:
             "payload": json.loads(args[13]),
             "metadata": json.loads(args[14]),
         }
+
+
+class _IndexSqlConn:
+    def __init__(self):
+        self.fetchval_calls: list[tuple[str, tuple]] = []
+        self.executed_sql: list[str] = []
+
+    async def fetchval(self, query, *args):
+        normalized = " ".join(str(query).split())
+        self.fetchval_calls.append((normalized, args))
+        with_clause = str(args[3])
+        profile_type = f" AND profile_type = '{args[7]}'" if len(args) > 7 else ""
+        return (
+            f"CREATE INDEX IF NOT EXISTS {args[0]} ON vector_profile_store USING hnsw "
+            f"((embedding::vector({args[1]})) {args[2]}){with_clause} "
+            f"WHERE collection_name = '{args[4]}' AND version = '{args[5]}' AND vector_dim = {args[6]}{profile_type}"
+        )
+
+    async def execute(self, query, *args):
+        self.executed_sql.append(" ".join(str(query).split()))
+        return "OK"
+
+
+class _HnswSearchConn:
+    def __init__(self):
+        self.commands: list[str] = []
+        self.fetch_calls: list[tuple[str, tuple]] = []
+
+    def transaction(self):
+        return _Txn()
+
+    async def execute(self, query, *args):
+        self.commands.append(" ".join(str(query).split()))
+        return "OK"
+
+    async def fetch(self, query, *args):
+        normalized = " ".join(str(query).split())
+        self.fetch_calls.append((normalized, args))
+        return [
+            {
+                "id": 1,
+                "collection_name": "stock_profile_embeddings",
+                "version": "snap_v1",
+                "entity_type": "stock_profile",
+                "entity_id": "600519|both",
+                "stock_code": "600519",
+                "profile_type": "both",
+                "model_id": "stock-profile-v1",
+                "metric": "cosine",
+                "vector_dim": 2,
+                "embedding_json": [1.0, 0.0],
+                "metadata": {"stock_name": "贵州茅台"},
+                "similarity": 0.98,
+            }
+        ]
 
 
 @pytest.mark.asyncio
@@ -228,6 +314,46 @@ async def test_list_vector_index_items_pushes_pruning_filters_into_sql():
 
     assert len(rows) == 1
     assert rows[0]["entity_id"] == "000001|both"
+
+
+@pytest.mark.asyncio
+async def test_ensure_vector_profile_pgvector_index_includes_hnsw_with_clause():
+    conn = _IndexSqlConn()
+    adapter = _Adapter(conn)
+
+    idx_name = await adapter.ensure_vector_profile_pgvector_index(
+        collection_name="stock_profile_embeddings",
+        version="snap_v1",
+        vector_dim=32,
+        profile_type="both",
+        index_params={"m": 24, "ef_construction": 96},
+    )
+
+    assert idx_name is not None
+    assert conn.fetchval_calls
+    _, args = conn.fetchval_calls[0]
+    assert args[3] == " WITH (m = 24, ef_construction = 96)"
+    assert "WITH (m = 24, ef_construction = 96)" in conn.executed_sql[0]
+
+
+@pytest.mark.asyncio
+async def test_search_vector_profiles_by_embedding_sets_hnsw_ef_search_locally():
+    conn = _HnswSearchConn()
+    adapter = _Adapter(conn)
+
+    rows = await adapter.search_vector_profiles_by_embedding(
+        query_embedding=[1.0, 0.0],
+        collection_name="stock_profile_embeddings",
+        version="snap_v1",
+        profile_type="both",
+        limit=3,
+        index_params={"ef_search": 123},
+    )
+
+    assert conn.commands[0] == "SET LOCAL hnsw.ef_search = 123"
+    assert "FROM vector_profile_store ps" in conn.fetch_calls[0][0]
+    assert len(rows) == 1
+    assert rows[0]["similarity"] == 0.98
 
 
 @pytest.mark.asyncio

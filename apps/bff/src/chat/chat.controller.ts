@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Req, Res } from '@nestjs/common';
-import { IsArray, IsString, IsIn, ValidateNested, IsOptional, MaxLength, ArrayMaxSize, IsObject } from 'class-validator';
+import { IsArray, IsString, IsIn, ValidateNested, IsOptional, MaxLength, ArrayMaxSize, IsObject, IsBoolean } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Request, Response } from 'express';
 import { ChatService } from './chat.service';
@@ -65,8 +65,40 @@ class ClientActionDescriptorDto {
 }
 
 class ChatConversationMessageDto {
+  @IsString() id!: string;
   @IsIn(['user', 'assistant']) role!: 'user' | 'assistant';
   @IsString() content!: string;
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ChatConversationToolCallDto)
+  toolCalls?: ChatConversationToolCallDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ChatConversationActionDto)
+  actions?: ChatConversationActionDto[];
+}
+
+class ChatConversationToolCallDto {
+  @IsString() id!: string;
+  @IsString() name!: string;
+  @IsOptional() @IsObject() args?: Record<string, unknown>;
+  @IsOptional() result?: unknown;
+  @IsOptional() @IsBoolean() pending?: boolean;
+}
+
+class ChatConversationActionDto {
+  @IsString() id!: string;
+  @IsString() actionId!: string;
+  @IsString() label!: string;
+  @IsOptional() @IsString() description?: string;
+  @IsOptional() @IsString() reason?: string;
+  @IsOptional() @IsObject() payload?: Record<string, unknown>;
+  @IsIn(['pending', 'running', 'done', 'error']) status!: 'pending' | 'running' | 'done' | 'error';
+  @IsOptional() @IsBoolean() autoExecute?: boolean;
+  @IsOptional() @IsString() resultMessage?: string;
 }
 
 class ChatConversationDto {

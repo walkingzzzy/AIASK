@@ -713,6 +713,8 @@ async def init_strategy_tables(conn, pgvector_enabled: bool = False) -> None:
             bucket_count INTEGER DEFAULT 0,
             vector_dim INTEGER DEFAULT 0,
             centroids JSONB DEFAULT '[]'::jsonb,
+            index_params JSONB DEFAULT '{}'::jsonb,
+            metrics JSONB DEFAULT '{}'::jsonb,
             metadata JSONB DEFAULT '{}'::jsonb,
             task_run_id INTEGER,
             source TEXT DEFAULT 'system',
@@ -720,6 +722,8 @@ async def init_strategy_tables(conn, pgvector_enabled: bool = False) -> None:
             activated_at TIMESTAMPTZ,
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
+        ALTER TABLE strategy_vector_index_snapshots ADD COLUMN IF NOT EXISTS index_params JSONB DEFAULT '{}'::jsonb;
+        ALTER TABLE strategy_vector_index_snapshots ADD COLUMN IF NOT EXISTS metrics JSONB DEFAULT '{}'::jsonb;
         CREATE INDEX IF NOT EXISTS idx_strategy_vector_index_snapshots_name
             ON strategy_vector_index_snapshots(index_name, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_strategy_vector_index_snapshots_name_version

@@ -2,6 +2,17 @@ import { BadGatewayException, Injectable } from '@nestjs/common';
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
 
+type OptionGreeksInput = {
+  optionType?: 'call' | 'put';
+  strike?: string;
+  spot?: string;
+  volatility?: string;
+  riskFreeRate?: string;
+  timeToMaturity?: string;
+  dividendYield?: string;
+  expiryDate?: string;
+};
+
 @Injectable()
 export class OptionsService {
   private static readonly OPTIONS_TTL_SECONDS = 300; // 5 mins cache for options
@@ -17,18 +28,22 @@ export class OptionsService {
     
     const cached = await this.cacheService.getWithMeta(cacheKey);
     if (cached.value && !this.hasToolError(cached.value)) {
-      return { 
-        ...cached.value as Record<string, unknown>, 
-        meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } } 
+      return {
+        ...(cached.value as Record<string, unknown>),
+        meta: this.buildMeta('', true, cached.meta.backend, cacheKey, ttlSeconds),
       };
     }
     if (cached.value) await this.cacheService.del(cacheKey);
 
     try {
       const payload = await this.mcp.callTool('get_option_chain', { underlying: symbol });
-      const result = { 
-        data: payload, 
-        meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } 
+      if (this.hasToolError(payload)) {
+        throw new Error(this.extractToolError(payload) ?? 'get_option_chain 返回异常');
+      }
+      const result = {
+        ...this.unwrapToolRecord(payload),
+        sourceTool: 'get_option_chain' as const,
+        meta: this.buildMeta(new Date().toISOString(), false, 'none', cacheKey, ttlSeconds),
       };
       await this.cacheService.set(cacheKey, result, ttlSeconds);
       return result;
@@ -41,15 +56,25 @@ export class OptionsService {
     }
   }
 
-  async getOptionGreeks(symbol: string) {
-    const cacheKey = `options:greeks:${symbol}`;
+  async getOptionGreeks(symbol: string, input: OptionGreeksInput = {}) {
+    const normalizedInput = {
+      optionType: input.optionType === 'put' ? 'put' : 'call',
+      strike: input.strike?.trim() || '',
+      spot: input.spot?.trim() || '',
+      volatility: input.volatility?.trim() || '',
+      riskFreeRate: input.riskFreeRate?.trim() || '',
+      timeToMaturity: input.timeToMaturity?.trim() || '',
+      dividendYield: input.dividendYield?.trim() || '',
+      expiryDate: input.expiryDate?.trim() || '',
+    };
+    const cacheKey = `options:greeks:${symbol}:${JSON.stringify(normalizedInput)}`;
     const ttlSeconds = this.cacheService.resolveTtl('options.greeks', OptionsService.OPTIONS_TTL_SECONDS);
     
     const cached = await this.cacheService.getWithMeta(cacheKey);
     if (cached.value && !this.hasToolError(cached.value)) {
-      return { 
-        ...cached.value as Record<string, unknown>, 
-        meta: { fetchedAt: '', cache: { hit: true, backend: cached.meta.backend, key: cacheKey, ttlSeconds } } 
+      return {
+        ...(cached.value as Record<string, unknown>),
+        meta: this.buildMeta('', true, cached.meta.backend, cacheKey, ttlSeconds),
       };
     }
     if (cached.value) await this.cacheService.del(cacheKey);
@@ -57,14 +82,22 @@ export class OptionsService {
     try {
       const payload = await this.callManager('calculate_greeks', {
         code: symbol,
-        option_type: 'call',
+        option_type: normalizedInput.optionType,
+        ...(normalizedInput.strike ? { strike: Number(normalizedInput.strike) } : {}),
+        ...(normalizedInput.spot ? { spot: Number(normalizedInput.spot) } : {}),
+        ...(normalizedInput.volatility ? { volatility: Number(normalizedInput.volatility) } : {}),
+        ...(normalizedInput.riskFreeRate ? { risk_free_rate: Number(normalizedInput.riskFreeRate) } : {}),
+        ...(normalizedInput.timeToMaturity ? { time_to_maturity: Number(normalizedInput.timeToMaturity) } : {}),
+        ...(normalizedInput.dividendYield ? { dividend_yield: Number(normalizedInput.dividendYield) } : {}),
+        ...(normalizedInput.expiryDate ? { expiry_date: normalizedInput.expiryDate } : {}),
       });
       if (this.hasToolError(payload)) {
         throw new Error(this.extractToolError(payload) ?? 'calculate_greeks 返回异常');
       }
-      const result = { 
-        data: payload, 
-        meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } } 
+      const result = {
+        ...this.unwrapToolRecord(payload),
+        sourceTool: 'options_manager.calculate_greeks' as const,
+        meta: this.buildMeta(new Date().toISOString(), false, 'none', cacheKey, ttlSeconds),
       };
       await this.cacheService.set(cacheKey, result, ttlSeconds);
       return result;
@@ -78,6 +111,18 @@ export class OptionsService {
   }
 
   async getVolatilitySmirk(symbol: string) {
+    const cacheKey = `options:smirk:${symbol}`;
+    const ttlSeconds = this.cacheService.resolveTtl('options.smirk', OptionsService.OPTIONS_TTL_SECONDS);
+
+    const cached = await this.cacheService.getWithMeta(cacheKey);
+    if (cached.value && !this.hasToolError(cached.value)) {
+      return {
+        ...(cached.value as Record<string, unknown>),
+        meta: this.buildMeta('', true, cached.meta.backend, cacheKey, ttlSeconds),
+      };
+    }
+    if (cached.value) await this.cacheService.del(cacheKey);
+
     try {
       const payload = await this.callManager('volatility_smirk', {
         underlying: symbol,
@@ -85,7 +130,13 @@ export class OptionsService {
       if (this.hasToolError(payload)) {
         throw new Error(this.extractToolError(payload) ?? 'volatility_smirk 返回异常');
       }
-      return { data: payload };
+      const result = {
+        ...this.unwrapToolRecord(payload),
+        sourceTool: 'options_manager.volatility_smirk' as const,
+        meta: this.buildMeta(new Date().toISOString(), false, 'none', cacheKey, ttlSeconds),
+      };
+      await this.cacheService.set(cacheKey, result, ttlSeconds);
+      return result;
     } catch (error) {
       throw new BadGatewayException({
         success: false,
@@ -121,5 +172,31 @@ export class OptionsService {
       return String(record.error ?? record.message ?? 'options tool error');
     }
     return null;
+  }
+
+  private unwrapToolRecord(payload: unknown): Record<string, unknown> {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return { value: payload };
+    }
+
+    const record = payload as Record<string, unknown>;
+    const data = record.data;
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      return data as Record<string, unknown>;
+    }
+    return record;
+  }
+
+  private buildMeta(
+    fetchedAt: string,
+    hit: boolean,
+    backend: 'redis' | 'memory' | 'none',
+    key: string,
+    ttlSeconds: number,
+  ) {
+    return {
+      fetchedAt,
+      cache: { hit, backend, key, ttlSeconds },
+    };
   }
 }

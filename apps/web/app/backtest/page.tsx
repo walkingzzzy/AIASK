@@ -2,17 +2,19 @@
 
 import { FormEvent, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import BacktestConfigWorkspace from '@/app/backtest/components/backtest-config-workspace';
+import BacktestHero from '@/app/backtest/components/backtest-hero';
+import BacktestHistoryBatch from '@/app/backtest/components/backtest-history-batch';
+import { backtestChipButtonCls, backtestNavCardCls } from '@/app/backtest/components/backtest-panel-styles';
 import {
   PageContainer,
   SectionCard,
   KpiCard,
   KpiGrid,
-  StockCodeInput,
   DataTable,
   Badge,
   Skeleton,
   SkeletonCard,
-  SkeletonTable,
 } from '@/components/ui';
 import { LineChart, Chart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
@@ -21,7 +23,6 @@ import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { extractArray, fmtNum, fmtPct, fmtAmount } from '@/lib/data-utils';
 import { exportCSV } from '@/lib/export';
-import { StockLink } from '@/components/stock-link';
 import type {
   BacktestBatchResponse,
   BacktestBatchResultItem,
@@ -69,15 +70,6 @@ const COST_PRESETS = [
   { key: 'swing', label: '中线模板', initialCapital: 100000, commission: 0.0003, slippage: 0.0005 },
   { key: 'conservative', label: '保守成本', initialCapital: 200000, commission: 0.0008, slippage: 0.0015 },
 ] as const;
-const HERO_PRIMARY_BUTTON_CLS =
-  'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
-const HERO_SECONDARY_BUTTON_CLS =
-  'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
-const CHIP_BUTTON_CLS = 'action-chip cursor-pointer text-xs text-text-primary';
-const NOTE_CARD_CLS = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
-const SIDE_PANEL_CLS = 'panel-soft rounded-[28px] p-4 sm:p-5';
-const NAV_CARD_CLS =
-  'panel-soft rounded-[24px] p-4 text-left text-sm transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(15,23,42,0.2)]';
 
 function defaultDate(offsetDays: number) {
   const d = new Date();
@@ -418,8 +410,6 @@ export default function BacktestPage() {
     return { bins, counts };
   }, [dailyReturns]);
 
-  const inputCls = 'text-sm text-text-primary';
-  const labelCls = 'text-xs text-text-secondary';
   const strategyLabel = STRATEGIES.find((item) => item.value === strategy)?.label ?? strategy;
   const runStatusLabel = loading ? '运行中' : m ? '已生成结果' : '等待运行';
   const runStatusVariant = loading ? 'warning' : m ? 'success' : 'neutral';
@@ -428,7 +418,7 @@ export default function BacktestPage() {
     ? `初始资金 ${fmtAmount(initialCapital)} · 手续费 ${fmtNum(commission * 100, 2)}% · 滑点 ${fmtNum(slippage * 100, 2)}%`
     : '使用默认成本设定或模板，适合先完成第一轮策略可行性判断';
 
-  function applyCostPreset(preset: (typeof COST_PRESETS)[number]) {
+  function applyCostPreset(preset: { initialCapital: number; commission: number; slippage: number }) {
     setInitialCapital(preset.initialCapital);
     setCommission(preset.commission);
     setSlippage(preset.slippage);
@@ -444,111 +434,23 @@ export default function BacktestPage() {
 
   return (
     <PageContainer className="app-theme-strategy">
-      <section className="page-hero mb-4 p-5 sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_380px]">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Backtest Workspace</Badge>
-              <Badge variant={runStatusVariant}>{runStatusLabel}</Badge>
-              <Badge variant={runResult?.artifactId ? 'success' : 'neutral'}>
-                {runResult?.artifactId ? `Artifact ${runResult.artifactId}` : '尚未生成 Artifact'}
-              </Badge>
-              {from ? <Badge variant="neutral">来源 {from}</Badge> : null}
-            </div>
-            <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
-              回测分析工作台
-            </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这一页把策略回测配置、结果阅读和跨标的比较收进一条完整链路。先完成参数配置并运行回测，再顺着摘要、净值曲线、历史对比和批量回测去判断一个策略是不是值得继续推进。
-            </p>
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button type="submit" form="backtest-config-form" disabled={loading} className={HERO_PRIMARY_BUTTON_CLS}>
-                {loading ? '运行中...' : '运行回测'}
-              </button>
-              <button
-                type="button"
-                onClick={() => scrollToSection('backtest-overview')}
-                className={HERO_SECONDARY_BUTTON_CLS}
-              >
-                查看结果总览
-              </button>
-              <button type="button" onClick={() => scrollToSection('backtest-chart')} className={CHIP_BUTTON_CLS}>
-                看净值曲线
-              </button>
-              <button type="button" onClick={() => scrollToSection('backtest-history')} className={CHIP_BUTTON_CLS}>
-                看历史对比
-              </button>
-              <button type="button" onClick={() => scrollToSection('backtest-batch')} className={CHIP_BUTTON_CLS}>
-                看批量回测
-              </button>
-            </div>
-
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
-              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前标的</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{trimmedCode || '600519'}</div>
-                <div className="mt-1 text-xs text-text-secondary">{strategyLabel}</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">回测区间</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{startDate.slice(5)}</div>
-                <div className="mt-1 text-xs text-text-secondary">{dateRangeLabel}</div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">关键读数</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{m ? fmtPct(m.total_return) : '-'}</div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  {m ? `回撤 ${fmtPct(m.max_drawdown)}` : '等待回测结果'}
-                </div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">下一步</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">
-                  {batchResults.length > 0 ? batchResults.length : hasAnyResultBlock ? '对比' : '运行'}
-                </div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  {batchResults.length > 0
-                    ? '批量结果已可比较'
-                    : hasAnyResultBlock
-                      ? '继续看历史与批量验证'
-                      : '先完成首轮回测'}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid gap-3">
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前配置</div>
-              <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>
-                  策略：
-                  <span className="font-medium text-text-primary">{strategyLabel}</span>
-                </div>
-                <div className={NOTE_CARD_CLS}>
-                  日期：
-                  <span className="font-medium text-text-primary">{dateRangeLabel}</span>
-                </div>
-                <div className={NOTE_CARD_CLS}>
-                  成本：
-                  <span className="font-medium text-text-primary">{configurationSummary}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className={SIDE_PANEL_CLS}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">建议顺序</div>
-              <div className="mt-4 space-y-3">
-                <div className={NOTE_CARD_CLS}>1. 先确认标的、策略和日期区间，避免错误的样本设置污染整轮判断。</div>
-                <div className={NOTE_CARD_CLS}>2. 再看总收益、回撤和胜率，先判断这次回测值不值得继续展开。</div>
-                <div className={NOTE_CARD_CLS}>
-                  3. 最后再看历史对比和批量回测，确认结果是否具有可复制性，而不是一次性幸运样本。
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <BacktestHero
+        loading={loading}
+        runStatusLabel={runStatusLabel}
+        runStatusVariant={runStatusVariant}
+        artifactId={runResult?.artifactId}
+        from={from}
+        onScrollToSection={scrollToSection}
+        trimmedCode={trimmedCode}
+        strategyLabel={strategyLabel}
+        startDate={startDate}
+        dateRangeLabel={dateRangeLabel}
+        totalReturn={m?.total_return ?? null}
+        maxDrawdown={m?.max_drawdown ?? null}
+        batchResultsCount={batchResults.length}
+        hasAnyResultBlock={hasAnyResultBlock}
+        configurationSummary={configurationSummary}
+      />
 
       <KpiGrid cols={5} className="mb-4">
         <KpiCard title="策略" value={strategyLabel} />
@@ -558,252 +460,44 @@ export default function BacktestPage() {
         <KpiCard title="交易次数" value={m?.trades_count ?? null} />
       </KpiGrid>
 
-      <SectionCard className="p-4 sm:p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="eyebrow">Configuration Workspace</div>
-            <h3 className="mt-2 mb-0 text-xl font-semibold text-text-primary">回测配置</h3>
-            <p className="mb-0 mt-2 text-sm leading-7 text-text-secondary">
-              按“基础参数 → 策略参数 →
-              成本假设”的顺序完成配置，减少首屏参数墙带来的理解成本，也让回测逻辑更容易被快速复查。
-            </p>
-          </div>
-        </div>
-
-        <form id="backtest-config-form" onSubmit={runBacktest} className="mt-4 grid gap-4 xl:grid-cols-3">
-          <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-            <div className="eyebrow">Basic Setup</div>
-            <div className="mt-4 grid gap-3">
-              <StockCodeInput
-                id="backtest-stock-code"
-                label="股票代码"
-                value={code}
-                onChange={setCode}
-                error={codeError}
-              />
-              <label htmlFor="backtest-strategy" className="grid gap-1">
-                <span className={labelCls}>策略</span>
-                <select
-                  id="backtest-strategy"
-                  value={strategy}
-                  onChange={(e) => setStrategy(e.target.value)}
-                  className={`${inputCls} w-full`}
-                >
-                  {STRATEGIES.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label htmlFor="backtest-start-date" className="grid gap-1">
-                  <span className={labelCls}>开始日期</span>
-                  <input
-                    id="backtest-start-date"
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    className={`${inputCls} w-full`}
-                  />
-                </label>
-                <label htmlFor="backtest-end-date" className="grid gap-1">
-                  <span className={labelCls}>结束日期</span>
-                  <input
-                    id="backtest-end-date"
-                    type="date"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    className={`${inputCls} w-full`}
-                  />
-                </label>
-              </div>
-            </div>
-            <div className={`${NOTE_CARD_CLS} mt-4`}>
-              先完成基础参数，再去调整策略细节和成本假设；首轮判断更看方向性，不必一开始就把每个参数调到极细。
-            </div>
-          </div>
-
-          <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-            <div className="eyebrow">Strategy Setup</div>
-            <div className="mt-4">
-              {strategy === 'ma_cross' ? (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label htmlFor="backtest-short-period" className="grid gap-1">
-                    <span className={labelCls}>短周期</span>
-                    <input
-                      id="backtest-short-period"
-                      type="number"
-                      value={shortPeriod}
-                      onChange={(e) => setShortPeriod(+e.target.value)}
-                      min={2}
-                      max={100}
-                      className={`${inputCls} w-full`}
-                    />
-                  </label>
-                  <label htmlFor="backtest-long-period" className="grid gap-1">
-                    <span className={labelCls}>长周期</span>
-                    <input
-                      id="backtest-long-period"
-                      type="number"
-                      value={longPeriod}
-                      onChange={(e) => setLongPeriod(+e.target.value)}
-                      min={5}
-                      max={250}
-                      className={`${inputCls} w-full`}
-                    />
-                  </label>
-                </div>
-              ) : null}
-              {strategy === 'momentum' ? (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label htmlFor="backtest-lookback" className="grid gap-1">
-                    <span className={labelCls}>回看周期</span>
-                    <input
-                      id="backtest-lookback"
-                      type="number"
-                      value={lookback}
-                      onChange={(e) => setLookback(+e.target.value)}
-                      min={5}
-                      max={120}
-                      className={`${inputCls} w-full`}
-                    />
-                  </label>
-                  <label htmlFor="backtest-threshold" className="grid gap-1">
-                    <span className={labelCls}>阈值</span>
-                    <input
-                      id="backtest-threshold"
-                      type="number"
-                      value={threshold}
-                      onChange={(e) => setThreshold(+e.target.value)}
-                      step={0.005}
-                      min={0}
-                      max={0.5}
-                      className={`${inputCls} w-full`}
-                    />
-                  </label>
-                </div>
-              ) : null}
-              {strategy === 'rsi' ? (
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <label htmlFor="backtest-rsi-period" className="grid gap-1">
-                    <span className={labelCls}>RSI 周期</span>
-                    <input
-                      id="backtest-rsi-period"
-                      type="number"
-                      value={rsiPeriod}
-                      onChange={(e) => setRsiPeriod(+e.target.value)}
-                      min={2}
-                      max={50}
-                      className={`${inputCls} w-full`}
-                    />
-                  </label>
-                  <label htmlFor="backtest-oversold" className="grid gap-1">
-                    <span className={labelCls}>超卖线</span>
-                    <input
-                      id="backtest-oversold"
-                      type="number"
-                      value={oversold}
-                      onChange={(e) => setOversold(+e.target.value)}
-                      min={5}
-                      max={50}
-                      className={`${inputCls} w-full`}
-                    />
-                  </label>
-                  <label htmlFor="backtest-overbought" className="grid gap-1">
-                    <span className={labelCls}>超买线</span>
-                    <input
-                      id="backtest-overbought"
-                      type="number"
-                      value={overbought}
-                      onChange={(e) => setOverbought(+e.target.value)}
-                      min={50}
-                      max={95}
-                      className={`${inputCls} w-full`}
-                    />
-                  </label>
-                </div>
-              ) : null}
-              {strategy === 'buy_and_hold' ? (
-                <div className={NOTE_CARD_CLS}>买入持有不需要额外策略参数，适合拿来做基准对照或快速 sanity check。</div>
-              ) : null}
-            </div>
-            {strategy !== 'buy_and_hold' ? (
-              <div className={`${NOTE_CARD_CLS} mt-4`}>
-                不同策略的参数只负责表达交易节奏，不负责替代样本验证。先看结果方向，再决定是否继续细调参数。
-              </div>
-            ) : null}
-          </div>
-
-          <div className="panel-soft rounded-[26px] p-4 sm:p-5">
-            <div className="eyebrow">Cost Setup</div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {COST_PRESETS.map((preset) => (
-                <button
-                  key={preset.key}
-                  type="button"
-                  onClick={() => applyCostPreset(preset)}
-                  className={CHIP_BUTTON_CLS}
-                >
-                  {preset.label}
-                </button>
-              ))}
-              <button type="button" onClick={() => setShowAdvanced(!showAdvanced)} className={CHIP_BUTTON_CLS}>
-                {showAdvanced ? '收起高级选项' : '展开高级选项'}
-              </button>
-            </div>
-            {showAdvanced ? (
-              <div className="mt-4 grid gap-3">
-                <label htmlFor="backtest-initial-capital" className="grid gap-1">
-                  <span className={labelCls}>初始资金</span>
-                  <input
-                    id="backtest-initial-capital"
-                    type="number"
-                    value={initialCapital}
-                    onChange={(e) => setInitialCapital(+e.target.value)}
-                    min={10000}
-                    step={10000}
-                    className={`${inputCls} w-full`}
-                  />
-                </label>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label htmlFor="backtest-commission" className="grid gap-1">
-                    <span className={labelCls}>手续费率</span>
-                    <input
-                      id="backtest-commission"
-                      type="number"
-                      value={commission}
-                      onChange={(e) => setCommission(+e.target.value)}
-                      step={0.0001}
-                      min={0}
-                      max={0.01}
-                      className={`${inputCls} w-full`}
-                    />
-                  </label>
-                  <label htmlFor="backtest-slippage" className="grid gap-1">
-                    <span className={labelCls}>滑点</span>
-                    <input
-                      id="backtest-slippage"
-                      type="number"
-                      value={slippage}
-                      onChange={(e) => setSlippage(+e.target.value)}
-                      step={0.0001}
-                      min={0}
-                      max={0.01}
-                      className={`${inputCls} w-full`}
-                    />
-                  </label>
-                </div>
-              </div>
-            ) : (
-              <div className={`${NOTE_CARD_CLS} mt-4`}>
-                可以先点上方模板快速填入成本参数；只有在需要贴近真实成交时，再展开高级选项微调手续费和滑点。
-              </div>
-            )}
-            {showAdvanced ? <div className={`${NOTE_CARD_CLS} mt-4`}>{configurationSummary}</div> : null}
-          </div>
-        </form>
-      </SectionCard>
+      <BacktestConfigWorkspace
+        code={code}
+        setCode={setCode}
+        codeError={codeError}
+        strategy={strategy}
+        setStrategy={setStrategy}
+        strategies={STRATEGIES}
+        startDate={startDate}
+        setStartDate={setStartDate}
+        endDate={endDate}
+        setEndDate={setEndDate}
+        shortPeriod={shortPeriod}
+        setShortPeriod={setShortPeriod}
+        longPeriod={longPeriod}
+        setLongPeriod={setLongPeriod}
+        lookback={lookback}
+        setLookback={setLookback}
+        threshold={threshold}
+        setThreshold={setThreshold}
+        rsiPeriod={rsiPeriod}
+        setRsiPeriod={setRsiPeriod}
+        oversold={oversold}
+        setOversold={setOversold}
+        overbought={overbought}
+        setOverbought={setOverbought}
+        showAdvanced={showAdvanced}
+        setShowAdvanced={setShowAdvanced}
+        initialCapital={initialCapital}
+        setInitialCapital={setInitialCapital}
+        commission={commission}
+        setCommission={setCommission}
+        slippage={slippage}
+        setSlippage={setSlippage}
+        costPresets={COST_PRESETS}
+        onApplyCostPreset={applyCostPreset}
+        configurationSummary={configurationSummary}
+        runBacktest={runBacktest}
+      />
 
       <SectionCard className="p-4 sm:p-5">
         <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -817,19 +511,19 @@ export default function BacktestPage() {
           <Badge variant={hasAnyResultBlock ? 'info' : 'neutral'}>{hasAnyResultBlock ? '已有结果' : '等待运行'}</Badge>
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <button type="button" onClick={() => scrollToSection('backtest-overview')} className={NAV_CARD_CLS}>
+          <button type="button" onClick={() => scrollToSection('backtest-overview')} className={backtestNavCardCls}>
             <div className="font-medium text-text-primary">1. 先看结果总览</div>
             <div className="mt-2 text-xs text-text-secondary">快速判断收益、回撤和胜率是否值得继续分析。</div>
           </button>
-          <button type="button" onClick={() => scrollToSection('backtest-chart')} className={NAV_CARD_CLS}>
+          <button type="button" onClick={() => scrollToSection('backtest-chart')} className={backtestNavCardCls}>
             <div className="font-medium text-text-primary">2. 再看净值曲线</div>
             <div className="mt-2 text-xs text-text-secondary">确认收益是否平滑、是否依赖单段行情。</div>
           </button>
-          <button type="button" onClick={() => scrollToSection('backtest-history')} className={NAV_CARD_CLS}>
+          <button type="button" onClick={() => scrollToSection('backtest-history')} className={backtestNavCardCls}>
             <div className="font-medium text-text-primary">3. 对比历史结果</div>
             <div className="mt-2 text-xs text-text-secondary">横向比较策略与标的，避免只盯一次结果。</div>
           </button>
-          <button type="button" onClick={() => scrollToSection('backtest-batch')} className={NAV_CARD_CLS}>
+          <button type="button" onClick={() => scrollToSection('backtest-batch')} className={backtestNavCardCls}>
             <div className="font-medium text-text-primary">4. 最后看批量回测</div>
             <div className="mt-2 text-xs text-text-secondary">把同一策略放到多只股票上，检验可复制性。</div>
           </button>
@@ -990,7 +684,7 @@ export default function BacktestPage() {
                     else setArtifactMetricsPath(path);
                   }}
                   disabled={artifactMetricsQ.isFetching}
-                  className={CHIP_BUTTON_CLS}
+                  className={backtestChipButtonCls}
                 >
                   {artifactMetricsQ.isFetching ? '加载中...' : '查看追踪指标'}
                 </button>
@@ -1197,204 +891,18 @@ export default function BacktestPage() {
         </>
       )}
 
-      <div id="backtest-history">
-        <SectionCard className="mt-4 min-h-[240px] p-4 sm:p-5">
-          <h3 className="mt-0">回测历史对比 {mergedHistoryRows.length > 0 ? `(${mergedHistoryRows.length})` : ''}</h3>
-          {historyQ.isFetching ? (
-            <SkeletonTable rows={5} cols={7} />
-          ) : mergedHistoryRows.length > 0 ? (
-            <DataTable
-              rows={mergedHistoryRows}
-              columns={[
-                { key: 'code', label: '代码', render: (v: unknown) => <StockLink code={String(v)} /> },
-                { key: 'strategy', label: '策略' },
-                {
-                  key: 'totalReturn',
-                  label: '总收益',
-                  align: 'right' as const,
-                  render: (v: unknown) => (
-                    <span className={(v as number) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(v as number)}</span>
-                  ),
-                },
-                {
-                  key: 'sharpe',
-                  label: '夏普',
-                  align: 'right' as const,
-                  render: (v: unknown) => fmtNum(v as number, 2),
-                },
-                {
-                  key: 'maxDrawdown',
-                  label: '最大回撤',
-                  align: 'right' as const,
-                  render: (v: unknown) => fmtPct(v as number),
-                },
-                { key: 'winRate', label: '胜率', align: 'right' as const, render: (v: unknown) => fmtPct(v as number) },
-                {
-                  key: 'ts',
-                  label: '时间',
-                  render: (v: unknown) => {
-                    const t = v as number;
-                    return t > 0 ? new Date(t).toLocaleString('zh-CN') : '-';
-                  },
-                },
-              ]}
-              onExport={() => exportCSV(mergedHistoryRows, 'backtest-history')}
-              mobileCardRender={(row) => (
-                <div className="space-y-2 text-sm">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-xs text-text-secondary">标的 / 策略</div>
-                      <div className="font-medium">
-                        <StockLink code={String(row.code)} /> · {String(row.strategy ?? '-')}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-xs text-text-secondary">总收益</div>
-                      <div
-                        className={
-                          Number(row.totalReturn ?? 0) >= 0 ? 'text-danger font-medium' : 'text-success font-medium'
-                        }
-                      >
-                        {fmtPct(Number(row.totalReturn ?? 0))}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>夏普：{fmtNum(Number(row.sharpe ?? 0), 2)}</div>
-                    <div>胜率：{fmtPct(Number(row.winRate ?? 0))}</div>
-                    <div>回撤：{fmtPct(Number(row.maxDrawdown ?? 0))}</div>
-                    <div>时间：{row.ts ? new Date(Number(row.ts)).toLocaleDateString('zh-CN') : '-'}</div>
-                  </div>
-                </div>
-              )}
-            />
-          ) : (
-            <EmptyState
-              text="还没有可对比的历史回测。"
-              hint="运行过的结果会自动进入这里，方便横向比较不同标的和策略。"
-            />
-          )}
-        </SectionCard>
-      </div>
-
-      {/* P3-3: Batch Backtest */}
-      <div id="backtest-batch">
-        <SectionCard className="mt-4 min-h-[220px] p-4 sm:p-5">
-          <h3 className="mt-0">批量回测对比</h3>
-          <div className="panel-soft mt-3 flex flex-wrap items-end gap-3 rounded-[24px] p-4">
-            <div className="grid gap-1">
-              <label htmlFor="backtest-batch-codes" className={labelCls}>
-                股票代码（逗号分隔）
-              </label>
-              <input
-                id="backtest-batch-codes"
-                value={batchCodes}
-                onChange={(e) => setBatchCodes(e.target.value)}
-                placeholder="600519,000858,601318"
-                className={`${inputCls} w-[280px]`}
-              />
-            </div>
-            <button type="button" onClick={runBatch} disabled={batchApi.isPending} className={HERO_PRIMARY_BUTTON_CLS}>
-              {batchApi.isPending ? '运行中...' : '批量回测'}
-            </button>
-          </div>
-          {batchApi.error ? <p className="text-danger text-sm mt-2">{batchApi.error}</p> : null}
-          {batchApi.isPending ? (
-            <div className="mt-3">
-              <SkeletonTable rows={4} cols={6} />
-            </div>
-          ) : batchResults.length > 0 ? (
-            <DataTable
-              rows={batchResults}
-              columns={[
-                { key: 'code', label: '代码', render: (v: unknown) => <StockLink code={String(v)} /> },
-                {
-                  key: 'success',
-                  label: '状态',
-                  render: (v: unknown) => {
-                    const success = v !== false;
-                    return <Badge variant={success ? 'success' : 'danger'}>{success ? '成功' : '失败'}</Badge>;
-                  },
-                },
-                {
-                  key: 'total_return',
-                  label: '总收益',
-                  align: 'right' as const,
-                  render: (v: unknown) =>
-                    v == null ? (
-                      '-'
-                    ) : (
-                      <span className={Number(v) >= 0 ? 'text-danger' : 'text-success'}>{fmtPct(Number(v))}</span>
-                    ),
-                },
-                {
-                  key: 'sharpe_ratio',
-                  label: '夏普',
-                  align: 'right' as const,
-                  render: (v: unknown) => (v == null ? '-' : fmtNum(Number(v), 2)),
-                },
-                {
-                  key: 'max_drawdown',
-                  label: '最大回撤',
-                  align: 'right' as const,
-                  render: (v: unknown) => (v == null ? '-' : fmtPct(Number(v))),
-                },
-                {
-                  key: 'win_rate',
-                  label: '胜率',
-                  align: 'right' as const,
-                  render: (v: unknown) => (v == null ? '-' : fmtPct(Number(v))),
-                },
-                { key: 'trades_count', label: '交易次数', align: 'right' as const },
-                { key: 'reasonCode', label: '失败代码' },
-                { key: 'reason', label: '失败原因' },
-              ]}
-              onExport={() => exportCSV(batchResults, 'batch-backtest')}
-              mobileCardRender={(row) => {
-                const success = row.success !== false;
-                return (
-                  <div className="space-y-2 text-sm">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-xs text-text-secondary">股票代码</div>
-                        <div className="font-medium">
-                          <StockLink code={String(row.code)} />
-                        </div>
-                      </div>
-                      <Badge variant={success ? 'success' : 'danger'}>{success ? '成功' : '失败'}</Badge>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        总收益：
-                        {row.total_return == null ? (
-                          '-'
-                        ) : (
-                          <span className={Number(row.total_return) >= 0 ? 'text-danger' : 'text-success'}>
-                            {fmtPct(Number(row.total_return))}
-                          </span>
-                        )}
-                      </div>
-                      <div>夏普：{row.sharpe_ratio == null ? '-' : fmtNum(Number(row.sharpe_ratio), 2)}</div>
-                      <div>最大回撤：{row.max_drawdown == null ? '-' : fmtPct(Number(row.max_drawdown))}</div>
-                      <div>胜率：{row.win_rate == null ? '-' : fmtPct(Number(row.win_rate))}</div>
-                      <div>交易次数：{fmtNum((row.trades_count ?? 0) as number, 0)}</div>
-                      <div>失败代码：{String(row.reasonCode ?? '-')}</div>
-                    </div>
-                    {!success && row.reason ? (
-                      <div className="text-xs text-text-secondary">失败原因：{String(row.reason)}</div>
-                    ) : null}
-                  </div>
-                );
-              }}
-            />
-          ) : (
-            <EmptyState
-              text="输入多只股票代码后，这里会显示批量回测对比表。"
-              hint="结果区已固定预留，批量运行完成后不会把页面其他模块整体挤开。"
-            />
-          )}
-        </SectionCard>
-      </div>
+      <BacktestHistoryBatch
+        historyRows={mergedHistoryRows}
+        historyLoading={historyQ.isFetching}
+        batchCodes={batchCodes}
+        onBatchCodesChange={setBatchCodes}
+        onRunBatch={() => {
+          void runBatch();
+        }}
+        batchPending={batchApi.isPending}
+        batchError={batchApi.error}
+        batchResults={batchResults}
+      />
     </PageContainer>
   );
 }

@@ -46,7 +46,7 @@ def register_market_insight_manager(mcp):
     """注册市场洞察管理器工具"""
 
     @mcp.tool()
-    async def market_insight_manager(action: str, params: dict | None = None, kwargs: Any = None):
+    async def market_insight_manager(action: str, params: dict | None = None, kwargs: Any = None, sector: str | None = None):
         """市场洞察管理器（统一 action + kwargs 协议）
 
         Args:
@@ -69,8 +69,13 @@ def register_market_insight_manager(mcp):
         """
         start_time = time.perf_counter()
         try:
+            kwargs = normalize_manager_payload(
+                params=params,
+                kwargs=kwargs,
+                extra={"sector": sector},
+            )
             kwargs = normalize_manager_kwargs(
-                dict(kwargs),
+                kwargs,
                 field_aliases={"sector": ("block_name", "name")},
             )
 

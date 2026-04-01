@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from ...utils import ok, fail, normalize_code
 from ..market.order_book import get_order_book
 from ..market.quote import get_realtime_quote
+from ..manager_protocol import normalize_manager_payload
 
 MAX_SINGLE_ORDER_SHARES = 1_000_000
 MAX_SINGLE_ORDER_AMOUNT = 50_000_000.0

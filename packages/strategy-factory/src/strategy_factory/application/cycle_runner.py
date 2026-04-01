@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .run_models import FactoryRunStatus, StageStatus
 from ..domain.constants import (
@@ -18,9 +19,6 @@ from ..domain.constants import (
     is_factory_runtime_enabled,
     resolve_event_runtime_mode,
 )
-
-if TYPE_CHECKING:
-    from .factory_scheduler import StrategyFactoryScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -111,10 +109,15 @@ class FactoryCycleRunner:
         active_candidate_count = int(factor_summary.get("active_candidate_count") or 0)
         governed_source_candidate_count = int(factor_summary.get("governed_source_candidate_count") or 0)
         governed_blocked_candidate_count = int(factor_summary.get("governed_blocked_candidate_count") or 0)
+        governed_blocked_ratio = scheduler._safe_float(factor_summary.get("governed_blocked_ratio"), default=0.0)
+        governed_freshness_days = factor_summary.get("governed_freshness_days")
+        scheduler_recent_success = bool(factor_summary.get("scheduler_recent_success"))
+        scheduler_llm_validation_status = factor_summary.get("scheduler_llm_validation_status")
         governed_exclusion_reason_counts = dict(factor_summary.get("governed_exclusion_reason_counts") or {})
         governed_risk_counts = dict(factor_summary.get("governed_risk_counts") or {})
         governed_candidate_pool_active = bool(
-            factor_source_mode == "governed_candidate_pool" or active_candidate_count > 0
+            factor_source_mode == "governed_candidate_pool"
+            or governed_source_candidate_count > 0
         )
         sources = dict(snapshot.get("sources") or {})
         event_source = dict(sources.get("event_driven") or {})
@@ -148,6 +151,15 @@ class FactoryCycleRunner:
             score -= 0.14
         if governed_blocked_candidate_count > 0:
             warnings.append("governed_candidate_pool_blocked_candidates")
+        if governed_blocked_ratio >= 0.75:
+            warnings.append("governed_candidate_pool_blocked_ratio_high")
+            score -= 0.12
+        elif governed_blocked_ratio >= 0.40:
+            warnings.append("governed_candidate_pool_blocked_ratio_elevated")
+            score -= 0.06
+        if scheduler_recent_success and not governed_candidate_pool_active:
+            warnings.append("factor_scheduler_recent_success_without_governed_pool")
+            score -= 0.08
         if bool(factor_summary.get("stale")):
             if governed_candidate_pool_active:
                 warnings.append("factor_research_history_stale_governed_pool_active")
@@ -155,6 +167,13 @@ class FactoryCycleRunner:
             else:
                 blockers.append("factor_research_stale")
                 score -= 0.32
+        if governed_candidate_pool_active:
+            if governed_freshness_days is None:
+                warnings.append("governed_candidate_pool_freshness_unknown")
+                score -= 0.05
+            elif scheduler._safe_float(governed_freshness_days, default=0.0) > 2:
+                warnings.append("governed_candidate_pool_stale")
+                score -= 0.08
         refresh_status = str(factor_refresh.get("refresh_status") or "").strip().lower()
         if bool(factor_refresh.get("refresh_attempted")) and refresh_status not in {"success", "not_needed"}:
             warnings.append(f"factor_refresh_{refresh_status or 'unknown'}")
@@ -187,10 +206,14 @@ class FactoryCycleRunner:
             "active_candidate_count": active_candidate_count,
             "governed_source_candidate_count": governed_source_candidate_count,
             "governed_blocked_candidate_count": governed_blocked_candidate_count,
+            "governed_blocked_ratio": governed_blocked_ratio,
+            "governed_freshness_days": governed_freshness_days,
             "governed_exclusion_reason_counts": governed_exclusion_reason_counts,
             "governed_risk_counts": governed_risk_counts,
             "active_family_count": len(list(factor_summary.get("active_family_names") or [])),
             "active_regime_count": len(list(factor_summary.get("active_regime_names") or [])),
+            "scheduler_recent_success": scheduler_recent_success,
+            "scheduler_llm_validation_status": scheduler_llm_validation_status,
             "factor_refresh_attempted": bool(factor_refresh.get("refresh_attempted")),
             "factor_refresh_status": factor_refresh.get("refresh_status"),
         }
@@ -341,7 +364,12 @@ class FactoryCycleRunner:
                         "factor_source_mode": factor_summary.get("factor_source_mode"),
                         "degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
                         "freshness_days": factor_summary.get("freshness_days"),
+                        "governed_freshness_days": factor_summary.get("governed_freshness_days"),
+                        "governed_blocked_ratio": factor_summary.get("governed_blocked_ratio"),
+                        "governed_latest_candidate_at": factor_summary.get("governed_latest_candidate_at"),
                         "latest_factor_date": factor_summary.get("latest_factor_date"),
+                        "scheduler_recent_success": bool(factor_summary.get("scheduler_recent_success")),
+                        "scheduler_llm_validation_status": factor_summary.get("scheduler_llm_validation_status"),
                         "quality_flags": list(factor_summary.get("quality_flags") or []),
                         "refresh_attempted": bool(factor_summary.get("refresh_attempted")),
                         "refresh_status": factor_summary.get("refresh_status"),
@@ -386,6 +414,11 @@ class FactoryCycleRunner:
                         "active_regime_names": [],
                         "preferred_strategy_types": [],
                         "factor_source_mode": "error_fallback",
+                        "governed_blocked_ratio": 0.0,
+                        "governed_freshness_days": None,
+                        "governed_latest_candidate_at": None,
+                        "scheduler_recent_success": False,
+                        "scheduler_llm_validation_status": None,
                         "degraded": True,
                         "quality_flags": ["failed"],
                     },
@@ -405,6 +438,11 @@ class FactoryCycleRunner:
                         "active_regime_names": [],
                         "preferred_strategy_types": [],
                         "factor_source_mode": "error_fallback",
+                        "governed_blocked_ratio": 0.0,
+                        "governed_freshness_days": None,
+                        "governed_latest_candidate_at": None,
+                        "scheduler_recent_success": False,
+                        "scheduler_llm_validation_status": None,
                         "degraded": True,
                         "quality_flags": ["failed"],
                         "error": str(exc),
@@ -470,6 +508,10 @@ class FactoryCycleRunner:
                     "active_candidate_count": int(readiness.get("active_candidate_count") or 0),
                     "governed_source_candidate_count": int(readiness.get("governed_source_candidate_count") or 0),
                     "governed_blocked_candidate_count": int(readiness.get("governed_blocked_candidate_count") or 0),
+                    "governed_blocked_ratio": readiness.get("governed_blocked_ratio"),
+                    "governed_freshness_days": readiness.get("governed_freshness_days"),
+                    "scheduler_recent_success": bool(readiness.get("scheduler_recent_success")),
+                    "scheduler_llm_validation_status": readiness.get("scheduler_llm_validation_status"),
                     "governed_exclusion_reason_counts": dict(readiness.get("governed_exclusion_reason_counts") or {}),
                     "governed_risk_counts": dict(readiness.get("governed_risk_counts") or {}),
                     "skip_reason": "readiness_blocked",
@@ -723,6 +765,9 @@ class FactoryCycleRunner:
                 "active_candidate_count": int(factor_research_summary.get("active_candidate_count") or 0),
                 "governed_source_candidate_count": int(factor_research_summary.get("governed_source_candidate_count") or 0),
                 "governed_blocked_candidate_count": int(factor_research_summary.get("governed_blocked_candidate_count") or 0),
+                "governed_blocked_ratio": factor_research_summary.get("governed_blocked_ratio"),
+                "governed_latest_candidate_at": factor_research_summary.get("governed_latest_candidate_at"),
+                "governed_freshness_days": factor_research_summary.get("governed_freshness_days"),
                 "governed_exclusion_reason_counts": dict(factor_research_summary.get("governed_exclusion_reason_counts") or {}),
                 "governed_risk_counts": dict(factor_research_summary.get("governed_risk_counts") or {}),
                 "active_family_count": len(list(factor_research_summary.get("active_family_names") or [])),
@@ -739,6 +784,10 @@ class FactoryCycleRunner:
                 "factor_research_degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
                 "factor_research_stale": bool(factor_research_summary.get("stale")),
                 "factor_research_freshness_days": factor_research_summary.get("freshness_days"),
+                "scheduler_recent_success": bool(factor_research_summary.get("scheduler_recent_success")),
+                "scheduler_llm_validation_status": factor_research_summary.get("scheduler_llm_validation_status"),
+                "factor_scheduler_recent_success": bool(factor_research_summary.get("scheduler_recent_success")),
+                "factor_scheduler_llm_validation_status": factor_research_summary.get("scheduler_llm_validation_status"),
                 "factor_research_refresh_attempted": bool(factor_refresh_summary.get("refresh_attempted")),
                 "factor_research_refresh_status": factor_refresh_summary.get("refresh_status"),
                 "factor_research_refresh_trigger": factor_refresh_summary.get("refresh_trigger"),

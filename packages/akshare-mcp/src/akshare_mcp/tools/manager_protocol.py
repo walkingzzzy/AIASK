@@ -33,7 +33,7 @@ def normalize_manager_kwargs(
     *,
     field_aliases: Optional[dict[str, Iterable[str]]] = None,
 ) -> dict[str, Any]:
-    normalized = dict(kwargs or {})
+    normalized = _merge_json_like_payload(kwargs)
 
     for key in ("params", "kwargs"):
         normalized.update(_merge_json_like_payload(normalized.get(key)))
@@ -85,7 +85,7 @@ def normalize_manager_payload(
 
     # 3. merge explicit extra fields
     if extra and isinstance(extra, dict):
-        merged.update(extra)
+        merged.update({key: value for key, value in extra.items() if value is not None})
 
     # 4. resolve code from explicit param or merged payload
     if code and isinstance(code, str) and code.strip():

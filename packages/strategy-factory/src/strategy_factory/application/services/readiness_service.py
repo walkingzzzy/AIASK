@@ -51,12 +51,20 @@ class ReadinessService:
         governed_blocked_candidate_count = int(
             factor_summary.get("governed_blocked_candidate_count") or 0
         )
+        governed_blocked_ratio = self._safe_float(
+            factor_summary.get("governed_blocked_ratio"),
+            default=0.0,
+        )
+        governed_freshness_days = factor_summary.get("governed_freshness_days")
+        scheduler_recent_success = bool(factor_summary.get("scheduler_recent_success"))
+        scheduler_llm_validation_status = factor_summary.get("scheduler_llm_validation_status")
         governed_exclusion_reason_counts = dict(
             factor_summary.get("governed_exclusion_reason_counts") or {}
         )
         governed_risk_counts = dict(factor_summary.get("governed_risk_counts") or {})
         governed_candidate_pool_active = bool(
-            factor_source_mode == "governed_candidate_pool" or active_candidate_count > 0
+            factor_source_mode == "governed_candidate_pool"
+            or governed_source_candidate_count > 0
         )
 
         sources = dict(snapshot.get("sources") or {})
@@ -92,6 +100,15 @@ class ReadinessService:
             score -= 0.14
         if governed_blocked_candidate_count > 0:
             warnings.append("governed_candidate_pool_blocked_candidates")
+        if governed_blocked_ratio >= 0.75:
+            warnings.append("governed_candidate_pool_blocked_ratio_high")
+            score -= 0.12
+        elif governed_blocked_ratio >= 0.40:
+            warnings.append("governed_candidate_pool_blocked_ratio_elevated")
+            score -= 0.06
+        if scheduler_recent_success and not governed_candidate_pool_active:
+            warnings.append("factor_scheduler_recent_success_without_governed_pool")
+            score -= 0.08
         if bool(factor_summary.get("stale")):
             if governed_candidate_pool_active:
                 warnings.append("factor_research_history_stale_governed_pool_active")
@@ -99,6 +116,13 @@ class ReadinessService:
             else:
                 blockers.append("factor_research_stale")
                 score -= 0.32
+        if governed_candidate_pool_active:
+            if governed_freshness_days is None:
+                warnings.append("governed_candidate_pool_freshness_unknown")
+                score -= 0.05
+            elif self._safe_float(governed_freshness_days, default=0.0) > 2:
+                warnings.append("governed_candidate_pool_stale")
+                score -= 0.08
         refresh_status = str(factor_refresh.get("refresh_status") or "").strip().lower()
         if bool(factor_refresh.get("refresh_attempted")) and refresh_status not in {
             "success",
@@ -138,10 +162,14 @@ class ReadinessService:
             "active_candidate_count": active_candidate_count,
             "governed_source_candidate_count": governed_source_candidate_count,
             "governed_blocked_candidate_count": governed_blocked_candidate_count,
+            "governed_blocked_ratio": governed_blocked_ratio,
+            "governed_freshness_days": governed_freshness_days,
             "governed_exclusion_reason_counts": governed_exclusion_reason_counts,
             "governed_risk_counts": governed_risk_counts,
             "active_family_count": len(list(factor_summary.get("active_family_names") or [])),
             "active_regime_count": len(list(factor_summary.get("active_regime_names") or [])),
+            "scheduler_recent_success": scheduler_recent_success,
+            "scheduler_llm_validation_status": scheduler_llm_validation_status,
             "factor_refresh_attempted": bool(factor_refresh.get("refresh_attempted")),
             "factor_refresh_status": factor_refresh.get("refresh_status"),
         }

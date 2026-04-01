@@ -183,6 +183,7 @@ class DataSyncService:
     def _persist_dead_letter(self, item: Dict[str, Any], error: Exception) -> None:
         """将最终失败的任务写入 jsonl。"""
         record = {
+            "kind": "save_failure",
             "stock_code": item.get("stock_code"),
             "retry": item.get("retry", 0),
             "enqueued_at": item.get("enqueued_at"),
@@ -196,6 +197,11 @@ class DataSyncService:
             ],
         }
 
+        self._append_dead_letter_record(record)
+
+    def _append_dead_letter_record(self, record: Dict[str, Any]) -> None:
+        """追加 dead-letter 记录。"""
+
         try:
             os.makedirs(self._dead_letter_dir, exist_ok=True)
             with open(self._dead_letter_file, "a", encoding="utf-8") as f:
@@ -206,6 +212,40 @@ class DataSyncService:
                 "[DataSync] persist dead letter failed",
                 extra={"error": str(dlq_err), "path": str(self._dead_letter_file)},
             )
+
+    def record_rejected_klines(
+        self,
+        *,
+        stock_code: Optional[str],
+        rejected_rows: List[Dict[str, Any]],
+        source: str = "kline_validation",
+    ) -> None:
+        """记录被 DQA 拒绝的 K 线行，避免静默丢失。"""
+        rejected = [dict(item or {}) for item in list(rejected_rows or []) if isinstance(item, dict)]
+        if not rejected:
+            return
+        record = {
+            "kind": "validation_rejection",
+            "source": source,
+            "stock_code": str(stock_code or ""),
+            "failed_at": time.time(),
+            "rejected_count": len(rejected),
+            "sample_dates": [
+                str((item.get("row") or {}).get("date") or "")
+                for item in rejected[:5]
+                if isinstance(item.get("row"), dict)
+            ],
+            "rejections": [
+                {
+                    "index": item.get("index"),
+                    "reason": item.get("reason"),
+                    "date": (item.get("row") or {}).get("date") if isinstance(item.get("row"), dict) else None,
+                    "code": (item.get("row") or {}).get("code") if isinstance(item.get("row"), dict) else None,
+                }
+                for item in rejected[:20]
+            ],
+        }
+        self._append_dead_letter_record(record)
 
     def get_dead_letters(self, limit: int = 20) -> Dict[str, Any]:
         """读取最近 dead-letter 记录。"""
@@ -516,4 +556,3 @@ class DataSyncService:
 
 # 全局实例
 data_sync_service = DataSyncService()
-

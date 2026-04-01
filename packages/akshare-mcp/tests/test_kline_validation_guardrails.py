@@ -66,6 +66,40 @@ def test_validate_kline_list_skips_invalid_rows() -> None:
 
     assert len(rows) == 1
     assert rows[0]["date"] == "2026-03-02"
+    assert rows.validation_report["accepted_count"] == 1
+    assert rows.validation_report["rejected_count"] == 1
+
+
+def test_validate_kline_list_report_exposes_quality_gate_counts() -> None:
+    report = validate_kline_list(
+        [
+            {
+                "date": "2026-03-01",
+                "code": "600519",
+                "open": 10.0,
+                "close": 11.0,
+                "high": 9.5,
+                "low": 9.0,
+                "volume": 1000,
+            },
+            {
+                "date": "2026-03-02",
+                "code": "600519",
+                "open": 10.0,
+                "close": 11.0,
+                "high": 12.0,
+                "low": 9.0,
+                "volume": 1000,
+            },
+        ],
+        return_report=True,
+        min_accept_ratio=0.75,
+    )
+
+    assert report["accepted_count"] == 1
+    assert report["rejected_count"] == 1
+    assert report["minimum_quality_threshold"] == 0.75
+    assert report["minimum_quality_passed"] is False
 
 
 @pytest.mark.asyncio
@@ -94,7 +128,9 @@ async def test_save_klines_skips_invalid_rows_before_persisting() -> None:
         ],
     )
 
-    assert saved == 1
+    assert saved['accepted_count'] == 1
+    assert saved['rejected_count'] == 1
+    assert saved['accept_ratio'] == 0.5
     assert db.conn.rows is not None
     assert len(db.conn.rows) == 1
     assert db.conn.rows[0][1] == "600519"

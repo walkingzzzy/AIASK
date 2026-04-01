@@ -314,6 +314,13 @@ export class FactorController {
     return { success: true, data, traceId: String(traceId) };
   }
 
+  @Get('observability')
+  async observability(@Req() req: { traceId?: string; headers?: Record<string, string | undefined> }) {
+    const data = await this.factorService.observability();
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    return { success: true, data, traceId: String(traceId) };
+  }
+
   @Get('scheduler-status')
   async schedulerStatus(@Req() req: { traceId?: string; headers?: Record<string, string | undefined> }) {
     const data = await this.factorService.schedulerStatus();

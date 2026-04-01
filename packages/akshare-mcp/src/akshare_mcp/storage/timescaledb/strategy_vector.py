@@ -191,6 +191,8 @@ class StrategyVectorMixin:
         result = dict(row)
         result.pop("rn", None)
         result["centroids"] = self._decode_json_field(result.get("centroids"), [])
+        result["index_params"] = self._decode_json_field(result.get("index_params"), {})
+        result["metrics"] = self._decode_json_field(result.get("metrics"), {})
         result["metadata"] = self._decode_json_field(result.get("metadata"), {})
         return result
 
@@ -203,9 +205,9 @@ class StrategyVectorMixin:
                 """
                 INSERT INTO strategy_vector_index_snapshots
                     (index_name, index_version, status, profile_type, vector_method, metric, backend,
-                     profile_count, bucket_count, vector_dim, centroids, metadata, task_run_id, source,
+                     profile_count, bucket_count, vector_dim, centroids, index_params, metrics, metadata, task_run_id, source,
                      built_at, activated_at, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15::timestamptz, $16::timestamptz, NOW())
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15, $16, $17::timestamptz, $18::timestamptz, NOW())
                 RETURNING *
                 """,
                 str(payload.get("index_name") or "strategy_behavior"),
@@ -219,6 +221,8 @@ class StrategyVectorMixin:
                 int(payload.get("bucket_count") or 0),
                 int(payload.get("vector_dim") or 0),
                 json.dumps(payload.get("centroids") or [], ensure_ascii=False, default=str),
+                json.dumps(payload.get("index_params") or {}, ensure_ascii=False, default=str),
+                json.dumps(payload.get("metrics") or {}, ensure_ascii=False, default=str),
                 json.dumps(payload.get("metadata") or {}, ensure_ascii=False, default=str),
                 payload.get("task_run_id"),
                 str(payload.get("source") or "system"),
@@ -448,6 +452,7 @@ class StrategyVectorMixin:
         exclude_strategy_id: Optional[str] = None,
         limit: int = 20,
         metric: str = 'cosine',
+        index_params: Optional[dict] = None,
     ) -> List[dict]:
         if not getattr(self, 'supports_pgvector', lambda: False)():
             return []
@@ -457,6 +462,7 @@ class StrategyVectorMixin:
             return []
         distance_sql, similarity_sql = self._pgvector_distance_sql('pv.embedding', metric, dim)
         async with self.acquire() as conn:
+            hnsw_params = self._resolve_pgvector_hnsw_params(index_params)
             sql = f"""
                 SELECT p.id, p.strategy_id, p.index_name, p.profile_type, p.vector_method, p.metric, p.vector_dim,
                        p.embedding, p.signature, p.backend, p.index_version, p.metadata, p.created_at, p.updated_at,
@@ -485,7 +491,12 @@ class StrategyVectorMixin:
                 idx += 1
             sql += f" ORDER BY {distance_sql} ASC LIMIT ${idx}"
             params.append(max(1, min(int(limit or 20), 500)))
-            rows = await conn.fetch(sql, *params)
+            if hasattr(conn, "transaction"):
+                async with conn.transaction():
+                    await conn.execute(f"SET LOCAL hnsw.ef_search = {int(hnsw_params['ef_search'])}")
+                    rows = await conn.fetch(sql, *params)
+            else:
+                rows = await conn.fetch(sql, *params)
         return [{**self._decode_vector_profile(dict(row)), 'similarity': round(float(row.get('similarity') or 0.0), 6)} for row in rows]
 
     async def search_strategy_vector_index_items_by_embedding(
@@ -497,6 +508,7 @@ class StrategyVectorMixin:
         exclude_strategy_id: Optional[str] = None,
         limit: int = 80,
         metric: str = 'cosine',
+        index_params: Optional[dict] = None,
     ) -> List[dict]:
         if not getattr(self, 'supports_pgvector', lambda: False)():
             return []
@@ -506,6 +518,7 @@ class StrategyVectorMixin:
             return []
         distance_sql, similarity_sql = self._pgvector_distance_sql('iv.embedding', metric, dim)
         async with self.acquire() as conn:
+            hnsw_params = self._resolve_pgvector_hnsw_params(index_params)
             sql = f"""
                 SELECT i.id, i.index_name, i.index_version, i.profile_id, i.strategy_id, i.profile_type, i.vector_method,
                        i.metric, i.vector_dim, i.bucket_id, i.coarse_score, i.embedding, i.metadata, i.created_at,
@@ -526,7 +539,12 @@ class StrategyVectorMixin:
                 idx += 1
             sql += f" ORDER BY {distance_sql} ASC LIMIT ${idx}"
             params.append(max(1, min(int(limit or 80), 500)))
-            rows = await conn.fetch(sql, *params)
+            if hasattr(conn, "transaction"):
+                async with conn.transaction():
+                    await conn.execute(f"SET LOCAL hnsw.ef_search = {int(hnsw_params['ef_search'])}")
+                    rows = await conn.fetch(sql, *params)
+            else:
+                rows = await conn.fetch(sql, *params)
         return [{**self._decode_vector_index_item(dict(row)), 'similarity': round(float(row.get('similarity') or 0.0), 6)} for row in rows]
 
     # ------------------------------------------------------------------
@@ -539,6 +557,7 @@ class StrategyVectorMixin:
         index_version: str,
         vector_dim: int,
         metric: str = 'cosine',
+        index_params: Optional[dict] = None,
     ) -> Optional[str]:
         if not getattr(self, 'supports_pgvector', lambda: False)():
             return None
@@ -546,18 +565,20 @@ class StrategyVectorMixin:
         if resolved_dim <= 0:
             return None
         opclass = self._pgvector_opclass(metric)
+        with_clause = self._pgvector_hnsw_with_clause(index_params)
         idx_name = self._pgvector_partial_index_name('idx_svi_pg_hnsw', index_name, index_version, resolved_dim, metric)
         async with self.acquire() as conn:
             sql = await conn.fetchval(
                 """
                 SELECT format(
-                    'CREATE INDEX IF NOT EXISTS %I ON strategy_vector_index_item_store USING hnsw ((embedding::vector(%s)) %s) WHERE index_name = %L AND index_version = %L AND vector_dim = %s',
-                    $1::text, $2::int, $3::text, $4::text, $5::text, $6::int
+                    'CREATE INDEX IF NOT EXISTS %I ON strategy_vector_index_item_store USING hnsw ((embedding::vector(%s)) %s)%s WHERE index_name = %L AND index_version = %L AND vector_dim = %s',
+                    $1::text, $2::int, $3::text, $4::text, $5::text, $6::text, $7::int
                 )
                 """,
                 idx_name,
                 resolved_dim,
                 opclass,
+                with_clause,
                 str(index_name or ''),
                 str(index_version or ''),
                 resolved_dim,
@@ -572,6 +593,7 @@ class StrategyVectorMixin:
         vector_dim: int,
         profile_type: Optional[str] = None,
         metric: str = 'cosine',
+        index_params: Optional[dict] = None,
     ) -> Optional[str]:
         if not getattr(self, 'supports_pgvector', lambda: False)():
             return None
@@ -579,6 +601,7 @@ class StrategyVectorMixin:
         if resolved_dim <= 0:
             return None
         opclass = self._pgvector_opclass(metric)
+        with_clause = self._pgvector_hnsw_with_clause(index_params)
         idx_name = self._pgvector_partial_index_name(
             'idx_svp_pg_hnsw',
             index_name,
@@ -593,6 +616,7 @@ class StrategyVectorMixin:
                 idx_name,
                 resolved_dim,
                 opclass,
+                with_clause,
                 str(index_name or ''),
                 str(index_version or ''),
                 resolved_dim,
@@ -600,13 +624,13 @@ class StrategyVectorMixin:
             if profile_type:
                 where_sql += " AND profile_type = %L"
                 format_args.append(str(profile_type))
-            format_placeholders = ["$1::text", "$2::int", "$3::text", "$4::text", "$5::text", "$6::int"]
+            format_placeholders = ["$1::text", "$2::int", "$3::text", "$4::text", "$5::text", "$6::text", "$7::int"]
             if profile_type:
                 format_placeholders.append(f"${len(format_args)}::text")
             sql = await conn.fetchval(
                 f"""
                 SELECT format(
-                    'CREATE INDEX IF NOT EXISTS %I ON strategy_vector_profile_store USING hnsw ((embedding::vector(%s)) %s) WHERE {where_sql}',
+                    'CREATE INDEX IF NOT EXISTS %I ON strategy_vector_profile_store USING hnsw ((embedding::vector(%s)) %s)%s WHERE {where_sql}',
                     {', '.join(format_placeholders)}
                 )
                 """,

@@ -3,11 +3,16 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useCartStore } from '@/store/cart-store';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import { useApiQuery } from '@/hooks/use-api-query';
+import { ConfirmDialog } from '@/components/ui';
+import { readTransactionConfirmations } from '@/lib/transaction-confirmations';
 
 export function CartDrawer({ onClose }: { onClose: () => void }) {
   const { items, removeStrategy, setWeight, clear } = useCartStore();
   const createApi = useApiMutation();
+  const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
   const [name, setName] = useState('');
+  const [pendingCreate, setPendingCreate] = useState<{ name: string; description: string } | null>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<Element | null>(null);
 
@@ -29,6 +34,7 @@ export function CartDrawer({ onClose }: { onClose: () => void }) {
 
   const totalWeight = items.reduce((sum, i) => sum + i.weight, 0);
   const weightValid = items.length > 0 && Math.abs(totalWeight - 100) < 0.01;
+  const confirmPrefs = readTransactionConfirmations(profileQ.data);
 
   function autoBalance() {
     const w = Math.floor(100 / items.length);
@@ -36,16 +42,27 @@ export function CartDrawer({ onClose }: { onClose: () => void }) {
     items.forEach((item, idx) => setWeight(item.strategyId, w + (idx === 0 ? remainder : 0)));
   }
 
-  async function handleSubmit() {
-    if (!weightValid) return;
-    const portfolioName = name.trim() || `策略组合 ${new Date().toLocaleDateString()}`;
+  async function executeCreatePortfolio(payload: { name: string; description: string }) {
     await createApi.triggerAsync('/portfolio/create', { method: 'POST' }, {
-      name: portfolioName,
-      description: `策略组合: ${items.map((i) => `${i.name}(${i.weight}%)`).join(', ')}`,
+      name: payload.name,
+      description: payload.description,
       strategies: items.map((i) => ({ strategyId: i.strategyId, weight: i.weight / 100 })),
     });
     clear();
     onClose();
+  }
+
+  async function handleSubmit() {
+    if (!weightValid) return;
+    const payload = {
+      name: name.trim() || `策略组合 ${new Date().toLocaleDateString()}`,
+      description: `策略组合: ${items.map((i) => `${i.name}(${i.weight}%)`).join(', ')}`,
+    };
+    if (confirmPrefs.portfolioRebalance) {
+      setPendingCreate(payload);
+      return;
+    }
+    await executeCreatePortfolio(payload);
   }
 
   return (
@@ -108,6 +125,26 @@ export function CartDrawer({ onClose }: { onClose: () => void }) {
           </>
         )}
       </div>
+      <ConfirmDialog
+        open={pendingCreate != null}
+        title="确认创建策略组合"
+        confirmText="确认创建"
+        onCancel={() => setPendingCreate(null)}
+        onConfirm={() => {
+          if (!pendingCreate) return;
+          const payload = pendingCreate;
+          setPendingCreate(null);
+          void executeCreatePortfolio(payload);
+        }}
+      >
+        <div className="space-y-2">
+          <div>当前操作已开启“组合调仓”二次确认。</div>
+          <div className="text-xs text-text-secondary">
+            即将创建：
+            <span className="ml-1 font-medium text-text-primary">{pendingCreate?.name ?? '-'}</span>
+          </div>
+        </div>
+      </ConfirmDialog>
     </div>
   );
 }

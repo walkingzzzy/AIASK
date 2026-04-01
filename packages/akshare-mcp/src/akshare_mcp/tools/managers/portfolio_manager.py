@@ -9,6 +9,7 @@ from ..manager_protocol import (
     fail_with_meta,
     normalize_manager_code,
     normalize_manager_kwargs,
+    normalize_manager_payload,
     ok_with_meta,
 )
 
@@ -67,7 +68,7 @@ def register_portfolio_manager(mcp):
     """注册组合管理器工具"""
 
     @mcp.tool()
-    async def portfolio_manager(action: str, params: dict | None = None, kwargs: Any = None):
+    async def portfolio_manager(action: str, params: dict | None = None, kwargs: Any = None, user_id: str | None = None, portfolio_id: int | None = None, code: str | None = None, shares: int | None = None, cost_price: float | None = None, name: str | None = None, description: str | None = None, initial_capital: float | None = None, updates: dict | None = None):
         """组合管理器（统一 action + kwargs 协议）
 
         Args:
@@ -101,7 +102,21 @@ def register_portfolio_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
-            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
+            kwargs = normalize_manager_payload(
+                params=params,
+                kwargs=kwargs,
+                extra={
+                    "user_id": user_id,
+                    "portfolio_id": portfolio_id,
+                    "code": code,
+                    "shares": shares,
+                    "cost_price": cost_price,
+                    "name": name,
+                    "description": description,
+                    "initial_capital": initial_capital,
+                    "updates": updates,
+                },
+            )
             _, kwargs = normalize_manager_code(None, kwargs)
             user_id = str(kwargs.get('user_id') or 'default').strip() or 'default'
 

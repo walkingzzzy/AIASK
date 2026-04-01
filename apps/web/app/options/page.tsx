@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { PageContainer, SectionCard } from '@/components/ui';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
@@ -42,42 +42,48 @@ type GreeksData = {
     interpretation?: Record<string, string>;
 };
 
+type SmirkPoint = {
+    strike?: number;
+    moneyness?: number;
+    call_iv?: number;
+    put_iv?: number;
+    avg_iv?: number;
+    skew?: number;
+};
+
+type SmirkData = {
+    underlying?: {
+        code?: string;
+        name?: string;
+        price?: number;
+    };
+    selected_expiry?: string[];
+    curve?: SmirkPoint[];
+    spot?: number;
+    time_to_maturity?: number;
+    atm_iv?: number;
+    point_count?: number;
+    degraded?: boolean;
+    message?: string;
+};
+
+type PairedOptionRow = {
+    strike: number;
+    call?: OptionChainItem;
+    put?: OptionChainItem;
+};
+
+type GreekSelection = {
+    type: 'call' | 'put';
+    strike: number;
+    last?: number;
+    iv?: number;
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown>
         : {};
-}
-
-function unwrapToolData(value: unknown, depth = 0): Record<string, unknown> {
-    if (depth > 4) return {};
-    const record = asRecord(value);
-    if (!record.data || typeof record.data !== 'object' || Array.isArray(record.data)) {
-        return record;
-    }
-
-    const keys = Object.keys(record);
-    const wrapperOnly = keys.every((key) => [
-        'data',
-        'success',
-        'ok',
-        'error',
-        'message',
-        'source',
-        'cached',
-        'timestamp',
-        'backend_requested',
-        'backend_used',
-        'fallback_used',
-        'fallback_reason',
-        'latency_ms',
-        'traceId',
-    ].includes(key));
-
-    if (!wrapperOnly) {
-        return record;
-    }
-
-    return unwrapToolData(record.data, depth + 1);
 }
 
 function readNumber(value: unknown): number | undefined {
@@ -101,7 +107,7 @@ function normalizeOptionItem(value: unknown): OptionChainItem {
 }
 
 function normalizeOptionChainData(raw: unknown): OptionChainData {
-    const payload = unwrapToolData(raw);
+    const payload = asRecord(raw);
     const underlying = asRecord(payload.underlying);
     const selectedExpiryRaw = payload.selectedExpiry ?? payload.expiryMonths;
 
@@ -131,7 +137,7 @@ function normalizeTextRecord(value: unknown): Record<string, string> | undefined
 }
 
 function normalizeGreeksData(raw: unknown): GreeksData {
-    const payload = unwrapToolData(raw);
+    const payload = asRecord(raw);
     return {
         code: typeof payload.code === 'string' ? payload.code : undefined,
         option_type: typeof payload.option_type === 'string' ? payload.option_type : undefined,
@@ -146,9 +152,79 @@ function normalizeGreeksData(raw: unknown): GreeksData {
     };
 }
 
+function normalizeSmirkPoint(raw: unknown): SmirkPoint {
+    const payload = asRecord(raw);
+    return {
+        strike: readNumber(payload.strike),
+        moneyness: readNumber(payload.moneyness),
+        call_iv: readNumber(payload.call_iv),
+        put_iv: readNumber(payload.put_iv),
+        avg_iv: readNumber(payload.avg_iv),
+        skew: readNumber(payload.skew),
+    };
+}
+
+function normalizeSmirkData(raw: unknown): SmirkData {
+    const payload = asRecord(raw);
+    const underlying = asRecord(payload.underlying);
+    const selectedExpiryRaw = payload.selected_expiry ?? payload.selectedExpiry;
+    return {
+        underlying: Object.keys(underlying).length > 0 ? {
+            code: typeof underlying.code === 'string' ? underlying.code : undefined,
+            name: typeof underlying.name === 'string' ? underlying.name : undefined,
+            price: readNumber(underlying.price),
+        } : undefined,
+        selected_expiry: Array.isArray(selectedExpiryRaw)
+            ? selectedExpiryRaw.map((item) => String(item)).filter(Boolean)
+            : typeof selectedExpiryRaw === 'string' && selectedExpiryRaw
+                ? [selectedExpiryRaw]
+                : [],
+        curve: Array.isArray(payload.curve) ? payload.curve.map((item) => normalizeSmirkPoint(item)) : [],
+        spot: readNumber(payload.spot),
+        time_to_maturity: readNumber(payload.time_to_maturity),
+        atm_iv: readNumber(payload.atm_iv),
+        point_count: readNumber(payload.point_count),
+        degraded: payload.degraded === true,
+        message: typeof payload.message === 'string' ? payload.message : undefined,
+    };
+}
+
+function buildGreekSelection(type: 'call' | 'put', row: PairedOptionRow): GreekSelection | null {
+    const option = type === 'call' ? row.call : row.put;
+    if (!option) {
+        return null;
+    }
+    const last = typeof option.last === 'number' ? option.last : option.lastPrice;
+    const iv = typeof option.iv === 'number' ? option.iv : option.impliedVolatility;
+    return {
+        type,
+        strike: row.strike,
+        ...(typeof last === 'number' ? { last } : {}),
+        ...(typeof iv === 'number' ? { iv } : {}),
+    };
+}
+
+function resolveDefaultGreekSelection(rows: PairedOptionRow[], underlyingPrice?: number): GreekSelection | null {
+    if (rows.length === 0) {
+        return null;
+    }
+    const ordered = [...rows].sort((left, right) => {
+        if (typeof underlyingPrice !== 'number') return left.strike - right.strike;
+        return Math.abs(left.strike - underlyingPrice) - Math.abs(right.strike - underlyingPrice);
+    });
+    for (const row of ordered) {
+        const callSelection = buildGreekSelection('call', row);
+        if (callSelection) return callSelection;
+        const putSelection = buildGreekSelection('put', row);
+        if (putSelection) return putSelection;
+    }
+    return null;
+}
+
 export default function OptionsPage() {
     const [symbol, setSymbol] = useState('510300'); // Default to 300 ETF
     const [querySymbol, setQuerySymbol] = useState('510300');
+    const [selectedGreekLeg, setSelectedGreekLeg] = useState<GreekSelection | null>(null);
     const exampleSymbols = ['510050', '510300'];
 
     const { data: chainData, isPending: chainLoading, error: chainError, refetch: refetchChain } = useApiQuery<OptionChainData>(
@@ -156,14 +232,35 @@ export default function OptionsPage() {
         { staleTime: 60 * 1000, parse: normalizeOptionChainData },
     );
 
+    const greekQueryString = useMemo(() => {
+        if (!selectedGreekLeg) {
+            return '';
+        }
+        const params = new URLSearchParams();
+        params.set('optionType', selectedGreekLeg.type);
+        params.set('strike', String(selectedGreekLeg.strike));
+        if (typeof chainData?.underlying?.price === 'number') {
+            params.set('spot', String(chainData.underlying.price));
+        }
+        if (typeof selectedGreekLeg.iv === 'number' && Number.isFinite(selectedGreekLeg.iv) && selectedGreekLeg.iv > 0) {
+            params.set('volatility', String(selectedGreekLeg.iv));
+        }
+        return params.toString();
+    }, [chainData?.underlying?.price, selectedGreekLeg]);
+
     const { data: greeksData, isPending: greeksLoading, error: greeksError, refetch: refetchGreeks } = useApiQuery<GreeksData>(
-        `/v1/options/greeks/${querySymbol}`,
+        `/v1/options/greeks/${querySymbol}${greekQueryString ? `?${greekQueryString}` : ''}`,
         { staleTime: 60 * 1000, parse: normalizeGreeksData },
     );
 
-    const pairedRows = useMemo(() => {
+    const { data: smirkData, isPending: smirkLoading, error: smirkError, refetch: refetchSmirk } = useApiQuery<SmirkData>(
+        `/v1/options/smirk/${querySymbol}`,
+        { staleTime: 60 * 1000, parse: normalizeSmirkData },
+    );
+
+    const pairedRows = useMemo<PairedOptionRow[]>(() => {
         const items = Array.isArray(chainData?.options) ? chainData.options : [];
-        const map = new Map<number, { strike: number; call?: OptionChainItem; put?: OptionChainItem }>();
+        const map = new Map<number, PairedOptionRow>();
 
         items.forEach((item) => {
             const strike = Number(item.strike ?? 0);
@@ -179,6 +276,33 @@ export default function OptionsPage() {
             .slice(0, 20);
     }, [chainData]);
 
+    useEffect(() => {
+        setSelectedGreekLeg(null);
+    }, [querySymbol]);
+
+    useEffect(() => {
+        if (pairedRows.length === 0) {
+            setSelectedGreekLeg(null);
+            return;
+        }
+
+        setSelectedGreekLeg((current) => {
+            const fallback = resolveDefaultGreekSelection(pairedRows, chainData?.underlying?.price);
+            if (!fallback) {
+                return null;
+            }
+            if (!current) {
+                return fallback;
+            }
+            const selectedRow = pairedRows.find((row) => row.strike === current.strike);
+            if (!selectedRow) {
+                return fallback;
+            }
+            const nextSelection = buildGreekSelection(current.type, selectedRow);
+            return nextSelection ?? fallback;
+        });
+    }, [chainData?.underlying?.price, pairedRows]);
+
     const greekEntries = useMemo(() => {
         if (!greeksData?.greeks || typeof greeksData.greeks !== 'object') return [];
         return Object.entries(greeksData.greeks);
@@ -188,10 +312,17 @@ export default function OptionsPage() {
         if (!greeksData?.interpretation || typeof greeksData.interpretation !== 'object') return [];
         return Object.entries(greeksData.interpretation);
     }, [greeksData]);
+    const smirkRows = useMemo(() => Array.isArray(smirkData?.curve) ? smirkData.curve : [], [smirkData]);
+    const selectedSmirkPoint = useMemo(() => {
+        if (!selectedGreekLeg) return null;
+        return smirkRows.find((row) => typeof row.strike === 'number' && row.strike === selectedGreekLeg.strike) ?? null;
+    }, [selectedGreekLeg, smirkRows]);
     const showChainLoading = (chainLoading || greeksLoading) && pairedRows.length === 0 && !chainError;
     const showGreeksLoading = (greeksLoading || chainLoading) && greekEntries.length === 0 && !greeksError;
     const showChainEmpty = !chainLoading && !greeksLoading && pairedRows.length === 0 && !chainError;
     const showGreeksEmpty = !greeksLoading && !chainLoading && greekEntries.length === 0 && !greeksError;
+    const showSmirkLoading = smirkLoading && smirkRows.length === 0 && !smirkError;
+    const showSmirkEmpty = !smirkLoading && smirkRows.length === 0 && !smirkError;
 
     const handleSearch = (e: React.FormEvent) => {
         e.preventDefault();
@@ -200,6 +331,7 @@ export default function OptionsPage() {
             if (nextSymbol === querySymbol) {
                 void refetchChain();
                 void refetchGreeks();
+                void refetchSmirk();
                 return;
             }
             setQuerySymbol(nextSymbol);
@@ -259,13 +391,16 @@ export default function OptionsPage() {
                 </form>
             </div>
 
-            {(chainError || greeksError) && (
-                <ErrorState text="数据获取失败" hint={chainError || greeksError || '未知错误，此代码可能无期权标的'} />
+            {(chainError || greeksError || smirkError) && (
+                <ErrorState text="数据获取失败" hint={chainError || greeksError || smirkError || '未知错误，此代码可能无期权标的'} />
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <SectionCard className="col-span-1 md:col-span-3">
                     <h3 className="font-bold text-lg mb-4">T型报价牌 (T-Quote) - {querySymbol}</h3>
+                    <div className="mb-3 text-xs text-text-muted">
+                        点击认购或认沽“最新”报价，可将下方 Greeks 计算切换到对应期权腿。
+                    </div>
                     {chainData?.underlying ? (
                         <div className="mb-3 text-sm text-text-muted flex flex-wrap gap-x-4 gap-y-1">
                             <span>{chainData.underlying.name ?? chainData.underlying.code ?? querySymbol}</span>
@@ -308,17 +443,40 @@ export default function OptionsPage() {
                                             const putLast = typeof put.last === 'number' ? put.last : put.lastPrice;
                                             const callIv = typeof call.iv === 'number' ? call.iv : call.impliedVolatility;
                                             const putIv = typeof put.iv === 'number' ? put.iv : put.impliedVolatility;
+                                            const callSelected = selectedGreekLeg?.type === 'call' && selectedGreekLeg?.strike === row.strike;
+                                            const putSelected = selectedGreekLeg?.type === 'put' && selectedGreekLeg?.strike === row.strike;
+                                            const rowSelected = selectedGreekLeg?.strike === row.strike;
 
                                             return (
-                                                <tr key={i} className="text-sm hover:bg-surface-alt border-b border-glass-border/50">
-                                                    <td className="text-right py-2 px-2 text-red-500 font-mono">{fmtPrice(callLast)}</td>
+                                                <tr key={i} className={`text-sm border-b border-glass-border/50 ${rowSelected ? 'bg-primary/5' : 'hover:bg-surface-alt'}`}>
+                                                    <td className="text-right py-2 px-2 text-red-500 font-mono">
+                                                        {typeof callLast === 'number' ? (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setSelectedGreekLeg(buildGreekSelection('call', row))}
+                                                                className={`w-full rounded px-2 py-1 text-right font-mono text-inherit ${callSelected ? 'bg-primary/10 ring-1 ring-primary/35' : 'hover:bg-primary/5'}`}
+                                                            >
+                                                                {fmtPrice(callLast)}
+                                                            </button>
+                                                        ) : '-'}
+                                                    </td>
                                                     <td className="text-right py-2 px-2 text-red-500">{fmtPercent(call.changePercent)}</td>
                                                     <td className="text-right py-2 px-2 text-text-muted">{call.openInterest ?? '-'}</td>
                                                     <td className="text-right py-2 px-2 font-mono text-blue-500/80">{typeof callIv === 'number' ? `${(callIv * 100).toFixed(2)}%` : '-'}</td>
 
-                                                    <td className="text-center border-x border-glass-border font-bold bg-surface-alt py-2 px-2">{fmtPrice(row.strike, 3)}</td>
+                                                    <td className={`text-center border-x border-glass-border font-bold py-2 px-2 ${rowSelected ? 'bg-primary/10 text-primary' : 'bg-surface-alt'}`}>{fmtPrice(row.strike, 3)}</td>
 
-                                                    <td className="text-left py-2 px-2 text-green-500 font-mono">{fmtPrice(putLast)}</td>
+                                                    <td className="text-left py-2 px-2 text-green-500 font-mono">
+                                                        {typeof putLast === 'number' ? (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setSelectedGreekLeg(buildGreekSelection('put', row))}
+                                                                className={`w-full rounded px-2 py-1 text-left font-mono text-inherit ${putSelected ? 'bg-primary/10 ring-1 ring-primary/35' : 'hover:bg-primary/5'}`}
+                                                            >
+                                                                {fmtPrice(putLast)}
+                                                            </button>
+                                                        ) : '-'}
+                                                    </td>
                                                     <td className="text-left py-2 px-2 text-green-500">{fmtPercent(put.changePercent)}</td>
                                                     <td className="text-left py-2 px-2 text-text-muted">{put.openInterest ?? '-'}</td>
                                                     <td className="text-left py-2 px-2 font-mono text-blue-500/80">{typeof putIv === 'number' ? `${(putIv * 100).toFixed(2)}%` : '-'}</td>
@@ -363,6 +521,29 @@ export default function OptionsPage() {
                 <SectionCard className="col-span-1 md:col-span-3">
                     <h3 className="font-bold text-lg mb-4">希腊字母与波动率 (Greeks & IV)</h3>
                     <div>
+                        <div className="mb-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+                            <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                <div className="text-text-muted mb-1">当前选中腿</div>
+                                <div className="font-semibold">
+                                    {selectedGreekLeg ? `${selectedGreekLeg.type === 'call' ? '认购' : '认沽'} / ${fmtPrice(selectedGreekLeg.strike, 3)}` : '等待选择'}
+                                </div>
+                            </div>
+                            <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                <div className="text-text-muted mb-1">市场最新价</div>
+                                <div className="font-semibold">{fmtPrice(selectedGreekLeg?.last, 4)}</div>
+                            </div>
+                            <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                <div className="text-text-muted mb-1">使用 IV</div>
+                                <div className="font-semibold">
+                                    {typeof selectedGreekLeg?.iv === 'number' ? `${(selectedGreekLeg.iv * 100).toFixed(2)}%` : '-'}
+                                </div>
+                            </div>
+                            <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                <div className="text-text-muted mb-1">标的现价</div>
+                                <div className="font-semibold">{fmtPrice(chainData?.underlying?.price, 3)}</div>
+                            </div>
+                        </div>
+
                         {showGreeksLoading ? (
                             <LoadingState text="计算 Greeks 中..." />
                         ) : greekEntries.length > 0 ? (
@@ -425,6 +606,116 @@ export default function OptionsPage() {
                                         <Link href="/market" className="px-3 py-1.5 rounded border border-border text-sm no-underline text-inherit hover:bg-surface-alt">
                                             回行情页确认标的
                                         </Link>
+                                    </>
+                                }
+                            />
+                        ) : null}
+                    </div>
+                </SectionCard>
+
+                <SectionCard className="col-span-1 md:col-span-3">
+                    <h3 className="font-bold text-lg mb-4">隐含波动率偏斜 (Smirk)</h3>
+                    <div>
+                        {showSmirkLoading ? (
+                            <LoadingState text="加载隐含波动率曲线中..." />
+                        ) : smirkRows.length > 0 ? (
+                            <div className="space-y-4">
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                    <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                        <div className="text-text-muted mb-1">ATM IV</div>
+                                        <div className="font-semibold">
+                                            {typeof smirkData?.atm_iv === 'number' ? `${(smirkData.atm_iv * 100).toFixed(2)}%` : '-'}
+                                        </div>
+                                    </div>
+                                    <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                        <div className="text-text-muted mb-1">曲线点数</div>
+                                        <div className="font-semibold">{smirkData?.point_count ?? smirkRows.length}</div>
+                                    </div>
+                                    <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                        <div className="text-text-muted mb-1">到期月</div>
+                                        <div className="font-semibold">{smirkData?.selected_expiry?.join(', ') || '-'}</div>
+                                    </div>
+                                    <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                        <div className="text-text-muted mb-1">状态</div>
+                                        <div className="font-semibold">{smirkData?.degraded ? '降级结果' : '正常结果'}</div>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                        <div className="text-text-muted mb-1">当前选中 Strike</div>
+                                        <div className="font-semibold">{selectedSmirkPoint ? fmtPrice(selectedSmirkPoint.strike, 3) : '等待选择'}</div>
+                                    </div>
+                                    <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                        <div className="text-text-muted mb-1">对应均值 IV</div>
+                                        <div className="font-semibold">
+                                            {typeof selectedSmirkPoint?.avg_iv === 'number' ? `${(selectedSmirkPoint.avg_iv * 100).toFixed(2)}%` : '-'}
+                                        </div>
+                                    </div>
+                                    <div className="rounded-md border border-glass-border bg-surface-alt p-3 text-sm">
+                                        <div className="text-text-muted mb-1">对应 Skew</div>
+                                        <div className="font-semibold">
+                                            {typeof selectedSmirkPoint?.skew === 'number' ? selectedSmirkPoint.skew.toFixed(4) : '-'}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {smirkData?.message ? (
+                                    <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-text-secondary">
+                                        {smirkData.message}
+                                    </div>
+                                ) : null}
+
+                                <div className="border border-glass-border rounded-md overflow-x-auto">
+                                    <table className="w-full text-sm text-left">
+                                        <thead className="bg-surface-alt text-xs text-text-muted">
+                                            <tr>
+                                                <th className="py-2 px-3">行权价</th>
+                                                <th className="py-2 px-3">Moneyness</th>
+                                                <th className="py-2 px-3">Call IV</th>
+                                                <th className="py-2 px-3">Put IV</th>
+                                                <th className="py-2 px-3">均值 IV</th>
+                                                <th className="py-2 px-3">Skew</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {smirkRows.map((row, index) => {
+                                                const selected = selectedSmirkPoint?.strike === row.strike;
+                                                return (
+                                                <tr key={`${row.strike ?? index}-${index}`} className={`border-b border-glass-border/50 ${selected ? 'bg-primary/5' : 'hover:bg-surface-alt'}`}>
+                                                    <td className="py-2 px-3 font-mono">{fmtPrice(row.strike, 3)}</td>
+                                                    <td className="py-2 px-3">{typeof row.moneyness === 'number' ? row.moneyness.toFixed(3) : '-'}</td>
+                                                    <td className="py-2 px-3">{typeof row.call_iv === 'number' ? `${(row.call_iv * 100).toFixed(2)}%` : '-'}</td>
+                                                    <td className="py-2 px-3">{typeof row.put_iv === 'number' ? `${(row.put_iv * 100).toFixed(2)}%` : '-'}</td>
+                                                    <td className="py-2 px-3">{typeof row.avg_iv === 'number' ? `${(row.avg_iv * 100).toFixed(2)}%` : '-'}</td>
+                                                    <td className={`py-2 px-3 ${typeof row.skew === 'number' && row.skew > 0 ? 'text-warning' : 'text-text-primary'}`}>
+                                                        {typeof row.skew === 'number' ? row.skew.toFixed(4) : '-'}
+                                                    </td>
+                                                </tr>
+                                            )})}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        ) : showSmirkEmpty ? (
+                            <EmptyState
+                                text="当前暂无隐含波动率偏斜数据"
+                                hint="如果期权链返回正常但 smirk 为空，通常是当前月份样本不足或部分合约价格无法反推出稳定 IV。"
+                                action={
+                                    <>
+                                        <button type="button" onClick={() => void refetchSmirk()} className="px-3 py-1.5 rounded border border-primary text-primary text-sm cursor-pointer hover:bg-primary/5">
+                                            重新加载
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setSymbol('510050');
+                                                setQuerySymbol('510050');
+                                            }}
+                                            className="px-3 py-1.5 rounded border border-border text-sm cursor-pointer hover:bg-surface-alt"
+                                        >
+                                            用 510050 重试
+                                        </button>
                                     </>
                                 }
                             />

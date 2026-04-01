@@ -17,7 +17,7 @@ type McpHealth = {
   activeConnections?: number;
 };
 
-type McpStartupProfile = 'full' | 'tool-only';
+type McpStartupProfile = 'full' | 'worker' | 'tool-only';
 
 interface PooledConnection {
   id: number;
@@ -36,12 +36,7 @@ type Waiter = {
 @Injectable()
 export class McpGatewayService implements OnModuleDestroy {
   private readonly logger = new Logger(McpGatewayService.name);
-  private static readonly DEDICATED_TOOL_CONNECTIONS = new Set([
-    'alerts_manager',
-    // execution_manager keeps task state in-process, so follow-up summary/list
-    // calls must hit the same stdio session that created the task.
-    'execution_manager',
-  ]);
+  private static readonly DEDICATED_TOOL_CONNECTIONS = new Set<string>();
 
   private pool: PooledConnection[] = [];
   private readonly poolSize: number;
@@ -268,7 +263,7 @@ export class McpGatewayService implements OnModuleDestroy {
     const first = await this.createConnection(0);
     this.pool.push(first);
     this.logger.log(
-      `MCP pool initialized (1/${this.poolSize} connections, full-profile slots=${this.fullProfilePoolSlots})`,
+      `MCP pool initialized (1/${this.poolSize} connections, heavy-worker slots=${this.fullProfilePoolSlots})`,
     );
   }
 
@@ -487,9 +482,9 @@ export class McpGatewayService implements OnModuleDestroy {
     const configured = this.configService.get<string>('MCP_FULL_PROFILE_POOL_SLOTS');
     const startupProfile = this.configService.get<string>('MCP_STDIO_STARTUP_PROFILE', 'balanced').trim().toLowerCase();
     let fallback = 1;
-    if (startupProfile === 'tool-only' || startupProfile === 'tool_only' || startupProfile === 'worker') {
+    if (startupProfile === 'tool-only' || startupProfile === 'tool_only') {
       fallback = 0;
-    } else if (startupProfile === 'full') {
+    } else if (startupProfile === 'full' || startupProfile === 'worker') {
       fallback = this.poolSize;
     }
     const raw = configured != null && configured.trim().length > 0 ? configured : String(fallback);
@@ -501,8 +496,9 @@ export class McpGatewayService implements OnModuleDestroy {
   private resolveStartupProfile(id: number): McpStartupProfile {
     const raw = this.configService.get<string>('MCP_STDIO_STARTUP_PROFILE', 'balanced').trim().toLowerCase();
     if (raw === 'full') return 'full';
-    if (raw === 'tool-only' || raw === 'tool_only' || raw === 'worker') return 'tool-only';
-    return id < this.fullProfilePoolSlots ? 'full' : 'tool-only';
+    if (raw === 'worker') return 'worker';
+    if (raw === 'tool-only' || raw === 'tool_only') return 'tool-only';
+    return id < this.fullProfilePoolSlots ? 'worker' : 'tool-only';
   }
 
   private recordToolMetric(name: string, latencyMs: number, errored: boolean): void {

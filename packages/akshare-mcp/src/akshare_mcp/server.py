@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import inspect
+import importlib as _importlib
 import logging
 import os
 import tempfile
@@ -21,6 +22,9 @@ except ImportError:  # pragma: no cover - Windows fallback path
     fcntl = None
 
 from .env_loader import load_mcp_env
+from .auth import build_http_security_components, wrap_http_auth_app
+from .resources import register as register_resources
+from .prompts import register as register_prompts
 
 # 禁用 tqdm 进度条输出，避免 AKShare/Tushare 内部进度条写入 stderr 被 MCP 当 [error] 刷屏
 os.environ.setdefault("TQDM_DISABLE", "1")
@@ -39,11 +43,6 @@ for _log_name in ("mcp", "mcp.server", "mcp.server.server", "fastmcp", "uvicorn"
     logging.getLogger(_log_name).setLevel(logging.WARNING)
 
 from mcp.server.fastmcp import FastMCP
-
-# T10: Split tool imports into core (eager) + heavy (deferred) to reduce
-# cold-start overhead for tool-only profile.  Heavy modules (quant 131KB,
-# data_sync 67KB, etc.) are loaded on demand during register().
-import importlib as _importlib
 
 # --- Core lightweight tools: import eagerly (essential for all profiles) ---
 _core_tool_names = (
@@ -73,6 +72,21 @@ except UnicodeDecodeError as e:
 # --- Heavy tool modules: deferred import via importlib ---
 _heavy_tool_names = ("vector", "skills", "quant", "sentiment", "data_sync", "factor_profile")
 _heavy_modules: dict[str, object] = {}
+_tool_only_manager_excludes = (
+    "data_sync_manager",
+    "quant_manager",
+    "sentiment_manager",
+    "vector_search_manager",
+)
+
+
+def _current_startup_profile() -> str:
+    raw = str(os.getenv("AKSHARE_MCP_STARTUP_PROFILE", "full")).strip().lower()
+    if raw == "worker":
+        return "worker"
+    if raw in {"tool-only", "tool_only", "lite"}:
+        return "tool-only"
+    return "full"
 
 
 def _load_heavy_module(name: str) -> object:
@@ -88,13 +102,28 @@ def _load_heavy_module(name: str) -> object:
     return _heavy_modules[name]
 
 
-from .services.data_sync import data_sync_service
-from .services.factor_scheduler import get_factor_scheduler
-from .services.matching_engine import get_matching_engine
-from .services.nav_engine import get_nav_engine
-from .services.signal_tracker import get_signal_tracker
-from .services import close_shared_runtime_clients
-from .storage import close_db
+def get_factor_scheduler():
+    from .services.factor_scheduler import get_factor_scheduler as _get_factor_scheduler
+
+    return _get_factor_scheduler()
+
+
+def get_matching_engine():
+    from .services.matching_engine import get_matching_engine as _get_matching_engine
+
+    return _get_matching_engine()
+
+
+def get_nav_engine():
+    from .services.nav_engine import get_nav_engine as _get_nav_engine
+
+    return _get_nav_engine()
+
+
+def get_signal_tracker():
+    from .services.signal_tracker import get_signal_tracker as _get_signal_tracker
+
+    return _get_signal_tracker()
 
 _started_background_services: list[tuple[str, object]] = []
 _shutdown_lock = threading.Lock()
@@ -124,27 +153,39 @@ async def _stop_started_background_services() -> None:
             logger.warning("[Server] stop %s failed: %s", name, exc)
 
 
-def _run_async_task_in_daemon_thread(coro_factory, name: str) -> threading.Thread:
-    """Run an async task from the synchronous server bootstrap path."""
-    logger = logging.getLogger(__name__)
+class _AsyncTaskServiceHandle:
+    """可纳入统一 shutdown 路径的后台 task 包装器。"""
 
-    def _runner() -> None:
+    def __init__(self, name: str, task: "asyncio.Task[object]"):
+        self._name = name
+        self._task = task
+
+    async def shutdown(self) -> None:
+        if self._task.done():
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logging.getLogger(__name__).warning("[Server] background task %s failed: %s", self._name, exc)
+            return
+
+        self._task.cancel()
         try:
-            asyncio.run(coro_factory())
-        except Exception as e:  # pragma: no cover - defensive logging for background thread
-            logger.warning("[Server] background task %s failed: %s", name, e, exc_info=True)
-
-    thread = threading.Thread(target=_runner, name=name, daemon=True)
-    thread.start()
-    return thread
+            await self._task
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logging.getLogger(__name__).warning("[Server] background task %s failed during shutdown: %s", self._name, exc)
 
 
-def _start_startup_validator_background() -> threading.Thread:
-    """Schedule StartupValidator without depending on a pre-existing event loop."""
+def _start_startup_validator_background() -> _AsyncTaskServiceHandle:
+    """在当前事件循环内调度 StartupValidator，并纳入统一 shutdown。"""
     from .services.startup_validator import get_startup_validator
 
     validator = get_startup_validator()
-    return _run_async_task_in_daemon_thread(validator.run_async, "startup-validator")
+    task = asyncio.create_task(validator.run_async(), name="startup-validator")
+    return _AsyncTaskServiceHandle("startup-validator", task)
 
 
 def _background_services_lock_path() -> Path:
@@ -221,6 +262,10 @@ async def _shutdown_services_async() -> None:
             return
         _shutdown_completed = True
     logger = logging.getLogger(__name__)
+    from .services import close_shared_runtime_clients
+    from .services.data_sync import data_sync_service
+    from .storage import close_db
+
     await _stop_started_background_services()
     # 给取消后的任务一次排空连接释放/close 回调的机会，避免残留 transport 警告。
     await asyncio.sleep(0)
@@ -261,103 +306,76 @@ atexit.register(_safe_shutdown_services)
 
 
 # ===== FastMCP app =====
-# T04: Configure host/port for HTTP transports from env vars
-# Note: FastMCP AuthSettings requires full OAuth issuer_url flow;
-# for simple API-key/bearer auth, use an ASGI middleware (future work).
-# Current baseline: _enforce_http_security_baseline() validates env vars
-# at startup and blocks insecure configurations.
+# T04: Configure host/port for HTTP transports from env vars and wire
+# FastMCP auth/token_verifier/transport_security for request-time enforcement.
 
 _mcp_host = str(os.getenv("MCP_HOST", "127.0.0.1")).strip() or "127.0.0.1"
 _mcp_port = int(os.getenv("MCP_PORT", "8000"))
+_mcp_auth, _mcp_token_verifier, _mcp_transport_security, _mcp_auth_mode = build_http_security_components(
+    _mcp_host,
+    _mcp_port,
+)
 
 mcp = FastMCP(
     "AKShare Stock Data Server v2",
     host=_mcp_host,
     port=_mcp_port,
+    auth=_mcp_auth,
+    token_verifier=_mcp_token_verifier,
+    transport_security=_mcp_transport_security,
 )
 
-market.register(mcp)
-finance.register(mcp)
-fund_flow.register(mcp)
-macro.register(mcp)
-news.register(mcp)
-options.register(mcp)
-technical.register(mcp)
-backtest.register(mcp)
-portfolio.register(mcp)
-valuation.register(mcp)
-decision.register(mcp)
-search.register(mcp)
-semantic.register(mcp)
-research.register(mcp)
-data_warmup.register(mcp)
-alerts.register(mcp)
-managers.register(mcp)  # Phase 5: 统一注册，消除重复
+def _register_market_block_tools(app: FastMCP) -> None:
+    @app.tool()
+    async def get_market_blocks(block_type: str = "industry", limit: int | None = None):
+        """获取市场板块列表。"""
+        return await market_blocks.get_market_blocks(block_type=block_type, limit=limit)
 
-# T08: Capability statement —
-# This server currently provides Tools only.
-# Resources (resource://) and Prompts (prompt://) are NOT implemented.
-# list_resources / list_prompts will return empty results.
-# See MCP_MANAGER_CONTRACT.md for the current contract.
-
-# T10: Heavy tool modules – loaded on demand via _load_heavy_module()
-_load_heavy_module("vector").register(mcp)
-_load_heavy_module("skills").register(mcp)
-_load_heavy_module("quant").register(mcp)
-_load_heavy_module("sentiment").register(mcp)
-
-# 注册因子画像工具 (Phase 3) — deferred
-_load_heavy_module("factor_profile").register(mcp)
-
-# 注册基础数据工具 (Phase 3)
-basic_data.register(mcp)
-
-# 注册数据同步工具 (Phase 4) — deferred
-_load_heavy_module("data_sync").register(mcp)
-
-# 注册市场板块工具
-@mcp.tool()
-async def get_market_blocks(block_type: str = "industry", limit: int | None = None):
-    """获取市场板块列表
-
-    Args:
-        block_type (str, optional): 板块类型，可选 "industry"(行业) / "concept"(概念) / "region"(地域)，默认 "industry"
-        limit (int | None, optional): 返回数量上限，None 表示不限制
-
-    Returns:
-        dict: {"success": bool, "data": {"blocks": [{"code": str, "name": str, ...}]}, "error": str|None}
-
-    Errors:
-        - block_type 不在枚举范围内时返回空列表
-        - 数据源不可用时返回 success=false
-
-    Examples:
-        # 获取行业板块列表
-        get_market_blocks(block_type="industry")
-        # 获取概念板块（限制返回10个）
-        get_market_blocks(block_type="concept", limit=10)
-    """
-    return await market_blocks.get_market_blocks(block_type=block_type, limit=limit)
+    @app.tool()
+    async def get_block_stocks(block_code: str):
+        """获取指定板块的成分股列表。"""
+        return await market_blocks.get_block_stocks(block_code=block_code)
 
 
-@mcp.tool()
-async def get_block_stocks(block_code: str):
-    """获取指定板块的成分股列表
+def _register_core_tools(app: FastMCP, *, startup_profile: str) -> None:
+    market.register(app)
+    finance.register(app)
+    fund_flow.register(app)
+    macro.register(app)
+    news.register(app)
+    options.register(app)
+    technical.register(app)
+    backtest.register(app)
+    portfolio.register(app)
+    valuation.register(app)
+    decision.register(app)
+    search.register(app)
+    semantic.register(app)
+    research.register(app)
+    data_warmup.register(app)
+    alerts.register(app)
+    basic_data.register(app)
+    managers.register(
+        app,
+        exclude=_tool_only_manager_excludes if startup_profile == "tool-only" else None,
+    )
+    register_resources(app)
+    register_prompts(app)
+    _register_market_block_tools(app)
 
-    Args:
-        block_code (str, required): 板块代码，来自 get_market_blocks 返回的 code 字段
 
-    Returns:
-        dict: {"success": bool, "data": {"stocks": [{"code": str, "name": str, ...}]}, "error": str|None}
+def _register_full_only_tools(app: FastMCP) -> None:
+    for module_name in _heavy_tool_names:
+        _load_heavy_module(module_name).register(app)
 
-    Errors:
-        - block_code 无效时返回空列表
 
-    Examples:
-        # 获取指定板块的成分股
-        get_block_stocks(block_code="BK0477")
-    """
-    return await market_blocks.get_block_stocks(block_code=block_code)
+def _register_runtime_surface(app: FastMCP, *, startup_profile: str) -> None:
+    _register_core_tools(app, startup_profile=startup_profile)
+    if startup_profile in {"full", "worker"}:
+        _register_full_only_tools(app)
+
+
+_register_runtime_surface(mcp, startup_profile=_current_startup_profile())
 
 
 def _as_bool(value: str | None) -> bool:
@@ -365,10 +383,7 @@ def _as_bool(value: str | None) -> bool:
 
 
 def _resolve_startup_profile() -> str:
-    raw = str(os.getenv("AKSHARE_MCP_STARTUP_PROFILE", "full")).strip().lower()
-    if raw in {"tool-only", "tool_only", "worker", "lite"}:
-        return "tool-only"
-    return "full"
+    return _current_startup_profile()
 
 
 def _resolve_transport() -> tuple[str, str | None]:
@@ -417,10 +432,25 @@ def _enforce_http_security_baseline() -> None:
             "MCP_AUTH_MODE must be configured for HTTP transport (e.g. bearer/api-key)."
         )
 
+    if _mcp_auth is None or _mcp_token_verifier is None:
+        raise RuntimeError(
+            "HTTP transport requires FastMCP auth/token_verifier to be configured with static tokens."
+        )
+
     if token_passthrough:
         raise RuntimeError(
             "MCP_ALLOW_TOKEN_PASSTHROUGH=true is forbidden by security baseline."
         )
+
+
+def _build_http_asgi_app(transport: str, mount_path: str | None):
+    if transport == "sse":
+        app = mcp.sse_app(mount_path)
+    elif transport == "streamable-http":
+        app = mcp.streamable_http_app()
+    else:  # pragma: no cover - defensive guard
+        raise RuntimeError(f"Unsupported HTTP transport: {transport}")
+    return wrap_http_auth_app(app, auth_mode=_mcp_auth_mode)
 
 
 async def _run_mcp_transport_async(transport: str, mount_path: str | None) -> None:
@@ -428,10 +458,32 @@ async def _run_mcp_transport_async(transport: str, mount_path: str | None) -> No
         await mcp.run_stdio_async()
         return
     if transport == "sse":
-        await mcp.run_sse_async(mount_path)
+        import uvicorn
+
+        app = _build_http_asgi_app(transport, mount_path)
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=mcp.settings.host,
+                port=mcp.settings.port,
+                log_level=mcp.settings.log_level.lower(),
+            )
+        )
+        await server.serve()
         return
     if transport == "streamable-http":
-        await mcp.run_streamable_http_async()
+        import uvicorn
+
+        app = _build_http_asgi_app(transport, mount_path)
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=mcp.settings.host,
+                port=mcp.settings.port,
+                log_level=mcp.settings.log_level.lower(),
+            )
+        )
+        await server.serve()
         return
     raise RuntimeError(f"Unsupported MCP transport: {transport}")
 
@@ -446,6 +498,8 @@ async def _main_async(transport: str, mount_path: str | None) -> None:
 
     if startup_profile == "tool-only":
         logger.info("[Server] tool-only profile active, background schedulers and startup validators are disabled")
+    elif startup_profile == "worker":
+        logger.info("[Server] worker profile active, heavy tools enabled but autonomous background services remain disabled")
     elif not _acquire_background_services_leader():
         logger.info("[Server] full profile active, but this process is not the background-services leader; autonomous services stay disabled")
     else:
@@ -482,7 +536,7 @@ async def _main_async(transport: str, mount_path: str | None) -> None:
 
         # Run startup validation (DB connectivity, schema, data freshness, coverage)
         if _as_bool(os.getenv("STARTUP_VALIDATION_ENABLED", "true")):
-            _start_startup_validator_background()
+            _remember_started_service("StartupValidator", _start_startup_validator_background())
             logger.info("[Server] StartupValidator scheduled")
 
         # Start data sync scheduler for automatic DB sync on startup & daily after market close

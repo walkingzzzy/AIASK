@@ -59,3 +59,119 @@ test('strategy auto refresh skips ranking refresh until MCP is reachable', async
 
   assert.equal(refreshed, false);
 });
+
+test('strategy factory observability merges factory and factor governance snapshots', async () => {
+  const cache = {
+    resolveTtl: () => 60,
+    getWithMeta: async () => ({ value: null, meta: { backend: 'memory' } }),
+    set: async () => undefined,
+    del: async () => undefined,
+    clear: async () => undefined,
+  };
+
+  const service = new StrategyMarketService(
+    {
+      callTool: async (name: string, args: Record<string, unknown>) => {
+        if (name === 'strategy_manager') {
+          const action = String(args.action ?? '');
+          if (action === 'factory_status') {
+            return {
+              data: {
+                running: false,
+                last_summary: {
+                  run_id: 'run_001',
+                  status: 'success',
+                  candidates_spawned: 5,
+                  passed_quality_gate: 2,
+                },
+              },
+            };
+          }
+          if (action === 'factory_runs') {
+            return {
+              data: {
+                items: [
+                  { run_id: 'run_001', status: 'success' },
+                  { run_id: 'run_000', status: 'partial' },
+                ],
+                latest: { run_id: 'run_001', status: 'success' },
+              },
+            };
+          }
+        }
+
+        if (name === 'quant_manager') {
+          const action = String(args.action ?? '');
+          if (action === 'scheduler_status') {
+            return {
+              data: {
+                quality_status: 'fresh',
+                stale: false,
+                last_result: {
+                  llm_validation: {
+                    generated_candidate_count: 4,
+                    validated_candidate_count: 2,
+                    governed_active_count_after_run: 2,
+                  },
+                },
+              },
+            };
+          }
+          if (action === 'factor_candidate_registry') {
+            const params = (args.params ?? {}) as Record<string, unknown>;
+            if (params.op === 'summary') {
+              return {
+                data: {
+                  summary: {
+                    active_count: 2,
+                    governed_active_count: 2,
+                    blocked_count: 1,
+                    registry_stage_counts: { governed: 2, validated: 1 },
+                  },
+                },
+              };
+            }
+            return {
+              data: {
+                active_pool: {
+                  count: 2,
+                  family_summary: [{ family: 'momentum', count: 2, promote_count: 1, avg_total_score: 82.3 }],
+                },
+              },
+            };
+          }
+          if (action === 'model_registry') {
+            const params = (args.params ?? {}) as Record<string, unknown>;
+            if (params.op === 'summary') {
+              return { data: { summary: { champion_count: 1, challenger_count: 1 } } };
+            }
+            if (params.op === 'retrain_summary') {
+              return { data: { summary: { count: 2, status_counts: { planned: 1, completed: 1 } } } };
+            }
+            if (params.op === 'retrain_list') {
+              return { data: { items: [{ artifact_id: 'retrain_1', family: 'momentum', status: 'planned' }] } };
+            }
+          }
+        }
+
+        throw new Error(`unexpected tool call ${name}`);
+      },
+    } as never,
+    cache as never,
+  );
+
+  const result = await service.factoryObservability();
+
+  assert.equal(result.degraded, false);
+  assert.equal(result.overview.latest_factory_run_id, 'run_001');
+  assert.equal(result.overview.latest_factory_status, 'success');
+  assert.equal(result.overview.active_factor_count, 2);
+  assert.equal(result.overview.governed_factor_count, 2);
+  assert.equal(result.overview.champion_count, 1);
+  assert.equal(result.overview.recent_generated_candidate_count, 4);
+  assert.equal(result.overview.retrain_plan_count, 2);
+  assert.equal(result.overview.retrain_pending_count, 1);
+  assert.equal(result.factor_governance.active_pool.count, 2);
+  assert.equal(result.factor_governance.retrain_queue[0]?.artifact_id, 'retrain_1');
+  assert.deepEqual(result.errors, []);
+});

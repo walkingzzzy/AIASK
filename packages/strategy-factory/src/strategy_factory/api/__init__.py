@@ -21,6 +21,14 @@ from .contracts import (
     ValidationGateway,
     VectorSearchGateway,
 )
+from .dto import (
+    FactoryRunDetailDTO,
+    FactoryRunSummaryDTO,
+    FactoryStatusDTO,
+    StageResultDTO,
+    normalize_run_result_to_detail,
+    normalize_run_result_to_summary,
+)
 
 _CONTRACT_EXPORTS = {
     "StrategyFactoryRepository",
@@ -37,6 +45,15 @@ _CONTRACT_EXPORTS = {
     "StrategyExecutionAssumptions",
     "StrategyValidationProfile",
     "StrategySubmissionAudit",
+}
+
+_DTO_EXPORTS = {
+    "FactoryRunDetailDTO",
+    "FactoryRunSummaryDTO",
+    "FactoryStatusDTO",
+    "StageResultDTO",
+    "normalize_run_result_to_detail",
+    "normalize_run_result_to_summary",
 }
 
 _FACADE_EXPORTS = {
@@ -90,6 +107,12 @@ __all__ = [
     "StrategyExecutionAssumptions",
     "StrategyValidationProfile",
     "StrategySubmissionAudit",
+    "FactoryRunDetailDTO",
+    "FactoryRunSummaryDTO",
+    "FactoryStatusDTO",
+    "StageResultDTO",
+    "normalize_run_result_to_detail",
+    "normalize_run_result_to_summary",
     "BACKTEST_AI_PROTOTYPE_THRESHOLDS",
     "CATEGORY_MINIMUMS",
     "DataCollector",
@@ -129,6 +152,8 @@ __all__ = [
 def __getattr__(name: str) -> Any:
     if name in _CONTRACT_EXPORTS:
         return globals()[name]
+    if name in _DTO_EXPORTS:
+        return globals()[name]
     if name not in _FACADE_EXPORTS:
         raise AttributeError(name)
     facade = import_module(".facade", __name__)
@@ -138,4 +163,4 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | _CONTRACT_EXPORTS | _FACADE_EXPORTS)
+    return sorted(set(globals()) | _CONTRACT_EXPORTS | _DTO_EXPORTS | _FACADE_EXPORTS)

@@ -21,6 +21,7 @@ import os
 from contextlib import suppress
 from datetime import datetime, time, timedelta
 from typing import List, Optional
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ class FactorScheduler:
     """Asyncio-based daily factor computation scheduler."""
 
     STALE_AFTER_SEC = 24 * 60 * 60
+    RUN_HISTORY_LIMIT = 12
 
     def __init__(
         self,
@@ -84,6 +86,7 @@ class FactorScheduler:
         self._running = False
         self.last_run: Optional[datetime] = None
         self.last_result: Optional[dict] = None
+        self._run_history: list[dict] = []
 
     @staticmethod
     def _isoformat(value: Optional[datetime]) -> Optional[str]:
@@ -119,6 +122,132 @@ class FactorScheduler:
             result.append(flag)
         return result
 
+    @staticmethod
+    def _quality_status(flags: list[str]) -> str:
+        normalized = [str(flag or "").strip().lower() for flag in list(flags or []) if str(flag or "").strip()]
+        if "failed" in normalized:
+            return "failed"
+        if "partial" in normalized or "degraded" in normalized:
+            return "degraded"
+        if "stale" in normalized:
+            return "stale"
+        return "fresh"
+
+    @staticmethod
+    def _normalize_stage_status(value: object) -> str:
+        token = str(value or "").strip().lower()
+        if token in {"completed", "complete", "success", "succeeded", "done"}:
+            return "completed"
+        if token in {"partial", "degraded", "warning"}:
+            return "partial"
+        if token in {"skipped", "disabled", "not_needed", "noop"}:
+            return "skipped"
+        if token in {"failed", "error"}:
+            return "failed"
+        return "completed"
+
+    @classmethod
+    def _build_stage_result(
+        cls,
+        stage: str,
+        *,
+        status: str,
+        payload: Optional[dict] = None,
+        retry_boundary: Optional[str] = None,
+    ) -> dict:
+        normalized_status = cls._normalize_stage_status(status)
+        data = dict(payload or {})
+        warnings = list(data.get("warnings") or [])
+        failures = list(data.get("failures") or data.get("failed_batches") or [])
+        result = {
+            "stage": stage,
+            "status": normalized_status,
+            "ok": normalized_status != "failed",
+            "degraded": normalized_status == "partial",
+            "warning_count": int(data.get("warning_count") or len(warnings)),
+            "failure_count": int(data.get("failure_count") or len(failures)),
+            "attempt_count": int(data.get("attempt_count") or 1),
+            **data,
+        }
+        if retry_boundary:
+            result["retry_boundary"] = retry_boundary
+            result["retryable"] = normalized_status in {"failed", "partial"}
+        return result
+
+    @classmethod
+    def _summarize_stage_results(cls, stages: dict[str, dict]) -> dict:
+        counts = {"completed": 0, "partial": 0, "skipped": 0, "failed": 0}
+        failed_stages: list[str] = []
+        partial_stages: list[str] = []
+        skipped_stages: list[str] = []
+        for stage_name, payload in dict(stages or {}).items():
+            status = cls._normalize_stage_status((payload or {}).get("status"))
+            counts[status] = int(counts.get(status, 0)) + 1
+            if status == "failed":
+                failed_stages.append(stage_name)
+            elif status == "partial":
+                partial_stages.append(stage_name)
+            elif status == "skipped":
+                skipped_stages.append(stage_name)
+        return {
+            "stage_status_counts": counts,
+            "failed_stage_count": len(failed_stages),
+            "partial_stage_count": len(partial_stages),
+            "skipped_stage_count": len(skipped_stages),
+            "failed_stages": failed_stages,
+            "partial_stages": partial_stages,
+            "skipped_stages": skipped_stages,
+        }
+
+    @classmethod
+    def _resolve_run_status(cls, stages: dict[str, dict]) -> str:
+        summary = cls._summarize_stage_results(stages)
+        if summary["failed_stage_count"] > 0:
+            return "failed" if summary["partial_stage_count"] == 0 and summary["stage_status_counts"].get("completed", 0) == 0 else "partial"
+        if summary["partial_stage_count"] > 0:
+            return "partial"
+        if summary["skipped_stage_count"] == len(stages) and stages:
+            return "skipped"
+        return "success"
+
+    @classmethod
+    def _build_run_summary(cls, result: dict) -> dict:
+        stages = dict(result.get("stages") or {})
+        lineage = dict(result.get("lineage") or {})
+        llm_validation = dict(result.get("llm_validation") or {})
+        quality_flags = list(result.get("quality_flags") or [])
+        return {
+            "run_id": result.get("run_id"),
+            "status": result.get("status"),
+            "started_at": result.get("started_at"),
+            "completed_at": result.get("completed_at"),
+            "elapsed_seconds": result.get("elapsed_seconds"),
+            "computed": int(result.get("computed") or 0),
+            "errors": int(result.get("errors") or 0),
+            "universe_size": int(result.get("universe_size") or 0),
+            "quality_status": cls._quality_status(quality_flags),
+            "quality_flags": quality_flags,
+            "stages": {
+                name: {
+                    "status": str((payload or {}).get("status") or ""),
+                    "failure_count": int((payload or {}).get("failure_count") or 0),
+                    "warning_count": int((payload or {}).get("warning_count") or 0),
+                }
+                for name, payload in stages.items()
+            },
+            "stage_summary": cls._summarize_stage_results(stages),
+            "llm_generation_artifact_id": lineage.get("llm_generation_artifact_id"),
+            "validation_artifact_ids": list(llm_validation.get("validation_artifact_ids") or []),
+            "generated_candidate_count": int(llm_validation.get("generated_candidate_count") or 0),
+            "validated_candidate_count": int(llm_validation.get("validated_candidate_count") or 0),
+            "active_pool_count_after_run": int(llm_validation.get("active_pool_count_after_run") or 0),
+            "governed_active_count_after_run": int(llm_validation.get("governed_active_count_after_run") or 0),
+        }
+
+    def _record_run_history(self, result: dict) -> None:
+        summary = self._build_run_summary(result)
+        self._run_history = [summary, *list(self._run_history or [])][: self.RUN_HISTORY_LIMIT]
+
     @classmethod
     def _build_quality_meta(
         cls,
@@ -135,6 +264,164 @@ class FactorScheduler:
             "freshness_sec": freshness_sec,
             "quality_flags": cls._quality_flags(errors=errors, computed=computed, freshness_sec=freshness_sec),
         }
+
+    @staticmethod
+    def _env_enabled(name: str, default: bool = False) -> bool:
+        raw = str(os.getenv(name, "1" if default else "0") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _safe_int(value: object, default: int = 0) -> int:
+        try:
+            return int(value if value is not None else default)
+        except Exception:
+            return int(default)
+
+    @staticmethod
+    def _normalize_codes(values: object) -> list[str]:
+        if values is None:
+            return []
+        if isinstance(values, list):
+            return [str(item).strip() for item in values if str(item).strip()]
+        text = str(values or "").strip()
+        if not text:
+            return []
+        return [item.strip() for item in text.split(",") if item.strip()]
+
+    def _resolve_validation_codes(self, llm_payload: dict) -> list[str]:
+        codes = self._normalize_codes(llm_payload.get("codes")) or list(self.universe)
+        if len(codes) < 4:
+            return codes
+        limit = max(
+            4,
+            min(
+                self._safe_int(os.getenv("FACTOR_SCHEDULER_VALIDATION_MAX_CODES"), 12),
+                len(codes),
+            ),
+        )
+        return list(dict.fromkeys(codes))[:limit]
+
+    async def _refresh_registry_summary(self, quant_manager, *, codes: list[str]) -> dict:
+        kwargs = {
+            "codes": codes,
+            "limit": 200,
+            "market_codes_only": True,
+        }
+        summary_resp = await quant_manager(
+            action="factor_candidate_registry",
+            kwargs=json.dumps({"op": "summary", **kwargs}, ensure_ascii=False),
+        )
+        active_pool_resp = await quant_manager(
+            action="factor_candidate_registry",
+            kwargs=json.dumps({"op": "active_pool", **kwargs}, ensure_ascii=False),
+        )
+        summary_data = summary_resp.get("data") if isinstance(summary_resp, dict) else {}
+        active_pool_data = active_pool_resp.get("data") if isinstance(active_pool_resp, dict) else {}
+        active_pool = active_pool_data.get("active_pool") if isinstance(active_pool_data, dict) else {}
+        summary = summary_data.get("summary") if isinstance(summary_data, dict) else {}
+        return {
+            "registry_refresh_status": (
+                "success"
+                if isinstance(summary_resp, dict)
+                and summary_resp.get("success")
+                and isinstance(active_pool_resp, dict)
+                and active_pool_resp.get("success")
+                else "failed"
+            ),
+            "registry_summary": summary if isinstance(summary, dict) else {},
+            "active_pool_count_after_run": int((active_pool or {}).get("count") or 0),
+            "governed_active_count_after_run": int((summary or {}).get("governed_active_count") or 0),
+            "blocked_active_count_after_run": int((summary or {}).get("blocked_active_count") or 0),
+        }
+
+    async def _run_llm_validation_cycle(self, quant_manager, llm_mining_result: dict | None) -> dict:
+        meta = {
+            "status": "skipped",
+            "validation_attempted": False,
+            "generated_candidate_count": 0,
+            "validated_candidate_count": 0,
+            "validation_failed_count": 0,
+            "validation_codes": [],
+            "validation_artifact_ids": [],
+            "failed_candidates": [],
+            "registry_refresh_status": "not_needed",
+            "registry_summary": {},
+            "active_pool_count_after_run": 0,
+            "governed_active_count_after_run": 0,
+            "blocked_active_count_after_run": 0,
+        }
+        if not isinstance(llm_mining_result, dict) or not llm_mining_result.get("success"):
+            return meta
+
+        llm_payload = llm_mining_result.get("data") if isinstance(llm_mining_result.get("data"), dict) else {}
+        candidates = [dict(item or {}) for item in list(llm_payload.get("candidates") or []) if isinstance(item, dict)]
+        meta["generated_candidate_count"] = len(candidates)
+        if not candidates:
+            meta["status"] = "skipped"
+            return meta
+
+        validation_codes = self._resolve_validation_codes(llm_payload)
+        meta["validation_codes"] = validation_codes
+        if len(validation_codes) < 4:
+            meta["status"] = "skipped"
+            meta["failed_candidates"] = [{"reason": "insufficient_validation_codes"}]
+            return meta
+
+        meta["validation_attempted"] = True
+        for idx, candidate in enumerate(candidates):
+            output_artifact_id = (
+                f"factor_validation_scheduler_{int(datetime.now().timestamp())}_{idx}_{candidate.get('name') or 'candidate'}"
+            )
+            try:
+                validation_resp = await quant_manager(
+                    action="validate_factor_candidate",
+                    kwargs=json.dumps(
+                        {
+                            "candidate": candidate,
+                            "codes": validation_codes,
+                            "persist_artifact": True,
+                            "write_memory": True,
+                            "output_artifact_id": output_artifact_id,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            except Exception as exc:
+                validation_resp = {"success": False, "error": str(exc)}
+
+            if isinstance(validation_resp, dict) and validation_resp.get("success"):
+                meta["validated_candidate_count"] += 1
+                data = validation_resp.get("data") if isinstance(validation_resp.get("data"), dict) else {}
+                artifact_id = str(data.get("artifact_id") or output_artifact_id).strip()
+                if artifact_id:
+                    meta["validation_artifact_ids"].append(artifact_id)
+            else:
+                meta["validation_failed_count"] += 1
+                error = None
+                if isinstance(validation_resp, dict):
+                    error = validation_resp.get("error") or validation_resp.get("message")
+                meta["failed_candidates"].append(
+                    {
+                        "candidate_index": idx,
+                        "name": candidate.get("name"),
+                        "error": str(error or "candidate validation failed"),
+                    }
+                )
+
+        if meta["validated_candidate_count"] > 0:
+            try:
+                meta.update(await self._refresh_registry_summary(quant_manager, codes=validation_codes))
+            except Exception as exc:
+                meta["registry_refresh_status"] = "failed"
+                meta["failed_candidates"].append({"reason": f"registry_refresh_failed:{exc}"})
+
+        if meta["validated_candidate_count"] == 0 and meta["generated_candidate_count"] > 0:
+            meta["status"] = "failed"
+        elif meta["validation_failed_count"] > 0:
+            meta["status"] = "partial"
+        else:
+            meta["status"] = "success"
+        return meta
 
     def start(self):
         """Start the scheduler in the background (non-blocking)."""
@@ -198,17 +485,23 @@ class FactorScheduler:
     async def run_once(self):
         """Execute a single batch factor computation run."""
         from ..storage import get_db
-        from ..data_source import data_source
 
         logger.info("FactorScheduler: starting batch compute for %d stocks", len(self.universe))
-        start = datetime.now()
+        start = datetime.now().astimezone()
+        run_id = f"factor_scheduler_run_{int(start.timestamp())}_{uuid4().hex[:8]}"
         db = get_db()
         total_computed = 0
         total_errors = 0
+        llm_validation_result = None
+        llm_mining_result = None
+        batch_failures: list[dict] = []
+        processed_batches = 0
+        total_batches = max((len(self.universe) + max(self.batch_size, 1) - 1) // max(self.batch_size, 1), 0)
 
         # Process in batches
         for i in range(0, len(self.universe), self.batch_size):
             batch = self.universe[i:i + self.batch_size]
+            processed_batches += 1
             try:
                 # Import and call the quant_manager batch action directly
                 from ..tools.managers.quant_manager import quant_manager
@@ -230,9 +523,17 @@ class FactorScheduler:
             except Exception as e:
                 logger.error("FactorScheduler batch %d-%d error: %s", i, i + len(batch), e)
                 total_errors += len(batch)
+                batch_failures.append(
+                    {
+                        "batch_index": len(batch_failures),
+                        "offset": i,
+                        "size": len(batch),
+                        "codes": list(batch),
+                        "error": str(e),
+                    }
+                )
 
         # Optional: run LLM factor mining after classic batch
-        llm_mining_result = None
         llm_enabled = os.getenv("FACTOR_LLM_ENABLED", "0").strip() in ("1", "true", "yes")
         scheduler_llm = os.getenv("FACTOR_SCHEDULER_LLM_MINING", "0").strip() in ("1", "true", "yes")
         if llm_enabled and scheduler_llm:
@@ -246,27 +547,183 @@ class FactorScheduler:
                         "dedup_mode": "penalty",
                     }, ensure_ascii=False),
                 )
+                llm_validation_result = await self._run_llm_validation_cycle(
+                    quant_manager,
+                    llm_mining_result,
+                )
                 logger.info("FactorScheduler: LLM mining completed")
             except Exception as e:
                 logger.warning("FactorScheduler: LLM mining failed: %s", e)
                 llm_mining_result = {"error": str(e)}
+                llm_validation_result = {
+                    "status": "failed",
+                    "validation_attempted": False,
+                    "generated_candidate_count": 0,
+                    "validated_candidate_count": 0,
+                    "validation_failed_count": 0,
+                    "validation_codes": [],
+                    "validation_artifact_ids": [],
+                    "failed_candidates": [{"reason": str(e)}],
+                    "registry_refresh_status": "failed",
+                    "registry_summary": {},
+                    "active_pool_count_after_run": 0,
+                    "governed_active_count_after_run": 0,
+                    "blocked_active_count_after_run": 0,
+                }
 
-        elapsed = (datetime.now() - start).total_seconds()
+        llm_payload = llm_mining_result.get("data") if isinstance((llm_mining_result or {}).get("data"), dict) else {}
+        llm_generation_artifact_id = str(llm_payload.get("artifact_id") or "").strip() or None
+        llm_quality_errors = 0
+        if isinstance(llm_validation_result, dict):
+            if str(llm_validation_result.get("status") or "").strip().lower() in {"failed", "partial"}:
+                llm_quality_errors = max(
+                    1,
+                    int(llm_validation_result.get("validation_failed_count") or 0),
+                )
+
+        batch_stage_status = "completed"
+        if total_errors > 0 and total_computed == 0:
+            batch_stage_status = "failed"
+        elif total_errors > 0:
+            batch_stage_status = "partial"
+
+        llm_stage_status = "skipped"
+        if llm_enabled and scheduler_llm:
+            if isinstance(llm_mining_result, dict) and llm_mining_result.get("success"):
+                llm_stage_status = "completed"
+            else:
+                llm_stage_status = "failed"
+
+        validation_status_token = str((llm_validation_result or {}).get("status") or "").strip().lower()
+        validation_stage_status = "skipped"
+        if validation_status_token in {"success", "completed"}:
+            validation_stage_status = "completed"
+        elif validation_status_token in {"partial", "failed", "skipped"}:
+            validation_stage_status = self._normalize_stage_status(validation_status_token)
+
+        registry_refresh_status = str((llm_validation_result or {}).get("registry_refresh_status") or "").strip().lower()
+        registry_stage_status = "skipped"
+        if registry_refresh_status == "success":
+            registry_stage_status = "completed"
+        elif registry_refresh_status in {"failed", "partial"}:
+            registry_stage_status = self._normalize_stage_status(registry_refresh_status)
+        elif validation_stage_status == "completed" and int((llm_validation_result or {}).get("validated_candidate_count") or 0) > 0:
+            registry_stage_status = "partial"
+
+        stages = {
+            "batch_compute": self._build_stage_result(
+                "batch_compute",
+                status=batch_stage_status,
+                payload={
+                    "computed_count": total_computed,
+                    "error_count": total_errors,
+                    "batch_count": total_batches,
+                    "completed_batch_count": max(processed_batches - len(batch_failures), 0),
+                    "failed_batch_count": len(batch_failures),
+                    "failed_batches": batch_failures[:12],
+                },
+                retry_boundary="batch",
+            ),
+            "llm_factor_mining": self._build_stage_result(
+                "llm_factor_mining",
+                status=llm_stage_status,
+                payload={
+                    "enabled": bool(llm_enabled and scheduler_llm),
+                    "artifact_id": llm_generation_artifact_id,
+                    "candidate_count": int(llm_payload.get("candidate_count") or len(llm_payload.get("candidates") or [])),
+                    "blocked_candidate_count": int(len(llm_payload.get("blocked_candidates") or [])),
+                    "degraded": bool(llm_payload.get("degraded")),
+                    "warnings": list(llm_payload.get("warnings") or []),
+                },
+                retry_boundary="workflow_stage",
+            ),
+            "llm_validation": self._build_stage_result(
+                "llm_validation",
+                status=validation_stage_status,
+                payload={
+                    "generated_candidate_count": int((llm_validation_result or {}).get("generated_candidate_count") or 0),
+                    "validated_candidate_count": int((llm_validation_result or {}).get("validated_candidate_count") or 0),
+                    "validation_failed_count": int((llm_validation_result or {}).get("validation_failed_count") or 0),
+                    "validation_artifact_ids": list((llm_validation_result or {}).get("validation_artifact_ids") or []),
+                    "validation_codes": list((llm_validation_result or {}).get("validation_codes") or []),
+                    "failures": list((llm_validation_result or {}).get("failed_candidates") or []),
+                },
+                retry_boundary="candidate_validation",
+            ),
+            "registry_refresh": self._build_stage_result(
+                "registry_refresh",
+                status=registry_stage_status,
+                payload={
+                    "registry_refresh_status": registry_refresh_status or "not_needed",
+                    "active_pool_count_after_run": int((llm_validation_result or {}).get("active_pool_count_after_run") or 0),
+                    "governed_active_count_after_run": int((llm_validation_result or {}).get("governed_active_count_after_run") or 0),
+                    "blocked_active_count_after_run": int((llm_validation_result or {}).get("blocked_active_count_after_run") or 0),
+                },
+                retry_boundary="registry_refresh",
+            ),
+        }
+
+        elapsed = (datetime.now().astimezone() - start).total_seconds()
         self.last_run = datetime.now().astimezone()
         quality_meta = self._build_quality_meta(
             asof_dt=self.last_run,
             computed=total_computed,
-            errors=total_errors,
+            errors=total_errors + llm_quality_errors,
             now=self.last_run,
         )
+        run_status = self._resolve_run_status(stages)
+        stage_summary = self._summarize_stage_results(stages)
+        recovery_checkpoint = {
+            "last_completed_stage": next(
+                (
+                    stage_name
+                    for stage_name in ("registry_refresh", "llm_validation", "llm_factor_mining", "batch_compute")
+                    if self._normalize_stage_status((stages.get(stage_name) or {}).get("status")) == "completed"
+                ),
+                None,
+            ),
+            "failed_stage_names": list(stage_summary.get("failed_stages") or []),
+            "retryable_stage_names": [
+                stage_name
+                for stage_name, stage_payload in stages.items()
+                if bool((stage_payload or {}).get("retryable"))
+            ],
+            "processed_batch_count": processed_batches,
+            "failed_batch_count": len(batch_failures),
+            "failed_batch_codes": [code for item in batch_failures for code in list(item.get("codes") or [])][:24],
+            "llm_generation_artifact_id": llm_generation_artifact_id,
+            "validation_artifact_ids": list((llm_validation_result or {}).get("validation_artifact_ids") or []),
+        }
         self.last_result = {
+            "run_id": run_id,
+            "status": run_status,
+            "workflow_version": "p2.v1",
+            "started_at": start.isoformat(),
+            "completed_at": self.last_run.isoformat(),
             "computed": total_computed,
             "errors": total_errors,
             "elapsed_seconds": round(elapsed, 1),
             "universe_size": len(self.universe),
             "llm_mining": llm_mining_result,
+            "llm_validation": llm_validation_result,
+            "stages": stages,
+            "stage_summary": stage_summary,
+            "recovery_checkpoint": recovery_checkpoint,
+            "lineage": {
+                "source": "factor_scheduler",
+                "workflow_version": "p2.v1",
+                "input_universe_size": len(self.universe),
+                "batch_size": self.batch_size,
+                "factors": list(self.factors),
+                "llm_generation_artifact_id": llm_generation_artifact_id,
+                "validation_artifact_ids": list((llm_validation_result or {}).get("validation_artifact_ids") or []),
+            },
             **quality_meta,
         }
+        self.last_result["quality_status"] = self._quality_status(list(self.last_result.get("quality_flags") or []))
+        self.last_result["stale"] = "stale" in list(self.last_result.get("quality_flags") or [])
+        self.last_result["summary"] = self._build_run_summary(self.last_result)
+        self._record_run_history(self.last_result)
         logger.info(
             "FactorScheduler: completed in %.1fs — %d computed, %d errors",
             elapsed, total_computed, total_errors,
@@ -275,10 +732,17 @@ class FactorScheduler:
 
     def status(self) -> dict:
         """Return current scheduler status."""
+        llm_validation = dict((self.last_result or {}).get("llm_validation") or {})
+        llm_quality_errors = 0
+        if str(llm_validation.get("status") or "").strip().lower() in {"failed", "partial"}:
+            llm_quality_errors = max(
+                1,
+                int(llm_validation.get("validation_failed_count") or 0),
+            )
         quality_meta = self._build_quality_meta(
             asof_dt=self.last_run,
             computed=int((self.last_result or {}).get("computed") or 0),
-            errors=int((self.last_result or {}).get("errors") or 0),
+            errors=int((self.last_result or {}).get("errors") or 0) + llm_quality_errors,
         )
         return {
             "running": self._running,
@@ -287,6 +751,10 @@ class FactorScheduler:
             "factors": self.factors,
             "last_run": self._isoformat(self.last_run),
             "last_result": self.last_result,
+            "last_summary": (self.last_result or {}).get("summary") if self.last_result else None,
+            "run_history": list(self._run_history or []),
+            "quality_status": self._quality_status(list(quality_meta.get("quality_flags") or [])),
+            "stale": "stale" in list(quality_meta.get("quality_flags") or []),
             **quality_meta,
         }
 

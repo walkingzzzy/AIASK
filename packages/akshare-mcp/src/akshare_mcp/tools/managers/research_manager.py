@@ -26,7 +26,7 @@ def register_research_manager(mcp):
     """注册研究管理器工具"""
     
     @mcp.tool()
-    async def research_manager(action: str, params: dict | None = None, kwargs: Any = None, code: str | None = None):
+    async def research_manager(action: str, params: dict | None = None, kwargs: Any = None, code: str | None = None, limit: int | None = None):
         """研究管理器（统一 action + kwargs 协议）
 
         Args:
@@ -51,6 +51,14 @@ def register_research_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
+            kwargs = normalize_manager_payload(
+                params=params,
+                kwargs=kwargs,
+                extra={
+                    "code": code,
+                    "limit": limit,
+                },
+            )
             kwargs = normalize_manager_kwargs(kwargs)
             code, kwargs = normalize_manager_code(code, kwargs)
 

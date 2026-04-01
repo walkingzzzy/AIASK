@@ -3,21 +3,28 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
-import { BarChart, LineChart, WaterfallChart } from '@/components/charts';
+import AccountPerformanceDashboard from '@/app/performance/components/account-performance-dashboard';
+import PerformanceContextPanels from '@/app/performance/components/performance-context-panels';
+import PerformanceHero from '@/app/performance/components/performance-hero';
+import PortfolioAttributionDashboard from '@/app/performance/components/portfolio-attribution-dashboard';
+import PerformanceSecondarySidebar from '@/app/performance/components/performance-secondary-sidebar';
+import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import WorkspaceSplitLayout from '@/components/workspace-split-layout';
 import WorkspaceToolbar from '@/components/workspace-toolbar';
-import { Badge, DataTable, KpiCard, KpiGrid, PageContainer, SectionCard, TabBar } from '@/components/ui';
+import { PageContainer, SectionCard, TabBar } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { usePageActions } from '@/hooks/use-page-actions';
 import { usePageContext } from '@/hooks/use-page-context';
 import { extractArray, extractObject, fmtNum, fmtPct } from '@/lib/data-utils';
-import { exportCSV } from '@/lib/export';
 import { selectActiveWorkspace, useWorkbenchStore } from '@/store/workbench-store';
 import type {
   PaperTradingAccountsResponse,
+  PaperTradingNavPoint,
+  PaperTradingPerformanceMetrics,
+  PaperTradingPerformancePoint,
   PaperTradingNavHistoryResponse,
   PaperTradingPerformanceResponse,
+  PaperTradingPosition,
   PaperTradingPositionsResponse,
   PaperTradingSummary,
   PerformanceAttributionResponse,
@@ -382,13 +389,6 @@ export default function PerformancePage() {
   const pageSummary = isAccountMode
     ? `当前账户 ${accountId || '默认账户'}，观察窗口 ${days} 天，总资产 ${fmtNum(totalValue)}，累计收益率 ${fmtPct(totalReturnPct)}，最大回撤 ${fmtPct(Number(accountMetrics.maxDrawdown ?? 0) * 100)}。`
     : `当前组合为 ${portfolioName}，基准 ${benchmark}，观察窗口 ${portfolioLookbackDays} 天。组合收益 ${fmtPct(portfolioTotalReturnPct)}，超额收益 ${fmtPct(Number(benchmarkComparison?.excessReturnPct ?? 0))}，信息比率 ${fmtNum(Number(benchmarkComparison?.informationRatio ?? 0))}。`;
-  const heroPrimaryButtonCls =
-    'inline-flex cursor-pointer items-center justify-center rounded-full bg-primary px-4 py-2 text-sm font-medium text-white shadow-[0_20px_40px_-24px_rgba(11,107,203,0.52)] transition hover:-translate-y-0.5 hover:shadow-[0_24px_46px_-24px_rgba(11,107,203,0.58)] disabled:cursor-not-allowed disabled:opacity-50';
-  const heroSecondaryButtonCls =
-    'action-chip cursor-pointer text-sm text-text-primary shadow-[0_16px_32px_-24px_rgba(15,23,42,0.28)]';
-  const chipButtonCls = 'action-chip cursor-pointer text-xs text-text-primary';
-  const noteCardCls = 'metric-tile rounded-[22px] p-3 text-xs text-text-secondary';
-  const sidePanelCls = 'panel-soft rounded-[28px] p-4 sm:p-5';
 
   useEffect(() => {
     if (!workbenchHydrated || !contextInitializedRef.current) return;
@@ -744,145 +744,47 @@ export default function PerformancePage() {
 
   usePageActions(pageActions);
 
+  const heroWindowLabel = `${isAccountMode ? days : portfolioLookbackDays} 天`;
+  const heroWindowHint = isAccountMode ? '账户净值与收益率复盘' : `基准 ${selectedBenchmark?.label ?? benchmark}`;
+  const heroPrimaryMetricLabel = isAccountMode ? '总资产' : '组合收益率';
+  const heroPrimaryMetricValue = isAccountMode ? fmtNum(totalValue) : fmtPct(portfolioTotalReturnPct);
+  const heroPrimaryMetricHint = isAccountMode
+    ? `累计收益率 ${fmtPct(totalReturnPct)}`
+    : `超额收益 ${fmtPct(Number(benchmarkComparison?.excessReturnPct ?? 0))}`;
+  const focusMetricHint = isAccountMode
+    ? accountLeader?.stock_name
+      ? `${accountLeader.stock_name} 为当前领先持仓`
+      : '当前还没有领先持仓'
+    : topContributor?.code
+      ? `最大正贡献来自 ${topContributor.code}`
+      : '当前暂无贡献股明细';
+  const accountErrorMessage = summaryQ.error || positionsQ.error || navQ.error || performanceQ.error || null;
+  const portfolioErrorMessage = portfolioDetailQ.error || attributionQ.error || benchmarkQ.error || null;
+  const linkedStockCode = String((isAccountMode ? accountLeader?.stock_code : topContributor?.code) ?? '').trim();
+
   return (
     <PageContainer>
-      <section className="page-hero p-5 sm:p-6">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_380px]">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="info">Performance Workspace</Badge>
-              <Badge variant={isAccountMode ? 'neutral' : 'warning'}>{activeModeLabel}</Badge>
-              {!isAccountMode ? (
-                <Badge variant={outperformance ? 'success' : 'warning'}>
-                  {outperformance ? '当前跑赢基准' : '当前未跑赢基准'}
-                </Badge>
-              ) : null}
-            </div>
-            <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
-              绩效复盘工作台
-            </h1>
-            <p className="mb-0 mt-3 max-w-3xl text-sm leading-7 text-text-secondary sm:text-[15px]">
-              这里不只看收益数字，而是把账户净值、组合归因、基准对照和下一跳动作收进一套连续界面。你可以先定观察窗口，再顺着风险中心、研究页和个股详情继续拆解收益来源。
-            </p>
-            {sourceExecutionId ? (
-              <div className="mt-4 inline-flex rounded-full border border-white/45 bg-white/32 px-3 py-1.5 text-xs text-text-secondary shadow-sm">
-                来源执行任务：<span className="ml-1 font-medium text-text-primary">{sourceExecutionId}</span>
-              </div>
-            ) : null}
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button type="button" onClick={() => void refreshActiveModeData()} className={heroPrimaryButtonCls}>
-                刷新当前数据
-              </button>
-              <button type="button" onClick={() => openRiskWorkspace()} className={heroSecondaryButtonCls}>
-                打开风险中心
-              </button>
-              {focusStockCode ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => openStockTarget(focusStockCode)}
-                    className={heroSecondaryButtonCls}
-                  >
-                    查看重点股票
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openResearchTarget(focusStockCode)}
-                    className={heroSecondaryButtonCls}
-                  >
-                    查看研究页
-                  </button>
-                </>
-              ) : null}
-            </div>
-
-            <div className="mt-5 grid gap-3 sm:grid-cols-4">
-              <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前视角</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{activeModeLabel}</div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  {isAccountMode ? `账户 ${accountId || '默认账户'}` : portfolioName}
-                </div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">观察窗口</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">
-                  {isAccountMode ? days : portfolioLookbackDays} 天
-                </div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  {isAccountMode ? '账户净值与收益率复盘' : `基准 ${selectedBenchmark?.label ?? benchmark}`}
-                </div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/26 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">
-                  {isAccountMode ? '总资产' : '组合收益率'}
-                </div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">
-                  {isAccountMode ? fmtNum(totalValue) : fmtPct(portfolioTotalReturnPct)}
-                </div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  {isAccountMode
-                    ? `累计收益率 ${fmtPct(totalReturnPct)}`
-                    : `超额收益 ${fmtPct(Number(benchmarkComparison?.excessReturnPct ?? 0))}`}
-                </div>
-              </div>
-              <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">重点标的</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{focusStockCode || '-'}</div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  {isAccountMode
-                    ? accountLeader?.stock_name
-                      ? `${accountLeader.stock_name} 为当前领先持仓`
-                      : '当前还没有领先持仓'
-                    : topContributor?.code
-                      ? `最大正贡献来自 ${topContributor.code}`
-                      : '当前暂无贡献股明细'}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid gap-3">
-            <div className={sidePanelCls}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前聚焦</div>
-              <div className="mt-3 text-base font-semibold text-text-primary">
-                {isAccountMode ? `${accountId || '默认账户'} 账户复盘` : `${portfolioName} 组合归因`}
-              </div>
-              <div className="mt-4 space-y-3">
-                <div className={noteCardCls}>
-                  核心摘要：<span className="font-medium text-text-primary">{pageSummary}</span>
-                </div>
-                {!isAccountMode ? (
-                  <div className={noteCardCls}>
-                    基准口径：
-                    <span className="font-medium text-text-primary">{selectedBenchmark?.label ?? benchmark}</span>
-                  </div>
-                ) : null}
-                <div className={noteCardCls}>
-                  联动股票：<span className="font-medium text-text-primary">{focusStockCode || '暂无'}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className={sidePanelCls}>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">下一步动作</div>
-              <div className="mt-4 space-y-3">
-                <div className={noteCardCls}>{portfolioNarrative}</div>
-                <div className={noteCardCls}>
-                  {isAccountMode
-                    ? '先核对回撤和胜率，再决定是否追到单只股票。'
-                    : '先看超额收益来源，再判断是配置问题还是个股问题。'}
-                </div>
-                <div className={noteCardCls}>
-                  {focusStockCode
-                    ? `当前可直接跳转 ${focusStockCode} 的研究页和详情页。`
-                    : '如果没有聚焦股票，先在持仓或归因列表中选一只拖累股或贡献股。'}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <PerformanceHero
+        isAccountMode={isAccountMode}
+        activeModeLabel={activeModeLabel}
+        outperformance={outperformance}
+        sourceExecutionId={sourceExecutionId}
+        onRefresh={() => void refreshActiveModeData()}
+        onOpenRisk={openRiskWorkspace}
+        focusStockCode={focusStockCode}
+        onOpenStock={focusStockCode ? () => openStockTarget(focusStockCode) : null}
+        onOpenResearch={focusStockCode ? () => openResearchTarget(focusStockCode) : null}
+        currentEntityLabel={isAccountMode ? `账户 ${accountId || '默认账户'}` : portfolioName}
+        windowLabel={heroWindowLabel}
+        windowHint={heroWindowHint}
+        primaryMetricLabel={heroPrimaryMetricLabel}
+        primaryMetricValue={heroPrimaryMetricValue}
+        primaryMetricHint={heroPrimaryMetricHint}
+        focusMetricHint={focusMetricHint}
+        pageSummary={pageSummary}
+        benchmarkLabel={selectedBenchmark?.label ?? benchmark}
+        portfolioNarrative={portfolioNarrative}
+      />
 
       <WorkspaceToolbar
         pageKey="performance"
@@ -899,79 +801,31 @@ export default function PerformancePage() {
         pageKey="performance"
         primary={
           <div className="space-y-4 xl:h-full xl:overflow-y-auto xl:pr-1">
-            <SectionCard tabAttached className="p-4">
-              <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.1fr)_minmax(340px,0.9fr)]">
-                <div>
-                  <h3 className="m-0 font-medium">{isAccountMode ? '账户绩效上下文' : '组合归因上下文'}</h3>
-                  <p className="mb-0 mt-1 text-sm text-text-secondary">
-                    {isAccountMode
-                      ? '用于观察模拟账户净值、波动、回撤和核心持仓，适合从交易结果往回看。'
-                      : '用于观察组合收益是由个股选择、行业配置还是择时带来的，适合从研究和配置往后复盘。'}
-                  </p>
-                </div>
-                <div className="panel-soft rounded-[24px] p-4 text-xs text-text-secondary">
-                  <div className="font-medium text-text-primary">联动建议</div>
-                  <ol className="mb-0 mt-2 space-y-1 pl-4">
-                    <li>先确认当前查看的是账户还是组合。</li>
-                    <li>再切换窗口长度，避免短周期和长周期混用。</li>
-                    <li>最后跳到风险中心，核对收益和风险是否匹配。</li>
-                  </ol>
-                </div>
-              </div>
-
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                {isAccountMode ? (
-                  <select
-                    value={accountId}
-                    onChange={(event) => setAccountId(event.target.value)}
-                    className="w-auto min-w-[148px] text-sm"
-                  >
-                    <option value="">默认账户</option>
-                    {accounts.map((account, index) => (
-                      <option key={account.account_id ?? index} value={account.account_id ?? ''}>
-                        {account.account_id ?? `账户 ${index + 1}`}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <>
-                    <select
-                      value={portfolioId}
-                      onChange={(event) => setPortfolioId(event.target.value)}
-                      className="w-auto min-w-[168px] text-sm"
-                    >
-                      <option value="">选择组合</option>
-                      {portfolios.map((portfolio) => (
-                        <option key={portfolio.id} value={portfolio.id}>
-                          {portfolio.name}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      value={benchmark}
-                      onChange={(event) => setBenchmark(event.target.value)}
-                      className="w-auto min-w-[144px] text-sm"
-                    >
-                      {BENCHMARK_OPTIONS.map((item) => (
-                        <option key={item.code} value={item.code}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                  </>
-                )}
-                {windowPresets.map((windowDays) => (
-                  <button
-                    key={windowDays}
-                    type="button"
-                    onClick={() => setDays(windowDays)}
-                    className={`action-chip cursor-pointer text-xs ${days === windowDays ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
-                  >
-                    {windowDays} 天
-                  </button>
-                ))}
-              </div>
-            </SectionCard>
+            <PerformanceContextPanels
+              isAccountMode={isAccountMode}
+              accountId={accountId}
+              accounts={accounts}
+              onAccountChange={setAccountId}
+              portfolios={portfolios}
+              portfolioId={portfolioId}
+              onPortfolioChange={setPortfolioId}
+              benchmark={benchmark}
+              benchmarkOptions={[...BENCHMARK_OPTIONS]}
+              onBenchmarkChange={setBenchmark}
+              windowPresets={windowPresets}
+              days={days}
+              onDaysChange={setDays}
+              portfolioNarrative={portfolioNarrative}
+              activeModeLabel={activeModeLabel}
+              portfolioLookbackDays={portfolioLookbackDays}
+              selectedBenchmarkLabel={selectedBenchmark?.label ?? benchmark}
+              topContributorCode={String(topContributor?.code ?? '')}
+              weakContributorCode={String(weakContributor?.code ?? '')}
+              linkedStockCode={linkedStockCode}
+              onOpenRisk={openRiskWorkspace}
+              onOpenStock={linkedStockCode ? () => openStockTarget(linkedStockCode) : null}
+              onOpenResearch={linkedStockCode ? () => openResearchTarget(linkedStockCode) : null}
+            />
 
             {!isAccountMode && portfoliosQ.isFetching && portfolios.length === 0 ? (
               <LoadingState text="加载组合列表中..." />
@@ -992,699 +846,79 @@ export default function PerformancePage() {
               </SectionCard>
             ) : null}
 
-            <SectionCard className="mt-4 p-4">
-              <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
-                <div>
-                  <h3 className="m-0 font-medium">{isAccountMode ? '账户复盘说明' : '归因解释与下一步动作'}</h3>
-                  <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">{portfolioNarrative}</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button type="button" onClick={() => openRiskWorkspace()} className={chipButtonCls}>
-                      打开风险中心
-                    </button>
-                    {(isAccountMode ? accountLeader?.stock_code : topContributor?.code) ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          openStockTarget(
-                            String((isAccountMode ? accountLeader?.stock_code : topContributor?.code) ?? ''),
-                          )
-                        }
-                        className={chipButtonCls}
-                      >
-                        打开重点股票详情
-                      </button>
-                    ) : null}
-                    {(isAccountMode ? accountLeader?.stock_code : topContributor?.code) ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          openResearchTarget(
-                            String((isAccountMode ? accountLeader?.stock_code : topContributor?.code) ?? ''),
-                          )
-                        }
-                        className={chipButtonCls}
-                      >
-                        打开重点股票研究
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="panel-soft rounded-[24px] p-4">
-                  <div className="text-xs font-medium uppercase tracking-[0.16em] text-text-muted">当前联动上下文</div>
-                  <div className="mt-3 space-y-2 text-xs text-text-secondary">
-                    <div>
-                      当前模式：<span className="font-medium text-text-primary">{activeModeLabel}</span>
-                    </div>
-                    <div>
-                      观察窗口：
-                      <span className="font-medium text-text-primary">
-                        {isAccountMode ? days : portfolioLookbackDays} 天
-                      </span>
-                    </div>
-                    <div>
-                      基准口径：
-                      <span className="font-medium text-text-primary">
-                        {isAccountMode ? '账户净值视角' : (selectedBenchmark?.label ?? benchmark)}
-                      </span>
-                    </div>
-                    {!isAccountMode && topContributor?.code ? (
-                      <div>
-                        最大贡献股：<span className="font-medium text-text-primary">{topContributor.code}</span>
-                      </div>
-                    ) : null}
-                    {!isAccountMode && weakContributor?.code ? (
-                      <div>
-                        主要拖累股：<span className="font-medium text-text-primary">{weakContributor.code}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                  {!isAccountMode ? (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {BENCHMARK_OPTIONS.map((item) => (
-                        <button
-                          key={item.code}
-                          type="button"
-                          onClick={() => setBenchmark(item.code)}
-                          className={`action-chip cursor-pointer text-[11px] ${benchmark === item.code ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
-                        >
-                          {item.label}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            </SectionCard>
-
             {isAccountMode ? (
-              <>
-                {summaryQ.error || positionsQ.error || navQ.error || performanceQ.error ? (
-                  <ErrorState
-                    text={summaryQ.error || positionsQ.error || navQ.error || performanceQ.error || '账户绩效加载失败'}
-                  />
-                ) : null}
-
-                <KpiGrid cols={5} className="mb-4 mt-4">
-                  <KpiCard title="总资产" value={fmtNum(totalValue)} />
-                  <KpiCard title="累计收益率" value={fmtPct(totalReturnPct)} change={totalReturnPct} />
-                  <KpiCard title="夏普比率" value={fmtNum(Number(accountMetrics.sharpe ?? 0))} />
-                  <KpiCard
-                    title="最大回撤"
-                    value={fmtPct(Number(accountMetrics.maxDrawdown ?? 0) * 100)}
-                    change={Number(accountMetrics.maxDrawdown ?? 0) * 100}
-                  />
-                  <KpiCard
-                    title="胜率"
-                    value={fmtPct(Number(accountMetrics.winRate ?? 0) * 100)}
-                    change={Number(accountMetrics.winRate ?? 0) * 100}
-                  />
-                </KpiGrid>
-
-                <div className="grid gap-4 2xl:grid-cols-2">
-                  <SectionCard className="p-4">
-                    <div className="flex items-center justify-between gap-3 flex-wrap">
-                      <h3 className="m-0 font-medium">净值曲线</h3>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          exportCSV(
-                            navData.map((item) => ({
-                              日期: item.nav_date ?? '',
-                              总资产: item.total_value ?? 0,
-                              现金: item.cash ?? 0,
-                              持仓市值: item.market_value ?? 0,
-                              日收益率: item.daily_return ?? 0,
-                            })),
-                            `performance-nav-${days}.csv`,
-                          )
-                        }
-                        className={chipButtonCls}
-                      >
-                        导出净值
-                      </button>
-                    </div>
-                    {navData.length > 1 ? (
-                      <LineChart categories={navCategories} series={[{ name: '总资产', data: navValues }]} />
-                    ) : (
-                      <p className="text-sm text-text-secondary">暂无足够净值数据</p>
-                    )}
-                  </SectionCard>
-
-                  <SectionCard className="p-4">
-                    <div className="flex items-center justify-between gap-3 flex-wrap">
-                      <h3 className="m-0 font-medium">日收益率</h3>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          exportCSV(
-                            performanceData.map((item) => ({
-                              日期: item.date ?? '',
-                              总资产: item.totalValue ?? 0,
-                              日收益率: item.dailyReturn ?? 0,
-                            })),
-                            `performance-returns-${days}.csv`,
-                          )
-                        }
-                        className={chipButtonCls}
-                      >
-                        导出收益
-                      </button>
-                    </div>
-                    {performanceData.length > 1 ? (
-                      <LineChart categories={perfCategories} series={[{ name: '日收益率(%)', data: perfReturns }]} />
-                    ) : (
-                      <p className="text-sm text-text-secondary">暂无足够收益数据</p>
-                    )}
-                  </SectionCard>
-                </div>
-
-                <SectionCard className="p-4">
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <h3 className="m-0 font-medium">核心持仓</h3>
-                    <span className="text-xs text-text-secondary">按市值排序展示前 8 只</span>
-                  </div>
-                  <DataTable
-                    rows={topPositions as unknown as Record<string, unknown>[]}
-                    emptyText="暂无持仓"
-                    columns={[
-                      { key: 'stock_code', label: '代码' },
-                      { key: 'stock_name', label: '名称' },
-                      { key: 'quantity', label: '数量' },
-                      { key: 'cost_price', label: '成本', render: (value: unknown) => fmtNum(Number(value ?? 0), 2) },
-                      {
-                        key: 'current_price',
-                        label: '现价',
-                        render: (value: unknown) => fmtNum(Number(value ?? 0), 2),
-                      },
-                      { key: 'market_value', label: '市值', render: (value: unknown) => fmtNum(Number(value ?? 0)) },
-                      {
-                        key: 'profit_rate',
-                        label: '盈亏率',
-                        render: (value: unknown) => fmtPct(Number(value ?? 0) * 100),
-                      },
-                      {
-                        key: 'actions',
-                        label: '联动',
-                        sortable: false,
-                        render: (_value: unknown, row: Record<string, unknown>) => {
-                          const rowCode = String(row.stock_code ?? '').trim();
-                          if (!rowCode) return '-';
-                          return (
-                            <div className="flex flex-wrap gap-2">
-                              <button type="button" onClick={() => openStockTarget(rowCode)} className={chipButtonCls}>
-                                详情
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => openResearchTarget(rowCode)}
-                                className={chipButtonCls}
-                              >
-                                研究
-                              </button>
-                            </div>
-                          );
-                        },
-                      },
-                    ]}
-                    mobileCardRender={(row) => (
-                      <div className="space-y-2">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="text-sm font-medium text-text-primary">
-                              {String(row.stock_name ?? row.stock_code ?? '-')}
-                            </div>
-                            <div className="text-xs text-text-secondary">代码：{String(row.stock_code ?? '-')}</div>
-                          </div>
-                          <div className="text-xs text-text-secondary">
-                            {fmtPct(Number(row.profit_rate ?? 0) * 100)}
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 text-xs text-text-secondary">
-                          <div>数量：{String(row.quantity ?? '-')}</div>
-                          <div>市值：{fmtNum(Number(row.market_value ?? 0))}</div>
-                          <div>成本：{fmtNum(Number(row.cost_price ?? 0), 2)}</div>
-                          <div>现价：{fmtNum(Number(row.current_price ?? 0), 2)}</div>
-                        </div>
-                        {String(row.stock_code ?? '').trim() ? (
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => openStockTarget(String(row.stock_code ?? ''))}
-                              className={chipButtonCls}
-                            >
-                              打开详情
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => openResearchTarget(String(row.stock_code ?? ''))}
-                              className={chipButtonCls}
-                            >
-                              打开研究
-                            </button>
-                          </div>
-                        ) : null}
-                      </div>
-                    )}
-                  />
-                </SectionCard>
-              </>
+              <AccountPerformanceDashboard
+                errorMessage={accountErrorMessage}
+                totalValue={totalValue}
+                totalReturnPct={totalReturnPct}
+                accountMetrics={accountMetrics as PaperTradingPerformanceMetrics}
+                days={days}
+                navData={navData as PaperTradingNavPoint[]}
+                navCategories={navCategories}
+                navValues={navValues}
+                performanceData={performanceData as PaperTradingPerformancePoint[]}
+                perfCategories={perfCategories}
+                perfReturns={perfReturns}
+                topPositions={topPositions as PaperTradingPosition[]}
+                onOpenStockTarget={openStockTarget}
+                onOpenResearchTarget={openResearchTarget}
+              />
             ) : (
-              <>
-                {portfolioDetailQ.error || attributionQ.error || benchmarkQ.error ? (
-                  <ErrorState
-                    text={portfolioDetailQ.error || attributionQ.error || benchmarkQ.error || '组合归因加载失败'}
-                  />
-                ) : null}
-
-                {(portfolioDetailQ.isFetching || attributionQ.isFetching || benchmarkQ.isFetching) && !attribution ? (
-                  <LoadingState text="加载组合归因中..." />
-                ) : null}
-
-                {portfolioMessage ? <MetaLine>{portfolioMessage}</MetaLine> : null}
-
-                <KpiGrid cols={5} className="mb-4 mt-4">
-                  <KpiCard title="当前组合" value={portfolioName} />
-                  <KpiCard title="持仓数量" value={portfolioHoldings.length || attributionByStock.length} />
-                  <KpiCard
-                    title="组合收益率"
-                    value={fmtPct(portfolioTotalReturnPct)}
-                    change={portfolioTotalReturnPct}
-                  />
-                  <KpiCard
-                    title="基准收益率"
-                    value={fmtPct(Number(benchmarkComparison?.benchmarkReturnPct ?? 0))}
-                    change={Number(benchmarkComparison?.benchmarkReturnPct ?? 0)}
-                  />
-                  <KpiCard
-                    title="超额收益"
-                    value={fmtPct(Number(benchmarkComparison?.excessReturnPct ?? 0))}
-                    change={Number(benchmarkComparison?.excessReturnPct ?? 0)}
-                  />
-                </KpiGrid>
-
-                <KpiGrid cols={5} className="mb-4">
-                  <KpiCard title="组合资产" value={fmtNum(portfolioTotalAssets)} />
-                  <KpiCard title="信息比率" value={fmtNum(Number(benchmarkComparison?.informationRatio ?? 0))} />
-                  <KpiCard
-                    title="跟踪误差"
-                    value={fmtPct(Number(benchmarkComparison?.trackingErrorPct ?? 0))}
-                    change={Number(benchmarkComparison?.trackingErrorPct ?? 0)}
-                  />
-                  <KpiCard
-                    title="股票选择贡献"
-                    value={fmtPct(Number(attribution?.attribution?.stockSelection?.contribution ?? 0))}
-                    change={Number(attribution?.attribution?.stockSelection?.contribution ?? 0)}
-                  />
-                  <KpiCard
-                    title="行业配置贡献"
-                    value={fmtPct(Number(attribution?.attribution?.sectorAllocation?.contribution ?? 0))}
-                    change={Number(attribution?.attribution?.sectorAllocation?.contribution ?? 0)}
-                  />
-                </KpiGrid>
-
-                <div className="grid gap-4 2xl:grid-cols-2">
-                  <SectionCard className="p-4">
-                    <div className="flex items-center justify-between gap-3 flex-wrap">
-                      <h3 className="m-0 font-medium">收益归因拆解</h3>
-                      <Badge variant={outperformance ? 'success' : 'warning'}>
-                        {outperformance ? '跑赢基准' : '未跑赢基准'}
-                      </Badge>
-                    </div>
-                    {waterfallData.some((item) => item.value !== 0) ? (
-                      <WaterfallChart data={waterfallData} height={320} />
-                    ) : (
-                      <p className="text-sm text-text-secondary">暂无足够归因分解数据</p>
-                    )}
-                  </SectionCard>
-
-                  <SectionCard className="p-4">
-                    <div className="flex items-center justify-between gap-3 flex-wrap">
-                      <h3 className="m-0 font-medium">行业收益表现</h3>
-                      <span className="text-xs text-text-secondary">按行业收益率展示前 8 项</span>
-                    </div>
-                    {sectorBarItems.length > 0 ? (
-                      <BarChart items={sectorBarItems} height={320} horizontal colorByValue yAxisName="收益率(%)" />
-                    ) : (
-                      <p className="text-sm text-text-secondary">暂无行业收益数据</p>
-                    )}
-                  </SectionCard>
-                </div>
-
-                <SectionCard className="p-4">
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <h3 className="m-0 font-medium">个股贡献明细</h3>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        exportCSV(
-                          attributionByStock.map((item) => ({
-                            代码: item.code ?? '',
-                            行业: item.sector ?? '',
-                            权重占比: item.weightPct ?? 0,
-                            区间收益率: item.stockReturnPct ?? 0,
-                            生命周期收益率: item.lifetimeReturnPct ?? 0,
-                            贡献度: item.contributionPct ?? 0,
-                          })),
-                          `performance-attribution-${selectedPortfolioId ?? 'portfolio'}-${portfolioLookbackDays}.csv`,
-                        )
-                      }
-                      className={chipButtonCls}
-                    >
-                      导出归因
-                    </button>
-                  </div>
-                  <DataTable
-                    rows={attributionByStock as unknown as Record<string, unknown>[]}
-                    emptyText="暂无个股归因数据"
-                    columns={[
-                      { key: 'code', label: '代码' },
-                      { key: 'sector', label: '行业' },
-                      { key: 'weightPct', label: '权重占比', render: (value: unknown) => fmtPct(Number(value ?? 0)) },
-                      {
-                        key: 'stockReturnPct',
-                        label: '区间收益率',
-                        render: (value: unknown) => fmtPct(Number(value ?? 0)),
-                      },
-                      {
-                        key: 'lifetimeReturnPct',
-                        label: '生命周期收益率',
-                        render: (value: unknown) => fmtPct(Number(value ?? 0)),
-                      },
-                      {
-                        key: 'contributionPct',
-                        label: '贡献度',
-                        render: (value: unknown) => fmtPct(Number(value ?? 0)),
-                      },
-                      {
-                        key: 'actions',
-                        label: '联动',
-                        sortable: false,
-                        render: (_value: unknown, row: Record<string, unknown>) => {
-                          const rowCode = String(row.code ?? '').trim();
-                          if (!rowCode) return '-';
-                          return (
-                            <div className="flex flex-wrap gap-2">
-                              <button type="button" onClick={() => openStockTarget(rowCode)} className={chipButtonCls}>
-                                详情
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => openResearchTarget(rowCode)}
-                                className={chipButtonCls}
-                              >
-                                研究
-                              </button>
-                            </div>
-                          );
-                        },
-                      },
-                    ]}
-                    searchable
-                    mobileCardRender={(row) => (
-                      <div className="space-y-2">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="text-sm font-medium text-text-primary">{String(row.code ?? '-')}</div>
-                            <div className="text-xs text-text-secondary">{String(row.sector ?? '未知行业')}</div>
-                          </div>
-                          <div className="text-xs text-text-secondary">{fmtPct(Number(row.contributionPct ?? 0))}</div>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 text-xs text-text-secondary">
-                          <div>权重：{fmtPct(Number(row.weightPct ?? 0))}</div>
-                          <div>区间收益：{fmtPct(Number(row.stockReturnPct ?? 0))}</div>
-                          <div>生命周期收益：{fmtPct(Number(row.lifetimeReturnPct ?? 0))}</div>
-                          <div>贡献：{fmtPct(Number(row.contributionPct ?? 0))}</div>
-                        </div>
-                        {String(row.code ?? '').trim() ? (
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => openStockTarget(String(row.code ?? ''))}
-                              className={chipButtonCls}
-                            >
-                              打开详情
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => openResearchTarget(String(row.code ?? ''))}
-                              className={chipButtonCls}
-                            >
-                              打开研究
-                            </button>
-                          </div>
-                        ) : null}
-                      </div>
-                    )}
-                  />
-                </SectionCard>
-
-                <SectionCard className="p-4">
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <h3 className="m-0 font-medium">基准对比与窗口审计</h3>
-                    <span className="text-xs text-text-secondary">用于核对超额收益来源是否可靠</span>
-                  </div>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
-                    <div className={noteCardCls}>
-                      <div className="text-xs text-text-secondary">基准代码</div>
-                      <div className="mt-1 text-sm font-medium text-text-primary">
-                        {benchmarkComparison?.benchmark ?? benchmark}
-                      </div>
-                    </div>
-                    <div className={noteCardCls}>
-                      <div className="text-xs text-text-secondary">年化超额收益</div>
-                      <div className="mt-1 text-sm font-medium text-text-primary">
-                        {fmtPct(Number(benchmarkComparison?.annualizedExcessReturnPct ?? 0))}
-                      </div>
-                    </div>
-                    <div className={noteCardCls}>
-                      <div className="text-xs text-text-secondary">对齐交易日</div>
-                      <div className="mt-1 text-sm font-medium text-text-primary">
-                        {String(benchmarkComparison?.alignedDays ?? '-')}
-                      </div>
-                    </div>
-                    <div className={noteCardCls}>
-                      <div className="text-xs text-text-secondary">归因方法</div>
-                      <div className="mt-1 text-sm font-medium text-text-primary">{attribution?.method ?? '-'}</div>
-                    </div>
-                  </div>
-                  {attribution?.benchmarkAlignment?.alignmentMethod ? (
-                    <MetaLine>基准对齐方式：{attribution.benchmarkAlignment.alignmentMethod}</MetaLine>
-                  ) : null}
-                  {benchmarkComparison?.alignedDays != null ? (
-                    <MetaLine>组合与基准对齐交易日：{benchmarkComparison.alignedDays}</MetaLine>
-                  ) : null}
-                  {attribution?.attribution?.timing?.basis ? (
-                    <MetaLine>择时贡献口径：{attribution.attribution.timing.basis}</MetaLine>
-                  ) : null}
-                </SectionCard>
-              </>
+              <PortfolioAttributionDashboard
+                errorMessage={portfolioErrorMessage}
+                isLoading={portfolioDetailQ.isFetching || attributionQ.isFetching || benchmarkQ.isFetching}
+                attribution={attribution}
+                benchmarkComparison={benchmarkComparison}
+                portfolioMessage={portfolioMessage}
+                portfolioName={portfolioName}
+                portfolioHoldingsCount={portfolioHoldings.length || attributionByStock.length}
+                attributionByStock={attributionByStock}
+                portfolioTotalReturnPct={portfolioTotalReturnPct}
+                portfolioTotalAssets={portfolioTotalAssets}
+                waterfallData={waterfallData}
+                sectorBarItems={sectorBarItems}
+                outperformance={outperformance}
+                selectedPortfolioId={selectedPortfolioId}
+                portfolioLookbackDays={portfolioLookbackDays}
+                benchmark={benchmark}
+                onOpenStockTarget={openStockTarget}
+                onOpenResearchTarget={openResearchTarget}
+              />
             )}
           </div>
         }
         secondary={
-          <div className="space-y-4 xl:h-full xl:overflow-y-auto xl:pl-1">
-            <div className={sidePanelCls}>
-              <div className="text-sm font-medium text-text-primary">当前联动摘要</div>
-              <p className="mb-0 mt-2 text-sm leading-6 text-text-secondary">{portfolioNarrative}</p>
-              <div className="mt-4 space-y-3">
-                <div className={noteCardCls}>
-                  模式：<span className="font-medium text-text-primary">{activeModeLabel}</span>
-                </div>
-                <div className={noteCardCls}>
-                  观察窗口：
-                  <span className="font-medium text-text-primary">
-                    {isAccountMode ? days : portfolioLookbackDays} 天
-                  </span>
-                </div>
-                <div className={noteCardCls}>
-                  基准：
-                  <span className="font-medium text-text-primary">
-                    {isAccountMode ? '账户净值视角' : (selectedBenchmark?.label ?? benchmark)}
-                  </span>
-                </div>
-                {focusStockCode ? (
-                  <div className={noteCardCls}>
-                    焦点股票：<span className="font-medium text-text-primary">{focusStockCode}</span>
-                  </div>
-                ) : null}
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" onClick={() => openRiskWorkspace()} className={chipButtonCls}>
-                  打开风险中心
-                </button>
-                {focusStockCode ? (
-                  <button type="button" onClick={() => openStockTarget(focusStockCode)} className={chipButtonCls}>
-                    打开股票详情
-                  </button>
-                ) : null}
-                {focusStockCode ? (
-                  <button type="button" onClick={() => openResearchTarget(focusStockCode)} className={chipButtonCls}>
-                    打开研究页
-                  </button>
-                ) : null}
-              </div>
-            </div>
-
-            {isAccountMode ? (
-              <>
-                <KpiGrid cols={2}>
-                  <KpiCard title="总资产" value={fmtNum(totalValue)} />
-                  <KpiCard title="累计收益率" value={fmtPct(totalReturnPct)} change={totalReturnPct} />
-                  <KpiCard title="夏普比率" value={fmtNum(Number(accountMetrics.sharpe ?? 0))} />
-                  <KpiCard
-                    title="最大回撤"
-                    value={fmtPct(Number(accountMetrics.maxDrawdown ?? 0) * 100)}
-                    change={Number(accountMetrics.maxDrawdown ?? 0) * 100}
-                  />
-                  <KpiCard
-                    title="胜率"
-                    value={fmtPct(Number(accountMetrics.winRate ?? 0) * 100)}
-                    change={Number(accountMetrics.winRate ?? 0) * 100}
-                  />
-                </KpiGrid>
-
-                <SectionCard className="p-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-sm font-medium text-text-primary">持仓快照</div>
-                    <Badge variant={accountLeader ? 'success' : 'neutral'}>
-                      {accountLeader?.stock_code || '暂无核心持仓'}
-                    </Badge>
-                  </div>
-                  <div className="mt-3 space-y-3">
-                    {topPositions.slice(0, 5).map((item) => (
-                      <div key={`${item.stock_code}-${item.stock_name}`} className={noteCardCls}>
-                        <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <div className="text-sm font-medium text-text-primary">
-                              {item.stock_name || item.stock_code}
-                            </div>
-                            <div className="text-xs text-text-secondary">{item.stock_code || '-'}</div>
-                          </div>
-                          <div className="text-xs text-text-secondary">
-                            {fmtPct(Number(item.profit_rate ?? 0) * 100)}
-                          </div>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => openStockTarget(String(item.stock_code ?? ''))}
-                            className={chipButtonCls}
-                          >
-                            详情
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => openResearchTarget(String(item.stock_code ?? ''))}
-                            className={chipButtonCls}
-                          >
-                            研究
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                    {topPositions.length === 0 ? (
-                      <div className="text-xs text-text-secondary">当前账户暂无核心持仓。</div>
-                    ) : null}
-                  </div>
-                </SectionCard>
-              </>
-            ) : (
-              <>
-                <KpiGrid cols={2}>
-                  <KpiCard title="当前组合" value={portfolioName} />
-                  <KpiCard title="持仓数量" value={portfolioHoldings.length || attributionByStock.length} />
-                  <KpiCard
-                    title="组合收益率"
-                    value={fmtPct(portfolioTotalReturnPct)}
-                    change={portfolioTotalReturnPct}
-                  />
-                  <KpiCard
-                    title="基准收益率"
-                    value={fmtPct(Number(benchmarkComparison?.benchmarkReturnPct ?? 0))}
-                    change={Number(benchmarkComparison?.benchmarkReturnPct ?? 0)}
-                  />
-                  <KpiCard
-                    title="超额收益"
-                    value={fmtPct(Number(benchmarkComparison?.excessReturnPct ?? 0))}
-                    change={Number(benchmarkComparison?.excessReturnPct ?? 0)}
-                  />
-                  <KpiCard title="信息比率" value={fmtNum(Number(benchmarkComparison?.informationRatio ?? 0))} />
-                  <KpiCard
-                    title="跟踪误差"
-                    value={fmtPct(Number(benchmarkComparison?.trackingErrorPct ?? 0))}
-                    change={Number(benchmarkComparison?.trackingErrorPct ?? 0)}
-                  />
-                  <KpiCard
-                    title="股票选择贡献"
-                    value={fmtPct(Number(attribution?.attribution?.stockSelection?.contribution ?? 0))}
-                    change={Number(attribution?.attribution?.stockSelection?.contribution ?? 0)}
-                  />
-                  <KpiCard
-                    title="行业配置贡献"
-                    value={fmtPct(Number(attribution?.attribution?.sectorAllocation?.contribution ?? 0))}
-                    change={Number(attribution?.attribution?.sectorAllocation?.contribution ?? 0)}
-                  />
-                </KpiGrid>
-
-                <SectionCard className="p-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-sm font-medium text-text-primary">基准与贡献审计</div>
-                    <Badge variant={outperformance ? 'success' : 'warning'}>
-                      {outperformance ? '跑赢基准' : '未跑赢基准'}
-                    </Badge>
-                  </div>
-                  {portfolioMessage ? <MetaLine>{portfolioMessage}</MetaLine> : null}
-                  <div className="mt-3 space-y-2 text-xs text-text-secondary">
-                    <div>
-                      基准代码：
-                      <span className="font-medium text-text-primary">
-                        {benchmarkComparison?.benchmark ?? benchmark}
-                      </span>
-                    </div>
-                    <div>
-                      年化超额收益：
-                      <span className="font-medium text-text-primary">
-                        {fmtPct(Number(benchmarkComparison?.annualizedExcessReturnPct ?? 0))}
-                      </span>
-                    </div>
-                    <div>
-                      对齐交易日：
-                      <span className="font-medium text-text-primary">
-                        {String(benchmarkComparison?.alignedDays ?? '-')}
-                      </span>
-                    </div>
-                    <div>
-                      归因方法：<span className="font-medium text-text-primary">{attribution?.method ?? '-'}</span>
-                    </div>
-                    {topContributor?.code ? (
-                      <div>
-                        最大贡献股：<span className="font-medium text-text-primary">{topContributor.code}</span>
-                      </div>
-                    ) : null}
-                    {weakContributor?.code ? (
-                      <div>
-                        主要拖累股：<span className="font-medium text-text-primary">{weakContributor.code}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                  {!isAccountMode ? (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {BENCHMARK_OPTIONS.map((item) => (
-                        <button
-                          key={item.code}
-                          type="button"
-                          onClick={() => setBenchmark(item.code)}
-                          className={`action-chip cursor-pointer text-[11px] ${benchmark === item.code ? 'border-primary/35 bg-primary/12 text-primary' : 'text-text-secondary'}`}
-                        >
-                          {item.label}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </SectionCard>
-              </>
-            )}
-          </div>
+          <PerformanceSecondarySidebar
+            isAccountMode={isAccountMode}
+            activeModeLabel={activeModeLabel}
+            portfolioNarrative={portfolioNarrative}
+            days={days}
+            portfolioLookbackDays={portfolioLookbackDays}
+            selectedBenchmarkLabel={selectedBenchmark?.label ?? benchmark}
+            focusStockCode={focusStockCode}
+            onOpenRisk={openRiskWorkspace}
+            onOpenStock={focusStockCode ? () => openStockTarget(focusStockCode) : null}
+            onOpenResearch={focusStockCode ? () => openResearchTarget(focusStockCode) : null}
+            totalValue={totalValue}
+            totalReturnPct={totalReturnPct}
+            accountMetrics={accountMetrics as PaperTradingPerformanceMetrics}
+            accountLeaderCode={String(accountLeader?.stock_code ?? '')}
+            topPositions={topPositions as PaperTradingPosition[]}
+            portfolioName={portfolioName}
+            portfolioHoldingsCount={portfolioHoldings.length || attributionByStock.length}
+            portfolioTotalReturnPct={portfolioTotalReturnPct}
+            benchmark={benchmark}
+            benchmarkOptions={[...BENCHMARK_OPTIONS]}
+            onBenchmarkChange={setBenchmark}
+            benchmarkComparison={benchmarkComparison}
+            attribution={attribution}
+            outperformance={outperformance}
+            portfolioMessage={portfolioMessage}
+            topContributorCode={String(topContributor?.code ?? '')}
+            weakContributorCode={String(weakContributor?.code ?? '')}
+            onOpenStockTarget={openStockTarget}
+            onOpenResearchTarget={openResearchTarget}
+          />
         }
       />
     </PageContainer>

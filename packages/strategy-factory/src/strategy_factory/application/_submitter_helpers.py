@@ -1,0 +1,381 @@
+"""策略工厂候选提交。"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import time as _time
+from collections import Counter
+from typing import TYPE_CHECKING, Any, List, Optional
+from uuid import uuid4
+
+from .legacy_bridge import call_compat_async, get_compat_symbol, get_compat_value
+from .quality_gates import build_completed_gate_3_report
+from .quality_reporting import build_quality_report, normalize_quality_gate_result
+from .submission_gate import run_submission_quality_gate as _local_run_submission_quality_gate
+from .utils import (
+    _auto_name as _local_auto_name,
+    _extract_event_context as _local_extract_event_context,
+    _update_strategy_status as _local_update_strategy_status,
+    get_strategy_factory_package as _local_get_strategy_factory_package,
+)
+from ..domain.constants import (
+    FACTORY_SUBMISSION_MIN_BACKTEST_TRADES,
+    FACTORY_SUBMISSION_MIN_EVENT_TARGET_COVERAGE,
+    FACTORY_SUBMISSION_REJECT_GENERIC_AI_NAMES,
+    FACTORY_SUBMISSION_REQUIRE_STRICT_PASS_FOR_REFRESH,
+    FACTORY_SUBMISSION_REQUIRE_TASK_PREFERENCE_MATCH,
+    SUBMIT_CONCURRENCY,
+)
+from ..domain.targets import _build_task_signature, _normalize_research_task_contract, _normalize_target_codes
+from ..infrastructure.mcp_services import build_strategy_vector_profile
+
+if TYPE_CHECKING:
+    from ..api.contracts import IncubationGateway, RiskGateway, ValidationGateway
+
+logger = logging.getLogger(__name__)
+
+_LEGACY_SUBMITTER_MODULE = "akshare_mcp.services.strategy_factory.submitter"
+_LEGACY_SUBMISSION_GATE_MODULE = "akshare_mcp.services.strategy_factory.submission_gate"
+_LEGACY_UTILS_MODULE = "akshare_mcp.services.strategy_factory.utils"
+
+def _compat_setting(name: str, default):
+    return get_compat_value(_LEGACY_SUBMITTER_MODULE, name, default)
+
+
+def _auto_name(*args, **kwargs):
+    return get_compat_symbol(_LEGACY_UTILS_MODULE, "_auto_name", _local_auto_name)(*args, **kwargs)
+
+
+def _extract_event_context(*args, **kwargs):
+    return get_compat_symbol(
+        _LEGACY_UTILS_MODULE,
+        "_extract_event_context",
+        _local_extract_event_context,
+    )(*args, **kwargs)
+
+
+def get_strategy_factory_package():
+    return get_compat_symbol(
+        _LEGACY_UTILS_MODULE,
+        "get_strategy_factory_package",
+        _local_get_strategy_factory_package,
+    )()
+
+
+async def _update_strategy_status(*args, **kwargs):
+    return await call_compat_async(
+        _LEGACY_UTILS_MODULE,
+        "_update_strategy_status",
+        _local_update_strategy_status,
+        *args,
+        **kwargs,
+    )
+
+
+class _CompatValidationGateway:
+    """Resolve validation runner through the legacy patch-point at call time."""
+
+    async def run_validation_report(self, strategy_type: str, params: dict[str, Any], db) -> Optional[dict]:
+        factory_pkg = get_strategy_factory_package()
+        return await factory_pkg._run_validation_report(strategy_type, dict(params or {}), db)
+
+
+class _CompatRiskGateway:
+    """Resolve risk runner through the legacy patch-point at call time."""
+
+    async def run_risk_report(self, strategy_type: str, params: dict[str, Any], db) -> Optional[dict]:
+        factory_pkg = get_strategy_factory_package()
+        return await factory_pkg._run_risk_report(strategy_type, dict(params or {}), db)
+
+
+class _StrategySubmitterHelpersMixin:
+        def _get_validation_gateway(self) -> "ValidationGateway":
+            if self._validation_gateway is None:
+                self._validation_gateway = _CompatValidationGateway()
+            return self._validation_gateway
+
+        def _get_risk_gateway(self) -> "RiskGateway":
+            if self._risk_gateway is None:
+                self._risk_gateway = _CompatRiskGateway()
+            return self._risk_gateway
+
+        def _get_incubation_gateway(self) -> "IncubationGateway":
+            if self._incubation_gateway is None:
+                from ..infrastructure.mcp_adapters import MCPIncubationGatewayImpl
+
+                self._incubation_gateway = MCPIncubationGatewayImpl()
+            return self._incubation_gateway
+
+        @staticmethod
+        def _candidate_name(candidate: dict, existing_strategy: Optional[dict] = None) -> str:
+            existing_strategy = dict(existing_strategy or {})
+            explicit_name = str(candidate.get("name") or "").strip()
+            return str(existing_strategy.get("name") or explicit_name or _auto_name(candidate["strategy_type"], candidate["params"]))
+
+        @staticmethod
+        def _candidate_style_tokens(candidate: dict) -> set[str]:
+            payload = dict(candidate or {})
+            tags = {str(tag).strip().lower() for tag in list(payload.get("tags") or []) if str(tag).strip()}
+            tokens = set()
+            strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+            if strategy_type:
+                tokens.add(strategy_type)
+            tokens.update(tag for tag in tags if "_" in tag or tag.isalpha())
+
+            if "trend_following" in tags:
+                tokens.update({"momentum", "ma_cross"})
+            if "mean_reversion" in tags:
+                tokens.update({"rsi", "value_factor"})
+            if "defensive" in tags:
+                tokens.update({"quality_factor", "value_factor"})
+
+            params = dict(payload.get("params") or {})
+            dsl = dict(params.get("dsl") or payload.get("dsl") or {})
+            for branch in (dsl.get("entry"), dsl.get("exit")):
+                if not isinstance(branch, dict):
+                    continue
+                for side in ("all", "any", "not"):
+                    conditions = branch.get(side)
+                    if not isinstance(conditions, list):
+                        continue
+                    for cond in conditions:
+                        left = dict((cond or {}).get("left") or {})
+                        right = dict((cond or {}).get("right") or {})
+                        indicators = {
+                            str(left.get("indicator") or "").strip().lower(),
+                            str(right.get("indicator") or "").strip().lower(),
+                        }
+                        if "rsi" in indicators:
+                            tokens.add("rsi")
+                        if indicators & {"sma", "ema"}:
+                            op = str((cond or {}).get("op") or "").strip().lower()
+                            if op in {"cross_above", "cross_below"}:
+                                tokens.add("ma_cross")
+            return {token for token in tokens if token}
+
+        @classmethod
+        def _is_generic_ai_name(cls, name: str, candidate: dict) -> bool:
+            strategy_type = str((candidate or {}).get("strategy_type") or "").strip().lower()
+            tags = {str(tag).strip().lower() for tag in list((candidate or {}).get("tags") or []) if str(tag).strip()}
+            normalized = str(name or "").strip()
+            if not normalized:
+                return True
+            if strategy_type != "dsl_rule" and not ({"external_llm", "ai_generated"} & tags):
+                return False
+            lowered = normalized.lower()
+            if lowered in {strategy_type, f"{strategy_type}策略", "策略", "dsl_rule策略"}:
+                return True
+            return any(pattern.match(normalized) for pattern in cls._GENERIC_AI_NAME_PATTERNS)
+
+        @staticmethod
+        def _candidate_symbols(candidate: dict) -> list[str]:
+            payload = dict(candidate or {})
+            params = dict(payload.get("params") or {})
+            return _normalize_target_codes(
+                [
+                    payload.get("target_symbols"),
+                    payload.get("stock_pool"),
+                    params.get("target_symbols"),
+                    params.get("stock_pool"),
+                    (params.get("dsl") or {}).get("metadata"),
+                ],
+                limit=16,
+            )
+
+        @staticmethod
+        def _normalize_optional_float(value: Any) -> Optional[float]:
+            try:
+                if value is None or value == "":
+                    return None
+                return float(value)
+            except Exception:
+                return None
+
+        @staticmethod
+        def _normalize_optional_int(value: Any) -> Optional[int]:
+            try:
+                if value is None or value == "":
+                    return None
+                return int(float(value))
+            except Exception:
+                return None
+
+        @staticmethod
+        def _normalize_string_list(values: Any, *, limit: int = 8) -> list[str]:
+            items: list[str] = []
+            seen: set[str] = set()
+            for item in list(values or []):
+                text = str(item or "").strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                items.append(text)
+                if len(items) >= limit:
+                    break
+            return items
+
+        @classmethod
+        def _candidate_provenance(cls, candidate: Optional[dict], existing: Optional[dict] = None) -> dict[str, Any]:
+            payload = dict(candidate or {})
+            existing_payload = dict(existing or {})
+            existing_params = dict(existing_payload.get("params") or {})
+            existing_provenance = dict(existing_params.get("candidate_provenance") or {})
+            research_task = _normalize_research_task_contract(
+                payload.get("research_task") or existing_params.get("research_task") or {}
+            )
+            event_context = dict(payload.get("event_context") or {}) or dict(research_task.get("event_context") or {})
+
+            source_candidate_artifact_id = (
+                str(
+                    payload.get("source_candidate_artifact_id")
+                    or research_task.get("source_candidate_artifact_id")
+                    or event_context.get("source_candidate_artifact_id")
+                    or existing_provenance.get("source_candidate_artifact_id")
+                    or ""
+                ).strip()
+                or None
+            )
+            candidate_family = (
+                str(
+                    payload.get("candidate_family")
+                    or research_task.get("candidate_family")
+                    or existing_provenance.get("candidate_family")
+                    or ""
+                ).strip()
+                or None
+            )
+            candidate_name = (
+                str(
+                    payload.get("candidate_name")
+                    or research_task.get("candidate_name")
+                    or existing_provenance.get("candidate_name")
+                    or payload.get("name")
+                    or ""
+                ).strip()
+                or None
+            )
+            candidate_grade = (
+                str(
+                    payload.get("candidate_grade")
+                    or research_task.get("candidate_grade")
+                    or existing_provenance.get("candidate_grade")
+                    or ""
+                ).strip()
+                or None
+            )
+            validation_score = cls._normalize_optional_float(
+                payload.get("validation_score")
+                if payload.get("validation_score") is not None
+                else research_task.get("validation_score")
+            )
+            if validation_score is None:
+                validation_score = cls._normalize_optional_float(existing_provenance.get("validation_score"))
+            expected_regime = cls._normalize_string_list(
+                payload.get("expected_regime")
+                or research_task.get("expected_regime")
+                or existing_provenance.get("expected_regime")
+                or []
+            )
+            expected_holding_period = cls._normalize_optional_int(
+                payload.get("expected_holding_period")
+                if payload.get("expected_holding_period") is not None
+                else research_task.get("expected_holding_period")
+            )
+            if expected_holding_period is None:
+                expected_holding_period = cls._normalize_optional_int(existing_provenance.get("expected_holding_period"))
+            source_generation_artifact_id = (
+                str(
+                    payload.get("source_generation_artifact_id")
+                    or research_task.get("source_generation_artifact_id")
+                    or existing_provenance.get("source_generation_artifact_id")
+                    or ""
+                ).strip()
+                or None
+            )
+            source_validation_artifact_id = (
+                str(
+                    payload.get("source_validation_artifact_id")
+                    or research_task.get("source_validation_artifact_id")
+                    or source_candidate_artifact_id
+                    or existing_provenance.get("source_validation_artifact_id")
+                    or ""
+                ).strip()
+                or None
+            )
+            memory_record_id = (
+                str(
+                    payload.get("memory_record_id")
+                    or research_task.get("memory_record_id")
+                    or existing_provenance.get("memory_record_id")
+                    or ""
+                ).strip()
+                or None
+            )
+            candidate_registry_stage = (
+                str(
+                    payload.get("candidate_registry_stage")
+                    or research_task.get("candidate_registry_stage")
+                    or existing_provenance.get("candidate_registry_stage")
+                    or ""
+                ).strip()
+                or None
+            )
+            latest_validation_at = (
+                str(
+                    payload.get("latest_validation_at")
+                    or research_task.get("latest_validation_at")
+                    or existing_provenance.get("latest_validation_at")
+                    or ""
+                ).strip()
+                or None
+            )
+            latest_validation_age_days = cls._normalize_optional_int(
+                payload.get("latest_validation_age_days")
+                if payload.get("latest_validation_age_days") is not None
+                else research_task.get("latest_validation_age_days")
+            )
+            if latest_validation_age_days is None:
+                latest_validation_age_days = cls._normalize_optional_int(existing_provenance.get("latest_validation_age_days"))
+            admission_block_reasons = cls._normalize_string_list(
+                payload.get("admission_block_reasons")
+                or research_task.get("admission_block_reasons")
+                or existing_provenance.get("admission_block_reasons")
+                or [],
+                limit=12,
+            )
+            candidate_evidence_status = dict(
+                payload.get("candidate_evidence_status")
+                or research_task.get("candidate_evidence_status")
+                or existing_provenance.get("candidate_evidence_status")
+                or {}
+            )
+
+            provenance = {
+                "source_candidate_artifact_id": source_candidate_artifact_id,
+                "source_generation_artifact_id": source_generation_artifact_id,
+                "source_validation_artifact_id": source_validation_artifact_id,
+                "memory_record_id": memory_record_id,
+                "candidate_family": candidate_family,
+                "candidate_name": candidate_name,
+                "candidate_grade": candidate_grade,
+                "candidate_registry_stage": candidate_registry_stage,
+                "validation_score": validation_score,
+                "expected_regime": expected_regime,
+                "expected_holding_period": expected_holding_period,
+                "latest_validation_at": latest_validation_at,
+                "latest_validation_age_days": latest_validation_age_days,
+                "admission_block_reasons": admission_block_reasons,
+                "candidate_evidence_status": candidate_evidence_status,
+                "task_source": str(research_task.get("task_source") or "").strip() or None,
+                "task_id": str(research_task.get("task_id") or "").strip() or None,
+                "task_key": str(research_task.get("task_key") or "").strip() or None,
+                "event_id": str(research_task.get("event_id") or event_context.get("event_id") or "").strip() or None,
+                "theme_code": str(research_task.get("theme_code") or event_context.get("theme_code") or "").strip() or None,
+            }
+            return {
+                key: value
+                for key, value in provenance.items()
+                if value not in (None, [], {}, "")
+            }

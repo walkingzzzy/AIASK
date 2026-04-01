@@ -516,3 +516,139 @@ async def test_quant_manager_llm_factor_mining_filters_compiler_invalid_candidat
     assert result["data"]["candidates"][0]["name"] == "valid_momentum_factor"
     assert result["data"]["blocked_candidates"][0]["name"] == "invalid_event_factor"
     assert any("compiler_screen_rejected=" in item for item in result["data"]["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_quant_manager_llm_factor_mining_emits_research_episode_metadata(monkeypatch):
+    import akshare_mcp.tools.managers.quant_manager as quant_mod
+    from akshare_mcp.services.factor_prompt_builder import FactorMiningPrompt
+
+    class _EnabledProvider:
+        config = SimpleNamespace(provider="openai_compatible", model="gpt-factor-p1")
+
+        def is_enabled(self):
+            return True
+
+        async def generate_candidates(self, prompt, candidate_count=1):
+            return {
+                "provider": "openai_compatible",
+                "model": "gpt-factor-p1",
+                "candidate_count": 1,
+                "requested_candidate_count": candidate_count,
+                "analysis": {"market_regime": "trend"},
+                "warnings": [],
+                "candidates": [
+                    {
+                        "name": "episode_momentum_candidate",
+                        "hypothesis": "中期动量在流动性改善时更容易延续。",
+                        "family": "momentum",
+                        "inputs": ["momentum_20d", "volume_ratio_5_20"],
+                        "expression_dsl": "zscore(momentum_20d, 20) + zscore(volume_ratio_5_20, 10)",
+                        "expected_holding_period": 10,
+                        "expected_regime": ["trend"],
+                        "complexity_hint": "medium",
+                        "novelty_rationale": "P1 episode metadata test",
+                        "source_model": "gpt-factor-p1",
+                        "generation_trace": {
+                            "provider": "openai_compatible",
+                            "model": "gpt-factor-p1",
+                        },
+                    }
+                ],
+            }
+
+    class _MemoryService:
+        async def build_prompt_memory_context(self, **kwargs):
+            return {
+                "available": True,
+                "success_examples": [{"artifact_id": "memory_success_1"}],
+                "failure_examples": [{"artifact_id": "memory_failure_1"}],
+                "duplicate_examples": [],
+            }
+
+        async def annotate_generated_candidates(self, candidates, codes=None):
+            rows = []
+            for candidate in list(candidates or []):
+                row = dict(candidate)
+                row["generation_trace"] = {
+                    **dict(candidate.get("generation_trace") or {}),
+                    "memory_similarity": {
+                        "top_artifact_id": "memory_success_1",
+                        "top_status": "success",
+                        "similarity": 0.12,
+                        "lexical_similarity": 0.18,
+                        "embedding_similarity": 0.11,
+                        "code_overlap": 1.0,
+                        "edge_type": "success_pattern",
+                        "reason": "similar to historical success",
+                    },
+                }
+                row["duplicate_risk"] = "low"
+                rows.append(row)
+            return {"candidates": rows, "warnings": []}
+
+        def apply_duplicate_policy(self, candidates, **kwargs):
+            rows = list(candidates or [])
+            return {
+                "mode": "penalty",
+                "kept_candidates": rows,
+                "blocked_candidates": [],
+                "summary": {
+                    "mode": "penalty",
+                    "input_count": len(rows),
+                    "kept_count": len(rows),
+                    "blocked_count": 0,
+                    "blocked_ratio": 0.0,
+                },
+                "warnings": [],
+            }
+
+    async def _fake_prompt_builder(db, codes, **kwargs):
+        return FactorMiningPrompt(
+            system_prompt="system",
+            user_prompt="user",
+            context_summary={
+                "codes": list(codes),
+                "rows": [
+                    {
+                        "code": codes[0],
+                        "kline_summary": {"bars": 220, "latest_date": "2026-03-31"},
+                        "recent_headlines": {"news": ["headline 1"], "research": ["report 1"]},
+                        "alternative_factors": {"alternative_composite": {"score_raw": 0.62}},
+                    }
+                ],
+                "memory_context": kwargs.get("memory_context") or {},
+            },
+            request_payload={"field_hints": ["momentum_20d", "volume_ratio_5_20"]},
+            source_chain=["services.factor_prompt_builder"],
+            schema_path="/tmp/factor_candidate.schema.json",
+        )
+
+    monkeypatch.setattr(quant_mod, "get_db", lambda: _FallbackDB())
+    monkeypatch.setattr(quant_mod, "get_factor_llm_provider", lambda: _EnabledProvider())
+    monkeypatch.setattr(quant_mod, "get_factor_research_memory_service", lambda: _MemoryService())
+    monkeypatch.setattr(quant_mod, "build_factor_mining_prompt", _fake_prompt_builder)
+
+    mcp = _DummyMCP()
+    quant_mod.register_quant_manager(mcp)
+
+    result = await mcp.quant_manager(
+        action="llm_factor_mining",
+        code="600519",
+        kwargs={"candidate_count": 1, "persist_artifact": False, "allow_fallback": False},
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    research_episode = data["research_episode"]
+    candidate = data["candidates"][0]
+
+    assert research_episode["episode_id"] == data["artifact_id"]
+    assert research_episode["theme"].startswith("momentum factor research")
+    assert research_episode["memory_similarity_summary"]["matched_candidate_count"] == 1
+    assert research_episode["novelty_summary"]["high_novelty_count"] == 1
+    assert research_episode["prompt_context_summary"]["memory_success_examples"] == 1
+    assert research_episode["prompt_context_summary"]["row_count"] == 1
+    assert candidate["research_episode_id"] == data["artifact_id"]
+    assert candidate["generation_trace"]["episode_id"] == data["artifact_id"]
+    assert candidate["generation_trace"]["novelty"]["novelty_score"] > 0.8

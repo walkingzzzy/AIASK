@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Optional
 import json
 from ...utils import ok, fail
+from ..manager_protocol import normalize_manager_payload
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:

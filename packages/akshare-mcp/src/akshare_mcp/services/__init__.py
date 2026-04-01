@@ -43,9 +43,19 @@ from .factor_research_memory import (
     FactorResearchMemoryService,
     get_factor_research_memory_service,
 )
-from .strategy_llm_provider import close_strategy_llm_provider
-from .text_embedding import close_strategy_text_embedding_service
+try:
+    from .strategy_llm_provider import close_strategy_llm_provider
+except Exception:
+    async def close_strategy_llm_provider() -> None:
+        return None
+
+try:
+    from .text_embedding import close_strategy_text_embedding_service
+except Exception:
+    async def close_strategy_text_embedding_service() -> None:
+        return None
 from .validation import (
+    bootstrap_ic_ci,
     deflated_sharpe_ratio,
     hansen_spa_test,
     probability_of_backtest_overfitting,
@@ -104,6 +114,7 @@ __all__ = [
     'close_strategy_llm_provider',
     'close_strategy_text_embedding_service',
     'close_shared_runtime_clients',
+    'bootstrap_ic_ci',
     'deflated_sharpe_ratio',
     'probability_of_backtest_overfitting',
     'white_reality_check',

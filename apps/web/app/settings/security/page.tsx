@@ -4,18 +4,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { PageContainer, SectionCard, Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
+import {
+  DEFAULT_TRANSACTION_CONFIRMATIONS,
+  readTransactionConfirmations,
+  type TransactionConfirmKey,
+  type TransactionConfirmations,
+} from '@/lib/transaction-confirmations';
 
 type TotpSetup = { secret: string; uri: string; backupCodes: string[] };
 type MessageState = { type: 'success' | 'error'; text: string } | null;
-type TransactionConfirmKey = 'paperOrder' | 'paperCancel' | 'alertRuleChange' | 'portfolioRebalance';
-type TransactionConfirmations = Record<TransactionConfirmKey, boolean>;
-
-const DEFAULT_CONFIRMATIONS: TransactionConfirmations = {
-  paperOrder: true,
-  paperCancel: true,
-  alertRuleChange: true,
-  portfolioRebalance: true,
-};
 
 const TRANSACTION_CONFIRM_ITEMS: Array<{ key: TransactionConfirmKey; label: string; description: string }> = [
   { key: 'paperOrder', label: '模拟交易下单', description: '提交模拟单前展示确认弹窗' },
@@ -23,23 +20,6 @@ const TRANSACTION_CONFIRM_ITEMS: Array<{ key: TransactionConfirmKey; label: stri
   { key: 'alertRuleChange', label: '告警规则修改', description: '敏感规则变更前需确认' },
   { key: 'portfolioRebalance', label: '组合调仓', description: '组合调仓动作需确认后执行' },
 ];
-
-function extractPreferences(profile: Record<string, unknown> | null): Record<string, unknown> {
-  const raw = profile?.preferences;
-  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
-}
-
-function readTransactionConfirmations(profile: Record<string, unknown> | null): TransactionConfirmations {
-  const prefs = extractPreferences(profile);
-  const raw = prefs.transactionConfirmations;
-  const stored = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
-  return {
-    paperOrder: stored.paperOrder !== false,
-    paperCancel: stored.paperCancel !== false,
-    alertRuleChange: stored.alertRuleChange !== false,
-    portfolioRebalance: stored.portfolioRebalance !== false,
-  };
-}
 
 export default function SecurityPage() {
   const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
@@ -52,7 +32,7 @@ export default function SecurityPage() {
   const [totpSetup, setTotpSetup] = useState<TotpSetup | null>(null);
   const [verifyCode, setVerifyCode] = useState('');
   const [message, setMessage] = useState<MessageState>(null);
-  const [transactionConfirmations, setTransactionConfirmations] = useState<TransactionConfirmations>(DEFAULT_CONFIRMATIONS);
+  const [transactionConfirmations, setTransactionConfirmations] = useState<TransactionConfirmations>(DEFAULT_TRANSACTION_CONFIRMATIONS);
   const [savingKey, setSavingKey] = useState<TransactionConfirmKey | null>(null);
 
   useEffect(() => {
@@ -62,8 +42,9 @@ export default function SecurityPage() {
   const totpEnabled = useMemo(() => {
     const enabledFromStatus = statusQ.data?.enabled;
     if (typeof enabledFromStatus === 'boolean') return enabledFromStatus;
-    const prefs = extractPreferences(profileQ.data);
-    return Boolean(prefs.totpEnabled);
+    return Boolean(profileQ.data?.preferences && typeof profileQ.data.preferences === 'object'
+      ? (profileQ.data.preferences as { totpEnabled?: boolean }).totpEnabled
+      : false);
   }, [profileQ.data, statusQ.data]);
   const setupProgress = totpEnabled ? 3 : totpSetup ? 2 : 1;
 

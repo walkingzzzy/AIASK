@@ -87,8 +87,14 @@ async def xxx_manager(
 ## 5. 当前能力声明
 
 - ✅ **Tools**: 完整支持
-- ❌ **Resources**: 未实现（`list_resources` 返回空）
-- ❌ **Prompts**: 未实现（`list_prompts` 返回空）
+- ✅ **Resources**: 已实现原生对象与模板资源
+  - `resource://server/capabilities`
+  - `resource://stock/{code}/profile`
+  - `resource://watchlist/{user_id}/snapshot`
+  - `resource://strategy/{id}/review`
+- ✅ **Prompts**: 已实现原生 Prompt
+  - `factor-mining`
+  - `strategy-review`
 
 ## 6. 安全配置
 
@@ -101,6 +107,13 @@ async def xxx_manager(
 | `MCP_PORT` | HTTP 端口（默认 8000） |
 | `MCP_AUTH_MODE` | 认证模式（HTTP 传输必配） |
 | `MCP_ALLOWED_ORIGINS` | 允许的 Origin（HTTP 传输必配） |
+| `MCP_ALLOWED_HOSTS` | 允许的 Host 头（HTTP 传输建议显式配置） |
+| `MCP_AUTH_TOKEN` | 单个 Bearer token / API key |
+| `MCP_AUTH_TOKENS_JSON` | 多 token 配置，JSON 对象 |
+| `MCP_AUTH_CLIENT_ID` | 默认认证主体 ID |
+| `MCP_AUTH_REQUIRED_SCOPES` | HTTP 传输要求的 scopes |
+| `MCP_AUTH_DEFAULT_SCOPES` | 静态 token 的默认 scopes |
 | `AKSHARE_REQUIRE_CONFIRMATION` | 是否启用写操作确认门禁 |
 | `AKSHARE_CONFIRM_TOKEN` | 确认 token 值 |
 | `AKSHARE_AUDIT_LOG` | 审计日志路径（默认 logs/risk_audit.jsonl） |
+| `AKSHARE_USER_MANAGER_ALLOW_IMPERSONATION` | 允许 `user_manager` 在内部调用时跨用户访问 |

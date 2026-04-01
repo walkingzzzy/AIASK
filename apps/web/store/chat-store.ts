@@ -94,13 +94,94 @@ function createConversationRecord(id: string, input: CreateConversationInput = {
   };
 }
 
+function asObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function normalizeToolCall(input: unknown): ChatToolCall | null {
+  const record = asObject(input);
+  const id = String(record.id ?? uid('tool')).trim();
+  const name = String(record.name ?? '').trim();
+  if (!id || !name) {
+    return null;
+  }
+
+  const args = record.args && typeof record.args === 'object' && !Array.isArray(record.args)
+    ? record.args as Record<string, unknown>
+    : undefined;
+
+  return {
+    id,
+    name,
+    args,
+    result: record.result,
+    pending: record.pending === true,
+  };
+}
+
+function normalizeActionBlock(input: unknown): ChatActionBlock | null {
+  const record = asObject(input);
+  const id = String(record.id ?? uid('action')).trim();
+  const actionId = String(record.actionId ?? '').trim();
+  const label = String(record.label ?? '').trim();
+  const status = record.status;
+  if (!id || !actionId || !label || !['pending', 'running', 'done', 'error'].includes(String(status))) {
+    return null;
+  }
+
+  const payload = record.payload && typeof record.payload === 'object' && !Array.isArray(record.payload)
+    ? record.payload as Record<string, unknown>
+    : undefined;
+
+  return {
+    id,
+    kind: 'action',
+    actionId,
+    label,
+    description: typeof record.description === 'string' ? record.description : undefined,
+    reason: typeof record.reason === 'string' ? record.reason : undefined,
+    payload,
+    status: String(status) as ChatActionStatus,
+    autoExecute: record.autoExecute === true,
+    resultMessage: typeof record.resultMessage === 'string' ? record.resultMessage : undefined,
+  };
+}
+
+function normalizeMessage(input: unknown): ChatMsg | null {
+  const record = asObject(input);
+  const role = String(record.role ?? '').trim();
+  if (role !== 'user' && role !== 'assistant') {
+    return null;
+  }
+
+  const toolCalls = Array.isArray(record.toolCalls)
+    ? record.toolCalls.map((item) => normalizeToolCall(item)).filter((item): item is ChatToolCall => item != null)
+    : undefined;
+  const actions = Array.isArray(record.actions)
+    ? record.actions.map((item) => normalizeActionBlock(item)).filter((item): item is ChatActionBlock => item != null)
+    : undefined;
+
+  return {
+    id: String(record.id ?? uid()).trim() || uid(),
+    role: role as 'user' | 'assistant',
+    content: typeof record.content === 'string' ? record.content : '',
+    ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+    ...(actions && actions.length > 0 ? { actions } : {}),
+  };
+}
+
 function normalizeConversation(input: ChatConversation): ChatConversation {
+  const messages = Array.isArray(input.messages)
+    ? input.messages.map((item) => normalizeMessage(item)).filter((item): item is ChatMsg => item != null)
+    : [];
   return {
     id: String(input.id || uid('conv')),
     title: String(input.title || '当前会话'),
     updatedAt: input.updatedAt || nowIso(),
     workspaceId: input.workspaceId || undefined,
-    messages: Array.isArray(input.messages) ? input.messages : [],
+    messages,
   };
 }
 
@@ -225,8 +306,11 @@ export const useChatStore = create<ChatState>()(
               updatedAt: conversation.updatedAt,
               workspaceId: conversation.workspaceId,
               messages: conversation.messages.map((message) => ({
+                id: message.id,
                 role: message.role,
                 content: message.content,
+                toolCalls: message.toolCalls,
+                actions: message.actions,
               })),
             })),
           }),
@@ -295,6 +379,7 @@ export const useChatStore = create<ChatState>()(
             conversations: upsertConversation(state.conversations, current),
           };
         });
+        scheduleSync();
       },
 
       resolveToolCall: (msgId, name, result) => {

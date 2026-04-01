@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from ...storage import get_db
 from ...utils import fail, normalize_code, ok
 from ..market import get_kline
+from ..manager_protocol import normalize_manager_payload
 
 logger = logging.getLogger(__name__)
 _REPORT_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -356,4 +357,3 @@ def register_benchmark_manager(mcp):
         except Exception as e:
             logger.error(f"[BenchmarkManager] Error: {e}")
             return fail(str(e))
-

@@ -6,6 +6,7 @@ import uuid
 
 from ...storage import get_db
 from ...utils import ok, fail
+from ..manager_protocol import normalize_manager_payload
 
 
 DEFAULT_GROUP_ID = "default"
@@ -101,7 +102,7 @@ def register_watchlist_manager(mcp):
     """注册自选股管理器工具"""
 
     @mcp.tool()
-    async def watchlist_manager(action: str, params: dict | None = None, kwargs: Any = None):
+    async def watchlist_manager(action: str, params: dict | None = None, kwargs: Any = None, user_id: str | None = None, group_id: str | None = None, code: str | None = None, codes: list[str] | None = None, name: str | None = None, note: str | None = None, color: str | None = None, limit: int | None = None, sort_order: int | None = None):
         """自选股管理器（统一 action + kwargs 协议）
 
         Args:
@@ -113,7 +114,21 @@ def register_watchlist_manager(mcp):
         """
         try:
             db = get_db()
-            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
+            kwargs = normalize_manager_payload(
+                params=params,
+                kwargs=kwargs,
+                extra={
+                    "user_id": user_id,
+                    "group_id": group_id,
+                    "code": code,
+                    "codes": codes,
+                    "name": name,
+                    "note": note,
+                    "color": color,
+                    "limit": limit,
+                    "sort_order": sort_order,
+                },
+            )
             user_id = str(kwargs.get("user_id") or "default").strip() or "default"
 
             if action == "list":

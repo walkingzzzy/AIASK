@@ -4,7 +4,7 @@ from typing import Any
 import time
 import numpy as np
 from ...storage import get_db
-from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, ok_with_meta
+from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, normalize_manager_payload, ok_with_meta
 
 _SECTOR_ALIAS_HINTS = {
     "白酒": ["酿酒", "酒"],
@@ -78,7 +78,7 @@ def register_sector_manager(mcp):
     """注册板块管理器工具"""
     
     @mcp.tool()
-    async def sector_manager(action: str, params: dict | None = None, kwargs: Any = None):
+    async def sector_manager(action: str, params: dict | None = None, kwargs: Any = None, sector: str | None = None, block_code: str | None = None, block_type: str | None = None, sectors: list[str] | None = None, period: int | None = None, days: int | None = None):
         """板块管理器（统一 action + kwargs 协议）
 
         Args:
@@ -106,7 +106,19 @@ def register_sector_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
-            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
+            kwargs = normalize_manager_payload(
+                params=params,
+                kwargs=kwargs,
+                extra={
+                    "sector": sector,
+                    "block_code": block_code,
+                    "block_type": block_type,
+                    "sectors": sectors,
+                    "period": period,
+                    "days": days,
+                },
+            )
+            kwargs = _normalize_kwargs(kwargs)
 
             def _ok(data: dict, source_chain=None):
                 return ok_with_meta(
@@ -405,7 +417,7 @@ def register_sector_manager(mcp):
                 
                 performance_result = await sector_manager(
                     action='sector_performance',
-                    period=period
+                    params={'period': period}
                 )
                 source_chain.extend(performance_result.get('meta', {}).get('source_chain') or [])
                 

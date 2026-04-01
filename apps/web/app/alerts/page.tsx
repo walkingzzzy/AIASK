@@ -1,16 +1,28 @@
 'use client';
 
 import { FormEvent, useMemo, useState } from 'react';
-import { PageContainer, SectionCard, StockCodeInput, Badge } from '@/components/ui';
+import { ConfirmDialog, PageContainer, SectionCard, StockCodeInput, Badge } from '@/components/ui';
 import { useApiQuery } from '@/hooks/use-api-query';
 import { useApiMutation } from '@/hooks/use-api-mutation';
 import { apiKeys } from '@/lib/query-keys';
 import { useStockCode } from '@/hooks/use-stock-code';
 import { EmptyState, ErrorState, LoadingState, MetaLine } from '@/components/status-state';
 import { cacheText, fmt, type CacheMeta } from '@/lib/api';
+import { readTransactionConfirmations } from '@/lib/transaction-confirmations';
 
 type AlertItem = { id: string; code: string; indicator: string; condition: string; value: number | null };
 type ListData = { status?: string; items?: AlertItem[]; sourceTool?: string; meta?: CacheMeta };
+type PendingAlertAction =
+  | {
+      type: 'create';
+      summary: string;
+      payload: { code: string; indicator: string; condition: string; value: string };
+    }
+  | {
+      type: 'delete';
+      summary: string;
+      alertId: string;
+    };
 
 const CONDITION_OPTIONS = [
   { value: '>', label: '大于' },
@@ -48,29 +60,43 @@ export default function AlertsPage() {
   const [value, setValue] = useState('1800');
   const [status, setStatus] = useState('active');
   const [lastCreatedSummary, setLastCreatedSummary] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingAlertAction | null>(null);
 
+  const profileQ = useApiQuery<Record<string, unknown>>('/auth/profile');
   const listQ = useApiQuery<ListData>(`/alerts/list?status=${encodeURIComponent(status)}`);
   const createApi = useApiMutation<unknown>({ invalidates: [[...apiKeys.alerts()]] });
   const deleteApi = useApiMutation<unknown>({ invalidates: [[...apiKeys.alerts()]] });
 
   const loading = listQ.isFetching || createApi.isPending || deleteApi.isPending;
   const error = listQ.error || createApi.error || deleteApi.error;
+  const confirmPrefs = useMemo(() => readTransactionConfirmations(profileQ.data), [profileQ.data]);
+
+  async function executeCreate(payload: { code: string; indicator: string; condition: string; value: string }, summary: string) {
+    await createApi.triggerAsync('/alerts/create', { method: 'POST' }, payload);
+    setLastCreatedSummary(summary);
+  }
+
+  async function executeDelete(alertId: string) {
+    await deleteApi.triggerAsync(`/alerts/delete?alertId=${encodeURIComponent(alertId)}`, { method: 'DELETE' });
+    setLastCreatedSummary(null);
+  }
 
   async function onCreate(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!validate()) return;
+    const payload = {
+      code: trimmedCode,
+      indicator: indicator.trim(),
+      condition,
+      value: value.trim(),
+    };
+    const summary = `${trimmedCode} · ${indicator.trim()} ${condition} ${value.trim()}`;
     try {
-      await createApi.triggerAsync(
-        '/alerts/create',
-        { method: 'POST' },
-        {
-          code: trimmedCode,
-          indicator: indicator.trim(),
-          condition,
-          value: value.trim(),
-        },
-      );
-      setLastCreatedSummary(`${trimmedCode} · ${indicator.trim()} ${condition} ${value.trim()}`);
+      if (confirmPrefs.alertRuleChange) {
+        setPendingAction({ type: 'create', summary, payload });
+        return;
+      }
+      await executeCreate(payload, summary);
     } catch {
       // error handled by mutation hook
     }
@@ -78,11 +104,29 @@ export default function AlertsPage() {
 
   async function onDelete(id: string) {
     try {
-      await deleteApi.triggerAsync(`/alerts/delete?alertId=${encodeURIComponent(id)}`, { method: 'DELETE' });
-      setLastCreatedSummary(null);
+      const item = items.find((alert) => alert.id === id);
+      const summary = item
+        ? `${item.code} · ${item.indicator} ${item.condition} ${item.value ?? '-'}`
+        : `规则 ${id}`;
+      if (confirmPrefs.alertRuleChange) {
+        setPendingAction({ type: 'delete', summary, alertId: id });
+        return;
+      }
+      await executeDelete(id);
     } catch {
       // error handled by mutation hook
     }
+  }
+
+  async function handleConfirmAction() {
+    if (!pendingAction) return;
+    const action = pendingAction;
+    setPendingAction(null);
+    if (action.type === 'create') {
+      await executeCreate(action.payload, action.summary);
+      return;
+    }
+    await executeDelete(action.alertId);
   }
 
   const items = useMemo(() => listQ.data?.items ?? [], [listQ.data]);
@@ -397,6 +441,23 @@ export default function AlertsPage() {
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={pendingAction != null}
+        title={pendingAction?.type === 'delete' ? '确认删除告警规则' : '确认创建告警规则'}
+        confirmText={pendingAction?.type === 'delete' ? '确认删除' : '确认创建'}
+        danger={pendingAction?.type === 'delete'}
+        onCancel={() => setPendingAction(null)}
+        onConfirm={() => { void handleConfirmAction(); }}
+      >
+        <div className="space-y-2">
+          <div>当前操作已开启“告警规则修改”二次确认。</div>
+          <div className="text-xs text-text-secondary">
+            {pendingAction?.type === 'delete' ? '即将删除：' : '即将创建：'}
+            <span className="ml-1 font-medium text-text-primary">{pendingAction?.summary ?? '-'}</span>
+          </div>
+        </div>
+      </ConfirmDialog>
     </PageContainer>
   );
 }

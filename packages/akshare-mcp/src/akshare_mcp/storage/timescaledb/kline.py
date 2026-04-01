@@ -8,7 +8,7 @@ import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
 
-from ...core.validators import validate_kline
+from ...core.validators import validate_kline_list
 
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ class KlineMixin:
                 for row in rows
             ]
 
-    async def save_klines(self, code_or_klines, klines: Optional[List[Dict[str, Any]]] = None) -> int:
+    async def save_klines(self, code_or_klines, klines: Optional[List[Dict[str, Any]]] = None) -> dict:
         """批量保存K线数据
 
         Args:
@@ -94,7 +94,7 @@ class KlineMixin:
             klines: K线数据列表（当第一个参数是 code 时使用）
 
         Returns:
-            插入/更新的行数
+            质量摘要字典，包含 accepted_count / rejected_count / accept_ratio
         """
         from datetime import datetime as _dt, date as _date
 
@@ -106,7 +106,7 @@ class KlineMixin:
             klines_list = klines
 
         if not klines_list:
-            return 0
+            return {'accepted_count': 0, 'rejected_count': 0, 'accept_ratio': 1.0}
 
         def _parse_date(val):
             """安全解析日期，兼容多种格式"""
@@ -140,39 +140,78 @@ class KlineMixin:
                     updated_at = NOW()
             """
 
-            rows = []
+            prepared_rows: list[dict] = []
+            rejected_rows: list[dict] = []
             for idx, k in enumerate(klines_list):
                 if not isinstance(k, dict):
+                    rejected_rows.append({
+                        "index": idx,
+                        "reason": "row_is_not_dict",
+                        "row": {"raw": k},
+                    })
                     continue
                 payload = dict(k)
                 if code and not payload.get("code"):
                     payload["code"] = code
-                try:
-                    validated = validate_kline(payload).model_dump()
-                except ValueError as exc:
-                    logger.warning("Skip invalid kline row #%d for %s: %s", idx, code or payload.get("code") or "unknown", exc)
-                    continue
+                prepared_rows.append(payload)
 
+            validation_report = validate_kline_list(prepared_rows, return_report=True)
+            rows = []
+            rejected_rows.extend(list(validation_report.get("rejected") or []))
+
+            for validated in list(validation_report.get("accepted") or []):
                 parsed_date = _parse_date(validated.get('date'))
-                if parsed_date is None:
-                    continue
                 row_code = validated.get('code')
                 open_ = validated.get('open')
                 high = validated.get('high')
                 low = validated.get('low')
                 close = validated.get('close')
                 volume = validated.get('volume')
+                if parsed_date is None:
+                    rejected_rows.append({
+                        "index": None,
+                        "reason": "invalid_date",
+                        "row": validated,
+                    })
+                    continue
                 if row_code is None or open_ is None or high is None or low is None or close is None or volume is None:
+                    rejected_rows.append({
+                        "index": None,
+                        "reason": "missing_required_fields",
+                        "row": validated,
+                    })
                     continue
                 rows.append((
                     parsed_date, row_code, open_, high, low, close,
                     volume, validated.get('amount'), validated.get('turnover'), validated.get('change_pct')
                 ))
 
+            if rejected_rows:
+                try:
+                    from ...services.data_sync import data_sync_service
+
+                    data_sync_service.record_rejected_klines(
+                        stock_code=code,
+                        rejected_rows=rejected_rows,
+                        source="timescaledb.save_klines",
+                    )
+                except Exception as exc:
+                    logger.warning("Persist rejected kline rows failed for %s: %s", code or "unknown", exc)
+
             if rows:
                 await conn.executemany(query, rows)
+            elif rejected_rows:
+                raise ValueError(
+                    f"all kline rows rejected for {code or 'unknown'}: rejected_count={len(rejected_rows)}"
+                )
 
-            return len(rows)
+            total = len(rows) + len(rejected_rows)
+            accept_ratio = len(rows) / total if total > 0 else 1.0
+            return {
+                'accepted_count': len(rows),
+                'rejected_count': len(rejected_rows),
+                'accept_ratio': round(accept_ratio, 6),
+            }
 
     async def get_limit_up_stats(self, target_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
         """统计指定日期的涨跌停和涨跌家数
