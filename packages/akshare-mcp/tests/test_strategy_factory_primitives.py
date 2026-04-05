@@ -53,7 +53,7 @@ class TestTimestampCoercion:
 
 
 class TestStrategyRegistry:
-    def test_all_9_strategies_registered(self):
+    def test_all_factory_strategies_registered(self):
         names = StrategyRegistry.list_all()
         expected = {
             "ma_cross",
@@ -65,6 +65,12 @@ class TestStrategyRegistry:
             "growth_factor",
             "multi_factor",
             "macro_timing",
+            "volatility_breakout",
+            "gap_fill",
+            "mean_reversion_short",
+            "sector_rotation",
+            "north_capital_track",
+            "margin_divergence",
         }
         assert expected.issubset(set(names)), f"Missing: {expected - set(names)}"
 
@@ -84,7 +90,7 @@ class TestStrategyRegistry:
 
 
 class TestSignalGeneration:
-    """测试所有9种策略的信号生成"""
+    """测试所有扩展策略的信号生成"""
 
     @pytest.fixture
     def klines(self):
@@ -111,6 +117,12 @@ class TestSignalGeneration:
             "growth_factor",
             "multi_factor",
             "macro_timing",
+            "volatility_breakout",
+            "gap_fill",
+            "mean_reversion_short",
+            "sector_rotation",
+            "north_capital_track",
+            "margin_divergence",
         ],
     )
     def test_signal_shape_and_values(self, name, closes, volumes):
@@ -132,6 +144,12 @@ class TestSignalGeneration:
             "growth_factor",
             "multi_factor",
             "macro_timing",
+            "volatility_breakout",
+            "gap_fill",
+            "mean_reversion_short",
+            "sector_rotation",
+            "north_capital_track",
+            "margin_divergence",
         ],
     )
     def test_signals_not_all_zero(self, name, closes, volumes):
@@ -170,6 +188,12 @@ class TestBacktestEngineRegistryFallback:
             "growth_factor",
             "multi_factor",
             "macro_timing",
+            "volatility_breakout",
+            "gap_fill",
+            "mean_reversion_short",
+            "sector_rotation",
+            "north_capital_track",
+            "margin_divergence",
         ],
     )
     def test_new_strategies_run_through_engine(self, strategy, klines):

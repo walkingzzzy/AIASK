@@ -38,9 +38,13 @@ class StrategyLLMConfig:
     max_tokens: int = 900
     retry_count: int = 2
     retry_backoff_sec: float = 1.0
+    stage_retry_count: int = 1
+    stage_retry_backoff_sec: float = 1.5
     initial_compact_level: int = 0
     recent_timeout_minimal_streak: int = 1
     recent_timeout_cooldown_sec: float = 600.0
+    recent_overload_minimal_streak: int = 1
+    recent_overload_cooldown_sec: float = 90.0
     max_concurrency: int = 3
     strict: bool = False
 
@@ -52,6 +56,8 @@ class StrategyLLMConfig:
         initial_compact_level = max(0, min(2, int(os.getenv("STRATEGY_LLM_INITIAL_COMPACT_LEVEL", "0") or 0)))
         recent_timeout_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_MINIMAL_STREAK", "1") or 1)))
         recent_timeout_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_COOLDOWN_SEC", "600") or 600))
+        recent_overload_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_OVERLOAD_MINIMAL_STREAK", "1") or 1)))
+        recent_overload_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_OVERLOAD_COOLDOWN_SEC", "90") or 90))
         return cls(
             enabled=enabled,
             provider=str(os.getenv("STRATEGY_LLM_PROVIDER", "openai_compatible") or "openai_compatible"),
@@ -66,10 +72,23 @@ class StrategyLLMConfig:
             max_tokens=max(128, int(os.getenv("STRATEGY_LLM_MAX_TOKENS", "900") or 900)),
             retry_count=max(0, int(os.getenv("STRATEGY_LLM_RETRY_COUNT", "2") or 2)),
             retry_backoff_sec=max(0.0, float(os.getenv("STRATEGY_LLM_RETRY_BACKOFF_SEC", "1.0") or 1.0)),
+            stage_retry_count=max(0, int(os.getenv("STRATEGY_LLM_STAGE_RETRY_COUNT", "1") or 1)),
+            stage_retry_backoff_sec=max(
+                0.0,
+                float(
+                    os.getenv(
+                        "STRATEGY_LLM_STAGE_RETRY_BACKOFF_SEC",
+                        os.getenv("STRATEGY_LLM_RETRY_BACKOFF_SEC", "1.5"),
+                    )
+                    or 1.5
+                ),
+            ),
             initial_compact_level=initial_compact_level,
             recent_timeout_minimal_streak=recent_timeout_minimal_streak,
             recent_timeout_cooldown_sec=recent_timeout_cooldown_sec,
-            max_concurrency=max(1, min(8, int(os.getenv("STRATEGY_LLM_MAX_CONCURRENCY", "3") or 3))),
+            recent_overload_minimal_streak=recent_overload_minimal_streak,
+            recent_overload_cooldown_sec=recent_overload_cooldown_sec,
+            max_concurrency=max(1, min(16, int(os.getenv("STRATEGY_LLM_MAX_CONCURRENCY", "3") or 3))),
             strict=str(os.getenv("STRATEGY_LLM_STRICT_MODE", "")).strip().lower() in {"1", "true", "yes", "on"},
         )
 
@@ -83,7 +102,10 @@ class StrategyLLMProvider(_StrategyLLMProviderNormalizeMixin, _StrategyLLMProvid
             self.config = config or StrategyLLMConfig.from_env()
             self._recent_timeout_streak = 0
             self._recent_timeout_cooldown_until = 0.0
+            self._recent_overload_streak = 0
+            self._recent_overload_cooldown_until = 0.0
             self._last_failure_type: Optional[str] = None
+            self._last_failure_status_code: Optional[int] = None
             self._client = httpx.AsyncClient(follow_redirects=True, http2=False)
             self._request_semaphore = asyncio.Semaphore(max(1, int(self.config.max_concurrency or 1)))
 

@@ -98,7 +98,7 @@ class StrategySubmitter(_StrategySubmitterHelpersMixin, _StrategySubmitterPolicy
         """创建策略记录并提交质检。"""
 
         _GENERIC_AI_NAME_PATTERNS = (
-            re.compile(r"^(?:dsl_rule|ma_cross|momentum|rsi|value_factor|quality_factor|growth_factor|multi_factor|macro_timing)策略$", re.I),
+            re.compile(r"^(?:dsl_rule|ma_cross|momentum|rsi|value_factor|quality_factor|growth_factor|multi_factor|macro_timing|volatility_breakout|gap_fill|mean_reversion_short|sector_rotation|north_capital_track|margin_divergence)策略$", re.I),
             re.compile(r"^(?:strategy|test|demo|sample)[ _-]*\d*$", re.I),
         )
 

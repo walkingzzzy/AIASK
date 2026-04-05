@@ -48,14 +48,16 @@ from mcp.server.fastmcp import FastMCP
 _core_tool_names = (
     "market", "finance", "fund_flow", "macro", "news", "options",
     "technical", "backtest", "portfolio", "valuation", "decision",
-    "search", "semantic", "data_warmup", "alerts",
+    "search", "semantic", "data_warmup", "alerts", "ai_workflows",
+    "governance_workflow", "adapter_tools",
     "market_blocks", "basic_data", "managers", "research",
 )
 try:
     from .tools import (
         market, finance, fund_flow, macro, news, options,
         technical, backtest, portfolio, valuation, decision,
-        search, semantic, data_warmup, alerts,
+        search, semantic, data_warmup, alerts, ai_workflows,
+        governance_workflow, adapter_tools,
         market_blocks, basic_data, managers, research,
     )
 except UnicodeDecodeError as e:
@@ -354,6 +356,9 @@ def _register_core_tools(app: FastMCP, *, startup_profile: str) -> None:
     research.register(app)
     data_warmup.register(app)
     alerts.register(app)
+    ai_workflows.register(app)
+    governance_workflow.register(app)
+    adapter_tools.register(app)
     basic_data.register(app)
     managers.register(
         app,

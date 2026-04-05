@@ -1,31 +1,13 @@
-"""Risk manager tools: VaR, stress test, and exposure analysis."""
+"""Shared data-loading helpers for risk_manager actions."""
 
 from __future__ import annotations
 
-import numpy as np
-import time
 from typing import Any
 
-from ...storage import get_db
 from ...utils import normalize_code
-from ..manager_protocol import fail_with_meta, normalize_manager_payload, ok_with_meta
 
-from .risk_mgr_helpers import (
-    _classify_size_bucket,
-    _empty_stress_payload,
-    _empty_var_payload,
-    _first_float,
-    _format_pct,
-    _liquidity_level,
-    _normalize_kwargs,
-    _parse_codes_weights,
-    _parse_dict_param,
-    _parse_list_param,
-    _safe_float,
-    _safe_portfolio_id,
-)
 
-def _extract_holding_code(holding: dict) -> str:
+def _extract_holding_code(holding: dict[str, Any]) -> str:
     return normalize_code(
         str(
             holding.get("code")
@@ -35,7 +17,8 @@ def _extract_holding_code(holding: dict) -> str:
         )
     )
 
-def _extract_holding_shares(holding: dict) -> float:
+
+def _extract_holding_shares(holding: dict[str, Any]) -> float:
     raw = holding.get("shares")
     if raw is None:
         raw = holding.get("quantity")
@@ -43,9 +26,10 @@ def _extract_holding_shares(holding: dict) -> float:
         raw = holding.get("qty")
     return float(raw or 0)
 
-async def _load_portfolio_holdings(conn, portfolio_id: Any) -> list[dict]:
+
+async def _load_portfolio_holdings(conn: Any, portfolio_id: Any) -> list[dict[str, Any]]:
     rows = await conn.fetch("SELECT * FROM holdings WHERE portfolio_id = $1", portfolio_id)
-    holdings = []
+    holdings: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
         code = _extract_holding_code(item)
@@ -55,7 +39,8 @@ async def _load_portfolio_holdings(conn, portfolio_id: Any) -> list[dict]:
         holdings.append({**item, "code": code, "shares": shares})
     return holdings
 
-async def _get_klines_with_fallback(db, code: str, limit: int) -> list[dict]:
+
+async def _get_klines_with_fallback(db: Any, code: str, limit: int) -> tuple[list[dict[str, Any]], list[str]]:
     try:
         klines = await db.get_klines(code, limit=limit)
         if klines:
@@ -66,14 +51,15 @@ async def _get_klines_with_fallback(db, code: str, limit: int) -> list[dict]:
     try:
         from ..market import get_kline
 
-        res = await get_kline(code, "daily", limit)
-        if res.get("success") and isinstance(res.get("data"), list):
-            return res["data"], ["tools.market.get_kline"]
+        result = await get_kline(code, "daily", limit)
+        if result.get("success") and isinstance(result.get("data"), list):
+            return result["data"], ["tools.market.get_kline"]
     except Exception:
         pass
     return [], []
 
-async def _get_stock_info_with_fallback(db, code: str) -> dict:
+
+async def _get_stock_info_with_fallback(db: Any, code: str) -> tuple[dict[str, Any], list[str]]:
     try:
         payload = await db.get_stock_info(code)
         if isinstance(payload, dict):
@@ -82,7 +68,8 @@ async def _get_stock_info_with_fallback(db, code: str) -> dict:
         pass
     return {}, []
 
-async def _get_financials_with_fallback(db, code: str):
+
+async def _get_financials_with_fallback(db: Any, code: str) -> tuple[list[dict[str, Any]] | dict[str, Any], list[str]]:
     try:
         payload = await db.get_financials(code, limit=1)
         if isinstance(payload, (list, dict)):
@@ -91,9 +78,10 @@ async def _get_financials_with_fallback(db, code: str):
         pass
     return [], []
 
+
 def _dedupe_chain(values: list[str]) -> list[str]:
-    chain = []
-    seen = set()
+    chain: list[str] = []
+    seen: set[str] = set()
     for value in values:
         label = str(value or "").strip()
         if not label or label in seen:
@@ -101,3 +89,14 @@ def _dedupe_chain(values: list[str]) -> list[str]:
         chain.append(label)
         seen.add(label)
     return chain
+
+
+__all__ = [
+    "_dedupe_chain",
+    "_extract_holding_code",
+    "_extract_holding_shares",
+    "_get_financials_with_fallback",
+    "_get_klines_with_fallback",
+    "_get_stock_info_with_fallback",
+    "_load_portfolio_holdings",
+]

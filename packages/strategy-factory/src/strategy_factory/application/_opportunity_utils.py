@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, List
 
 from ..domain.constants import (
@@ -9,6 +10,8 @@ from ..domain.constants import (
     AUTONOMY_MAX_RESEARCH_TASKS,
     EVENT_SNAPSHOT_MIX_MAX,
     EVENT_TASK_GENERATION_LIMIT_MAX,
+    OPPORTUNITY_MAX_PER_INDUSTRY,
+    OPPORTUNITY_TARGET_SYMBOLS_PER_TASK,
 )
 from ..domain.targets import _normalize_research_task_contract
 
@@ -179,6 +182,7 @@ class _MarketOpportunityScannerUtilityMixin:
 
     @staticmethod
     def _top_codes(rows: List[dict], limit: int = 5) -> List[str]:
+        """按市值降序选股（基础方法，仅在无快照上下文时使用）。"""
         ranked = sorted(
             [dict(item or {}) for item in rows],
             key=lambda item: (float(item.get("market_cap") or 0.0), str(item.get("code") or "")),
@@ -192,6 +196,160 @@ class _MarketOpportunityScannerUtilityMixin:
             if len(codes) >= limit:
                 break
         return codes
+
+    @classmethod
+    def _factor_scored_top_codes(
+        cls,
+        rows: List[dict],
+        *,
+        limit: int = 0,
+        snapshot: dict | None = None,
+        hot_sectors: List[str] | None = None,
+        cold_sectors: List[str] | None = None,
+        max_per_industry: int = 0,
+        industry_diverse: bool = True,
+        selection_pressure: Dict[str, float] | None = None,
+        task_seed: Any = None,
+        candidate_pool_limit: int = 0,
+    ) -> List[str]:
+        """
+        综合因子+技术面+行业分散的动态选股方法，替代纯市值的 _top_codes。
+
+        评分维度：
+        - 市值（基础权重，取 log 归一化，避免大市值垄断）
+        - 热点行业（热点行业额外加分）
+        - 冷门行业（降权）
+        - 因子 IC 趋势（来自 snapshot 的 factor_ic_trend）
+        - 行业分散（每个行业最多选 max_per_industry 只）
+        """
+        _limit = limit if limit > 0 else OPPORTUNITY_TARGET_SYMBOLS_PER_TASK
+        _max_per_industry = max_per_industry if max_per_industry > 0 else OPPORTUNITY_MAX_PER_INDUSTRY
+        _hot = set(str(s).strip() for s in (hot_sectors or []) if str(s).strip())
+        _cold = set(str(s).strip() for s in (cold_sectors or []) if str(s).strip())
+
+        # 从 snapshot 提取因子 IC 趋势（rising 加分）
+        factor_ic_trend: dict = {}
+        if snapshot:
+            factor_ic_trend = dict(snapshot.get("factor_ic_trend") or {})
+
+        # 行业因子信号映射：哪些因子 rising 对哪些行业有利
+        rising_factors = {
+            k for k, v in factor_ic_trend.items() if str(v).lower() == "rising"
+        }
+
+        import math
+
+        def _score_row(row: dict) -> float:
+            score = 0.0
+            # 1. 市值得分（log 归一化，避免龙头垄断）
+            mc = float(row.get("market_cap") or 0.0)
+            if mc > 0:
+                score += min(math.log10(mc / 1e8 + 1) * 10, 40.0)  # 上限 40 分
+
+            # 2. 行业热度得分
+            industry = str(row.get("industry") or row.get("sector") or "").strip()
+            if industry and industry in _hot:
+                score += 25.0
+            elif industry and industry in _cold:
+                score -= 15.0
+
+            # 3. 因子信号得分（基于 PE/PB 估值）
+            pe = row.get("pe_ratio")
+            pb = row.get("pb_ratio")
+            # 价值因子 rising → 低估值加分
+            if "value" in rising_factors or "reversal" in rising_factors:
+                if pe and 0 < float(pe or 0) < 15:
+                    score += 12.0
+                if pb and 0 < float(pb or 0) < 1.5:
+                    score += 8.0
+            # 成长/动量因子 rising → 高估值不惩罚
+            if "momentum" in rising_factors or "growth" in rising_factors:
+                if pe and 15 < float(pe or 0) < 50:
+                    score += 8.0
+
+            # 4. 随机扰动（避免完全确定性，引入探索性）
+            import hashlib
+            code = str(row.get("code") or "").strip()
+            if code:
+                h = int(hashlib.md5(code.encode()).hexdigest()[:4], 16) % 100
+                score += h * 0.05  # 最多 5 分的随机偏移
+
+            return round(score, 4)
+
+        cleaned_rows = [dict(item or {}) for item in rows if str((item or {}).get("code") or "").strip()]
+        scored = [
+            (cls._safe_float(_score_row(row)), row)
+            for row in cleaned_rows
+        ]
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        pressure = {
+            str(code).strip(): float(value or 0.0)
+            for code, value in dict(selection_pressure or {}).items()
+            if str(code).strip()
+        }
+        pool_limit = max(
+            _limit,
+            int(candidate_pool_limit or 0),
+            min(len(scored), max(_limit * 4, 24)),
+        )
+        candidate_pool = list(scored[:pool_limit]) if scored else []
+
+        def _task_bias(code: str) -> float:
+            seed_text = str(task_seed or "").strip()
+            if not seed_text:
+                return 0.0
+            digest = hashlib.md5(f"{seed_text}|{code}".encode("utf-8")).hexdigest()
+            return (int(digest[:6], 16) % 1000) / 1000.0
+
+        codes: List[str] = []
+        industry_count: dict[str, int] = {}
+
+        def _pick_code(items: List[tuple[float, dict]], *, allow_industry_overflow: bool) -> str | None:
+            best_code: str | None = None
+            best_key: tuple[Any, ...] | None = None
+            for score_val, row in items:
+                code = str(row.get("code") or "").strip()
+                if not code or code in codes:
+                    continue
+                industry = str(row.get("industry") or row.get("sector") or "未知").strip() or "未知"
+                if (
+                    industry_diverse
+                    and not allow_industry_overflow
+                    and industry_count.get(industry, 0) >= _max_per_industry
+                ):
+                    continue
+                key = (
+                    round(float(pressure.get(code, 0.0)), 4),
+                    -(float(score_val) + _task_bias(code)),
+                    code,
+                )
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_code = code
+            return best_code
+
+        while len(codes) < _limit and candidate_pool:
+            code = _pick_code(candidate_pool, allow_industry_overflow=False)
+            if code is None:
+                code = _pick_code(candidate_pool, allow_industry_overflow=True)
+            if code is None:
+                break
+            row = next((item for _score, item in candidate_pool if str(item.get("code") or "").strip() == code), {})
+            industry = str(row.get("industry") or row.get("sector") or "未知").strip() or "未知"
+            codes.append(code)
+            industry_count[industry] = industry_count.get(industry, 0) + 1
+
+        # 若候选池过小或行业约束过强，补充剩余股票（不限行业）
+        if len(codes) < _limit:
+            for _score_val, row in scored:
+                code = str(row.get("code") or "").strip()
+                if code and code not in codes:
+                    codes.append(code)
+                if len(codes) >= _limit:
+                    break
+
+        return codes[:_limit]
 
     @staticmethod
     def _rows_by_code(rows: List[dict]) -> Dict[str, dict]:

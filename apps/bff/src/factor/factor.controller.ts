@@ -123,6 +123,24 @@ class ValidateCandidateDto {
   @IsOptional() @IsString() output_artifact_id?: string;
 }
 
+class FactorCandidateWorkflowDto {
+  @IsOptional() @IsString() task?: string;
+  @IsOptional() @IsString() code?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) stock_codes?: string[];
+  @IsOptional() @IsString() artifact_id?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) candidate_index?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(24) candidate_count?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(120) @Max(500) lookback_bars?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(3) @Max(30) horizon_days?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(20) @Max(120) max_dates?: number;
+  @IsOptional() @Type(() => Boolean) @IsBoolean() allow_fallback?: boolean;
+  @IsOptional() @Type(() => Boolean) @IsBoolean() persist_artifact?: boolean;
+  @IsOptional() @Type(() => Boolean) @IsBoolean() write_memory?: boolean;
+  @IsOptional() @Type(() => Boolean) @IsBoolean() run_scheduler_now?: boolean;
+  @IsOptional() @IsString() idempotency_key?: string;
+  @IsOptional() @IsString() as_of?: string;
+}
+
 class FactorResearchMemoryDto {
   @IsOptional() @IsString() @IsIn(['list', 'get', 'recall', 'stats']) op?: string;
   @IsOptional() @IsString() artifact_id?: string;
@@ -270,6 +288,16 @@ export class FactorController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.factorService.llmFactorMining(body);
+    const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
+    return { success: true, data, traceId: String(traceId) };
+  }
+
+  @Post('candidate-workflow')
+  async candidateWorkflow(
+    @Body() body: FactorCandidateWorkflowDto,
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+  ) {
+    const data = await this.factorService.candidateWorkflow(body);
     const traceId = req.traceId || req.headers?.['x-trace-id'] || req.headers?.['x-request-id'] || 'UNKNOWN';
     return { success: true, data, traceId: String(traceId) };
   }

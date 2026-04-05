@@ -9,7 +9,7 @@ import akshare_mcp.tools.managers.paper_trading_manager as ptm
 
 
 class _DummyMCP:
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn

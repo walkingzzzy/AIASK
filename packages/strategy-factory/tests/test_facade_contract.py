@@ -87,6 +87,15 @@ def test_get_factory_constants_returns_existing_thresholds():
     constants = get_factory_constants()
     assert "BACKTEST_DEFAULT_THRESHOLDS" in constants
     assert "FACTORY_SCHEDULE_MODE" in constants
+    assert "FACTORY_PRE_GATE_ENABLED" in constants
+    assert "AUTONOMY_TASK_HARD_CAP" in constants
+    assert "SPAWNER_EVENT_SOURCE_BASE_CAP" in constants
+    assert "SPAWNER_EVENT_SOURCE_SUPPLEMENTAL_BONUS" in constants
+    assert "STOCK_STRATEGY_MATRIX_ENABLED" in constants
+    assert "STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK" in constants
+    assert "STOCK_STRATEGY_MATRIX_BATCH_SIZE" in constants
+    assert "STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY" in constants
+    assert "STOCK_STRATEGY_MATRIX_RUN_WINDOW" in constants
     assert constants["LLM_FAN_OUT_COUNT"] == LLM_FAN_OUT_COUNT
     assert constants["PIPELINE_STAGE_TIMEOUTS"] == PIPELINE_STAGE_TIMEOUTS
 

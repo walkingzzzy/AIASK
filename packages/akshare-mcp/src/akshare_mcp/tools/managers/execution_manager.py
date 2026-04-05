@@ -20,6 +20,27 @@ from .compliance_manager import evaluate_order_compliance
 from ..manager_protocol import normalize_manager_payload
 from ..risk_guard import audit_event
 
+from ._execution_manager_support import (
+    _append_event,
+    _build_soft_gate_warnings,
+    _create_task,
+    _enrich_kwargs_with_realtime,
+    _ensure_runtime_config_loaded,
+    _load_all_tasks,
+    _load_task,
+    _normalize_kwargs,
+    _now_iso,
+    _persist_runtime_config,
+    _persist_task,
+    _profile_distribution,
+    _refresh_and_persist_tasks,
+    _run_pretrade_gate,
+    _set_config_impl,
+    _set_config_result,
+    _soft_gate_config_view,
+    _summary_aggregates,
+    _task_brief,
+)
 
 _EXECUTION_TASKS: dict[str, dict[str, Any]] = {}
 _EXECUTION_TASK_ARTIFACT_STRATEGY = "execution_task"
@@ -72,8 +93,8 @@ from ._execution_manager_support import *
 def register_execution_manager(mcp):
     """Register execution manager tool."""
 
-    @mcp.tool()
-    async def execution_manager(action: str, params: dict | None = None, kwargs: Any = None):
+    @mcp.tool(structured_output=True)
+    async def execution_manager(action: str, params: dict | None = None, kwargs: Any = None, dry_run: bool = False) -> dict[str, Any]:
         """
         Execution manager with unified action + kwargs protocol.
         Supports structured ``params`` in addition to legacy ``kwargs`` payloads.
@@ -126,6 +147,7 @@ def register_execution_manager(mcp):
         try:
             kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             kwargs = _normalize_kwargs(kwargs)
+            dry_run = dry_run or bool(kwargs.get("dry_run", False))
             if kwargs.get("code"):
                 try:
                     kwargs["code"] = normalize_code(kwargs.get("code"))
@@ -242,15 +264,20 @@ def register_execution_manager(mcp):
                 task["pretrade_warnings"] = warnings
                 task["soft_gate"] = soft_gate
                 task["compliance_gate"] = gate
-                await _persist_task(task)
+                task["dry_run"] = dry_run
+                if not dry_run:
+                    await _persist_task(task)
+                else:
+                    _EXECUTION_TASKS.pop(task.get("task_id", ""), None)
 
                 return ok(
                     {
                         "algorithm": task["algorithm"],
-                        "task_id": task["task_id"],
-                        "artifact_id": task.get("artifact_id"),
+                        "task_id": task["task_id"] if not dry_run else None,
+                        "artifact_id": task.get("artifact_id") if not dry_run else None,
                         "code": task["code"],
-                        "status": task["status"],
+                        "status": "dry_run_preview" if dry_run else task["status"],
+                        "dry_run": dry_run,
                         "total_shares": task["total_shares"],
                         "total_quantity": task["total_quantity"],
                         "duration": task["plan"]["duration"],
@@ -263,7 +290,7 @@ def register_execution_manager(mcp):
                         "warnings": warnings,
                         "soft_gate": soft_gate,
                         "compliance_gate": gate,
-                        "lifecycle": task["lifecycle"],
+                        "lifecycle": task["lifecycle"] if not dry_run else [],
                     }
                 )
 

@@ -10,6 +10,8 @@ from pathlib import Path
 from functools import wraps
 from typing import Any, Callable
 
+from .manager_protocol import generate_audit_event_id
+
 
 def _is_true(value: str | None, default: bool = False) -> bool:
     if value is None:
@@ -36,8 +38,15 @@ def require_confirmation_if_needed(action: str, confirm_token: str | None = None
     return False, "需要确认：请提供 confirm_token=I_UNDERSTAND_THE_RISK"
 
 
-def audit_event(action: str, params: dict[str, Any], result: dict[str, Any], reason: str | None = None) -> None:
-    """最小审计：JSONL 追加写入。"""
+def audit_event(
+    action: str,
+    params: dict[str, Any],
+    result: dict[str, Any],
+    reason: str | None = None,
+    audit_event_id: str | None = None,
+) -> str | None:
+    """最小审计：JSONL 追加写入。返回 audit_event_id。"""
+    resolved_id = audit_event_id or generate_audit_event_id("risk_guard", action)
     try:
         log_path = os.getenv("AKSHARE_AUDIT_LOG", "logs/risk_audit.jsonl")
         path = Path(log_path)
@@ -46,6 +55,7 @@ def audit_event(action: str, params: dict[str, Any], result: dict[str, Any], rea
         path.parent.mkdir(parents=True, exist_ok=True)
         record = {
             "ts": _dt.datetime.now().isoformat(),
+            "audit_event_id": resolved_id,
             "action": action,
             "params": params,
             "success": bool(result.get("success")) if isinstance(result, dict) else False,
@@ -56,7 +66,8 @@ def audit_event(action: str, params: dict[str, Any], result: dict[str, Any], rea
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
         # 审计不应影响主流程
-        return
+        pass
+    return resolved_id
 
 
 def risk_audited(action: str) -> Callable[[Callable[..., dict]], Callable[..., dict]]:
@@ -74,16 +85,19 @@ def risk_audited(action: str) -> Callable[[Callable[..., dict]], Callable[..., d
             allowed, message = require_confirmation_if_needed(action, confirm_token)
             if not allowed:
                 rejected = {"success": False, "message": message}
-                audit_event(action, params, rejected, reason="confirmation_required")
+                event_id = audit_event(action, params, rejected, reason="confirmation_required")
+                rejected["audit_event_id"] = event_id
                 return rejected
 
             result = func(*args, **kwargs)
             if isinstance(result, dict):
-                audit_event(action, params, result)
+                event_id = audit_event(action, params, result)
+                result.setdefault("audit_event_id", event_id)
                 return result
 
             wrapped = {"success": False, "message": "工具返回格式异常"}
-            audit_event(action, params, wrapped, reason="invalid_result")
+            event_id = audit_event(action, params, wrapped, reason="invalid_result")
+            wrapped["audit_event_id"] = event_id
             return wrapped
 
         return _wrapper
@@ -106,16 +120,19 @@ def risk_audited_async(action: str) -> Callable:
             allowed, message = require_confirmation_if_needed(action, confirm_token)
             if not allowed:
                 rejected = {"success": False, "message": message}
-                audit_event(action, params, rejected, reason="confirmation_required")
+                event_id = audit_event(action, params, rejected, reason="confirmation_required")
+                rejected["audit_event_id"] = event_id
                 return rejected
 
             result = await func(*args, **kwargs)
             if isinstance(result, dict):
-                audit_event(action, params, result)
+                event_id = audit_event(action, params, result)
+                result.setdefault("audit_event_id", event_id)
                 return result
 
             wrapped = {"success": False, "message": "工具返回格式异常"}
-            audit_event(action, params, wrapped, reason="invalid_result")
+            event_id = audit_event(action, params, wrapped, reason="invalid_result")
+            wrapped["audit_event_id"] = event_id
             return wrapped
 
         return _wrapper

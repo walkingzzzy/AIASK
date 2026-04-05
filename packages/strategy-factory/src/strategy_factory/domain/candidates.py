@@ -192,6 +192,8 @@ class CandidatePipelineReport:
     autonomy_generated: int = 0
     gate_0_passed: int = 0
     gate_0_failed: int = 0
+    pre_gate_passed: int = 0
+    pre_gate_failed: int = 0
     gate_1_passed: int = 0
     gate_1_failed: int = 0
     gate_2_passed: int = 0
@@ -209,6 +211,8 @@ class CandidatePipelineReport:
             "autonomy_generated": self.autonomy_generated,
             "gate_0_passed": self.gate_0_passed,
             "gate_0_failed": self.gate_0_failed,
+            "pre_gate_passed": self.pre_gate_passed,
+            "pre_gate_failed": self.pre_gate_failed,
             "gate_1_passed": self.gate_1_passed,
             "gate_1_failed": self.gate_1_failed,
             "gate_2_passed": self.gate_2_passed,

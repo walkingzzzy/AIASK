@@ -17,6 +17,13 @@ from .quant_mgr_helpers import _as_code_list, _safe_float
 
 
 ACTIVE_REGISTRY_STAGES = {"governed", "challenger", "champion"}
+STRICT_ACTIVE_POOL_MODE = "strict_governed"
+PROVISIONAL_ACTIVE_POOL_MODE = "provisional_validated_watch"
+EMPTY_ACTIVE_POOL_MODE = "empty"
+PROVISIONAL_ACTIVE_REGISTRY_STAGE = "validated"
+PROVISIONAL_ACTIVE_RECOMMENDATIONS = {"watch"}
+PROVISIONAL_ACTIVE_RISK_LEVELS = {"low", "medium"}
+PROVISIONAL_ACTIVE_MIN_SCORE = 45.0
 _REGISTRY_STAGE_RANK = {
     "draft": 0,
     "validated": 1,
@@ -464,72 +471,152 @@ def _summarize_factor_candidate_registry(items: list[dict]) -> dict:
     }
 
 
+def _evaluate_active_pool_eligibility(item: dict[str, Any]) -> dict[str, Any]:
+    rating = item.get("rating") if isinstance(item.get("rating"), dict) else {}
+    risk_audit = item.get("risk_audit") if isinstance(item.get("risk_audit"), dict) else {}
+    registry_stage = str(item.get("registry_stage") or "").strip().lower()
+    recommendation = str(rating.get("recommendation") or "").strip().lower()
+    total_score = _safe_float(rating.get("total_score"), 0.0)
+    lookahead_risk = str(risk_audit.get("lookahead_risk_level") or "unknown").strip().lower()
+    multiple_testing_risk = str(risk_audit.get("multiple_testing_risk_level") or "unknown").strip().lower()
+    required_audits_complete = bool(risk_audit.get("required_audits_complete"))
+    admission_blocked = bool(item.get("admission_blocked")) or bool(risk_audit.get("blocked"))
+    block_reasons = _dedupe_tokens(risk_audit.get("block_reasons"))
+
+    strict_reasons = []
+    if registry_stage not in ACTIVE_REGISTRY_STAGES:
+        strict_reasons.append(f"registry_stage_{registry_stage or 'unknown'}")
+    strict_reasons.extend(block_reasons)
+    strict_reasons = _dedupe_tokens(strict_reasons)
+
+    provisional_reasons = []
+    if registry_stage != PROVISIONAL_ACTIVE_REGISTRY_STAGE:
+        provisional_reasons.append(f"registry_stage_{registry_stage or 'unknown'}")
+    if recommendation not in PROVISIONAL_ACTIVE_RECOMMENDATIONS:
+        provisional_reasons.append(f"recommendation_{recommendation or 'unknown'}")
+    if admission_blocked:
+        provisional_reasons.extend(block_reasons or ["admission_blocked"])
+    if not required_audits_complete:
+        provisional_reasons.append("required_audits_incomplete")
+    if lookahead_risk not in PROVISIONAL_ACTIVE_RISK_LEVELS:
+        provisional_reasons.append(f"lookahead_risk_{lookahead_risk or 'unknown'}")
+    if multiple_testing_risk not in PROVISIONAL_ACTIVE_RISK_LEVELS:
+        provisional_reasons.append(f"multiple_testing_risk_{multiple_testing_risk or 'unknown'}")
+    if total_score < PROVISIONAL_ACTIVE_MIN_SCORE:
+        provisional_reasons.append("score_below_provisional_threshold")
+    provisional_reasons = _dedupe_tokens(provisional_reasons)
+
+    return {
+        "strict_eligible": not strict_reasons,
+        "strict_reasons": strict_reasons,
+        "provisional_eligible": not provisional_reasons,
+        "provisional_reasons": provisional_reasons,
+    }
+
+
+def _build_active_pool_candidate_entry(
+    item: dict[str, Any],
+    *,
+    pool_entry_mode: str | None = None,
+    reasons: list[str] | None = None,
+) -> dict[str, Any]:
+    candidate = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
+    rating = item.get("rating") if isinstance(item.get("rating"), dict) else {}
+    risk_audit = item.get("risk_audit") if isinstance(item.get("risk_audit"), dict) else {}
+    lineage = item.get("lineage") if isinstance(item.get("lineage"), dict) else {}
+    family = str(candidate.get("family") or "unknown").strip().lower() or "unknown"
+    recommendation = str(rating.get("recommendation") or "").strip().lower()
+    registry_stage = str(item.get("registry_stage") or "").strip().lower()
+    score = _safe_float(rating.get("total_score"), 0.0)
+    regimes = candidate.get("expected_regime") if isinstance(candidate.get("expected_regime"), list) else []
+
+    payload = {
+        "artifact_id": item.get("artifact_id"),
+        "name": candidate.get("name"),
+        "family": family,
+        "expected_regime": regimes,
+        "expected_holding_period": candidate.get("expected_holding_period"),
+        "grade": rating.get("grade"),
+        "recommendation": recommendation,
+        "registry_stage": registry_stage,
+        "total_score": score,
+        "risk_audit": risk_audit,
+        "admission_blocked": bool(item.get("admission_blocked")),
+        "admission_block_reasons": list(item.get("admission_block_reasons") or []),
+        "source_generation_artifact_id": item.get("source_generation_artifact_id"),
+        "source_validation_artifact_id": item.get("source_validation_artifact_id"),
+        "memory_record_id": item.get("memory_record_id"),
+        "latest_validation_at": item.get("latest_validation_at"),
+        "validation_params": dict(item.get("validation_params") or {}),
+        "model_registry_stages": list(item.get("model_registry_stages") or []),
+        "lineage": lineage,
+        "created_at": item.get("created_at"),
+        "updated_at": item.get("updated_at"),
+    }
+    if pool_entry_mode:
+        payload["pool_entry_mode"] = pool_entry_mode
+    if reasons is not None:
+        payload["reasons"] = list(reasons)
+    return payload
+
+
 def _build_active_candidate_pool(items: list[dict]) -> dict:
-    stage_rank = {"champion": 3, "challenger": 2, "governed": 1}
+    stage_rank = {"champion": 4, "challenger": 3, "governed": 2, "validated": 1}
     family_bucket = {}
     regime_counts = {}
-    top_candidates = []
-    excluded_candidates = []
-    exclusion_reason_counts = {}
+    evaluated_items = []
     latest_candidate_updated_at = None
-    latest_active_candidate_updated_at = None
-    latest_blocked_candidate_updated_at = None
 
     for item in list(items or []):
-        candidate = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
-        rating = item.get("rating") if isinstance(item.get("rating"), dict) else {}
-        risk_audit = item.get("risk_audit") if isinstance(item.get("risk_audit"), dict) else {}
-        lineage = item.get("lineage") if isinstance(item.get("lineage"), dict) else {}
-        family = str(candidate.get("family") or "unknown").strip().lower() or "unknown"
-        recommendation = str(rating.get("recommendation") or "").strip().lower()
-        registry_stage = str(item.get("registry_stage") or "").strip().lower()
-        score = _safe_float(rating.get("total_score"), 0.0)
-        regimes = candidate.get("expected_regime") if isinstance(candidate.get("expected_regime"), list) else []
-        exclusion_reasons = []
         updated_at = str(item.get("latest_validation_at") or item.get("updated_at") or item.get("created_at") or "").strip() or None
 
         if updated_at and (latest_candidate_updated_at is None or updated_at > latest_candidate_updated_at):
             latest_candidate_updated_at = updated_at
 
-        if registry_stage not in ACTIVE_REGISTRY_STAGES:
-            exclusion_reasons.append(f"registry_stage_{registry_stage or 'unknown'}")
-        exclusion_reasons.extend(
-            [str(reason).strip() for reason in list(risk_audit.get("block_reasons") or []) if str(reason).strip()]
+        evaluated_items.append(
+            {
+                "item": item,
+                "updated_at": updated_at,
+                **_evaluate_active_pool_eligibility(item),
+            }
         )
-        if exclusion_reasons:
-            for reason in exclusion_reasons:
-                exclusion_reason_counts[reason] = int(exclusion_reason_counts.get(reason, 0)) + 1
-            excluded_candidates.append(
-                {
-                    "artifact_id": item.get("artifact_id"),
-                    "name": candidate.get("name"),
-                    "family": family,
-                    "expected_regime": regimes,
-                    "expected_holding_period": candidate.get("expected_holding_period"),
-                    "grade": rating.get("grade"),
-                    "recommendation": recommendation,
-                    "registry_stage": registry_stage,
-                    "total_score": score,
-                    "risk_audit": risk_audit,
-                    "admission_blocked": bool(item.get("admission_blocked")),
-                    "admission_block_reasons": list(item.get("admission_block_reasons") or []),
-                    "source_generation_artifact_id": item.get("source_generation_artifact_id"),
-                    "source_validation_artifact_id": item.get("source_validation_artifact_id"),
-                    "memory_record_id": item.get("memory_record_id"),
-                    "latest_validation_at": item.get("latest_validation_at"),
-                    "validation_params": dict(item.get("validation_params") or {}),
-                    "model_registry_stages": list(item.get("model_registry_stages") or []),
-                    "lineage": lineage,
-                    "created_at": item.get("created_at"),
-                    "updated_at": item.get("updated_at"),
-                    "reasons": exclusion_reasons,
-                }
-            )
-            if updated_at and (
-                latest_blocked_candidate_updated_at is None or updated_at > latest_blocked_candidate_updated_at
-            ):
-                latest_blocked_candidate_updated_at = updated_at
-            continue
+
+    strict_candidates = [entry for entry in evaluated_items if bool(entry.get("strict_eligible"))]
+    provisional_candidates = [entry for entry in evaluated_items if bool(entry.get("provisional_eligible"))]
+    if strict_candidates:
+        active_pool_mode = STRICT_ACTIVE_POOL_MODE
+        selected_candidates = strict_candidates
+        excluded_source = [
+            entry
+            for entry in evaluated_items
+            if not bool(entry.get("strict_eligible"))
+        ]
+        exclusion_reason_key = "strict_reasons"
+    elif provisional_candidates:
+        active_pool_mode = PROVISIONAL_ACTIVE_POOL_MODE
+        selected_candidates = provisional_candidates
+        excluded_source = [
+            entry
+            for entry in evaluated_items
+            if not bool(entry.get("provisional_eligible"))
+        ]
+        exclusion_reason_key = "provisional_reasons"
+    else:
+        active_pool_mode = EMPTY_ACTIVE_POOL_MODE
+        selected_candidates = []
+        excluded_source = list(evaluated_items)
+        exclusion_reason_key = "provisional_reasons"
+
+    top_candidates = []
+    latest_active_candidate_updated_at = None
+    for entry in selected_candidates:
+        item = dict(entry.get("item") or {})
+        candidate = item.get("candidate") if isinstance(item.get("candidate"), dict) else {}
+        rating = item.get("rating") if isinstance(item.get("rating"), dict) else {}
+        family = str(candidate.get("family") or "unknown").strip().lower() or "unknown"
+        recommendation = str(rating.get("recommendation") or "").strip().lower()
+        score = _safe_float(rating.get("total_score"), 0.0)
+        regimes = candidate.get("expected_regime") if isinstance(candidate.get("expected_regime"), list) else []
 
         bucket = family_bucket.setdefault(
             family,
@@ -552,34 +639,30 @@ def _build_active_candidate_pool(items: list[dict]) -> dict:
             regime_counts[regime] = int(regime_counts.get(regime, 0)) + 1
 
         top_candidates.append(
-            {
-                "artifact_id": item.get("artifact_id"),
-                "name": candidate.get("name"),
-                "family": family,
-                "expected_regime": regimes,
-                "expected_holding_period": candidate.get("expected_holding_period"),
-                "grade": rating.get("grade"),
-                "recommendation": recommendation,
-                "registry_stage": registry_stage,
-                "total_score": score,
-                "risk_audit": risk_audit,
-                "admission_blocked": bool(item.get("admission_blocked")),
-                "admission_block_reasons": list(item.get("admission_block_reasons") or []),
-                "source_generation_artifact_id": item.get("source_generation_artifact_id"),
-                "source_validation_artifact_id": item.get("source_validation_artifact_id"),
-                "memory_record_id": item.get("memory_record_id"),
-                "latest_validation_at": item.get("latest_validation_at"),
-                "validation_params": dict(item.get("validation_params") or {}),
-                "model_registry_stages": list(item.get("model_registry_stages") or []),
-                "lineage": lineage,
-                "created_at": item.get("created_at"),
-                "updated_at": item.get("updated_at"),
-            }
+            _build_active_pool_candidate_entry(item, pool_entry_mode=active_pool_mode)
         )
+        updated_at = entry.get("updated_at")
         if updated_at and (
             latest_active_candidate_updated_at is None or updated_at > latest_active_candidate_updated_at
         ):
             latest_active_candidate_updated_at = updated_at
+
+    excluded_candidates = []
+    exclusion_reason_counts = {}
+    latest_blocked_candidate_updated_at = None
+    for entry in excluded_source:
+        reasons = _dedupe_tokens(entry.get(exclusion_reason_key))
+        for reason in reasons:
+            exclusion_reason_counts[reason] = int(exclusion_reason_counts.get(reason, 0)) + 1
+        item = dict(entry.get("item") or {})
+        excluded_candidates.append(
+            _build_active_pool_candidate_entry(item, reasons=reasons)
+        )
+        updated_at = entry.get("updated_at")
+        if updated_at and (
+            latest_blocked_candidate_updated_at is None or updated_at > latest_blocked_candidate_updated_at
+        ):
+            latest_blocked_candidate_updated_at = updated_at
 
     family_summary = []
     for bucket in family_bucket.values():
@@ -607,8 +690,11 @@ def _build_active_candidate_pool(items: list[dict]) -> dict:
     )
 
     return {
+        "active_pool_mode": active_pool_mode,
         "source_count": len(list(items or [])),
         "count": len(top_candidates),
+        "strict_count": len(strict_candidates),
+        "provisional_count": len(provisional_candidates),
         "excluded_count": len(excluded_candidates),
         "family_summary": family_summary,
         "regime_summary": regime_summary,
@@ -693,7 +779,40 @@ async def handle_factor_research_memory(
             source_chain=["services.factor_research_memory", "services.factor_candidate_storage"],
         )
 
-    return fail("Unknown factor_research_memory op. Supported: list|get|recall|stats")
+    if op in {"feedback_sync", "write_feedback"}:
+        artifact_id = str(kw.get("artifact_id") or "").strip()
+        if not artifact_id:
+            return fail("factor_research_memory feedback_sync 需要 artifact_id")
+        raw_feedback = kw.get("feedback")
+        if isinstance(raw_feedback, str) and raw_feedback.strip():
+            try:
+                raw_feedback = json.loads(raw_feedback)
+            except Exception:
+                return fail("feedback 必须是 dict 或可解析的 JSON 字符串")
+        if not isinstance(raw_feedback, dict):
+            return fail("feedback 必须是包含反馈信号的 dict（decay_detected / regime_shift_detected / forward_return 等）")
+        try:
+            updated = await memory_service.record_feedback(
+                artifact_id=artifact_id,
+                feedback=raw_feedback,
+                source_feedback_artifact_id=str(kw.get("source_feedback_artifact_id") or "").strip() or None,
+                source_model_registry_artifact_id=str(kw.get("source_model_registry_artifact_id") or "").strip() or None,
+            )
+        except ValueError as exc:
+            return fail(str(exc))
+        return ok(
+            {
+                "op": "feedback_sync",
+                "artifact_id": artifact_id,
+                "new_status": updated.get("status"),
+                "last_feedback_recommended_action": updated.get("last_feedback_recommended_action"),
+                "runtime_feedback_count": len(updated.get("runtime_feedback") or []),
+                "item": updated,
+            },
+            source_chain=["services.factor_research_memory", "services.factor_candidate_storage"],
+        )
+
+    return fail("Unknown factor_research_memory op. Supported: list|get|recall|stats|feedback_sync")
 
 
 async def handle_factor_candidate_registry(

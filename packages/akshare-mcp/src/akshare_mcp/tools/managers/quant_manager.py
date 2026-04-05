@@ -38,6 +38,7 @@ from ...services.llm_alpha import LLMAlphaMiner
 from ...data_source import data_source
 from ...storage import get_db
 from ...utils import fail, ok
+from ..manager_protocol import build_manager_meta, ok_with_meta, fail_with_meta
 from ..quant import run_factor_oos_validation
 
 # Re-exported helpers from sub-modules
@@ -112,17 +113,16 @@ def _filter_market_codes(values) -> list[str]:
 def register_quant_manager(mcp):
     """Register quant manager tool."""
 
-    @mcp.tool()
+    @mcp.tool(structured_output=True)
     async def quant_manager(
         action: str,
         code: Optional[str] = None,
         kwargs: Any = None,
         params: Any = None,
-    ):
+    ) -> dict[str, Any]:
         """Quant manager with unified action + kwargs protocol."""
         try:
             start_time = time.perf_counter()
-            trace_id = f"quant_manager:{action}:{int(time.time() * 1000)}"
             tool_version = "v1.2"
             db = get_db()
 
@@ -155,22 +155,36 @@ def register_quant_manager(mcp):
             strict_mode = _kw.get("strict_mode", False)
             code = code or _kw.get("code") or _kw.get("Code") or _kw.get("stock_code") or _kw.get("symbol")
 
+            # P0-4b / P1-1b: dry_run and as_of propagation
+            _dry_run = _coerce_bool(_kw.get("dry_run"), False)
+            if _dry_run:
+                _kw = dict(_kw)
+                _kw["persist_artifact"] = False
+                _kw["write_memory"] = False
+            if as_of and not _kw.get("as_of"):
+                _kw = dict(_kw) if not _dry_run else _kw
+                _kw["as_of"] = as_of
+
             def _with_meta(resp: dict, source_chain=None, data_timestamp: Optional[str] = None):
                 if not isinstance(resp, dict):
                     return resp
-                resp["meta"] = {
-                    "trace_id": trace_id,
-                    "tool_version": tool_version,
-                    "data_timestamp": data_timestamp or datetime.now().strftime("%Y-%m-%d"),
-                    "source_chain": source_chain or ["quant_manager"],
-                    "cached": False,
-                    "latency_ms": round((time.perf_counter() - start_time) * 1000, 2),
-                    "as_of": as_of,
-                    "adjust": adjust,
-                    "price_source_policy": price_source_policy,
-                    "explain": explain,
-                    "strict_mode": strict_mode,
-                }
+                resp["meta"] = build_manager_meta(
+                    tool_name="quant_manager",
+                    action=action,
+                    started_at=start_time,
+                    source_chain=source_chain or ["quant_manager"],
+                    data_timestamp=data_timestamp,
+                    tool_version=tool_version,
+                    extra={
+                        "as_of": as_of,
+                        "adjust": adjust,
+                        "price_source_policy": price_source_policy,
+                        "explain": explain,
+                        "strict_mode": strict_mode,
+                        "dry_run": _dry_run,
+                        "pit": {"as_of": as_of or None, "pit_passed": bool(as_of)},
+                    },
+                )
                 return resp
 
             def _ok(data: dict, source_chain=None, data_timestamp: Optional[str] = None):
@@ -413,7 +427,7 @@ class _QuantManagerProbeMCP:
     def __init__(self):
         self.fn = None
 
-    def tool(self):
+    def tool(self, **kwargs):
         def _decorator(fn):
             self.fn = fn
             return fn

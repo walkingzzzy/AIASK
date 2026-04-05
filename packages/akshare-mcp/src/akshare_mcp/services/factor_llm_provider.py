@@ -267,12 +267,41 @@ class FactorLLMProvider:
 
     def __init__(self, config: Optional[FactorLLMConfig] = None):
         self.config = config or FactorLLMConfig.from_env()
-        self._client = httpx.AsyncClient(follow_redirects=True, http2=False)
+        self._client: httpx.AsyncClient | Any | None = self._build_client()
+        self._closed = False
         self._request_semaphore = asyncio.Semaphore(max(1, int(self.config.max_concurrency or 1)))
 
-    async def close(self) -> None:
+    def _build_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(follow_redirects=True, http2=False)
+
+    @property
+    def is_closed(self) -> bool:
+        if self._closed or self._client is None:
+            return True
         try:
-            await self._client.aclose()
+            return bool(getattr(self._client, "is_closed"))
+        except Exception:
+            return False
+
+    async def _ensure_client(self) -> None:
+        if not self.is_closed:
+            return
+        self._client = self._build_client()
+        self._closed = False
+
+    async def close(self) -> None:
+        client = self._client
+        self._client = None
+        self._closed = True
+        if client is None:
+            return
+        try:
+            close = getattr(client, "aclose", None)
+            if close is None:
+                return
+            result = close()
+            if asyncio.iscoroutine(result):
+                await result
         except Exception:
             pass
 
@@ -346,6 +375,7 @@ class FactorLLMProvider:
 
         if not self.is_enabled():
             raise FactorLLMRequestError("factor llm provider not configured")
+        await self._ensure_client()
 
         system_prompt = str(getattr(prompt, "system_prompt", "") or "")
         user_prompt = str(getattr(prompt, "user_prompt", "") or "")
@@ -425,7 +455,7 @@ def get_factor_llm_provider() -> FactorLLMProvider:
     """返回全局 provider 单例。"""
 
     global _factor_llm_provider
-    if _factor_llm_provider is None:
+    if _factor_llm_provider is None or _factor_llm_provider.is_closed:
         _factor_llm_provider = FactorLLMProvider()
     return _factor_llm_provider
 

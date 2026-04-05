@@ -75,6 +75,16 @@ export class FactoryRunsQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number;
 }
 
+export class ReviewWorkflowQueryDto {
+  @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() include_factory_status?: boolean;
+  @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() include_review_report?: boolean;
+  @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() include_runtime_alerts?: boolean;
+  @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() run_factory_once?: boolean;
+  @IsOptional() @Transform(({ value }) => value === true || value === 'true') @IsBoolean() run_runtime_cycle?: boolean;
+  @IsOptional() @IsString() idempotency_key?: string;
+  @IsOptional() @IsString() as_of?: string;
+}
+
 export class DailySnapshotsQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) limit?: number;
   @IsOptional() @IsString() start_date?: string;

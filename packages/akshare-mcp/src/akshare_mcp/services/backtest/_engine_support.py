@@ -40,6 +40,7 @@ _POSITION_ASSUMPTION_PCT = {
     "equal_weight": 0.2,
     "half_notional": 0.5,
 }
+_A_SHARE_MARKET_RULESETS = {"cn_equity", "a_share", "ashare", "cn_stock", "china_equity"}
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -47,6 +48,12 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return float(default)
     return float(result) if np.isfinite(result) else float(default)
+
+def _resolve_market_ruleset(args: Dict[str, Any]) -> str:
+    return str(args.get("market_ruleset") or "").strip().lower()
+
+def _is_a_share_ruleset(args: Dict[str, Any]) -> bool:
+    return _resolve_market_ruleset(args) in _A_SHARE_MARKET_RULESETS
 
 def _resolve_position_pct(args: Dict[str, Any]) -> float:
     explicit_max_position = _safe_float(args.get("max_position_pct"), 0.0)
@@ -296,6 +303,11 @@ def _attach_execution_audit(
         args.get("position_assumption")
         or ("equal_weight_proxy" if str(args.get("target_weight_scheme") or "").strip().lower() == "equal_weight" else "single_name_full_notional")
     ).strip() or "single_name_full_notional"
+    market_ruleset = _resolve_market_ruleset(args)
+    a_share_rules = _is_a_share_ruleset(args)
+    sell_tax_rate = _safe_float(args.get("sell_tax_rate"), 0.001 if a_share_rules else 0.0)
+    min_trade_lot = max(1, int(args.get("min_trade_lot", 100 if a_share_rules else 1) or (100 if a_share_rules else 1)))
+    t_plus_one = bool(args.get("t_plus_one", a_share_rules))
 
     payload["cost_assumptions"] = {
         "commission_rate": round(explicit_commission, 8),
@@ -305,15 +317,21 @@ def _attach_execution_audit(
         "market_impact_bps": round(market_impact_bps, 4),
         "implementation_shortfall_proxy": round(implementation_shortfall_proxy, 4),
         "implementation_shortfall_model_source": implementation_source,
+        "market_ruleset": market_ruleset or None,
+        "sell_tax_rate": round(sell_tax_rate, 6),
+        "min_trade_lot": int(min_trade_lot),
+        "t_plus_one": bool(t_plus_one),
     }
     payload["explicit_cost_breakdown"] = {
         "commission_rate": round(explicit_commission, 8),
+        "sell_tax_rate": round(sell_tax_rate, 6),
     }
     payload["implicit_cost_breakdown"] = {
         "slippage_rate": round(explicit_slippage if explicit_slippage > 0 else model_slippage, 8),
         "market_impact_bps": round(market_impact_bps, 4),
         "implementation_shortfall_proxy": round(implementation_shortfall_proxy, 4),
         "implementation_shortfall_model_source": implementation_source,
+        "market_ruleset": market_ruleset or None,
     }
     payload["implementation_shortfall_proxy"] = round(implementation_shortfall_proxy, 4)
     payload["implementation_shortfall_model_source"] = implementation_source
@@ -321,6 +339,10 @@ def _attach_execution_audit(
     payload["tradability_summary"] = tradability_summary
     payload["capacity_summary"] = capacity_summary
     payload["position_assumption"] = position_assumption
+    payload["market_ruleset"] = market_ruleset or None
+    payload["sell_tax_rate"] = round(sell_tax_rate, 6)
+    payload["min_trade_lot"] = int(min_trade_lot)
+    payload["t_plus_one"] = bool(t_plus_one)
 
 def _finalize_backtest_payload(
     payload: Dict[str, Any],
@@ -477,9 +499,37 @@ def _simulate_trades_from_masks(
     tradability_mask: Optional[np.ndarray] = None,
     return_trades: bool = False,
     klines: Optional[List[Dict[str, Any]]] = None,
+    params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """按 entry/exit 掩码执行交易仿真，支持逐笔滑点与可交易过滤。"""
     n = len(closes)
+    args = dict(params or {})
+    a_share_rules = _is_a_share_ruleset(args)
+    lot_size = max(1, int(args.get("min_trade_lot", 100 if a_share_rules else 1) or (100 if a_share_rules else 1)))
+    sell_tax_rate = _safe_float(args.get("sell_tax_rate"), 0.001 if a_share_rules else 0.0)
+    t_plus_one = bool(args.get("t_plus_one", a_share_rules))
+    position_pct = _resolve_position_pct(args)
+    payload_context = {
+        "tradable_days": int(np.sum(tradability_mask)) if tradability_mask is not None else int(np.sum(volumes > 0)),
+        "total_days": int(n),
+        "tradability_filter": bool(tradability_mask is not None),
+    }
+    explicit_slippage = _safe_float(args.get("slippage", 0.0), 0.0)
+    model_slippage = _compute_slippage_rate(closes, volumes, args, 0.0)
+    market_impact_bps = _safe_float(args.get("market_impact_bps", 0.0), 0.0)
+    implementation_shortfall_proxy, _shortfall_source, shortfall_components, _tradability_summary, _capacity_summary = _estimate_implementation_shortfall(
+        payload_context,
+        args,
+        closes=closes,
+        volumes=volumes,
+        explicit_slippage_rate=explicit_slippage,
+        model_slippage_rate=model_slippage,
+        market_impact_bps=market_impact_bps,
+    )
+    execution_total_bps = float(shortfall_components.get("effective_total_bps") or implementation_shortfall_proxy or 0.0)
+    if slippage_calc is not None:
+        execution_total_bps = max(0.0, execution_total_bps - float(shortfall_components.get("effective_slippage_bps") or 0.0))
+    per_side_extra_cost_rate = max(0.0, execution_total_bps / 10000.0 / 2.0)
     cash = float(initial_capital)
     shares = 0
     buy_price = 0.0
@@ -498,8 +548,12 @@ def _simulate_trades_from_masks(
         if entry_mask[i] and shares == 0 and cash > 0 and tradable and next_tradable:
             exec_price = float(closes[i + 1])
             if slippage_calc is not None:
-                approx_price = exec_price * (1 + commission_rate)
-                est_shares = int(cash / approx_price) if approx_price > 0 else 0
+                approx_price = exec_price * (1 + commission_rate + per_side_extra_cost_rate)
+                max_entry_notional = max(0.0, (cash + shares * closes[i]) * position_pct)
+                affordable_cash = min(cash, max_entry_notional) if max_entry_notional > 0 else cash
+                est_shares = int(affordable_cash / approx_price) if approx_price > 0 else 0
+                if lot_size > 1:
+                    est_shares = (est_shares // lot_size) * lot_size
                 if est_shares <= 0:
                     equity[i] = cash
                     continue
@@ -511,8 +565,12 @@ def _simulate_trades_from_masks(
                 )
                 exec_price = float(slip.get("execution_price", exec_price))
 
-            buy_price = exec_price * (1 + commission_rate)
-            max_shares = int(cash / buy_price) if buy_price > 0 else 0
+            buy_price = exec_price * (1 + commission_rate + per_side_extra_cost_rate)
+            max_entry_notional = max(0.0, (cash + shares * closes[i]) * position_pct)
+            affordable_cash = min(cash, max_entry_notional) if max_entry_notional > 0 else cash
+            max_shares = int(affordable_cash / buy_price) if buy_price > 0 else 0
+            if lot_size > 1:
+                max_shares = (max_shares // lot_size) * lot_size
             if max_shares > 0:
                 shares = max_shares
                 cash -= shares * buy_price
@@ -536,6 +594,9 @@ def _simulate_trades_from_masks(
                     )
 
         elif exit_mask[i] and shares > 0 and tradable and next_tradable:
+            if t_plus_one and buy_index >= 0 and (i + 1) <= buy_index:
+                equity[i] = cash + shares * closes[i]
+                continue
             exec_price = float(closes[i + 1])
             if slippage_calc is not None:
                 slip = slippage_calc.calculate(
@@ -546,7 +607,8 @@ def _simulate_trades_from_masks(
                 )
                 exec_price = float(slip.get("execution_price", exec_price))
 
-            sell_price = exec_price * (1 - commission_rate)
+            sell_price = exec_price * (1 - commission_rate - per_side_extra_cost_rate - sell_tax_rate)
+            sell_price = max(0.0, sell_price)
             revenue = shares * sell_price
             profit = revenue - (shares * buy_price)
             if profit > 0:
@@ -589,7 +651,8 @@ def _simulate_trades_from_masks(
                 is_buy=False,
             )
             exec_price = float(slip.get("execution_price", exec_price))
-        sell_price = exec_price * (1 - commission_rate)
+        sell_price = exec_price * (1 - commission_rate - per_side_extra_cost_rate - sell_tax_rate)
+        sell_price = max(0.0, sell_price)
         revenue = shares * sell_price
         profit = revenue - (shares * buy_price)
         if profit > 0:

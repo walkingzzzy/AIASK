@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import time
+from types import SimpleNamespace
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,6 +27,8 @@ from akshare_mcp.services.strategy_stages import (
     STAGE_ORDER,
     StageDefinition,
     StageResult,
+    _fallback_exposure_mapping,
+    _fallback_strategy_generation,
     _validate_event_recognition,
     _validate_theme_propagation,
     _validate_exposure_mapping,
@@ -134,6 +137,14 @@ class TestStageRegistry:
             assert len(prompt) > 50, f"Stage {stage_id} prompt too short ({len(prompt)} chars)"
             assert prompt not in prompts, f"Stage {stage_id} prompt duplicates another stage"
             prompts.add(prompt)
+
+    def test_strategy_generation_prompt_tightens_snapshot_family_tasks(self):
+        registry = get_stage_registry()
+        prompt = registry["strategy_generation"].system_prompt
+
+        assert "不得同时输出 momentum 和 ma_cross" in prompt
+        assert "allowed_strategy_types" in prompt
+        assert "lookback>=20" in prompt
 
     def test_each_stage_has_fallback(self):
         registry = get_stage_registry()
@@ -313,6 +324,45 @@ class TestStageFallbacks:
             assert "signal_strength" in c
 
     @pytest.mark.asyncio
+    async def test_fallback_market_confirmation_fetches_symbols_concurrently(self):
+        registry = get_stage_registry()
+        fn = registry["market_confirmation"].fallback_fn
+        state = {"in_flight": 0, "max_in_flight": 0}
+
+        async def _get_klines(_code: str, limit: int = 30):
+            state["in_flight"] += 1
+            state["max_in_flight"] = max(state["max_in_flight"], state["in_flight"])
+            await asyncio.sleep(0.01)
+            state["in_flight"] -= 1
+            return [
+                {
+                    "date": f"2026-01-{idx+1:02d}",
+                    "open": 10.0 + idx * 0.1,
+                    "close": 10.1 + idx * 0.1,
+                    "high": 10.2 + idx * 0.1,
+                    "low": 9.9 + idx * 0.1,
+                    "volume": 100000 + idx * 1000,
+                }
+                for idx in range(limit)
+            ]
+
+        output = await fn(
+            SimpleNamespace(get_klines=_get_klines),
+            {
+                "exposures": [
+                    {
+                        "theme_code": "chip_domestic",
+                        "target_symbols": ["600519", "000858", "601318", "600036"],
+                    }
+                ]
+            },
+            MOCK_SNAPSHOT,
+        )
+
+        assert len(output["confirmations"]) == 4
+        assert state["max_in_flight"] >= 2
+
+    @pytest.mark.asyncio
     async def test_fallback_strategy_generation(self, db):
         registry = get_stage_registry()
         fn = registry["strategy_generation"].fallback_fn
@@ -328,11 +378,139 @@ class TestStageFallbacks:
         assert len(candidates) >= 1
         for cand in candidates:
             assert "name" in cand
+            assert "strategy_type" in cand
+            assert "params" in cand
             assert "dsl" in cand
             dsl = cand["dsl"]
             assert "entry" in dsl
             assert "exit" in dsl
             assert "target_symbols" in cand
+
+    @pytest.mark.asyncio
+    async def test_fallback_strategy_generation_expands_growth_and_flow_families(self, db):
+        result = await _fallback_strategy_generation(
+            db,
+            input_data={
+                "confirmations": [
+                    {"theme_code": "chip_domestic", "symbol": "002415", "confirmed": True},
+                    {"theme_code": "chip_domestic", "symbol": "300750", "confirmed": True},
+                ]
+            },
+            snapshot={
+                **MOCK_SNAPSHOT,
+                "fear_greed": {"score": 64, "label": "greed"},
+                "north_fund": {"net_inflow": 180000000},
+            },
+        )
+
+        strategy_types = {item["strategy_type"] for item in result["candidates"]}
+        assert "volatility_breakout" in strategy_types
+        assert "north_capital_track" in strategy_types
+
+    @pytest.mark.asyncio
+    async def test_fallback_strategy_generation_expands_defensive_and_repair_families(self, db):
+        result = await _fallback_strategy_generation(
+            db,
+            input_data={
+                "confirmations": [
+                    {"theme_code": "high_dividend_banks", "symbol": "600036", "confirmed": True},
+                    {"theme_code": "high_dividend_banks", "symbol": "000001", "confirmed": True},
+                ]
+            },
+            snapshot={
+                **MOCK_SNAPSHOT,
+                "fear_greed": {"score": 36, "label": "fear"},
+                "north_fund": {"net_inflow": 80000000},
+            },
+        )
+
+        strategy_types = {item["strategy_type"] for item in result["candidates"]}
+        assert "mean_reversion_short" in strategy_types
+        assert "gap_fill" in strategy_types
+
+    @pytest.mark.asyncio
+    async def test_fallback_strategy_generation_expands_rotation_and_divergence_families(self, db):
+        result = await _fallback_strategy_generation(
+            db,
+            input_data={
+                "confirmations": [
+                    {"theme_code": "infrastructure", "symbol": "600585", "confirmed": True},
+                    {"theme_code": "infrastructure", "symbol": "601012", "confirmed": True},
+                ]
+            },
+            snapshot={
+                **MOCK_SNAPSHOT,
+                "fear_greed": {"score": 40, "label": "fear"},
+                "hot_sectors": [
+                    {"group": "基建", "change_pct": 1.8},
+                    {"group": "有色", "change_pct": 1.5},
+                    {"group": "航运", "change_pct": 1.3},
+                ],
+            },
+        )
+
+        strategy_types = {item["strategy_type"] for item in result["candidates"]}
+        assert "sector_rotation" in strategy_types
+        assert "margin_divergence" in strategy_types
+
+    @pytest.mark.asyncio
+    async def test_fallback_strategy_generation_tightens_snapshot_family_breakout_task(self, db):
+        result = await _fallback_strategy_generation(
+            db,
+            input_data={
+                "confirmations": [
+                    {"theme_code": "chip_domestic", "symbol": "002415", "confirmed": True},
+                    {"theme_code": "chip_domestic", "symbol": "300750", "confirmed": True},
+                ],
+                "research_task": {
+                    "task_source": "snapshot",
+                    "opportunity_type": "candidate_family_activation",
+                    "candidate_family": "momentum",
+                    "validation_focus": "candidate_target_only",
+                    "allowed_strategy_types": ["volatility_breakout", "ma_cross", "sector_rotation"],
+                    "template_generation_profile": "conservative_breakout",
+                },
+            },
+            snapshot={
+                **MOCK_SNAPSHOT,
+                "fear_greed": {"score": 64, "label": "greed"},
+                "north_fund": {"net_inflow": 180000000},
+            },
+        )
+
+        candidates = list(result["candidates"])
+        assert len(candidates) == 1
+        assert candidates[0]["strategy_type"] == "volatility_breakout"
+        assert candidates[0]["research_task"]["template_generation_profile"] == "conservative_breakout"
+
+    @pytest.mark.asyncio
+    async def test_fallback_strategy_generation_tightens_snapshot_family_mean_reversion_task(self, db):
+        result = await _fallback_strategy_generation(
+            db,
+            input_data={
+                "confirmations": [
+                    {"theme_code": "high_dividend_banks", "symbol": "600036", "confirmed": True},
+                    {"theme_code": "high_dividend_banks", "symbol": "000001", "confirmed": True},
+                ],
+                "research_task": {
+                    "task_source": "snapshot",
+                    "opportunity_type": "candidate_factor_activation",
+                    "candidate_family": "close_location",
+                    "validation_focus": "candidate_target_only",
+                    "allowed_strategy_types": ["rsi", "gap_fill", "ma_cross"],
+                    "template_generation_profile": "conservative_mean_reversion",
+                },
+            },
+            snapshot={
+                **MOCK_SNAPSHOT,
+                "fear_greed": {"score": 42, "label": "fear"},
+            },
+        )
+
+        candidates = list(result["candidates"])
+        assert len(candidates) == 1
+        assert candidates[0]["strategy_type"] == "rsi"
+        assert candidates[0]["research_task"]["candidate_family"] == "close_location"
 
 
 # ===========================================================================
@@ -401,6 +579,18 @@ class TestPipelineEndToEnd:
         # Stage 5 应输出 candidates
         s5 = result.stages["strategy_generation"]
         assert "candidates" in s5.output
+
+    @pytest.mark.asyncio
+    async def test_exposure_mapping_fallback_bootstraps_from_snapshot_when_parallel_input_has_no_themes(self, db):
+        result = await _fallback_exposure_mapping(
+            db,
+            input_data={},
+            snapshot=MOCK_SNAPSHOT,
+        )
+
+        assert "exposures" in result
+        assert len(result["exposures"]) > 0
+        assert any(item.get("target_symbols") for item in result["exposures"])
 
 
 # ===========================================================================
@@ -487,6 +677,128 @@ class TestCandidateToSpec:
         assert "pipeline_staged" in spec.tags
         assert spec.metadata.get("generator_type") == "pipeline_staged"
         assert "600519" in spec.metadata.get("target_symbols", [])
+
+    def test_pipeline_candidate_to_spec_keeps_template_params_for_native_family(self):
+        from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+        candidate = {
+            "name": "芯片半导体_波动突破",
+            "strategy_type": "volatility_breakout",
+            "target_symbols": ["002415", "300750"],
+            "stock_pool": {"selection_mode": "explicit", "symbols": ["002415", "300750"]},
+            "params": {"lookback": 20, "threshold": 0.025},
+            "dsl": {
+                "version": "1.0",
+                "timeframe": "daily",
+                "entry": {
+                    "all": [
+                        {"op": "gt", "left": {"indicator": "roc", "field": "close", "window": 20}, "right": {"value": 0.025}},
+                        {"op": "gt", "left": {"indicator": "stddev", "field": "close", "window": 20}, "right": {"value": 0.018}},
+                    ],
+                },
+                "exit": {
+                    "any": [
+                        {"op": "lt", "left": {"indicator": "roc", "field": "close", "window": 10}, "right": {"value": -0.015}},
+                    ],
+                },
+                "metadata": {"target_symbols": ["002415", "300750"]},
+            },
+            "tags": ["ai_staged", "chip_domestic", "volatility_breakout"],
+        }
+
+        spec = LLMProxyStrategyGenerator._pipeline_candidate_to_spec(
+            candidate, provenance={"pipeline_elapsed_sec": 0.8, "stage_count": 5}
+        )
+
+        assert spec is not None
+        assert spec.strategy_type == "volatility_breakout"
+        assert spec.params["lookback"] == 20
+        assert spec.params["threshold"] == 0.025
+        assert spec.metadata["stock_pool"]["symbols"] == ["002415", "300750"]
+
+        submit_candidate = spec.to_candidate("strategy_factory:pipeline_staged", "exp_pipeline_1")
+        assert submit_candidate["name"] == "芯片半导体_波动突破"
+        assert submit_candidate["target_symbols"] == ["002415", "300750"]
+        assert submit_candidate["params"]["target_symbols"] == ["002415", "300750"]
+        assert submit_candidate["params"]["stock_pool"]["symbols"] == ["002415", "300750"]
+        assert submit_candidate["pipeline_provenance"]["stage_count"] == 5
+
+    def test_pipeline_candidate_to_spec_drops_snapshot_family_momentum(self):
+        from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+        candidate = {
+            "name": "snapshot_momentum_candidate",
+            "strategy_type": "momentum",
+            "target_symbols": ["002415", "300750"],
+            "params": {"lookback": 12, "threshold": 0.018},
+            "dsl": {
+                "version": "1.0",
+                "timeframe": "daily",
+                "entry": {"any": [{"op": "gt", "left": {"indicator": "roc", "field": "close", "window": 12}, "right": {"value": 0.018}}]},
+                "exit": {"any": [{"op": "lt", "left": {"indicator": "roc", "field": "close", "window": 8}, "right": {"value": -0.02}}]},
+            },
+            "research_task": {
+                "task_source": "snapshot",
+                "opportunity_type": "candidate_family_activation",
+                "candidate_family": "momentum",
+                "validation_focus": "candidate_target_only",
+                "template_generation_profile": "conservative_breakout",
+                "allowed_strategy_types": ["volatility_breakout", "ma_cross", "sector_rotation"],
+            },
+        }
+
+        spec = LLMProxyStrategyGenerator._pipeline_candidate_to_spec(
+            candidate, provenance={"pipeline_elapsed_sec": 0.6, "stage_count": 5}
+        )
+
+        assert spec is None
+
+    def test_pipeline_candidate_to_spec_retunes_snapshot_family_ma_cross(self):
+        from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+        candidate = {
+            "name": "snapshot_ma_cross_candidate",
+            "strategy_type": "ma_cross",
+            "target_symbols": ["002415", "300750"],
+            "params": {"short_period": 6, "long_period": 24},
+            "stock_pool": {"selection_mode": "explicit", "symbols": ["002415", "300750"]},
+            "dsl": {
+                "version": "1.0",
+                "timeframe": "daily",
+                "entry": {
+                    "any": [{
+                        "op": "cross_above",
+                        "left": {"indicator": "sma", "field": "close", "window": 6},
+                        "right": {"indicator": "sma", "field": "close", "window": 24},
+                    }],
+                },
+                "exit": {
+                    "any": [{
+                        "op": "cross_below",
+                        "left": {"indicator": "sma", "field": "close", "window": 6},
+                        "right": {"indicator": "sma", "field": "close", "window": 24},
+                    }],
+                },
+            },
+            "research_task": {
+                "task_source": "snapshot",
+                "opportunity_type": "candidate_factor_activation",
+                "candidate_family": "ma_cross",
+                "validation_focus": "candidate_target_only",
+                "template_generation_profile": "conservative_breakout",
+                "allowed_strategy_types": ["volatility_breakout", "ma_cross", "sector_rotation"],
+            },
+        }
+
+        spec = LLMProxyStrategyGenerator._pipeline_candidate_to_spec(
+            candidate, provenance={"pipeline_elapsed_sec": 0.6, "stage_count": 5}
+        )
+
+        assert spec is not None
+        assert spec.strategy_type == "ma_cross"
+        assert spec.params["short_period"] >= 12
+        assert spec.params["long_period"] >= 48
+        assert "snapshot_family_conservative" in spec.tags
 
     def test_pipeline_candidate_to_spec_none_for_bad_input(self):
         from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
@@ -819,6 +1131,136 @@ class TestSingleStageLLMPath:
         provider._client.post.assert_not_awaited()
         await provider.close()
 
+    @pytest.mark.asyncio
+    async def test_stage_skips_external_llm_during_recent_overload_cooldown(self, db):
+        """最近过载处于冷却窗口时，应直接 fallback 并避免继续轰炸外部 LLM。"""
+        from akshare_mcp.services.strategy_llm_provider import StrategyLLMConfig, StrategyLLMProvider
+
+        provider = StrategyLLMProvider(
+            StrategyLLMConfig(
+                enabled=True,
+                base_url="https://example.com/v1",
+                api_key="test-key",
+                model="test-model",
+            )
+        )
+        provider._recent_overload_streak = 1
+        provider._recent_overload_cooldown_until = time.monotonic() + 60.0
+        provider._client.post = AsyncMock(side_effect=AssertionError("external request should be skipped during overload cooldown"))
+
+        pipeline = MultiStageStrategyPipeline(provider=provider)
+        stage_result = await pipeline.run_stage(
+            db=db,
+            stage_id="event_recognition",
+            input_data={"market_snapshot": {}, "theme_library": []},
+            snapshot=MOCK_SNAPSHOT,
+        )
+
+        assert stage_result.used_fallback is True
+        assert stage_result.llm_error_type == "RecentOverloadCooldown"
+        assert stage_result.llm_error_metrics["status"] == "cooldown_skip"
+        assert stage_result.llm_error_metrics["cooldown_reason"] == "recent_overload"
+        provider._client.post.assert_not_awaited()
+        await provider.close()
+
+def test_strategy_llm_prompt_disallows_market_fallback_for_strict_event_targets():
+    from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
+
+    provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
+
+    system_prompt, user_prompt = provider._build_prompt(
+        snapshot={"date": "2026-04-03"},
+        market_summary={"market_regime": {"risk_on": 0.6}},
+        research_context={"candidate_universe_symbols": ["600519", "000858"]},
+        parent_strategies=[],
+        history_summary=[],
+        limit=1,
+        research_task={
+            "task_source": "event_driven",
+            "event_id": "evt_1",
+            "theme_code": "baijiu",
+            "target_symbols": ["600519"],
+            "same_theme_symbols": ["000858"],
+        },
+    )
+
+    payload = json.loads(user_prompt)
+
+    assert "不允许退回 candidate_universe" in system_prompt
+    assert "same_theme_symbols" in system_prompt
+    assert payload["output_contract"]["target_symbol_rule"] == "strict_intersection_with_research_task"
+
+
+def test_strategy_llm_prompt_tightens_snapshot_target_pool_contract():
+    from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
+
+    provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
+
+    system_prompt, user_prompt = provider._build_prompt(
+        snapshot={"date": "2026-04-03"},
+        market_summary={"market_regime": {"risk_on": 0.6}},
+        research_context={"candidate_universe_symbols": ["603855", "603279", "002833", "601766"]},
+        parent_strategies=[],
+        history_summary=[],
+        limit=2,
+        research_task={
+            "task_source": "snapshot",
+            "task_id": "task_pipeline_rsi_prompt",
+            "allowed_strategy_types": ["rsi"],
+            "target_symbols": ["603855", "603279", "002833", "601766", "600528", "600582", "600894", "920599"],
+        },
+    )
+
+    payload = json.loads(user_prompt)
+    contract = payload["output_contract"]["target_alignment_contract"]
+
+    assert "不得扩展到 candidate_universe 或全市场" in system_prompt
+    assert contract["min_target_overlap_count"] == 4
+    assert contract["max_target_symbols"] == 4
+    assert contract["disallow_market_fallback"] is True
+
+
+def test_strategy_llm_normalize_rejects_low_alignment_snapshot_candidate():
+    from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
+
+    provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
+
+    normalized = provider._normalize_candidate_payload(
+        {
+            "name": "fragile_rsi_snapshot",
+            "strategy_type": "rsi",
+            "generator_type": "pipeline_staged",
+            "tags": ["pipeline_staged", "generator_pipeline_staged"],
+            "target_symbols": ["603855", "603279", "002833"],
+            "dsl": {
+                "version": "1.0",
+                "timeframe": "daily",
+                "entry": {
+                    "any": [{
+                        "op": "lt",
+                        "left": {"indicator": "rsi", "field": "close", "window": 14},
+                        "right": {"value": 30},
+                    }],
+                },
+                "exit": {
+                    "any": [{
+                        "op": "gt",
+                        "left": {"indicator": "rsi", "field": "close", "window": 14},
+                        "right": {"value": 60},
+                    }],
+                },
+                "metadata": {},
+            },
+        },
+        research_task={
+            "task_source": "snapshot",
+            "allowed_strategy_types": ["rsi"],
+            "target_symbols": ["603855", "603279", "002833", "601766", "600528", "600582", "600894", "920599"],
+        },
+    )
+
+    assert normalized is None
+
 
 # ===========================================================================
 # Test 9: Pipeline 初始输入构建
@@ -840,6 +1282,32 @@ class TestBuildInitialInput:
         initial = pipeline._build_initial_input({})
 
         assert "theme_library" in initial
+
+    def test_build_initial_input_adds_theme_hints(self):
+        pipeline = MultiStageStrategyPipeline.__new__(MultiStageStrategyPipeline)
+        initial = pipeline._build_initial_input(MOCK_SNAPSHOT)
+
+        assert initial["theme_library"][0]["aliases"]
+        matched = list(initial.get("matched_theme_candidates") or [])
+        matched_codes = {item["theme_code"] for item in matched}
+        assert "chip_domestic" in matched_codes
+        assert "liquor_consumption" in matched_codes
+        hints = dict(initial.get("event_detection_hints") or {})
+        assert "hot_sector_names" in hints
+        assert "半导体" in list(hints.get("hot_sector_names") or [])
+
+    def test_prepare_event_recognition_input_prioritizes_hints(self):
+        pipeline = MultiStageStrategyPipeline.__new__(MultiStageStrategyPipeline)
+        initial = pipeline._build_initial_input(MOCK_SNAPSHOT)
+
+        prepared = pipeline._prepare_stage_input("event_recognition", initial)
+
+        assert "matched_theme_candidates" in prepared
+        assert len(prepared["matched_theme_candidates"]) <= 6
+        assert len(prepared["theme_library"]) <= 12
+        assert prepared["theme_library"][0]["theme_code"] in {
+            item["theme_code"] for item in prepared["matched_theme_candidates"]
+        }
         assert len(initial["theme_library"]) == 20
         for entry in initial["theme_library"]:
             assert "theme_code" in entry
@@ -853,6 +1321,30 @@ class TestBuildInitialInput:
         assert "research_task" in initial
         assert initial["research_task"]["task_key"] == "abc"
         assert initial["research_task"]["theme_code"] == "chip_domestic"
+
+    def test_includes_extended_snapshot_research_task_context(self):
+        pipeline = MultiStageStrategyPipeline.__new__(MultiStageStrategyPipeline)
+        task = {
+            "task_key": "snapshot_family_1",
+            "task_source": "snapshot",
+            "opportunity_type": "candidate_family_activation",
+            "candidate_family": "close_location",
+            "factor_name": "close_location",
+            "candidate_name": "close_location_watch",
+            "preference_reason": "governed_family:close_location",
+            "rationale": "围绕 close_location target pool 收紧生成。",
+            "expected_regime": ["trend"],
+            "validation_score": 79.0,
+            "template_generation_profile": "conservative_mean_reversion",
+            "allowed_strategy_types": ["rsi", "gap_fill", "ma_cross"],
+        }
+        initial = pipeline._build_initial_input({}, research_task=task)
+        prepared = pipeline._prepare_stage_input("strategy_generation", initial)
+
+        assert initial["research_task"]["candidate_family"] == "close_location"
+        assert initial["research_task"]["template_generation_profile"] == "conservative_mean_reversion"
+        assert prepared["research_task"]["allowed_strategy_types"] == ["rsi", "gap_fill", "ma_cross"]
+        assert prepared["research_task"]["candidate_name"] == "close_location_watch"
 
 
 # ===========================================================================

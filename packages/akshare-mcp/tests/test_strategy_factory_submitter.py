@@ -43,6 +43,10 @@ class TestStrategySubmitter:
             }
         ], {"fg_level": "neutral"}, db)
         periods = [call.args[1] for call in db.save_strategy_metrics.await_args_list]
+        assert result["created"] == 1
+        assert result["created_total"] == 1
+        assert result["created_strategy_pool"] == 1
+        assert result["created_audit_only"] == 0
         assert result["passed_quality_gate"] == 1
         assert "backtest" in periods
         assert "validation" in periods
@@ -64,13 +68,15 @@ class TestStrategySubmitter:
         db.save_strategy_lineage = AsyncMock()
         db.save_strategy_quality_report = AsyncMock()
 
+        validation_mock = AsyncMock(return_value=None)
+        risk_mock = AsyncMock(return_value=None)
         monkeypatch.setattr(
             "akshare_mcp.services.strategy_factory._run_validation_report",
-            AsyncMock(return_value=None),
+            validation_mock,
         )
         monkeypatch.setattr(
             "akshare_mcp.services.strategy_factory._run_risk_report",
-            AsyncMock(return_value=None),
+            risk_mock,
         )
         monkeypatch.setattr(
             "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
@@ -95,6 +101,10 @@ class TestStrategySubmitter:
         assert saved_strategy["params"]["stock_pool"]["symbols"] == ["688981", "002371"]
         assert saved_strategy["params"]["selection_logic"] == ["prefer semiconductor leaders"]
         assert saved_strategy["params"]["research_task"]["task_id"] == "task_chip"
+        assert validation_mock.await_args.args[1]["target_symbols"] == ["688981", "002371"]
+        assert validation_mock.await_args.args[1]["stock_pool"]["symbols"] == ["688981", "002371"]
+        assert validation_mock.await_args.args[1]["research_task"]["task_id"] == "task_chip"
+        assert risk_mock.await_args.args[1]["target_symbols"] == ["688981", "002371"]
 
     @pytest.mark.asyncio
     async def test_submitter_preserves_event_context_in_experiment_record(self, monkeypatch):
@@ -165,7 +175,10 @@ class TestStrategySubmitter:
 
         saved = await db.get_strategy_generation_experiment("exp_evt_submit_1")
 
-        assert result["created"] == 1
+        assert result["created"] == 0
+        assert result["created_total"] == 1
+        assert result["created_strategy_pool"] == 0
+        assert result["created_audit_only"] == 1
         assert result["passed_quality_gate"] == 0
         assert saved["parent_strategy_id"] == "parent_evt_1"
         assert saved["generated_strategy_id"] == result["strategies"][0]["strategy_id"]
@@ -224,6 +237,10 @@ class TestStrategySubmitter:
         ], {"fg_level": "neutral"}, db)
 
         saved_report = db.save_strategy_quality_report.await_args.args[2]
+        assert result["created"] == 1
+        assert result["created_total"] == 1
+        assert result["created_strategy_pool"] == 1
+        assert result["created_audit_only"] == 0
         assert result["passed_quality_gate"] == 1
         assert result["gate_3_passed"] == 1
         assert result["gate_3_failed"] == 0
@@ -273,6 +290,10 @@ class TestStrategySubmitter:
             }
         ], {"fg_level": "neutral"}, db)
 
+        assert result["created"] == 0
+        assert result["created_total"] == 1
+        assert result["created_strategy_pool"] == 0
+        assert result["created_audit_only"] == 1
         assert result["passed_quality_gate"] == 0
         assert result["gate_3_passed"] == 0
         assert result["gate_3_failed"] == 1
@@ -559,7 +580,7 @@ class TestStrategySubmitter:
             "akshare_mcp.services.strategy_factory._run_risk_report",
             AsyncMock(return_value={"var_percent": 1.2, "cvar_percent": 1.8, "stress_loss_percent": -12.0}),
         )
-        gate_mock = AsyncMock(return_value={"passed": True, "reasons": []})
+        gate_mock = AsyncMock(return_value={"passed": True, "passed_strict": True, "reasons": [], "warnings": []})
         monkeypatch.setattr(
             "akshare_mcp.services.strategy_factory.submission_gate.run_submission_quality_gate",
             gate_mock,
@@ -569,17 +590,21 @@ class TestStrategySubmitter:
             {
                 "strategy_type": "momentum",
                 "params": {"lookback": 20, "threshold": 0.02},
-                "backtest_metrics": {"sharpe_ratio": 0.61, "total_return": 0.19, "max_drawdown": 0.08, "trade_count": 3},
+                "backtest_metrics": {"sharpe_ratio": 0.61, "total_return": 0.19, "max_drawdown": 0.08, "trade_count": 4},
                 "spawn_reason": "factory_context_test",
             }
         ], {"fg_level": "neutral"}, db)
 
         assert result["submitted"] == 1
+        assert result["created"] == 1
+        assert result["created_total"] == 1
+        assert result["created_strategy_pool"] == 1
+        assert result["created_audit_only"] == 0
         assert gate_mock.await_count == 1
         gate_kwargs = gate_mock.await_args.kwargs
         assert gate_kwargs["validation_report"]["rating"]["grade"] == "B"
         assert gate_kwargs["risk_report"]["var_percent"] == 1.2
-        assert gate_kwargs["backtest_metrics"]["trade_count"] == 3
+        assert gate_kwargs["backtest_metrics"]["trade_count"] == 4
         assert gate_kwargs["backtest_metrics"]["trades_count"] is None
 
     @pytest.mark.asyncio
@@ -631,6 +656,9 @@ class TestStrategySubmitter:
         ], {"date": "2026-03-08", "fg_level": "neutral", "fear_greed_index": 55}, db)
 
         assert result["created"] == 0
+        assert result["created_total"] == 0
+        assert result["created_strategy_pool"] == 0
+        assert result["created_audit_only"] == 0
         assert result["refreshed"] == 1
         assert result["submitted"] == 1
         assert result["passed_quality_gate"] == 1

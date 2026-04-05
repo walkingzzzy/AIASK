@@ -332,7 +332,7 @@ class TestFactorProfile:
 
 
 class _DummyMCP:
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import inspect
 from typing import Any, Dict, List
 
-from ..domain.constants import AUTONOMY_MAX_RESEARCH_TASKS
+from ..domain.constants import AUTONOMY_MAX_RESEARCH_TASKS, OPPORTUNITY_UNIVERSE_LIMIT
+from ._stock_universe_loader import load_stock_universe_rows
 from ._opportunity_event import _MarketOpportunityScannerEventMixin
 from ._opportunity_snapshot import _MarketOpportunityScannerSnapshotMixin
 from ._opportunity_utils import _MarketOpportunityScannerUtilityMixin
@@ -29,24 +29,22 @@ class MarketOpportunityScanner(
 
     async def scan(self, db, snapshot: dict[str, Any]) -> dict[str, Any]:
         snapshot = dict(snapshot or {})
-        universe_rows: List[dict[str, Any]] = []
-        list_stock_universe = getattr(db, "list_stock_universe", None)
-        if callable(list_stock_universe):
-            try:
-                result = list_stock_universe(limit=120, offset=0)
-                if inspect.isawaitable(result):
-                    result = await result
-                if isinstance(result, list):
-                    universe_rows = result
-                elif isinstance(result, tuple):
-                    universe_rows = list(result)
-                else:
-                    try:
-                        universe_rows = list(result or [])
-                    except Exception:
-                        universe_rows = []
-            except Exception:
-                universe_rows = []
+        universe_page_size = max(100, min(int(OPPORTUNITY_UNIVERSE_LIMIT), 1000))
+        try:
+            universe_rows, universe_meta = await load_stock_universe_rows(
+                db,
+                limit=OPPORTUNITY_UNIVERSE_LIMIT,
+                page_size=universe_page_size,
+                start_offset=0,
+            )
+        except Exception:
+            universe_rows, universe_meta = [], {
+                "pages_loaded": 0,
+                "loaded_count": 0,
+                "complete": False,
+                "truncated": False,
+                "page_size": universe_page_size,
+            }
 
         rows = [dict(item or {}) for item in list(universe_rows or [])]
         tasks: List[dict] = []
@@ -77,6 +75,12 @@ class MarketOpportunityScanner(
                 "task_sources": dict(task_sources),
                 "event_task_count": len([item for item in tasks if item.get("task_source") == "event_driven"]),
                 "max_tasks": AUTONOMY_MAX_RESEARCH_TASKS,
+                "universe_limit": int(OPPORTUNITY_UNIVERSE_LIMIT),
+                "universe_page_size": int(universe_meta.get("page_size") or universe_page_size),
+                "universe_row_count": len(rows),
+                "universe_pages_loaded": int(universe_meta.get("pages_loaded") or 0),
+                "universe_complete": bool(universe_meta.get("complete")),
+                "universe_truncated": bool(universe_meta.get("truncated")),
             },
             "tasks": tasks,
         }

@@ -325,6 +325,7 @@ class _StrategyVectorPlatformIndexesMixin:
             rows = await db.list_strategy_vector_index_snapshots(index_name=index_name, limit=1)
             return rows[0] if rows else None
 
+        @staticmethod
         def _snapshot_bucket_map(snapshot: Optional[dict]) -> dict[str, dict]:
             centroids = list((snapshot or {}).get('centroids') or [])
             return {str(item.get('bucket_id')): dict(item) for item in centroids if item.get('bucket_id')}

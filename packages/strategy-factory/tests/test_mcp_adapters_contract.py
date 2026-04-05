@@ -104,6 +104,15 @@ class _FakeDB:
     async def save_strategy_factory_run(self, results):
         return {"results": results}
 
+    async def list_strategy_factory_runs(self, limit: int = 20):
+        return [{"run_id": "factory_run_1", "limit": limit}]
+
+    async def get_strategy_factory_run(self, run_id: str):
+        return {"run_id": run_id, "status": "success"}
+
+    async def get_latest_strategy_factory_run(self):
+        return {"run_id": "factory_run_latest", "status": "success"}
+
     async def get_strategy_incubation_account(self, strategy_id: str):
         return {"strategy_id": strategy_id, "account_id": f"acct_{strategy_id}"}
 
@@ -186,9 +195,15 @@ async def test_repository_adapter_wraps_db_surface():
 
     klines = await repo.get_klines("600519", limit=3)
     saved = await repo.save_strategy({"id": "s1"})
+    latest_run = await repo.get_latest_strategy_factory_run()
+    run_detail = await repo.get_strategy_factory_run("factory_run_1")
+    run_list = await repo.list_strategy_factory_runs(limit=5)
 
     assert klines == [{"code": "600519", "limit": 3}]
     assert saved == {"saved": {"id": "s1"}}
+    assert latest_run["run_id"] == "factory_run_latest"
+    assert run_detail["run_id"] == "factory_run_1"
+    assert run_list == [{"run_id": "factory_run_1", "limit": 5}]
     assert db.calls[:2] == [("get_klines", "600519", 3), ("save_strategy", {"id": "s1"})]
 
 

@@ -69,7 +69,7 @@ class StrategyLLMConfig:
             initial_compact_level=initial_compact_level,
             recent_timeout_minimal_streak=recent_timeout_minimal_streak,
             recent_timeout_cooldown_sec=recent_timeout_cooldown_sec,
-            max_concurrency=max(1, min(8, int(os.getenv("STRATEGY_LLM_MAX_CONCURRENCY", "3") or 3))),
+            max_concurrency=max(1, min(16, int(os.getenv("STRATEGY_LLM_MAX_CONCURRENCY", "3") or 3))),
             strict=str(os.getenv("STRATEGY_LLM_STRICT_MODE", "")).strip().lower() in {"1", "true", "yes", "on"},
         )
 
@@ -89,10 +89,35 @@ class _StrategyLLMProviderPromptMixin:
             requested_limit = cls._normalize_limit(limit)
             profile_name = cls._prompt_profile_name(compact_level)
             normalized_task = _normalize_research_task_contract(research_task)
+            target_alignment_contract = dict(normalized_task.get('target_alignment_contract') or {})
             prompt_target_symbol_rule = cls._prompt_target_symbol_rule(normalized_task)
             compact_market_summary = cls._compact_market_summary(market_summary, compact_level=compact_level)
             compact_research_context = cls._compact_research_context(research_context, compact_level=compact_level)
             compact_task = cls._compact_research_task(research_task, compact_level=compact_level)
+            max_target_symbols = max(
+                1,
+                int(
+                    target_alignment_contract.get('max_candidate_target_symbols')
+                    or max(1, min(len(list(normalized_task.get('target_symbols') or [])) or 5, 8))
+                ),
+            )
+            min_target_coverage_ratio = float(target_alignment_contract.get('min_coverage_ratio') or 0.0)
+            min_target_intersection_ratio = float(target_alignment_contract.get('min_intersection_ratio') or 0.0)
+            min_target_overlap_count = int(target_alignment_contract.get('min_required_overlap_count') or 0)
+            strict_snapshot_target_pool = (
+                str(normalized_task.get('task_source') or '').strip().lower() == 'snapshot'
+                and bool(target_alignment_contract.get('strict_target_subset_required'))
+                and bool(normalized_task.get('target_symbols'))
+            )
+            disallow_market_fallback = strict_snapshot_target_pool and not target_alignment_contract.get('market_fallback_allowed', True)
+            focus_strategy_families = list(target_alignment_contract.get('focus_strategy_families') or [])
+            strict_snapshot_rule = ''
+            if strict_snapshot_target_pool:
+                strict_snapshot_rule = (
+                    f'这是定向 target pool 任务，target_symbols 只能从 research_task.target_symbols 中选择，'
+                    f'不得扩展到 candidate_universe 或全市场；候选至少要覆盖 {max(1, min_target_overlap_count)} 只 research_task 目标，'
+                    f'且 target_symbols 不得超过 {max_target_symbols} 只。'
+                )
 
             if compact_level >= 2:
                 example_symbols = cls._normalize_code_list([
@@ -109,6 +134,13 @@ class _StrategyLLMProviderPromptMixin:
                     'candidate_fields': ['name', 'strategy_type', 'hypothesis', 'holding_horizon', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'dsl', 'tags'],
                     'dsl_required_fields': ['version', 'timeframe', 'entry', 'exit', 'metadata'],
                     'target_symbol_rule': prompt_target_symbol_rule,
+                    'target_alignment_contract': {
+                        'max_target_symbols': max_target_symbols,
+                        'min_target_coverage_ratio': round(min_target_coverage_ratio, 4),
+                        'min_target_intersection_ratio': round(min_target_intersection_ratio, 4),
+                        'min_target_overlap_count': max(0, min_target_overlap_count),
+                        'disallow_market_fallback': disallow_market_fallback,
+                    },
                     'prefer_single_high_confidence_candidate': True,
                     'candidate_limit': 1,
                 }
@@ -120,6 +152,7 @@ class _StrategyLLMProviderPromptMixin:
                     '返回根对象 {"candidates":[...]}。',
                     'candidate 仅保留 name,target_symbols,stock_pool,dsl,tags。',
                     'dsl 必须是对象，且必须包含 version,timeframe,entry,exit,metadata。',
+                    strict_snapshot_rule,
                     '字段仅限 open/high/low/close/volume；指标优先仅用 sma,ema,roc,rsi,volume_ratio；',
                     '条件运算仅限 gt,gte,lt,lte,cross_above,cross_below；组合仅限 all,any,not。',
                     '不要使用 highest/lowest/atr/stddev，也不要写 close 与 highest/lowest 的交叉突破。',
@@ -148,7 +181,17 @@ class _StrategyLLMProviderPromptMixin:
             analysis_fields = ['market_regime', 'style_bias', 'hypothesis', 'evidence', 'risk_focus', 'selection_notes', 'universe_view', 'selection_plan', 'trade_plan']
             analysis_length_rule = 'analysis 每个字段必须短：字符串不超过 60 个字，列表最多 2 项，不要复述输入。' if compact_level >= 1 else 'analysis 需要结构化且基于输入证据。'
             candidate_priority_rule = '优先返回 1 个高置信、可执行候选；不要为了凑数量返回弱候选。' if compact_level >= 1 else '按 limit 返回高质量候选。'
-            context_rule = '如果 research_task.target_symbols 与 candidate_universe 有交集，target_symbols 必须只取交集；如果没有交集，才允许退回 candidate_universe。'
+            if strict_snapshot_target_pool:
+                context_rule = strict_snapshot_rule
+            elif prompt_target_symbol_rule == 'strict_intersection_with_research_task':
+                context_rule = (
+                    '如果 research_task.target_symbols 与 candidate_universe 有交集，'
+                    'target_symbols 必须只取交集；如果没有交集，不允许退回 candidate_universe。'
+                    '只有在 research_task 显式提供 same_theme_symbols 或 theme_members 时，'
+                    '才允许只在该同主题集合内补充候选。'
+                )
+            else:
+                context_rule = '如果 research_task.target_symbols 与 candidate_universe 有交集，target_symbols 必须只取交集；如果没有交集，才允许退回 candidate_universe。'
             event_rule = '如果 research_task 提供 event_id/theme_code/direction/evidence_summary，必须优先围绕该事件主题、方向和证据构建候选。'
             system_prompt = ''.join([
                 '你是量化策略研究员。必须输出严格 JSON，不要输出解释文本。',
@@ -172,7 +215,7 @@ class _StrategyLLMProviderPromptMixin:
                     '根对象只允许包含 analysis 与 candidates。',
                 '每个 candidate 必须包含: name, description, rationale, hypothesis, holding_horizon, trade_plan, risk_rules, position_sizing, execution_notes, rebalance_rule, portfolio_spec, execution_assumptions, validation_profile, target_symbols, stock_pool, selection_logic, dsl, tags。',
                 'DSL 条件节点必须使用标准对象格式 {"op":...,"left":...,"right":...}，不要使用 {"gt":[...]} 这类简写。',
-                'target_symbols 数量建议 1-5 只；stock_pool 必须包含 selection_mode 与 symbols；dsl.metadata 必须回填 target_symbols 与 stock_pool。',
+                f'target_symbols 数量建议 1-{max_target_symbols} 只；stock_pool 必须包含 selection_mode 与 symbols；dsl.metadata 必须回填 target_symbols 与 stock_pool。',
                 '不要生成 Python 代码，不要生成自然语言规则，只能生成 JSON DSL。',
             ])
             output_contract = {
@@ -180,6 +223,14 @@ class _StrategyLLMProviderPromptMixin:
                 'required': ['analysis', 'candidates'],
                 'analysis_fields': analysis_fields,
                 'target_symbol_rule': prompt_target_symbol_rule,
+                'target_alignment_contract': {
+                    'max_target_symbols': max_target_symbols,
+                    'min_target_coverage_ratio': round(min_target_coverage_ratio, 4),
+                    'min_target_intersection_ratio': round(min_target_intersection_ratio, 4),
+                    'min_target_overlap_count': max(0, min_target_overlap_count),
+                    'disallow_market_fallback': disallow_market_fallback,
+                    'focus_strategy_families': focus_strategy_families[:4],
+                },
                 'prefer_single_high_confidence_candidate': compact_level >= 1,
                 'candidate_fields': ['name', 'description', 'rationale', 'hypothesis', 'holding_horizon', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'selection_logic', 'dsl', 'tags'],
                 'task_alignment': ['research_task.theme', 'research_task.opportunity_type', 'research_task.target_symbols', 'research_task.preferred_strategy_types', 'research_task.validation_focus'],

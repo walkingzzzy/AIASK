@@ -303,6 +303,39 @@ class _TestStrategyFactorySchedulerScannerMixin:
         assert captured["source"] == "strategy_factory:sector_breakout"
 
     @pytest.mark.asyncio
+    async def test_generate_for_research_task_respects_task_hard_cap(self, monkeypatch):
+        import strategy_factory.application._factory_scheduler_loop as scheduler_loop_mod
+
+        scheduler = StrategyFactoryScheduler()
+        captured = {}
+
+        class _DummyAutonomy:
+            async def generate_factory_candidates(self, db, snapshot, *, limit, research_task, source):
+                captured.update({
+                    "db": db,
+                    "snapshot": snapshot,
+                    "limit": limit,
+                    "research_task": research_task,
+                    "source": source,
+                })
+                return {"generated_count": 0, "candidates": [], "experiments": []}
+
+        monkeypatch.setattr(scheduler_loop_mod, "AUTONOMY_TASK_HARD_CAP", 6)
+        db = MagicMock()
+        snapshot = {"date": "2026-03-10"}
+        task = {
+            "task_id": "task_high_limit",
+            "opportunity_type": "factor_acceleration",
+            "generation_limit": 20,
+        }
+
+        await scheduler._generate_for_research_task(_DummyAutonomy(), db, snapshot, task)
+
+        assert captured["limit"] == 6
+        assert captured["research_task"] == task
+        assert captured["source"] == "strategy_factory:factor_acceleration"
+
+    @pytest.mark.asyncio
     async def test_run_once_records_autonomy_task_counts(self, monkeypatch):
         db = MagicMock()
         db.save_strategy_task_run = AsyncMock(side_effect=[{"id": 101}, {"id": 102}])

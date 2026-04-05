@@ -33,6 +33,7 @@ class _StrategyVectorPlatformBackendMixin:
                 'fallback_allowed': bool(self.allow_fallback),
             }
 
+        @staticmethod
         def _coerce_positive_int(value: Any, default: int) -> int:
             try:
                 resolved = int(value)
@@ -147,15 +148,18 @@ class _StrategyVectorPlatformBackendMixin:
                 raise ValueError(f'unsupported vector_method: {resolved}')
             return resolved
 
+        @staticmethod
         def _text_embedding_fallback_method() -> str:
             return 'price_volume'
 
+        @staticmethod
         def _sanitize_collection_part(value: Any, max_len: int = 48) -> str:
             normalized = ''.join(ch.lower() if str(ch).isalnum() else '_' for ch in str(value or '').strip())
             normalized = '_'.join(part for part in normalized.split('_') if part)
             truncated = normalized[: max(8, int(max_len or 48))].strip('_')
             return truncated or 'na'
 
+        @staticmethod
         def _default_strategy_model_id(vector_method: str, vector_dim: int) -> str:
             normalized_method = str(vector_method or 'price_volume').strip().lower() or 'price_volume'
             if normalized_method == 'price_volume' and int(vector_dim or 0) == 120:
@@ -204,6 +208,7 @@ class _StrategyVectorPlatformBackendMixin:
             )
             return f'{base}__{suffix}'
 
+        @staticmethod
         def _strategy_index_name_from_collection(collection_name: Optional[str], collection: Optional[dict] = None) -> str:
             meta = dict((collection or {}).get('metadata') or {})
             explicit = str(meta.get('index_name') or '').strip()
@@ -225,12 +230,14 @@ class _StrategyVectorPlatformBackendMixin:
                 str(collection.get('collection_name') or ''),
             )
 
+        @staticmethod
         def _pgvector_backend_family(backend_used: Optional[str]) -> str:
             normalized = str(backend_used or '').strip().lower()
             if normalized.startswith('pgvector'):
                 return 'pgvector'
             return normalized or 'unavailable'
 
+        @staticmethod
         def _unified_retrieval_mode(backend_used: Optional[str]) -> str:
             normalized = str(backend_used or '').strip().lower()
             if normalized == 'pgvector_index_item':
@@ -241,6 +248,7 @@ class _StrategyVectorPlatformBackendMixin:
                 return 'unified_exact_json'
             return f'unified_{normalized}' if normalized else 'unified_unknown'
 
+        @staticmethod
         def _signature(strategy: dict, profile_type: str, vector_method: str) -> str:
             payload = {
                 'strategy_id': strategy.get('id'),
@@ -252,11 +260,13 @@ class _StrategyVectorPlatformBackendMixin:
             raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
             return hashlib.sha1(raw.encode('utf-8')).hexdigest()
 
+        @staticmethod
         def _as_float_array(values: Any) -> np.ndarray:
             if values is None:
                 return np.asarray([], dtype=np.float64)
             return np.asarray(values, dtype=np.float64)
 
+        @staticmethod
         def _returns_to_pseudo_klines(series: np.ndarray) -> List[dict]:
             price = 100.0
             rows: List[dict] = []
@@ -272,6 +282,7 @@ class _StrategyVectorPlatformBackendMixin:
                 })
             return rows
 
+        @staticmethod
         def _normalize_embedding(values: Any) -> np.ndarray:
             vector = StrategyVectorPlatform._as_float_array(values)
             if vector.ndim != 1 or len(vector) == 0:
@@ -281,18 +292,22 @@ class _StrategyVectorPlatformBackendMixin:
                 return np.asarray([], dtype=np.float64)
             return vector / norm
 
+        @staticmethod
         def _resolved_index_name(index_name: Optional[str], profile: Optional[dict]) -> str:
             meta = dict((profile or {}).get('metadata') or {})
             return str(index_name or meta.get('index_name') or 'strategy_behavior')
 
+        @staticmethod
         def _resolve_bucket_count(sample_count: int) -> int:
             if sample_count <= 1:
                 return 1
             return max(1, min(8, int(round(math.sqrt(sample_count)))))
 
+        @staticmethod
         def _bucket_label(idx: int) -> str:
             return f'bucket_{idx + 1:02d}'
 
+        @staticmethod
         def _summarize_holdings(holdings: Any, limit: int = 5) -> str:
             rows = []
             for item in list(holdings or [])[: max(1, min(int(limit or 5), 10))]:
@@ -305,6 +320,7 @@ class _StrategyVectorPlatformBackendMixin:
                 rows.append(f'{code}({weight:.2%})')
             return ', '.join(rows) if rows else '无显著持仓'
 
+        @staticmethod
         def _max_drawdown(series: np.ndarray) -> float:
             if len(series) == 0:
                 return 0.0

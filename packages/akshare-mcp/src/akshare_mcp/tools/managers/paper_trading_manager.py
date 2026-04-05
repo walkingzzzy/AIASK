@@ -9,6 +9,26 @@ from ...storage import get_db
 from ...utils import ok, fail
 from ...services.cost_model import build_cost_model
 from ..manager_protocol import normalize_manager_payload
+from . import _paper_trading_manager_support as _paper_trading_manager_support_mod
+
+from ._paper_trading_manager_support import (
+    _check_risk_before_buy,
+    _db_supports_acquire,
+    _ensure_account,
+    _ensure_positions_consistency,
+    _fill_order,
+    _get_quote_snapshot,
+    _get_price,
+    _get_sellable_quantity,
+    _normalize_kwargs,
+    _normalize_risk_pct,
+    _record_order_event,
+    _refresh_account_prices,
+    _serialize_order_event_row,
+    _summarize_order_events,
+    _validate_price_limit,
+    _validate_sell_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +39,19 @@ DEFAULT_RISK_RULES = {
     "stop_loss_pct": 10.0,      # 个股止损线 %
 }
 
-from ._paper_trading_manager_support import *
+
+def _sync_paper_trading_support_overrides() -> None:
+    """Keep nested support helpers aligned with paper_trading_manager monkeypatches."""
+    _paper_trading_manager_support_mod._get_quote_snapshot = _get_quote_snapshot
+    _paper_trading_manager_support_mod._get_sellable_quantity = _get_sellable_quantity
+    _paper_trading_manager_support_mod._validate_sell_request = _validate_sell_request
+    _paper_trading_manager_support_mod._get_price = _get_price
 
 def register_paper_trading_manager(mcp):
     """注册模拟交易管理器工具"""
 
-    @mcp.tool()
-    async def paper_trading_manager(action: str, params: dict | None = None, kwargs: Any = None, user_id: str | None = None, account_id: str | None = None, code: str | None = None, price: float | None = None, shares: int | None = None, quantity: int | None = None, order_id: str | None = None, trade_type: str | None = None, direction: str | None = None, order_type: str | None = None, stop_price: float | None = None, name: str | None = None, initial_capital: float | None = None, limit: int | None = None):
+    @mcp.tool(structured_output=True)
+    async def paper_trading_manager(action: str, params: dict | None = None, kwargs: Any = None, user_id: str | None = None, account_id: str | None = None, code: str | None = None, price: float | None = None, shares: int | None = None, quantity: int | None = None, order_id: str | None = None, trade_type: str | None = None, direction: str | None = None, order_type: str | None = None, stop_price: float | None = None, name: str | None = None, initial_capital: float | None = None, limit: int | None = None) -> dict[str, Any]:
         """模拟交易管理器（统一 action + kwargs 协议）
 
         Args:
@@ -60,6 +86,7 @@ def register_paper_trading_manager(mcp):
                 },
             )
             kwargs = _normalize_kwargs(kwargs)
+            _sync_paper_trading_support_overrides()
             user_id = kwargs.get('user_id', 'default')
 
             SUPPORTED_ACTIONS = {

@@ -45,6 +45,7 @@ from ._engine_support import (
     _build_strategy_masks,
     _build_tradability_mask,
     _finalize_backtest_payload,
+    _safe_float,
     _simulate_trades_from_masks,
 )
 
@@ -97,7 +98,20 @@ class BacktestEngine:
                 is_st=bool(params.get("is_st", False)),
             )
 
-        advanced_exec_enabled = (slippage_calc is not None) or (tradability_mask is not None)
+        has_execution_overrides = any(
+            [
+                params.get("max_position_pct") is not None,
+                bool(str(params.get("position_assumption") or "").strip()),
+                bool(str(params.get("target_weight_scheme") or "").strip()),
+                bool(str(params.get("market_ruleset") or "").strip()),
+                bool(params.get("t_plus_one")),
+                int(params.get("min_trade_lot") or 0) > 1,
+                _safe_float(params.get("market_impact_bps", 0.0), 0.0) > 0,
+                _safe_float(params.get("implementation_shortfall_proxy", 0.0), 0.0) > 0,
+                _safe_float(params.get("sell_tax_rate", 0.0), 0.0) > 0,
+            ]
+        )
+        advanced_exec_enabled = (slippage_calc is not None) or (tradability_mask is not None) or has_execution_overrides
 
         if strategy == 'ma_cross':
             short_period = params.get('short_period', 5)
@@ -119,6 +133,7 @@ class BacktestEngine:
                     tradability_mask=tradability_mask,
                     return_trades=return_trades,
                     klines=klines,
+                    params=params,
                 )
                 payload = {
                     'code': code, 'strategy': strategy,
@@ -278,6 +293,7 @@ class BacktestEngine:
                     tradability_mask=tradability_mask,
                     return_trades=return_trades,
                     klines=klines,
+                    params=params,
                 )
                 payload = {
                     'code': code, 'strategy': strategy,
@@ -342,6 +358,7 @@ class BacktestEngine:
                     tradability_mask=tradability_mask,
                     return_trades=return_trades,
                     klines=klines,
+                    params=params,
                 )
                 payload = {
                     'code': code, 'strategy': strategy,
@@ -407,6 +424,7 @@ class BacktestEngine:
                     tradability_mask=tradability_mask,
                     return_trades=return_trades,
                     klines=klines,
+                    params=params,
                 )
                 _payload = {
                     'code': code, 'strategy': strategy,

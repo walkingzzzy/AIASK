@@ -226,12 +226,14 @@ class RuleStrategyGenerator:
 
 
 class _LLMProxyStrategyGeneratorContextMixin:
+        @staticmethod
         def _safe_float(value: Any) -> float:
             try:
                 return float(value or 0.0)
             except Exception:
                 return 0.0
 
+        @staticmethod
         def _normalize_code_list(values: Any, limit: int = 12) -> list[str]:
             codes: list[str] = []
             seen: set[str] = set()
@@ -268,6 +270,7 @@ class _LLMProxyStrategyGeneratorContextMixin:
             visit(values)
             return codes[: max(1, min(int(limit or 12), 40))]
 
+        @classmethod
         def _summarize_symbol_frame(cls, code: str, frame: pd.DataFrame) -> Optional[dict[str, Any]]:
             if frame is None or frame.empty or 'close' not in frame.columns:
                 return None
@@ -300,6 +303,7 @@ class _LLMProxyStrategyGeneratorContextMixin:
                 'volume_ratio_20': round(volume_ratio_20, 6),
             }
 
+        @classmethod
         def _rank_symbol_context(cls, item: dict[str, Any]) -> float:
             score = 0.0
             score += cls._safe_float(item.get('return_20d')) * 5.0
@@ -404,6 +408,7 @@ class _LLMProxyStrategyGeneratorContextMixin:
                 research_task={},
             )
 
+        @classmethod
         def _reuse_shared_research_context(
             cls,
             shared_context: dict[str, Any],
@@ -754,6 +759,7 @@ class _LLMProxyStrategyGeneratorContextMixin:
                 ],
             }
 
+        @staticmethod
         def _summarize_research_context(context: Optional[dict[str, Any]]) -> dict[str, Any]:
             payload = dict(context or {})
             breadth = dict(payload.get('market_breadth') or {})

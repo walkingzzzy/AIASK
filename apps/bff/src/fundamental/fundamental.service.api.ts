@@ -437,10 +437,10 @@ export async function getF10Info(service: any, code: string) {
         ]);
         const root = service.unwrapRoot(payload);
         const rootRecord = service.readRecord(root);
-        const items = Array.isArray(root)
+        const items: Array<Record<string, unknown>> = Array.isArray(root)
           ? service.readRecordArray(root)
           : service.readRecordArray(rootRecord.items);
-        const latestForecast = items.find((item) => Object.keys(item).length > 0);
+        const latestForecast = items.find((item: Record<string, unknown>) => Object.keys(item).length > 0);
         if (latestForecast) {
           const forecastPatch: Record<string, unknown> = {};
           const institution = String(latestForecast.institution ?? '').trim();

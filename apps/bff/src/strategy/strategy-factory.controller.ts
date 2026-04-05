@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { StrategyMarketService } from './strategy.service';
 import { Roles } from '../rbac/roles.decorator';
-import { FactoryRunsQueryDto, AiGenerateDto, AiExperimentsQueryDto, Req_, tid } from './dto';
+import { FactoryRunsQueryDto, AiGenerateDto, AiExperimentsQueryDto, Req_, ReviewWorkflowQueryDto, tid } from './dto';
 
 @Controller('strategy-market')
 export class StrategyFactoryController {
@@ -47,6 +47,12 @@ export class StrategyFactoryController {
   @Post(':id/review-report/recheck')
   async reviewReportRecheck(@Param('id') id: string, @Req() req: Req_) {
     const data = await this.svc.reviewReportRecheck(id);
+    return { success: true, data, traceId: tid(req) };
+  }
+
+  @Get(':id/review-workflow')
+  async reviewWorkflow(@Param('id') id: string, @Query() query: ReviewWorkflowQueryDto, @Req() req: Req_) {
+    const data = await this.svc.reviewWorkflow(id, query);
     return { success: true, data, traceId: tid(req) };
   }
 

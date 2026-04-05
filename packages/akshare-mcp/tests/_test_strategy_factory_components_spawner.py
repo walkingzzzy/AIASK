@@ -550,7 +550,7 @@ class TestStrategySpawner:
         assert report["summary"]["source_counts"]["fear_greed"] > 0
         assert report["summary"]["source_counts"].get("factor_ic", 0) == 0
 
-    def test_spawn_prefers_event_driven_and_suppresses_broad_neutral_templates(self):
+    def test_spawn_event_ready_keeps_controlled_local_templates(self):
         spawner = StrategySpawner()
         snapshot = {
             "fear_greed_index": 55,
@@ -564,10 +564,18 @@ class TestStrategySpawner:
         }
         candidates = spawner.spawn(snapshot)
         report = spawner.get_last_report()
-        assert report["summary"]["quota_fill_count"] == 0
-        assert report["summary"]["source_counts"].get("fear_greed", 0) == 0
-        assert report["summary"]["source_counts"].get("volatility", 0) == 0
-        assert report["summary"]["source_counts"].get("fund_flow", 0) == 0
+        summary = report["summary"]
+
+        assert candidates
+        assert summary["event_ready"] is True
+        assert summary["event_ready_supplemental"] is False
+        assert summary["quota_fill_count"] == 0
+        assert summary["source_counts"].get("fear_greed", 0) > 0
+        assert summary["source_counts"]["fear_greed"] <= summary["source_budget_caps"]["fear_greed"]
+        assert summary["source_raw_counts"]["fear_greed"] > summary["source_counts"]["fear_greed"]
+        assert summary["source_counts"].get("volatility", 0) == 0
+        assert summary["source_counts"].get("fund_flow", 0) == 0
+        assert summary["source_trimmed_count"] >= 1
         assert all((item.get("generation_reason") or {}).get("source") != "quota_fill" for item in candidates)
 
     def test_spawn_allows_controlled_event_ready_fill_when_local_signals_are_strong(self):
@@ -585,12 +593,21 @@ class TestStrategySpawner:
 
         candidates = spawner.spawn(snapshot)
         report = spawner.get_last_report()
+        summary = report["summary"]
 
         assert candidates
-        assert report["summary"]["quota_fill_count"] >= 0
-        assert report["summary"]["source_counts"].get("volatility", 0) > 0
-        assert report["summary"]["source_counts"].get("fund_flow", 0) > 0
-        assert report["summary"]["signal_trigger_count"] > 0
+        assert summary["event_ready"] is True
+        assert summary["event_ready_supplemental"] is True
+        assert summary["quota_fill_count"] >= 0
+        assert summary["source_counts"].get("fear_greed", 0) > 0
+        assert summary["source_counts"].get("volatility", 0) > 0
+        assert summary["source_counts"].get("fund_flow", 0) > 0
+        assert summary["source_counts"]["fear_greed"] <= summary["source_budget_caps"]["fear_greed"]
+        assert summary["source_counts"]["volatility"] <= summary["source_budget_caps"]["volatility"]
+        assert summary["source_counts"]["fund_flow"] <= summary["source_budget_caps"]["fund_flow"]
+        assert summary["source_raw_counts"]["fund_flow"] > summary["source_counts"]["fund_flow"]
+        assert summary["source_trimmed_count"] >= 1
+        assert summary["signal_trigger_count"] > 0
 
     def test_spawn_adds_signal_variants_when_signals_are_strong(self):
         spawner = StrategySpawner()

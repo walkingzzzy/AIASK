@@ -12,7 +12,11 @@ from typing import Any, Optional
 
 import httpx
 import pandas as pd
-from strategy_factory.domain.targets import _apply_target_symbol_policy, _normalize_research_task_contract
+from strategy_factory.domain.targets import (
+    _apply_target_symbol_policy,
+    _build_target_alignment_contract,
+    _normalize_research_task_contract,
+)
 
 from ..env_loader import load_mcp_env
 
@@ -69,7 +73,7 @@ class StrategyLLMConfig:
             initial_compact_level=initial_compact_level,
             recent_timeout_minimal_streak=recent_timeout_minimal_streak,
             recent_timeout_cooldown_sec=recent_timeout_cooldown_sec,
-            max_concurrency=max(1, min(8, int(os.getenv("STRATEGY_LLM_MAX_CONCURRENCY", "3") or 3))),
+            max_concurrency=max(1, min(16, int(os.getenv("STRATEGY_LLM_MAX_CONCURRENCY", "3") or 3))),
             strict=str(os.getenv("STRATEGY_LLM_STRICT_MODE", "")).strip().lower() in {"1", "true", "yes", "on"},
         )
 
@@ -81,10 +85,12 @@ class _StrategyLLMProviderNormalizeMixin:
                 return base
             return f"{base}/chat/completions"
 
+        @staticmethod
         def _error_text(exc: Exception) -> str:
             text = str(exc or "").strip()
             return text or exc.__class__.__name__
 
+        @staticmethod
         def _round_number(value: Any, digits: int = 6) -> Any:
             try:
                 if isinstance(value, bool):
@@ -97,12 +103,14 @@ class _StrategyLLMProviderNormalizeMixin:
                 return value
             return value
 
+        @staticmethod
         def _compact_text(value: Any, limit: int = 120) -> str:
             text = str(value or '').strip()
             if len(text) <= limit:
                 return text
             return text[: max(0, limit - 1)] + '...'
 
+        @staticmethod
         def _extract_json_text(text: str) -> str:
             raw = str(text or "").strip()
             if not raw:
@@ -122,6 +130,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 return raw[start : end + 1]
             return raw
 
+        @staticmethod
         def _extract_content(payload: dict[str, Any]) -> str:
             choices = list(payload.get("choices") or [])
             if choices:
@@ -139,6 +148,7 @@ class _StrategyLLMProviderNormalizeMixin:
                         parts.append(str(text))
             return "\n".join(parts)
 
+        @staticmethod
         def _normalize_analysis(analysis: Any) -> dict[str, Any]:
             if not isinstance(analysis, dict):
                 return {}
@@ -158,6 +168,7 @@ class _StrategyLLMProviderNormalizeMixin:
                     normalized[key] = value
             return normalized
 
+        @staticmethod
         def _normalize_code_list(values: Any, limit: int = 12) -> list[str]:
             codes: list[str] = []
             seen: set[str] = set()
@@ -199,6 +210,9 @@ class _StrategyLLMProviderNormalizeMixin:
                 return None
             normalized_task = _normalize_research_task_contract(research_task)
             research_symbols = cls._normalize_code_list(normalized_task.get('target_symbols'), limit=8)
+            target_alignment_contract = dict(
+                _build_target_alignment_contract(normalized_task, candidate=candidate) or {}
+            )
             dsl_payload = candidate.get('dsl')
             if not isinstance(dsl_payload, dict):
                 dsl_payload = {
@@ -232,6 +246,9 @@ class _StrategyLLMProviderNormalizeMixin:
                 limit=8,
             )
             target_symbols = list(policy_result.get('target_symbols') or [])
+            max_candidate_target_symbols = int(target_alignment_contract.get('max_candidate_target_symbols') or 0)
+            if max_candidate_target_symbols > 0 and len(target_symbols) > max_candidate_target_symbols:
+                target_symbols = list(target_symbols[:max_candidate_target_symbols])
             stock_pool_payload = candidate.get('stock_pool')
             stock_pool_symbols = cls._normalize_code_list([
                 stock_pool_payload,
@@ -263,6 +280,36 @@ class _StrategyLLMProviderNormalizeMixin:
                     or constraint_check.get('constraint_violation')
                     or 'expanded_from_candidate_universe'
                 )
+            overlap_count = len(set(target_symbols).intersection(research_symbols))
+            coverage_ratio = round(overlap_count / max(1, len(target_symbols)), 4) if target_symbols else 0.0
+            intersection_ratio = (
+                round(overlap_count / max(1, len(research_symbols)), 4)
+                if research_symbols
+                else None
+            )
+            min_coverage_ratio = float(target_alignment_contract.get('min_coverage_ratio') or 0.0)
+            min_intersection_ratio = float(target_alignment_contract.get('min_intersection_ratio') or 0.0)
+            min_required_overlap_count = int(target_alignment_contract.get('min_required_overlap_count') or 0)
+            alignment_reject_reasons: list[str] = []
+            if target_alignment_contract.get('quality_gate_enabled'):
+                if not target_symbols and research_symbols:
+                    alignment_reject_reasons.append('empty_target_symbols_after_alignment')
+                if coverage_ratio < min_coverage_ratio:
+                    alignment_reject_reasons.append('coverage_ratio_below_contract')
+                if intersection_ratio is not None and intersection_ratio < min_intersection_ratio:
+                    alignment_reject_reasons.append('intersection_ratio_below_contract')
+                if min_required_overlap_count > 0 and overlap_count < min_required_overlap_count:
+                    alignment_reject_reasons.append('target_overlap_count_below_contract')
+            constraint_check['target_symbols_after_normalize'] = list(target_symbols)
+            constraint_check['coverage_ratio'] = coverage_ratio
+            constraint_check['intersection_ratio'] = intersection_ratio
+            constraint_check['target_overlap_count'] = int(overlap_count)
+            constraint_check['alignment_contract_ok'] = len(alignment_reject_reasons) == 0
+            constraint_check['alignment_contract_violation'] = alignment_reject_reasons[0] if alignment_reject_reasons else None
+            constraint_check['alignment_contract_reject_reasons'] = list(dict.fromkeys(alignment_reject_reasons))
+            constraint_check['target_alignment_contract'] = dict(target_alignment_contract)
+            if alignment_reject_reasons:
+                return None
             metadata['target_symbols'] = list(target_symbols)
             metadata['stock_pool'] = stock_pool
             metadata['constraint_check'] = constraint_check
@@ -271,6 +318,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 'universe_expansion_policy': normalized_task.get('universe_expansion_policy'),
                 'validation_focus': normalized_task.get('validation_focus'),
             }
+            metadata['target_alignment_contract'] = dict(target_alignment_contract)
             dsl['metadata'] = metadata
             dsl = cls._sanitize_dsl_for_candidate(dsl)
             tags = candidate.get('tags') or []
@@ -360,8 +408,9 @@ class _StrategyLLMProviderNormalizeMixin:
                 'execution_assumptions': execution_assumptions,
                 'validation_profile': validation_profile,
                 'targeting_policy': dict(metadata.get('targeting_policy') or {}),
+                'target_alignment_contract': dict(target_alignment_contract),
                 'constraint_check': constraint_check,
-                'tags': [str(item) for item in tags if str(item or '').strip()][:8],
+                'tags': [str(item) for item in [*tags, 'target_contract_enforced'] if str(item or '').strip()][:8],
             }
             description = candidate.get('description')
             if description not in (None, ''):
@@ -473,6 +522,7 @@ class _StrategyLLMProviderNormalizeMixin:
             payload['exit'] = cls._sanitize_condition_for_candidate(payload.get('exit'))
             return payload
 
+        @staticmethod
         def _summarize_market_frame(frame: Optional[pd.DataFrame]) -> dict[str, Any]:
             if frame is None or frame.empty:
                 return {"rows": 0}
@@ -496,9 +546,11 @@ class _StrategyLLMProviderNormalizeMixin:
                     }
             return result
 
+        @staticmethod
         def _normalize_limit(limit: int) -> int:
             return max(1, min(int(limit or 3), 8))
 
+        @staticmethod
         def _prompt_profile_name(compact_level: int) -> str:
             if compact_level <= 0:
                 return "normal"
@@ -716,6 +768,7 @@ class _StrategyLLMProviderNormalizeMixin:
 
         def _compact_research_task(cls, research_task: Optional[dict[str, Any]], compact_level: int = 0) -> dict[str, Any]:
             task = _normalize_research_task_contract(research_task)
+            target_alignment_contract = dict(task.get("target_alignment_contract") or {})
             compact = {
                 "task_id": task.get("task_id"),
                 "task_source": task.get("task_source"),
@@ -742,6 +795,17 @@ class _StrategyLLMProviderNormalizeMixin:
                     "holding_window": dict(task.get("holding_window") or {}),
                 })
             if compact_level <= 1:
+                compact["target_alignment_contract"] = {
+                    key: target_alignment_contract.get(key)
+                    for key in (
+                        "profile",
+                        "max_candidate_target_symbols",
+                        "min_coverage_ratio",
+                        "min_intersection_ratio",
+                        "min_required_overlap_count",
+                    )
+                    if target_alignment_contract.get(key) not in (None, "", [], {})
+                }
                 compact["theme"] = task.get("theme") or compact.get("theme")
                 if task.get("stock_pool"):
                     compact["stock_pool"] = task.get("stock_pool")
@@ -775,6 +839,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 }
             return {key: value for key, value in compact.items() if value not in (None, [], {}, "")}
 
+        @staticmethod
         def _prompt_target_symbol_rule(task: Optional[dict[str, Any]]) -> str:
             policy = str((task or {}).get("target_symbol_policy") or "").strip().lower()
             if policy == "strict_intersection":

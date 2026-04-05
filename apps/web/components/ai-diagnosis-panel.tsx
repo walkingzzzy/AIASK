@@ -71,6 +71,50 @@ function normalizeDiagnosisPayload(payload: unknown): DiagnosisResult {
             };
         })
         .filter((factor) => factor.detail);
+    const workflowSteps = Array.isArray(rawData?.steps) ? rawData.steps : [];
+    const workflowFactors = workflowSteps
+        .slice(0, 6)
+        .map((step): DiagnosisResult['factors'][number] | null => {
+            const record = step && typeof step === 'object' && !Array.isArray(step)
+                ? step as Record<string, unknown>
+                : {};
+            const stepName = String(record.step ?? '');
+            const output = record.output && typeof record.output === 'object'
+                ? record.output as Record<string, unknown>
+                : {};
+            const outputData = output.data && typeof output.data === 'object'
+                ? output.data as Record<string, unknown>
+                : {};
+            const signalText = String(outputData.action ?? outputData.signal ?? '').toLowerCase();
+            const label = stepName === 'stock_profile'
+                ? '股票画像'
+                : stepName === 'daily_kline'
+                    ? 'K 线快照'
+                    : stepName === 'financials'
+                        ? '财务快照'
+                        : stepName === 'decision_summary'
+                            ? '决策摘要'
+                            : stepName || '工作流步骤';
+            const detail = stepName === 'stock_profile'
+                ? String(outputData.name ?? outputData.code ?? outputData.industry ?? '已拉取股票基础信息')
+                : stepName === 'daily_kline'
+                    ? `已拉取 ${Array.isArray(outputData.rows) ? outputData.rows.length : 0} 条行情`
+                    : stepName === 'financials'
+                        ? String(outputData.reportDate ?? outputData.report_date ?? outputData.roe ?? '已拉取财务摘要')
+                        : String(outputData.summary ?? outputData.reason ?? outputData.description ?? outputData.action_text ?? '');
+            return detail
+                ? {
+                    name: label,
+                    signal: signalText.includes('buy') || signalText.includes('bull')
+                        ? 'bullish'
+                        : signalText.includes('sell') || signalText.includes('bear')
+                            ? 'bearish'
+                            : 'neutral',
+                    detail,
+                }
+                : null;
+        })
+        .filter((factor): factor is DiagnosisResult['factors'][number] => Boolean(factor));
     const rawRisks = Array.isArray(rawData?.risks) ? rawData.risks : [];
     const riskCount = Number(summaryInfo?.risk_count ?? rawRisks.length ?? 0);
     const riskLevel = riskCount >= 5 ? 'high' : riskCount >= 2 ? 'medium' : 'low';
@@ -85,7 +129,7 @@ function normalizeDiagnosisPayload(payload: unknown): DiagnosisResult {
             rawData?.reason ??
             '暂无详细分析',
         ),
-        factors,
+        factors: factors.length > 0 ? factors : workflowFactors,
         riskLevel,
     };
 }
@@ -100,7 +144,11 @@ export function AIDiagnosisPanel({ code }: { code: string }) {
 
     async function runDiagnosis() {
         try {
-            const data = await diagnosisApi.triggerAsync('/assistant/diagnosis', { method: 'POST' }, { code });
+            const data = await diagnosisApi.triggerAsync(
+                '/assistant/analysis-workflow',
+                { method: 'POST' },
+                { code },
+            );
             setResult(data);
         } catch {
             setResult(null);

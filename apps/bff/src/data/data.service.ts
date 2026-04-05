@@ -42,6 +42,114 @@ export class DataService {
     return { sourceTool: 'get_stock_capital' as const, result: payload };
   }
 
+  async predictionDiagnosisWorkflow(params: {
+    probabilities: number[];
+    labels: number[];
+    rawScores?: number[];
+    method?: string;
+    plattA?: number;
+    plattB?: number;
+    coverageTarget?: number;
+    datasetId?: string;
+    runId?: string;
+    persistArtifact?: boolean;
+    outputArtifactId?: string;
+    asOf?: string;
+  }) {
+    return this.callTool('prediction_diagnosis_workflow', {
+      probabilities: params.probabilities,
+      labels: params.labels,
+      raw_scores: params.rawScores,
+      method: params.method,
+      platt_a: params.plattA,
+      platt_b: params.plattB,
+      coverage_target: params.coverageTarget,
+      dataset_id: params.datasetId,
+      run_id: params.runId,
+      persist_artifact: params.persistArtifact,
+      output_artifact_id: params.outputArtifactId,
+      as_of: params.asOf,
+    });
+  }
+
+  async dataQualityWorkflow(params: {
+    datasetId?: string;
+    records?: Array<Record<string, unknown>>;
+    requiredFields?: string[];
+    asOfField?: string;
+    asOfValue?: string;
+    source?: string;
+    sourceChain?: string[];
+    minimumQualityThreshold?: number;
+    persistArtifact?: boolean;
+    outputArtifactId?: string;
+    asOf?: string;
+  }) {
+    return this.callTool('data_quality_workflow', {
+      dataset_id: params.datasetId,
+      records: params.records,
+      required_fields: params.requiredFields,
+      as_of_field: params.asOfField,
+      as_of_value: params.asOfValue,
+      source: params.source,
+      source_chain: params.sourceChain,
+      minimum_quality_threshold: params.minimumQualityThreshold,
+      persist_artifact: params.persistArtifact,
+      output_artifact_id: params.outputArtifactId,
+      as_of: params.asOf,
+    });
+  }
+
+  async getToolCatalog() {
+    const payload = await this.readResource('resource://server/tool-catalog');
+    return { resourceUri: 'resource://server/tool-catalog' as const, result: payload };
+  }
+
+  async getWorkflowGuide(name: string) {
+    const normalizedName = this.normalizeWorkflowGuideName(name);
+    const uri = `resource://workflow/${normalizedName}/guide`;
+    return this.readResourceEnvelope(uri);
+  }
+
+  async getRunSnapshot(runId: string) {
+    const uri = `resource://run/${this.normalizeResourceId(runId)}`;
+    return this.readResourceEnvelope(uri);
+  }
+
+  async getDatasetQuality(datasetId: string) {
+    const uri = `resource://dataset/${this.normalizeResourceId(datasetId)}/quality`;
+    return this.readResourceEnvelope(uri);
+  }
+
+  async getDatasetProfile(datasetId: string) {
+    const uri = `resource://dataset/${this.normalizeResourceId(datasetId)}/profile`;
+    return this.readResourceEnvelope(uri);
+  }
+
+  async getFactorProfile(factorId: string) {
+    const uri = `resource://factor/${this.normalizeResourceId(factorId)}/profile`;
+    return this.readResourceEnvelope(uri);
+  }
+
+  async getModelProfile(modelId: string) {
+    const uri = `resource://model/${this.normalizeResourceId(modelId)}/profile`;
+    return this.readResourceEnvelope(uri);
+  }
+
+  async getStrategyGovernance(strategyId: string) {
+    const uri = `resource://strategy/${this.normalizeResourceId(strategyId)}/governance`;
+    return this.readResourceEnvelope(uri);
+  }
+
+  async getExperimentSummary(experimentId: string) {
+    const uri = `resource://experiment/${this.normalizeResourceId(experimentId)}/summary`;
+    return this.readResourceEnvelope(uri);
+  }
+
+  async getSystemGovernanceReport() {
+    return this.readResourceEnvelope('resource://governance/system/report');
+  }
+
   private async callTool(name: string, args: Record<string, unknown>) {
     try {
       return await this.mcpGatewayService.callTool(name, args);
@@ -49,6 +157,18 @@ export class DataService {
       throw new BadGatewayException({
         success: false, message: `调用 MCP ${name} 失败`,
         detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async readResource(uri: string) {
+    try {
+      return await this.mcpGatewayService.readResource(uri);
+    } catch (error) {
+      throw new BadGatewayException({
+        success: false, message: `读取 MCP 资源失败`,
+        detail: error instanceof Error ? error.message : String(error),
+        resourceUri: uri,
       });
     }
   }
@@ -88,5 +208,25 @@ export class DataService {
       if (!acc || typeof acc !== 'object') return undefined;
       return (acc as Record<string, unknown>)[key];
     }, value);
+  }
+
+  private async readResourceEnvelope(uri: string) {
+    const payload = await this.readResource(uri);
+    return { resourceUri: uri, result: payload };
+  }
+
+  private normalizeWorkflowGuideName(name: string): string {
+    const raw = String(name ?? '').trim();
+    const aliasMap: Record<string, string> = {
+      'stock-analysis-guide': 'stock-analysis',
+      'factor-governance-guide': 'factor-governance',
+      'strategy-promotion-guide': 'strategy-promotion',
+      'governance-monitoring-guide': 'governance-monitoring',
+    };
+    return aliasMap[raw] ?? raw;
+  }
+
+  private normalizeResourceId(value: string): string {
+    return String(value ?? '').trim();
   }
 }

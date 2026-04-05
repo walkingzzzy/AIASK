@@ -96,3 +96,51 @@ def test_run_backtest_estimates_shortfall_from_capacity_and_tradability_pressure
     assert stressed_data["capacity_summary"]["adv_utilization"] > 1.0
     assert stressed_data["avg_holding_days"] > 0
     assert stressed_data["turnover_proxy"] > 1.0
+
+
+def test_run_backtest_applies_market_rules_and_position_constraints_to_pnl():
+    base = BacktestEngine.run_backtest(
+        "600519",
+        _make_klines(n=120, start=10.0, volume=2_000_000.0),
+        "momentum",
+        {
+            "lookback": 5,
+            "threshold": 0.01,
+            "initial_capital": 100000,
+            "commission": 0.0003,
+            "slippage_model": "fixed",
+        },
+    )
+    constrained = BacktestEngine.run_backtest(
+        "600519",
+        _make_klines(n=120, start=10.0, volume=2_000_000.0),
+        "momentum",
+        {
+            "lookback": 5,
+            "threshold": 0.01,
+            "initial_capital": 100000,
+            "commission": 0.0003,
+            "slippage_model": "fixed",
+            "market_ruleset": "cn_equity",
+            "sell_tax_rate": 0.001,
+            "min_trade_lot": 100,
+            "t_plus_one": True,
+            "max_position_pct": 0.2,
+            "market_impact_bps": 12.0,
+            "arrival_price_policy": "next_open_proxy",
+        },
+    )
+
+    assert base["success"] is True
+    assert constrained["success"] is True
+
+    base_data = base["data"]
+    constrained_data = constrained["data"]
+
+    assert constrained_data["total_return"] < base_data["total_return"]
+    assert constrained_data["final_capital"] < base_data["final_capital"]
+    assert constrained_data["turnover_proxy"] < base_data["turnover_proxy"]
+    assert constrained_data["cost_assumptions"]["market_ruleset"] == "cn_equity"
+    assert constrained_data["cost_assumptions"]["min_trade_lot"] == 100
+    assert constrained_data["cost_assumptions"]["t_plus_one"] is True
+    assert constrained_data["sell_tax_rate"] == pytest.approx(0.001)

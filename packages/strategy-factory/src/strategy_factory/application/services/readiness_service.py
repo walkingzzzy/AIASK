@@ -18,6 +18,73 @@ from ...domain.constants import (
 )
 
 
+def resolve_governed_pool_state(factor_summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    summary = dict(factor_summary or {})
+    factor_source_mode = str(summary.get("factor_source_mode") or "").strip().lower()
+    active_candidate_count = int(summary.get("active_candidate_count") or 0)
+    governed_source_candidate_count = int(summary.get("governed_source_candidate_count") or 0)
+    governed_candidate_pool_mode = (
+        str(
+            summary.get("governed_candidate_pool_mode")
+            or summary.get("active_pool_mode")
+            or ""
+        ).strip().lower()
+        or None
+    )
+    governed_candidate_pool_provisional = bool(
+        summary.get("governed_candidate_pool_provisional")
+    ) or governed_candidate_pool_mode == "provisional_validated_watch"
+    governed_candidate_pool_active = bool(
+        active_candidate_count > 0
+        and (
+            factor_source_mode == "governed_candidate_pool"
+            or governed_source_candidate_count > 0
+            or governed_candidate_pool_mode in {"strict_governed", "provisional_validated_watch"}
+        )
+    )
+    return {
+        "mode": governed_candidate_pool_mode,
+        "active": governed_candidate_pool_active,
+        "provisional": governed_candidate_pool_provisional,
+    }
+
+
+def resolve_factor_refresh_trigger(
+    factor_research: dict[str, Any] | None = None,
+    *,
+    factor_summary: dict[str, Any] | None = None,
+) -> str | None:
+    """Return the preferred scheduler refresh trigger for a factor artifact."""
+
+    artifact = dict(factor_research or {})
+    summary = dict(factor_summary or artifact.get("summary") or {})
+    factor_source_mode = str(summary.get("factor_source_mode") or "").strip().lower()
+    active_candidate_count = int(summary.get("active_candidate_count") or 0)
+    governed_source_candidate_count = int(summary.get("governed_source_candidate_count") or 0)
+    scheduler_recent_success = bool(summary.get("scheduler_recent_success"))
+    scheduler_last_run = summary.get("scheduler_last_run")
+    governed_pool_state = resolve_governed_pool_state(summary)
+    governed_candidate_pool_active = bool(governed_pool_state.get("active"))
+
+    if bool(summary.get("stale")):
+        return "stale_artifact"
+    if bool(summary.get("governed_pool_missing_after_scheduler_success")) or (
+        scheduler_recent_success and not governed_candidate_pool_active
+    ):
+        return "governed_pool_missing_after_scheduler_success"
+    if governed_candidate_pool_active:
+        return None
+    if factor_source_mode == "seed_fallback":
+        return (
+            "seed_fallback_without_governed_pool"
+            if scheduler_last_run
+            else "scheduler_warmup_missing_governed_pool"
+        )
+    if not scheduler_last_run and active_candidate_count <= 0 and governed_source_candidate_count <= 0:
+        return "scheduler_warmup_missing_governed_pool"
+    return None
+
+
 class ReadinessService:
     """Stateless evaluator for factory readiness.
 
@@ -43,11 +110,18 @@ class ReadinessService:
         factor_artifact = dict(factor_research or {})
         factor_summary = dict(factor_artifact.get("summary") or {})
         factor_refresh = dict(factor_artifact.get("freshness_repair") or {})
+        factor_refresh_recommendation_reason = resolve_factor_refresh_trigger(
+            factor_artifact,
+            factor_summary=factor_summary,
+        )
         factor_source_mode = str(factor_summary.get("factor_source_mode") or "").strip().lower()
         active_candidate_count = int(factor_summary.get("active_candidate_count") or 0)
         governed_source_candidate_count = int(
             factor_summary.get("governed_source_candidate_count") or 0
         )
+        governed_pool_state = resolve_governed_pool_state(factor_summary)
+        governed_candidate_pool_mode = governed_pool_state.get("mode")
+        governed_candidate_pool_provisional = bool(governed_pool_state.get("provisional"))
         governed_blocked_candidate_count = int(
             factor_summary.get("governed_blocked_candidate_count") or 0
         )
@@ -62,9 +136,10 @@ class ReadinessService:
             factor_summary.get("governed_exclusion_reason_counts") or {}
         )
         governed_risk_counts = dict(factor_summary.get("governed_risk_counts") or {})
-        governed_candidate_pool_active = bool(
-            factor_source_mode == "governed_candidate_pool"
-            or governed_source_candidate_count > 0
+        governed_candidate_pool_active = bool(governed_pool_state.get("active"))
+        governed_pool_missing_after_scheduler_success = bool(
+            factor_source_mode == "governed_pool_missing_after_scheduler_success"
+            or (scheduler_recent_success and not governed_candidate_pool_active)
         )
 
         sources = dict(snapshot.get("sources") or {})
@@ -75,6 +150,7 @@ class ReadinessService:
 
         warnings: list[str] = []
         blockers: list[str] = []
+        critical_blockers: list[str] = []
         score = 1.0
 
         if bool(snapshot.get("degraded")):
@@ -98,6 +174,9 @@ class ReadinessService:
         if bool(factor_summary.get("degraded")):
             warnings.append("factor_research_degraded")
             score -= 0.14
+        if governed_candidate_pool_provisional:
+            warnings.append("governed_candidate_pool_provisional")
+            score -= 0.04
         if governed_blocked_candidate_count > 0:
             warnings.append("governed_candidate_pool_blocked_candidates")
         if governed_blocked_ratio >= 0.75:
@@ -106,9 +185,11 @@ class ReadinessService:
         elif governed_blocked_ratio >= 0.40:
             warnings.append("governed_candidate_pool_blocked_ratio_elevated")
             score -= 0.06
-        if scheduler_recent_success and not governed_candidate_pool_active:
+        if governed_pool_missing_after_scheduler_success:
             warnings.append("factor_scheduler_recent_success_without_governed_pool")
-            score -= 0.08
+            blockers.append("governed_candidate_pool_missing_after_scheduler_success")
+            critical_blockers.append("governed_candidate_pool_missing_after_scheduler_success")
+            score -= 0.18
         if bool(factor_summary.get("stale")):
             if governed_candidate_pool_active:
                 warnings.append("factor_research_history_stale_governed_pool_active")
@@ -133,7 +214,9 @@ class ReadinessService:
 
         score = max(min(round(score, 4), 1.0), 0.0)
         hard_block = is_factory_readiness_hard_block_enabled()
-        can_proceed = not hard_block or (score >= FACTORY_READINESS_MIN_SCORE and not blockers)
+        can_proceed = not critical_blockers and (
+            not hard_block or (score >= FACTORY_READINESS_MIN_SCORE and not blockers)
+        )
 
         return {
             "runtime_enabled": is_factory_runtime_enabled(),
@@ -151,6 +234,8 @@ class ReadinessService:
             "warning_count": len(warnings),
             "blockers": blockers,
             "blocker_count": len(blockers),
+            "critical_blockers": critical_blockers,
+            "critical_blocker_count": len(critical_blockers),
             "snapshot_completion_ratio": completion_ratio,
             "snapshot_degraded": bool(snapshot.get("degraded")),
             "event_status": event_status,
@@ -159,6 +244,9 @@ class ReadinessService:
             "factor_research_degraded": bool(factor_summary.get("degraded")),
             "factor_source_mode": factor_summary.get("factor_source_mode"),
             "governed_candidate_pool_active": governed_candidate_pool_active,
+            "governed_candidate_pool_mode": governed_candidate_pool_mode,
+            "governed_candidate_pool_provisional": governed_candidate_pool_provisional,
+            "governed_pool_missing_after_scheduler_success": governed_pool_missing_after_scheduler_success,
             "active_candidate_count": active_candidate_count,
             "governed_source_candidate_count": governed_source_candidate_count,
             "governed_blocked_candidate_count": governed_blocked_candidate_count,
@@ -172,6 +260,8 @@ class ReadinessService:
             "scheduler_llm_validation_status": scheduler_llm_validation_status,
             "factor_refresh_attempted": bool(factor_refresh.get("refresh_attempted")),
             "factor_refresh_status": factor_refresh.get("refresh_status"),
+            "factor_refresh_recommended": factor_refresh_recommendation_reason is not None,
+            "factor_refresh_recommendation_reason": factor_refresh_recommendation_reason,
         }
 
     @staticmethod
@@ -182,4 +272,4 @@ class ReadinessService:
             return default
 
 
-__all__ = ["ReadinessService"]
+__all__ = ["ReadinessService", "resolve_factor_refresh_trigger", "resolve_governed_pool_state"]

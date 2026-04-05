@@ -40,6 +40,10 @@ def test_ok_with_meta_should_attach_trace_and_common_meta():
     assert response["meta"]["source_chain"] == ["research_manager", "tushare.report_rc"]
     assert response["meta"]["as_of"] == "2026-03-19"
     assert response["meta"]["explain"] is True
+    assert response["meta"]["quality"]["status"] == "not_provided"
+    assert response["meta"]["side_effect"]["level"] == "read_only"
+    assert response["meta"]["lineage"] == {}
+    assert response["meta"]["degraded"] is False
 
 
 def test_text_and_retrieval_services_should_return_summary_structures():

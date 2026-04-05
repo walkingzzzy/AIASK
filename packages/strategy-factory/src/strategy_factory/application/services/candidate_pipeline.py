@@ -163,6 +163,7 @@ class CandidatePipeline:
     ) -> CandidatePipelineReport:
         backtest_summary = backtest_report.get("summary") or {}
         gate_0 = dict(quality_gate_report.get("gate_0") or {})
+        pre_gate = dict(quality_gate_report.get("pre_gate") or {})
         gate_1 = dict(quality_gate_report.get("gate_1") or {})
         gate_2 = dict(quality_gate_report.get("gate_2") or {})
 
@@ -193,6 +194,8 @@ class CandidatePipeline:
             total_spawned=len(candidates),
             gate_0_passed=int(gate_0.get("passed_count") or 0),
             gate_0_failed=int(gate_0.get("failed_count") or 0),
+            pre_gate_passed=int(pre_gate.get("passed_count") or 0),
+            pre_gate_failed=int(pre_gate.get("failed_count") or 0),
             gate_1_passed=int(gate_1.get("passed_count") or 0),
             gate_1_failed=int(gate_1.get("failed_count") or 0),
             gate_2_passed=int(gate_2.get("passed_count") or backtest_summary.get("passed_count") or len(passed)),

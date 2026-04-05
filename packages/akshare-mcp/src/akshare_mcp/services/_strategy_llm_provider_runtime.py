@@ -16,11 +16,19 @@ from strategy_factory.domain.targets import _apply_target_symbol_policy, _normal
 
 from ..env_loader import load_mcp_env
 
+try:
+    from .strategy_llm_provider import StrategyLLMRequestError as _PublicStrategyLLMRequestError
+except Exception:  # pragma: no cover - circular import fallback
+    _PublicStrategyLLMRequestError = None
 
-class StrategyLLMRequestError(RuntimeError):
-    def __init__(self, message: str, *, metrics: Optional[dict[str, Any]] = None):
-        super().__init__(message)
-        self.metrics = dict(metrics or {})
+
+if _PublicStrategyLLMRequestError is None:
+    class StrategyLLMRequestError(RuntimeError):
+        def __init__(self, message: str, *, metrics: Optional[dict[str, Any]] = None):
+            super().__init__(message)
+            self.metrics = dict(metrics or {})
+else:
+    StrategyLLMRequestError = _PublicStrategyLLMRequestError
 
 
 @dataclass
@@ -38,9 +46,13 @@ class StrategyLLMConfig:
     max_tokens: int = 900
     retry_count: int = 2
     retry_backoff_sec: float = 1.0
+    stage_retry_count: int = 1
+    stage_retry_backoff_sec: float = 1.5
     initial_compact_level: int = 0
     recent_timeout_minimal_streak: int = 1
     recent_timeout_cooldown_sec: float = 600.0
+    recent_overload_minimal_streak: int = 1
+    recent_overload_cooldown_sec: float = 90.0
     max_concurrency: int = 3
     strict: bool = False
 
@@ -52,6 +64,8 @@ class StrategyLLMConfig:
         initial_compact_level = max(0, min(2, int(os.getenv("STRATEGY_LLM_INITIAL_COMPACT_LEVEL", "0") or 0)))
         recent_timeout_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_MINIMAL_STREAK", "1") or 1)))
         recent_timeout_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_COOLDOWN_SEC", "600") or 600))
+        recent_overload_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_OVERLOAD_MINIMAL_STREAK", "1") or 1)))
+        recent_overload_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_OVERLOAD_COOLDOWN_SEC", "90") or 90))
         return cls(
             enabled=enabled,
             provider=str(os.getenv("STRATEGY_LLM_PROVIDER", "openai_compatible") or "openai_compatible"),
@@ -66,10 +80,23 @@ class StrategyLLMConfig:
             max_tokens=max(128, int(os.getenv("STRATEGY_LLM_MAX_TOKENS", "900") or 900)),
             retry_count=max(0, int(os.getenv("STRATEGY_LLM_RETRY_COUNT", "2") or 2)),
             retry_backoff_sec=max(0.0, float(os.getenv("STRATEGY_LLM_RETRY_BACKOFF_SEC", "1.0") or 1.0)),
+            stage_retry_count=max(0, int(os.getenv("STRATEGY_LLM_STAGE_RETRY_COUNT", "1") or 1)),
+            stage_retry_backoff_sec=max(
+                0.0,
+                float(
+                    os.getenv(
+                        "STRATEGY_LLM_STAGE_RETRY_BACKOFF_SEC",
+                        os.getenv("STRATEGY_LLM_RETRY_BACKOFF_SEC", "1.5"),
+                    )
+                    or 1.5
+                ),
+            ),
             initial_compact_level=initial_compact_level,
             recent_timeout_minimal_streak=recent_timeout_minimal_streak,
             recent_timeout_cooldown_sec=recent_timeout_cooldown_sec,
-            max_concurrency=max(1, min(8, int(os.getenv("STRATEGY_LLM_MAX_CONCURRENCY", "3") or 3))),
+            recent_overload_minimal_streak=recent_overload_minimal_streak,
+            recent_overload_cooldown_sec=recent_overload_cooldown_sec,
+            max_concurrency=max(1, min(16, int(os.getenv("STRATEGY_LLM_MAX_CONCURRENCY", "3") or 3))),
             strict=str(os.getenv("STRATEGY_LLM_STRICT_MODE", "")).strip().lower() in {"1", "true", "yes", "on"},
         )
 
@@ -94,6 +121,7 @@ class _StrategyLLMProviderRuntimeMixin:
             base_reduction = 1 if initial_compact_level >= 1 and requested_limit > 1 else 0
             return max(1, requested_limit - base_reduction - max(0, attempt - 1))
 
+        @staticmethod
         def _compact_level_for_attempt(attempt: int, total_attempts: int) -> int:
             index = max(int(attempt or 1) - 1, 0)
             if int(total_attempts or 1) <= 1:
@@ -108,29 +136,91 @@ class _StrategyLLMProviderRuntimeMixin:
             candidate_budget = max(1, int(request_limit or 1)) * (220 if compact_level <= 0 else (170 if compact_level == 1 else 140))
             return max(128, min(base, analysis_budget + candidate_budget))
 
+        @staticmethod
         def _is_timeout_like_error(exc: Exception) -> bool:
             return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError))
 
-        def _recent_timeout_degrade_state(self) -> tuple[int, Optional[str]]:
+        @staticmethod
+        def _status_code_from_error(exc: Exception) -> Optional[int]:
+            try:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                return int(status_code) if status_code is not None else None
+            except Exception:
+                return None
+
+        @staticmethod
+        def _is_overload_status_code(status_code: Optional[int]) -> bool:
+            return int(status_code or 0) in {429, 502, 503, 504, 529}
+
+        def _is_overload_like_error(self, exc: Exception) -> bool:
+            return self._is_overload_status_code(self._status_code_from_error(exc))
+
+        def _failure_type(self, exc: Exception) -> str:
+            status_code = self._status_code_from_error(exc)
+            return f"HTTP{status_code}" if status_code else exc.__class__.__name__
+
+        @staticmethod
+        def _retry_after_seconds(exc: Exception) -> Optional[float]:
+            response = getattr(exc, "response", None)
+            headers = getattr(response, "headers", None)
+            if headers is None:
+                return None
+            raw = headers.get("Retry-After") or headers.get("retry-after")
+            if raw in (None, ""):
+                return None
+            try:
+                return max(0.0, float(raw))
+            except Exception:
+                return None
+
+        def _retry_backoff_delay(self, attempt: int, exc: Exception, *, base_delay: float, max_delay: float = 15.0) -> float:
+            retry_after = self._retry_after_seconds(exc)
+            if retry_after is not None:
+                return min(max(retry_after, base_delay), max_delay)
+            multiplier = 2.0 if self._is_overload_like_error(exc) else (1.5 if self._is_timeout_like_error(exc) else 1.0)
+            delay = max(0.0, float(base_delay or 0.0)) * max(1.0, multiplier * (2 ** max(int(attempt) - 1, 0)))
+            return min(delay, max_delay)
+
+        def _should_retry_request_error(self, exc: Exception) -> bool:
+            return self._is_timeout_like_error(exc) or self._is_overload_like_error(exc)
+
+        def _recent_failure_degrade_state(self) -> tuple[int, Optional[str]]:
             initial_level = max(0, min(int(self.config.initial_compact_level or 0), 2))
             now = time.monotonic()
             if self._recent_timeout_cooldown_until > 0 and self._recent_timeout_cooldown_until <= now:
                 self._recent_timeout_streak = 0
                 self._recent_timeout_cooldown_until = 0.0
+            if getattr(self, "_recent_overload_cooldown_until", 0.0) > 0 and self._recent_overload_cooldown_until <= now:
+                self._recent_overload_streak = 0
+                self._recent_overload_cooldown_until = 0.0
             if self._recent_timeout_streak >= max(1, int(self.config.recent_timeout_minimal_streak or 1)) and self._recent_timeout_cooldown_until > now:
                 return max(initial_level, 2), 'recent_timeout'
+            if getattr(self, "_recent_overload_streak", 0) >= max(1, int(getattr(self.config, "recent_overload_minimal_streak", 1) or 1)) and getattr(self, "_recent_overload_cooldown_until", 0.0) > now:
+                return max(initial_level, 2), 'recent_overload'
             return initial_level, None
 
         def _record_request_failure(self, exc: Exception) -> None:
-            self._last_failure_type = exc.__class__.__name__
+            self._last_failure_type = self._failure_type(exc)
+            self._last_failure_status_code = self._status_code_from_error(exc)
             if self._is_timeout_like_error(exc):
                 self._recent_timeout_streak += 1
                 self._recent_timeout_cooldown_until = time.monotonic() + max(0.0, float(self.config.recent_timeout_cooldown_sec or 0.0))
+            elif self._is_overload_like_error(exc):
+                self._recent_overload_streak = int(getattr(self, "_recent_overload_streak", 0) or 0) + 1
+                retry_after = self._retry_after_seconds(exc)
+                cooldown_sec = max(
+                    float(getattr(self.config, "recent_overload_cooldown_sec", 90.0) or 0.0),
+                    float(retry_after or 0.0),
+                )
+                self._recent_overload_cooldown_until = time.monotonic() + max(0.0, cooldown_sec)
 
         def _record_request_success(self) -> None:
             self._recent_timeout_streak = 0
             self._recent_timeout_cooldown_until = 0.0
+            self._recent_overload_streak = 0
+            self._recent_overload_cooldown_until = 0.0
             self._last_failure_type = None
+            self._last_failure_status_code = None
 
         async def generate_candidates(
             self,
@@ -157,9 +247,9 @@ class _StrategyLLMProviderRuntimeMixin:
             last_exc: Optional[Exception] = None
             attempts = max(1, int(self.config.retry_count or 0) + 1)
             attempt_reports: list[dict[str, Any]] = []
-            initial_compact_level, degrade_reason = self._recent_timeout_degrade_state()
+            initial_compact_level, degrade_reason = self._recent_failure_degrade_state()
             initial_prompt_profile = self._prompt_profile_name(initial_compact_level)
-            effective_attempts = 1 if degrade_reason == 'recent_timeout' else attempts
+            effective_attempts = 1 if degrade_reason in {'recent_timeout', 'recent_overload'} else attempts
             client = self._client
             for attempt in range(1, effective_attempts + 1):
                 compact_level = max(initial_compact_level, self._compact_level_for_attempt(attempt, effective_attempts))
@@ -177,7 +267,7 @@ class _StrategyLLMProviderRuntimeMixin:
                 )
                 prompt_profile = self._prompt_profile_name(compact_level)
                 request_timeout_sec = self._timeout_for_attempt(attempt, effective_attempts)
-                if degrade_reason == 'recent_timeout' and attempt == 1:
+                if degrade_reason in {'recent_timeout', 'recent_overload'} and attempt == 1:
                     request_timeout_sec = max(request_timeout_sec, min(float(self.config.timeout_sec or request_timeout_sec), 15.0))
                 max_tokens = self._max_tokens_for_attempt(request_limit, compact_level)
                 payload = {
@@ -289,13 +379,20 @@ class _StrategyLLMProviderRuntimeMixin:
                         "degrade_reason": degrade_reason,
                         "initial_prompt_profile": initial_prompt_profile,
                         "elapsed_seconds": round(time.perf_counter() - request_started_at, 4),
-                        "error_type": exc.__class__.__name__,
+                        "error_type": self._failure_type(exc),
                         "error": self._error_text(exc),
-                        "status_code": getattr(getattr(exc, "response", None), "status_code", None),
+                        "status_code": self._status_code_from_error(exc),
+                        "retry_after_sec": self._retry_after_seconds(exc),
                     })
-                    if attempt >= attempts:
+                    if attempt >= attempts or not self._should_retry_request_error(exc):
                         break
-                    await asyncio.sleep(self.config.retry_backoff_sec * attempt)
+                    await asyncio.sleep(
+                        self._retry_backoff_delay(
+                            attempt,
+                            exc,
+                            base_delay=float(self.config.retry_backoff_sec or 0.0),
+                        )
+                    )
 
             if last_exc is not None:
                 self._record_request_failure(last_exc)
@@ -309,10 +406,13 @@ class _StrategyLLMProviderRuntimeMixin:
                 "degrade_reason": degrade_reason,
                 "recent_timeout_streak": self._recent_timeout_streak,
                 "recent_timeout_cooldown_sec": round(max(self._recent_timeout_cooldown_until - time.monotonic(), 0.0), 4),
+                "recent_overload_streak": int(getattr(self, "_recent_overload_streak", 0) or 0),
+                "recent_overload_cooldown_sec": round(max(getattr(self, "_recent_overload_cooldown_until", 0.0) - time.monotonic(), 0.0), 4),
                 "elapsed_seconds": round(time.perf_counter() - started_at, 4),
                 "attempt_count": len(attempt_reports),
                 "attempts": attempt_reports,
-                "last_error_type": last_exc.__class__.__name__ if last_exc else "RuntimeError",
+                "last_error_type": self._failure_type(last_exc) if last_exc else "RuntimeError",
+                "last_error_status_code": self._status_code_from_error(last_exc) if last_exc else None,
                 "last_error": self._error_text(last_exc or RuntimeError("external llm request failed")),
             }
             raise StrategyLLMRequestError(
@@ -347,17 +447,24 @@ class _StrategyLLMProviderRuntimeMixin:
 
             started_at = time.perf_counter()
             stage_timeout = float(timeout_sec or 10.0)
-            _compact_level, degrade_reason = self._recent_timeout_degrade_state()
-            if degrade_reason == 'recent_timeout':
+            _compact_level, degrade_reason = self._recent_failure_degrade_state()
+            if degrade_reason in {'recent_timeout', 'recent_overload'}:
+                is_overload = degrade_reason == 'recent_overload'
                 raise StrategyLLMRequestError(
-                    f"call_stage({stage_id}) skipped during timeout cooldown",
+                    f"call_stage({stage_id}) skipped during {'overload' if is_overload else 'timeout'} cooldown",
                     metrics={
                         "stage_id": stage_id,
                         "status": "cooldown_skip",
-                        "last_error_type": "RecentTimeoutCooldown",
+                        "cooldown_reason": degrade_reason,
+                        "last_error_type": "RecentOverloadCooldown" if is_overload else "RecentTimeoutCooldown",
                         "recent_timeout_streak": self._recent_timeout_streak,
                         "recent_timeout_cooldown_sec": round(
                             max(self._recent_timeout_cooldown_until - time.monotonic(), 0.0),
+                            4,
+                        ),
+                        "recent_overload_streak": int(getattr(self, "_recent_overload_streak", 0) or 0),
+                        "recent_overload_cooldown_sec": round(
+                            max(getattr(self, "_recent_overload_cooldown_until", 0.0) - time.monotonic(), 0.0),
                             4,
                         ),
                         "elapsed_seconds": round(time.perf_counter() - started_at, 4),
@@ -383,7 +490,8 @@ class _StrategyLLMProviderRuntimeMixin:
             }
 
             last_exc: Optional[Exception] = None
-            attempts = 1  # single attempt per stage — fail fast and fallback
+            attempts = max(1, int(getattr(self.config, "stage_retry_count", 1) or 0) + 1)
+            attempt_reports: list[dict[str, Any]] = []
 
             client = self._client
             for attempt in range(1, attempts + 1):
@@ -426,18 +534,41 @@ class _StrategyLLMProviderRuntimeMixin:
                     ValueError,
                 ) as exc:
                     last_exc = exc
-                    if attempt >= attempts:
+                    attempt_reports.append({
+                        "attempt": attempt,
+                        "status": "failed",
+                        "elapsed_seconds": round(time.perf_counter() - request_started_at, 4),
+                        "error_type": self._failure_type(exc),
+                        "error": self._error_text(exc),
+                        "status_code": self._status_code_from_error(exc),
+                        "retry_after_sec": self._retry_after_seconds(exc),
+                    })
+                    if attempt >= attempts or not self._should_retry_request_error(exc):
                         break
-                    await asyncio.sleep(min(self.config.retry_backoff_sec * attempt, 3.0))
+                    await asyncio.sleep(
+                        self._retry_backoff_delay(
+                            attempt,
+                            exc,
+                            base_delay=float(getattr(self.config, "stage_retry_backoff_sec", self.config.retry_backoff_sec) or 0.0),
+                        )
+                    )
 
             if last_exc is not None:
                 self._record_request_failure(last_exc)
             raise StrategyLLMRequestError(
-                f"call_stage({stage_id}) failed after {attempts} attempts: {self._error_text(last_exc or RuntimeError('unknown'))}",
+                f"call_stage({stage_id}) failed after {len(attempt_reports)} attempts: {self._error_text(last_exc or RuntimeError('unknown'))}",
                 metrics={
                     "stage_id": stage_id,
                     "status": "failed",
                     "elapsed_seconds": round(time.perf_counter() - started_at, 4),
-                    "last_error_type": (last_exc.__class__.__name__ if last_exc else "RuntimeError"),
+                    "attempt_count": len(attempt_reports),
+                    "attempts": attempt_reports,
+                    "last_error_type": (self._failure_type(last_exc) if last_exc else "RuntimeError"),
+                    "last_error_status_code": self._status_code_from_error(last_exc) if last_exc else None,
+                    "last_error": self._error_text(last_exc or RuntimeError("unknown")),
+                    "recent_timeout_streak": self._recent_timeout_streak,
+                    "recent_timeout_cooldown_sec": round(max(self._recent_timeout_cooldown_until - time.monotonic(), 0.0), 4),
+                    "recent_overload_streak": int(getattr(self, "_recent_overload_streak", 0) or 0),
+                    "recent_overload_cooldown_sec": round(max(getattr(self, "_recent_overload_cooldown_until", 0.0) - time.monotonic(), 0.0), 4),
                 },
             ) from last_exc

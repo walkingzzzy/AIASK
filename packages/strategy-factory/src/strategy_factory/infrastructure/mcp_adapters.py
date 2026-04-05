@@ -124,6 +124,15 @@ class MCPStrategyFactoryRepositoryAdapter:
     async def save_strategy_factory_run(self, results: Mapping[str, Any]):
         return await self._call("save_strategy_factory_run", results)
 
+    async def list_strategy_factory_runs(self, limit: int = 20):
+        return await self._call("list_strategy_factory_runs", limit=limit)
+
+    async def get_strategy_factory_run(self, run_id: str):
+        return await self._call("get_strategy_factory_run", run_id)
+
+    async def get_latest_strategy_factory_run(self):
+        return await self._call("get_latest_strategy_factory_run")
+
     async def get_strategy_incubation_account(self, strategy_id: str):
         return await self._call("get_strategy_incubation_account", strategy_id)
 

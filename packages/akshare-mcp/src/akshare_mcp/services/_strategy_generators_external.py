@@ -92,6 +92,16 @@ from .strategy_spec import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_strategy_generators_imports() -> dict[str, Any]:
+    try:
+        from . import strategy_generators as public_module
+
+        sf_fn = getattr(public_module, "_sf", _sf)
+        return dict(sf_fn() or {})
+    except Exception:
+        return dict(_sf() or {})
+
+
 class RuleStrategyGenerator:
     @staticmethod
     def _factor_research_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -226,6 +236,7 @@ class RuleStrategyGenerator:
 
 
 class _LLMProxyStrategyGeneratorExternalMixin:
+        @staticmethod
         def _dedupe_specs(specs: list[StrategySpec]) -> list[StrategySpec]:
             unique: list[StrategySpec] = []
             seen: set[tuple[str, str]] = set()
@@ -240,6 +251,7 @@ class _LLMProxyStrategyGeneratorExternalMixin:
                 unique.append(spec)
             return unique
 
+        @staticmethod
         def _pipeline_run_timeout_sec() -> float:
             configured = os.getenv('STRATEGY_LLM_PIPELINE_RUN_TIMEOUT_SEC')
             if configured is not None:
@@ -252,8 +264,9 @@ class _LLMProxyStrategyGeneratorExternalMixin:
             stage_default = 10.0
             stage_timeouts: dict[str, Any] = {}
             try:
-                stage_default = float(_sf().get('PIPELINE_STAGE_TIMEOUT_SEC') or 10.0)
-                stage_timeouts = dict(_sf().get('PIPELINE_STAGE_TIMEOUTS') or {})
+                strategy_generator_imports = _resolve_strategy_generators_imports()
+                stage_default = float(strategy_generator_imports.get('PIPELINE_STAGE_TIMEOUT_SEC') or 10.0)
+                stage_timeouts = dict(strategy_generator_imports.get('PIPELINE_STAGE_TIMEOUTS') or {})
             except Exception:
                 stage_default = 10.0
                 stage_timeouts = {}
@@ -385,6 +398,7 @@ class _LLMProxyStrategyGeneratorExternalMixin:
                     return frame.tail(120).copy()
             return None
 
+        @staticmethod
         def _build_synthetic_market_frame(research_context: Optional[dict[str, Any]] = None) -> Optional[pd.DataFrame]:
             context = dict(research_context or {})
             sources = list(context.get('symbol_insights') or []) + list(context.get('candidate_universe') or [])

@@ -66,3 +66,6 @@ async def get_investment_analysis(
         finally:
             if original_get_db is not None:
                 investment_analysis_mod.get_db = original_get_db
+
+
+__all__ = [name for name in globals() if not name.startswith("__")]

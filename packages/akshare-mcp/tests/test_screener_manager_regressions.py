@@ -6,7 +6,7 @@ from akshare_mcp.services import screen_conditions as _screen_conditions  # noqa
 
 
 class _DummyMCP:
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn

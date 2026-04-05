@@ -35,7 +35,7 @@ const PRIMARY_ACTIONS = [
     className: LARGE_ACTION_CLS,
   },
   {
-    endpoint: '/assistant/diagnosis',
+    endpoint: '/assistant/analysis-workflow',
     label: '全方位体检',
     actionLabel: '全方位综合体检',
     description: '优先给出综合结论、风险点和后续动作，适合第一次看一只股票。',
@@ -132,9 +132,9 @@ export default function AssistantPage() {
 
     const requiresStockCode =
       endpoint === '/assistant/unified-decision' ||
+      endpoint === '/assistant/analysis-workflow' ||
       endpoint === '/assistant/should-buy' ||
-      endpoint === '/assistant/should-sell' ||
-      endpoint === '/assistant/diagnosis';
+      endpoint === '/assistant/should-sell';
 
     if (requiresStockCode) {
       if (!validate()) return;
@@ -144,6 +144,10 @@ export default function AssistantPage() {
     if (endpoint === '/assistant/unified-decision') {
       body.investmentStyle = investmentStyle;
       body.legacyMode = legacyMode;
+    }
+
+    if (endpoint === '/assistant/analysis-workflow') {
+      body.investmentStyle = investmentStyle;
     }
 
     if (endpoint === '/assistant/should-sell') {

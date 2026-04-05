@@ -116,6 +116,11 @@ class FactoryBacktestAssumptions:
     capacity_bucket: Optional[str] = None
     position_assumption: str = "single_name_full_notional"
     target_weight_scheme: str = "single_name"
+    target_weight_map: JSONDict = field(default_factory=dict)
+    market_ruleset: str = "cn_equity"
+    sell_tax_rate: float = 0.001
+    min_trade_lot: int = 100
+    t_plus_one: bool = True
     validation_focus: str = "target_plus_representative"
 
     def to_backtest_kwargs(self) -> JSONDict:
@@ -134,6 +139,11 @@ class FactoryBacktestAssumptions:
             "capacity_bucket": self.capacity_bucket,
             "position_assumption": str(self.position_assumption or "single_name_full_notional"),
             "target_weight_scheme": str(self.target_weight_scheme or "single_name"),
+            "target_weight_map": dict(self.target_weight_map or {}),
+            "market_ruleset": str(self.market_ruleset or "cn_equity"),
+            "sell_tax_rate": float(self.sell_tax_rate),
+            "min_trade_lot": int(self.min_trade_lot),
+            "t_plus_one": bool(self.t_plus_one),
             "validation_focus": str(self.validation_focus or "target_plus_representative"),
         }
 
@@ -153,6 +163,11 @@ class FactoryBacktestAssumptions:
             "capacity_bucket": self.capacity_bucket,
             "position_assumption": str(self.position_assumption or "single_name_full_notional"),
             "target_weight_scheme": str(self.target_weight_scheme or "single_name"),
+            "target_weight_map": dict(self.target_weight_map or {}),
+            "market_ruleset": str(self.market_ruleset or "cn_equity"),
+            "sell_tax_rate": float(self.sell_tax_rate),
+            "min_trade_lot": int(self.min_trade_lot),
+            "t_plus_one": bool(self.t_plus_one),
             "validation_focus": str(self.validation_focus or "target_plus_representative"),
         }
 
@@ -214,6 +229,12 @@ class StrategyFactoryRepository(Protocol):
     async def save_factory_theme_definition(self, payload: Mapping[str, Any]) -> Any: ...
 
     async def save_strategy_factory_run(self, results: Mapping[str, Any]) -> Any: ...
+
+    async def list_strategy_factory_runs(self, limit: int = 20) -> list[Mapping[str, Any]]: ...
+
+    async def get_strategy_factory_run(self, run_id: str) -> Optional[Mapping[str, Any]]: ...
+
+    async def get_latest_strategy_factory_run(self) -> Optional[Mapping[str, Any]]: ...
 
 
 @runtime_checkable

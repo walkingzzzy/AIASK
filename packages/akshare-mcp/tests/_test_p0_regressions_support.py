@@ -38,7 +38,7 @@ import akshare_mcp.services.portfolio_optimization as po_mod
 
 
 class _DummyMCP:
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn

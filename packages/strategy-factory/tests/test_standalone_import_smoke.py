@@ -47,6 +47,10 @@ def test_strategy_factory_public_api_imports_without_akshare_mcp(tmp_path):
 
         constants = api.get_factory_constants()
         assert constants["LLM_FAN_OUT_COUNT"] >= 1
+        assert constants["AUTONOMY_TASK_HARD_CAP"] >= constants["AUTONOMY_CANDIDATES_PER_TASK"]
+        assert constants["SPAWNER_EVENT_SOURCE_BASE_CAP"] >= 0
+        assert "STOCK_STRATEGY_MATRIX_ENABLED" in constants
+        assert "FACTORY_PRE_GATE_ENABLED" in constants
         assert "strategy_generation" in constants["PIPELINE_STAGE_TIMEOUTS"]
         assert strategy_factory.auto_name("ma_cross", {"short_period": 8, "long_period": 21}) == "均线交叉·快8慢21"
         assert api.StrategyFactoryRepository.__name__ == "StrategyFactoryRepository"

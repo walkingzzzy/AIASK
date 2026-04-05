@@ -156,20 +156,129 @@ async def handle_incubation_overview(db, params: dict) -> dict:
 
 
 async def handle_factory_status(db, params: dict) -> dict:
-    from strategy_factory import get_strategy_factory_scheduler
+    from strategy_factory import get_factory_constants, get_strategy_factory_scheduler
 
     scheduler = get_strategy_factory_scheduler()
     status = scheduler.status()
+    extract_bulk_cursor = getattr(scheduler, "_extract_bulk_stock_cursor", None)
+    factory_constants = get_factory_constants()
+
+    def _default_bulk_config() -> dict:
+        return {
+            "enabled": bool(factory_constants.get("STOCK_STRATEGY_MATRIX_ENABLED")),
+            "universe_limit": int(factory_constants.get("STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT") or 0),
+            "families_per_stock": int(factory_constants.get("STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK") or 0),
+            "max_tasks_per_run": int(factory_constants.get("STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN") or 0),
+            "max_candidates_per_run": int(factory_constants.get("STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN") or 0),
+            "generation_limit_per_task": int(factory_constants.get("STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK") or 0),
+            "batch_size": int(factory_constants.get("STOCK_STRATEGY_MATRIX_BATCH_SIZE") or 0),
+            "bulk_concurrency": int(factory_constants.get("STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY") or 0),
+            "run_window": factory_constants.get("STOCK_STRATEGY_MATRIX_RUN_WINDOW"),
+            "tasks_per_shard": int(factory_constants.get("STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD") or 0),
+            "pre_gate_enabled": bool(factory_constants.get("FACTORY_PRE_GATE_ENABLED")),
+        }
+
+    def _fallback_bulk_cursor(summary: dict | None, *, run_id: str | None) -> dict:
+        payload = dict(summary or {})
+        universe_limit = max(1, int(payload.get("bulk_stock_matrix_universe_limit") or 500))
+        enabled = bool(payload.get("bulk_stock_matrix_enabled"))
+        eligible_stock_count = int(payload.get("bulk_stock_matrix_eligible_stock_count") or 0)
+        offset_fallback = bool(payload.get("bulk_stock_matrix_universe_offset_fallback"))
+        effective_offset = int(payload.get("bulk_stock_matrix_effective_universe_offset") or 0)
+        next_offset = payload.get("bulk_stock_matrix_next_universe_offset")
+        if next_offset is None:
+            if not enabled or eligible_stock_count <= 0:
+                next_offset = 0
+            elif offset_fallback:
+                next_offset = universe_limit
+            elif eligible_stock_count < universe_limit:
+                next_offset = 0
+            else:
+                next_offset = effective_offset + universe_limit
+        next_offset = max(0, int(next_offset or 0))
+        requested_task_offset = max(
+            0,
+            int(
+                payload.get("bulk_stock_matrix_requested_task_offset")
+                or payload.get("bulk_stock_matrix_requested_universe_offset")
+                or 0
+            ),
+        )
+        effective_task_offset = max(
+            0,
+            int(
+                payload.get("bulk_stock_matrix_effective_task_offset")
+                or payload.get("bulk_stock_matrix_effective_universe_offset")
+                or 0
+            ),
+        )
+        next_task_offset = max(
+            0,
+            int(
+                payload.get("bulk_stock_matrix_next_task_offset")
+                or payload.get("bulk_stock_matrix_next_universe_offset")
+                or 0
+            ),
+        )
+        return {
+            "available": any(
+                key in payload
+                for key in (
+                    "bulk_stock_matrix_enabled",
+                    "bulk_stock_matrix_requested_universe_offset",
+                    "bulk_stock_matrix_effective_universe_offset",
+                    "bulk_stock_matrix_next_universe_offset",
+                    "bulk_stock_matrix_requested_task_offset",
+                    "bulk_stock_matrix_effective_task_offset",
+                    "bulk_stock_matrix_next_task_offset",
+                )
+            ),
+            "source": "persisted_run",
+            "resume_from_run_id": str(run_id or "").strip() or None,
+            "enabled": enabled,
+            "universe_limit": universe_limit,
+            "requested_universe_offset": max(0, int(payload.get("bulk_stock_matrix_requested_universe_offset") or 0)),
+            "effective_universe_offset": effective_offset,
+            "universe_offset_fallback": offset_fallback,
+            "eligible_stock_count": eligible_stock_count,
+            "next_universe_offset": next_offset,
+            "cursor_wrapped": bool(payload.get("bulk_stock_matrix_cursor_wrapped")) if "bulk_stock_matrix_cursor_wrapped" in payload else bool(enabled and eligible_stock_count > 0 and (offset_fallback or next_offset == 0)),
+            "cursor_mode": str(payload.get("bulk_stock_matrix_cursor_mode") or "task_offset").strip() or "task_offset",
+            "requested_task_offset": requested_task_offset,
+            "effective_task_offset": effective_task_offset,
+            "task_offset_fallback": bool(payload.get("bulk_stock_matrix_task_offset_fallback")) if "bulk_stock_matrix_task_offset_fallback" in payload else offset_fallback,
+            "planned_task_count": max(0, int(payload.get("bulk_stock_matrix_planned_task_count") or 0)),
+            "next_task_offset": next_task_offset,
+            "task_cursor_wrapped": bool(payload.get("bulk_stock_matrix_task_cursor_wrapped")) if "bulk_stock_matrix_task_cursor_wrapped" in payload else bool(enabled and eligible_stock_count > 0 and next_task_offset == 0),
+        }
+
+    status["bulk_stock_matrix_config"] = {
+        **_default_bulk_config(),
+        **dict(status.get("bulk_stock_matrix_config") or {}),
+    }
     latest_run = await db.get_latest_strategy_factory_run() if hasattr(db, "get_latest_strategy_factory_run") else None
     if latest_run:
         status["last_persisted_run"] = latest_run
         if not status.get("last_result"):
             status["last_run"] = latest_run.get("completed_at") or latest_run.get("started_at")
             status["last_result"] = {
+                "run_id": latest_run.get("run_id"),
                 "status": latest_run.get("status"),
                 "error": latest_run.get("error"),
             }
             status["last_summary"] = latest_run.get("summary") or {}
+        if not (status.get("bulk_stock_matrix_cursor") or {}).get("available"):
+            if callable(extract_bulk_cursor):
+                status["bulk_stock_matrix_cursor"] = extract_bulk_cursor(
+                    latest_run.get("summary") or {},
+                    source="persisted_run",
+                    run_id=latest_run.get("run_id"),
+                )
+            else:
+                status["bulk_stock_matrix_cursor"] = _fallback_bulk_cursor(
+                    latest_run.get("summary") or {},
+                    run_id=latest_run.get("run_id"),
+                )
     return ok(status)
 
 

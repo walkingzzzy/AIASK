@@ -840,6 +840,75 @@ class FactorResearchMemoryService:
         }
 
 
+    async def record_feedback(
+        self,
+        *,
+        artifact_id: str,
+        feedback: dict[str, Any],
+        source_feedback_artifact_id: str | None = None,
+        source_model_registry_artifact_id: str | None = None,
+    ) -> dict[str, Any]:
+        """将策略孵化期的真实结果写回 factor memory 记录。
+
+        feedback 字段包括：
+          - decay_detected: bool
+          - regime_shift_detected: bool
+          - crowding_elevated: bool
+          - runtime_pressure_detected: bool
+          - forward_return / forward_ic_5d: float
+          - recommended_action: str (monitor|schedule_retrain|deprecate)
+          - 其他任意补充字段
+        """
+        existing = await self.get_memory_record(artifact_id)
+        if not existing:
+            raise ValueError(f"memory record not found: {artifact_id}")
+
+        decay_detected = bool(feedback.get("decay_detected"))
+        regime_shift_detected = bool(feedback.get("regime_shift_detected"))
+        crowding_elevated = bool(feedback.get("crowding_elevated"))
+        runtime_pressure = bool(feedback.get("runtime_pressure_detected"))
+        forward_return = feedback.get("forward_return") or feedback.get("forward_ic_5d")
+        recommended_action = str(feedback.get("recommended_action") or "monitor").strip()
+
+        current_status = str(existing.get("status") or "").strip()
+        new_status = current_status
+        if (decay_detected or regime_shift_detected) and current_status == "success":
+            new_status = "degraded"
+
+        feedback_entry: dict[str, Any] = {
+            "source_feedback_artifact_id": source_feedback_artifact_id,
+            "source_model_registry_artifact_id": source_model_registry_artifact_id,
+            "decay_detected": decay_detected,
+            "regime_shift_detected": regime_shift_detected,
+            "crowding_elevated": crowding_elevated,
+            "runtime_pressure_detected": runtime_pressure,
+            "forward_return": forward_return,
+            "recommended_action": recommended_action,
+            "feedback_at": _now_iso(),
+        }
+        skip_keys = {
+            "decay_detected", "regime_shift_detected", "crowding_elevated",
+            "runtime_pressure_detected", "forward_return", "forward_ic_5d", "recommended_action",
+        }
+        for k, v in feedback.items():
+            if k not in skip_keys:
+                feedback_entry[k] = v
+
+        existing_feedback = list(existing.get("runtime_feedback") or [])
+        existing_feedback.insert(0, feedback_entry)
+        existing_feedback = existing_feedback[:10]
+
+        updated = {
+            **existing,
+            "status": new_status,
+            "runtime_feedback": existing_feedback,
+            "last_feedback_at": _now_iso(),
+            "last_feedback_recommended_action": recommended_action,
+            "updated_at": _now_iso(),
+        }
+        return save_factor_candidate_record(updated, artifact_id=artifact_id)
+
+
 _factor_research_memory_service: Optional[FactorResearchMemoryService] = None
 
 

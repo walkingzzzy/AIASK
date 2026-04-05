@@ -1,4 +1,9 @@
-from ._schema_market_common import *
+from ._schema_market_common import (
+    _create_hypertable_if_supported,
+    _ensure_foreign_key,
+    _run_market_migration_once,
+    logger,
+)
 
 
 async def init_market_tables_phase_1(conn) -> None:

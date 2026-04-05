@@ -115,6 +115,7 @@ class _MarketOpportunityScannerEventMixin:
                 theme_code = str(theme.get("theme_code") or theme.get("theme") or f"theme_{theme_idx}").strip()
                 if not theme_code:
                     continue
+                from ..domain.constants import OPPORTUNITY_TARGET_SYMBOLS_PER_TASK as _EVT_LIMIT
                 target_symbols = cls._normalize_codes(
                     [
                         theme.get("target_symbols"),
@@ -125,7 +126,7 @@ class _MarketOpportunityScannerEventMixin:
                             else None
                         ),
                     ],
-                    limit=5,
+                    limit=_EVT_LIMIT,
                 )
                 if not target_symbols:
                     continue

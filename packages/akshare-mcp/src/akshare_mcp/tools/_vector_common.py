@@ -258,7 +258,6 @@ async def _fill_missing_candidate_stock_info(db, candidate_rows: List[Dict[str, 
             filled[code] = dict(payload)
     return filled
 
-
 def _extract_technical_features(klines: List[Dict[str, Any]]) -> Dict[str, float]:
     if not klines or len(klines) < 20:
         return {}
@@ -363,3 +362,6 @@ def _coerce_date_str(value: Any) -> str:
         return value.date().isoformat()
     text = str(value or "").strip()
     return text[:10] if text else ""
+
+
+__all__ = [name for name in globals() if not name.startswith("__")]

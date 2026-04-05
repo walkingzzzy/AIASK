@@ -15,7 +15,11 @@ from zoneinfo import ZoneInfo
 
 from .legacy_bridge import get_compat_symbol
 from ..domain.constants import (
+    AUTONOMY_MAX_RESEARCH_TASKS,
+    AUTONOMY_MAX_BULK_RESEARCH_TASKS,
+    AUTONOMY_RESERVED_BULK_RESEARCH_TASKS,
     AUTONOMY_CANDIDATES_PER_TASK,
+    AUTONOMY_TASK_HARD_CAP,
     AUTONOMY_STARTUP_DELAY_SEC,
     FACTORY_DAILY_RUN_TIME,
     FACTORY_ERROR_BACKOFF_SEC,
@@ -25,6 +29,7 @@ from ..domain.constants import (
     FACTORY_MARKET_HOURS_INTERVAL_SEC,
     FACTORY_MAX_DAILY_RUNS,
     FACTORY_OFF_HOURS_INTERVAL_SEC,
+    FACTORY_PRE_GATE_ENABLED,
     FACTORY_READINESS_HARD_BLOCK,
     FACTORY_READINESS_MIN_COMPLETION_RATIO,
     FACTORY_READINESS_MIN_SCORE,
@@ -35,6 +40,16 @@ from ..domain.constants import (
     FACTORY_STARTUP_WARMUP_LIMIT,
     FACTORY_STARTUP_WARMUP_TASK_TYPE,
     RESEARCH_TASK_CONCURRENCY,
+    STOCK_STRATEGY_MATRIX_BATCH_SIZE,
+    STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY,
+    STOCK_STRATEGY_MATRIX_ENABLED,
+    STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK,
+    STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK,
+    STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN,
+    STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN,
+    STOCK_STRATEGY_MATRIX_RUN_WINDOW,
+    STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD,
+    STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT,
     is_factory_factor_auto_refresh_enabled,
     is_factory_readiness_hard_block_enabled,
     is_factory_runtime_enabled,
@@ -49,6 +64,7 @@ from .run_models import (
     summarize_stage_results,
 )
 from .utils import _extract_event_context as _local_extract_event_context
+from .stock_strategy_matrix import StockStrategyMatrixPlanner
 from ..domain.targets import _extract_target_codes_from_payload, _normalize_target_codes
 from ..infrastructure.mcp_services import get_autonomy_lifecycle_runtime, get_runtime_warmup_runner
 
@@ -244,6 +260,27 @@ class _StrategyFactorySchedulerLoopMixin:
             t = now.time()
             return time(9, 30) <= t < time(15, 0)
 
+        @classmethod
+        def _bulk_stock_matrix_run_window_state(cls, now: datetime) -> dict[str, Any]:
+            current_period = "market_hours" if cls._is_market_hours(now) else "off_hours"
+            run_window = str(STOCK_STRATEGY_MATRIX_RUN_WINDOW or "always").strip().lower() or "always"
+            configured_enabled = bool(STOCK_STRATEGY_MATRIX_ENABLED)
+            run_window_active = configured_enabled and (
+                run_window == "always" or run_window == current_period
+            )
+            skip_reason = None
+            if not configured_enabled:
+                skip_reason = "disabled"
+            elif not run_window_active:
+                skip_reason = "outside_run_window"
+            return {
+                "configured_enabled": configured_enabled,
+                "run_window": run_window,
+                "run_window_active": run_window_active,
+                "current_period": current_period,
+                "skip_reason": skip_reason,
+            }
+
         def _compute_next_wait(self, now: datetime) -> float:
             """根据调度模式和当前时间计算下一次运行的等待秒数。"""
             # 首次运行使用启动延迟
@@ -263,6 +300,153 @@ class _StrategyFactorySchedulerLoopMixin:
             if self._is_market_hours(now):
                 return float(FACTORY_MARKET_HOURS_INTERVAL_SEC)
             return float(FACTORY_OFF_HOURS_INTERVAL_SEC)
+
+        @staticmethod
+        def _coerce_non_negative_int(value: Any, default: int = 0) -> int:
+            try:
+                return max(0, int(value))
+            except Exception:
+                return max(0, int(default))
+
+        @classmethod
+        def _extract_bulk_stock_cursor(
+            cls,
+            summary: Optional[dict[str, Any]],
+            *,
+            source: str,
+            run_id: Optional[str] = None,
+        ) -> dict[str, Any]:
+            payload = dict(summary or {})
+            known_keys = {
+                "bulk_stock_matrix_enabled",
+                "bulk_stock_matrix_universe_limit",
+                "bulk_stock_matrix_requested_universe_offset",
+                "bulk_stock_matrix_effective_universe_offset",
+                "bulk_stock_matrix_universe_offset_fallback",
+                "bulk_stock_matrix_eligible_stock_count",
+                "bulk_stock_matrix_next_universe_offset",
+                "bulk_stock_matrix_cursor_wrapped",
+                "bulk_stock_matrix_requested_task_offset",
+                "bulk_stock_matrix_effective_task_offset",
+                "bulk_stock_matrix_task_offset_fallback",
+                "bulk_stock_matrix_next_task_offset",
+                "bulk_stock_matrix_task_cursor_wrapped",
+                "bulk_stock_matrix_planned_task_count",
+            }
+            available = any(key in payload for key in known_keys)
+            universe_limit = max(
+                1,
+                cls._coerce_non_negative_int(
+                    payload.get("bulk_stock_matrix_universe_limit"),
+                    STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT,
+                ),
+            )
+            enabled = bool(payload.get("bulk_stock_matrix_enabled"))
+            requested_offset = cls._coerce_non_negative_int(
+                payload.get("bulk_stock_matrix_requested_universe_offset"),
+            )
+            effective_offset = cls._coerce_non_negative_int(
+                payload.get("bulk_stock_matrix_effective_universe_offset"),
+            )
+            offset_fallback = bool(payload.get("bulk_stock_matrix_universe_offset_fallback"))
+            eligible_stock_count = cls._coerce_non_negative_int(
+                payload.get("bulk_stock_matrix_eligible_stock_count"),
+            )
+            next_offset_raw = payload.get("bulk_stock_matrix_next_universe_offset")
+            if next_offset_raw is None:
+                if not enabled or eligible_stock_count <= 0:
+                    next_universe_offset = 0
+                    cursor_wrapped = False
+                elif offset_fallback:
+                    next_universe_offset = universe_limit
+                    cursor_wrapped = True
+                elif eligible_stock_count < universe_limit:
+                    next_universe_offset = 0
+                    cursor_wrapped = True
+                else:
+                    next_universe_offset = effective_offset + universe_limit
+                    cursor_wrapped = False
+            else:
+                next_universe_offset = cls._coerce_non_negative_int(next_offset_raw)
+                if "bulk_stock_matrix_cursor_wrapped" in payload:
+                    cursor_wrapped = bool(payload.get("bulk_stock_matrix_cursor_wrapped"))
+                else:
+                    cursor_wrapped = bool(
+                        enabled and eligible_stock_count > 0 and (offset_fallback or next_universe_offset == 0)
+                    )
+            requested_task_offset = cls._coerce_non_negative_int(
+                payload.get("bulk_stock_matrix_requested_task_offset"),
+                requested_offset,
+            )
+            effective_task_offset = cls._coerce_non_negative_int(
+                payload.get("bulk_stock_matrix_effective_task_offset"),
+                effective_offset,
+            )
+            task_offset_fallback = bool(
+                payload.get("bulk_stock_matrix_task_offset_fallback")
+                if "bulk_stock_matrix_task_offset_fallback" in payload
+                else offset_fallback
+            )
+            planned_task_count = cls._coerce_non_negative_int(
+                payload.get("bulk_stock_matrix_planned_task_count"),
+            )
+            next_task_offset = cls._coerce_non_negative_int(
+                payload.get("bulk_stock_matrix_next_task_offset"),
+                next_universe_offset,
+            )
+            task_cursor_wrapped = bool(
+                payload.get("bulk_stock_matrix_task_cursor_wrapped")
+                if "bulk_stock_matrix_task_cursor_wrapped" in payload
+                else cursor_wrapped
+            )
+            return {
+                "available": available,
+                "source": str(source or "default"),
+                "resume_from_run_id": str(run_id or "").strip() or None,
+                "enabled": enabled,
+                "universe_limit": universe_limit,
+                "requested_universe_offset": requested_offset,
+                "effective_universe_offset": effective_offset,
+                "universe_offset_fallback": offset_fallback,
+                "eligible_stock_count": eligible_stock_count,
+                "next_universe_offset": next_universe_offset,
+                "cursor_wrapped": cursor_wrapped,
+                "cursor_mode": str(payload.get("bulk_stock_matrix_cursor_mode") or "task_offset").strip() or "task_offset",
+                "requested_task_offset": requested_task_offset,
+                "effective_task_offset": effective_task_offset,
+                "task_offset_fallback": task_offset_fallback,
+                "planned_task_count": planned_task_count,
+                "next_task_offset": next_task_offset,
+                "task_cursor_wrapped": task_cursor_wrapped,
+            }
+
+        async def _resolve_bulk_stock_matrix_cursor(self, db) -> dict[str, Any]:
+            last_result = dict(self.last_result or {})
+            last_cursor = self._extract_bulk_stock_cursor(
+                (last_result.get("summary") or {}),
+                source="last_result",
+                run_id=last_result.get("run_id"),
+            )
+            if last_cursor.get("available"):
+                return last_cursor
+
+            try:
+                latest_run = await _call_optional_async(db, "get_latest_strategy_factory_run", default=None)
+            except Exception as exc:
+                logger.warning(
+                    "StrategyFactory: failed to resolve persisted bulk cursor, falling back to default: %s",
+                    exc,
+                )
+                latest_run = None
+            latest_cursor = self._extract_bulk_stock_cursor(
+                ((latest_run or {}).get("summary") or {}),
+                source="persisted_run",
+                run_id=(latest_run or {}).get("run_id"),
+            )
+            if latest_cursor.get("available"):
+                return latest_cursor
+
+            return self._extract_bulk_stock_cursor({}, source="default")
 
         async def _loop(self):
             while self._running:
@@ -305,16 +489,26 @@ class _StrategyFactorySchedulerLoopMixin:
                     await asyncio.sleep(FACTORY_ERROR_BACKOFF_SEC)
 
         async def _generate_for_research_task(self, autonomy_gateway, db, snapshot: dict, task: dict) -> dict:
-            limit = max(1, min(int(task.get("generation_limit") or AUTONOMY_CANDIDATES_PER_TASK), 10))
+            limit = max(1, min(int(task.get("generation_limit") or AUTONOMY_CANDIDATES_PER_TASK), AUTONOMY_TASK_HARD_CAP))
             source = f"strategy_factory:{task.get('opportunity_type') or 'general'}"
             gateway_db = self._adapt_gateway_repository(db)
-            return await autonomy_gateway.generate_factory_candidates(
-                gateway_db,
-                snapshot,
-                limit=limit,
-                research_task=task,
-                source=source,
-            )
+            timeout_sec = self._resolve_research_task_timeout_sec()
+            try:
+                return await asyncio.wait_for(
+                    autonomy_gateway.generate_factory_candidates(
+                        gateway_db,
+                        snapshot,
+                        limit=limit,
+                        research_task=task,
+                        source=source,
+                    ),
+                    timeout=timeout_sec,
+                )
+            except asyncio.TimeoutError as exc:
+                task_id = str(task.get("task_id") or task.get("task_key") or source).strip() or source
+                raise RuntimeError(
+                    f"research task {task_id} timed out after {timeout_sec:g}s"
+                ) from exc
 
         async def _persist_run_result(
             self,
@@ -375,22 +569,347 @@ class _StrategyFactorySchedulerLoopMixin:
                 return None
             return max(1, limit) if limit > 0 else None
 
+        @staticmethod
+        def _env_bool(*names: str, default: bool) -> bool:
+            for name in names:
+                raw = os.getenv(str(name or "").strip())
+                if raw is None:
+                    continue
+                text = str(raw).strip().lower()
+                if text in {"1", "true", "yes", "y", "on"}:
+                    return True
+                if text in {"0", "false", "no", "n", "off"}:
+                    return False
+            return bool(default)
+
         @classmethod
-        def _resolve_research_task_concurrency(cls, autonomy_gateway) -> int:
+        def _bulk_tasks_use_external_llm(cls, autonomy_gateway) -> bool:
+            autonomy_target = getattr(autonomy_gateway, "raw", autonomy_gateway)
+            generation_service = getattr(autonomy_target, "generation_service", None)
+            resolver = getattr(generation_service, "_bulk_llm_enabled", None)
+            if callable(resolver):
+                try:
+                    return bool(resolver())
+                except Exception:
+                    pass
+            return cls._env_bool(
+                "STRATEGY_FACTORY_BULK_LLM_ENABLED",
+                "STRATEGY_FACTORY_BULK_STOCK_MATRIX_LLM_ENABLED",
+                default=False,
+            )
+
+        @classmethod
+        def _resolve_research_task_concurrency(cls, autonomy_gateway, *, has_bulk_tasks: bool = False) -> int:
             effective = RESEARCH_TASK_CONCURRENCY
             provider_limit = cls._resolve_external_llm_concurrency_limit(autonomy_gateway)
             if provider_limit is not None:
                 effective = min(effective, provider_limit)
+            if has_bulk_tasks and cls._bulk_tasks_use_external_llm(autonomy_gateway):
+                bulk_target = max(1, int(STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY))
+                if provider_limit is not None:
+                    bulk_target = min(bulk_target, provider_limit)
+                effective = max(effective, bulk_target)
             return max(1, effective)
+
+        @classmethod
+        def _resolve_bulk_research_task_concurrency(cls, autonomy_gateway, *, has_bulk_tasks: bool = False) -> int:
+            if not has_bulk_tasks:
+                return cls._resolve_research_task_concurrency(autonomy_gateway, has_bulk_tasks=False)
+            if cls._bulk_tasks_use_external_llm(autonomy_gateway):
+                return cls._resolve_research_task_concurrency(autonomy_gateway, has_bulk_tasks=True)
+            return max(1, int(STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY))
+
+        @staticmethod
+        def _resolve_research_task_timeout_sec() -> float:
+            raw = str(os.getenv("STRATEGY_FACTORY_RESEARCH_TASK_TIMEOUT_SEC", "180") or "180").strip()
+            try:
+                value = float(raw)
+            except Exception:
+                value = 180.0
+            return max(15.0, min(value, 1800.0))
+
+        @classmethod
+        def _merge_autonomy_tasks_with_budget(
+            cls,
+            scanner,
+            scan_tasks: list[dict[str, Any]],
+            bulk_tasks: list[dict[str, Any]],
+        ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+            """Keep scan and bulk lanes on separate task budgets."""
+
+            normalized_scan_tasks = scanner._deduplicate_tasks(list(scan_tasks or []))
+            normalized_scan_tasks.sort(key=scanner._task_sort_key, reverse=True)
+            normalized_bulk_tasks = scanner._deduplicate_tasks(list(bulk_tasks or []))
+            normalized_bulk_tasks.sort(key=scanner._task_sort_key, reverse=True)
+            scan_task_budget = max(0, int(AUTONOMY_MAX_RESEARCH_TASKS))
+            bulk_task_budget = 0
+            if normalized_bulk_tasks:
+                bulk_task_budget = min(
+                    len(normalized_bulk_tasks),
+                    max(0, int(AUTONOMY_MAX_BULK_RESEARCH_TASKS)),
+                )
+            if len(normalized_scan_tasks) > scan_task_budget:
+                normalized_scan_tasks = normalized_scan_tasks[:scan_task_budget]
+            selected_bulk_tasks = normalized_bulk_tasks[:bulk_task_budget]
+
+            merged_tasks = scanner._deduplicate_tasks([*normalized_scan_tasks, *selected_bulk_tasks])
+            merged_tasks.sort(key=scanner._task_sort_key, reverse=True)
+
+            selected_bulk_count = len(
+                [
+                    task
+                    for task in merged_tasks
+                    if str((task or {}).get("task_source") or "").strip().lower() == "bulk_stock_matrix"
+                ]
+            )
+            selected_scan_count = max(0, len(merged_tasks) - selected_bulk_count)
+            planned_bulk_count = len(normalized_bulk_tasks)
+            return merged_tasks, {
+                "max_research_tasks": int(scan_task_budget),
+                "max_bulk_research_tasks": int(bulk_task_budget),
+                "combined_research_task_budget": int(scan_task_budget + bulk_task_budget),
+                "scan_research_task_budget": int(scan_task_budget),
+                "reserved_bulk_task_budget": int(bulk_task_budget or AUTONOMY_RESERVED_BULK_RESEARCH_TASKS),
+                "selected_scan_task_count": int(selected_scan_count),
+                "selected_bulk_task_count": int(selected_bulk_count),
+                "planned_bulk_task_count": int(planned_bulk_count),
+                "clipped_bulk_task_count": int(max(0, planned_bulk_count - selected_bulk_count)),
+            }
 
         async def _run_autonomy_batches(self, db, snapshot: dict) -> dict:
             factory_pkg = get_strategy_factory_package()
             scanner = factory_pkg.MarketOpportunityScanner()
             scan_report = await scanner.scan(db, snapshot)
-            tasks = list(scan_report.get("tasks") or [])
+            scan_tasks = list(scan_report.get("tasks") or [])
+            tasks = list(scan_tasks)
             scan_summary = dict(scan_report.get("summary") or {})
-            task_source_counts = dict(scan_summary.get("task_sources") or self._build_task_source_counts(tasks))
+            bulk_cursor = await self._resolve_bulk_stock_matrix_cursor(db)
+            bulk_window_state = self._bulk_stock_matrix_run_window_state(self._now())
+            bulk_report: dict[str, Any] = {
+                "summary": {
+                    "enabled": bool(bulk_window_state.get("run_window_active")),
+                    "configured_enabled": bool(bulk_window_state.get("configured_enabled")),
+                    "task_count": 0,
+                    "stock_count": 0,
+                    "family_counts": {},
+                    "planned_family_counts": {},
+                    "universe_limit": STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT,
+                    "batch_size": STOCK_STRATEGY_MATRIX_BATCH_SIZE,
+                    "bulk_concurrency": STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY,
+                    "requested_universe_offset": int(bulk_cursor.get("next_universe_offset") or 0),
+                    "effective_universe_offset": 0,
+                    "universe_offset_fallback": False,
+                    "next_universe_offset": 0,
+                    "cursor_wrapped": False,
+                    "cursor_mode": bulk_cursor.get("cursor_mode") or "task_offset",
+                    "requested_task_offset": int(bulk_cursor.get("next_task_offset") or 0),
+                    "effective_task_offset": 0,
+                    "task_offset_fallback": False,
+                    "next_task_offset": 0,
+                    "task_cursor_wrapped": False,
+                    "planned_task_count": int(bulk_cursor.get("planned_task_count") or 0),
+                    "planned_candidate_count": 0,
+                    "loaded_stock_count": 0,
+                    "pages_loaded": 0,
+                    "analysis_complete": False,
+                    "analysis_stock_coverage_ratio": 0.0,
+                    "cursor_source": bulk_cursor.get("source"),
+                    "cursor_resume_from_run_id": bulk_cursor.get("resume_from_run_id"),
+                    "run_window": bulk_window_state.get("run_window"),
+                    "run_window_active": bool(bulk_window_state.get("run_window_active")),
+                    "run_window_current_period": bulk_window_state.get("current_period"),
+                    "skip_reason": bulk_window_state.get("skip_reason"),
+                    "selected_shard_count": 0,
+                    "selected_shard_ids": [],
+                },
+                "tasks": [],
+            }
+            if bool(bulk_window_state.get("run_window_active")):
+                try:
+                    bulk_report = await StockStrategyMatrixPlanner().plan(
+                        db,
+                        {
+                            **snapshot,
+                            "bulk_stock_matrix_task_offset": int(bulk_cursor.get("next_task_offset") or 0),
+                            "bulk_stock_matrix_universe_offset": int(bulk_cursor.get("next_universe_offset") or 0),
+                            "bulk_stock_matrix_cycle_index": int(self._cycle_count),
+                            "bulk_stock_matrix_cursor_source": bulk_cursor.get("source"),
+                            "bulk_stock_matrix_cursor_resume_from_run_id": bulk_cursor.get("resume_from_run_id"),
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning("StrategyFactory: bulk stock-strategy matrix planning failed: %s", exc)
+                    bulk_report = {
+                        "summary": {
+                            "enabled": False,
+                            "configured_enabled": bool(bulk_window_state.get("configured_enabled")),
+                            "task_count": 0,
+                            "stock_count": 0,
+                            "family_counts": {},
+                            "planned_family_counts": {},
+                            "universe_limit": STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT,
+                            "batch_size": STOCK_STRATEGY_MATRIX_BATCH_SIZE,
+                            "bulk_concurrency": STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY,
+                            "requested_universe_offset": int(bulk_cursor.get("next_universe_offset") or 0),
+                            "effective_universe_offset": 0,
+                            "universe_offset_fallback": False,
+                            "next_universe_offset": 0,
+                            "cursor_wrapped": False,
+                            "cursor_mode": bulk_cursor.get("cursor_mode") or "task_offset",
+                            "requested_task_offset": int(bulk_cursor.get("next_task_offset") or 0),
+                            "effective_task_offset": 0,
+                            "task_offset_fallback": False,
+                            "next_task_offset": 0,
+                            "task_cursor_wrapped": False,
+                            "planned_task_count": int(bulk_cursor.get("planned_task_count") or 0),
+                            "planned_candidate_count": 0,
+                            "loaded_stock_count": 0,
+                            "pages_loaded": 0,
+                            "analysis_complete": False,
+                            "analysis_stock_coverage_ratio": 0.0,
+                            "cursor_source": bulk_cursor.get("source"),
+                            "cursor_resume_from_run_id": bulk_cursor.get("resume_from_run_id"),
+                            "run_window": bulk_window_state.get("run_window"),
+                            "run_window_active": bool(bulk_window_state.get("run_window_active")),
+                            "run_window_current_period": bulk_window_state.get("current_period"),
+                            "skip_reason": "planner_error",
+                            "selected_shard_count": 0,
+                            "selected_shard_ids": [],
+                            "error": str(exc),
+                        },
+                        "tasks": [],
+                    }
+            bulk_summary = dict(bulk_report.get("summary") or {})
+            bulk_summary.setdefault("configured_enabled", bool(bulk_window_state.get("configured_enabled")))
+            bulk_summary.setdefault("universe_limit", STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT)
+            bulk_summary.setdefault("batch_size", STOCK_STRATEGY_MATRIX_BATCH_SIZE)
+            bulk_summary.setdefault("bulk_concurrency", STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY)
+            bulk_summary.setdefault("requested_universe_offset", int(bulk_cursor.get("next_universe_offset") or 0))
+            bulk_summary.setdefault("effective_universe_offset", 0)
+            bulk_summary.setdefault("universe_offset_fallback", False)
+            bulk_summary.setdefault("next_universe_offset", 0)
+            bulk_summary.setdefault("cursor_wrapped", False)
+            bulk_summary.setdefault("cursor_mode", bulk_cursor.get("cursor_mode") or "task_offset")
+            bulk_summary.setdefault("requested_task_offset", int(bulk_cursor.get("next_task_offset") or 0))
+            bulk_summary.setdefault("effective_task_offset", 0)
+            bulk_summary.setdefault("task_offset_fallback", False)
+            bulk_summary.setdefault("next_task_offset", 0)
+            bulk_summary.setdefault("task_cursor_wrapped", False)
+            bulk_summary.setdefault("planned_task_count", int(bulk_cursor.get("planned_task_count") or 0))
+            bulk_summary.setdefault("planned_candidate_count", 0)
+            bulk_summary.setdefault("loaded_stock_count", 0)
+            bulk_summary.setdefault("pages_loaded", 0)
+            bulk_summary.setdefault("analysis_complete", False)
+            bulk_summary.setdefault("analysis_stock_coverage_ratio", 0.0)
+            bulk_summary.setdefault("planned_family_counts", {})
+            bulk_summary.setdefault("selected_shard_count", 0)
+            bulk_summary.setdefault("selected_shard_ids", [])
+            bulk_summary.setdefault("cursor_source", bulk_cursor.get("source"))
+            bulk_summary.setdefault("cursor_resume_from_run_id", bulk_cursor.get("resume_from_run_id"))
+            bulk_summary.setdefault("run_window", bulk_window_state.get("run_window"))
+            bulk_summary.setdefault("run_window_active", bool(bulk_window_state.get("run_window_active")))
+            bulk_summary.setdefault("run_window_current_period", bulk_window_state.get("current_period"))
+            bulk_summary.setdefault("skip_reason", bulk_window_state.get("skip_reason"))
+            bulk_report = {**bulk_report, "summary": bulk_summary}
+            bulk_tasks = list(bulk_report.get("tasks") or [])
+            if bulk_tasks:
+                tasks, task_budget_meta = self._merge_autonomy_tasks_with_budget(
+                    scanner,
+                    scan_tasks,
+                    bulk_tasks,
+                )
+            else:
+                task_budget_meta = {
+                    "max_research_tasks": int(AUTONOMY_MAX_RESEARCH_TASKS),
+                    "max_bulk_research_tasks": 0,
+                    "combined_research_task_budget": int(AUTONOMY_MAX_RESEARCH_TASKS),
+                    "scan_research_task_budget": int(AUTONOMY_MAX_RESEARCH_TASKS),
+                    "reserved_bulk_task_budget": 0,
+                    "selected_scan_task_count": int(len(tasks)),
+                    "selected_bulk_task_count": 0,
+                    "planned_bulk_task_count": 0,
+                    "clipped_bulk_task_count": 0,
+                }
+            task_source_counts = dict(scan_summary.get("task_sources") or scanner._build_task_source_counts(tasks))
+            if bulk_tasks:
+                task_source_counts = scanner._build_task_source_counts(tasks)
             event_task_count = int(scan_summary.get("event_task_count") or task_source_counts.get("event_driven", 0))
+            task_type_counts: Dict[str, int] = {}
+            for task in tasks:
+                opportunity_type = str(task.get("opportunity_type") or "unknown")
+                task_type_counts[opportunity_type] = task_type_counts.get(opportunity_type, 0) + 1
+            combined_scan_report = {
+                "summary": {
+                    **scan_summary,
+                    "task_count": len(tasks),
+                    "task_types": task_type_counts,
+                    "task_sources": dict(task_source_counts),
+                    "event_task_count": event_task_count,
+                    "bulk_stock_task_count": len(bulk_tasks),
+                    "bulk_stock_matrix_enabled": bool((bulk_report.get("summary") or {}).get("enabled")),
+                    "bulk_stock_matrix_configured_enabled": bool((bulk_report.get("summary") or {}).get("configured_enabled")),
+                    "bulk_stock_matrix_stock_count": int((bulk_report.get("summary") or {}).get("stock_count") or 0),
+                    "bulk_stock_matrix_eligible_stock_count": int((bulk_report.get("summary") or {}).get("eligible_stock_count") or 0),
+                    "bulk_stock_matrix_loaded_stock_count": int((bulk_report.get("summary") or {}).get("loaded_stock_count") or 0),
+                    "bulk_stock_matrix_pages_loaded": int((bulk_report.get("summary") or {}).get("pages_loaded") or 0),
+                    "bulk_stock_matrix_analysis_complete": bool((bulk_report.get("summary") or {}).get("analysis_complete")),
+                    "bulk_stock_matrix_analysis_stock_coverage_ratio": (bulk_report.get("summary") or {}).get("analysis_stock_coverage_ratio"),
+                    "bulk_stock_matrix_family_counts": dict((bulk_report.get("summary") or {}).get("family_counts") or {}),
+                    "bulk_stock_matrix_planned_family_counts": dict((bulk_report.get("summary") or {}).get("planned_family_counts") or {}),
+                    "bulk_stock_matrix_universe_limit": int((bulk_report.get("summary") or {}).get("universe_limit") or STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT),
+                    "bulk_stock_matrix_batch_size": int((bulk_report.get("summary") or {}).get("batch_size") or STOCK_STRATEGY_MATRIX_BATCH_SIZE),
+                    "bulk_stock_matrix_batch_count": int((bulk_report.get("summary") or {}).get("batch_count") or 0),
+                    "bulk_stock_matrix_selected_batch_count": int((bulk_report.get("summary") or {}).get("selected_batch_count") or 0),
+                    "bulk_stock_matrix_bulk_concurrency": int((bulk_report.get("summary") or {}).get("bulk_concurrency") or STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY),
+                    "bulk_stock_matrix_run_window": (bulk_report.get("summary") or {}).get("run_window"),
+                    "bulk_stock_matrix_run_window_active": bool((bulk_report.get("summary") or {}).get("run_window_active")),
+                    "bulk_stock_matrix_run_window_current_period": (bulk_report.get("summary") or {}).get("run_window_current_period"),
+                    "bulk_stock_matrix_skip_reason": (bulk_report.get("summary") or {}).get("skip_reason"),
+                    "bulk_stock_matrix_requested_universe_offset": int((bulk_report.get("summary") or {}).get("requested_universe_offset") or 0),
+                    "bulk_stock_matrix_effective_universe_offset": int((bulk_report.get("summary") or {}).get("effective_universe_offset") or 0),
+                    "bulk_stock_matrix_universe_offset_fallback": bool((bulk_report.get("summary") or {}).get("universe_offset_fallback")),
+                    "bulk_stock_matrix_next_universe_offset": int((bulk_report.get("summary") or {}).get("next_universe_offset") or 0),
+                    "bulk_stock_matrix_cursor_wrapped": bool((bulk_report.get("summary") or {}).get("cursor_wrapped")),
+                    "bulk_stock_matrix_cursor_mode": (bulk_report.get("summary") or {}).get("cursor_mode") or "task_offset",
+                    "bulk_stock_matrix_requested_task_offset": int((bulk_report.get("summary") or {}).get("requested_task_offset") or 0),
+                    "bulk_stock_matrix_effective_task_offset": int((bulk_report.get("summary") or {}).get("effective_task_offset") or 0),
+                    "bulk_stock_matrix_task_offset_fallback": bool((bulk_report.get("summary") or {}).get("task_offset_fallback")),
+                    "bulk_stock_matrix_next_task_offset": int((bulk_report.get("summary") or {}).get("next_task_offset") or 0),
+                    "bulk_stock_matrix_task_cursor_wrapped": bool((bulk_report.get("summary") or {}).get("task_cursor_wrapped")),
+                    "bulk_stock_matrix_cursor_source": (bulk_report.get("summary") or {}).get("cursor_source") or bulk_cursor.get("source"),
+                    "bulk_stock_matrix_cursor_resume_from_run_id": (bulk_report.get("summary") or {}).get("cursor_resume_from_run_id") or bulk_cursor.get("resume_from_run_id"),
+                    "bulk_stock_matrix_effective_task_budget": int((bulk_report.get("summary") or {}).get("effective_task_budget") or 0),
+                    "bulk_stock_matrix_max_candidates_per_run": int((bulk_report.get("summary") or {}).get("max_candidates_per_run") or 0),
+                    "bulk_stock_matrix_estimated_candidate_count": int((bulk_report.get("summary") or {}).get("estimated_candidate_count") or 0),
+                    "bulk_stock_matrix_planned_task_count": int((bulk_report.get("summary") or {}).get("planned_task_count") or 0),
+                    "bulk_stock_matrix_planned_candidate_count": int((bulk_report.get("summary") or {}).get("planned_candidate_count") or 0),
+                    "bulk_stock_matrix_tasks_per_shard": int((bulk_report.get("summary") or {}).get("tasks_per_shard") or 0),
+                    "bulk_stock_matrix_shard_count": int((bulk_report.get("summary") or {}).get("shard_count") or 0),
+                    "bulk_stock_matrix_selected_shard_count": int((bulk_report.get("summary") or {}).get("selected_shard_count") or 0),
+                    "bulk_stock_matrix_selected_shard_ids": list((bulk_report.get("summary") or {}).get("selected_shard_ids") or []),
+                    "bulk_stock_matrix_stock_coverage_ratio": (bulk_report.get("summary") or {}).get("stock_coverage_ratio"),
+                    "bulk_stock_matrix_allocation_mode": (bulk_report.get("summary") or {}).get("allocation_mode"),
+                    "bulk_stock_matrix_allocation_pass_counts": dict((bulk_report.get("summary") or {}).get("allocation_pass_counts") or {}),
+                    "bulk_stock_matrix_planned_allocation_pass_counts": dict((bulk_report.get("summary") or {}).get("planned_allocation_pass_counts") or {}),
+                    "bulk_stock_matrix_overflow_task_count": int((bulk_report.get("summary") or {}).get("overflow_task_count") or 0),
+                    "max_research_tasks": int(task_budget_meta.get("max_research_tasks") or AUTONOMY_MAX_RESEARCH_TASKS),
+                    "max_bulk_research_tasks": int(task_budget_meta.get("max_bulk_research_tasks") or 0),
+                    "combined_research_task_budget": int(
+                        task_budget_meta.get("combined_research_task_budget")
+                        or task_budget_meta.get("max_research_tasks")
+                        or AUTONOMY_MAX_RESEARCH_TASKS
+                    ),
+                    "scan_research_task_budget": int(task_budget_meta.get("scan_research_task_budget") or AUTONOMY_MAX_RESEARCH_TASKS),
+                    "reserved_bulk_task_budget": int(task_budget_meta.get("reserved_bulk_task_budget") or 0),
+                    "selected_scan_task_count": int(task_budget_meta.get("selected_scan_task_count") or 0),
+                    "selected_bulk_task_count": int(task_budget_meta.get("selected_bulk_task_count") or 0),
+                    "planned_bulk_task_count": int(task_budget_meta.get("planned_bulk_task_count") or 0),
+                    "clipped_bulk_task_count": int(task_budget_meta.get("clipped_bulk_task_count") or 0),
+                },
+                "tasks": tasks,
+                "opportunity_scan": scan_report,
+                "bulk_stock_matrix": bulk_report,
+            }
             autonomy_gateway = self._get_autonomy_gateway()
             generated_candidates: List[dict] = []
             all_experiments: List[dict] = []
@@ -405,9 +924,20 @@ class _StrategyFactorySchedulerLoopMixin:
             persistence_failures: List[dict[str, Any]] = []
             _agg_lock = asyncio.Lock()
             shared_generation_context_preloaded = await self._prepare_shared_generation_context(autonomy_gateway, db, snapshot)
-            effective_research_concurrency = self._resolve_research_task_concurrency(autonomy_gateway)
-
+            has_bulk_tasks = bool([task for task in tasks if str(task.get("task_source") or "").strip().lower() == "bulk_stock_matrix"])
+            effective_research_concurrency = self._resolve_research_task_concurrency(
+                autonomy_gateway,
+                has_bulk_tasks=has_bulk_tasks,
+            )
+            effective_bulk_research_concurrency = self._resolve_bulk_research_task_concurrency(
+                autonomy_gateway,
+                has_bulk_tasks=has_bulk_tasks,
+            )
+            split_bulk_concurrency = bool(
+                has_bulk_tasks and effective_bulk_research_concurrency != effective_research_concurrency
+            )
             sem = asyncio.Semaphore(effective_research_concurrency)
+            bulk_sem = asyncio.Semaphore(effective_bulk_research_concurrency) if split_bulk_concurrency else sem
 
             async def _run_one_task(task: dict) -> None:
                 nonlocal total_attempt_count, total_selected_count, total_evidence_count
@@ -416,7 +946,9 @@ class _StrategyFactorySchedulerLoopMixin:
                 task_run: dict[str, Any] = {"id": None}
                 enriched_task = dict(task or {})
                 failed_phase = "preparing"
-                async with sem:
+                task_source = str(enriched_task.get("task_source") or "").strip().lower()
+                task_sem = bulk_sem if task_source == "bulk_stock_matrix" else sem
+                async with task_sem:
                     try:
                         try:
                             evidence_rows = await self._persist_task_evidence(
@@ -626,10 +1158,39 @@ class _StrategyFactorySchedulerLoopMixin:
                 "task_source_counts": task_source_counts,
                 "event_task_count": event_task_count,
                 "snapshot_task_count": int(task_source_counts.get("snapshot", 0)),
+                "bulk_stock_task_count": int(task_source_counts.get("bulk_stock_matrix", 0)),
+                "bulk_stock_matrix_eligible_stock_count": int((bulk_report.get("summary") or {}).get("eligible_stock_count") or 0),
+                "bulk_stock_matrix_loaded_stock_count": int((bulk_report.get("summary") or {}).get("loaded_stock_count") or 0),
+                "bulk_stock_matrix_pages_loaded": int((bulk_report.get("summary") or {}).get("pages_loaded") or 0),
+                "bulk_stock_matrix_analysis_complete": bool((bulk_report.get("summary") or {}).get("analysis_complete")),
+                "bulk_stock_matrix_analysis_stock_coverage_ratio": (bulk_report.get("summary") or {}).get("analysis_stock_coverage_ratio"),
+                "bulk_stock_matrix_universe_limit": int((bulk_report.get("summary") or {}).get("universe_limit") or STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT),
+                "bulk_stock_matrix_batch_count": int((bulk_report.get("summary") or {}).get("batch_count") or 0),
+                "bulk_stock_matrix_selected_batch_count": int((bulk_report.get("summary") or {}).get("selected_batch_count") or 0),
+                "bulk_stock_matrix_requested_universe_offset": int((bulk_report.get("summary") or {}).get("requested_universe_offset") or 0),
+                "bulk_stock_matrix_effective_universe_offset": int((bulk_report.get("summary") or {}).get("effective_universe_offset") or 0),
+                "bulk_stock_matrix_universe_offset_fallback": bool((bulk_report.get("summary") or {}).get("universe_offset_fallback")),
+                "bulk_stock_matrix_next_universe_offset": int((bulk_report.get("summary") or {}).get("next_universe_offset") or 0),
+                "bulk_stock_matrix_cursor_wrapped": bool((bulk_report.get("summary") or {}).get("cursor_wrapped")),
+                "bulk_stock_matrix_cursor_mode": (bulk_report.get("summary") or {}).get("cursor_mode") or "task_offset",
+                "bulk_stock_matrix_requested_task_offset": int((bulk_report.get("summary") or {}).get("requested_task_offset") or 0),
+                "bulk_stock_matrix_effective_task_offset": int((bulk_report.get("summary") or {}).get("effective_task_offset") or 0),
+                "bulk_stock_matrix_task_offset_fallback": bool((bulk_report.get("summary") or {}).get("task_offset_fallback")),
+                "bulk_stock_matrix_next_task_offset": int((bulk_report.get("summary") or {}).get("next_task_offset") or 0),
+                "bulk_stock_matrix_task_cursor_wrapped": bool((bulk_report.get("summary") or {}).get("task_cursor_wrapped")),
+                "bulk_stock_matrix_cursor_source": (bulk_report.get("summary") or {}).get("cursor_source") or bulk_cursor.get("source"),
+                "bulk_stock_matrix_cursor_resume_from_run_id": (bulk_report.get("summary") or {}).get("cursor_resume_from_run_id") or bulk_cursor.get("resume_from_run_id"),
+                "bulk_stock_matrix_effective_task_budget": int((bulk_report.get("summary") or {}).get("effective_task_budget") or 0),
+                "bulk_stock_matrix_estimated_candidate_count": int((bulk_report.get("summary") or {}).get("estimated_candidate_count") or 0),
+                "bulk_stock_matrix_planned_task_count": int((bulk_report.get("summary") or {}).get("planned_task_count") or 0),
+                "bulk_stock_matrix_planned_candidate_count": int((bulk_report.get("summary") or {}).get("planned_candidate_count") or 0),
+                "bulk_stock_matrix_shard_count": int((bulk_report.get("summary") or {}).get("shard_count") or 0),
+                "bulk_stock_matrix_selected_shard_count": int((bulk_report.get("summary") or {}).get("selected_shard_count") or 0),
+                "bulk_stock_matrix_selected_shard_ids": list((bulk_report.get("summary") or {}).get("selected_shard_ids") or []),
                 "event_evidence_count": total_evidence_count,
                 "completed_task_count": completed_task_count,
                 "failed_task_count": failed_task_count,
-                "task_scan": scan_report,
+                "task_scan": combined_scan_report,
                 "task_results": task_results,
                 "generated_count": len(generated_candidates),
                 "experiment_count": len(all_experiments),
@@ -643,6 +1204,23 @@ class _StrategyFactorySchedulerLoopMixin:
                 "external_llm_elapsed_seconds": round(elapsed_seconds, 4),
                 "research_task_concurrency": effective_research_concurrency,
                 "configured_research_task_concurrency": RESEARCH_TASK_CONCURRENCY,
+                "bulk_task_concurrency": effective_bulk_research_concurrency if has_bulk_tasks else 0,
+                "configured_bulk_task_concurrency": int(STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY) if has_bulk_tasks else 0,
+                "bulk_tasks_use_external_llm": bool(self._bulk_tasks_use_external_llm(autonomy_gateway)) if has_bulk_tasks else False,
+                "research_task_timeout_sec": round(self._resolve_research_task_timeout_sec(), 4),
+                "max_research_tasks": int(task_budget_meta.get("max_research_tasks") or AUTONOMY_MAX_RESEARCH_TASKS),
+                "max_bulk_research_tasks": int(task_budget_meta.get("max_bulk_research_tasks") or 0),
+                "combined_research_task_budget": int(
+                    task_budget_meta.get("combined_research_task_budget")
+                    or task_budget_meta.get("max_research_tasks")
+                    or AUTONOMY_MAX_RESEARCH_TASKS
+                ),
+                "scan_research_task_budget": int(task_budget_meta.get("scan_research_task_budget") or AUTONOMY_MAX_RESEARCH_TASKS),
+                "reserved_bulk_task_budget": int(task_budget_meta.get("reserved_bulk_task_budget") or 0),
+                "selected_scan_task_count": int(task_budget_meta.get("selected_scan_task_count") or 0),
+                "selected_bulk_task_count": int(task_budget_meta.get("selected_bulk_task_count") or 0),
+                "planned_bulk_task_count": int(task_budget_meta.get("planned_bulk_task_count") or 0),
+                "clipped_bulk_task_count": int(task_budget_meta.get("clipped_bulk_task_count") or 0),
                 "shared_generation_context_preloaded": shared_generation_context_preloaded,
                 "persistence_failures": persistence_failures,
                 "persistence_failure_count": len(persistence_failures),
@@ -673,9 +1251,53 @@ class _StrategyFactorySchedulerLoopMixin:
                 results,
                 persistence_failures=outcome.persistence_failures,
             )
+
+            # P2-D：用本次孵化预算 family 计数更新反馈 EMA（α=0.3）
+            try:
+                family_counts: Dict[str, int] = dict(
+                    (results.get("summary") or {}).get("incubation_budget_family_counts") or {}
+                )
+                if family_counts:
+                    _alpha = 0.3
+                    for family, count in family_counts.items():
+                        prev = dict(self._family_gate_feedback.get(family) or {})
+                        prev_ema = float(prev.get("ema_submit_count") or 0.0)
+                        new_ema = round(_alpha * float(count) + (1.0 - _alpha) * prev_ema, 4)
+                        self._family_gate_feedback[family] = {"ema_submit_count": new_ema}
+                    # 衰减未出现的 family（惩罚持续没有产出的家族）
+                    for family in list(self._family_gate_feedback):
+                        if family not in family_counts:
+                            prev_ema = float((self._family_gate_feedback[family] or {}).get("ema_submit_count") or 0.0)
+                            self._family_gate_feedback[family]["ema_submit_count"] = round(
+                                (1.0 - _alpha) * prev_ema, 4
+                            )
+            except Exception:
+                pass
+
             return results
 
         def status(self) -> dict:
+            bulk_window_state = self._bulk_stock_matrix_run_window_state(self._now())
+            bulk_stock_matrix_cursor = self._extract_bulk_stock_cursor(
+                ((self.last_result or {}).get("summary") or {}),
+                source="last_result" if self.last_result else "default",
+                run_id=(self.last_result or {}).get("run_id"),
+            )
+            bulk_stock_matrix_config = {
+                "enabled": bool(STOCK_STRATEGY_MATRIX_ENABLED),
+                "universe_limit": int(STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT),
+                "families_per_stock": int(STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK),
+                "max_tasks_per_run": int(STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN),
+                "max_candidates_per_run": int(STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN),
+                "generation_limit_per_task": int(STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK),
+                "batch_size": int(STOCK_STRATEGY_MATRIX_BATCH_SIZE),
+                "bulk_concurrency": int(STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY),
+                "run_window": str(STOCK_STRATEGY_MATRIX_RUN_WINDOW),
+                "run_window_active": bool(bulk_window_state.get("run_window_active")),
+                "run_window_current_period": bulk_window_state.get("current_period"),
+                "tasks_per_shard": int(STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD),
+                "pre_gate_enabled": bool(FACTORY_PRE_GATE_ENABLED),
+            }
             return {
                 "running": self._running,
                 "schedule_mode": self.schedule_mode,
@@ -690,6 +1312,8 @@ class _StrategyFactorySchedulerLoopMixin:
                 "last_run": str(self.last_run) if self.last_run else None,
                 "last_result": self.last_result,
                 "last_summary": (self.last_result or {}).get("summary") if self.last_result else None,
+                "bulk_stock_matrix_config": bulk_stock_matrix_config,
+                "bulk_stock_matrix_cursor": bulk_stock_matrix_cursor,
                 "daily_run_count": self._daily_run_count,
                 "max_daily_runs": self.max_daily_runs,
                 "cycle_count": self._cycle_count,

@@ -10,9 +10,80 @@ Phase 3 实现 - MCP 服务开发方案
 - 股本数据
 """
 
-from typing import Optional, List
+import time
+from typing import Any, List, Optional
+
 from ..data_source import data_source
-from ..utils import ok, fail, resolve_security_code
+from ..utils import resolve_security_code
+from .manager_protocol import ERR_INTERNAL, ERR_PARAM, fail_with_meta, ok_with_meta
+
+
+def _dedupe_chain(items: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in items:
+        value = str(raw or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _backend_source_name(value: Any) -> str:
+    token = str(value or "").strip()
+    if not token or token == "none":
+        return ""
+    return f"market_data.{token}"
+
+
+def _source_chain_from_result(default_source: str, result: dict[str, Any] | None = None) -> list[str]:
+    chain = [default_source]
+    if not isinstance(result, dict):
+        return chain
+    for candidate in (result.get("backend_requested"), result.get("backend_used"), result.get("source")):
+        source_name = _backend_source_name(candidate)
+        if source_name:
+            chain.append(source_name)
+    return _dedupe_chain(chain)
+
+
+def _read_only_extra_meta(
+    *,
+    status: str,
+    target: str,
+    result: dict[str, Any] | None = None,
+    degraded: bool | None = None,
+    extra_quality: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = dict(result or {})
+    quality_flags = [str(item) for item in payload.get("quality_flags") or [] if str(item).strip()]
+    fallback_reason = payload.get("fallback_reason")
+    fallback_used = bool(payload.get("fallback_used", False))
+    quality = {
+        "status": status,
+        "fallback_used": fallback_used,
+    }
+    if quality_flags:
+        quality["quality_flags"] = quality_flags
+    if payload.get("backend_requested") is not None:
+        quality["backend_requested"] = payload.get("backend_requested")
+    if payload.get("backend_used") is not None:
+        quality["backend_used"] = payload.get("backend_used")
+    if fallback_reason:
+        quality["fallback_reason"] = fallback_reason
+    if isinstance(extra_quality, dict):
+        quality.update(extra_quality)
+    return {
+        "quality": quality,
+        "side_effect": {
+            "level": "read_only",
+            "target": target,
+            "confirmation_required": False,
+            "idempotent": True,
+        },
+        "degraded": fallback_used if degraded is None else degraded,
+    }
 
 
 def register(mcp):
@@ -44,6 +115,9 @@ def register(mcp):
             get_trading_dates(count=10)
             get_trading_dates(start_date="20260101", end_date="20260131")
         """
+        started_at = time.perf_counter()
+        source_name = "basic_data.get_trading_dates"
+        target = end_date or start_date or "trading_calendar"
         try:
             import datetime as _dt
 
@@ -59,13 +133,61 @@ def register(mcp):
                     return False
 
             if not _valid_yyyymmdd(start_date):
-                return fail("start_date 格式错误，应为 YYYYMMDD")
+                return fail_with_meta(
+                    "start_date 格式错误，应为 YYYYMMDD",
+                    tool_name="get_trading_dates",
+                    action="query",
+                    started_at=started_at,
+                    source_chain=[source_name],
+                    error_code=ERR_PARAM,
+                    extra_meta=_read_only_extra_meta(
+                        status="invalid_request",
+                        target=target,
+                        degraded=True,
+                    ),
+                )
             if not _valid_yyyymmdd(end_date):
-                return fail("end_date 格式错误，应为 YYYYMMDD")
+                return fail_with_meta(
+                    "end_date 格式错误，应为 YYYYMMDD",
+                    tool_name="get_trading_dates",
+                    action="query",
+                    started_at=started_at,
+                    source_chain=[source_name],
+                    error_code=ERR_PARAM,
+                    extra_meta=_read_only_extra_meta(
+                        status="invalid_request",
+                        target=target,
+                        degraded=True,
+                    ),
+                )
             if start_date and end_date and start_date > end_date:
-                return fail("start_date 不能晚于 end_date")
+                return fail_with_meta(
+                    "start_date 不能晚于 end_date",
+                    tool_name="get_trading_dates",
+                    action="query",
+                    started_at=started_at,
+                    source_chain=[source_name],
+                    error_code=ERR_PARAM,
+                    extra_meta=_read_only_extra_meta(
+                        status="invalid_request",
+                        target=target,
+                        degraded=True,
+                    ),
+                )
             if count == 0 or count < -1:
-                return fail("count 仅支持 -1 或正整数")
+                return fail_with_meta(
+                    "count 仅支持 -1 或正整数",
+                    tool_name="get_trading_dates",
+                    action="query",
+                    started_at=started_at,
+                    source_chain=[source_name],
+                    error_code=ERR_PARAM,
+                    extra_meta=_read_only_extra_meta(
+                        status="invalid_request",
+                        target=target,
+                        degraded=True,
+                    ),
+                )
 
             result = data_source.get_trading_dates(
                 market="SH",
@@ -73,17 +195,55 @@ def register(mcp):
                 end_time=end_date or "",
                 count=count
             )
+            source_chain = _source_chain_from_result(source_name, result)
 
             if result.get("success"):
-                return ok({
+                payload = {
                     "dates": result["data"],
                     "count": len(result["data"]),
-                    "source": result.get("source", "unknown")
-                })
-            else:
-                return fail(result.get("message", "获取交易日历失败"))
+                    "source": result.get("source", "unknown"),
+                }
+                return ok_with_meta(
+                    payload,
+                    tool_name="get_trading_dates",
+                    action="query",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_read_only_extra_meta(
+                        status="available",
+                        target=target,
+                        result=result,
+                        extra_quality={"result_count": len(result["data"])},
+                    ),
+                )
+            return fail_with_meta(
+                result.get("message", "获取交易日历失败"),
+                tool_name="get_trading_dates",
+                action="query",
+                started_at=started_at,
+                source_chain=source_chain,
+                error_code=ERR_INTERNAL,
+                extra_meta=_read_only_extra_meta(
+                    status="failed",
+                    target=target,
+                    result=result,
+                    degraded=True,
+                ),
+            )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="get_trading_dates",
+                action="query",
+                started_at=started_at,
+                source_chain=[source_name],
+                error_code=ERR_INTERNAL,
+                extra_meta=_read_only_extra_meta(
+                    status="failed",
+                    target=target,
+                    degraded=True,
+                ),
+            )
 
     @mcp.tool()
     async def get_ipo_info(
@@ -111,26 +271,66 @@ def register(mcp):
             get_ipo_info()
             get_ipo_info(ipo_type=0, include_future=False)
         """
+        started_at = time.perf_counter()
+        source_name = "basic_data.get_ipo_info"
+        target = f"ipo_type:{ipo_type}"
         try:
             ipo_date = 1 if include_future else 0
             result = data_source.get_ipo_info(ipo_type=ipo_type, ipo_date=ipo_date)
+            source_chain = _source_chain_from_result(source_name, result)
             
             if result.get("success") and result.get("data"):
-                return ok({
+                payload = {
                     "ipo_list": result["data"],
                     "count": len(result["data"]),
-                    "source": result.get("source", "unknown")
-                })
+                    "source": result.get("source", "unknown"),
+                }
+                return ok_with_meta(
+                    payload,
+                    tool_name="get_ipo_info",
+                    action="query",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_read_only_extra_meta(
+                        status="available",
+                        target=target,
+                        result=result,
+                        extra_quality={"result_count": len(result["data"])},
+                    ),
+                )
             
             # 返回空但成功的结果（而非 fail），避免链路中断
-            return ok({
+            return ok_with_meta({
                 "ipo_list": [],
                 "count": 0,
                 "source": "none",
                 "message": "当前暂无新股/新债申购信息"
-            })
+            },
+                tool_name="get_ipo_info",
+                action="query",
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta=_read_only_extra_meta(
+                    status="empty",
+                    target=target,
+                    result=result,
+                    extra_quality={"result_count": 0},
+                ),
+            )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="get_ipo_info",
+                action="query",
+                started_at=started_at,
+                source_chain=[source_name],
+                error_code=ERR_INTERNAL,
+                extra_meta=_read_only_extra_meta(
+                    status="failed",
+                    target=target,
+                    degraded=True,
+                ),
+            )
 
     @mcp.tool()
     async def get_cb_info(
@@ -161,22 +361,73 @@ def register(mcp):
         Example:
             get_cb_info("123039")
         """
+        started_at = time.perf_counter()
+        source_name = "basic_data.get_cb_info"
         try:
             code = resolve_security_code(code, stock_code=stock_code, symbol=symbol)
             if not code:
-                return fail("可转债代码不能为空（支持 code / stock_code / symbol）")
+                return fail_with_meta(
+                    "可转债代码不能为空（支持 code / stock_code / symbol）",
+                    tool_name="get_cb_info",
+                    action="query",
+                    started_at=started_at,
+                    source_chain=[source_name],
+                    error_code=ERR_PARAM,
+                    extra_meta=_read_only_extra_meta(
+                        status="invalid_request",
+                        target="convertible_bond",
+                        degraded=True,
+                    ),
+                )
             
             result = data_source.get_cb_info(stock_code=code)
+            source_chain = _source_chain_from_result(source_name, result)
             
             if result.get("success"):
-                return ok({
+                payload = {
                     "cb_info": result["data"],
-                    "source": result.get("source", "unknown")
-                })
-            else:
-                return fail(result.get("message", "获取可转债信息失败"))
+                    "source": result.get("source", "unknown"),
+                }
+                return ok_with_meta(
+                    payload,
+                    tool_name="get_cb_info",
+                    action="query",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_read_only_extra_meta(
+                        status="available",
+                        target=code,
+                        result=result,
+                    ),
+                )
+            return fail_with_meta(
+                result.get("message", "获取可转债信息失败"),
+                tool_name="get_cb_info",
+                action="query",
+                started_at=started_at,
+                source_chain=source_chain,
+                error_code=ERR_INTERNAL,
+                extra_meta=_read_only_extra_meta(
+                    status="failed",
+                    target=code,
+                    result=result,
+                    degraded=True,
+                ),
+            )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="get_cb_info",
+                action="query",
+                started_at=started_at,
+                source_chain=[source_name],
+                error_code=ERR_INTERNAL,
+                extra_meta=_read_only_extra_meta(
+                    status="failed",
+                    target=code or "convertible_bond",
+                    degraded=True,
+                ),
+            )
 
     @mcp.tool()
     async def get_stock_capital(
@@ -209,10 +460,24 @@ def register(mcp):
             get_stock_capital("600519")
             get_stock_capital("600519", dates=["20260101", "20260601"])
         """
+        started_at = time.perf_counter()
+        source_name = "basic_data.get_stock_capital"
         try:
             code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
             if not code:
-                return fail("股票代码不能为空（支持 code / stock_code / symbol / ticker）")
+                return fail_with_meta(
+                    "股票代码不能为空（支持 code / stock_code / symbol / ticker）",
+                    tool_name="get_stock_capital",
+                    action="query",
+                    started_at=started_at,
+                    source_chain=[source_name],
+                    error_code=ERR_PARAM,
+                    extra_meta=_read_only_extra_meta(
+                        status="invalid_request",
+                        target="stock_capital",
+                        degraded=True,
+                    ),
+                )
             
             date_list = dates or []
             count = len(date_list) if date_list else 1
@@ -222,10 +487,11 @@ def register(mcp):
                 date_list=date_list,
                 count=count
             )
+            source_chain = _source_chain_from_result(source_name, result)
             
             if result.get("success"):
                 capital_data = result.get("data") or []
-                return ok({
+                payload = {
                     "capital_data": capital_data,
                     "count": len(capital_data),
                     "source": result.get("source", "unknown"),
@@ -238,7 +504,20 @@ def register(mcp):
                     "asof_time": result.get("asof_time"),
                     "freshness_sec": result.get("freshness_sec"),
                     "latency_ms": result.get("latency_ms"),
-                })
+                }
+                return ok_with_meta(
+                    payload,
+                    tool_name="get_stock_capital",
+                    action="query",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_read_only_extra_meta(
+                        status="available",
+                        target=code,
+                        result=result,
+                        extra_quality={"result_count": len(capital_data)},
+                    ),
+                )
 
             # 降级: 从 get_stock_info 提取股本数据
             from .finance import get_stock_info
@@ -256,15 +535,59 @@ def register(mcp):
                         "zgb": float(parse_numeric(total_shares) or 0),
                         "ltgb": float(parse_numeric(float_shares) or 0),
                     }
-                    return ok({
+                    payload = {
                         "capital_data": [capital_entry],
                         "count": 1,
                         "source": "get_stock_info_fallback",
                         "message": "通过 get_stock_info 降级获取股本数据",
                         "fallback_used": True,
                         "fallback_reason": result.get("message") or "get_gb_info failed",
-                    })
+                    }
+                    return ok_with_meta(
+                        payload,
+                        tool_name="get_stock_capital",
+                        action="query",
+                        started_at=started_at,
+                        source_chain=_dedupe_chain(source_chain + ["finance.get_stock_info"]),
+                        extra_meta=_read_only_extra_meta(
+                            status="available",
+                            target=code,
+                            result={
+                                **result,
+                                "fallback_used": True,
+                                "fallback_reason": result.get("message") or "get_gb_info failed",
+                                "backend_used": "get_stock_info_fallback",
+                            },
+                            degraded=True,
+                            extra_quality={"result_count": 1},
+                        ),
+                    )
 
-            return fail(result.get("message") or result.get("error") or "获取股本数据失败")
+            return fail_with_meta(
+                result.get("message") or result.get("error") or "获取股本数据失败",
+                tool_name="get_stock_capital",
+                action="query",
+                started_at=started_at,
+                source_chain=source_chain,
+                error_code=ERR_INTERNAL,
+                extra_meta=_read_only_extra_meta(
+                    status="failed",
+                    target=code,
+                    result=result,
+                    degraded=True,
+                ),
+            )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="get_stock_capital",
+                action="query",
+                started_at=started_at,
+                source_chain=[source_name],
+                error_code=ERR_INTERNAL,
+                extra_meta=_read_only_extra_meta(
+                    status="failed",
+                    target=code or "stock_capital",
+                    degraded=True,
+                ),
+            )

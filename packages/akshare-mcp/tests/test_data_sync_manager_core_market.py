@@ -10,7 +10,7 @@ from akshare_mcp.tools.managers import data_sync_manager as manager_mod
 
 
 class _DummyMCP:
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn

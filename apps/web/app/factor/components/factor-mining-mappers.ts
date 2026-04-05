@@ -39,13 +39,25 @@ export function countRows(value: unknown, keyLabel: string) {
 
 export function readArtifactId(payload: unknown) {
   const root = extractObject(payload);
-  const value = root.artifact_id;
+  const summary = isRecord(root.summary) ? root.summary : {};
+  const generation = isRecord(root.generation) ? root.generation : {};
+  const validation = isRecord(root.validation) ? root.validation : {};
+  const value = root.artifact_id ?? summary.artifact_id ?? generation.artifact_id ?? validation.artifact_id;
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
 export function mcpError(payload: unknown): string | null {
   if (!isRecord(payload)) return null;
   if (payload.success === false && payload.error) return String(payload.error);
+  if (Array.isArray(payload.steps)) {
+    const failedStep = payload.steps.find((step) => isRecord(step) && step.success === false);
+    if (isRecord(failedStep)) {
+      const output = isRecord(failedStep.output) ? failedStep.output : {};
+      if (output.error) return String(output.error);
+      if (output.message) return String(output.message);
+      return `${String(failedStep.step ?? 'workflow')} 执行失败`;
+    }
+  }
   if (isRecord(payload.data)) return mcpError(payload.data);
   return null;
 }

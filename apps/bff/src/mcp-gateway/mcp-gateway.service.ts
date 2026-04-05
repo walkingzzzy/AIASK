@@ -140,6 +140,29 @@ export class McpGatewayService implements OnModuleDestroy {
     }
   }
 
+  async readResource(uri: string): Promise<unknown> {
+    const conn = await this.acquire();
+    const startedAt = performance.now();
+    try {
+      const result = await this.withTimeout(
+        conn.client.readResource({ uri }),
+        this.toolCallTimeoutMs,
+        `MCP resource ${uri} timed out after ${this.toolCallTimeoutMs}ms`,
+      );
+      this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, false);
+      return this.normalizeResourceResult(result);
+    } catch (error) {
+      this.recordToolMetric(`resource:${uri}`, performance.now() - startedAt, true);
+      if (this.isTransportError(error)) {
+        this.logger.warn(`Transport error on pool[${conn.id}] while reading resource, recycling connection`);
+        await this.recycleConnection(conn);
+      }
+      throw error;
+    } finally {
+      this.release(conn);
+    }
+  }
+
   getMetricsSnapshot(): {
     totalCalls: number;
     avgLatency: number;
@@ -626,5 +649,37 @@ export class McpGatewayService implements OnModuleDestroy {
     }
 
     return this.withFallbackMetaDefaults(result);
+  }
+
+  private normalizeResourceResult(result: unknown): unknown {
+    if (!result || typeof result !== 'object') return result;
+
+    const node = result as Record<string, unknown>;
+    const contents = Array.isArray(node.contents) ? node.contents : [];
+    if (contents.length === 1) {
+      const [content] = contents;
+      if (content && typeof content === 'object' && typeof (content as Record<string, unknown>).text === 'string') {
+        const text = String((content as Record<string, unknown>).text);
+        try {
+          return JSON.parse(text);
+        } catch {
+          return text;
+        }
+      }
+      return content;
+    }
+
+    return contents.map((content) => {
+      if (!content || typeof content !== 'object') return content;
+      const block = content as Record<string, unknown>;
+      if (typeof block.text === 'string') {
+        try {
+          return JSON.parse(block.text);
+        } catch {
+          return block.text;
+        }
+      }
+      return block;
+    });
   }
 }

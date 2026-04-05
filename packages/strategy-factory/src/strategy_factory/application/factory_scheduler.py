@@ -191,6 +191,8 @@ class StrategyFactoryScheduler(_StrategyFactorySchedulerAnalysisMixin, _Strategy
             self._daily_run_count: int = 0
             self._daily_run_date: Optional[str] = None  # "YYYY-MM-DD"
             self._cycle_count: int = 0
+            # P2-D 孵化反馈：按 family 跟踪 Gate 通过率（指数平滑，α=0.3）
+            self._family_gate_feedback: Dict[str, Dict[str, float]] = {}
             self._db_provider = db_provider
             self._runtime_adapters = runtime_adapters
             self._vector_gateway = vector_gateway

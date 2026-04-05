@@ -230,13 +230,14 @@ class AutonomyCycleOrchestrator:
         event_context: dict,
         auto_submit: bool,
     ) -> dict:
-        return await db.save_strategy_task_run({
+        trace_id = uuid4().hex[:12]
+        payload = {
             'strategy_id': parent_strategy_id,
             'task_name': 'strategy_ai_cycle',
             'task_scope': source,
             'task_key': research_task.get('task_key') or parent_strategy_id or str(snapshot.get('date') or date.today()),
             'status': 'running',
-            'trace_id': uuid4().hex[:12],
+            'trace_id': trace_id,
             'payload': {
                 'limit': limit,
                 'parent_strategy_id': parent_strategy_id,
@@ -245,7 +246,26 @@ class AutonomyCycleOrchestrator:
                 'event_context': event_context,
                 'auto_submit': auto_submit,
             },
-        })
+        }
+        try:
+            persisted = await db.save_strategy_task_run(payload)
+        except Exception as exc:
+            logger.warning(
+                'StrategyAutonomyService: save task run failed, continuing without persistence: %s',
+                exc,
+            )
+            return {
+                'id': None,
+                'trace_id': trace_id,
+                'persistence_error': str(exc),
+            }
+        if not isinstance(persisted, dict):
+            persisted = {}
+        return {
+            'id': persisted.get('id'),
+            'trace_id': persisted.get('trace_id') or trace_id,
+            **persisted,
+        }
 
     async def _run_cycle_pipeline(
         self,
@@ -369,7 +389,8 @@ class AutonomyCycleOrchestrator:
     ) -> None:
         if not hasattr(db, 'save_strategy_domain_event'):
             return
-        await db.save_strategy_domain_event({
+        try:
+            await db.save_strategy_domain_event({
             'strategy_id': parent_strategy_id,
             'aggregate_type': 'strategy_ai_cycle',
             'aggregate_id': str(task_run.get('id') or snapshot.get('date') or date.today()),
@@ -388,7 +409,12 @@ class AutonomyCycleOrchestrator:
                 'factor_research': factor_research,
                 'lifecycle': lifecycle,
             },
-        })
+            })
+        except Exception as exc:
+            logger.warning(
+                'StrategyAutonomyService: save completed domain event failed, continuing: %s',
+                exc,
+            )
 
     async def _save_cycle_failed_event(
         self,
@@ -406,7 +432,8 @@ class AutonomyCycleOrchestrator:
     ) -> None:
         if not hasattr(db, 'save_strategy_domain_event'):
             return
-        await db.save_strategy_domain_event({
+        try:
+            await db.save_strategy_domain_event({
             'strategy_id': parent_strategy_id,
             'aggregate_type': 'strategy_ai_cycle',
             'aggregate_id': str(task_run.get('id') or snapshot.get('date') or date.today()),
@@ -423,7 +450,12 @@ class AutonomyCycleOrchestrator:
                 'lifecycle': lifecycle,
                 'error': error,
             },
-        })
+            })
+        except Exception as exc:
+            logger.warning(
+                'StrategyAutonomyService: save failed domain event failed, continuing: %s',
+                exc,
+            )
 
 
     async def run_cycle(

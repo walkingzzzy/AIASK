@@ -14,6 +14,7 @@ from akshare_mcp.services.strategy_factory.quality_gates import (
 def _base_gate_report() -> dict:
     return {
         "gate_0": {"passed_count": 2, "failed_count": 1, "failed": [{"strategy_type": "invalid"}]},
+        "pre_gate": {"status": "completed", "passed_count": 2, "failed_count": 0, "failed": []},
         "gate_1": {"passed_count": 1, "failed_count": 1, "failed": [{"strategy_type": "momentum"}]},
         "gate_2": {"input_count": 1, "passed_count": 1, "report": {"summary": {"passed_count": 1, "failed_count": 0}}},
         "gate_3": {"status": "pending_submission_gate", "passed_count": 0, "failed_count": 0, "pending_count": 1},
@@ -52,8 +53,9 @@ async def test_run_gated_filter_returns_complete_gate_report(monkeypatch):
     report = await run_gated_filter(candidates, MagicMock(), _DummyBacktestFilter())
 
     gate_report = report["gate_report"]
-    assert set(gate_report.keys()) == {"gate_0", "gate_1", "gate_2", "gate_3", "final_decision"}
+    assert set(gate_report.keys()) == {"gate_0", "pre_gate", "gate_1", "gate_2", "gate_3", "final_decision"}
     assert gate_report["gate_0"]["failed_count"] == 1
+    assert gate_report["pre_gate"]["passed_count"] == 2
     assert gate_report["gate_1"]["failed_count"] == 1
     assert gate_report["gate_2"]["passed_count"] == 1
     assert gate_report["gate_3"]["status"] == "pending_submission_gate"
@@ -64,6 +66,7 @@ def test_finalize_gate_report_merges_submission_stage_decision():
     merged = finalize_gate_report(
         _base_gate_report(),
         {
+            "gate_3_input": 1,
             "submitted": 1,
             "passed_quality_gate": 0,
             "gate_3_passed": 0,
@@ -88,6 +91,25 @@ def test_finalize_gate_report_merges_submission_stage_decision():
     assert merged["gate_3"]["failed_count"] == 1
     assert merged["gate_3"]["failure_reason_topn"][0]["reason_code"] == "insufficient_kline_data"
     assert merged["final_decision"]["stage"] == "gate_3"
+
+
+def test_finalize_gate_report_preserves_gate_3_input_when_submission_count_is_zero():
+    merged = finalize_gate_report(
+        _base_gate_report(),
+        {
+            "gate_3_input": 1,
+            "submitted": 0,
+            "passed_quality_gate": 0,
+            "gate_3_passed": 0,
+            "gate_3_failed": 1,
+            "gate_3_provisional_passed": 0,
+            "gate_3_failure_reason_topn": [{"reason_code": "quality_gate_failed", "count": 1}],
+        },
+    )
+
+    assert merged["gate_3"]["input_count"] == 1
+    assert merged["gate_3"]["passed_count"] == 0
+    assert merged["gate_3"]["failed_count"] == 1
 
 
 @pytest.mark.asyncio

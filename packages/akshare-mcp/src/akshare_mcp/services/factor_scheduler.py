@@ -4,7 +4,8 @@ Runs batch_compute_factors periodically (default: daily at 18:00 CST)
 without requiring external dependencies like APScheduler or Celery.
 
 Optionally runs LLM factor mining after classic batch computation when
-FACTOR_LLM_ENABLED=1 and FACTOR_SCHEDULER_LLM_MINING=1.
+FACTOR_LLM_ENABLED=1 and FACTOR_SCHEDULER_LLM_MINING!=0. The scheduler
+defaults to enabling the LLM mining leg unless it is explicitly disabled.
 
 Usage:
     from .factor_scheduler import FactorScheduler
@@ -330,6 +331,9 @@ class FactorScheduler:
             ),
             "registry_summary": summary if isinstance(summary, dict) else {},
             "active_pool_count_after_run": int((active_pool or {}).get("count") or 0),
+            "active_pool_mode_after_run": (active_pool or {}).get("active_pool_mode"),
+            "active_pool_strict_count_after_run": int((active_pool or {}).get("strict_count") or 0),
+            "active_pool_provisional_count_after_run": int((active_pool or {}).get("provisional_count") or 0),
             "governed_active_count_after_run": int((summary or {}).get("governed_active_count") or 0),
             "blocked_active_count_after_run": int((summary or {}).get("blocked_active_count") or 0),
         }
@@ -535,7 +539,7 @@ class FactorScheduler:
 
         # Optional: run LLM factor mining after classic batch
         llm_enabled = os.getenv("FACTOR_LLM_ENABLED", "0").strip() in ("1", "true", "yes")
-        scheduler_llm = os.getenv("FACTOR_SCHEDULER_LLM_MINING", "0").strip() in ("1", "true", "yes")
+        scheduler_llm = os.getenv("FACTOR_SCHEDULER_LLM_MINING", "1").strip().lower() in ("1", "true", "yes", "on")
         if llm_enabled and scheduler_llm:
             try:
                 from ..tools.managers.quant_manager import quant_manager

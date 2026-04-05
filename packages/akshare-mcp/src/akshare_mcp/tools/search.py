@@ -1,9 +1,12 @@
 """搜索工具"""
 
+import time
 from typing import Optional
 from ..storage import get_db
-from ..utils import ok, fail, normalize_code
+from ..utils import normalize_code
 from ..data_source import data_source
+from .manager_protocol import fail_with_meta, ok_with_meta
+from .tool_catalog import get_tool_contract as get_catalog_tool_contract
 
 
 _CATEGORY_DESCRIPTIONS = {
@@ -234,6 +237,27 @@ def _is_hidden_tool(name: str, tool) -> bool:
 
 def register(mcp):
     """注册搜索工具"""
+
+    def _read_only_meta(
+        *,
+        status: str,
+        target: str,
+        degraded: bool = False,
+        extra_quality: dict | None = None,
+    ) -> dict:
+        quality = {"status": status}
+        if isinstance(extra_quality, dict):
+            quality.update(extra_quality)
+        return {
+            "quality": quality,
+            "side_effect": {
+                "level": "read_only",
+                "target": target,
+                "confirmation_required": False,
+                "idempotent": True,
+            },
+            "degraded": degraded,
+        }
     
     @mcp.tool()
     async def search_stocks(
@@ -247,6 +271,8 @@ def register(mcp):
             keyword: 关键词（代码或名称，支持中文）
             limit: 返回数量
         """
+        started_at = time.perf_counter()
+        source_chain = ["search.search_stocks", "db.search_stocks"]
         try:
             db = get_db()
             results = []
@@ -272,22 +298,55 @@ def register(mcp):
                     for row in rows
                 ]
             
+            fallback_used = False
             if not results:
                 results = _search_stocks_tushare_fallback(keyword, limit)
+                fallback_used = bool(results)
+                if fallback_used:
+                    source_chain.append("tushare_pro.stock_basic")
             
-            return ok({
-                'keyword': keyword,
-                'results': results,
-                'count': len(results),
-            })
+            return ok_with_meta(
+                {
+                    'keyword': keyword,
+                    'results': results,
+                    'count': len(results),
+                },
+                tool_name="search_stocks",
+                action="query",
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta=_read_only_meta(
+                    status="available" if results else "not_found",
+                    target=keyword.strip() or "stock_search",
+                    degraded=fallback_used,
+                    extra_quality={
+                        "result_count": len(results),
+                        "fallback_used": fallback_used,
+                    },
+                ),
+            )
         
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="search_stocks",
+                action="query",
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta=_read_only_meta(
+                    status="failed",
+                    target=keyword.strip() or "stock_search",
+                    degraded=True,
+                ),
+            )
     
     @mcp.tool()
-    def available_tools():
+    def available_tools(category: str | None = None, include_contracts: bool = True):
         """获取所有可用工具列表"""
+        started_at = time.perf_counter()
         tools = []
+        requested_category = str(category or "").strip().lower()
+        contract_count = 0
         for name, tool in _iter_registered_tools(mcp):
             if not name:
                 continue
@@ -301,18 +360,89 @@ def register(mcp):
                 if fn:
                     desc = getattr(fn, "__doc__", None)
             
-            tools.append({
+            inferred_category = _infer_tool_category(str(name), tool)
+            if requested_category and inferred_category != requested_category:
+                continue
+            row = {
                 'name': str(name),
-                'category': _infer_tool_category(str(name), tool),
+                'category': inferred_category,
                 'description': desc.strip() if isinstance(desc, str) else None,
-            })
+            }
+            if include_contracts:
+                contract = get_catalog_tool_contract(str(name))
+                if contract is not None:
+                    contract_count += 1
+                    row.update(
+                        {
+                            "title": contract.get("title"),
+                            "required_params": contract.get("required_params"),
+                            "side_effect": contract.get("side_effect"),
+                            "freshness": contract.get("freshness"),
+                            "examples": contract.get("examples"),
+                            "input_schema": contract.get("input_schema"),
+                            "output_schema": contract.get("output_schema"),
+                            "tags": contract.get("tags"),
+                            "contract_version": contract.get("contract_version"),
+                        }
+                    )
+            tools.append(row)
         tools.sort(key=lambda x: x.get('name', ''))
 
-        return ok({'tools': tools, 'count': len(tools)})
+        coverage = 1.0 if not tools else round(contract_count / len(tools), 4)
+        return ok_with_meta(
+            {'tools': tools, 'count': len(tools), 'category': requested_category or None, 'include_contracts': bool(include_contracts)},
+            tool_name="available_tools",
+            action="list",
+            started_at=started_at,
+            source_chain=["search.available_tools", "tool_registry", "tool_catalog"],
+            extra_meta=_read_only_meta(
+                status="available",
+                target=requested_category or "tool_registry",
+                extra_quality={
+                    "tool_count": len(tools),
+                    "contract_count": contract_count,
+                    "contract_coverage": coverage,
+                    "include_contracts": bool(include_contracts),
+                },
+            ),
+        )
+
+    @mcp.tool()
+    def get_tool_contract(tool_name: str):
+        """获取单个工具的 AI 调用契约。"""
+        started_at = time.perf_counter()
+        contract = get_catalog_tool_contract(tool_name)
+        if contract is None:
+            return fail_with_meta(
+                f"tool contract not found: {tool_name}",
+                tool_name="get_tool_contract",
+                action="get",
+                started_at=started_at,
+                source_chain=["search.get_tool_contract", "tool_catalog"],
+                error_code="NOT_FOUND",
+                extra_meta=_read_only_meta(
+                    status="not_found",
+                    target=tool_name.strip() or "tool_catalog",
+                    degraded=True,
+                ),
+            )
+        return ok_with_meta(
+            {"tool": tool_name, "contract": contract},
+            tool_name="get_tool_contract",
+            action="get",
+            started_at=started_at,
+            source_chain=["search.get_tool_contract", "tool_catalog"],
+            extra_meta=_read_only_meta(
+                status="available",
+                target=tool_name.strip() or "tool_catalog",
+                extra_quality={"contract_version": contract.get("contract_version")},
+            ),
+        )
 
     @mcp.tool()
     def get_available_categories():
         """获取工具分类"""
+        started_at = time.perf_counter()
         names = sorted({
             _infer_tool_category(str(name), tool)
             for name, tool in _iter_registered_tools(mcp)
@@ -323,4 +453,15 @@ def register(mcp):
             for name in names
         ]
         
-        return ok({'categories': categories})
+        return ok_with_meta(
+            {'categories': categories},
+            tool_name="get_available_categories",
+            action="list",
+            started_at=started_at,
+            source_chain=["search.get_available_categories", "tool_registry"],
+            extra_meta=_read_only_meta(
+                status="available",
+                target="tool_categories",
+                extra_quality={"category_count": len(categories)},
+            ),
+        )

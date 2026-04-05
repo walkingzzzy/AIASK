@@ -25,6 +25,100 @@ const TABS = [
   { key: 'ipo', label: 'IPO' },
   { key: 'cb', label: '可转债' },
   { key: 'capital', label: '股本' },
+  { key: 'resource', label: '资源对象' },
+] as const;
+
+const RESOURCE_PRESETS = [
+  {
+    key: 'toolCatalog',
+    label: '工具目录',
+    requiresId: false,
+    inputLabel: '对象标识',
+    placeholder: '工具目录不需要额外 ID',
+    example: '',
+    description: '查看 AI 工具目录、必填参数、输出摘要和副作用级别。',
+  },
+  {
+    key: 'workflowGuide',
+    label: '工作流指南',
+    requiresId: true,
+    inputLabel: '指南名称',
+    placeholder: 'stock-analysis-guide',
+    example: 'stock-analysis-guide',
+    description: '查看 stock analysis、factor governance 等标准工作流模板。',
+  },
+  {
+    key: 'runSnapshot',
+    label: 'Run 快照',
+    requiresId: true,
+    inputLabel: 'Run ID',
+    placeholder: 'run_demo_001',
+    example: 'run_demo_001',
+    description: '回看一次运行的 linege、artifact 和关键摘要。',
+  },
+  {
+    key: 'datasetQuality',
+    label: 'Dataset 质量',
+    requiresId: true,
+    inputLabel: 'Dataset ID',
+    placeholder: 'dataset_demo',
+    example: 'dataset_demo',
+    description: '查看数据集质量状态、校验标记和修复建议。',
+  },
+  {
+    key: 'datasetProfile',
+    label: 'Dataset 档案',
+    requiresId: true,
+    inputLabel: 'Dataset ID',
+    placeholder: 'dataset_demo',
+    example: 'dataset_demo',
+    description: '查看 dataset profile、lineage 和最新验证快照。',
+  },
+  {
+    key: 'factorProfile',
+    label: 'Factor 档案',
+    requiresId: true,
+    inputLabel: 'Factor ID',
+    placeholder: 'factor_demo',
+    example: 'factor_demo',
+    description: '查看因子候选、验证结果、注册状态与衰减信息。',
+  },
+  {
+    key: 'modelProfile',
+    label: 'Model 档案',
+    requiresId: true,
+    inputLabel: 'Model ID',
+    placeholder: 'model_demo',
+    example: 'model_demo',
+    description: '查看模型 profile、校准信息和 champion/challenger 关系。',
+  },
+  {
+    key: 'strategyGovernance',
+    label: '策略治理',
+    requiresId: true,
+    inputLabel: 'Strategy ID',
+    placeholder: 'strat_demo',
+    example: 'strat_demo',
+    description: '查看策略审查状态、门禁结果与上线风险摘要。',
+  },
+  {
+    key: 'experimentSummary',
+    label: '实验摘要',
+    requiresId: true,
+    inputLabel: 'Experiment ID',
+    placeholder: 'exp_demo',
+    example: 'exp_demo',
+    description: '查看实验对象、关键指标和 artifact 关联关系。',
+  },
+  {
+    key: 'governanceReport',
+    label: '治理总览',
+    requiresId: false,
+    inputLabel: '对象标识',
+    placeholder: '治理总览不需要额外 ID',
+    example: '',
+    description: '查看系统级治理、风险与告警概览。',
+  },
 ] as const;
 
 const HERO_PRIMARY_BUTTON_CLS =
@@ -38,6 +132,55 @@ const FIELD_CLS =
   'h-11 rounded-[20px] border border-white/65 bg-white/55 px-4 text-sm text-text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] outline-none transition placeholder:text-text-muted focus:border-primary/45 focus:bg-white/72';
 
 type Tab = (typeof TABS)[number]['key'];
+type ResourceKey = (typeof RESOURCE_PRESETS)[number]['key'];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringifyValue(value: unknown) {
+  if (value == null || value === '') return '-';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function buildResourcePath(kind: ResourceKey, identifier: string) {
+  switch (kind) {
+    case 'toolCatalog':
+      return '/data/tool-catalog';
+    case 'workflowGuide':
+      return `/data/workflow-guide?name=${encodeURIComponent(identifier)}`;
+    case 'runSnapshot':
+      return `/data/run-snapshot?runId=${encodeURIComponent(identifier)}`;
+    case 'datasetQuality':
+      return `/data/dataset-quality?datasetId=${encodeURIComponent(identifier)}`;
+    case 'datasetProfile':
+      return `/data/dataset-profile?datasetId=${encodeURIComponent(identifier)}`;
+    case 'factorProfile':
+      return `/data/factor-profile?factorId=${encodeURIComponent(identifier)}`;
+    case 'modelProfile':
+      return `/data/model-profile?modelId=${encodeURIComponent(identifier)}`;
+    case 'strategyGovernance':
+      return `/data/strategy-governance?strategyId=${encodeURIComponent(identifier)}`;
+    case 'experimentSummary':
+      return `/data/experiment-summary?experimentId=${encodeURIComponent(identifier)}`;
+    case 'governanceReport':
+      return '/data/governance-report';
+    default:
+      return '/data/tool-catalog';
+  }
+}
+
+function buildResourceSummaryRows(obj: Record<string, unknown>) {
+  return Object.entries(obj)
+    .filter(([, value]) => value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
+    .slice(0, 12)
+    .map(([field, value]) => ({ field, value: stringifyValue(value) }));
+}
 
 function readOptionNumber(row: Record<string, unknown>, keys: string[]) {
   for (const key of keys) {
@@ -66,11 +209,22 @@ export default function DataPage() {
   const [tab, setTab] = useState<Tab>('option');
   const { code, setCode, codeError, setCodeError, validate, trimmedCode } = useStockCode('');
   const [underlying, setUnderlying] = useState('510050');
+  const [resourceKind, setResourceKind] = useState<ResourceKey>('toolCatalog');
+  const [resourceId, setResourceId] = useState('');
+  const [resourceError, setResourceError] = useState<string | null>(null);
   const [queryPath, setQueryPath] = useState<string | null>(null);
   const { data, isFetching: isPending, error, refetch } = useApiQuery<unknown>(queryPath);
+  const activeResourcePreset = (RESOURCE_PRESETS.find((item) => item.key === resourceKind) ??
+    RESOURCE_PRESETS[0]) as (typeof RESOURCE_PRESETS)[number];
+  const resourceRequiresId = activeResourcePreset.requiresId === true;
+  const resourceInputLabel = activeResourcePreset.inputLabel;
+  const resourcePlaceholder = activeResourcePreset.placeholder;
+  const resourceExample = activeResourcePreset.example;
+  const resourceDescription = activeResourcePreset.description;
 
   function submit() {
     let path: string;
+    setResourceError(null);
 
     if (tab === 'option') {
       path = `/data/option-chain?underlying=${encodeURIComponent(underlying.trim())}`;
@@ -84,6 +238,15 @@ export default function DataPage() {
         return;
       }
       path = `/data/cb?code=${encodeURIComponent(trimmedCode)}`;
+    } else if (tab === 'resource') {
+      const fallbackId = resourceExample;
+      const resolvedId = resourceId.trim() || fallbackId;
+      if (resourceRequiresId && !resolvedId) {
+        setResourceError(`请输入${resourceInputLabel}`);
+        return;
+      }
+      if (!resourceId.trim() && resolvedId) setResourceId(resolvedId);
+      path = buildResourcePath(resourceKind, resolvedId);
     } else {
       if (!validate()) return;
       path = `/data/capital?code=${encodeURIComponent(trimmedCode)}`;
@@ -104,6 +267,46 @@ export default function DataPage() {
   const ipoRows = extractArray(data, 'ipos', 'list', 'data') as Array<Record<string, unknown>>;
   const cbObj = tab === 'cb' ? (extractObject(data) as Record<string, unknown>) || null : null;
   const capObj = tab === 'capital' ? (extractObject(data) as Record<string, unknown>) || null : null;
+  const resourceEnvelope = tab === 'resource' && isRecord(data) ? data : null;
+  const resourceResult = resourceEnvelope?.result ?? null;
+  const resourceObject = tab === 'resource' ? ((extractObject(resourceResult) as Record<string, unknown>) || {}) : {};
+  const resourceTableRows = useMemo(
+    () =>
+      tab === 'resource'
+        ? (extractArray(
+            resourceResult,
+            'tools',
+            'items',
+            'records',
+            'datasets',
+            'models',
+            'factors',
+            'strategies',
+            'experiments',
+            'runs',
+            'checks',
+            'alerts',
+            'steps',
+            'results',
+          ) as Array<Record<string, unknown>>)
+        : [],
+    [resourceResult, tab],
+  );
+  const resourceSummaryRows = useMemo(
+    () => (tab === 'resource' ? buildResourceSummaryRows(resourceObject) : []),
+    [resourceObject, tab],
+  );
+  const resourceJson = useMemo(() => {
+    if (tab !== 'resource') return '';
+    try {
+      return JSON.stringify(resourceResult ?? {}, null, 2);
+    } catch {
+      return '{"error":"resource_result_not_serializable"}';
+    }
+  }, [resourceResult, tab]);
+  const resourceStatus = String(
+    resourceObject.status ?? resourceObject.overall_status ?? resourceObject.current_status ?? resourceObject.name ?? 'resource',
+  );
   const activeTabLabel = TABS.find((item) => item.key === tab)?.label ?? '数据';
   const resultCount =
     tab === 'option'
@@ -112,6 +315,8 @@ export default function DataPage() {
         ? calendarRows.length
         : tab === 'ipo'
           ? ipoRows.length
+          : tab === 'resource'
+            ? resourceTableRows.length || resourceSummaryRows.length || (resourceResult ? 1 : 0)
           : data
             ? 1
             : 0;
@@ -120,16 +325,20 @@ export default function DataPage() {
       ? underlying.trim() || '510050'
       : tab === 'calendar'
         ? '最近 30 个交易日'
-        : tab === 'ipo'
-          ? '最近 IPO 窗口'
+      : tab === 'ipo'
+        ? '最近 IPO 窗口'
+        : tab === 'resource'
+          ? resourceId.trim() || resourceExample || activeResourcePreset.label
           : trimmedCode || '待输入';
   const tabDescription =
     tab === 'option'
       ? '适合观察 ETF 期权链的行权价、成交量、持仓量与隐含波动率。'
       : tab === 'calendar'
         ? '适合确认开市、休市与节假日节奏，给后续策略或提醒页做时间参照。'
-        : tab === 'ipo'
-          ? '适合快速查看最近新股与新债窗口，判断一级市场供给节奏。'
+      : tab === 'ipo'
+        ? '适合快速查看最近新股与新债窗口，判断一级市场供给节奏。'
+        : tab === 'resource'
+          ? '适合直接查看 MCP 资源对象，把 workflow、run、dataset、model、strategy 的结构化摘要拉出来核对。'
           : tab === 'cb'
             ? '适合用单只转债快速看价格、转股价值和溢价率。'
             : '适合用股本结构确认流通盘、限售盘与总市值的关系。';
@@ -176,6 +385,48 @@ export default function DataPage() {
         />
       );
     }
+    if (tab === 'resource') {
+      return (
+        <EmptyState
+          text="先选择资源类型，再读取 MCP 资源对象"
+          hint="这里适合看 tool catalog、workflow guide、run snapshot 以及 dataset/model/factor/strategy 治理对象。"
+          action={
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setResourceKind('toolCatalog');
+                  setResourceId('');
+                }}
+                className={CHIP_BUTTON_CLS}
+              >
+                工具目录
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setResourceKind('workflowGuide');
+                  setResourceId('stock-analysis-guide');
+                }}
+                className={CHIP_BUTTON_CLS}
+              >
+                stock-analysis-guide
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setResourceKind('governanceReport');
+                  setResourceId('');
+                }}
+                className={CHIP_BUTTON_CLS}
+              >
+                治理总览
+              </button>
+            </>
+          }
+        />
+      );
+    }
     return (
       <EmptyState
         text="请输入股票代码后查看股本结构"
@@ -191,6 +442,69 @@ export default function DataPage() {
 
   function renderData() {
     if (!data) return null;
+
+    if (tab === 'resource' && resourceEnvelope) {
+      return (
+        <div className="space-y-4">
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,0.86fr)_minmax(0,1.14fr)]">
+            <div className="space-y-4">
+              <div className="panel-soft rounded-[24px] p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">Resource URI</div>
+                <div className="mt-3 break-all text-sm font-medium text-text-primary">
+                  {String(resourceEnvelope.resourceUri ?? '-')}
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className={NOTE_CARD_CLS}>
+                    资源类型：<span className="font-medium text-text-primary">{activeResourcePreset.label}</span>
+                  </div>
+                  <div className={NOTE_CARD_CLS}>
+                    当前状态：<span className="font-medium text-text-primary">{resourceStatus}</span>
+                  </div>
+                  <div className={NOTE_CARD_CLS}>
+                    摘要字段：<span className="font-medium text-text-primary">{resourceSummaryRows.length}</span>
+                  </div>
+                  <div className={NOTE_CARD_CLS}>
+                    明细行数：<span className="font-medium text-text-primary">{resourceTableRows.length}</span>
+                  </div>
+                </div>
+              </div>
+
+              {resourceSummaryRows.length ? (
+                <DataTable
+                  rows={resourceSummaryRows}
+                  columns={[
+                    { key: 'field', label: '字段', sortable: true },
+                    { key: 'value', label: '值' },
+                  ]}
+                  maxHeight={320}
+                />
+              ) : (
+                <EmptyState
+                  text="当前资源没有直接可展示的标量摘要"
+                  hint="这通常意味着结果以数组或深层对象为主，右侧可以直接看原始 JSON。"
+                />
+              )}
+            </div>
+
+            <div className="panel-soft rounded-[24px] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">Raw JSON</div>
+              <pre className="mt-3 max-h-[520px] overflow-auto rounded-[22px] bg-slate-950/90 p-4 text-xs leading-6 text-slate-100">
+                {resourceJson}
+              </pre>
+            </div>
+          </div>
+
+          {resourceTableRows.length ? (
+            <DataTable rows={resourceTableRows} searchable maxHeight={460} onExport={() => exportCSV(resourceTableRows, `resource-${resourceKind}`)} />
+          ) : (
+            <EmptyState
+              text="当前资源没有可平铺的列表数据"
+              hint="如果这个对象更偏摘要类资源，左侧字段表和右侧 JSON 通常已经足够完成核对。"
+            />
+          )}
+        </div>
+      );
+    }
 
     if (tab === 'option') {
       if (!optionRows.length) return <EmptyState text="无期权数据" />;
@@ -407,8 +721,10 @@ export default function DataPage() {
                       ? '比对波动率与持仓量'
                       : tab === 'calendar'
                         ? '确认时间窗口'
-                        : tab === 'ipo'
-                          ? '补一级市场供给'
+                      : tab === 'ipo'
+                        ? '补一级市场供给'
+                        : tab === 'resource'
+                          ? '核对对象关系与治理状态'
                           : tab === 'cb'
                             ? '看溢价与转股价值'
                             : '确认流通盘与市值'}
@@ -431,6 +747,12 @@ export default function DataPage() {
                 </Link>
                 <Link href="/valuation" className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
                   估值分析
+                </Link>
+                <Link href="/macro" className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
+                  宏观数据
+                </Link>
+                <Link href="/research" className={`${CHIP_BUTTON_CLS} no-underline text-inherit`}>
+                  研究中心
                 </Link>
               </div>
             </div>
@@ -459,6 +781,7 @@ export default function DataPage() {
             onChange={(key) => {
               setTab(key);
               setQueryPath(null);
+              setResourceError(null);
             }}
           />
         </div>
@@ -524,6 +847,70 @@ export default function DataPage() {
                 <button type="button" onClick={() => setCode('123039')} className={CHIP_BUTTON_CLS}>
                   123039
                 </button>
+              </div>
+            </div>
+          ) : null}
+
+          {tab === 'resource' ? (
+            <div className="grid gap-4 xl:grid-cols-[240px_260px_auto] xl:items-end">
+              <label htmlFor="data-resource-kind" className="grid gap-2 text-xs text-text-secondary">
+                <span className="font-medium uppercase tracking-[0.12em] text-text-muted">资源类型</span>
+                <select
+                  id="data-resource-kind"
+                  value={resourceKind}
+                  onChange={(e) => {
+                    const nextKind = e.target.value as ResourceKey;
+                    const preset = RESOURCE_PRESETS.find((item) => item.key === nextKind) ?? RESOURCE_PRESETS[0];
+                    setResourceKind(nextKind);
+                    setResourceId(preset.example);
+                    setResourceError(null);
+                    setQueryPath(null);
+                  }}
+                  className={FIELD_CLS}
+                >
+                  {RESOURCE_PRESETS.map((item) => (
+                    <option key={item.key} value={item.key}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label htmlFor="data-resource-id" className="grid gap-2 text-xs text-text-secondary">
+                <span className="font-medium uppercase tracking-[0.12em] text-text-muted">{resourceInputLabel}</span>
+                <input
+                  id="data-resource-id"
+                  value={resourceId}
+                  onChange={(e) => {
+                    setResourceId(e.target.value);
+                    setResourceError(null);
+                  }}
+                  placeholder={resourcePlaceholder}
+                  disabled={!resourceRequiresId}
+                  className={FIELD_CLS}
+                />
+              </label>
+
+              <div className="grid gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
+                    读取资源对象
+                  </button>
+                  {resourceExample ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setResourceId(resourceExample);
+                        setResourceError(null);
+                      }}
+                      className={CHIP_BUTTON_CLS}
+                    >
+                      使用示例 {resourceExample}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="text-sm text-text-secondary">{resourceDescription}</div>
+                {resourceError ? <div className="text-xs text-error">{resourceError}</div> : null}
               </div>
             </div>
           ) : null}

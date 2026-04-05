@@ -40,6 +40,43 @@ const FACTORY_SECTION_STALE_TIME = 60_000;
 type StrategySubscriptionRow = { strategy_id?: string; id?: string };
 type StrategySubscriptionsResponse = { subscriptions?: StrategySubscriptionRow[]; items?: StrategySubscriptionRow[]; count?: number };
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  return value as Record<string, unknown>;
+}
+
+function readWorkflowStepData(payload: unknown, stepName: string): Record<string, unknown> {
+  const root = asRecord(payload);
+  const steps = Array.isArray(root.steps) ? root.steps : [];
+  const matched = steps.find((item) => asRecord(item).step === stepName);
+  const output = asRecord(asRecord(matched).output);
+  return asRecord(output.data);
+}
+
+function normalizeReviewWorkflow(payload: unknown): ReviewReportResponse {
+  const root = asRecord(payload);
+  const report = readWorkflowStepData(root, 'strategy_manager.review_report');
+  if (Object.keys(report).length > 0) {
+    return report as ReviewReportResponse;
+  }
+
+  if (!Array.isArray(root.steps)) {
+    return root as ReviewReportResponse;
+  }
+
+  const resource = readWorkflowStepData(root, 'resource.strategy_review');
+  const summary = asRecord(resource.summary);
+  return {
+    passed: Boolean(resource.found ?? true),
+    summary: {
+      status_after_review: typeof summary.current_status === 'string' ? summary.current_status : undefined,
+      review_source: 'strategy_review_workflow',
+    },
+  };
+}
+
 export function useStrategyDetailPage(id: string | null, userId: string | null) {
   const detailQ = useApiQuery<StrategyDetailResponse | StrategyCore>(id ? `/strategy-market/${id}` : null);
   const mySubscriptionsQ = useApiQuery<StrategySubscriptionsResponse>(
@@ -116,8 +153,12 @@ export function useStrategyDetailPage(id: string | null, userId: string | null) 
     id && activeTab === 'tracking' ? `/strategy-market/${id}/signals?limit=50` : null,
   );
   const reviewReportQ = useApiQuery<ReviewReportResponse>(
-    id ? `/strategy-market/${id}/review-report` : null,
-    { enabled: factorySummaryMode, staleTime: FACTORY_SECTION_STALE_TIME },
+    id ? `/strategy-market/${id}/review-workflow` : null,
+    {
+      enabled: factorySummaryMode,
+      staleTime: FACTORY_SECTION_STALE_TIME,
+      parse: normalizeReviewWorkflow,
+    },
   );
   const eventsQ = useApiQuery<StrategyEventsResponse>(eventsPath, {
     enabled: factorySummaryMode,

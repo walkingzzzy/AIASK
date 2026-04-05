@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 import time as _time
@@ -28,6 +29,7 @@ from ..domain.constants import (
     FACTORY_SUBMISSION_REQUIRE_TASK_PREFERENCE_MATCH,
     SUBMIT_CONCURRENCY,
 )
+from ..domain.strategy_profile import infer_candidate_strategy_profile
 from ..domain.targets import _build_task_signature, _normalize_research_task_contract, _normalize_target_codes
 from ..infrastructure.mcp_services import build_strategy_vector_profile
 
@@ -91,6 +93,25 @@ class _CompatRiskGateway:
 
 
 class _StrategySubmitterHelpersMixin:
+        @staticmethod
+        def _get_optional_db_method(db, name: str):
+            method = getattr(db, name, None)
+            if method is None or not callable(method):
+                return None
+            if type(method).__module__.startswith("unittest.mock") and not hasattr(method, "await_count"):
+                return None
+            return method
+
+        @classmethod
+        async def _call_optional_db_method(cls, db, name: str, *args, **kwargs):
+            method = cls._get_optional_db_method(db, name)
+            if method is None:
+                return None
+            result = method(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+
         def _get_validation_gateway(self) -> "ValidationGateway":
             if self._validation_gateway is None:
                 self._validation_gateway = _CompatValidationGateway()
@@ -216,12 +237,142 @@ class _StrategySubmitterHelpersMixin:
                     break
             return items
 
+        @staticmethod
+        def _normalize_object_dict(value: Any) -> dict[str, Any]:
+            return {
+                str(key): item
+                for key, item in dict(value or {}).items()
+                if item not in (None, [], {}, "")
+            }
+
+        @classmethod
+        def _candidate_report_params(cls, candidate: Optional[dict]) -> dict[str, Any]:
+            payload = dict(candidate or {})
+            params = dict(payload.get("params") or {})
+
+            def _assign_list(key: str, *values: Any) -> None:
+                for value in values:
+                    if isinstance(value, (list, tuple, set)) and value:
+                        params[key] = list(value)
+                        return
+
+            def _assign_dict(key: str, *values: Any) -> None:
+                for value in values:
+                    if isinstance(value, dict) and value:
+                        params[key] = dict(value)
+                        return
+
+            _assign_list(
+                "target_symbols",
+                payload.get("target_symbols"),
+                params.get("target_symbols"),
+            )
+            _assign_dict(
+                "stock_pool",
+                payload.get("stock_pool"),
+                params.get("stock_pool"),
+            )
+            _assign_dict(
+                "research_task",
+                payload.get("research_task"),
+                params.get("research_task"),
+            )
+            _assign_dict(
+                "event_context",
+                payload.get("event_context"),
+                params.get("event_context"),
+            )
+            _assign_dict(
+                "holding_horizon",
+                payload.get("holding_horizon"),
+                params.get("holding_horizon"),
+            )
+            _assign_dict(
+                "trade_plan",
+                payload.get("trade_plan"),
+                params.get("trade_plan"),
+            )
+            _assign_dict(
+                "risk_rules",
+                payload.get("risk_rules"),
+                params.get("risk_rules"),
+            )
+            _assign_dict(
+                "position_sizing",
+                payload.get("position_sizing"),
+                params.get("position_sizing"),
+            )
+            _assign_dict(
+                "rebalance_rule",
+                payload.get("rebalance_rule"),
+                params.get("rebalance_rule"),
+            )
+            _assign_dict(
+                "portfolio_spec",
+                payload.get("portfolio_spec"),
+                params.get("portfolio_spec"),
+            )
+            _assign_dict(
+                "execution_assumptions",
+                payload.get("execution_assumptions"),
+                params.get("execution_assumptions"),
+            )
+            _assign_dict(
+                "validation_profile",
+                payload.get("validation_profile"),
+                params.get("validation_profile"),
+            )
+            _assign_dict(
+                "targeting_policy",
+                payload.get("targeting_policy"),
+                params.get("targeting_policy"),
+            )
+            _assign_dict(
+                "constraint_check",
+                payload.get("constraint_check"),
+                params.get("constraint_check"),
+            )
+            return params
+
+        @classmethod
+        def _candidate_strategy_profile(
+            cls,
+            candidate: Optional[dict],
+            existing: Optional[dict] = None,
+        ) -> dict[str, Any]:
+            payload = dict(candidate or {})
+            existing_payload = dict(existing or {})
+            if not payload and not existing_payload:
+                return {}
+
+            params = dict(payload.get("params") or {})
+            existing_params = dict(existing_payload.get("params") or {})
+            existing_provenance = dict(existing_params.get("candidate_provenance") or {})
+            explicit_profile = cls._normalize_object_dict(
+                payload.get("strategy_profile")
+                or params.get("strategy_profile")
+                or existing_provenance.get("strategy_profile")
+                or existing_payload.get("strategy_profile")
+                or existing_params.get("strategy_profile")
+                or {}
+            )
+            merged_candidate = {
+                **existing_payload,
+                **payload,
+                "params": {**existing_params, **params},
+            }
+            inferred_profile = cls._normalize_object_dict(
+                infer_candidate_strategy_profile(merged_candidate)
+            )
+            return {**inferred_profile, **explicit_profile}
+
         @classmethod
         def _candidate_provenance(cls, candidate: Optional[dict], existing: Optional[dict] = None) -> dict[str, Any]:
             payload = dict(candidate or {})
             existing_payload = dict(existing or {})
             existing_params = dict(existing_payload.get("params") or {})
             existing_provenance = dict(existing_params.get("candidate_provenance") or {})
+            strategy_profile = cls._candidate_strategy_profile(payload, existing_payload)
             research_task = _normalize_research_task_contract(
                 payload.get("research_task") or existing_params.get("research_task") or {}
             )
@@ -241,6 +392,7 @@ class _StrategySubmitterHelpersMixin:
                 str(
                     payload.get("candidate_family")
                     or research_task.get("candidate_family")
+                    or strategy_profile.get("strategy_family")
                     or existing_provenance.get("candidate_family")
                     or ""
                 ).strip()
@@ -351,6 +503,89 @@ class _StrategySubmitterHelpersMixin:
                 or existing_provenance.get("candidate_evidence_status")
                 or {}
             )
+            holding_period_bucket = (
+                str(
+                    payload.get("holding_period_bucket")
+                    or research_task.get("holding_period_bucket")
+                    or strategy_profile.get("holding_period_bucket")
+                    or existing_provenance.get("holding_period_bucket")
+                    or ""
+                ).strip()
+                or None
+            )
+            alpha_source = (
+                str(
+                    payload.get("alpha_source")
+                    or research_task.get("alpha_source")
+                    or strategy_profile.get("alpha_source")
+                    or existing_provenance.get("alpha_source")
+                    or ""
+                ).strip()
+                or None
+            )
+            risk_level = (
+                str(
+                    payload.get("risk_level")
+                    or research_task.get("risk_level")
+                    or strategy_profile.get("risk_level")
+                    or existing_provenance.get("risk_level")
+                    or ""
+                ).strip()
+                or None
+            )
+            regime_fit = (
+                str(
+                    payload.get("regime_fit")
+                    or research_task.get("regime_fit")
+                    or strategy_profile.get("regime_fit")
+                    or existing_provenance.get("regime_fit")
+                    or ""
+                ).strip()
+                or None
+            )
+            generator_mode = (
+                str(
+                    payload.get("generator_mode")
+                    or strategy_profile.get("generator_mode")
+                    or existing_provenance.get("generator_mode")
+                    or ""
+                ).strip()
+                or None
+            )
+            direction_bias = (
+                str(
+                    payload.get("direction_bias")
+                    or strategy_profile.get("direction_bias")
+                    or existing_provenance.get("direction_bias")
+                    or ""
+                ).strip()
+                or None
+            )
+            candidate_family_id = (
+                str(
+                    payload.get("candidate_family_id")
+                    or strategy_profile.get("candidate_family_id")
+                    or existing_provenance.get("candidate_family_id")
+                    or ""
+                ).strip()
+                or None
+            )
+            validation_profile_name = (
+                str(
+                    payload.get("validation_profile_name")
+                    or strategy_profile.get("validation_profile")
+                    or existing_provenance.get("validation_profile")
+                    or ""
+                ).strip()
+                or None
+            )
+            target_symbol_count = cls._normalize_optional_int(
+                payload.get("target_symbol_count")
+                if payload.get("target_symbol_count") is not None
+                else strategy_profile.get("target_symbol_count")
+            )
+            if target_symbol_count is None:
+                target_symbol_count = cls._normalize_optional_int(existing_provenance.get("target_symbol_count"))
 
             provenance = {
                 "source_candidate_artifact_id": source_candidate_artifact_id,
@@ -368,6 +603,16 @@ class _StrategySubmitterHelpersMixin:
                 "latest_validation_age_days": latest_validation_age_days,
                 "admission_block_reasons": admission_block_reasons,
                 "candidate_evidence_status": candidate_evidence_status,
+                "strategy_profile": strategy_profile,
+                "holding_period_bucket": holding_period_bucket,
+                "alpha_source": alpha_source,
+                "risk_level": risk_level,
+                "regime_fit": regime_fit,
+                "generator_mode": generator_mode,
+                "direction_bias": direction_bias,
+                "candidate_family_id": candidate_family_id,
+                "validation_profile": validation_profile_name,
+                "target_symbol_count": target_symbol_count,
                 "task_source": str(research_task.get("task_source") or "").strip() or None,
                 "task_id": str(research_task.get("task_id") or "").strip() or None,
                 "task_key": str(research_task.get("task_key") or "").strip() or None,

@@ -4,11 +4,15 @@ import pandas as pd
 import pytest
 
 import akshare_mcp.storage as storage_mod
+import akshare_mcp.tools.backtest as backtest_mod
+import akshare_mcp.tools.basic_data as basic_data_mod
 import akshare_mcp.tools.finance as finance_mod
 import akshare_mcp.tools.fund_flow_market as fund_flow_market_mod
+import akshare_mcp.tools.macro as macro_tool_mod
 import akshare_mcp.tools.market.kline as kline_mod
 import akshare_mcp.tools.market.limit_up as limit_up_mod
 import akshare_mcp.tools.market.quote as quote_mod
+import akshare_mcp.tools.search as search_mod
 import akshare_mcp.tools.valuation as valuation_mod
 
 
@@ -46,7 +50,7 @@ class _PartialFundKlineDB:
 
 
 class _DummyMCP:
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn
@@ -73,6 +77,34 @@ class _ValuationStockInfoDB:
             "pb_ratio": 6.4,
             "market_cap": 1234.0,
         }
+
+
+class _SearchConn:
+    async def fetch(self, query, *args):
+        return []
+
+
+class _SearchDB:
+    def acquire(self):
+        return _Acquire(_SearchConn())
+
+
+class _BacktestToolDB:
+    def __init__(self):
+        self.rows = [
+            {
+                "date": f"2025-02-{(idx % 28) + 1:02d}",
+                "open": 10.0 + idx * 0.1,
+                "close": 10.2 + idx * 0.1,
+                "high": 10.4 + idx * 0.1,
+                "low": 9.8 + idx * 0.1,
+                "volume": 10000 + idx * 50,
+            }
+            for idx in range(80)
+        ]
+
+    async def get_klines(self, code, start_date=None, end_date=None):
+        return list(self.rows)
 
 
 @pytest.mark.asyncio
@@ -364,6 +396,150 @@ async def test_get_valuation_metrics_filters_non_positive_db_values(monkeypatch)
     assert result["data"]["data_quality"]["invalid_metrics"]["pb_ratio"][0]["reason"] == "non_positive"
 
 
+def test_get_macro_indicator_returns_read_only_meta_envelope(monkeypatch):
+    class _TsPro:
+        def cpi(self):
+            return pd.DataFrame(
+                [
+                    {"month": "202601", "nt_val": 0.8, "nt_yoy": 0.8, "nt_mom": 0.1},
+                    {"month": "202602", "nt_val": 1.2, "nt_yoy": 1.2, "nt_mom": 0.2},
+                ]
+            )
+
+    monkeypatch.setattr(macro_tool_mod, "get_limiter", lambda *args, **kwargs: _DummyLimiter())
+    monkeypatch.setattr(macro_tool_mod.data_source, "get_tushare_pro", lambda: _TsPro())
+
+    result = macro_tool_mod.get_macro_indicator.__wrapped__("cpi", limit=2)
+
+    assert result["success"] is True
+    assert result["data"]["indicator"] == "cpi"
+    assert len(result["data"]["records"]) == 2
+    assert result["meta"]["side_effect"]["level"] == "read_only"
+    assert result["meta"]["source_chain"] == ["macro.get_indicator", "tushare_pro.cpi"]
+    assert result["meta"]["quality"]["backend_used"] == "tushare_pro.cpi"
+    assert result["meta"]["degraded"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_stock_capital_tool_meta_marks_finance_fallback(monkeypatch):
+    mcp = _DummyMCP()
+    basic_data_mod.register(mcp)
+
+    monkeypatch.setattr(
+        basic_data_mod.data_source,
+        "get_gb_info",
+        lambda stock_code, date_list, count: {
+            "success": False,
+            "message": "gb unavailable",
+            "source": "none",
+            "backend_requested": "tushare_pro",
+            "backend_used": "none",
+            "fallback_used": False,
+            "quality_flags": ["fallback"],
+        },
+    )
+    monkeypatch.setattr(
+        finance_mod,
+        "get_stock_info",
+        lambda code: {
+            "success": True,
+            "data": {"totalShares": 1000, "floatShares": 600},
+        },
+    )
+
+    result = await mcp.get_stock_capital("600519")
+
+    assert result["success"] is True
+    assert result["data"]["source"] == "get_stock_info_fallback"
+    assert result["meta"]["degraded"] is True
+    assert result["meta"]["side_effect"]["level"] == "read_only"
+    assert result["meta"]["source_chain"] == [
+        "basic_data.get_stock_capital",
+        "market_data.tushare_pro",
+        "finance.get_stock_info",
+    ]
+    assert result["meta"]["quality"]["fallback_used"] is True
+    assert result["meta"]["quality"]["backend_used"] == "get_stock_info_fallback"
+    assert result["data"]["capital_data"][0]["ltgb"] == 600.0
+
+
+@pytest.mark.asyncio
+async def test_run_simple_backtest_tool_exposes_pit_and_execution_reality(monkeypatch):
+    mcp = _DummyMCP()
+    backtest_mod.register(mcp)
+
+    monkeypatch.setattr(backtest_mod, "get_db", lambda: _BacktestToolDB())
+    monkeypatch.setattr(
+        backtest_mod.backtest_engine,
+        "run_backtest",
+        lambda code, klines, strategy, params: {
+            "success": True,
+            "data": {
+                "code": code,
+                "strategy": strategy,
+                "total_return": 0.18,
+                "sharpe_ratio": 1.42,
+            },
+        },
+    )
+
+    result = await mcp.run_simple_backtest(
+        "600519",
+        strategy="ma_cross",
+        start_date="2025-01-01",
+        end_date="2025-03-31",
+        short_period=5,
+        long_period=20,
+        as_of="2025-03-31",
+    )
+
+    assert result["success"] is True
+    assert result["data"]["execution_reality"]["fill_model"] == "close_price"
+    assert result["data"]["execution_reality"]["cost_model_mode"] == "backtest"
+    assert result["meta"]["pit"]["event_time"] == "2025-03-31"
+    assert result["meta"]["pit"]["event_time_window"] == {"start": "2025-01-01", "end": "2025-03-31"}
+    assert result["meta"]["pit"]["feature_time_window"] == {"lookback_bars": 20}
+    assert result["meta"]["pit"]["pit_passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_batch_backtest_tool_exposes_pit_and_execution_reality(monkeypatch):
+    mcp = _DummyMCP()
+    backtest_mod.register(mcp)
+
+    monkeypatch.setattr(backtest_mod, "get_db", lambda: _BacktestToolDB())
+    monkeypatch.setattr(
+        backtest_mod.backtest_engine,
+        "run_backtest",
+        lambda code, klines, strategy, params: {
+            "success": True,
+            "data": {
+                "code": code,
+                "strategy": strategy,
+                "total_return": 0.08,
+                "sharpe_ratio": 0.96,
+            },
+        },
+    )
+    monkeypatch.setattr(backtest_mod, "RAY_AVAILABLE", False)
+
+    result = await mcp.run_batch_backtest(
+        ["600519", "000858"],
+        use_parallel=False,
+        start_date="2025-01-01",
+        end_date="2025-03-31",
+        short_period=10,
+        long_period=30,
+        as_of="2025-03-31",
+    )
+
+    assert result["success"] is True
+    assert result["data"]["execution_reality"]["total_cost_bps"] == pytest.approx(3.0)
+    assert result["data"]["pit"]["feature_time_window"] == {"lookback_bars": 30}
+    assert result["meta"]["pit"]["event_time_window"] == {"start": "2025-01-01", "end": "2025-03-31"}
+    assert result["meta"]["quality"]["execution_mode"] == "local_sequential"
+
+
 def test_get_limit_up_stocks_quality_metadata_distinguishes_missing_vs_derived(monkeypatch):
     monkeypatch.setattr(limit_up_mod, "get_limiter", lambda *args, **kwargs: _DummyLimiter())
 
@@ -538,3 +714,30 @@ def test_get_realtime_quote_backfills_prev_close_and_timestamp(monkeypatch):
     assert data["change"] == 10.0
     assert round(data["changePercent"], 4) == round((10.0 / 1490.0) * 100, 4)
     assert data["data_timestamp"] == "2026-03-21T10:15:30+08:00"
+
+
+@pytest.mark.asyncio
+async def test_search_stocks_meta_marks_tushare_fallback(monkeypatch):
+    class _SimpleDF:
+        empty = False
+
+        def iterrows(self):
+            yield 0, {"ts_code": "600519.SH", "symbol": "600519", "name": "贵州茅台", "industry": "白酒"}
+
+    class _FakePro:
+        def stock_basic(self, **kwargs):
+            return _SimpleDF()
+
+    mcp = _DummyMCP()
+    search_mod.register(mcp)
+    monkeypatch.setattr(search_mod, "get_db", lambda: _SearchDB())
+    monkeypatch.setattr(search_mod.data_source, "get_tushare_pro", lambda: _FakePro())
+
+    result = await mcp.search_stocks(keyword="白酒", limit=5)
+
+    assert result["success"] is True
+    assert result["data"]["count"] == 1
+    assert result["meta"]["side_effect"]["level"] == "read_only"
+    assert result["meta"]["quality"]["fallback_used"] is True
+    assert result["meta"]["degraded"] is True
+    assert result["meta"]["source_chain"] == ["search.search_stocks", "db.search_stocks", "tushare_pro.stock_basic"]

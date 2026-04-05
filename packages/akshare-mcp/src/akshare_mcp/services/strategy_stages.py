@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -91,15 +92,24 @@ _THEME_LOOKUP: dict[str, dict[str, Any]] = {t["theme_code"]: t for t in EXTENDED
 # ---------------------------------------------------------------------------
 
 _PROMPT_EVENT_RECOGNITION = """\
-你是一个 A 股市场事件识别引擎。根据提供的市场快照数据，在扩展主题库范围内识别 3-5 个当前活跃的市场事件。
+你是 A 股事件识别器。根据 market_snapshot、matched_theme_candidates、event_detection_hints、factor_research、research_task 输出 1-4 个最值得跟踪的事件。
 
 规则:
-1. 仅从 theme_library 中的 theme_code 选择，除非有强烈理由新增主题
-2. 每个事件需给出事件类型(sector_rotation/policy/macro/earnings/flow)、严重程度(1-5)和受影响板块
-3. 需引用具体数据证据(如板块涨跌幅、资金流向、龙虎榜等)
+1. 只要上述任一线索非空，就禁止输出 {"events":[]}
+2. 优先使用 matched_theme_candidates 中已有的 theme_code
+3. 若证据较弱，也要输出候选事件，并把 severity 设为 1-2
+4. evidence 必须直接引用输入线索，不能留空
+5. 只输出 JSON object，顶层 key 只能是 events
 
-严格按以下 JSON 格式输出:
-{"events": [{"theme_code": "chip_domestic", "event_type": "sector_rotation", "event_id": "ev_001", "title": "芯片板块资金流入", "severity": 3, "affected_sectors": ["半导体", "算力"], "evidence": ["芯片板块涨2.5%"]}]}"""
+常用映射:
+半导体/芯片/算力 -> chip_domestic
+机器人/自动化 -> robotics_automation
+白酒/食品饮料 -> liquor_consumption
+银行/保险/高股息 -> high_dividend_banks
+原油/油气 -> upstream_oil_gas
+
+输出格式:
+{"events":[{"theme_code":"chip_domestic","event_type":"sector_rotation","event_id":"ev_chip_001","title":"半导体板块走强","severity":3,"affected_sectors":["半导体"],"evidence":["半导体板块涨3.2%"]}]}"""
 
 _PROMPT_THEME_PROPAGATION = """\
 你是一个产业链传导分析引擎。根据识别出的事件，将每个事件映射到产业链传导路径。
@@ -161,6 +171,13 @@ DSL 格式要求:
 2. entry 和 exit 条件必须完整可执行
 3. 策略参数应合理(均线窗口 5-60，RSI 阈值 20-80)
 4. 至少生成 1 个候选策略
+5. 必须严格服从 research_task.allowed_strategy_types；若该字段非空，不得生成未被允许的 strategy_type
+6. 若 research_task.task_source="snapshot" 且 opportunity_type 属于 candidate_family_activation / candidate_factor_activation / factor_acceleration:
+   - 默认只输出 1 个最高置信候选
+   - 不得同时输出 momentum 和 ma_cross
+   - 若 allowed_strategy_types 中不含 momentum，则禁止生成 momentum
+   - ma_cross 必须使用更长周期(short>=10,long>=40)，并附加 close>sma20、roc20>0.01、volume_ratio20>=1.0 等确认
+   - momentum 仅在 research_task 明确允许时可用，且 lookback>=20、threshold>=0.02，并附加 close>sma40、sma12>sma48、volume_ratio>=1.1 等确认
 
 严格按以下 JSON 格式输出(趋势跟踪示例):
 {"candidates": [{"name": "芯片趋势跟踪", "strategy_type": "ma_cross", "target_symbols": ["600519"], "dsl": {"version": "1.0", "timeframe": "daily", "entry": {"any": [{"op": "cross_above", "left": {"indicator": "sma", "field": "close", "window": 5}, "right": {"indicator": "sma", "field": "close", "window": 20}}]}, "exit": {"any": [{"op": "cross_below", "left": {"indicator": "sma", "field": "close", "window": 5}, "right": {"indicator": "sma", "field": "close", "window": 20}}]}}, "tags": ["ai_staged", "ma_cross"]}]}
@@ -308,6 +325,29 @@ _VALIDATORS: dict[str, Callable[[dict[str, Any]], bool]] = {
 # Fallback functions — 调用现有规则引擎
 # ---------------------------------------------------------------------------
 
+def _sector_item_name(item: Any) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    if not isinstance(item, dict):
+        return ""
+    for key in ("group", "name", "sector", "theme_name", "label"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _snapshot_sector_names(snapshot: dict[str, Any], input_data: dict[str, Any]) -> list[str]:
+    hot_sectors = list(
+        (snapshot.get("hot_sectors") or input_data.get("market_snapshot", {}).get("sectors")) or []
+    )
+    names: list[str] = []
+    for sector_item in hot_sectors[:8]:
+        name = _sector_item_name(sector_item)
+        if name and name not in names:
+            names.append(name)
+    return names
+
 async def _fallback_event_recognition(db: Any, input_data: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
     """使用 LocalEventDrivenResearchEngine 的规则检测作为 fallback。"""
     from strategy_factory import get_local_event_engine
@@ -352,7 +392,11 @@ async def _fallback_event_recognition(db: Any, input_data: dict[str, Any], snaps
 
 
 async def _fallback_theme_propagation(db: Any, input_data: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
-    """基于主题库的关键词匹配做简单传导推断。"""
+    """基于主题库的关键词匹配做简单传导推断。
+    
+    当 events 为空（并行 pipeline 模式下 event_recognition 尚未完成时）
+    自动降级为从 snapshot 热门板块推断主题，保证输出非空。
+    """
     events = list(input_data.get("events") or [])
     themes: list[dict[str, Any]] = []
     for ev in events:
@@ -367,30 +411,84 @@ async def _fallback_theme_propagation(db: Any, input_data: dict[str, Any], snaps
             "direction": "bullish" if ev.get("severity", 3) <= 3 else "bearish",
             "confidence": 0.5,
         })
+
+    if not themes:
+        # 并行模式降级：从 snapshot 热门板块匹配主题库
+        for name in _snapshot_sector_names(snapshot, input_data)[:6]:
+            if not name:
+                continue
+            matched_code = _match_sector_to_theme(name)
+            if not matched_code:
+                continue
+            theme_info = _THEME_LOOKUP.get(matched_code, {})
+            parent = theme_info.get("parent", "")
+            themes.append({
+                "theme_code": matched_code,
+                "theme_name": theme_info.get("name", matched_code),
+                "source_event_id": f"snapshot_sector_{matched_code}",
+                "propagation_chain": [parent, matched_code] if parent else [matched_code],
+                "direction": "bullish",
+                "confidence": 0.4,
+            })
+
     return {"themes": themes}
 
 
 async def _fallback_exposure_mapping(db: Any, input_data: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
     """使用 opportunity.py 的规则扫描做板块→成分股映射。"""
     themes = list(input_data.get("themes") or [])
-    exposures: list[dict[str, Any]] = []
+    if not themes:
+        # Phase-1 并行时 exposure_mapping 拿不到 theme_propagation 输出，
+        # 需要直接从 snapshot 的热门板块自举主题线索。
+        for name in _snapshot_sector_names(snapshot, input_data)[:6]:
+            matched_code = _match_sector_to_theme(name)
+            theme_info = _THEME_LOOKUP.get(matched_code, {})
+            themes.append({
+                "theme_code": matched_code or f"snapshot_sector_{name}",
+                "theme_name": theme_info.get("name", name) or name,
+                "sector_hint": name,
+            })
 
     # 尝试从 DB 加载股票池并按主题关键词匹配
     from strategy_factory import _call_optional_async
     universe = await _call_optional_async(db, "list_stock_universe", limit=200, offset=0, default=[])
 
-    for th in themes:
+    normalized_universe = [
+        {
+            "code": str((row or {}).get("code") or "").strip(),
+            "text": " ".join(
+                [
+                    str((row or {}).get("name") or "").lower(),
+                    str((row or {}).get("industry") or "").lower(),
+                    str((row or {}).get("sector") or "").lower(),
+                ]
+            ),
+        }
+        for row in list(universe or [])
+    ]
+
+    def _map_theme(th: dict[str, Any]) -> Optional[dict[str, Any]]:
         theme_code = str(th.get("theme_code") or "").strip()
         theme_info = _THEME_LOOKUP.get(theme_code, {})
-        aliases = [a.lower() for a in list(theme_info.get("aliases") or [])]
+        sector_hint = str(th.get("sector_hint") or th.get("theme_name") or "").strip()
+        aliases = [
+            str(alias or "").strip().lower()
+            for alias in list(theme_info.get("aliases") or [])
+            if str(alias or "").strip()
+        ]
+        if sector_hint:
+            aliases.extend(
+                [
+                    sector_hint.lower(),
+                    sector_hint.replace("板块", "").strip().lower(),
+                ]
+            )
+        aliases = list(dict.fromkeys([alias for alias in aliases if alias]))
         if not aliases:
-            continue
+            return None
         matched_symbols: list[str] = []
-        for row in list(universe or []):
-            name = str(row.get("name") or "").lower()
-            industry = str(row.get("industry") or "").lower()
-            sector = str(row.get("sector") or "").lower()
-            text = f"{name} {industry} {sector}"
+        for row in normalized_universe:
+            text = str(row.get("text") or "")
             if any(alias in text for alias in aliases):
                 code = str(row.get("code") or "").strip()
                 if code:
@@ -398,13 +496,19 @@ async def _fallback_exposure_mapping(db: Any, input_data: dict[str, Any], snapsh
             if len(matched_symbols) >= 6:
                 break
         if matched_symbols:
-            exposures.append({
+            return {
                 "theme_code": theme_code,
                 "target_symbols": matched_symbols,
-                "sector": theme_info.get("name", theme_code),
+                "sector": theme_info.get("name", sector_hint or theme_code),
                 "exposure_type": "direct_beneficiary",
                 "weight": 0.5,
-            })
+            }
+        return None
+    exposures = [
+        item
+        for item in await asyncio.gather(*[asyncio.to_thread(_map_theme, th) for th in themes])
+        if item
+    ]
     return {"exposures": exposures}
 
 
@@ -413,36 +517,51 @@ async def _fallback_market_confirmation(db: Any, input_data: dict[str, Any], sna
     from strategy_factory import _call_optional_async
 
     exposures = list(input_data.get("exposures") or [])
-    confirmations: list[dict[str, Any]] = []
+    symbol_jobs: list[tuple[str, str]] = []
     for exp in exposures:
+        theme_code = str(exp.get("theme_code") or "").strip()
         for symbol in list(exp.get("target_symbols") or [])[:4]:
-            try:
-                klines = await _call_optional_async(db, "get_klines", symbol, limit=30, default=[])
-            except TypeError:
-                klines = await _call_optional_async(db, "get_klines", symbol, default=[])
-            klines = list(klines or [])
-            confirmed = False
-            signal_strength = "weak"
-            if len(klines) >= 5:
-                closes = [float(k.get("close") or 0) for k in klines if k.get("close") is not None]
-                if len(closes) >= 5:
-                    ma5 = sum(closes[-5:]) / 5
-                    ma20 = sum(closes[-20:]) / max(len(closes[-20:]), 1) if len(closes) >= 20 else sum(closes) / len(closes)
-                    last_close = closes[-1]
-                    # 简单确认: 价格在均线上方且短均线>长均线
-                    if last_close > ma20 and ma5 > ma20:
-                        confirmed = True
-                        signal_strength = "moderate"
-                    if last_close > ma5 > ma20:
-                        signal_strength = "strong"
-            confirmations.append({
-                "theme_code": exp.get("theme_code", ""),
-                "symbol": symbol,
-                "confirmed": confirmed,
-                "signal_strength": signal_strength,
-                "entry_timing": "immediate" if confirmed else "avoid",
-                "risk_level": "medium",
-            })
+            symbol_jobs.append((theme_code, symbol))
+
+    async def _load_symbol_klines(symbol: str) -> list[dict[str, Any]]:
+        try:
+            return list(await _call_optional_async(db, "get_klines", symbol, limit=30, default=[]))
+        except TypeError:
+            return list(await _call_optional_async(db, "get_klines", symbol, default=[]))
+
+    kline_payloads = await asyncio.gather(
+        *[_load_symbol_klines(symbol) for _theme_code, symbol in symbol_jobs],
+        return_exceptions=True,
+    )
+
+    confirmations: list[dict[str, Any]] = []
+    for (theme_code, symbol), kline_payload in zip(symbol_jobs, kline_payloads):
+        if isinstance(kline_payload, Exception):
+            klines = []
+        else:
+            klines = list(kline_payload or [])
+        confirmed = False
+        signal_strength = "weak"
+        if len(klines) >= 5:
+            closes = [float(k.get("close") or 0) for k in klines if k.get("close") is not None]
+            if len(closes) >= 5:
+                ma5 = sum(closes[-5:]) / 5
+                ma20 = sum(closes[-20:]) / max(len(closes[-20:]), 1) if len(closes) >= 20 else sum(closes) / len(closes)
+                last_close = closes[-1]
+                # 简单确认: 价格在均线上方且短均线>长均线
+                if last_close > ma20 and ma5 > ma20:
+                    confirmed = True
+                    signal_strength = "moderate"
+                if last_close > ma5 > ma20:
+                    signal_strength = "strong"
+        confirmations.append({
+            "theme_code": theme_code,
+            "symbol": symbol,
+            "confirmed": confirmed,
+            "signal_strength": signal_strength,
+            "entry_timing": "immediate" if confirmed else "avoid",
+            "risk_level": "medium",
+        })
     return {"confirmations": confirmations}
 
 
@@ -457,113 +576,653 @@ def _is_defensive_theme(theme_code: str) -> bool:
     return False
 
 
-def _build_trend_templates(theme_name: str, theme_code: str, symbols: list[str], stock_pool: dict) -> list[dict[str, Any]]:
-    """趋势跟踪 + 动量突破模板（适合科技/周期/成长类标的）。"""
-    templates = []
-    templates.append({
-        "name": f"{theme_name}_趋势跟踪",
-        "strategy_type": "ma_cross",
+def _fear_greed_score(snapshot: dict[str, Any]) -> int:
+    raw = snapshot.get("fear_greed_index")
+    if raw is None:
+        raw = dict(snapshot.get("fear_greed") or {}).get("score")
+    try:
+        return int(float(raw or 50))
+    except (TypeError, ValueError):
+        return 50
+
+
+def _north_fund_inflow(snapshot: dict[str, Any]) -> float:
+    north_fund = dict(snapshot.get("north_fund") or {})
+    for key in ("net_inflow", "net_inflow_amount", "amount", "inflow"):
+        value = north_fund.get(key)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _theme_parent(theme_code: str) -> str:
+    return str(_THEME_LOOKUP.get(theme_code, {}).get("parent") or "").strip()
+
+
+def _is_growth_theme(theme_code: str) -> bool:
+    parent = _theme_parent(theme_code)
+    if parent in {"technology", "new_energy", "defense"}:
+        return True
+    return theme_code in {
+        "chip_domestic",
+        "new_energy_vehicle",
+        "photovoltaic_wind",
+        "telecom_5g",
+        "software_saas",
+        "robotics_automation",
+        "data_center_cloud",
+    }
+
+
+def _is_rotation_theme(theme_code: str) -> bool:
+    parent = _theme_parent(theme_code)
+    if parent in {"commodities", "policy", "infrastructure", "global_trade", "real_estate"}:
+        return True
+    return theme_code in {
+        "upstream_oil_gas",
+        "shipping_trade",
+        "real_estate_chain",
+        "rare_earth_metals",
+        "infrastructure",
+        "carbon_neutral",
+    }
+
+
+def _is_flow_preferred_theme(theme_code: str) -> bool:
+    parent = _theme_parent(theme_code)
+    if parent in {"consumer", "defensive", "technology", "new_energy"}:
+        return True
+    return theme_code in {
+        "liquor_consumption",
+        "high_dividend_banks",
+        "insurance_pension",
+        "chip_domestic",
+        "software_saas",
+        "data_center_cloud",
+    }
+
+
+def _theme_hot_sector_strength(theme_code: str, snapshot: dict[str, Any], input_data: Optional[dict[str, Any]] = None) -> float:
+    theme_info = _THEME_LOOKUP.get(theme_code, {})
+    aliases = {
+        str(alias or "").strip().lower()
+        for alias in list(theme_info.get("aliases") or [])
+        if str(alias or "").strip()
+    }
+    aliases.add(str(theme_info.get("name") or theme_code).strip().lower())
+    max_change = 0.0
+    for sector_item in list((snapshot.get("hot_sectors") or (input_data or {}).get("market_snapshot", {}).get("sectors")) or []):
+        name = _sector_item_name(sector_item).lower()
+        if not name:
+            continue
+        if not any(alias and (alias in name or name in alias) for alias in aliases):
+            continue
+        try:
+            max_change = max(max_change, abs(float((sector_item or {}).get("change_pct") or 0.0)))
+        except (AttributeError, TypeError, ValueError):
+            max_change = max(max_change, 0.0)
+    return max_change
+
+
+def _collapsed_hint_text(value: Any) -> str:
+    return (
+        str(value or "")
+        .strip()
+        .lower()
+        .replace(" ", "")
+        .replace("_", "")
+        .replace("-", "")
+    )
+
+
+def _snapshot_strategy_generation_profile(research_task: Optional[dict[str, Any]]) -> dict[str, Any]:
+    task = dict(research_task or {})
+    task_source = str(task.get("task_source") or "").strip().lower()
+    opportunity_type = str(task.get("opportunity_type") or "").strip().lower()
+    validation_focus = str(task.get("validation_focus") or "").strip().lower()
+    allowed_strategy_types = [
+        str(item).strip()
+        for item in list(task.get("allowed_strategy_types") or [])
+        if str(item).strip()
+    ]
+    template_profile = str(task.get("template_generation_profile") or "").strip().lower()
+    hint_blob = " ".join(
+        str(item or "")
+        for item in (
+            task.get("candidate_family"),
+            task.get("factor_name"),
+            task.get("candidate_name"),
+            task.get("preference_reason"),
+            task.get("rationale"),
+        )
+        if str(item or "").strip()
+    )
+    collapsed = _collapsed_hint_text(hint_blob)
+    conservative_snapshot_task = (
+        task_source == "snapshot"
+        and (
+            opportunity_type in {"candidate_family_activation", "candidate_factor_activation", "factor_acceleration"}
+            or validation_focus == "candidate_target_only"
+            or template_profile.startswith("conservative_")
+        )
+    )
+    mean_reversion_tokens = (
+        "closelocation",
+        "intradayresilience",
+        "trendefficiency",
+        "pullback",
+        "quality",
+        "stability",
+        "quiet",
+        "resilience",
+        "repair",
+        "reversion",
+        "defensive",
+        "rsi",
+    )
+    flow_tokens = (
+        "capitalflow",
+        "northcapital",
+        "northbound",
+        "fundflow",
+        "liquidity",
+        "turnover",
+    )
+    rotation_tokens = (
+        "rotation",
+        "sector",
+        "cycle",
+        "divergence",
+        "breadth",
+    )
+    breakout_tokens = (
+        "momentum",
+        "macross",
+        "cross",
+        "trend",
+        "breakout",
+        "gapcontinuation",
+        "expansion",
+        "acceleration",
+        "volatility",
+    )
+    if not template_profile:
+        if any(token in collapsed for token in mean_reversion_tokens):
+            template_profile = "conservative_mean_reversion"
+        elif any(token in collapsed for token in flow_tokens):
+            template_profile = "conservative_flow"
+        elif any(token in collapsed for token in rotation_tokens):
+            template_profile = "conservative_rotation"
+        elif any(token in collapsed for token in breakout_tokens):
+            template_profile = "conservative_breakout"
+        elif conservative_snapshot_task:
+            template_profile = "conservative_trend"
+
+    disable_momentum = (
+        conservative_snapshot_task
+        and (
+            "momentum" not in allowed_strategy_types
+            or template_profile in {
+                "conservative_mean_reversion",
+                "conservative_flow",
+                "conservative_rotation",
+                "conservative_trend",
+                "conservative_breakout",
+            }
+        )
+    )
+    candidate_cap = 4
+    if conservative_snapshot_task:
+        candidate_cap = 1 if opportunity_type in {"candidate_family_activation", "candidate_factor_activation"} else 2
+
+    return {
+        "task_source": task_source,
+        "opportunity_type": opportunity_type,
+        "validation_focus": validation_focus,
+        "allowed_strategy_types": allowed_strategy_types,
+        "template_generation_profile": template_profile,
+        "conservative_snapshot_task": conservative_snapshot_task,
+        "disable_momentum": disable_momentum,
+        "candidate_cap": candidate_cap,
+    }
+
+
+def _filter_templates_by_allowed_types(
+    templates: list[dict[str, Any]],
+    allowed_strategy_types: list[str],
+) -> list[dict[str, Any]]:
+    allowed = {
+        str(item).strip()
+        for item in list(allowed_strategy_types or [])
+        if str(item).strip()
+    }
+    if not allowed:
+        return list(templates)
+    return [
+        item
+        for item in templates
+        if str((item or {}).get("strategy_type") or "").strip() in allowed
+    ]
+
+
+def _build_template_candidate(
+    *,
+    theme_name: str,
+    theme_code: str,
+    family: str,
+    title_suffix: str,
+    symbols: list[str],
+    stock_pool: dict[str, Any],
+    params: dict[str, Any],
+    entry: dict[str, Any],
+    exit_rule: dict[str, Any],
+    tags: list[str],
+    description: str,
+) -> dict[str, Any]:
+    metadata = {"target_symbols": list(symbols), "stock_pool": dict(stock_pool)}
+    return {
+        "name": f"{theme_name}_{title_suffix}",
+        "strategy_type": family,
         "target_symbols": list(symbols),
+        "params": dict(params),
+        "stock_pool": dict(stock_pool),
+        "description": description,
         "dsl": {
             "version": "1.0",
             "timeframe": "daily",
-            "entry": {
-                "any": [{
-                    "op": "cross_above",
-                    "left": {"indicator": "sma", "field": "close", "window": 5},
-                    "right": {"indicator": "sma", "field": "close", "window": 20},
-                }],
-            },
-            "exit": {
-                "any": [{
-                    "op": "cross_below",
-                    "left": {"indicator": "sma", "field": "close", "window": 5},
-                    "right": {"indicator": "sma", "field": "close", "window": 20},
-                }],
-            },
-            "metadata": {"target_symbols": list(symbols), "stock_pool": stock_pool},
+            "entry": entry,
+            "exit": exit_rule,
+            "metadata": metadata,
         },
-        "tags": ["ai_staged", theme_code, "ma_cross"],
-    })
-    if len(symbols) >= 2:
-        templates.append({
-            "name": f"{theme_name}_动量突破",
-            "strategy_type": "momentum",
-            "target_symbols": list(symbols),
-            "dsl": {
-                "version": "1.0",
-                "timeframe": "daily",
-                "entry": {
-                    "all": [
-                        {"op": "gt", "left": {"indicator": "roc", "field": "close", "window": 10}, "right": {"value": 0.02}},
-                        {"op": "gt", "left": {"indicator": "volume_ratio", "field": "volume", "window": 20}, "right": {"value": 1.2}},
-                    ],
+        "tags": ["ai_staged", theme_code, family, *tags],
+    }
+
+
+def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    for candidate in candidates:
+        strategy_type = str(candidate.get("strategy_type") or "").strip()
+        target_symbols = tuple(str(symbol).strip() for symbol in list(candidate.get("target_symbols") or []))
+        if not strategy_type or not target_symbols:
+            continue
+        key = (strategy_type, target_symbols)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _build_trend_templates(
+    theme_name: str,
+    theme_code: str,
+    symbols: list[str],
+    stock_pool: dict[str, Any],
+    *,
+    include_breakout: bool = False,
+    conservative: bool = False,
+    disable_momentum: bool = False,
+    prefer_breakout_first: bool = False,
+) -> list[dict[str, Any]]:
+    """趋势跟踪模板，兼顾传统趋势与高波动成长场景。"""
+    short_window = 12 if conservative else 6
+    long_window = 48 if conservative else 24
+    ma_entry = {
+        "any": [{
+            "op": "cross_above",
+            "left": {"indicator": "sma", "field": "close", "window": short_window},
+            "right": {"indicator": "sma", "field": "close", "window": long_window},
+        }],
+    }
+    ma_exit = {
+        "any": [{
+            "op": "cross_below",
+            "left": {"indicator": "sma", "field": "close", "window": short_window},
+            "right": {"indicator": "sma", "field": "close", "window": long_window},
+        }],
+    }
+    ma_tags = ["trend", "ma_cross"]
+    ma_description = f"{theme_name}主线以均线趋势跟踪为主，适合景气延续与抱团强化阶段。"
+    if conservative:
+        ma_entry = {
+            "all": [
+                {
+                    "op": "cross_above",
+                    "left": {"indicator": "sma", "field": "close", "window": short_window},
+                    "right": {"indicator": "sma", "field": "close", "window": long_window},
                 },
-                "exit": {
-                    "any": [
-                        {"op": "lt", "left": {"indicator": "roc", "field": "close", "window": 10}, "right": {"value": -0.03}},
-                        {"op": "gt", "left": {"indicator": "rsi", "field": "close", "window": 14}, "right": {"value": 75}},
-                    ],
+                {
+                    "op": "gt",
+                    "left": {"field": "close"},
+                    "right": {"indicator": "sma", "field": "close", "window": 20},
                 },
-                "metadata": {"target_symbols": list(symbols), "stock_pool": stock_pool},
+                {
+                    "op": "gt",
+                    "left": {"indicator": "roc", "field": "close", "window": 20},
+                    "right": {"value": 0.01},
+                },
+                {
+                    "op": "gt",
+                    "left": {"indicator": "volume_ratio", "field": "volume", "window": 20},
+                    "right": {"value": 1.0},
+                },
+            ],
+        }
+        ma_exit = {
+            "any": [
+                {
+                    "op": "cross_below",
+                    "left": {"indicator": "sma", "field": "close", "window": short_window},
+                    "right": {"indicator": "sma", "field": "close", "window": long_window},
+                },
+                {
+                    "op": "lt",
+                    "left": {"field": "close"},
+                    "right": {"indicator": "sma", "field": "close", "window": 20},
+                },
+                {
+                    "op": "lt",
+                    "left": {"indicator": "roc", "field": "close", "window": 10},
+                    "right": {"value": -0.012},
+                },
+            ],
+        }
+        ma_tags = ["trend", "ma_cross", "conservative"]
+        ma_description = f"{theme_name}在定向 target pool 下改用长周期均线和量价确认，优先保证信号稳定性而不是追求高频触发。"
+
+    templates = [
+        _build_template_candidate(
+            theme_name=theme_name,
+            theme_code=theme_code,
+            family="ma_cross",
+            title_suffix="趋势跟踪",
+            symbols=symbols,
+            stock_pool=stock_pool,
+            params={"short_period": short_window, "long_period": long_window},
+            entry=ma_entry,
+            exit_rule=ma_exit,
+            tags=ma_tags,
+            description=ma_description,
+        ),
+    ]
+    if not disable_momentum:
+        momentum_lookback = 24 if conservative else 12
+        momentum_threshold = 0.03 if conservative else 0.018
+        momentum_entry = {
+            "all": [
+                {"op": "gt", "left": {"indicator": "roc", "field": "close", "window": momentum_lookback}, "right": {"value": momentum_threshold}},
+                {"op": "gt", "left": {"indicator": "volume_ratio", "field": "volume", "window": 20}, "right": {"value": 1.15 if conservative else 1.1}},
+            ],
+        }
+        momentum_exit = {
+            "any": [
+                {"op": "lt", "left": {"indicator": "roc", "field": "close", "window": 12 if conservative else 8}, "right": {"value": -0.01 if conservative else -0.02}},
+                {"op": "gt", "left": {"indicator": "rsi", "field": "close", "window": 14}, "right": {"value": 76 if conservative else 78}},
+            ],
+        }
+        momentum_tags = ["trend", "momentum"]
+        momentum_description = f"{theme_name}热点扩散阶段更适合用短中周期动量确认主升浪。"
+        if conservative:
+            momentum_entry = {
+                "all": [
+                    {"op": "gt", "left": {"indicator": "roc", "field": "close", "window": momentum_lookback}, "right": {"value": momentum_threshold}},
+                    {
+                        "op": "gt",
+                        "left": {"field": "close"},
+                        "right": {"indicator": "sma", "field": "close", "window": 40},
+                    },
+                    {
+                        "op": "gt",
+                        "left": {"indicator": "sma", "field": "close", "window": 12},
+                        "right": {"indicator": "sma", "field": "close", "window": 48},
+                    },
+                    {"op": "gt", "left": {"indicator": "volume_ratio", "field": "volume", "window": 20}, "right": {"value": 1.15}},
+                ],
+            }
+            momentum_tags = ["trend", "momentum", "conservative"]
+            momentum_description = f"{theme_name}仅在强趋势已确认时才允许动量突破，优先过滤掉高换手、低持续性的追涨信号。"
+        templates.append(
+            _build_template_candidate(
+                theme_name=theme_name,
+                theme_code=theme_code,
+                family="momentum",
+                title_suffix="动量突破",
+                symbols=symbols,
+                stock_pool=stock_pool,
+                params={"lookback": momentum_lookback, "threshold": momentum_threshold},
+                entry=momentum_entry,
+                exit_rule=momentum_exit,
+                tags=momentum_tags,
+                description=momentum_description,
+            )
+        )
+    if include_breakout:
+        breakout_candidate = _build_template_candidate(
+            theme_name=theme_name,
+            theme_code=theme_code,
+            family="volatility_breakout",
+            title_suffix="波动突破",
+            symbols=symbols,
+            stock_pool=stock_pool,
+            params={"lookback": 30 if conservative else 20, "threshold": 0.03 if conservative else 0.025},
+            entry={
+                "all": [
+                    {"op": "gt", "left": {"indicator": "roc", "field": "close", "window": 30 if conservative else 20}, "right": {"value": 0.03 if conservative else 0.025}},
+                    {"op": "gt", "left": {"indicator": "stddev", "field": "close", "window": 20}, "right": {"value": 0.02 if conservative else 0.018}},
+                    {"op": "gt", "left": {"indicator": "volume_ratio", "field": "volume", "window": 20}, "right": {"value": 1.12 if conservative else 1.0}},
+                ],
             },
-            "tags": ["ai_staged", theme_code, "momentum"],
-        })
+            exit_rule={
+                "any": [
+                    {"op": "lt", "left": {"indicator": "roc", "field": "close", "window": 12 if conservative else 10}, "right": {"value": -0.012 if conservative else -0.015}},
+                    {
+                        "op": "cross_below",
+                        "left": {"indicator": "sma", "field": "close", "window": 10 if conservative else 5},
+                        "right": {"indicator": "sma", "field": "close", "window": 40 if conservative else 20},
+                    },
+                ],
+            },
+            tags=["trend", "breakout", "high_beta", *(['conservative'] if conservative else [])],
+            description=(
+                f"{theme_name}处于高弹性放量阶段时，优先用波动突破捕捉主升与加速段。"
+                if not conservative
+                else f"{theme_name}在定向 basket 下优先用更长确认窗口的波动突破，只保留趋势和量能都足够清晰的候选。"
+            ),
+        )
+        if prefer_breakout_first:
+            templates = [breakout_candidate, *templates]
+        else:
+            templates.append(breakout_candidate)
     return templates
 
 
-def _build_mean_reversion_templates(theme_name: str, theme_code: str, symbols: list[str], stock_pool: dict) -> list[dict[str, Any]]:
-    """均值回归 + 高股息低吸模板（适合银行/保险/高股息/公用事业类标的）。"""
-    templates = []
-    # RSI 超卖回归策略
-    templates.append({
-        "name": f"{theme_name}_超卖回归",
-        "strategy_type": "rsi",
-        "target_symbols": list(symbols),
-        "dsl": {
-            "version": "1.0",
-            "timeframe": "daily",
-            "entry": {
+def _build_mean_reversion_templates(
+    theme_name: str,
+    theme_code: str,
+    symbols: list[str],
+    stock_pool: dict[str, Any],
+    *,
+    include_gap_fill: bool = False,
+) -> list[dict[str, Any]]:
+    """均值回归模板，覆盖防御与错杀修复场景。"""
+    templates = [
+        _build_template_candidate(
+            theme_name=theme_name,
+            theme_code=theme_code,
+            family="rsi",
+            title_suffix="超卖回归",
+            symbols=symbols,
+            stock_pool=stock_pool,
+            params={"rsi_period": 14, "oversold": 35, "overbought": 65},
+            entry={
                 "all": [
                     {"op": "lt", "left": {"indicator": "rsi", "field": "close", "window": 14}, "right": {"value": 35}},
                     {"op": "gt", "left": {"indicator": "volume_ratio", "field": "volume", "window": 20}, "right": {"value": 0.8}},
                 ],
             },
-            "exit": {
+            exit_rule={
                 "any": [
                     {"op": "gt", "left": {"indicator": "rsi", "field": "close", "window": 14}, "right": {"value": 65}},
                 ],
             },
-            "metadata": {"target_symbols": list(symbols), "stock_pool": stock_pool},
-        },
-        "tags": ["ai_staged", theme_code, "rsi", "mean_reversion"],
-    })
-    # 布林带回归策略
-    if len(symbols) >= 2:
-        templates.append({
-            "name": f"{theme_name}_区间震荡",
-            "strategy_type": "rsi",
-            "target_symbols": list(symbols),
-            "dsl": {
-                "version": "1.0",
-                "timeframe": "daily",
-                "entry": {
-                    "all": [
-                        {"op": "lt", "left": {"indicator": "rsi", "field": "close", "window": 6}, "right": {"value": 25}},
-                        {"op": "lt", "left": {"indicator": "roc", "field": "close", "window": 5}, "right": {"value": -0.01}},
-                    ],
-                },
-                "exit": {
-                    "any": [
-                        {"op": "gt", "left": {"indicator": "rsi", "field": "close", "window": 6}, "right": {"value": 55}},
-                        {"op": "gt", "left": {"indicator": "roc", "field": "close", "window": 5}, "right": {"value": 0.03}},
-                    ],
-                },
-                "metadata": {"target_symbols": list(symbols), "stock_pool": stock_pool},
+            tags=["mean_reversion", "rsi"],
+            description=f"{theme_name}偏低波防御属性，适合用经典 RSI 超卖回归吸收短线回撤。",
+        ),
+        _build_template_candidate(
+            theme_name=theme_name,
+            theme_code=theme_code,
+            family="mean_reversion_short",
+            title_suffix="短线回归",
+            symbols=symbols,
+            stock_pool=stock_pool,
+            params={"rsi_period": 6, "oversold": 26, "overbought": 62},
+            entry={
+                "all": [
+                    {"op": "lt", "left": {"indicator": "rsi", "field": "close", "window": 6}, "right": {"value": 26}},
+                    {"op": "lt", "left": {"indicator": "zscore", "field": "close", "window": 20}, "right": {"value": -1.0}},
+                ],
             },
-            "tags": ["ai_staged", theme_code, "rsi", "mean_reversion"],
-        })
+            exit_rule={
+                "any": [
+                    {"op": "gt", "left": {"indicator": "rsi", "field": "close", "window": 6}, "right": {"value": 58}},
+                    {"op": "gt", "left": {"indicator": "zscore", "field": "close", "window": 20}, "right": {"value": 0.8}},
+                ],
+            },
+            tags=["mean_reversion", "short_horizon"],
+            description=f"{theme_name}震荡期更容易出现短周期偏离修复，适合短线均值回归模板。",
+        ),
+    ]
+    if include_gap_fill:
+        templates.append(
+            _build_template_candidate(
+                theme_name=theme_name,
+                theme_code=theme_code,
+                family="gap_fill",
+                title_suffix="跳空回补",
+                symbols=symbols,
+                stock_pool=stock_pool,
+                params={"gap_threshold": 0.02, "rsi_period": 5, "oversold": 24, "overbought": 58},
+                entry={
+                    "all": [
+                        {"op": "lt", "left": {"indicator": "rsi", "field": "close", "window": 5}, "right": {"value": 24}},
+                        {"op": "lt", "left": {"indicator": "roc", "field": "close", "window": 2}, "right": {"value": -0.025}},
+                    ],
+                },
+                exit_rule={
+                    "any": [
+                        {"op": "gt", "left": {"indicator": "rsi", "field": "close", "window": 5}, "right": {"value": 58}},
+                        {"op": "gt", "left": {"indicator": "roc", "field": "close", "window": 3}, "right": {"value": 0.02}},
+                    ],
+                },
+                tags=["mean_reversion", "event_repair"],
+                description=f"{theme_name}若因情绪冲击出现快速错杀，更适合用跳空回补模板承接修复。",
+            )
+        )
     return templates
+
+
+def _build_rotation_templates(
+    theme_name: str,
+    theme_code: str,
+    symbols: list[str],
+    stock_pool: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        _build_template_candidate(
+            theme_name=theme_name,
+            theme_code=theme_code,
+            family="sector_rotation",
+            title_suffix="行业轮动",
+            symbols=symbols,
+            stock_pool=stock_pool,
+            params={"lookback": 20, "factor_weights": {"momentum": 0.45, "quality": 0.30, "value": 0.25}},
+            entry={
+                "all": [
+                    {"op": "gt", "left": {"indicator": "roc", "field": "close", "window": 20}, "right": {"value": 0.015}},
+                    {"op": "gt", "left": {"indicator": "zscore", "field": "close", "window": 20}, "right": {"value": -0.3}},
+                ],
+            },
+            exit_rule={
+                "any": [
+                    {"op": "lt", "left": {"indicator": "roc", "field": "close", "window": 10}, "right": {"value": -0.015}},
+                    {"op": "lt", "left": {"indicator": "zscore", "field": "close", "window": 20}, "right": {"value": -1.2}},
+                ],
+            },
+            tags=["rotation", "macro"],
+            description=f"{theme_name}更偏政策/商品/顺周期轮动，适合用行业轮动打分模板捕捉切换。",
+        )
+    ]
+
+
+def _build_flow_templates(
+    theme_name: str,
+    theme_code: str,
+    symbols: list[str],
+    stock_pool: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        _build_template_candidate(
+            theme_name=theme_name,
+            theme_code=theme_code,
+            family="north_capital_track",
+            title_suffix="北向跟踪",
+            symbols=symbols,
+            stock_pool=stock_pool,
+            params={"lookback": 15, "threshold": 0.015},
+            entry={
+                "all": [
+                    {"op": "gt", "left": {"indicator": "roc", "field": "close", "window": 15}, "right": {"value": 0.015}},
+                    {"op": "gt", "left": {"indicator": "volume_ratio", "field": "volume", "window": 15}, "right": {"value": 1.1}},
+                ],
+            },
+            exit_rule={
+                "any": [
+                    {"op": "lt", "left": {"indicator": "roc", "field": "close", "window": 10}, "right": {"value": -0.012}},
+                    {"op": "lt", "left": {"indicator": "volume_ratio", "field": "volume", "window": 10}, "right": {"value": 0.92}},
+                ],
+            },
+            tags=["capital_flow", "north_fund"],
+            description=f"{theme_name}受资金偏好驱动较强时，优先使用北向跟踪模板承接趋势与量能共振。",
+        )
+    ]
+
+
+def _build_divergence_templates(
+    theme_name: str,
+    theme_code: str,
+    symbols: list[str],
+    stock_pool: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        _build_template_candidate(
+            theme_name=theme_name,
+            theme_code=theme_code,
+            family="margin_divergence",
+            title_suffix="融资背离",
+            symbols=symbols,
+            stock_pool=stock_pool,
+            params={"fear_threshold": 40, "greed_threshold": 60, "lookback": 15},
+            entry={
+                "all": [
+                    {"op": "lt", "left": {"indicator": "roc", "field": "close", "window": 5}, "right": {"value": 0.0}},
+                    {"op": "gt", "left": {"indicator": "volume_ratio", "field": "volume", "window": 15}, "right": {"value": 0.95}},
+                ],
+            },
+            exit_rule={
+                "any": [
+                    {"op": "gt", "left": {"indicator": "rsi", "field": "close", "window": 10}, "right": {"value": 68}},
+                    {"op": "lt", "left": {"indicator": "roc", "field": "close", "window": 10}, "right": {"value": -0.02}},
+                ],
+            },
+            tags=["capital_flow", "divergence"],
+            description=f"{theme_name}在情绪分歧与量价背离阶段，更适合用融资背离模板捕捉修复回归。",
+        )
+    ]
 
 
 async def _fallback_strategy_generation(db: Any, input_data: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -582,17 +1241,178 @@ async def _fallback_strategy_generation(db: Any, input_data: dict[str, Any], sna
             theme_symbols.setdefault(tc, []).append(sym)
 
     candidates: list[dict[str, Any]] = []
+    fear_greed = _fear_greed_score(snapshot)
+    north_inflow = _north_fund_inflow(snapshot)
+    hot_sector_count = len(_snapshot_sector_names(snapshot, input_data))
+    generation_profile = _snapshot_strategy_generation_profile(input_data.get("research_task"))
+    risk_on = fear_greed >= 58 or north_inflow > 0 or hot_sector_count >= 3
+    risk_off = fear_greed <= 45 or str(snapshot.get("sentiment") or "").strip().lower() in {"fear", "risk_off", "weak"}
     for theme_code, symbols in theme_symbols.items():
         theme_info = _THEME_LOOKUP.get(theme_code, {})
         theme_name = theme_info.get("name", theme_code)
         stock_pool = {"selection_mode": "explicit", "symbols": list(symbols)}
-
+        hot_strength = _theme_hot_sector_strength(theme_code, snapshot, input_data)
+        include_breakout = _is_growth_theme(theme_code) and (risk_on or hot_strength >= 1.5)
+        include_gap_fill = _is_defensive_theme(theme_code) or risk_off
+        templates: list[dict[str, Any]] = []
+        if generation_profile.get("conservative_snapshot_task"):
+            template_profile = str(generation_profile.get("template_generation_profile") or "").strip().lower()
+            if template_profile == "conservative_mean_reversion":
+                templates.extend(
+                    _build_mean_reversion_templates(
+                        theme_name,
+                        theme_code,
+                        symbols,
+                        stock_pool,
+                        include_gap_fill=True,
+                    )
+                )
+                if not risk_off:
+                    templates.extend(_build_rotation_templates(theme_name, theme_code, symbols, stock_pool))
+            elif template_profile == "conservative_flow":
+                templates.extend(_build_flow_templates(theme_name, theme_code, symbols, stock_pool))
+                templates.extend(_build_rotation_templates(theme_name, theme_code, symbols, stock_pool))
+                templates.extend(
+                    _build_trend_templates(
+                        theme_name,
+                        theme_code,
+                        symbols,
+                        stock_pool,
+                        conservative=True,
+                        disable_momentum=True,
+                    )
+                )
+            elif template_profile == "conservative_rotation":
+                templates.extend(_build_rotation_templates(theme_name, theme_code, symbols, stock_pool))
+                templates.extend(_build_divergence_templates(theme_name, theme_code, symbols, stock_pool))
+                if risk_on or hot_strength >= 1.0:
+                    templates.extend(
+                        _build_trend_templates(
+                            theme_name,
+                            theme_code,
+                            symbols,
+                            stock_pool,
+                            conservative=True,
+                            disable_momentum=True,
+                        )
+                    )
+            elif template_profile == "conservative_breakout":
+                templates.extend(
+                    _build_trend_templates(
+                        theme_name,
+                        theme_code,
+                        symbols,
+                        stock_pool,
+                        include_breakout=include_breakout or hot_strength >= 1.0,
+                        conservative=True,
+                        disable_momentum=True,
+                        prefer_breakout_first=True,
+                    )
+                )
+                if north_inflow > 0 and _is_flow_preferred_theme(theme_code):
+                    templates.extend(_build_flow_templates(theme_name, theme_code, symbols, stock_pool))
+            else:
+                if risk_off or not _is_growth_theme(theme_code):
+                    templates.extend(
+                        _build_mean_reversion_templates(
+                            theme_name,
+                            theme_code,
+                            symbols,
+                            stock_pool,
+                            include_gap_fill=include_gap_fill,
+                        )
+                    )
+                templates.extend(_build_rotation_templates(theme_name, theme_code, symbols, stock_pool))
+                templates.extend(
+                    _build_trend_templates(
+                        theme_name,
+                        theme_code,
+                        symbols,
+                        stock_pool,
+                        include_breakout=include_breakout and risk_on,
+                        conservative=True,
+                        disable_momentum=True,
+                    )
+                )
+            templates = _filter_templates_by_allowed_types(
+                templates,
+                list(generation_profile.get("allowed_strategy_types") or []),
+            )
+            capped_templates = _dedupe_candidates(templates)[: int(generation_profile.get("candidate_cap") or 1)]
+            for item in capped_templates:
+                item["research_task"] = dict(input_data.get("research_task") or {})
+            candidates.extend(capped_templates)
+            continue
         if _is_defensive_theme(theme_code):
-            templates = _build_mean_reversion_templates(theme_name, theme_code, symbols, stock_pool)
+            templates.extend(
+                _build_mean_reversion_templates(
+                    theme_name,
+                    theme_code,
+                    symbols,
+                    stock_pool,
+                    include_gap_fill=include_gap_fill,
+                )
+            )
             logger.debug("Fallback: using mean-reversion templates for defensive theme '%s'", theme_code)
+        elif _is_rotation_theme(theme_code):
+            templates.extend(_build_rotation_templates(theme_name, theme_code, symbols, stock_pool))
+            if risk_off:
+                templates.extend(
+                    _build_mean_reversion_templates(
+                        theme_name,
+                        theme_code,
+                        symbols,
+                        stock_pool,
+                        include_gap_fill=True,
+                    )
+                )
+            else:
+                templates.extend(
+                    _build_trend_templates(
+                        theme_name,
+                        theme_code,
+                        symbols,
+                        stock_pool,
+                        include_breakout=include_breakout or hot_strength >= 1.0,
+                    )
+                )
         else:
-            templates = _build_trend_templates(theme_name, theme_code, symbols, stock_pool)
-        candidates.extend(templates)
+            if risk_off and not _is_growth_theme(theme_code):
+                templates.extend(
+                    _build_mean_reversion_templates(
+                        theme_name,
+                        theme_code,
+                        symbols,
+                        stock_pool,
+                        include_gap_fill=include_gap_fill,
+                    )
+                )
+            templates.extend(
+                _build_trend_templates(
+                    theme_name,
+                    theme_code,
+                    symbols,
+                    stock_pool,
+                    include_breakout=include_breakout,
+                )
+            )
+
+        if hot_sector_count >= 3 and _is_rotation_theme(theme_code):
+            templates.extend(_build_rotation_templates(theme_name, theme_code, symbols, stock_pool))
+        if north_inflow > 0 and _is_flow_preferred_theme(theme_code):
+            templates.extend(_build_flow_templates(theme_name, theme_code, symbols, stock_pool))
+        if risk_off and not _is_defensive_theme(theme_code):
+            templates = _build_divergence_templates(theme_name, theme_code, symbols, stock_pool) + templates
+
+        normal_templates = _dedupe_candidates(
+            _filter_templates_by_allowed_types(
+                templates,
+                list(generation_profile.get("allowed_strategy_types") or []),
+            )
+        )[:4]
+        for item in normal_templates:
+            item["research_task"] = dict(input_data.get("research_task") or {})
+        candidates.extend(normal_templates)
 
     return {"candidates": candidates[:6]}
 

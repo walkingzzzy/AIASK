@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "strategy-factory" 
 
 from akshare_mcp.server import mcp
 from akshare_mcp.prompts import analysis as prompt_mod
+from akshare_mcp.resources import lineage as lineage_resource_mod
 from akshare_mcp.resources import stock_and_watchlist as stock_resource_mod
 from akshare_mcp.resources import strategy as strategy_resource_mod
 
@@ -124,6 +125,15 @@ class _FakeDb:
             }
         ]
 
+    async def get_strategy_factory_run(self, run_id: str):
+        return {
+            "run_id": run_id,
+            "status": "completed",
+            "elapsed_seconds": 12.5,
+            "started_at": "2026-03-30T00:00:00+00:00",
+            "completed_at": "2026-03-30T00:00:12+00:00",
+        }
+
 
 def _normalize_result(result):
     if isinstance(result, str):
@@ -204,6 +214,7 @@ def _stub_resource_and_prompt_dependencies(monkeypatch):
 
     monkeypatch.setattr(stock_resource_mod, "get_db", lambda: fake_db)
     monkeypatch.setattr(strategy_resource_mod, "get_db", lambda: fake_db)
+    monkeypatch.setattr(lineage_resource_mod, "get_db", lambda: fake_db)
     monkeypatch.setattr(prompt_mod, "get_db", lambda: fake_db)
     monkeypatch.setattr(stock_resource_mod, "build_stock_profile_payload", _fake_build_stock_profile_payload)
     monkeypatch.setattr(
@@ -218,6 +229,12 @@ def _stub_resource_and_prompt_dependencies(monkeypatch):
     )
     monkeypatch.setattr(prompt_mod, "build_factor_mining_prompt", _fake_factor_prompt)
     monkeypatch.setattr(prompt_mod, "build_strategy_review_payload", _fake_strategy_review_payload)
+    monkeypatch.setattr(prompt_mod, "get_financials", lambda code: {"success": True, "data": {"reportDate": "2025-Q4", "roe": 0.21}})
+
+    async def _fake_decision_summary(**kwargs):
+        return {"success": True, "data": {"action": "hold", "confidence": 0.66}}
+
+    monkeypatch.setattr(prompt_mod, "get_unified_decision_summary", _fake_decision_summary)
 
 
 @pytest.mark.asyncio
@@ -231,32 +248,55 @@ async def test_runtime_should_expose_resources_and_prompts():
     prompt_names = {item.name for item in prompts}
 
     assert "resource://server/capabilities" in resource_uris
+    assert "resource://server/tool-catalog" in resource_uris
     assert "resource://stock/{code}/profile" in template_uris
     assert "resource://watchlist/{user_id}/snapshot" in template_uris
     assert "resource://strategy/{id}/review" in template_uris
-    assert {"factor-mining", "strategy-review"} <= prompt_names
+    assert "resource://workflow/{name}/guide" in template_uris
+    assert "resource://run/{run_id}" in template_uris
+    assert "resource://dataset/{dataset_id}/quality" in template_uris
+    assert {"factor-mining", "strategy-review", "stock-analysis", "prediction-diagnosis", "factor-registry-review", "strategy-promotion-review"} <= prompt_names
 
 
 @pytest.mark.asyncio
 async def test_runtime_should_read_resources_and_render_prompts():
     capabilities = await mcp.read_resource("resource://server/capabilities")
+    tool_catalog = await mcp.read_resource("resource://server/tool-catalog")
     stock_profile = await mcp.read_resource("resource://stock/600519/profile")
     watchlist = await mcp.read_resource("resource://watchlist/default/snapshot")
     strategy_review = await mcp.read_resource("resource://strategy/strat_demo/review")
+    workflow_guide = await mcp.read_resource("resource://workflow/stock-analysis/guide")
+    run_snapshot = await mcp.read_resource("resource://run/factory_run_demo")
+    dataset_quality = await mcp.read_resource("resource://dataset/dataset_demo/quality")
     factor_prompt = await mcp.get_prompt("factor-mining", {"codes": "600519,000001"})
     review_prompt = await mcp.get_prompt("strategy-review", {"strategy_id": "strat_demo"})
+    stock_prompt = await mcp.get_prompt("stock-analysis", {"code": "600519"})
+    prediction_prompt = await mcp.get_prompt("prediction-diagnosis", {"probabilities": "[0.2,0.8]", "labels": "[0,1]"})
+    promotion_prompt = await mcp.get_prompt("strategy-promotion-review", {"strategy_id": "strat_demo"})
 
     capabilities_payload = json.loads(capabilities[0].content)
+    tool_catalog_payload = json.loads(tool_catalog[0].content)
     stock_payload = json.loads(stock_profile[0].content)
     watchlist_payload = json.loads(watchlist[0].content)
     strategy_payload = json.loads(strategy_review[0].content)
+    workflow_payload = json.loads(workflow_guide[0].content)
+    run_payload = json.loads(run_snapshot[0].content)
+    dataset_payload = json.loads(dataset_quality[0].content)
 
     assert capabilities_payload["resources"]["count"] >= 1
+    assert capabilities_payload["ai_catalog"]["tool_contract_count"] >= 1
+    assert tool_catalog_payload["count"] >= 1
     assert stock_payload["code"] == "600519"
     assert stock_payload["profile"]["profile_type"] == "both"
     assert watchlist_payload["summary"]["item_count"] == 1
     assert strategy_payload["summary"]["current_status"] == "listed"
+    assert workflow_payload["name"] == "stock-analysis"
+    assert run_payload["found"] is True
+    assert dataset_payload["found"] is False
     assert len(factor_prompt.messages) == 2
     assert len(review_prompt.messages) == 2
+    assert len(stock_prompt.messages) == 2
+    assert len(prediction_prompt.messages) == 2
+    assert len(promotion_prompt.messages) == 2
     assert "600519" in _message_text(factor_prompt.messages[1])
     assert "Quality Momentum" in _message_text(review_prompt.messages[1])

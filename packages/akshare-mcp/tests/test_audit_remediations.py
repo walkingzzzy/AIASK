@@ -20,7 +20,7 @@ from akshare_mcp.storage.timescaledb.financials import FinancialsMixin
 
 
 class _DummyMCP:
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn

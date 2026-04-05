@@ -7,10 +7,12 @@ This module is the public entry-point.  Heavy handler logic lives in
 
 import json
 import logging
+import time
 from typing import Any
 
 from ...storage import get_db
 from ...utils import fail, ok
+from ..manager_protocol import build_manager_meta
 
 # ── Sub-module handler imports ───────────────────────────────────────────────
 from .strategy_mgr_crud import (
@@ -411,22 +413,47 @@ def register_strategy_manager(mcp):
         Supports legacy ``kwargs`` JSON strings and structured ``params`` / dict kwargs.
         Actions: create, publish, archive, list, detail, update_metrics, review, subscribe, unsubscribe, my_subscriptions, rank, submit, lifecycle_scan, get_signals, get_forward_returns, get_signal_stats, factory_status, factory_run_once, factory_runs, factory_run_detail, review_report, review_report_recheck, events, incubation_overview, vector_health, vector_cleanup, help
         """
+        started_at = time.perf_counter()
         params = _normalize_strategy_manager_params(kwargs=kwargs, params=params)
 
         db = get_db()
 
         handler = ACTION_HANDLERS.get(action)
         if handler is None:
-            return _strategy_manager_error(
+            result = _strategy_manager_error(
                 "STRATEGY_MANAGER_INVALID_ACTION",
                 f"Unknown action: {action}. Use action='help' for available actions.",
                 detail={"action": action},
             )
+            result["meta"] = build_manager_meta(
+                tool_name="strategy_manager",
+                action=action,
+                started_at=started_at,
+                source_chain=["strategy_manager"],
+            )
+            return result
         validation_error = _validate_strategy_manager_params(action, params)
         if validation_error is not None:
+            validation_error["meta"] = build_manager_meta(
+                tool_name="strategy_manager",
+                action=action,
+                started_at=started_at,
+                source_chain=["strategy_manager"],
+            )
             return validation_error
         result = await handler(db, params)
-        return _normalize_strategy_manager_failure(action, result)
+        result = _normalize_strategy_manager_failure(action, result)
+        if isinstance(result, dict) and "meta" not in result:
+            result["meta"] = build_manager_meta(
+                tool_name="strategy_manager",
+                action=action,
+                started_at=started_at,
+                source_chain=["strategy_manager"],
+                extra={
+                    "strategy_id": str(params.get("strategy_id") or params.get("id") or "").strip() or None,
+                },
+            )
+        return result
 
 
 class _StrategyManagerProbeMCP:
@@ -435,7 +462,7 @@ class _StrategyManagerProbeMCP:
     def __init__(self):
         self.fn = None
 
-    def tool(self):
+    def tool(self, **kwargs):
         def _decorator(fn):
             self.fn = fn
             return fn

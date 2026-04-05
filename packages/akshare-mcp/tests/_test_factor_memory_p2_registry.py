@@ -178,6 +178,53 @@ async def test_quant_manager_factor_candidate_registry_active_pool_blocks_high_r
 
 
 @pytest.mark.asyncio
+async def test_quant_manager_factor_candidate_registry_active_pool_falls_back_to_provisional_validated_watch(monkeypatch):
+    import akshare_mcp.tools.managers.quant_manager as quant_mod
+    import akshare_mcp.services.artifact_registry as _ar_mod
+
+    monkeypatch.setattr(quant_mod, "get_db", lambda: _ValidationDB())
+    monkeypatch.setattr(_ar_mod, "_get_db", lambda: None)
+
+    registry_codes = ["601551", "601552", "601553", "601554"]
+    _register_validation_artifact(
+        "factor_validation_registry_watch_candidate",
+        registry_codes,
+        name="watch_candidate",
+        recommendation="watch",
+        total_score=49.5,
+    )
+    _register_validation_artifact(
+        "factor_validation_registry_reject_candidate",
+        registry_codes,
+        name="reject_candidate",
+        recommendation="reject",
+        total_score=38.0,
+    )
+
+    mcp = _DummyMCP()
+    quant_mod.register_quant_manager(mcp)
+
+    active_pool = await mcp.quant_manager(
+        action="factor_candidate_registry",
+        kwargs={"op": "active_pool", "codes": registry_codes, "limit": 20, "market_codes_only": True},
+    )
+
+    assert active_pool["success"] is True
+    assert active_pool["data"]["summary"]["governed_active_count"] == 0
+    pool = active_pool["data"]["active_pool"]
+    assert pool["active_pool_mode"] == "provisional_validated_watch"
+    assert pool["strict_count"] == 0
+    assert pool["provisional_count"] == 1
+    assert pool["count"] == 1
+    assert pool["top_candidates"][0]["artifact_id"] == "factor_validation_registry_watch_candidate"
+    assert pool["top_candidates"][0]["registry_stage"] == "validated"
+    assert pool["top_candidates"][0]["pool_entry_mode"] == "provisional_validated_watch"
+
+    excluded = {str(item.get("artifact_id") or ""): item for item in pool["excluded_candidates"]}
+    assert "recommendation_reject" in excluded["factor_validation_registry_reject_candidate"]["reasons"]
+
+
+@pytest.mark.asyncio
 async def test_quant_manager_model_registry_and_champion_challenger_review(monkeypatch):
     import akshare_mcp.tools.managers.quant_manager as quant_mod
     import akshare_mcp.services.artifact_registry as _ar_mod

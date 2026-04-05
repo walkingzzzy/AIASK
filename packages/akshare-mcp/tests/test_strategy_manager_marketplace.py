@@ -425,6 +425,14 @@ class TestStrategyManager:
                 "submitted": 1,
                 "event_task_count": 1,
                 "snapshot_task_count": 1,
+                "bulk_stock_matrix_enabled": True,
+                "bulk_stock_matrix_universe_limit": 500,
+                "bulk_stock_matrix_requested_universe_offset": 500,
+                "bulk_stock_matrix_effective_universe_offset": 500,
+                "bulk_stock_matrix_universe_offset_fallback": False,
+                "bulk_stock_matrix_eligible_stock_count": 500,
+                "bulk_stock_matrix_next_universe_offset": 1000,
+                "bulk_stock_matrix_cursor_wrapped": False,
                 "task_source_counts": {"event_driven": 1, "snapshot": 1},
                 "scanner_task_types": {"sector_breakout": 1, "rotation_balanced": 1},
                 "event_snapshot_mixed": True,
@@ -463,9 +471,24 @@ class TestStrategyManager:
             "strategy_factory.get_strategy_factory_scheduler",
             lambda: _DummyScheduler(),
         )
+        monkeypatch.setattr(
+            "strategy_factory.get_factory_constants",
+            lambda: {
+                "STOCK_STRATEGY_MATRIX_ENABLED": True,
+                "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT": 500,
+                "STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK": 3,
+                "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN": 180,
+                "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN": 180,
+                "STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK": 1,
+                "STOCK_STRATEGY_MATRIX_RUN_WINDOW": "off_hours",
+                "STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD": 24,
+                "FACTORY_PRE_GATE_ENABLED": True,
+            },
+        )
 
         status_resp = await mcp.strategy_manager(action="factory_status")
         run_resp = await mcp.strategy_manager(action="factory_run_once")
+        capabilities_resp = await mcp.strategy_manager(action="capabilities")
         runs_resp = await mcp.strategy_manager(action="factory_runs", kwargs=json.dumps({"limit": 1}))
         detail_resp = await mcp.strategy_manager(action="factory_run_detail", kwargs=json.dumps({"run_id": "run_hist_1"}))
         snapshots_resp = await mcp.strategy_manager(action="daily_snapshots", kwargs=json.dumps({"limit": 1}))
@@ -476,7 +499,18 @@ class TestStrategyManager:
         assert status_resp["data"]["last_summary"]["task_source_counts"]["snapshot"] == 1
         assert status_resp["data"]["last_summary"]["event_snapshot_mixed"] is True
         assert status_resp["data"]["last_summary"]["autonomy_task_briefs"][0]["task_id"] == "event_demo_1"
+        assert status_resp["data"]["bulk_stock_matrix_config"]["enabled"] is True
+        assert status_resp["data"]["bulk_stock_matrix_config"]["families_per_stock"] == 3
+        assert status_resp["data"]["bulk_stock_matrix_config"]["pre_gate_enabled"] is True
+        assert status_resp["data"]["bulk_stock_matrix_config"]["run_window"] == "off_hours"
+        assert status_resp["data"]["bulk_stock_matrix_cursor"]["source"] == "persisted_run"
+        assert status_resp["data"]["bulk_stock_matrix_cursor"]["resume_from_run_id"] == "run_hist_1"
+        assert status_resp["data"]["bulk_stock_matrix_cursor"]["next_universe_offset"] == 1000
         assert run_resp["data"]["status"] == "success"
+        assert capabilities_resp["data"]["factory_runs"] is True
+        assert capabilities_resp["data"]["factory_bulk_lane"] is True
+        assert capabilities_resp["data"]["factory_bulk_lane_enabled"] is True
+        assert capabilities_resp["data"]["factory_pre_gate_enabled"] is True
         assert runs_resp["data"]["count"] == 1
         assert runs_resp["data"]["items"][0]["run_id"] == "run_hist_1"
         assert runs_resp["data"]["items"][0]["summary"]["event_task_count"] == 1

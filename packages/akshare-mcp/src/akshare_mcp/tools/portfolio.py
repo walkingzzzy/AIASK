@@ -1,15 +1,37 @@
 """组合管理工具"""
 
+import time
 from typing import List, Dict, Any, Optional
 from ..services.portfolio_optimization import simple_portfolio_optimizer as portfolio_optimizer
 from ..services.risk_model import risk_model
 from ..storage import get_db
-from ..utils import ok, fail
+from .manager_protocol import fail_with_meta, ok_with_meta
 import numpy as np
 
 
 def register(mcp):
     """注册组合管理工具"""
+
+    def _meta(
+        *,
+        status: str,
+        target: str,
+        degraded: bool = False,
+        extra_quality: dict | None = None,
+    ) -> dict:
+        quality = {"status": status}
+        if isinstance(extra_quality, dict):
+            quality.update(extra_quality)
+        return {
+            "quality": quality,
+            "side_effect": {
+                "level": "read_only",
+                "target": target,
+                "confirmation_required": False,
+                "idempotent": True,
+            },
+            "degraded": degraded,
+        }
     
     @mcp.tool()
     async def optimize_portfolio(
@@ -48,16 +70,30 @@ def register(mcp):
         Returns:
             最优权重和组合指标
         """
+        started_at = time.perf_counter()
+        source_chain = ["portfolio.optimize_portfolio"]
         try:
             if method == 'equal_weight':
                 weights = portfolio_optimizer.optimize_equal_weight(stocks)
-                return ok({
-                    'weights': weights,
-                    'method': method,
-                })
+                return ok_with_meta(
+                    {
+                        'weights': weights,
+                        'method': method,
+                    },
+                    tool_name="optimize_portfolio",
+                    action=method,
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(
+                        status="available",
+                        target="portfolio_optimization",
+                        extra_quality={"method": method, "stock_count": len(stocks or [])},
+                    ),
+                )
             
             # 获取历史数据
             db = get_db()
+            source_chain.append("db.get_klines")
             returns_list = []
             
             for code in stocks:
@@ -68,7 +104,19 @@ def register(mcp):
                     returns_list.append(returns)
             
             if not returns_list:
-                return fail('No data available')
+                return fail_with_meta(
+                    'No data available',
+                    tool_name="optimize_portfolio",
+                    action=method,
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(
+                        status="not_found",
+                        target="portfolio_optimization",
+                        degraded=True,
+                        extra_quality={"method": method, "stock_count": len(stocks or [])},
+                    ),
+                )
             
             # 对齐长度
             min_len = min(len(r) for r in returns_list)
@@ -80,10 +128,21 @@ def register(mcp):
             # 根据方法选择优化器
             if method == 'risk_parity':
                 weights = portfolio_optimizer.optimize_risk_parity(stocks, returns_matrix)
-                return ok({
-                    'weights': weights,
-                    'method': method,
-                })
+                return ok_with_meta(
+                    {
+                        'weights': weights,
+                        'method': method,
+                    },
+                    tool_name="optimize_portfolio",
+                    action=method,
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(
+                        status="available",
+                        target="portfolio_optimization",
+                        extra_quality={"method": method, "stock_count": len(stocks or []), "lookback_days": lookback_days},
+                    ),
+                )
             
             elif method == 'mean_variance':
                 weights = portfolio_optimizer.optimize_mean_variance(
@@ -92,11 +151,22 @@ def register(mcp):
                     expected_returns,
                     risk_aversion=risk_aversion
                 )
-                return ok({
-                    'weights': weights,
-                    'method': method,
-                    'risk_aversion': risk_aversion,
-                })
+                return ok_with_meta(
+                    {
+                        'weights': weights,
+                        'method': method,
+                        'risk_aversion': risk_aversion,
+                    },
+                    tool_name="optimize_portfolio",
+                    action=method,
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(
+                        status="available",
+                        target="portfolio_optimization",
+                        extra_quality={"method": method, "stock_count": len(stocks or []), "lookback_days": lookback_days},
+                    ),
+                )
             
             elif method == 'black_litterman':
                 # 默认市场权重为等权
@@ -117,14 +187,25 @@ def register(mcp):
                     risk_aversion=risk_aversion
                 )
                 
-                return ok({
-                    'weights': result['weights'],
-                    'posterior_returns': result['posterior_returns'],
-                    'expected_return': f"{result['expected_return']*100:.2f}%",
-                    'volatility': f"{result['volatility']*100:.2f}%",
-                    'sharpe_ratio': f"{result['sharpe_ratio']:.2f}",
-                    'method': method,
-                })
+                return ok_with_meta(
+                    {
+                        'weights': result['weights'],
+                        'posterior_returns': result['posterior_returns'],
+                        'expected_return': f"{result['expected_return']*100:.2f}%",
+                        'volatility': f"{result['volatility']*100:.2f}%",
+                        'sharpe_ratio': f"{result['sharpe_ratio']:.2f}",
+                        'method': method,
+                    },
+                    tool_name="optimize_portfolio",
+                    action=method,
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(
+                        status="available",
+                        target="portfolio_optimization",
+                        extra_quality={"method": method, "stock_count": len(stocks or []), "lookback_days": lookback_days},
+                    ),
+                )
             
             elif method == 'risk_budget':
                 result = portfolio_optimizer.optimize_risk_budget(
@@ -133,12 +214,23 @@ def register(mcp):
                     risk_budgets=risk_budgets
                 )
                 
-                return ok({
-                    'weights': result['weights'],
-                    'risk_contributions': result['risk_contributions'],
-                    'portfolio_volatility': f"{result['portfolio_volatility']*100:.2f}%",
-                    'method': method,
-                })
+                return ok_with_meta(
+                    {
+                        'weights': result['weights'],
+                        'risk_contributions': result['risk_contributions'],
+                        'portfolio_volatility': f"{result['portfolio_volatility']*100:.2f}%",
+                        'method': method,
+                    },
+                    tool_name="optimize_portfolio",
+                    action=method,
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(
+                        status="available",
+                        target="portfolio_optimization",
+                        extra_quality={"method": method, "stock_count": len(stocks or []), "lookback_days": lookback_days},
+                    ),
+                )
             
             elif method == 'max_sharpe':
                 result = portfolio_optimizer.optimize_max_sharpe(
@@ -149,20 +241,50 @@ def register(mcp):
                     max_weight=max_weight,
                 )
 
-                return ok({
-                    'weights': result['weights'],
-                    'expected_return': f"{result['expected_return']*100:.2f}%",
-                    'volatility': f"{result['volatility']*100:.2f}%",
-                    'sharpe_ratio': f"{result['sharpe_ratio']:.2f}",
-                    'constraints_applied': result.get('constraints_applied', {'max_weight': max_weight}),
-                    'method': method,
-                })
+                return ok_with_meta(
+                    {
+                        'weights': result['weights'],
+                        'expected_return': f"{result['expected_return']*100:.2f}%",
+                        'volatility': f"{result['volatility']*100:.2f}%",
+                        'sharpe_ratio': f"{result['sharpe_ratio']:.2f}",
+                        'constraints_applied': result.get('constraints_applied', {'max_weight': max_weight}),
+                        'method': method,
+                    },
+                    tool_name="optimize_portfolio",
+                    action=method,
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(
+                        status="available",
+                        target="portfolio_optimization",
+                        extra_quality={"method": method, "stock_count": len(stocks or []), "lookback_days": lookback_days},
+                    ),
+                )
             
             else:
-                return fail(f'Unknown method: {method}. Supported: equal_weight, risk_parity, mean_variance, black_litterman, risk_budget, max_sharpe')
+                return fail_with_meta(
+                    f'Unknown method: {method}. Supported: equal_weight, risk_parity, mean_variance, black_litterman, risk_budget, max_sharpe',
+                    tool_name="optimize_portfolio",
+                    action="validate",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(
+                        status="invalid_params",
+                        target="portfolio_optimization",
+                        degraded=True,
+                        extra_quality={"method": method},
+                    ),
+                )
         
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="optimize_portfolio",
+                action=method,
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta=_meta(status="failed", target="portfolio_optimization", degraded=True),
+            )
     
     @mcp.tool()
     async def analyze_portfolio_risk(
@@ -182,6 +304,8 @@ def register(mcp):
             codes: 股票代码列表
             weights: 权重列表，与 codes 对应
         """
+        started_at = time.perf_counter()
+        source_chain = ["portfolio.analyze_portfolio_risk"]
         try:
             db = get_db()
             requested_holdings: List[Dict[str, Any]] = []
@@ -191,10 +315,24 @@ def register(mcp):
             elif codes:
                 normalized_codes = [str(code).strip() for code in codes if str(code).strip()]
                 if not normalized_codes:
-                    return fail('codes 不能为空')
+                    return fail_with_meta(
+                        'codes 不能为空',
+                        tool_name="analyze_portfolio_risk",
+                        action="analyze",
+                        started_at=started_at,
+                        source_chain=source_chain,
+                        extra_meta=_meta(status="invalid_params", target="portfolio_risk", degraded=True),
+                    )
                 raw_weights = weights or []
                 if raw_weights and len(raw_weights) != len(normalized_codes):
-                    return fail('weights 数量必须与 codes 一致')
+                    return fail_with_meta(
+                        'weights 数量必须与 codes 一致',
+                        tool_name="analyze_portfolio_risk",
+                        action="analyze",
+                        started_at=started_at,
+                        source_chain=source_chain,
+                        extra_meta=_meta(status="invalid_params", target="portfolio_risk", degraded=True),
+                    )
                 if raw_weights:
                     requested_holdings = [
                         {'code': code, 'weight': float(raw_weights[idx])}
@@ -208,7 +346,15 @@ def register(mcp):
                     ]
             elif portfolio_id:
                 if not hasattr(db, 'acquire'):
-                    return fail('当前数据源不支持通过 portfolio_id 加载持仓')
+                    return fail_with_meta(
+                        '当前数据源不支持通过 portfolio_id 加载持仓',
+                        tool_name="analyze_portfolio_risk",
+                        action="analyze",
+                        started_at=started_at,
+                        source_chain=source_chain,
+                        extra_meta=_meta(status="unsupported", target="portfolio_risk", degraded=True),
+                    )
+                source_chain.append("db.holdings")
                 async with db.acquire() as conn:
                     rows = await conn.fetch(
                         "SELECT code, shares, cost_price, weight FROM holdings WHERE portfolio_id = $1",
@@ -225,14 +371,29 @@ def register(mcp):
                     if row.get('code')
                 ]
             else:
-                return fail('需要提供 holdings、portfolio_id 或 codes + weights')
+                return fail_with_meta(
+                    '需要提供 holdings、portfolio_id 或 codes + weights',
+                    tool_name="analyze_portfolio_risk",
+                    action="analyze",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(status="invalid_params", target="portfolio_risk", degraded=True),
+                )
 
             if not requested_holdings:
-                return fail('未获取到可分析的持仓数据')
+                return fail_with_meta(
+                    '未获取到可分析的持仓数据',
+                    tool_name="analyze_portfolio_risk",
+                    action="analyze",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(status="not_found", target="portfolio_risk", degraded=True),
+                )
 
             returns_list = []
             valid_holdings = []
             dropped_holdings = []
+            source_chain.append("db.get_klines")
             
             for holding in requested_holdings:
                 code = holding['code']
@@ -249,7 +410,14 @@ def register(mcp):
                     })
             
             if not returns_list:
-                return fail('No data available')
+                return fail_with_meta(
+                    'No data available',
+                    tool_name="analyze_portfolio_risk",
+                    action="analyze",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(status="not_found", target="portfolio_risk", degraded=True),
+                )
             
             min_len = min(len(r) for r in returns_list)
             returns_matrix = np.array([r[:min_len] for r in returns_list])
@@ -273,21 +441,45 @@ def register(mcp):
             # 计算组合风险
             risk_result = risk_model.calculate_portfolio_risk(analyzed_holdings, returns_matrix)
             
-            return ok({
-                'var': var_result,
-                'risk': risk_result,
-                'portfolio_id': portfolio_id,
-                'analyzed_holdings': analyzed_holdings,
-                'dropped_holdings': dropped_holdings,
-                'coverage': {
-                    'requested': len(requested_holdings),
-                    'used': len(analyzed_holdings),
-                    'dropped': len(dropped_holdings),
+            degraded = bool(dropped_holdings)
+            return ok_with_meta(
+                {
+                    'var': var_result,
+                    'risk': risk_result,
+                    'portfolio_id': portfolio_id,
+                    'analyzed_holdings': analyzed_holdings,
+                    'dropped_holdings': dropped_holdings,
+                    'coverage': {
+                        'requested': len(requested_holdings),
+                        'used': len(analyzed_holdings),
+                        'dropped': len(dropped_holdings),
+                    },
                 },
-            })
+                tool_name="analyze_portfolio_risk",
+                action="analyze",
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta=_meta(
+                    status="partial" if degraded else "available",
+                    target=portfolio_id or "portfolio_risk",
+                    degraded=degraded,
+                    extra_quality={
+                        "requested_holdings": len(requested_holdings),
+                        "used_holdings": len(analyzed_holdings),
+                        "dropped_holdings": len(dropped_holdings),
+                    },
+                ),
+            )
         
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="analyze_portfolio_risk",
+                action="analyze",
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta=_meta(status="failed", target=portfolio_id or "portfolio_risk", degraded=True),
+            )
 
     @mcp.tool()
     async def stress_test_portfolio(
@@ -301,6 +493,8 @@ def register(mcp):
             holdings: 持仓列表 [{'code': '600519', 'weight': 0.3, 'value': 100000}, ...]
             scenarios: 压力场景 ['market_crash', 'sector_rotation', 'interest_rate_hike', 'black_swan']
         """
+        started_at = time.perf_counter()
+        source_chain = ["portfolio.stress_test_portfolio", "risk_model.stress_test"]
         try:
             if not scenarios:
                 scenarios = ['market_crash', 'sector_rotation', 'interest_rate_hike', 'black_swan']
@@ -315,13 +509,31 @@ def register(mcp):
                 result = risk_model.stress_test(holdings, scenario=scenario)
                 results[scenario] = result
 
-            return ok({
-                'holdings_count': len(holdings),
-                'stress_tests': results,
-            })
+            return ok_with_meta(
+                {
+                    'holdings_count': len(holdings),
+                    'stress_tests': results,
+                },
+                tool_name="stress_test_portfolio",
+                action="stress_test",
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta=_meta(
+                    status="available",
+                    target="portfolio_stress",
+                    extra_quality={"holdings_count": len(holdings or []), "scenario_count": len(scenarios or [])},
+                ),
+            )
 
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="stress_test_portfolio",
+                action="stress_test",
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta=_meta(status="failed", target="portfolio_stress", degraded=True),
+            )
 
     @mcp.tool()
     async def analyze_portfolio_risk_barra(
@@ -335,6 +547,8 @@ def register(mcp):
             holdings: 持仓列表 [{'code': '600519', 'weight': 0.3}, ...]
             lookback_days: 回溯天数
         """
+        started_at = time.perf_counter()
+        source_chain = ["portfolio.analyze_portfolio_risk_barra", "db.get_klines", "risk_model.calculate_barra_risk"]
         try:
             db = get_db()
             codes = [h['code'] for h in holdings]
@@ -364,7 +578,14 @@ def register(mcp):
                 }
 
             if not returns_list or not factor_exposures:
-                return fail('No data available for Barra decomposition')
+                return fail_with_meta(
+                    'No data available for Barra decomposition',
+                    tool_name="analyze_portfolio_risk_barra",
+                    action="decompose",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta=_meta(status="not_found", target="portfolio_barra", degraded=True),
+                )
 
             # 构建因子协方差（简化：单位矩阵 × 平均方差）
             n_factors = len(factor_names)
@@ -382,7 +603,29 @@ def register(mcp):
                 factor_covariance=factor_cov,
                 specific_risks=specific_risks,
             )
-            return ok(result)
+            return ok_with_meta(
+                result,
+                tool_name="analyze_portfolio_risk_barra",
+                action="decompose",
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta=_meta(
+                    status="available",
+                    target="portfolio_barra",
+                    extra_quality={
+                        "holdings_count": len(holdings or []),
+                        "factor_exposure_count": len(factor_exposures),
+                        "lookback_days": lookback_days,
+                    },
+                ),
+            )
 
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="analyze_portfolio_risk_barra",
+                action="decompose",
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta=_meta(status="failed", target="portfolio_barra", degraded=True),
+            )

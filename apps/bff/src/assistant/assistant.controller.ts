@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
 import { Type } from 'class-transformer';
-import { IsNumber, IsOptional, IsString, Matches, Min } from 'class-validator';
+import { IsBoolean, IsNumber, IsOptional, IsString, Matches, Min } from 'class-validator';
 import { AssistantUnifiedService } from './assistant-unified.service';
 import { AssistantService } from './assistant.service';
 import { UnifiedDecisionBodyDto, UnifiedDecisionDiffQueryDto } from './dto/unified-decision.dto';
@@ -9,6 +9,15 @@ class StockCodeBodyDto {
   @IsString()
   @Matches(/^\d{6}$/, { message: 'code 必须为 6 位数字' })
   code!: string;
+}
+
+class StockWorkflowBodyDto extends StockCodeBodyDto {
+  @IsOptional() @IsString() investmentStyle?: string;
+  @IsOptional() @Type(() => Boolean) @IsBoolean() includeKline?: boolean;
+  @IsOptional() @Type(() => Boolean) @IsBoolean() includeFinancials?: boolean;
+  @IsOptional() @Type(() => Boolean) @IsBoolean() includeDecision?: boolean;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(20) klineLimit?: number;
+  @IsOptional() @IsString() asOf?: string;
 }
 
 class IndustryChainDto {
@@ -54,6 +63,22 @@ export class AssistantController {
     @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
   ) {
     const data = await this.assistantService.diagnosis(body.code);
+    return { success: true, data, traceId: this.getTraceId(req) };
+  }
+
+  @Post('analysis-workflow')
+  async analysisWorkflow(
+    @Body() body: StockWorkflowBodyDto,
+    @Req() req: { traceId?: string; headers?: Record<string, string | undefined> },
+  ) {
+    const data = await this.assistantService.analyzeWorkflow(body.code, {
+      investmentStyle: body.investmentStyle,
+      includeKline: body.includeKline,
+      includeFinancials: body.includeFinancials,
+      includeDecision: body.includeDecision,
+      klineLimit: body.klineLimit,
+      asOf: body.asOf,
+    });
     return { success: true, data, traceId: this.getTraceId(req) };
   }
 

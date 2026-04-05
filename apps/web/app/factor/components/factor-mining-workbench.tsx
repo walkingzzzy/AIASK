@@ -260,9 +260,10 @@ export function FactorMiningWorkbench() {
           const codes = requireCodes(generationCodes, 1);
           if (!codes) return;
           generationMut.trigger(
-            '/factor/llm-mining',
+            '/factor/candidate-workflow',
             { method: 'POST' },
             {
+              task: 'generate',
               stock_codes: codes,
               candidate_count: parseOptionalInt(generationCandidateCount),
               lookback_bars: parseOptionalInt(generationLookbackBars),
@@ -361,9 +362,10 @@ export function FactorMiningWorkbench() {
                 const codes = requireCodes(validationCodes, 3);
                 if (!codes) return;
                 validationMut.trigger(
-                  '/factor/validate-candidate',
+                  '/factor/candidate-workflow',
                   { method: 'POST' },
                   {
+                    task: 'validate',
                     artifact_id: validationArtifactId.trim(),
                     candidate_index: parseOptionalInt(validationCandidateIndex),
                     stock_codes: codes,

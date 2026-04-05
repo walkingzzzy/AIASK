@@ -253,7 +253,10 @@ class TestBacktestFilterConcurrency:
     @pytest.mark.asyncio
     async def test_filter_calls_gather(self):
         """filter() 应使用 asyncio.gather 并发测试候选。"""
-        from akshare_mcp.services.strategy_factory.backtest_filter import BacktestFilter
+        from akshare_mcp.services.strategy_factory.backtest_filter import (
+            BACKTEST_CONCURRENCY,
+            BacktestFilter,
+        )
 
         bf = BacktestFilter()
         concurrent_peak = 0
@@ -281,8 +284,8 @@ class TestBacktestFilterConcurrency:
             passed = await bf.filter(candidates, mock.MagicMock())
 
         assert len(passed) == 6
-        # 并发度上限为 BACKTEST_CONCURRENCY=4，6 个候选应有 peak ≤ 4
-        assert concurrent_peak <= 4
+        # 并发度上限来自当前运行配置，峰值不应超过有效常量。
+        assert concurrent_peak <= BACKTEST_CONCURRENCY
 
 
 # ────────────────────────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ from typing import Any, Iterable, List, Optional
 
 
 class _VectorUnifiedUtilsMixin:
+        @staticmethod
         def _normalize_hybrid_query_text(value: Any) -> str:
             return " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())
 
@@ -64,6 +65,7 @@ class _VectorUnifiedUtilsMixin:
             score = 0.6 * full_match + 0.3 * term_score + 0.1 * title_bonus
             return round(max(0.0, min(score, 1.0)), 6)
 
+        @staticmethod
         def _hybrid_dense_score(value: Any) -> Optional[float]:
             if value is None:
                 return None
@@ -119,6 +121,7 @@ class _VectorUnifiedUtilsMixin:
             result["metadata"] = self._decode_json_field(result.get("metadata"), {})
             return result
 
+        @staticmethod
         def _vector_similarity(left: List[float], right: List[float], metric: str = "cosine") -> float:
             lv = [float(item) for item in list(left or [])]
             rv = [float(item) for item in list(right or [])]
@@ -136,6 +139,7 @@ class _VectorUnifiedUtilsMixin:
                 return 0.0
             return round(float(sum(l * r for l, r in zip(lv, rv)) / (left_norm * right_norm)), 6)
 
+        @staticmethod
         def _normalize_embedding(values: Any) -> List[float]:
             resolved = [float(item) for item in list(values or [])]
             if not resolved:
@@ -145,6 +149,7 @@ class _VectorUnifiedUtilsMixin:
                 return []
             return [float(item / norm) for item in resolved]
 
+        @staticmethod
         def _coerce_date_value(value: Any) -> Optional[date]:
             if value is None:
                 return None
@@ -167,6 +172,7 @@ class _VectorUnifiedUtilsMixin:
                     return None
             return None
 
+        @staticmethod
         def _snapshot_bucket_rows(snapshot: Optional[dict]) -> List[dict]:
             metadata = dict((snapshot or {}).get("metadata") or {})
             return [dict(item or {}) for item in list(metadata.get("centroids") or []) if dict(item or {}).get("bucket_id")]
@@ -205,6 +211,7 @@ class _VectorUnifiedUtilsMixin:
                     candidate_buckets.append(neighbor)
             return primary_bucket, candidate_buckets
 
+        @staticmethod
         def _kline_pattern_profile_type(
             *,
             window_size: int,

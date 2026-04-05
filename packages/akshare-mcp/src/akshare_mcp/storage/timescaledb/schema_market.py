@@ -8,7 +8,7 @@ All ~30 market-data tables are created via a single entry point:
 The function is idempotent (CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS).
 """
 
-from ._schema_market_common import logger
+from ._schema_market_common import logger, _run_market_migration_once
 from ._schema_market_phase_1 import init_market_tables_phase_1
 from ._schema_market_phase_2 import init_market_tables_phase_2
 from ._schema_market_phase_3 import init_market_tables_phase_3

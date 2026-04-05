@@ -85,3 +85,45 @@ def test_build_strategy_data_persists_extended_strategy_contract():
     assert params["expected_regime"] == ["trend", "event"]
     assert params["expected_holding_period"] == 10
     assert params["candidate_latest_validation_age_days"] == 1
+
+
+def test_candidate_report_params_merges_target_universe_contract():
+    submitter = StrategySubmitter()
+
+    report_params = submitter._candidate_report_params(
+        {
+            "strategy_type": "volatility_breakout",
+            "params": {"lookback": 20, "threshold": 0.025},
+            "target_symbols": ["002415", "300750"],
+            "stock_pool": {"selection_mode": "explicit", "symbols": ["002415", "300750"]},
+            "research_task": {"task_id": "task_chip", "task_source": "event_driven"},
+            "event_context": {"event_id": "evt_chip"},
+            "validation_profile": {"profile": "event_trade_validation"},
+            "execution_assumptions": {"tradability_filter": True},
+        }
+    )
+
+    assert report_params["lookback"] == 20
+    assert report_params["threshold"] == 0.025
+    assert report_params["target_symbols"] == ["002415", "300750"]
+    assert report_params["stock_pool"]["symbols"] == ["002415", "300750"]
+    assert report_params["research_task"]["task_id"] == "task_chip"
+    assert report_params["event_context"]["event_id"] == "evt_chip"
+    assert report_params["validation_profile"]["profile"] == "event_trade_validation"
+
+
+def test_submitter_resolves_live_ready_candidates_to_live_review_lane():
+    submitter = StrategySubmitter()
+
+    submission_lane, final_status = submitter._resolve_submission_lane(
+        {
+            "passed": True,
+            "live_candidate_ready": True,
+        },
+        refresh_existing=False,
+        existing_status="draft",
+        incubation_budget_track="formal_incubation",
+    )
+
+    assert submission_lane == "live_ready_review"
+    assert final_status == "submitted"

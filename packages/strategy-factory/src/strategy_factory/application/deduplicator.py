@@ -13,6 +13,7 @@ from .legacy_bridge import get_compat_symbol, get_compat_value
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
 from .utils import _extract_event_context as _local_extract_event_context
 from ..domain.constants import DEDUP_CONCURRENCY
+from ..domain.strategy_profile import infer_candidate_strategy_profile
 from ..domain.targets import _build_task_signature, _extract_target_codes_from_payload, _normalize_research_task_contract
 
 if TYPE_CHECKING:
@@ -124,6 +125,24 @@ class Deduplicator:
         return bool(_extract_target_codes_from_payload(payload or {}, limit=20))
 
     @classmethod
+    def _has_exact_target_universe_match(
+        cls,
+        left_payload: Optional[dict],
+        right_payload: Optional[dict],
+    ) -> bool:
+        left_codes = {
+            str(code).strip()
+            for code in _extract_target_codes_from_payload(left_payload or {}, limit=20)
+            if str(code).strip()
+        }
+        right_codes = {
+            str(code).strip()
+            for code in _extract_target_codes_from_payload(right_payload or {}, limit=20)
+            if str(code).strip()
+        }
+        return bool(left_codes and right_codes and left_codes == right_codes)
+
+    @classmethod
     def _has_material_target_divergence(
         cls,
         candidate: Optional[dict],
@@ -174,6 +193,43 @@ class Deduplicator:
             if str(value or "").strip()
         }
         return parent_ids
+
+    @staticmethod
+    def _candidate_strategy_profile(candidate: Optional[dict]) -> dict:
+        item = dict(candidate or {})
+        if not item:
+            return {}
+        params = dict(item.get("params") or {})
+        profile = dict(item.get("strategy_profile") or params.get("strategy_profile") or {})
+        if not profile:
+            profile = dict(infer_candidate_strategy_profile(item) or {})
+        return {
+            str(key): value
+            for key, value in profile.items()
+            if value not in (None, [], {}, "")
+        }
+
+    @classmethod
+    def _report_item(cls, candidate: Optional[dict]) -> dict:
+        item = dict(candidate or {})
+        profile = cls._candidate_strategy_profile(item)
+        return {
+            "strategy_type": item.get("strategy_type"),
+            "generator_type": item.get("generator_type"),
+            "params": item.get("params"),
+            "target_symbols": item.get("target_symbols") or [],
+            "stock_pool": item.get("stock_pool") or {},
+            "tags": item.get("tags") or [],
+            "spawn_reason": item.get("spawn_reason"),
+            "dedup_result": item.get("dedup_result"),
+            "strategy_profile": profile,
+            "candidate_family_id": profile.get("candidate_family_id"),
+            "holding_period_bucket": profile.get("holding_period_bucket"),
+            "alpha_source": profile.get("alpha_source"),
+            "risk_level": profile.get("risk_level"),
+            "regime_fit": profile.get("regime_fit"),
+            "generator_mode": profile.get("generator_mode"),
+        }
 
     @staticmethod
     def _candidate_refresh_rank(candidate: Optional[dict]) -> tuple[float, float, float]:
@@ -367,26 +423,8 @@ class Deduplicator:
                 "param_threshold": self.THRESHOLD,
                 "vector_threshold": self.VECTOR_THRESHOLD,
             },
-            "kept": [{
-                "strategy_type": item.get("strategy_type"),
-                "generator_type": item.get("generator_type"),
-                "params": item.get("params"),
-                "target_symbols": item.get("target_symbols") or [],
-                "stock_pool": item.get("stock_pool") or {},
-                "tags": item.get("tags") or [],
-                "spawn_reason": item.get("spawn_reason"),
-                "dedup_result": item.get("dedup_result"),
-            } for item in unique],
-            "dropped": [{
-                "strategy_type": item.get("strategy_type"),
-                "generator_type": item.get("generator_type"),
-                "params": item.get("params"),
-                "target_symbols": item.get("target_symbols") or [],
-                "stock_pool": item.get("stock_pool") or {},
-                "tags": item.get("tags") or [],
-                "spawn_reason": item.get("spawn_reason"),
-                "dedup_result": item.get("dedup_result"),
-            } for item in dropped],
+            "kept": [self._report_item(item) for item in unique],
+            "dropped": [self._report_item(item) for item in dropped],
         }
         return unique
 
@@ -447,18 +485,25 @@ class Deduplicator:
         event_context = dict(candidate.get("event_context") or {}) or _extract_event_context(research_task)
         candidate_signature = cls._candidate_task_signature(candidate)
         existing_signature = cls._existing_task_signature(existing_item) if existing_item is not None else ""
+        explicit_candidate_universe = cls._has_explicit_universe(candidate)
+        explicit_existing_universe = cls._has_explicit_universe(existing_item)
+        target_overlap = float(match.get("target_overlap") or 0.0)
         if existing_item is not None and candidate_signature and existing_signature:
-            return candidate_signature == existing_signature
+            if candidate_signature != existing_signature:
+                return False
+            if explicit_candidate_universe and explicit_existing_universe:
+                return cls._has_exact_target_universe_match(candidate, existing_item)
+            return True
         has_event_context = bool(
             event_context.get("event_id")
             or event_context.get("theme_code")
             or research_task.get("task_source") == "event_driven"
             or str(candidate.get("source") or "").startswith("strategy_factory:")
         )
-        has_explicit_universe = bool(_extract_target_codes_from_payload(candidate, limit=20))
+        has_explicit_universe = explicit_candidate_universe
         if existing_item is None:
             return bool(has_event_context and has_explicit_universe)
-        return bool(has_event_context and has_explicit_universe and float(match.get("target_overlap") or 0.0) >= 0.8)
+        return bool(has_event_context and has_explicit_universe and target_overlap >= 0.95)
 
     @classmethod
     def _should_spawn_revision_from_existing(
@@ -474,9 +519,20 @@ class Deduplicator:
             return False
         if matched_strategy_id in cls._extract_parent_strategy_ids(candidate):
             return False
+        target_overlap = float((match or {}).get("target_overlap") or 0.0)
+        explicit_candidate_universe = cls._has_explicit_universe(candidate)
+        explicit_existing_universe = cls._has_explicit_universe(existing_item)
+        if (
+            explicit_candidate_universe
+            and explicit_existing_universe
+            and candidate_signature
+            and existing_signature
+            and candidate_signature == existing_signature
+            and 0.8 <= target_overlap < 0.999
+        ):
+            return True
         if not candidate_signature or not existing_signature or candidate_signature == existing_signature:
             return False
-        target_overlap = float((match or {}).get("target_overlap") or 0.0)
         return target_overlap >= 0.8
 
     async def _find_duplicate(self, candidate: dict, existing: list, db) -> tuple[dict, dict]:

@@ -49,6 +49,7 @@ from .run_models import (
     summarize_stage_results,
 )
 from .utils import _extract_event_context as _local_extract_event_context
+from ..domain.strategy_profile import apply_candidate_strategy_profile
 from ..domain.targets import _extract_target_codes_from_payload, _normalize_target_codes
 from ..infrastructure.mcp_services import get_autonomy_lifecycle_runtime, get_runtime_warmup_runner
 
@@ -226,7 +227,7 @@ class _StrategyFactorySchedulerAnalysisMixin:
             tags = list(item.get("tags") or [])
             if "targeted_universe" not in tags:
                 item["tags"] = [*tags, "targeted_universe"]
-            return item
+            return apply_candidate_strategy_profile(item, research_task=merged_task or task)
 
         @staticmethod
         def _extract_cycle_experiments(cycle: dict) -> list[dict]:
@@ -319,6 +320,7 @@ class _StrategyFactorySchedulerAnalysisMixin:
                         "grade": str(item.get("grade") or "").strip() or None,
                         "recommendation": str(item.get("recommendation") or "").strip() or None,
                         "registry_stage": str(item.get("registry_stage") or "").strip() or None,
+                        "pool_entry_mode": str(item.get("pool_entry_mode") or "").strip() or None,
                         "total_score": item.get("total_score"),
                         "admission_blocked": bool(item.get("admission_blocked")),
                         "admission_block_reasons": _normalize_list(item.get("admission_block_reasons")),
@@ -382,8 +384,11 @@ class _StrategyFactorySchedulerAnalysisMixin:
             ]
 
             return {
+                "active_pool_mode": str(active_pool.get("active_pool_mode") or "").strip() or None,
                 "source_count": int(active_pool.get("source_count") or 0),
                 "count": int(active_pool.get("count") or 0),
+                "strict_count": int(active_pool.get("strict_count") or 0),
+                "provisional_count": int(active_pool.get("provisional_count") or 0),
                 "excluded_count": int(active_pool.get("excluded_count") or 0),
                 "top_candidates": top_candidates,
                 "excluded_candidates": excluded_candidates,
@@ -420,6 +425,12 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "active_regime_names": list(summary.get("active_regime_names") or []),
                     "preferred_strategy_types": list(summary.get("preferred_strategy_types") or []),
                     "factor_source_mode": summary.get("factor_source_mode"),
+                    "governed_candidate_pool_mode": summary.get("governed_candidate_pool_mode"),
+                    "governed_candidate_pool_provisional": bool(summary.get("governed_candidate_pool_provisional")),
+                    "governed_candidate_pool_strict_count": int(summary.get("governed_candidate_pool_strict_count") or 0),
+                    "governed_candidate_pool_provisional_count": int(
+                        summary.get("governed_candidate_pool_provisional_count") or 0
+                    ),
                     "scheduler_last_run": summary.get("scheduler_last_run"),
                     "scheduler_freshness_sec": summary.get("scheduler_freshness_sec"),
                     "scheduler_recent_success": bool(summary.get("scheduler_recent_success")),
@@ -428,6 +439,11 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "governed_registry_stage_counts": dict(summary.get("governed_registry_stage_counts") or {}),
                     "top_candidate_lineage": list(summary.get("top_candidate_lineage") or []),
                     "governed_risk_counts": dict(summary.get("governed_risk_counts") or {}),
+                    "stock_family_allocation_count": int(summary.get("stock_family_allocation_count") or 0),
+                    "stock_family_allocation_family_counts": dict(summary.get("stock_family_allocation_family_counts") or {}),
+                    "stock_family_allocation_entropy": summary.get("stock_family_allocation_entropy"),
+                    "stock_family_allocation_avg_priority": summary.get("stock_family_allocation_avg_priority"),
+                    "stock_family_allocation_source_mode": summary.get("stock_family_allocation_source_mode"),
                     "degraded": bool(summary.get("degraded")),
                     "freshness_days": summary.get("freshness_days"),
                     "latest_factor_date": summary.get("latest_factor_date"),
@@ -625,6 +641,16 @@ class _StrategyFactorySchedulerAnalysisMixin:
             formal_multiple_testing_count = 0
             weak_white_reality_check_count = 0
             weak_hansen_spa_count = 0
+            incubation_readiness_values: list[float] = []
+            formal_incubation_count = 0
+            observe_incubation_count = 0
+            deferred_budget_queue_count = 0
+            live_ready_review_count = 0
+            direct_trade_candidate_count = 0
+            paper_account_bound_count = 0
+            runtime_review_count = 0
+            promotion_review_count = 0
+            promotion_review_status_counts: dict[str, int] = {}
 
             for item in strategies:
                 summary = dict(item or {})
@@ -671,6 +697,33 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     intersection_ratios.append(cls._safe_float(intersection_ratio))
                 if any("preference" in str(code or "").lower() for code in list(summary.get("warning_codes") or [])):
                     preference_mismatch_warning_count += 1
+                readiness_score = summary.get("incubation_readiness_score")
+                if readiness_score is not None:
+                    incubation_readiness_values.append(cls._safe_float(readiness_score))
+                track = str(summary.get("incubation_budget_track") or "").strip().lower()
+                if summary.get("passed"):
+                    if track == "formal_incubation":
+                        formal_incubation_count += 1
+                    elif track == "observe_incubation":
+                        observe_incubation_count += 1
+                    elif track == "deferred_budget_queue":
+                        deferred_budget_queue_count += 1
+                if bool(summary.get("direct_trade_candidate")):
+                    direct_trade_candidate_count += 1
+                submission_lane = str(summary.get("submission_lane") or "").strip().lower()
+                if submission_lane == "live_ready_review":
+                    live_ready_review_count += 1
+                if summary.get("paper_account_id") or summary.get("incubation_account_id"):
+                    paper_account_bound_count += 1
+                if str(summary.get("runtime_control_mode") or "").strip():
+                    runtime_review_count += 1
+                promotion_review_status = str(summary.get("promotion_review_status") or "").strip().lower()
+                if summary.get("promotion_review_id") or promotion_review_status:
+                    promotion_review_count += 1
+                if promotion_review_status:
+                    promotion_review_status_counts[promotion_review_status] = (
+                        promotion_review_status_counts.get(promotion_review_status, 0) + 1
+                    )
 
                 refresh_mode = str(
                     summary.get("refresh_mode")
@@ -704,8 +757,98 @@ class _StrategyFactorySchedulerAnalysisMixin:
                 "formal_multiple_testing_count": formal_multiple_testing_count,
                 "weak_white_reality_check_count": weak_white_reality_check_count,
                 "weak_hansen_spa_count": weak_hansen_spa_count,
+                "avg_incubation_readiness_score": round(
+                    sum(incubation_readiness_values) / len(incubation_readiness_values),
+                    4,
+                )
+                if incubation_readiness_values
+                else 0.0,
+                "formal_incubation_count": formal_incubation_count,
+                "observe_incubation_count": observe_incubation_count,
+                "deferred_budget_queue_count": deferred_budget_queue_count,
+                "live_ready_review_count": live_ready_review_count,
+                "direct_trade_candidate_count": direct_trade_candidate_count,
+                "paper_account_bound_count": paper_account_bound_count,
+                "runtime_review_count": runtime_review_count,
+                "promotion_review_count": promotion_review_count,
+                "promotion_review_status_counts": promotion_review_status_counts,
                 "refresh_metrics_only_count": refresh_metrics_only_count,
                 "spawn_revision_from_existing_count": spawn_revision_from_existing_count,
+            }
+
+        @classmethod
+        def _build_layered_run_summary(
+            cls,
+            summary: Optional[dict[str, Any]],
+            submit_result: Optional[dict],
+        ) -> dict[str, Any]:
+            base = dict(summary or {})
+            strategies = list((submit_result or {}).get("strategies") or [])
+            submission_lane_counts: dict[str, int] = {}
+            strategy_status_counts: dict[str, int] = {}
+            live_candidate_ready_count = 0
+            live_review_ready_count = 0
+            for item in strategies:
+                record = dict(item or {})
+                if bool(record.get("live_candidate_ready")):
+                    live_candidate_ready_count += 1
+                if bool(record.get("live_review_ready")):
+                    live_review_ready_count += 1
+                submission_lane = str(record.get("submission_lane") or "").strip().lower()
+                if submission_lane:
+                    submission_lane_counts[submission_lane] = submission_lane_counts.get(submission_lane, 0) + 1
+                status = str(record.get("status") or record.get("final_status") or "").strip().lower()
+                if status:
+                    strategy_status_counts[status] = strategy_status_counts.get(status, 0) + 1
+
+            return {
+                "research_summary": {
+                    "runtime_enabled": bool(base.get("runtime_enabled", True)),
+                    "event_runtime_mode": base.get("event_runtime_mode"),
+                    "readiness_score": base.get("factory_readiness_score"),
+                    "readiness_can_proceed": bool(base.get("factory_readiness_can_proceed", True)),
+                    "factor_source_mode": base.get("factor_source_mode"),
+                    "governed_candidate_pool_active": bool(base.get("governed_candidate_pool_active")),
+                    "governed_candidate_pool_mode": base.get("governed_candidate_pool_mode"),
+                    "governed_candidate_pool_provisional": bool(base.get("governed_candidate_pool_provisional")),
+                    "spawned_candidate_count": int(base.get("candidates_spawned") or 0),
+                    "autonomy_generated_count": int(base.get("autonomy_generated") or 0),
+                    "autonomy_task_count": int(base.get("autonomy_task_count") or 0),
+                    "snapshot_task_count": int(base.get("snapshot_task_count") or 0),
+                    "bulk_stock_task_count": int(base.get("bulk_stock_task_count") or 0),
+                    "gate_0_passed": int(base.get("gate_0_passed") or 0),
+                    "pre_gate_passed": int(base.get("pre_gate_passed") or 0),
+                    "gate_1_passed": int(base.get("gate_1_passed") or 0),
+                    "gate_2_input": int(base.get("gate_2_input") or 0),
+                    "gate_2_passed": int(base.get("gate_2_passed") or 0),
+                    "gate_2_failed": int(base.get("candidates_failed_backtest") or 0),
+                },
+                "incubation_summary": {
+                    "candidates_after_dedup": int(base.get("candidates_after_dedup") or 0),
+                    "gate_3_input": int(base.get("gate_3_input") or 0),
+                    "gate_3_passed": int(base.get("gate_3_passed") or 0),
+                    "gate_3_failed": int(base.get("gate_3_failed") or 0),
+                    "submitted_count": int(base.get("submitted") or 0),
+                    "created_strategy_pool_count": int(base.get("created_strategy_pool") or 0),
+                    "created_audit_only_count": int(base.get("created_audit_only") or 0),
+                    "formal_incubation_count": int(base.get("formal_incubation_count") or 0),
+                    "observe_incubation_count": int(base.get("observe_incubation_count") or 0),
+                    "deferred_budget_queue_count": int(base.get("deferred_budget_queue_count") or 0),
+                    "refresh_metrics_only_count": int(base.get("refresh_metrics_only_count") or 0),
+                    "spawn_revision_from_existing_count": int(base.get("spawn_revision_from_existing_count") or 0),
+                    "submission_lane_counts": submission_lane_counts,
+                    "strategy_status_counts": strategy_status_counts,
+                },
+                "live_ready_summary": {
+                    "live_candidate_ready_count": live_candidate_ready_count,
+                    "live_review_ready_count": live_review_ready_count,
+                    "live_ready_review_count": int(base.get("live_ready_review_count") or 0),
+                    "direct_trade_candidate_count": int(base.get("direct_trade_candidate_count") or 0),
+                    "paper_account_bound_count": int(base.get("paper_account_bound_count") or 0),
+                    "runtime_review_count": int(base.get("runtime_review_count") or 0),
+                    "promotion_review_count": int(base.get("promotion_review_count") or 0),
+                    "promotion_review_status_counts": dict(base.get("promotion_review_status_counts") or {}),
+                },
             }
 
         @classmethod

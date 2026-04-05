@@ -10,7 +10,7 @@ class _DummyMCP:
     def __init__(self):
         self._tool_manager = SimpleNamespace(_tools={})
 
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn

@@ -10,14 +10,47 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from ..domain.constants import QUALITY_GATE_THRESHOLDS, TRADE_GATE_PROFILE_THRESHOLDS
-from ..domain.targets import _extract_target_codes_from_payload, _normalize_research_task_contract
+from ..domain.constants import (
+    INCUBATION_ADMISSION_THRESHOLDS,
+    LIVE_ADMISSION_THRESHOLDS,
+    QUALITY_GATE_THRESHOLDS,
+    RESEARCH_ADMISSION_THRESHOLDS,
+    TRADE_GATE_PROFILE_THRESHOLDS,
+)
+from ..domain.targets import _build_task_signature, _extract_target_codes_from_payload, _normalize_research_task_contract
 from ..infrastructure.mcp_services import get_normalize_klines, get_strategy_registry, get_validation_runtime
 from .quality_reporting import maybe_grant_provisional_incubation, normalize_quality_gate_result, safe_metric_value
 
 
 _FACTOR_VALIDATION_TYPES = {"value_factor", "quality_factor", "growth_factor", "multi_factor"}
-_TRADE_VALIDATION_TYPES = {"momentum", "ma_cross", "rsi", "macro_timing", "dsl_rule"}
+_TRADE_PRIMARY_PROFILES = {"trade_rule_validation", "event_trade_validation", "macro_regime_validation"}
+_ADMISSION_LEVEL_ORDER = ("research", "incubation", "live")
+_ADMISSION_THRESHOLD_SETS = {
+    "research": RESEARCH_ADMISSION_THRESHOLDS,
+    "incubation": INCUBATION_ADMISSION_THRESHOLDS,
+    "live": LIVE_ADMISSION_THRESHOLDS,
+}
+_SUPPLEMENTAL_STATISTICAL_FIELDS = {
+    "wf_ic_ir",
+    "pkf_ic",
+    "bootstrap_ci_lower",
+    "param_sensitivity",
+    "period_robustness",
+    "run_correction_mode",
+    "raw_sharpe_proxy",
+    "deflated_sharpe_proxy",
+    "pbo_proxy",
+    "reality_check_pvalue_proxy",
+    "spa_pvalue_proxy",
+    "multiple_testing_mode",
+    "deflated_sharpe_ratio",
+    "deflated_sharpe_reference_sharpe",
+    "deflated_sharpe_effective_trials",
+    "pbo",
+    "white_reality_check_pvalue",
+    "hansen_spa_pvalue",
+    "multiple_testing",
+}
 
 
 def _strategy_payload_value(strategy: dict, key: str, default: Any = None) -> Any:
@@ -95,6 +128,138 @@ def _build_attempt_adjustment(strategy: dict) -> dict[str, Any]:
         "penalty": round(penalty, 4),
         "applied": penalty > 0,
     }
+
+
+def _build_multiple_testing_registry(
+    strategy: dict,
+    profile: dict[str, Any],
+    gate: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_gate = normalize_quality_gate_result(gate)
+    research_task = dict(profile.get("research_task") or {})
+    target_codes = _extract_target_codes_from_payload(strategy)
+    candidate_provenance = dict(
+        _strategy_payload_value(strategy, "candidate_provenance")
+        or strategy.get("candidate_provenance")
+        or {}
+    )
+    attempt_adjustment = dict(normalized_gate.get("attempt_adjustment") or _build_attempt_adjustment(strategy))
+    multiple_testing = dict(normalized_gate.get("multiple_testing") or {})
+    task_signature = str(
+        _strategy_payload_value(strategy, "task_signature")
+        or research_task.get("task_signature")
+        or _build_task_signature(research_task)
+    ).strip()
+    target_symbols_signature = ",".join(target_codes)
+    strategy_family = str(
+        candidate_provenance.get("candidate_family")
+        or _strategy_payload_value(strategy, "candidate_family")
+        or strategy.get("strategy_type")
+        or "unknown"
+    ).strip().lower()
+    family_matrix_artifact_id = str(
+        candidate_provenance.get("source_generation_artifact_id")
+        or candidate_provenance.get("source_validation_artifact_id")
+        or _strategy_payload_value(strategy, "source_generation_artifact_id")
+        or _strategy_payload_value(strategy, "source_validation_artifact_id")
+        or ""
+    ).strip() or None
+    formal_coverage = all(
+        normalized_gate.get(field) is not None
+        for field in (
+            "deflated_sharpe_ratio",
+            "pbo",
+            "white_reality_check_pvalue",
+            "hansen_spa_pvalue",
+        )
+    )
+    registry_key = "|".join(
+        part
+        for part in (
+            task_signature,
+            strategy_family,
+            target_symbols_signature,
+            str(profile.get("profile") or "").strip().lower(),
+        )
+        if part
+    )
+    if not registry_key:
+        registry_key = f"registry|{strategy_family or 'unknown'}"
+    return {
+        "registry_key": registry_key,
+        "task_signature": task_signature,
+        "strategy_family": strategy_family,
+        "strategy_family_id": str(candidate_provenance.get("candidate_family_id") or strategy_family or "").strip() or None,
+        "target_symbols_signature": target_symbols_signature,
+        "validation_profile": str(profile.get("profile") or "").strip().lower() or None,
+        "validation_focus": str(profile.get("validation_focus") or "").strip().lower() or None,
+        "primary_validation_layer": str(profile.get("primary_validation_layer") or "").strip().lower() or None,
+        "attempt_count": int(attempt_adjustment.get("attempt_count") or 1),
+        "selected_count": int(attempt_adjustment.get("selected_count") or 0),
+        "selection_ratio": float(attempt_adjustment.get("selection_ratio") or 0.0),
+        "factory_attempt_count": int(_strategy_payload_value(strategy, "factory_attempt_count", 0) or 0),
+        "task_attempt_count": int(_strategy_payload_value(strategy, "task_attempt_count", 0) or 0),
+        "external_llm_attempt_count": int(_strategy_payload_value(strategy, "external_llm_attempt_count", 0) or 0),
+        "family_matrix_artifact_id": family_matrix_artifact_id,
+        "formal_coverage": formal_coverage,
+        "multiple_testing_mode": normalized_gate.get("multiple_testing_mode"),
+        "multiple_testing": {
+            "deflated_sharpe": dict(multiple_testing.get("deflated_sharpe") or {}),
+            "pbo": dict(multiple_testing.get("pbo") or {}),
+            "white_reality_check": dict(multiple_testing.get("white_reality_check") or {}),
+            "hansen_spa": dict(multiple_testing.get("hansen_spa") or {}),
+            "deflated_sharpe_ratio": normalized_gate.get("deflated_sharpe_ratio"),
+            "pbo_value": normalized_gate.get("pbo"),
+            "white_reality_check_pvalue": normalized_gate.get("white_reality_check_pvalue"),
+            "hansen_spa_pvalue": normalized_gate.get("hansen_spa_pvalue"),
+            "deflated_sharpe_proxy": normalized_gate.get("deflated_sharpe_proxy"),
+            "pbo_proxy": normalized_gate.get("pbo_proxy"),
+            "reality_check_pvalue_proxy": normalized_gate.get("reality_check_pvalue_proxy"),
+            "spa_pvalue_proxy": normalized_gate.get("spa_pvalue_proxy"),
+        },
+    }
+
+
+def _admission_threshold_bundle(admission_level: str) -> dict[str, Any]:
+    normalized = str(admission_level or "incubation").strip().lower()
+    return dict(_ADMISSION_THRESHOLD_SETS.get(normalized) or INCUBATION_ADMISSION_THRESHOLDS)
+
+
+def _multiple_testing_thresholds(admission_level: str) -> dict[str, float]:
+    base = dict(_admission_threshold_bundle(admission_level).get("multiple_testing") or {})
+    return {
+        "deflated_sharpe_ratio_min": float(base.get("deflated_sharpe_ratio_min", -0.10)),
+        "pbo_max": float(base.get("pbo_max", 0.75)),
+        "white_reality_check_pvalue_max": float(base.get("white_reality_check_pvalue_max", 0.35)),
+        "hansen_spa_pvalue_max": float(base.get("hansen_spa_pvalue_max", 0.35)),
+    }
+
+
+def _statistical_gate_thresholds(
+    attempt_adjustment: dict[str, Any],
+    *,
+    admission_level: str = "incubation",
+) -> dict[str, float]:
+    penalty = float(attempt_adjustment.get("penalty") or 0.0)
+    base = dict(_admission_threshold_bundle(admission_level).get("statistical_validation") or QUALITY_GATE_THRESHOLDS)
+    return {
+        "walk_forward_ic_ir_min": float(base.get("walk_forward_ic_ir_min", 0.30)) + penalty,
+        "purged_kfold_ic_min": float(base.get("purged_kfold_ic_min", 0.02)) + penalty / 2.0,
+        "bootstrap_ci_lower_min": float(base.get("bootstrap_ci_lower_min", 0.0)) + penalty / 3.0,
+        "param_sensitivity_max": float(base.get("param_sensitivity_max", 0.30)),
+    }
+
+
+def _first_float_value(payload: Optional[dict], *keys: str) -> Optional[float]:
+    data = dict(payload or {})
+    for key in keys:
+        if key not in data or data.get(key) is None:
+            continue
+        try:
+            return float(data.get(key) or 0.0)
+        except Exception:
+            continue
+    return None
 
 
 def _observed_sharpe_proxy(series: Optional[np.ndarray], fallback_score: float) -> float:
@@ -318,13 +483,17 @@ def _estimate_run_correction_metrics(
     }
 
 
-def _trade_gate_thresholds(profile: dict[str, Any], attempt_adjustment: dict[str, Any]) -> dict[str, float]:
+def _trade_gate_thresholds(
+    profile: dict[str, Any],
+    attempt_adjustment: dict[str, Any],
+    *,
+    admission_level: str = "incubation",
+) -> dict[str, float]:
     penalty = float(attempt_adjustment.get("penalty") or 0.0)
     validation_focus = str(profile.get("validation_focus") or "target_plus_representative")
     is_event = str(profile.get("profile") or "") == "event_trade_validation" or validation_focus == "event_target_only"
-    base = dict(
-        TRADE_GATE_PROFILE_THRESHOLDS["event_trade_validation" if is_event else "default"]
-    )
+    trade_profiles = dict(_admission_threshold_bundle(admission_level).get("trade_profiles") or TRADE_GATE_PROFILE_THRESHOLDS)
+    base = dict(trade_profiles.get("event_trade_validation" if is_event else "default") or TRADE_GATE_PROFILE_THRESHOLDS["default"])
     return {
         "post_cost_sharpe_min": float(base.get("post_cost_sharpe_min", 0.10)) + penalty,
         "trade_count_min": float(base.get("trade_count_min", 4.0)),
@@ -360,10 +529,17 @@ def _evaluate_trade_profile(
     profile: dict[str, Any],
     backtest_metrics: Optional[dict],
     risk_report: Optional[dict],
+    *,
+    admission_level: str = "incubation",
+    attempt_adjustment: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     metrics = dict(backtest_metrics or {})
-    attempt_adjustment = _build_attempt_adjustment(strategy)
-    thresholds = _trade_gate_thresholds(profile, attempt_adjustment)
+    attempt_adjustment = dict(attempt_adjustment or _build_attempt_adjustment(strategy))
+    thresholds = _trade_gate_thresholds(
+        profile,
+        attempt_adjustment,
+        admission_level=admission_level,
+    )
     reasons: list[str] = []
     warnings: list[str] = []
 
@@ -394,10 +570,13 @@ def _evaluate_trade_profile(
         )
     if max_drawdown > thresholds["max_drawdown_max"]:
         reasons.append(f"max_drawdown {max_drawdown:.3f} > {thresholds['max_drawdown_max']:.3f}")
-    if thresholds["event_window_hit_ratio_min"] > 0 and event_window_hit_ratio and event_window_hit_ratio < thresholds["event_window_hit_ratio_min"]:
-        reasons.append(
-            f"event_window_hit_ratio {event_window_hit_ratio:.3f} < {thresholds['event_window_hit_ratio_min']:.3f}"
-        )
+    if thresholds["event_window_hit_ratio_min"] > 0:
+        if event_window_hit_ratio <= 0 and admission_level == "incubation":
+            warnings.append("event_window_hit_ratio_missing")
+        elif event_window_hit_ratio < thresholds["event_window_hit_ratio_min"]:
+            reasons.append(
+                f"event_window_hit_ratio {event_window_hit_ratio:.3f} < {thresholds['event_window_hit_ratio_min']:.3f}"
+            )
     if post_event_decay < thresholds["post_event_decay_min"]:
         warnings.append(
             f"post_event_decay {post_event_decay:.3f} < {thresholds['post_event_decay_min']:.3f}"
@@ -417,6 +596,36 @@ def _evaluate_trade_profile(
     if stress_loss_percent and stress_loss_percent <= -25.0:
         reasons.append(f"stress_loss_percent {stress_loss_percent:.2f} <= -25.00")
 
+    if admission_level == "live":
+        mt_thresholds = _multiple_testing_thresholds(admission_level)
+        deflated_sharpe = _first_float_value(metrics, "deflated_sharpe_ratio", "deflated_sharpe_proxy")
+        pbo = _first_float_value(metrics, "pbo", "pbo_proxy")
+        white_rc = _first_float_value(metrics, "white_reality_check_pvalue", "reality_check_pvalue_proxy")
+        spa_pvalue = _first_float_value(metrics, "hansen_spa_pvalue", "spa_pvalue_proxy")
+        if deflated_sharpe is None:
+            reasons.append("deflated_sharpe_missing_for_live_admission")
+        elif deflated_sharpe < mt_thresholds["deflated_sharpe_ratio_min"]:
+            reasons.append(
+                f"deflated_sharpe {deflated_sharpe:.3f} < {mt_thresholds['deflated_sharpe_ratio_min']:.3f}"
+            )
+        if pbo is None:
+            reasons.append("pbo_missing_for_live_admission")
+        elif pbo > mt_thresholds["pbo_max"]:
+            reasons.append(f"pbo {pbo:.3f} > {mt_thresholds['pbo_max']:.3f}")
+        if white_rc is None:
+            reasons.append("white_reality_check_missing_for_live_admission")
+        elif white_rc > mt_thresholds["white_reality_check_pvalue_max"]:
+            reasons.append(
+                "white_reality_check_pvalue "
+                f"{white_rc:.3f} > {mt_thresholds['white_reality_check_pvalue_max']:.3f}"
+            )
+        if spa_pvalue is None:
+            reasons.append("hansen_spa_missing_for_live_admission")
+        elif spa_pvalue > mt_thresholds["hansen_spa_pvalue_max"]:
+            reasons.append(
+                f"hansen_spa_pvalue {spa_pvalue:.3f} > {mt_thresholds['hansen_spa_pvalue_max']:.3f}"
+            )
+
     return normalize_quality_gate_result(
         {
             "passed": len(reasons) == 0,
@@ -426,6 +635,7 @@ def _evaluate_trade_profile(
             "primary_validation_layer": profile.get("primary_validation_layer"),
             "attempt_adjustment": attempt_adjustment,
             "thresholds": thresholds,
+            "admission_level": admission_level,
             "reasons": reasons,
             "warnings": warnings,
             "trade_count": round(trade_count, 4),
@@ -442,6 +652,100 @@ def _evaluate_trade_profile(
     )
 
 
+def _evaluate_statistical_admission(
+    strategy: dict,
+    profile: dict[str, Any],
+    gate_payload: Optional[dict],
+    *,
+    admission_level: str = "incubation",
+    attempt_adjustment: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    payload = dict(gate_payload or {})
+    attempt_adjustment = dict(attempt_adjustment or _build_attempt_adjustment(strategy))
+    thresholds = _statistical_gate_thresholds(
+        attempt_adjustment,
+        admission_level=admission_level,
+    )
+    reasons: list[str] = []
+    warnings: list[str] = []
+
+    wf_ic_ir = safe_metric_value(payload, "wf_ic_ir")
+    pkf_ic = safe_metric_value(payload, "pkf_ic")
+    bootstrap_ci_lower = safe_metric_value(payload, "bootstrap_ci_lower")
+    param_sensitivity = safe_metric_value(payload, "param_sensitivity")
+
+    if wf_ic_ir < thresholds["walk_forward_ic_ir_min"]:
+        reasons.append(f"walk_forward_ic_ir {wf_ic_ir:.3f} < {thresholds['walk_forward_ic_ir_min']:.3f}")
+    if pkf_ic < thresholds["purged_kfold_ic_min"]:
+        reasons.append(f"purged_kfold_ic {pkf_ic:.3f} < {thresholds['purged_kfold_ic_min']:.3f}")
+    if bootstrap_ci_lower < thresholds["bootstrap_ci_lower_min"]:
+        reasons.append(f"bootstrap_ci_lower {bootstrap_ci_lower:.3f} < {thresholds['bootstrap_ci_lower_min']:.3f}")
+    if param_sensitivity > thresholds["param_sensitivity_max"]:
+        reasons.append(f"param_sensitivity {param_sensitivity:.3f} > {thresholds['param_sensitivity_max']:.3f}")
+
+    period_robustness = dict(payload.get("period_robustness") or {})
+    first_ic = _first_float_value(period_robustness, "first_half_ic")
+    second_ic = _first_float_value(period_robustness, "second_half_ic")
+    if first_ic is not None and second_ic is not None:
+        if first_ic < -0.02 or second_ic < -0.02:
+            reasons.append(
+                f"period_robustness {first_ic:.3f}/{second_ic:.3f} < -0.020"
+            )
+        elif (first_ic > 0.01 > second_ic) or (second_ic > 0.01 > first_ic):
+            warnings.append(
+                f"period_direction_reversal {first_ic:.3f}/{second_ic:.3f}"
+            )
+
+    if admission_level == "live":
+        mt_thresholds = _multiple_testing_thresholds(admission_level)
+        deflated_sharpe = _first_float_value(payload, "deflated_sharpe_ratio", "deflated_sharpe_proxy")
+        pbo = _first_float_value(payload, "pbo", "pbo_proxy")
+        white_rc = _first_float_value(payload, "white_reality_check_pvalue", "reality_check_pvalue_proxy")
+        spa_pvalue = _first_float_value(payload, "hansen_spa_pvalue", "spa_pvalue_proxy")
+        if deflated_sharpe is None:
+            reasons.append("deflated_sharpe_missing_for_live_admission")
+        elif deflated_sharpe < mt_thresholds["deflated_sharpe_ratio_min"]:
+            reasons.append(
+                f"deflated_sharpe {deflated_sharpe:.3f} < {mt_thresholds['deflated_sharpe_ratio_min']:.3f}"
+            )
+        if pbo is None:
+            reasons.append("pbo_missing_for_live_admission")
+        elif pbo > mt_thresholds["pbo_max"]:
+            reasons.append(f"pbo {pbo:.3f} > {mt_thresholds['pbo_max']:.3f}")
+        if white_rc is None:
+            reasons.append("white_reality_check_missing_for_live_admission")
+        elif white_rc > mt_thresholds["white_reality_check_pvalue_max"]:
+            reasons.append(
+                "white_reality_check_pvalue "
+                f"{white_rc:.3f} > {mt_thresholds['white_reality_check_pvalue_max']:.3f}"
+            )
+        if spa_pvalue is None:
+            reasons.append("hansen_spa_missing_for_live_admission")
+        elif spa_pvalue > mt_thresholds["hansen_spa_pvalue_max"]:
+            reasons.append(
+                f"hansen_spa_pvalue {spa_pvalue:.3f} > {mt_thresholds['hansen_spa_pvalue_max']:.3f}"
+            )
+
+    return normalize_quality_gate_result(
+        {
+            "passed": len(reasons) == 0,
+            "passed_strict": len(reasons) == 0,
+            "profile": profile.get("profile"),
+            "validation_focus": profile.get("validation_focus"),
+            "primary_validation_layer": profile.get("primary_validation_layer"),
+            "attempt_adjustment": attempt_adjustment,
+            "thresholds": thresholds,
+            "admission_level": admission_level,
+            "reasons": reasons,
+            "warnings": warnings,
+            "wf_ic_ir": round(wf_ic_ir, 4),
+            "pkf_ic": round(pkf_ic, 4),
+            "bootstrap_ci_lower": round(bootstrap_ci_lower, 4),
+            "param_sensitivity": round(param_sensitivity, 4),
+        }
+    )
+
+
 def _merge_text_items(*groups: Optional[list[str]]) -> list[str]:
     items: list[str] = []
     for group in groups:
@@ -450,6 +754,113 @@ def _merge_text_items(*groups: Optional[list[str]]) -> list[str]:
             if text and text not in items:
                 items.append(text)
     return items
+
+
+def _with_gate_protocol(gate: dict[str, Any], protocol: str) -> dict[str, Any]:
+    return normalize_quality_gate_result({**dict(gate or {}), "gate_protocol": protocol})
+
+
+def _merge_trade_primary_gate(
+    trade_gate: dict[str, Any],
+    supplemental_statistical_gate: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    supplemental = normalize_quality_gate_result(supplemental_statistical_gate)
+    warnings = _merge_text_items(trade_gate.get("warnings"), supplemental.get("warnings"))
+    if supplemental.get("reasons"):
+        warnings = _merge_text_items(warnings, ["supplemental_statistical_gate_failed"])
+    merged = {
+        **dict(trade_gate or {}),
+        **{
+            key: value
+            for key, value in supplemental.items()
+            if key in _SUPPLEMENTAL_STATISTICAL_FIELDS
+        },
+        "warnings": warnings,
+        "supplemental_statistical_gate": {
+            "passed": bool(supplemental.get("passed")),
+            "reasons": list(supplemental.get("reasons") or []),
+            "warnings": list(supplemental.get("warnings") or []),
+        },
+    }
+    return normalize_quality_gate_result(merged)
+
+
+def _attach_admission_evaluations(
+    strategy: dict,
+    profile: dict[str, Any],
+    gate: dict[str, Any],
+    *,
+    risk_report: Optional[dict] = None,
+) -> dict[str, Any]:
+    normalized_gate = normalize_quality_gate_result(gate)
+    attempt_adjustment = dict(normalized_gate.get("attempt_adjustment") or _build_attempt_adjustment(strategy))
+    evaluations: dict[str, dict[str, Any]] = {}
+    profile_name = str(profile.get("profile") or "").strip().lower()
+
+    for admission_level in _ADMISSION_LEVEL_ORDER:
+        if profile_name in _TRADE_PRIMARY_PROFILES:
+            stage_result = _evaluate_trade_profile(
+                strategy,
+                profile,
+                normalized_gate,
+                risk_report,
+                admission_level=admission_level,
+                attempt_adjustment=attempt_adjustment,
+            )
+        else:
+            stage_result = _evaluate_statistical_admission(
+                strategy,
+                profile,
+                normalized_gate,
+                admission_level=admission_level,
+                attempt_adjustment=attempt_adjustment,
+            )
+        evaluations[admission_level] = {
+            "passed": bool(stage_result.get("passed")),
+            "reasons": list(stage_result.get("reasons") or []),
+            "warnings": list(stage_result.get("warnings") or []),
+            "thresholds": dict(stage_result.get("thresholds") or {}),
+        }
+
+    strict_incubation_ready = bool((evaluations.get("incubation") or {}).get("passed"))
+    incubation_candidate_ready = bool(normalized_gate.get("passed"))
+    live_candidate_ready = bool(
+        incubation_candidate_ready
+        and not normalized_gate.get("provisional_pass")
+        and (evaluations.get("live") or {}).get("passed")
+    )
+    research_candidate_ready = bool((evaluations.get("research") or {}).get("passed"))
+
+    if live_candidate_ready:
+        admission_stage = "live"
+        block_reasons: list[str] = []
+    elif incubation_candidate_ready:
+        admission_stage = "incubation"
+        block_reasons = list((evaluations.get("live") or {}).get("reasons") or [])
+    elif research_candidate_ready:
+        admission_stage = "research"
+        block_reasons = list((evaluations.get("incubation") or {}).get("reasons") or [])
+    else:
+        admission_stage = "rejected"
+        block_reasons = list(normalized_gate.get("reasons") or (evaluations.get("incubation") or {}).get("reasons") or [])
+
+    incubation_pass_mode = (
+        "provisional"
+        if normalized_gate.get("provisional_pass")
+        else ("strict" if strict_incubation_ready and incubation_candidate_ready else "failed")
+    )
+    return normalize_quality_gate_result(
+        {
+            **normalized_gate,
+            "admission_stage": admission_stage,
+            "incubation_pass_mode": incubation_pass_mode,
+            "research_candidate_ready": research_candidate_ready,
+            "incubation_candidate_ready": incubation_candidate_ready,
+            "live_candidate_ready": live_candidate_ready,
+            "admission_evaluations": evaluations,
+            "admission_block_reasons": block_reasons,
+        }
+    )
 
 
 async def _run_statistical_gate(
@@ -506,7 +917,11 @@ async def _run_statistical_gate(
     reasons = []
     attempt_adjustment = _build_attempt_adjustment(strategy)
 
-    _wf_min = QUALITY_GATE_THRESHOLDS["walk_forward_ic_ir_min"] + float(attempt_adjustment.get("penalty") or 0.0)
+    statistical_thresholds = _statistical_gate_thresholds(
+        attempt_adjustment,
+        admission_level="incubation",
+    )
+    _wf_min = statistical_thresholds["walk_forward_ic_ir_min"]
     try:
         wf = validation_runtime.WalkForwardValidator(train_window=60, test_window=20, step=20)
         wf_summary = wf.validate(factor_panel, return_panel)
@@ -517,7 +932,7 @@ async def _run_statistical_gate(
         reasons.append(f"Walk-Forward error: {e}")
         wf_sharpe = 0
 
-    _pkf_min = QUALITY_GATE_THRESHOLDS["purged_kfold_ic_min"] + float(attempt_adjustment.get("penalty") or 0.0) / 2.0
+    _pkf_min = statistical_thresholds["purged_kfold_ic_min"]
     try:
         pkf = validation_runtime.PurgedKFoldCV(n_folds=5, purge_gap=5)
         pkf_summary = pkf.validate(factor_panel, return_panel)
@@ -528,7 +943,7 @@ async def _run_statistical_gate(
         reasons.append(f"Purged K-Fold error: {e}")
         pkf_ic = 0
 
-    _bs_min = QUALITY_GATE_THRESHOLDS["bootstrap_ci_lower_min"] + float(attempt_adjustment.get("penalty") or 0.0) / 3.0
+    _bs_min = statistical_thresholds["bootstrap_ci_lower_min"]
     try:
         bs = validation_runtime.bootstrap_ic_ci(flat_factors, flat_returns)
         ci_lower = bs.get("ci_lower", 0)
@@ -538,7 +953,7 @@ async def _run_statistical_gate(
         reasons.append(f"Bootstrap error: {e}")
         ci_lower = 0
 
-    _sens_max = QUALITY_GATE_THRESHOLDS["param_sensitivity_max"]
+    _sens_max = statistical_thresholds["param_sensitivity_max"]
     sensitivity = 0.0
     try:
         ref_closes = all_closes[0][:min_len]
@@ -640,58 +1055,90 @@ async def run_submission_quality_gate(
     """Run the submission-stage quality gate and return the final authority result."""
     try:
         profile = _resolve_validation_profile(strategy)
+        profile_name = str(profile.get("profile") or "").strip().lower()
         strategy_type = str(strategy.get("strategy_type", "") or "").strip().lower()
         strategy_registry = get_strategy_registry()
         klass = strategy_registry.get(strategy_type) if strategy_type else None
         if klass is None:
             return normalize_quality_gate_result({"passed": False, "reason": f"Strategy type not in registry: {strategy_type}"})
 
-        statistical_gate = await _run_statistical_gate(
-            db,
-            strategy,
-            profile=profile,
-            klass=klass,
-        )
-        uses_trade_profile = (
-            profile["profile"] != "factor_rank_validation"
-            and strategy_type in _TRADE_VALIDATION_TYPES
-            and _has_trade_validation_audit(backtest_metrics)
-        )
-        normalized = statistical_gate
-        if uses_trade_profile:
-            trade_gate = _evaluate_trade_profile(strategy, profile, backtest_metrics, risk_report)
-            trade_failed = not bool(trade_gate.get("passed"))
-            merged_reasons = _merge_text_items(
-                statistical_gate.get("reasons"),
-                trade_gate.get("reasons") if trade_failed else [],
+        normalized: dict[str, Any]
+        if profile_name == "factor_rank_validation":
+            statistical_gate = await _run_statistical_gate(
+                db,
+                strategy,
+                profile=profile,
+                klass=klass,
             )
-            merged_warnings = _merge_text_items(
-                statistical_gate.get("warnings"),
-                trade_gate.get("warnings"),
+            normalized = _with_gate_protocol(
+                statistical_gate,
+                "factor_rank_validation:statistical_primary",
             )
+        elif profile_name in _TRADE_PRIMARY_PROFILES and _has_trade_validation_audit(backtest_metrics):
+            trade_gate = _with_gate_protocol(
+                _evaluate_trade_profile(strategy, profile, backtest_metrics, risk_report),
+                f"{profile_name}:trade_primary",
+            )
+            supplemental_gate: dict[str, Any]
+            try:
+                supplemental_gate = await _run_statistical_gate(
+                    db,
+                    strategy,
+                    profile=profile,
+                    klass=klass,
+                )
+            except Exception as exc:
+                supplemental_gate = normalize_quality_gate_result(
+                    {
+                        "passed": False,
+                        "reason": f"Supplemental statistical gate error: {exc}",
+                        "warnings": [f"supplemental_statistical_gate_error:{type(exc).__name__}"],
+                    }
+                )
+            normalized = _merge_trade_primary_gate(trade_gate, supplemental_gate)
+        else:
+            statistical_gate = await _run_statistical_gate(
+                db,
+                strategy,
+                profile=profile,
+                klass=klass,
+            )
+            warnings = list(statistical_gate.get("warnings") or [])
+            protocol = f"{profile_name or 'unknown'}:statistical_fallback"
+            if profile_name in _TRADE_PRIMARY_PROFILES:
+                warnings = _merge_text_items(
+                    warnings,
+                    [f"{profile_name}:trade_validation_audit_missing"],
+                )
             normalized = normalize_quality_gate_result(
                 {
                     **statistical_gate,
-                    **{
-                        key: value
-                        for key, value in trade_gate.items()
-                        if key
-                        not in {"passed", "passed_strict", "reason", "reasons", "warnings", "reason_codes", "warning_codes"}
-                    },
-                    "passed": bool(statistical_gate.get("passed")) and bool(trade_gate.get("passed")),
-                    "passed_strict": bool(statistical_gate.get("passed_strict", statistical_gate.get("passed")))
-                    and bool(trade_gate.get("passed_strict", trade_gate.get("passed"))),
-                    "reason": merged_reasons[0] if merged_reasons else "",
-                    "reasons": merged_reasons,
-                    "warnings": merged_warnings,
+                    "gate_protocol": protocol,
+                    "warnings": warnings,
                 }
             )
-        return maybe_grant_provisional_incubation(
+        normalized = maybe_grant_provisional_incubation(
             strategy,
             normalized,
             validation_report=validation_report,
             risk_report=risk_report,
             backtest_metrics=backtest_metrics,
+        )
+        normalized = normalize_quality_gate_result(
+            {
+                **normalized,
+                "multiple_testing_registry": _build_multiple_testing_registry(
+                    strategy,
+                    profile,
+                    normalized,
+                ),
+            }
+        )
+        return _attach_admission_evaluations(
+            strategy,
+            profile,
+            normalized,
+            risk_report=risk_report,
         )
     except Exception as e:
         return normalize_quality_gate_result({"passed": False, "reason": str(e)})

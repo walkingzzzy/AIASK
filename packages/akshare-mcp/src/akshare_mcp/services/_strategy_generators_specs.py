@@ -226,6 +226,7 @@ class RuleStrategyGenerator:
 
 
 class _LLMProxyStrategyGeneratorSpecsMixin:
+        @staticmethod
         def _fallback_variant_seed(task: dict[str, Any], target_symbols: list[str], candidate: dict[str, Any]) -> int:
             seed_text = "|".join([
                 str(task.get('task_id') or ''),
@@ -236,6 +237,82 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
             ])
             return sum(ord(ch) for ch in seed_text if ch)
 
+        @staticmethod
+        def _local_category_strategy_types(
+            category: str,
+            research_task: Optional[dict[str, Any]] = None,
+        ) -> tuple[str, ...]:
+            task = _normalize_research_task_contract(research_task)
+            opportunity_type = str(task.get('opportunity_type') or '').strip().lower()
+
+            if category == 'momentum':
+                if opportunity_type in {'sector_breakout', 'industry_leadership'}:
+                    return ('momentum', 'volatility_breakout')
+                return ('momentum',)
+            if category == 'trend':
+                if opportunity_type in {'sector_breakout', 'industry_leadership'}:
+                    return ('ma_cross', 'north_capital_track')
+                return ('ma_cross',)
+            if category == 'reversal':
+                if opportunity_type == 'oversold_repair':
+                    return ('gap_fill', 'mean_reversion_short', 'rsi')
+                return ('rsi', 'gap_fill')
+            if category == 'value':
+                if opportunity_type == 'factor_acceleration':
+                    return ('multi_factor', 'value_factor')
+                return ('value_factor', 'multi_factor')
+            if category == 'quality':
+                if opportunity_type == 'factor_acceleration':
+                    return ('multi_factor', 'quality_factor')
+                return ('quality_factor', 'multi_factor')
+            if category == 'growth':
+                return ('growth_factor', 'momentum')
+            if category == 'volatility':
+                return ('volatility_breakout', 'ma_cross', 'macro_timing')
+            if category == 'risk_adjusted':
+                return ('multi_factor', 'quality_factor')
+            if category == 'sentiment':
+                if opportunity_type in {'sector_breakout', 'industry_leadership'}:
+                    return ('momentum', 'north_capital_track')
+                return ('momentum', 'sector_rotation')
+            if category == 'event':
+                if opportunity_type in {'sector_breakout', 'industry_leadership'}:
+                    return ('sector_rotation', 'momentum', 'north_capital_track')
+                return ('momentum', 'sector_rotation')
+            if category == 'liquidity':
+                if opportunity_type in {'sector_breakout', 'industry_leadership'}:
+                    return ('north_capital_track', 'growth_factor', 'momentum')
+                return ('growth_factor', 'momentum')
+            return ()
+
+        @classmethod
+        def _resolve_local_fallback_target(
+            cls,
+            category: str,
+            research_task: Optional[dict[str, Any]] = None,
+        ) -> Optional[tuple[str, dict[str, Any]]]:
+            templates = {
+                'momentum': {'lookback': 20, 'threshold': 0.02},
+                'ma_cross': {'short_period': 5, 'long_period': 20},
+                'rsi': {'rsi_period': 14, 'oversold': 30, 'overbought': 70},
+                'gap_fill': {'rsi_period': 6, 'oversold': 24, 'overbought': 58},
+                'mean_reversion_short': {'rsi_period': 8, 'oversold': 28, 'overbought': 62},
+                'value_factor': {'lookback': 60, 'buy_quantile': 0.8, 'sell_quantile': 0.2},
+                'quality_factor': {'lookback': 50, 'buy_quantile': 0.75, 'sell_quantile': 0.25},
+                'growth_factor': {'lookback': 40, 'buy_quantile': 0.75, 'sell_quantile': 0.25},
+                'multi_factor': {'factor_weights': {'quality': 0.4, 'value': 0.35, 'momentum': 0.25}, 'lookback': 36},
+                'volatility_breakout': {'lookback': 12, 'threshold': 0.018},
+                'north_capital_track': {'lookback': 10, 'threshold': 0.01},
+                'sector_rotation': {'factor_weights': {'momentum': 0.45, 'quality': 0.3, 'value': 0.25}, 'lookback': 20},
+                'macro_timing': {'fear_threshold': 35, 'greed_threshold': 65, 'lookback': 20},
+            }
+            for strategy_type in cls._local_category_strategy_types(category, research_task=research_task):
+                params = templates.get(strategy_type)
+                if params is not None:
+                    return strategy_type, dict(params)
+            return None
+
+        @classmethod
         def _adapt_local_fallback_params(
             cls,
             strategy_type: str,
@@ -296,6 +373,10 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 adapted['rsi_period'] = int([6, 8, 10, 12, 14][bucket])
                 adapted['oversold'] = int([24, 26, 28, 30, 32][bucket])
                 adapted['overbought'] = int([68, 70, 72, 74, 76][bucket])
+            elif strategy_type in {'gap_fill', 'mean_reversion_short'}:
+                adapted['rsi_period'] = int([4, 5, 6, 8, 10][bucket])
+                adapted['oversold'] = int([20, 22, 24, 26, 28][bucket])
+                adapted['overbought'] = int([56, 58, 60, 62, 64][bucket])
             elif strategy_type in {'quality_factor', 'value_factor', 'growth_factor'}:
                 lookbacks = [24, 30, 36, 45, 60] if opportunity_type == 'sector_breakout' else [30, 40, 50, 60, 72]
                 buy_quantiles = [0.58, 0.62, 0.66, 0.7, 0.75]
@@ -303,6 +384,68 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 adapted['lookback'] = int(lookbacks[bucket])
                 adapted['buy_quantile'] = round(float(buy_quantiles[bucket]), 4)
                 adapted['sell_quantile'] = round(float(sell_quantiles[(bucket + 2) % len(sell_quantiles)]), 4)
+            elif strategy_type == 'volatility_breakout':
+                lookbacks = {
+                    'sector_breakout': [6, 8, 10, 12, 15],
+                    'industry_leadership': [8, 10, 12, 15, 18],
+                    'factor_acceleration': [5, 6, 8, 10, 12],
+                    'default': [8, 10, 12, 15, 18],
+                }
+                thresholds = {
+                    'sector_breakout': [0.008, 0.01, 0.012, 0.015, 0.018],
+                    'industry_leadership': [0.009, 0.011, 0.013, 0.016, 0.02],
+                    'factor_acceleration': [0.007, 0.009, 0.011, 0.013, 0.015],
+                    'default': [0.01, 0.012, 0.015, 0.018, 0.02],
+                }
+                adapted['lookback'] = int(lookbacks.get(opportunity_type, lookbacks['default'])[bucket])
+                adapted['threshold'] = round(float(thresholds.get(opportunity_type, thresholds['default'])[bucket]), 4)
+            elif strategy_type == 'north_capital_track':
+                lookbacks = {
+                    'sector_breakout': [5, 8, 10, 12, 15],
+                    'industry_leadership': [8, 10, 12, 15, 20],
+                    'default': [8, 10, 12, 15, 18],
+                }
+                thresholds = {
+                    'sector_breakout': [0.005, 0.007, 0.009, 0.011, 0.013],
+                    'industry_leadership': [0.006, 0.008, 0.01, 0.012, 0.015],
+                    'default': [0.006, 0.008, 0.01, 0.012, 0.014],
+                }
+                adapted['lookback'] = int(lookbacks.get(opportunity_type, lookbacks['default'])[bucket])
+                adapted['threshold'] = round(float(thresholds.get(opportunity_type, thresholds['default'])[bucket]), 4)
+            elif strategy_type in {'multi_factor', 'sector_rotation'}:
+                if opportunity_type in {'sector_breakout', 'industry_leadership'}:
+                    weight_sets = [
+                        {'momentum': 0.5, 'quality': 0.3, 'value': 0.2},
+                        {'momentum': 0.45, 'growth': 0.35, 'quality': 0.2},
+                        {'momentum': 0.4, 'quality': 0.35, 'value': 0.25},
+                        {'growth': 0.45, 'momentum': 0.35, 'quality': 0.2},
+                        {'momentum': 0.42, 'quality': 0.28, 'value': 0.3},
+                    ]
+                    lookbacks = [10, 12, 15, 18, 20]
+                elif opportunity_type == 'oversold_repair':
+                    weight_sets = [
+                        {'value': 0.45, 'quality': 0.35, 'momentum': 0.2},
+                        {'value': 0.5, 'quality': 0.3, 'momentum': 0.2},
+                        {'value': 0.4, 'quality': 0.4, 'momentum': 0.2},
+                        {'value': 0.42, 'quality': 0.33, 'reversal': 0.25},
+                        {'value': 0.38, 'quality': 0.37, 'momentum': 0.25},
+                    ]
+                    lookbacks = [18, 20, 24, 30, 36]
+                else:
+                    weight_sets = [
+                        {'quality': 0.4, 'value': 0.35, 'momentum': 0.25},
+                        {'quality': 0.35, 'growth': 0.35, 'momentum': 0.3},
+                        {'quality': 0.38, 'value': 0.32, 'momentum': 0.3},
+                        {'quality': 0.33, 'growth': 0.37, 'momentum': 0.3},
+                        {'quality': 0.36, 'value': 0.29, 'growth': 0.35},
+                    ]
+                    lookbacks = [15, 18, 20, 24, 30]
+                adapted['factor_weights'] = dict(weight_sets[bucket])
+                adapted['lookback'] = int(lookbacks[bucket])
+            elif strategy_type == 'macro_timing':
+                adapted['fear_threshold'] = int([30, 32, 35, 38, 40][bucket])
+                adapted['greed_threshold'] = int([60, 62, 65, 68, 70][bucket])
+                adapted['lookback'] = int([10, 12, 15, 18, 20][bucket])
 
             profile = {
                 'variant_seed': variant_seed,
@@ -313,24 +456,27 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
             }
             return adapted, profile
 
-        def _local_category_rank(category: str, research_task: Optional[dict[str, Any]] = None) -> tuple[int, int]:
+        @classmethod
+        def _local_category_rank(cls, category: str, research_task: Optional[dict[str, Any]] = None) -> tuple[int, int]:
             task = _normalize_research_task_contract(research_task)
             opportunity_type = str(task.get('opportunity_type') or '').strip().lower()
             task_source = str(task.get('task_source') or '').strip().lower()
             strategy_preferences = [str(item).strip().lower() for item in list(task.get('preferred_strategy_types') or task.get('strategy_preferences') or []) if str(item).strip()]
-
             category_to_types = {
-                'momentum': ('momentum',),
-                'event': ('momentum',),
-                'sentiment': ('momentum',),
-                'trend': ('ma_cross',),
-                'volatility': ('ma_cross',),
-                'reversal': ('rsi',),
-                'quality': ('quality_factor',),
-                'risk_adjusted': ('quality_factor',),
-                'value': ('value_factor',),
-                'growth': ('growth_factor',),
-                'liquidity': ('growth_factor', 'momentum'),
+                key: cls._local_category_strategy_types(key, research_task=task)
+                for key in (
+                    'momentum',
+                    'event',
+                    'sentiment',
+                    'trend',
+                    'volatility',
+                    'reversal',
+                    'quality',
+                    'risk_adjusted',
+                    'value',
+                    'growth',
+                    'liquidity',
+                )
             }
             if opportunity_type in {'sector_breakout', 'trend_expansion', 'industry_leadership'} or task_source == 'event_driven':
                 preferred_categories = ['event', 'momentum', 'trend', 'growth', 'liquidity', 'sentiment', 'quality', 'risk_adjusted', 'volatility', 'value', 'reversal']
@@ -355,21 +501,10 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 preferred_categories.index(category) if category in preferred_categories else len(preferred_categories),
             )
 
+        @classmethod
         def _local_candidate_to_spec(cls, candidate: dict, research_task: Optional[dict[str, Any]] = None) -> Optional[StrategySpec]:
             category = str(candidate.get('category') or 'custom')
-            mapping = {
-                'momentum': ('momentum', {'lookback': 20, 'threshold': 0.02}),
-                'trend': ('ma_cross', {'short_period': 5, 'long_period': 20}),
-                'reversal': ('rsi', {'rsi_period': 14, 'oversold': 30, 'overbought': 70}),
-                'value': ('value_factor', {'lookback': 60, 'buy_quantile': 0.8, 'sell_quantile': 0.2}),
-                'quality': ('quality_factor', {'lookback': 50, 'buy_quantile': 0.75, 'sell_quantile': 0.25}),
-                'growth': ('growth_factor', {'lookback': 40, 'buy_quantile': 0.75, 'sell_quantile': 0.25}),
-                'volatility': ('ma_cross', {'short_period': 8, 'long_period': 34}),
-                'risk_adjusted': ('quality_factor', {'lookback': 45, 'buy_quantile': 0.7, 'sell_quantile': 0.3}),
-                'sentiment': ('momentum', {'lookback': 10, 'threshold': 0.015}),
-                'event': ('momentum', {'lookback': 8, 'threshold': 0.012}),
-            }
-            target = mapping.get(category)
+            target = cls._resolve_local_fallback_target(category, research_task=research_task)
             if not target:
                 return None
             task = _normalize_research_task_contract(research_task)
@@ -457,6 +592,7 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 },
             )
 
+        @classmethod
         def _normalize_stock_pool(cls, payload: Any, target_symbols: list[str]) -> dict[str, Any]:
             if isinstance(payload, dict):
                 symbols = cls._normalize_code_list(payload.get('symbols') or payload.get('codes') or payload.get('stock_codes') or target_symbols)
@@ -473,6 +609,7 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 'rationale': None,
             }
 
+        @classmethod
         def _external_candidate_to_spec(cls, candidate: dict, provider_payload: dict, market_frame: Optional[pd.DataFrame] = None) -> Optional[StrategySpec]:
             normalized_candidate = StrategyLLMProvider._normalize_candidate_payload(
                 candidate,
@@ -594,6 +731,7 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 metadata=metadata,
             )
 
+        @staticmethod
         def _spec_preflight_score(spec: StrategySpec) -> float:
             activity = dict(spec.metadata.get('dsl_activity') or {})
             score = float(activity.get('score') or 0.0)
@@ -602,6 +740,7 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 score += 0.1
             return score
 
+        @classmethod
         def _is_viable_external_spec(cls, spec: StrategySpec) -> bool:
             activity = dict(spec.metadata.get('dsl_activity') or {})
             if not activity:

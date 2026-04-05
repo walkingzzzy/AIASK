@@ -2,10 +2,11 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { PageContainer, SectionCard, DataTable } from '@/components/ui';
+import { PageContainer, SectionCard, DataTable, Badge, KpiCard, KpiGrid } from '@/components/ui';
 import { EmptyState, ErrorState, LoadingState } from '@/components/status-state';
 import { LineChart } from '@/components/charts';
 import { useApiQuery } from '@/hooks/use-api-query';
+import { extractObject } from '@/lib/data-utils';
 
 type MacroRecord = {
     date?: string;
@@ -21,6 +22,10 @@ type MacroResponse = {
     indicator?: string;
     records?: MacroRecord[];
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
 
 export default function MacroPage() {
     const [indicator, setIndicator] = useState('gdp');
@@ -38,12 +43,41 @@ export default function MacroPage() {
         { staleTime: 5 * 60 * 1000 },
     );
 
+    const macroEnvelope = useMemo(
+        () => (isRecord(macroData) ? (macroData as Record<string, unknown>) : null),
+        [macroData],
+    );
+    const macroPayload = useMemo(
+        () => extractObject(macroData) as MacroResponse,
+        [macroData],
+    );
+    const toolMeta = useMemo(() => {
+        const payload = macroEnvelope?.data;
+        if (!isRecord(payload)) return null;
+        const meta = payload.meta;
+        return isRecord(meta) ? meta : null;
+    }, [macroEnvelope]);
+    const cacheMeta = useMemo(() => {
+        const meta = macroEnvelope?.meta;
+        return isRecord(meta) ? meta : null;
+    }, [macroEnvelope]);
+
     const macroRows = useMemo(() => {
-        if (macroData && !Array.isArray(macroData) && Array.isArray(macroData.records)) {
-            return macroData.records;
+        if (!Array.isArray(macroData) && Array.isArray(macroPayload.records)) {
+            return macroPayload.records;
         }
         return Array.isArray(macroData) ? macroData : [];
-    }, [macroData]);
+    }, [macroData, macroPayload]);
+
+    const qualityMeta = isRecord(toolMeta?.quality) ? (toolMeta.quality as Record<string, unknown>) : null;
+    const cacheInfo = isRecord(cacheMeta?.cache) ? (cacheMeta.cache as Record<string, unknown>) : null;
+    const sourceChain = Array.isArray(toolMeta?.source_chain)
+        ? toolMeta.source_chain.map((item) => String(item))
+        : [];
+    const qualityStatus = String(qualityMeta?.status ?? (macroRows.length ? 'available' : 'empty'));
+    const backendUsed = String(qualityMeta?.backend_used ?? sourceChain[sourceChain.length - 1] ?? '-');
+    const cacheHit = Boolean(cacheInfo?.hit);
+    const degraded = Boolean(toolMeta?.degraded);
 
     const chartData = useMemo(() => {
         if (!macroRows.length) return null;
@@ -64,6 +98,11 @@ export default function MacroPage() {
                         宏观经济数据分析 (Macro Economics)
                     </h1>
                     <p className="text-muted-foreground mt-1 text-sm text-text-muted">全面追踪中国核心宏观经济指标及其长期趋势</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                        <Badge variant="info">{qualityStatus}</Badge>
+                        <Badge variant={degraded ? 'warning' : 'success'}>{degraded ? '存在降级链路' : '链路正常'}</Badge>
+                        <Badge variant={cacheHit ? 'success' : 'neutral'}>{cacheHit ? '缓存命中' : '实时拉取'}</Badge>
+                    </div>
                 </div>
 
                 <div className="flex gap-2 w-full md:w-auto">
@@ -103,6 +142,20 @@ export default function MacroPage() {
                         <Link href="/data" className="px-3 py-1.5 rounded-full border border-border text-sm no-underline text-inherit hover:bg-surface">去数据中心</Link>
                     </div>
                 </div>
+            </SectionCard>
+
+            <SectionCard className="mb-6 p-4">
+                <KpiGrid cols={4}>
+                    <KpiCard title="记录条数" value={String(macroRows.length)} />
+                    <KpiCard title="后端来源" value={backendUsed} />
+                    <KpiCard title="缓存状态" value={cacheHit ? '命中' : '未命中'} />
+                    <KpiCard title="链路节点" value={String(sourceChain.length)} />
+                </KpiGrid>
+                {sourceChain.length ? (
+                    <div className="mt-4 rounded-[20px] border border-border bg-surface-alt/60 p-3 text-xs leading-6 text-text-secondary">
+                        来源链路：{sourceChain.join(' -> ')}
+                    </div>
+                ) : null}
             </SectionCard>
 
             {error ? (

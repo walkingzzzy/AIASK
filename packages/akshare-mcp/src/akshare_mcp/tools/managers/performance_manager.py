@@ -9,13 +9,29 @@ from ...utils import normalize_code
 from ..manager_protocol import fail_with_meta, normalize_manager_kwargs, normalize_manager_payload, ok_with_meta
 from ..market import get_kline
 
-from ._performance_manager_support import *
+from ._performance_manager_support import (
+    _build_fee_disclosure,
+    _build_portfolio_daily_returns,
+    _build_window_audit,
+    _calc_annualized_from_daily,
+    _calc_max_drawdown,
+    _calc_period_return,
+    _calc_rolling_drawdown,
+    _calc_rolling_sharpe,
+    _compute_timing_component,
+    _dedupe_chain,
+    _extract_closes_with_dates,
+    _fetch_dated_returns_for_code,
+    _fetch_klines_raw,
+    _safe_portfolio_id,
+    _to_pct,
+)
 
 def register_performance_manager(mcp):
     """注册绩效管理器工具"""
 
-    @mcp.tool()
-    async def performance_manager(action: str, params: dict | None = None, kwargs: Any = None, portfolio_id: str | int | None = None, backtest_id: str | None = None, artifact_id: str | None = None, benchmark: str | None = None, lookback_days: int | None = None):
+    @mcp.tool(structured_output=True)
+    async def performance_manager(action: str, params: dict | None = None, kwargs: Any = None, portfolio_id: str | int | None = None, backtest_id: str | None = None, artifact_id: str | None = None, benchmark: str | None = None, lookback_days: int | None = None) -> dict[str, Any]:
         """绩效管理器（统一 action + kwargs 协议）
 
         Args:

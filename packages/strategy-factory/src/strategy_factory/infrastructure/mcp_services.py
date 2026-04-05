@@ -63,6 +63,14 @@ def get_runtime_warmup_runner():
     return import_module("akshare_mcp.tools.managers.data_sync_manager").run_runtime_data_warmup
 
 
+def get_strategy_promotion_pipeline_service():
+    return import_module("akshare_mcp.services.promotion_pipeline").get_strategy_promotion_pipeline_service()
+
+
+def get_strategy_runtime_control_service():
+    return import_module("akshare_mcp.services.runtime_control").get_strategy_runtime_control_service()
+
+
 def get_event_context_builder():
     return import_module("akshare_mcp.services.decision_event_builder").build_event_context
 
@@ -135,6 +143,8 @@ __all__ = [
     "get_financial_semantic_service_factory",
     "get_quant_manager_callable",
     "get_runtime_warmup_runner",
+    "get_strategy_promotion_pipeline_service",
+    "get_strategy_runtime_control_service",
     "get_index_kline_provider",
     "get_normalize_klines",
     "get_risk_model_class",

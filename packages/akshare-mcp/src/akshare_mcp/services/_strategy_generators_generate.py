@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+from copy import deepcopy
 from typing import Any, Optional
 
 import pandas as pd
@@ -92,6 +93,188 @@ from .strategy_spec import (
 logger = logging.getLogger(__name__)
 
 
+def _collapsed_generation_hint(value: Any) -> str:
+    return (
+        str(value or "")
+        .strip()
+        .lower()
+        .replace(" ", "")
+        .replace("_", "")
+        .replace("-", "")
+    )
+
+
+def _snapshot_pipeline_contract(research_task: Optional[dict[str, Any]]) -> dict[str, Any]:
+    task = dict(research_task or {})
+    task_source = str(task.get("task_source") or "").strip().lower()
+    opportunity_type = str(task.get("opportunity_type") or "").strip().lower()
+    validation_focus = str(task.get("validation_focus") or "").strip().lower()
+    template_profile = str(task.get("template_generation_profile") or "").strip().lower()
+    allowed_strategy_types = [
+        str(item).strip()
+        for item in list(task.get("allowed_strategy_types") or [])
+        if str(item).strip()
+    ]
+    collapsed = _collapsed_generation_hint(
+        " ".join(
+            str(item or "")
+            for item in (
+                task.get("candidate_family"),
+                task.get("factor_name"),
+                task.get("candidate_name"),
+                task.get("preference_reason"),
+                task.get("rationale"),
+            )
+            if str(item or "").strip()
+        )
+    )
+    if not template_profile:
+        if any(token in collapsed for token in ("closelocation", "intradayresilience", "trendefficiency", "pullback", "quality", "stability", "quiet", "repair", "reversion")):
+            template_profile = "conservative_mean_reversion"
+        elif any(token in collapsed for token in ("capitalflow", "northcapital", "northbound", "fundflow", "liquidity", "turnover")):
+            template_profile = "conservative_flow"
+        elif any(token in collapsed for token in ("rotation", "sector", "cycle", "divergence", "breadth")):
+            template_profile = "conservative_rotation"
+        elif any(token in collapsed for token in ("momentum", "macross", "cross", "trend", "breakout", "gapcontinuation", "expansion", "acceleration", "volatility")):
+            template_profile = "conservative_breakout"
+
+    conservative_snapshot_task = (
+        task_source == "snapshot"
+        and (
+            template_profile.startswith("conservative_")
+            or opportunity_type in {"candidate_family_activation", "candidate_factor_activation", "factor_acceleration"}
+            or validation_focus == "candidate_target_only"
+        )
+    )
+    return {
+        "conservative_snapshot_task": conservative_snapshot_task,
+        "template_generation_profile": template_profile,
+        "allowed_strategy_types": allowed_strategy_types,
+    }
+
+
+def _conservative_ma_cross_dsl(target_symbols: list[str], stock_pool: dict[str, Any], *, short_period: int, long_period: int) -> dict[str, Any]:
+    metadata = {
+        "target_symbols": list(target_symbols),
+        "stock_pool": dict(stock_pool),
+        "generation_profile": "snapshot_family_conservative",
+    }
+    return {
+        "version": "1.0",
+        "timeframe": "daily",
+        "entry": {
+            "all": [
+                {
+                    "op": "cross_above",
+                    "left": {"indicator": "sma", "field": "close", "window": short_period},
+                    "right": {"indicator": "sma", "field": "close", "window": long_period},
+                },
+                {
+                    "op": "gt",
+                    "left": {"field": "close"},
+                    "right": {"indicator": "sma", "field": "close", "window": 20},
+                },
+                {
+                    "op": "gt",
+                    "left": {"indicator": "roc", "field": "close", "window": 20},
+                    "right": {"value": 0.01},
+                },
+                {
+                    "op": "gt",
+                    "left": {"indicator": "volume_ratio", "field": "volume", "window": 20},
+                    "right": {"value": 1.0},
+                },
+            ],
+        },
+        "exit": {
+            "any": [
+                {
+                    "op": "cross_below",
+                    "left": {"indicator": "sma", "field": "close", "window": short_period},
+                    "right": {"indicator": "sma", "field": "close", "window": long_period},
+                },
+                {
+                    "op": "lt",
+                    "left": {"field": "close"},
+                    "right": {"indicator": "sma", "field": "close", "window": 20},
+                },
+                {
+                    "op": "lt",
+                    "left": {"indicator": "roc", "field": "close", "window": 10},
+                    "right": {"value": -0.012},
+                },
+            ],
+        },
+        "metadata": metadata,
+    }
+
+
+def _normalize_snapshot_pipeline_candidate(candidate: dict[str, Any]) -> Optional[dict[str, Any]]:
+    payload = deepcopy(candidate or {})
+    contract = _snapshot_pipeline_contract(payload.get("research_task"))
+    if not contract.get("conservative_snapshot_task"):
+        return payload
+
+    strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+    allowed_strategy_types = set(contract.get("allowed_strategy_types") or [])
+    if allowed_strategy_types and strategy_type and strategy_type not in allowed_strategy_types:
+        return None
+    if strategy_type == "momentum":
+        return None
+    if strategy_type != "ma_cross":
+        return payload
+
+    params = dict(payload.get("params") or {})
+    short_period = max(int(params.get("short_period") or 12), 12)
+    long_period = max(int(params.get("long_period") or 48), 48)
+    if long_period <= short_period:
+        long_period = max(long_period, short_period * 4)
+    target_symbols = [
+        str(item).strip()
+        for item in list(payload.get("target_symbols") or [])
+        if str(item).strip()
+    ]
+    stock_pool = dict(payload.get("stock_pool") or {})
+    if not stock_pool and target_symbols:
+        stock_pool = {"selection_mode": "explicit", "symbols": list(target_symbols)}
+    payload["params"] = {
+        **params,
+        "short_period": short_period,
+        "long_period": long_period,
+    }
+    payload["dsl"] = _conservative_ma_cross_dsl(
+        target_symbols,
+        stock_pool,
+        short_period=short_period,
+        long_period=long_period,
+    )
+    payload["tags"] = list(
+        dict.fromkeys(
+            [
+                *list(payload.get("tags") or []),
+                "snapshot_family_conservative",
+                "ma_cross_retuned",
+            ]
+        )
+    )
+    payload["description"] = str(
+        payload.get("description")
+        or "针对 snapshot family target pool 收紧后的长周期均线模板，优先过滤负 Sharpe 的高换手趋势信号。"
+    )
+    return payload
+
+
+def _resolve_pipeline_runtime_symbols() -> tuple[str, Any]:
+    try:
+        from . import strategy_generators as public_module
+
+        pipeline_mode = str(getattr(public_module, "PIPELINE_MODE", PIPELINE_MODE) or PIPELINE_MODE)
+        pipeline_factory = getattr(public_module, "get_strategy_pipeline", get_strategy_pipeline)
+        return pipeline_mode, pipeline_factory
+    except Exception:
+        return str(PIPELINE_MODE), get_strategy_pipeline
+
+
 class RuleStrategyGenerator:
     @staticmethod
     def _factor_research_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -157,6 +340,36 @@ class RuleStrategyGenerator:
                 'params': {'risk_on_threshold': 0.55, 'rebalance_days': 10},
                 'name': 'AI 宏观择时',
                 'description': '波动与风险偏好分化阶段偏向宏观择时。',
+            },
+            'volatility_breakout': {
+                'params': {'lookback': 20, 'threshold': 0.025},
+                'name': 'AI 波动突破',
+                'description': '趋势加速且波动扩张时，捕捉放量突破的延续段。',
+            },
+            'gap_fill': {
+                'params': {'gap_threshold': 0.02, 'rsi_period': 5, 'oversold': 24, 'overbought': 58},
+                'name': 'AI 跳空回补',
+                'description': '利用超跌跳空后的回补行为，构建短线反转机会。',
+            },
+            'mean_reversion_short': {
+                'params': {'rsi_period': 6, 'oversold': 26, 'overbought': 62},
+                'name': 'AI 短反均值回归',
+                'description': '短周期超跌/超涨后的价格修复，偏向高频次轻持仓。',
+            },
+            'sector_rotation': {
+                'params': {'lookback': 20, 'factor_weights': {'momentum': 0.45, 'quality': 0.30, 'value': 0.25}},
+                'name': 'AI 行业轮动',
+                'description': '结合动量、稳定性与估值回归代理，优先轮动到更强板块。',
+            },
+            'north_capital_track': {
+                'params': {'lookback': 15, 'threshold': 0.015},
+                'name': 'AI 北向跟踪',
+                'description': '用价量共振近似北向资金持续流入，捕捉机构偏好延续。',
+            },
+            'margin_divergence': {
+                'params': {'fear_threshold': 40, 'greed_threshold': 60, 'lookback': 15},
+                'name': 'AI 融资背离',
+                'description': '价格回落但量能韧性仍在时布局，过热或背离恶化时退出。',
             },
         }
         template = templates.get(strategy_type)
@@ -235,7 +448,8 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
             timeout_sec: Optional[float] = None,
         ) -> list[StrategySpec]:
             """使用多阶段 Pipeline 生成策略候选。"""
-            pipeline = get_strategy_pipeline()
+            _pipeline_mode, pipeline_factory = _resolve_pipeline_runtime_symbols()
+            pipeline = pipeline_factory()
             pipeline_timeout_sec = float(timeout_sec or self._pipeline_run_timeout_sec())
             pipeline_result = await asyncio.wait_for(
                 pipeline.run_pipeline(
@@ -247,8 +461,16 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
             )
 
             specs: list[StrategySpec] = []
+            normalized_research_task = (
+                _normalize_research_task_contract(research_task)
+                if isinstance(research_task, dict) and research_task
+                else {}
+            )
             for candidate in pipeline_result.candidates[:limit]:
-                spec = self._pipeline_candidate_to_spec(candidate, pipeline_result.provenance)
+                candidate_payload = dict(candidate or {})
+                if normalized_research_task and not candidate_payload.get("research_task"):
+                    candidate_payload["research_task"] = dict(normalized_research_task)
+                spec = self._pipeline_candidate_to_spec(candidate_payload, pipeline_result.provenance)
                 if spec is not None:
                     specs.append(spec)
 
@@ -316,6 +538,7 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
             }
             return specs
 
+        @classmethod
         def _pipeline_candidate_to_spec(
             cls,
             candidate: dict[str, Any],
@@ -323,6 +546,9 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
         ) -> Optional[StrategySpec]:
             """将 pipeline 产出的 candidate dict 转为 StrategySpec。"""
             if not candidate or not isinstance(candidate, dict):
+                return None
+            candidate = _normalize_snapshot_pipeline_candidate(candidate)
+            if candidate is None:
                 return None
 
             # 尝试通过 DSL 编译获得可执行策略
@@ -392,6 +618,14 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                 'targeting_policy': dict(candidate.get('targeting_policy') or {}),
                 'constraint_check': dict(candidate.get('constraint_check') or {}),
                 'target_symbols': list(target_symbols),
+                'stock_pool': dict(
+                    candidate.get('stock_pool')
+                    or ((params.get('dsl') or {}).get('metadata') or {}).get('stock_pool')
+                    or ({'selection_mode': 'explicit', 'symbols': list(target_symbols)} if target_symbols else {})
+                ),
+                'selection_logic': list(candidate.get('selection_logic') or []),
+                'research_scope': dict(candidate.get('research_scope') or {}),
+                'event_context': dict(candidate.get('event_context') or {}),
                 'research_task': dict(candidate.get('research_task') or {}),
                 'pipeline_provenance': provenance,
                 'source_candidate': candidate,
@@ -415,7 +649,8 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
             _pipeline_fallback_reason: Optional[str] = None
             skip_monolithic_external_provider = False
             pipeline_run_timeout_sec: Optional[float] = None
-            if PIPELINE_MODE == 'staged' and self.external_provider.is_enabled():
+            pipeline_mode, _pipeline_factory = _resolve_pipeline_runtime_symbols()
+            if pipeline_mode == 'staged' and self.external_provider.is_enabled():
                 pipeline_run_timeout_sec = self._pipeline_run_timeout_sec()
                 try:
                     staged_specs = await self._generate_via_pipeline(

@@ -192,6 +192,43 @@ export class FactorService {
     return this.flattenMcpResult(payload);
   }
 
+  async candidateWorkflow(body: {
+    task?: string;
+    code?: string;
+    stock_codes?: string[];
+    artifact_id?: string;
+    candidate_index?: number;
+    candidate_count?: number;
+    lookback_bars?: number;
+    horizon_days?: number;
+    max_dates?: number;
+    allow_fallback?: boolean;
+    persist_artifact?: boolean;
+    write_memory?: boolean;
+    run_scheduler_now?: boolean;
+    idempotency_key?: string;
+    as_of?: string;
+  }) {
+    const payload = await this.mcp.callTool('factor_candidate_workflow', {
+      task: body.task ?? 'pipeline',
+      code: body.code,
+      codes: body.stock_codes?.length ? this.normalizeCodes(body.stock_codes) : undefined,
+      artifact_id: body.artifact_id,
+      candidate_index: body.candidate_index,
+      candidate_count: body.candidate_count,
+      lookback_bars: body.lookback_bars,
+      horizon_days: body.horizon_days,
+      max_dates: body.max_dates,
+      allow_fallback: body.allow_fallback,
+      persist_artifact: body.persist_artifact,
+      write_memory: body.write_memory,
+      run_scheduler_now: body.run_scheduler_now,
+      idempotency_key: body.idempotency_key,
+      as_of: body.as_of,
+    });
+    return this.normalizeCandidateWorkflow(payload);
+  }
+
   async validateCandidate(body: {
     artifact_id?: string;
     candidate_index?: number;
@@ -425,6 +462,45 @@ export class FactorService {
       return { ...rest, ...(inner as Record<string, unknown>) };
     }
     return obj;
+  }
+
+  private normalizeCandidateWorkflow(payload: unknown): Record<string, unknown> {
+    const root = this.flattenMcpResult(payload);
+    const task = String(root.task ?? 'pipeline').trim().toLowerCase();
+    const generation = this.readWorkflowStepData(root, 'quant_manager.llm_factor_mining');
+    const validation = this.readWorkflowStepData(root, 'quant_manager.validate_factor_candidate');
+    const summary = this.asRecord(root.summary);
+    const artifactId =
+      summary.artifact_id ??
+      generation.artifact_id ??
+      validation.artifact_id ??
+      root.artifact_id ??
+      null;
+    const base = artifactId == null ? root : { ...root, artifact_id: artifactId };
+
+    if (task === 'generate' && Object.keys(generation).length > 0) {
+      return { ...base, ...generation };
+    }
+    if (task === 'validate' && Object.keys(validation).length > 0) {
+      return { ...base, ...validation };
+    }
+
+    return {
+      ...base,
+      generation: Object.keys(generation).length > 0 ? generation : undefined,
+      validation: Object.keys(validation).length > 0 ? validation : undefined,
+    };
+  }
+
+  private readWorkflowStepData(root: Record<string, unknown>, stepName: string): Record<string, unknown> {
+    const steps = Array.isArray(root.steps) ? root.steps : [];
+    const matched = steps.find((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+      return String((item as Record<string, unknown>).step ?? '') === stepName;
+    });
+    if (!matched || typeof matched !== 'object' || Array.isArray(matched)) return {};
+    const output = this.asRecord((matched as Record<string, unknown>).output);
+    return this.asRecord(output.data);
   }
 
   private unwrapPayload(payload: unknown): unknown {

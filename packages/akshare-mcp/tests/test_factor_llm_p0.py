@@ -4,7 +4,7 @@ import pytest
 
 
 class _DummyMCP:
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn
@@ -231,6 +231,86 @@ async def test_factor_llm_provider_parses_json_payload():
     assert result["model"] == "test-factor-model"
     assert result["candidates"][0]["source_model"] == "test-factor-model"
     assert result["candidates"][0]["generation_trace"]["provider"] == "openai_compatible"
+
+
+@pytest.mark.asyncio
+async def test_factor_llm_provider_rebuilds_client_after_close(monkeypatch):
+    from akshare_mcp.services.factor_llm_provider import FactorLLMConfig, FactorLLMProvider
+    from akshare_mcp.services.factor_prompt_builder import FactorMiningPrompt
+
+    created_clients = []
+
+    class _ClosableClient:
+        def __init__(self):
+            self.is_closed = False
+
+        async def post(self, *args, **kwargs):
+            return _FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": """{
+                                  "candidates": [
+                                    {
+                                      "name": "rebuilt_client_factor",
+                                      "hypothesis": "client 重建后仍可正常返回。",
+                                      "family": "momentum",
+                                      "inputs": ["close", "volume"],
+                                      "expression_dsl": "zscore(close,20) + zscore(volume,20)",
+                                      "expected_holding_period": 5,
+                                      "expected_regime": ["trend"],
+                                      "complexity_hint": "low",
+                                      "novelty_rationale": "验证 provider 生命周期自愈。"
+                                    }
+                                  ],
+                                  "analysis": {},
+                                  "warnings": []
+                                }"""
+                            }
+                        }
+                    ],
+                    "usage": {"total_tokens": 123},
+                }
+            )
+
+        async def aclose(self):
+            self.is_closed = True
+
+    def _fake_build_client(self):
+        client = _ClosableClient()
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr(FactorLLMProvider, "_build_client", _fake_build_client)
+
+    provider = FactorLLMProvider(
+        FactorLLMConfig(
+            enabled=True,
+            provider="openai_compatible",
+            base_url="http://llm.local/v1",
+            api_key="test-key",
+            model="test-factor-model",
+            retry_count=0,
+        )
+    )
+    prompt = FactorMiningPrompt(
+        system_prompt="system",
+        user_prompt="user",
+        context_summary={},
+        request_payload={},
+        source_chain=[],
+        schema_path="/tmp/factor_candidate.schema.json",
+    )
+
+    await provider.close()
+    result = await provider.generate_candidates(prompt, candidate_count=1)
+
+    assert len(created_clients) == 2
+    assert created_clients[0].is_closed is True
+    assert provider.is_closed is False
+    assert result["candidate_count"] == 1
+    assert result["candidates"][0]["name"] == "rebuilt_client_factor"
 
 
 @pytest.mark.asyncio

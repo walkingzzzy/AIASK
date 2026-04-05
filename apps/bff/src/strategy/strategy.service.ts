@@ -434,6 +434,31 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     return this.call('review_report_recheck', { strategy_id: id });
   }
 
+  async reviewWorkflow(
+    id: string,
+    params: {
+      include_factory_status?: boolean;
+      include_review_report?: boolean;
+      include_runtime_alerts?: boolean;
+      run_factory_once?: boolean;
+      run_runtime_cycle?: boolean;
+      idempotency_key?: string;
+      as_of?: string;
+    } = {},
+  ) {
+    const payload = await this.mcp.callTool('strategy_review_workflow', {
+      strategy_id: id,
+      include_factory_status: params.include_factory_status,
+      include_review_report: params.include_review_report,
+      include_runtime_alerts: params.include_runtime_alerts,
+      run_factory_once: params.run_factory_once,
+      run_runtime_cycle: params.run_runtime_cycle,
+      idempotency_key: params.idempotency_key,
+      as_of: params.as_of,
+    });
+    return this.flattenMcpResult(payload);
+  }
+
   async events(
     id: string,
     filters?: {

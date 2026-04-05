@@ -344,6 +344,107 @@ class _TestAutonomyEnhancementsLlmMixin:
         assert len(result['request_metrics']['attempts']) == 1
         assert result['request_metrics']['initial_prompt_profile'] == 'minimal'
 
+    @pytest.mark.asyncio
+    async def test_strategy_llm_provider_call_stage_retries_after_502(self):
+        import httpx
+        from akshare_mcp.services.strategy_llm_provider import StrategyLLMConfig, StrategyLLMProvider
+
+        request = httpx.Request('POST', 'https://example.com/v1/chat/completions')
+        first_response = httpx.Response(502, request=request, headers={'Retry-After': '0'})
+        calls = {'count': 0}
+
+        class _Resp:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    'choices': [{
+                        'message': {
+                            'content': json.dumps({
+                                'events': [{'event_type': 'policy_shift', 'description': '政策边际转暖'}]
+                            })
+                        }
+                    }]
+                }
+
+        async def _post(*args, **kwargs):
+            calls['count'] += 1
+            if calls['count'] == 1:
+                raise httpx.HTTPStatusError('bad gateway', request=request, response=first_response)
+            return _Resp()
+
+        provider = StrategyLLMProvider(StrategyLLMConfig(
+            enabled=True,
+            provider='openai_compatible',
+            base_url='https://example.com/v1',
+            api_key='k',
+            model='m',
+            stage_retry_count=1,
+            stage_retry_backoff_sec=0,
+        ))
+        provider._client.post = AsyncMock(side_effect=_post)
+
+        with patch('akshare_mcp.services._strategy_llm_provider_runtime.asyncio.sleep', new=AsyncMock()) as sleep_mock:
+            result = await provider.call_stage(
+                stage_id='event_recognition',
+                input_data={'market_snapshot': {'date': '2026-03-09'}},
+                system_prompt='Return JSON only.',
+                timeout_sec=5,
+            )
+
+        assert calls['count'] == 2
+        assert result['events'][0]['event_type'] == 'policy_shift'
+        sleep_mock.assert_awaited()
+        await provider.close()
+
+    @pytest.mark.asyncio
+    async def test_strategy_llm_provider_call_stage_enters_overload_cooldown_after_429(self):
+        import time
+        import httpx
+        from akshare_mcp.services.strategy_llm_provider import StrategyLLMConfig, StrategyLLMProvider, StrategyLLMRequestError
+
+        request = httpx.Request('POST', 'https://example.com/v1/chat/completions')
+        response = httpx.Response(429, request=request, headers={'Retry-After': '0'})
+        provider = StrategyLLMProvider(StrategyLLMConfig(
+            enabled=True,
+            provider='openai_compatible',
+            base_url='https://example.com/v1',
+            api_key='k',
+            model='m',
+            stage_retry_count=0,
+            recent_overload_minimal_streak=1,
+            recent_overload_cooldown_sec=30,
+        ))
+        provider._client.post = AsyncMock(side_effect=httpx.HTTPStatusError('rate limited', request=request, response=response))
+
+        with pytest.raises(StrategyLLMRequestError) as excinfo:
+            await provider.call_stage(
+                stage_id='event_recognition',
+                input_data={'market_snapshot': {'date': '2026-03-09'}},
+                system_prompt='Return JSON only.',
+                timeout_sec=5,
+            )
+
+        assert excinfo.value.metrics['last_error_type'] == 'HTTP429'
+        assert provider._recent_overload_streak == 1
+        assert provider._recent_overload_cooldown_until > time.monotonic()
+
+        provider._client.post = AsyncMock(side_effect=AssertionError('cooldown should skip network request'))
+        with pytest.raises(StrategyLLMRequestError) as cooldown_exc:
+            await provider.call_stage(
+                stage_id='event_recognition',
+                input_data={'market_snapshot': {'date': '2026-03-09'}},
+                system_prompt='Return JSON only.',
+                timeout_sec=5,
+            )
+
+        assert cooldown_exc.value.metrics['status'] == 'cooldown_skip'
+        assert cooldown_exc.value.metrics['last_error_type'] == 'RecentOverloadCooldown'
+        assert cooldown_exc.value.metrics['cooldown_reason'] == 'recent_overload'
+        provider._client.post.assert_not_awaited()
+        await provider.close()
+
     def test_strategy_llm_provider_build_prompt_includes_event_driven_research_task(self):
         from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
 

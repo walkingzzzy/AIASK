@@ -1,3 +1,4 @@
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -48,6 +49,74 @@ class _RefreshingFactorResearchGateway:
     async def refresh(self):
         self.refresh_calls += 1
         return {"computed": 8, "errors": 0, "quality_flags": []}
+
+
+class _SeedFallbackRefreshGateway:
+    def __init__(self):
+        self.build_calls = 0
+        self.refresh_calls = 0
+
+    async def build_artifact(self, db, snapshot):
+        self.build_calls += 1
+        if self.refresh_calls == 0:
+            return {
+                "degraded": False,
+                "summary": {
+                    "active_factor_count": 1,
+                    "active_candidate_count": 0,
+                    "governed_source_candidate_count": 0,
+                    "governed_blocked_candidate_count": 0,
+                    "ranked_factor_count": 1,
+                    "top_factor_names": ["value"],
+                    "preferred_strategy_types": ["value_factor"],
+                    "factor_source_mode": "seed_fallback",
+                    "degraded": False,
+                    "stale": False,
+                    "freshness_days": 0,
+                    "scheduler_last_run": None,
+                    "scheduler_recent_success": False,
+                },
+            }
+        return {
+            "degraded": False,
+            "summary": {
+                "active_factor_count": 1,
+                "active_candidate_count": 2,
+                "governed_source_candidate_count": 2,
+                "governed_blocked_candidate_count": 0,
+                "ranked_factor_count": 1,
+                "top_factor_names": ["sentiment"],
+                "top_candidate_names": ["sentiment_breakout_factor"],
+                "active_family_names": ["sentiment"],
+                "active_regime_names": ["trend"],
+                "preferred_strategy_types": ["momentum"],
+                "factor_source_mode": "governed_candidate_pool",
+                "degraded": False,
+                "stale": False,
+                "freshness_days": 0,
+                "scheduler_last_run": "2026-04-05T10:00:00+08:00",
+                "scheduler_recent_success": True,
+                "scheduler_llm_validation_status": "success",
+            },
+            "active_candidate_pool": {
+                "count": 2,
+                "top_candidates": [
+                    {
+                        "artifact_id": "factor_validation_001",
+                        "name": "sentiment_breakout_factor",
+                        "family": "sentiment",
+                        "expected_regime": ["trend"],
+                    }
+                ],
+            },
+        }
+
+    def status(self):
+        return {"running": False}
+
+    async def refresh(self):
+        self.refresh_calls += 1
+        return {"computed": 12, "errors": 0, "quality_flags": []}
 
 
 class _StaleFactorResearchGateway:
@@ -101,7 +170,10 @@ class _GovernedPoolSnapshotFactorResearchGateway:
             "degraded": False,
             "source_chain": ["quant_manager.factor_candidate_registry(active_pool)", "artifact_v2"],
             "active_candidate_pool": {
+                "active_pool_mode": "strict_governed",
                 "count": 2,
+                "strict_count": 2,
+                "provisional_count": 0,
                 "family_summary": [
                     {
                         "family": "sentiment",
@@ -121,6 +193,7 @@ class _GovernedPoolSnapshotFactorResearchGateway:
                         "expected_regime": ["trend"],
                         "grade": "A",
                         "recommendation": "promote",
+                        "pool_entry_mode": "strict_governed",
                         "total_score": 84.0,
                     }
                 ],
@@ -135,11 +208,78 @@ class _GovernedPoolSnapshotFactorResearchGateway:
                 "active_regime_names": ["trend"],
                 "preferred_strategy_types": ["momentum"],
                 "factor_source_mode": "governed_candidate_pool",
+                "governed_candidate_pool_mode": "strict_governed",
+                "governed_candidate_pool_provisional": False,
+                "governed_candidate_pool_strict_count": 2,
+                "governed_candidate_pool_provisional_count": 0,
                 "degraded": False,
                 "stale": False,
                 "freshness_days": 0,
                 "latest_factor_date": "2026-03-23",
                 "quality_flags": ["governed_candidate_pool_active"],
+            },
+        }
+
+    def status(self):
+        return {"running": False}
+
+
+class _ProvisionalGovernedPoolGateway:
+    async def build_artifact(self, db, snapshot):
+        return {
+            "degraded": False,
+            "active_candidate_pool": {
+                "active_pool_mode": "provisional_validated_watch",
+                "count": 1,
+                "strict_count": 0,
+                "provisional_count": 1,
+                "source_count": 4,
+                "top_candidates": [
+                    {
+                        "artifact_id": "factor_validation_watch_001",
+                        "name": "watch_factor",
+                        "family": "momentum",
+                        "expected_regime": ["trend"],
+                        "grade": "C",
+                        "recommendation": "watch",
+                        "registry_stage": "validated",
+                        "pool_entry_mode": "provisional_validated_watch",
+                        "total_score": 49.5,
+                    }
+                ],
+                "family_summary": [
+                    {
+                        "family": "momentum",
+                        "count": 1,
+                        "promote_count": 0,
+                        "review_count": 0,
+                        "avg_total_score": 49.5,
+                        "max_total_score": 49.5,
+                    }
+                ],
+                "regime_summary": [{"regime": "trend", "count": 1}],
+            },
+            "summary": {
+                "active_factor_count": 1,
+                "active_candidate_count": 1,
+                "governed_source_candidate_count": 4,
+                "governed_blocked_candidate_count": 2,
+                "governed_blocked_ratio": 0.5,
+                "governed_freshness_days": 0,
+                "ranked_factor_count": 0,
+                "top_factor_names": ["momentum"],
+                "top_candidate_names": ["watch_factor"],
+                "active_family_names": ["momentum"],
+                "active_regime_names": ["trend"],
+                "preferred_strategy_types": ["momentum"],
+                "factor_source_mode": "governed_candidate_pool",
+                "governed_candidate_pool_mode": "provisional_validated_watch",
+                "governed_candidate_pool_provisional": True,
+                "governed_candidate_pool_strict_count": 0,
+                "governed_candidate_pool_provisional_count": 1,
+                "degraded": False,
+                "stale": False,
+                "freshness_days": 0,
             },
         }
 
@@ -301,10 +441,15 @@ class _AuditSpawner:
                 "target_symbols": ["601398"],
                 "dedup_result": {"refresh_mode": "spawn_revision_from_existing"},
             },
+            {
+                "strategy_type": "mean_reversion",
+                "params": {"lookback": 5, "threshold": 0.03},
+                "target_symbols": ["600036"],
+            },
         ]
 
     def get_last_report(self):
-        return {"summary": {"candidate_count": 2, "quota_fill_count": 0, "signal_trigger_count": 2}}
+        return {"summary": {"candidate_count": 3, "quota_fill_count": 0, "signal_trigger_count": 3}}
 
 
 class _AuditFilter:
@@ -330,10 +475,19 @@ class _AuditFilter:
             "position_assumption": "equal_weight_proxy",
         }
         candidates[1]["backtest_metrics"] = {"cost_assumptions": {"commission_bps": 8}}
+        candidates[2]["backtest_result"] = {
+            "passed": True,
+            "reason_code": "passed",
+            "validation_focus": "target_plus_representative",
+            "contamination_summary": {"representative_included": False, "mixed_layer_used": False},
+            "cost_assumptions": {"commission_bps": 6},
+            "position_assumption": "equal_weight_proxy",
+        }
+        candidates[2]["backtest_metrics"] = {"cost_assumptions": {"commission_bps": 6}}
         self._last_report = {
             "summary": {
-                "input_count": 2,
-                "passed_count": 2,
+                "input_count": 3,
+                "passed_count": 3,
                 "failed_count": 0,
                 "failed_reason_counts": {},
                 "thresholds_by_type": {},
@@ -353,15 +507,23 @@ class _AuditFilter:
 class _AuditSubmitter:
     async def submit(self, candidates, _snapshot, _db):
         return {
-            "submitted": len(candidates),
+            "created": 1,
+            "created_total": 2,
+            "created_strategy_pool": 1,
+            "created_audit_only": 1,
+            "gate_3_input": len(candidates),
+            "submitted": 1,
             "passed_quality_gate": 1,
             "gate_3_passed": 1,
-            "gate_3_failed": 1,
+            "gate_3_failed": 2,
             "gate_3_provisional_passed": 0,
             "gate_3_failure_reason_topn": [],
             "strategies": [
                 {
                     "strategy_id": "sid_1",
+                    "created_total": False,
+                    "created_strategy_pool": False,
+                    "created_audit_only": False,
                     "refresh_mode": "refresh_metrics_only",
                     "constraint_check": {
                         "constraint_violation": "strict_intersection_empty",
@@ -383,6 +545,20 @@ class _AuditSubmitter:
                 },
                 {
                     "strategy_id": "sid_2",
+                    "created_total": True,
+                    "created_strategy_pool": True,
+                    "created_audit_only": False,
+                    "status": "submitted",
+                    "submission_lane": "live_ready_review",
+                    "live_candidate_ready": True,
+                    "live_review_ready": True,
+                    "direct_trade_candidate": True,
+                    "paper_account_id": "paper_sid_2",
+                    "runtime_control_mode": "monitor",
+                    "runtime_control_status": "active",
+                    "promotion_review_id": "promotion_review_sid_2",
+                    "promotion_review_status": "watch",
+                    "promotion_review_recommendation": "observe",
                     "refresh_mode": "spawn_revision_from_existing",
                     "constraint_check": {
                         "constraint_violation": None,
@@ -400,6 +576,22 @@ class _AuditSubmitter:
                         "pbo": 0.19,
                         "white_reality_check_pvalue": 0.07,
                         "hansen_spa_pvalue": 0.05,
+                    },
+                },
+                {
+                    "strategy_id": "sid_3",
+                    "created_total": True,
+                    "created_strategy_pool": False,
+                    "created_audit_only": True,
+                    "refresh_mode": None,
+                    "constraint_check": {
+                        "constraint_violation": None,
+                        "expansion_applied": False,
+                        "intersection_ratio": None,
+                    },
+                    "warning_codes": [],
+                    "gate_3": {
+                        "passed": False,
                     },
                 },
             ],
@@ -504,6 +696,256 @@ async def test_scheduler_refreshes_stale_factor_research_before_continuing(monke
 
 
 @pytest.mark.asyncio
+async def test_scheduler_refreshes_seed_fallback_when_governed_pool_is_missing(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    gateway = _SeedFallbackRefreshGateway()
+    scheduler = StrategyFactoryScheduler(factor_research_gateway=gateway)
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+
+    result = await scheduler.run_once()
+
+    assert result["status"] == "success"
+    assert gateway.refresh_calls == 1
+    assert gateway.build_calls == 2
+    assert result["stages"]["factor_research"]["refresh_attempted"] is True
+    assert result["stages"]["factor_research"]["refresh_trigger"] == "scheduler_warmup_missing_governed_pool"
+    assert result["stages"]["factor_research"]["factor_source_mode"] == "governed_candidate_pool"
+    assert result["summary"]["factor_research_refresh_status"] == "success"
+    assert result["summary"]["factor_research_refresh_trigger"] == "scheduler_warmup_missing_governed_pool"
+    assert result["summary"]["factor_source_mode"] == "governed_candidate_pool"
+    assert result["summary"]["governed_candidate_pool_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_scheduler_summary_surfaces_bulk_stock_matrix_counts(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    scheduler = StrategyFactoryScheduler(factor_research_gateway=_RefreshingFactorResearchGateway())
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+
+    async def _fake_run_autonomy_batches(_db, _snapshot):
+        return {
+            "stage": {
+                "generated_count": 0,
+                "task_count": 3,
+                "completed_task_count": 3,
+                "failed_task_count": 0,
+                "event_task_count": 0,
+                "snapshot_task_count": 1,
+                "bulk_stock_task_count": 2,
+                "task_source_counts": {"snapshot": 1, "bulk_stock_matrix": 2},
+                "task_scan": {
+                    "summary": {
+                        "bulk_stock_matrix_enabled": True,
+                        "bulk_stock_matrix_stock_count": 2,
+                        "bulk_stock_matrix_eligible_stock_count": 3,
+                        "bulk_stock_matrix_family_counts": {"momentum": 1, "mean_reversion": 1},
+                        "bulk_stock_matrix_universe_limit": 500,
+                        "bulk_stock_matrix_requested_universe_offset": 500,
+                        "bulk_stock_matrix_effective_universe_offset": 0,
+                        "bulk_stock_matrix_universe_offset_fallback": True,
+                        "bulk_stock_matrix_next_universe_offset": 500,
+                        "bulk_stock_matrix_cursor_wrapped": True,
+                        "bulk_stock_matrix_cursor_source": "persisted_run",
+                        "bulk_stock_matrix_cursor_resume_from_run_id": "factory_run_hist_1",
+                        "bulk_stock_matrix_effective_task_budget": 6,
+                        "bulk_stock_matrix_max_candidates_per_run": 6,
+                        "bulk_stock_matrix_estimated_candidate_count": 2,
+                        "bulk_stock_matrix_tasks_per_shard": 2,
+                        "bulk_stock_matrix_shard_count": 1,
+                        "bulk_stock_matrix_stock_coverage_ratio": 0.6667,
+                        "bulk_stock_matrix_allocation_mode": "stock_round_robin_by_family_rank",
+                        "bulk_stock_matrix_allocation_pass_counts": {"1": 2},
+                        "bulk_stock_matrix_overflow_task_count": 4,
+                        "task_sources": {"snapshot": 1, "bulk_stock_matrix": 2},
+                        "task_types": {"snapshot": 1, "bulk_stock_matrix": 2},
+                    }
+                },
+            },
+            "candidates": [],
+            "experiments": [],
+        }
+
+    monkeypatch.setattr(scheduler, "_run_autonomy_batches", _fake_run_autonomy_batches)
+
+    result = await scheduler.run_once()
+
+    assert result["status"] == "success"
+    assert result["summary"]["bulk_stock_task_count"] == 2
+    assert result["summary"]["bulk_stock_matrix_enabled"] is True
+    assert result["summary"]["bulk_stock_matrix_stock_count"] == 2
+    assert result["summary"]["bulk_stock_matrix_eligible_stock_count"] == 3
+    assert result["summary"]["bulk_stock_matrix_family_counts"] == {"momentum": 1, "mean_reversion": 1}
+    assert result["summary"]["bulk_stock_matrix_universe_limit"] == 500
+    assert result["summary"]["bulk_stock_matrix_requested_universe_offset"] == 500
+    assert result["summary"]["bulk_stock_matrix_effective_universe_offset"] == 0
+    assert result["summary"]["bulk_stock_matrix_universe_offset_fallback"] is True
+    assert result["summary"]["bulk_stock_matrix_next_universe_offset"] == 500
+    assert result["summary"]["bulk_stock_matrix_cursor_wrapped"] is True
+    assert result["summary"]["bulk_stock_matrix_cursor_source"] == "persisted_run"
+    assert result["summary"]["bulk_stock_matrix_cursor_resume_from_run_id"] == "factory_run_hist_1"
+    assert result["summary"]["bulk_stock_matrix_effective_task_budget"] == 6
+    assert result["summary"]["bulk_stock_matrix_max_candidates_per_run"] == 6
+    assert result["summary"]["bulk_stock_matrix_estimated_candidate_count"] == 2
+    assert result["summary"]["bulk_stock_matrix_tasks_per_shard"] == 2
+    assert result["summary"]["bulk_stock_matrix_shard_count"] == 1
+    assert result["summary"]["bulk_stock_matrix_stock_coverage_ratio"] == 0.6667
+    assert result["summary"]["bulk_stock_matrix_allocation_mode"] == "stock_round_robin_by_family_rank"
+    assert result["summary"]["bulk_stock_matrix_allocation_pass_counts"] == {"1": 2}
+    assert result["summary"]["bulk_stock_matrix_overflow_task_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_scheduler_resumes_bulk_stock_matrix_cursor_from_persisted_run(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    db.get_latest_strategy_factory_run = AsyncMock(
+        return_value={
+            "run_id": "factory_run_hist_cursor",
+            "summary": {
+                "bulk_stock_matrix_enabled": True,
+                "bulk_stock_matrix_universe_limit": 500,
+                "bulk_stock_matrix_requested_universe_offset": 500,
+                "bulk_stock_matrix_effective_universe_offset": 500,
+                "bulk_stock_matrix_universe_offset_fallback": False,
+                "bulk_stock_matrix_eligible_stock_count": 500,
+                "bulk_stock_matrix_next_universe_offset": 1000,
+                "bulk_stock_matrix_cursor_wrapped": False,
+            },
+        }
+    )
+    scheduler = StrategyFactoryScheduler(factor_research_gateway=_RefreshingFactorResearchGateway())
+    captured_snapshot = {}
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+
+    async def _fake_bulk_plan(_self, _db, snapshot):
+        captured_snapshot.update(snapshot)
+        requested_offset = int(snapshot.get("bulk_stock_matrix_universe_offset") or 0)
+        return {
+            "summary": {
+                "enabled": True,
+                "task_count": 0,
+                "stock_count": 0,
+                "eligible_stock_count": 500,
+                "family_counts": {},
+                "universe_limit": 500,
+                "requested_universe_offset": requested_offset,
+                "effective_universe_offset": requested_offset,
+                "universe_offset_fallback": False,
+                "next_universe_offset": requested_offset + 500,
+                "cursor_wrapped": False,
+                "effective_task_budget": 0,
+                "max_candidates_per_run": 0,
+                "estimated_candidate_count": 0,
+                "tasks_per_shard": 0,
+                "shard_count": 0,
+                "stock_coverage_ratio": 0.0,
+                "allocation_mode": "stock_round_robin_by_family_rank",
+                "allocation_pass_counts": {},
+                "overflow_task_count": 0,
+            },
+            "tasks": [],
+        }
+
+    monkeypatch.setattr(
+        "strategy_factory.application._factory_scheduler_loop.StockStrategyMatrixPlanner.plan",
+        _fake_bulk_plan,
+    )
+
+    result = await scheduler.run_once()
+
+    assert captured_snapshot["bulk_stock_matrix_universe_offset"] == 1000
+    assert captured_snapshot["bulk_stock_matrix_cursor_source"] == "persisted_run"
+    assert captured_snapshot["bulk_stock_matrix_cursor_resume_from_run_id"] == "factory_run_hist_cursor"
+    assert result["summary"]["bulk_stock_matrix_requested_universe_offset"] == 1000
+    assert result["summary"]["bulk_stock_matrix_next_universe_offset"] == 1500
+    assert result["summary"]["bulk_stock_matrix_cursor_source"] == "persisted_run"
+    assert result["summary"]["bulk_stock_matrix_cursor_resume_from_run_id"] == "factory_run_hist_cursor"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_falls_back_to_default_bulk_cursor_when_persisted_run_lookup_fails():
+    db = MagicMock()
+    db.get_latest_strategy_factory_run = AsyncMock(side_effect=ConnectionRefusedError("db offline"))
+    scheduler = StrategyFactoryScheduler()
+
+    cursor = await scheduler._resolve_bulk_stock_matrix_cursor(db)
+
+    assert cursor["source"] == "default"
+    assert cursor["available"] is False
+    assert cursor["next_universe_offset"] == 0
+    assert cursor["resume_from_run_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_skips_bulk_lane_outside_configured_run_window(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    db.get_latest_strategy_factory_run = AsyncMock(return_value=None)
+    scheduler = StrategyFactoryScheduler(factor_research_gateway=_RefreshingFactorResearchGateway())
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+    monkeypatch.setattr(
+        "strategy_factory.application._factory_scheduler_loop.STOCK_STRATEGY_MATRIX_ENABLED",
+        True,
+    )
+    monkeypatch.setattr(
+        "strategy_factory.application._factory_scheduler_loop.STOCK_STRATEGY_MATRIX_RUN_WINDOW",
+        "off_hours",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_now",
+        lambda: datetime(2026, 4, 3, 10, 5, 0, tzinfo=scheduler._market_timezone),
+    )
+
+    async def _unexpected_bulk_plan(_self, _db, _snapshot):
+        raise AssertionError("bulk planner should be skipped outside configured run window")
+
+    monkeypatch.setattr(
+        "strategy_factory.application._factory_scheduler_loop.StockStrategyMatrixPlanner.plan",
+        _unexpected_bulk_plan,
+    )
+
+    result = await scheduler.run_once()
+    status = scheduler.status()
+
+    assert result["summary"]["bulk_stock_matrix_enabled"] is False
+    assert result["summary"]["bulk_stock_matrix_configured_enabled"] is True
+    assert result["summary"]["bulk_stock_matrix_run_window"] == "off_hours"
+    assert result["summary"]["bulk_stock_matrix_run_window_active"] is False
+    assert result["summary"]["bulk_stock_matrix_run_window_current_period"] == "market_hours"
+    assert result["summary"]["bulk_stock_matrix_skip_reason"] == "outside_run_window"
+    assert status["bulk_stock_matrix_config"]["run_window"] == "off_hours"
+    assert status["bulk_stock_matrix_config"]["run_window_active"] is False
+    assert status["bulk_stock_matrix_config"]["run_window_current_period"] == "market_hours"
+
+
+@pytest.mark.asyncio
 async def test_scheduler_runs_startup_warmup_before_collect(monkeypatch):
     db = MagicMock()
     db.save_strategy_factory_run = AsyncMock()
@@ -601,6 +1043,36 @@ async def test_scheduler_governed_candidate_pool_can_bypass_legacy_factor_stale_
 
 
 @pytest.mark.asyncio
+async def test_scheduler_readiness_allows_provisional_governed_candidate_pool(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+    scheduler = StrategyFactoryScheduler(
+        factor_research_gateway=_ProvisionalGovernedPoolGateway()
+    )
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+    monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "1")
+
+    result = await scheduler.run_once()
+
+    assert result["status"] in {"partial", "success"}
+    assert result["stages"]["readiness"]["can_proceed"] is True
+    assert result["stages"]["readiness"]["governed_candidate_pool_active"] is True
+    assert result["stages"]["readiness"]["governed_candidate_pool_mode"] == "provisional_validated_watch"
+    assert result["stages"]["readiness"]["governed_candidate_pool_provisional"] is True
+    assert "governed_candidate_pool_provisional" in result["stages"]["readiness"]["warnings"]
+    assert result["summary"]["factor_source_mode"] == "governed_candidate_pool"
+    assert result["summary"]["governed_candidate_pool_mode"] == "provisional_validated_watch"
+    assert result["summary"]["governed_candidate_pool_provisional"] is True
+    assert result["summary"]["governed_candidate_pool_active"] is True
+
+
+@pytest.mark.asyncio
 async def test_scheduler_readiness_surfaces_recent_scheduler_success_without_governed_pool(monkeypatch):
     db = MagicMock()
     db.save_strategy_factory_run = AsyncMock()
@@ -617,8 +1089,12 @@ async def test_scheduler_readiness_surfaces_recent_scheduler_success_without_gov
 
     result = await scheduler.run_once()
 
-    assert result["status"] in {"partial", "success"}
+    assert result["status"] == "skipped"
+    assert result["summary"]["skip_reason"] == "readiness_blocked"
     assert "factor_scheduler_recent_success_without_governed_pool" in result["stages"]["readiness"]["warnings"]
+    assert "governed_candidate_pool_missing_after_scheduler_success" in result["stages"]["readiness"]["blockers"]
+    assert result["stages"]["readiness"]["governed_pool_missing_after_scheduler_success"] is True
+    assert result["stages"]["readiness"]["can_proceed"] is False
     assert result["summary"]["scheduler_recent_success"] is True
     assert result["summary"]["scheduler_llm_validation_status"] == "success"
 
@@ -668,10 +1144,14 @@ async def test_scheduler_snapshot_summary_persists_compact_active_pool(monkeypat
 
     assert result["status"] == "success"
     assert compact_pool["count"] == 2
+    assert compact_pool["active_pool_mode"] == "strict_governed"
+    assert compact_pool["strict_count"] == 2
     assert compact_pool["top_candidates"][0]["artifact_id"] == "factor_validation_001"
     assert compact_pool["top_candidates"][0]["recommendation"] == "promote"
+    assert compact_pool["top_candidates"][0]["pool_entry_mode"] == "strict_governed"
     assert compact_pool["family_summary"][0]["family"] == "sentiment"
     assert persisted["snapshot_summary"]["factor_research"]["summary"]["factor_source_mode"] == "governed_candidate_pool"
+    assert persisted["snapshot_summary"]["factor_research"]["summary"]["governed_candidate_pool_mode"] == "strict_governed"
     assert persisted["snapshot_summary"]["factor_research"]["active_candidate_pool"]["top_candidates"][0]["name"] == "sentiment_breakout_factor"
 
 
@@ -694,6 +1174,10 @@ async def test_scheduler_summary_exposes_run_level_audit_metrics(monkeypatch):
     result = await scheduler.run_once()
 
     assert result["status"] == "success"
+    assert result["summary"]["created"] == 1
+    assert result["summary"]["created_total"] == 2
+    assert result["summary"]["created_strategy_pool"] == 1
+    assert result["summary"]["created_audit_only"] == 1
     assert result["summary"]["attempt_adjusted_gate_failed"] == 1
     assert result["summary"]["attempt_adjusted_score_avg"] == pytest.approx(0.04)
     assert result["summary"]["constraint_violation_count"] == 1
@@ -709,8 +1193,20 @@ async def test_scheduler_summary_exposes_run_level_audit_metrics(monkeypatch):
     assert result["summary"]["formal_multiple_testing_count"] == 2
     assert result["summary"]["weak_white_reality_check_count"] == 1
     assert result["summary"]["weak_hansen_spa_count"] == 1
+    assert result["summary"]["live_ready_review_count"] == 1
+    assert result["summary"]["direct_trade_candidate_count"] == 1
+    assert result["summary"]["paper_account_bound_count"] == 1
+    assert result["summary"]["runtime_review_count"] == 1
+    assert result["summary"]["promotion_review_count"] == 1
+    assert result["summary"]["promotion_review_status_counts"] == {"watch": 1}
     assert result["summary"]["refresh_metrics_only_count"] == 1
     assert result["summary"]["spawn_revision_from_existing_count"] == 1
+    assert result["summary"]["research_summary"]["gate_2_passed"] == 3
+    assert result["summary"]["incubation_summary"]["gate_3_failed"] == 2
+    assert result["summary"]["incubation_summary"]["submission_lane_counts"]["live_ready_review"] == 1
+    assert result["summary"]["live_ready_summary"]["live_candidate_ready_count"] == 1
+    assert result["summary"]["live_ready_summary"]["live_review_ready_count"] == 1
+    assert result["summary"]["live_ready_summary"]["promotion_review_status_counts"] == {"watch": 1}
 
 
 @pytest.mark.asyncio

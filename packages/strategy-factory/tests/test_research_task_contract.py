@@ -1,5 +1,6 @@
 from strategy_factory.domain.targets import (
     _apply_target_symbol_policy,
+    _build_target_alignment_contract,
     _normalize_research_task_contract,
 )
 
@@ -47,6 +48,9 @@ def test_normalize_research_task_contract_for_snapshot_task():
     assert task["target_symbols"] == ["601398", "601288"]
     assert task["holding_window"]["max_days"] == 20
     assert task["preference_reason"] == "snapshot_regime_bias:quality_factor"
+    assert task["target_alignment_contract"]["profile"] == "snapshot_targeted"
+    assert task["target_alignment_contract"]["market_fallback_allowed"] is False
+    assert task["target_alignment_contract"]["max_candidate_target_symbols"] == 2
 
 
 def test_apply_target_symbol_policy_strict_intersection_trims_to_task_targets():
@@ -80,3 +84,57 @@ def test_apply_target_symbol_policy_prefer_intersection_retains_candidate_when_n
     assert result["constraint_check"]["expansion_source"] == "candidate_symbols"
     assert result["constraint_check"]["coverage_ratio"] == 0.0
     assert result["constraint_check"]["intersection_ratio"] == 0.0
+
+
+def test_apply_target_symbol_policy_strict_intersection_without_overlap_does_not_fallback_to_market_universe():
+    result = _apply_target_symbol_policy(
+        ["000001", "601318"],
+        {
+            "task_source": "event_driven",
+            "target_symbols": ["600519", "000858"],
+            "target_symbol_policy": "strict_intersection",
+            "universe_expansion_policy": "allow_same_theme_only",
+        },
+        fallback_symbols=["000001", "601318", "002594"],
+    )
+
+    assert result["target_symbols"] == []
+    assert result["constraint_check"]["expansion_applied"] is False
+    assert result["constraint_check"]["constraint_violation"] == "strict_intersection_empty"
+    assert result["constraint_check"]["expansion_blocked_reason"] == "same_theme_symbols_unavailable"
+
+
+def test_apply_target_symbol_policy_blocks_default_snapshot_market_fallback_when_contract_requires_target_pool():
+    result = _apply_target_symbol_policy(
+        ["000001", "601318"],
+        {
+            "task_source": "snapshot",
+            "target_symbols": ["600519", "000858", "601398", "601939"],
+        },
+        fallback_symbols=["000001", "601318", "002594"],
+    )
+
+    assert result["target_symbols"] == []
+    assert result["constraint_check"]["constraint_violation"] == "expansion_forbidden"
+    assert result["constraint_check"]["alignment_contract_violation"] == "empty_target_symbols_after_alignment"
+
+
+def test_build_target_alignment_contract_tightens_pipeline_rsi_snapshot_requirements():
+    contract = _build_target_alignment_contract(
+        {
+            "task_source": "snapshot",
+            "target_symbols": ["603855", "603279", "002833", "601766", "600528", "600582", "600894", "920599"],
+            "allowed_strategy_types": ["rsi"],
+        },
+        candidate={
+            "strategy_type": "rsi",
+            "generator_type": "pipeline_staged",
+            "tags": ["pipeline_staged", "generator_pipeline_staged"],
+        },
+    )
+
+    assert contract["profile"] == "pipeline_staged_rsi"
+    assert contract["min_intersection_ratio"] == 0.5
+    assert contract["min_required_overlap_count"] == 4
+    assert contract["min_target_sample_count"] == 4
+    assert contract["max_candidate_target_symbols"] == 4

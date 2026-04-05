@@ -51,6 +51,38 @@ export class AssistantService {
     return { card: this.normalizeCard(payload), raw: payload };
   }
 
+  async analyzeWorkflow(
+    code: string,
+    options: {
+      investmentStyle?: string;
+      includeKline?: boolean;
+      includeFinancials?: boolean;
+      includeDecision?: boolean;
+      klineLimit?: number;
+      asOf?: string;
+    } = {},
+  ) {
+    const stockCode = code.trim();
+    const payload = await this.mcp.callTool('analyze_stock_workflow', {
+      code: stockCode,
+      investment_style: options.investmentStyle ?? 'balanced',
+      include_kline: options.includeKline ?? true,
+      include_financials: options.includeFinancials ?? true,
+      include_decision: options.includeDecision ?? true,
+      kline_limit: options.klineLimit,
+      as_of: options.asOf,
+    });
+    const toolError = this.extractToolError(payload);
+    if (toolError) {
+      throw new BadGatewayException({
+        success: false,
+        message: 'MCP analyze_stock_workflow 调用失败',
+        detail: toolError,
+      });
+    }
+    return { card: this.normalizeWorkflowCard(payload), raw: payload };
+  }
+
   async decisionManagerAnalyze(code: string) {
     const stockCode = code.trim();
     const attempts: Array<Record<string, unknown>> = [
@@ -155,6 +187,43 @@ export class AssistantService {
       risks,
       dataProvenance: provenance,
       complianceNotice: String(d.compliance_notice ?? d.complianceNotice ?? d.disclaimer ?? '本分析结果仅供参考，不构成投资建议。'),
+    };
+  }
+
+  private normalizeWorkflowCard(payload: unknown): DecisionCardDto {
+    const root = this.asRecord(payload);
+    const data = this.asRecord(this.unwrapPayload(payload));
+    const steps = Array.isArray(data.steps) ? data.steps : [];
+    const decisionStep = steps.find(
+      (item) => item && typeof item === 'object' && this.asRecord(item).step === 'decision_summary',
+    );
+    const decisionOutput = this.asRecord(this.asRecord(decisionStep).output);
+    const decisionData = this.asRecord(decisionOutput.data);
+    const summary = this.asRecord(data.summary);
+    const meta = this.asRecord(root.meta);
+    const sourceChain = Array.isArray(meta.source_chain)
+      ? meta.source_chain.map((item) => this.toText(item)).filter(Boolean)
+      : [];
+    const decisionCard = this.normalizeCard({ data: decisionData });
+    const quotePrice = summary.quote_price;
+    const fallbackSummary = [
+      this.toText(decisionCard.summary),
+      this.toText(summary.decision_action) ? `决策动作：${this.toText(summary.decision_action)}` : '',
+      quotePrice != null ? `参考价格：${this.toText(quotePrice)}` : '',
+    ].filter(Boolean).join('；');
+
+    return {
+      action: decisionCard.action || this.toText(summary.decision_action) || 'watch',
+      confidence: decisionCard.confidence,
+      summary: fallbackSummary || '已生成股票分析工作流结果。',
+      reasons: decisionCard.reasons,
+      executionPlan: [
+        '已聚合 stock profile / kline / financials / decision summary',
+        ...this.toTextArray(data.artifacts ? Object.values(this.asRecord(data.artifacts)) : []),
+      ].filter(Boolean),
+      risks: decisionCard.risks,
+      dataProvenance: sourceChain,
+      complianceNotice: decisionCard.complianceNotice,
     };
   }
 

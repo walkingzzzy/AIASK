@@ -293,6 +293,7 @@ class _StrategySubmitterPolicyMixin:
             validation_report: Optional[dict],
             risk_report: Optional[dict],
             final_status: str,
+            submission_lane: Optional[str] = None,
         ) -> dict:
             return build_quality_report(
                 strategy_id=strategy_id,
@@ -314,6 +315,8 @@ class _StrategySubmitterPolicyMixin:
                 submission_audit={
                     "task_signature": _build_task_signature(candidate.get("research_task") or {}),
                     "refresh_mode": (candidate.get("dedup_result") or {}).get("refresh_mode"),
+                    "submission_lane": submission_lane,
+                    "direct_trade_candidate": bool((quality_gate or {}).get("live_candidate_ready")),
                     "task_preference": dict((quality_gate or {}).get("task_preference") or {}),
                     "candidate_provenance": cls._candidate_provenance(candidate),
                 },

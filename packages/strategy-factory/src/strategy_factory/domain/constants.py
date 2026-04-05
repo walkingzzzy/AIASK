@@ -39,6 +39,8 @@ CATEGORY_MINIMUMS = {
     "momentum": 3, "ma_cross": 3, "rsi": 3,
     "value_factor": 3, "quality_factor": 3, "growth_factor": 3,
     "multi_factor": 3, "macro_timing": 3,
+    "volatility_breakout": 1, "gap_fill": 1, "mean_reversion_short": 1,
+    "sector_rotation": 1, "north_capital_track": 1, "margin_divergence": 1,
 }
 
 # 策略工厂默认种子/回退因子集合。
@@ -52,12 +54,12 @@ FACTOR_STRATEGY_MAPPING: Dict[str, tuple[str, ...]] = {
     "value": ("value_factor", "multi_factor"),
     "quality": ("quality_factor", "multi_factor"),
     "growth": ("growth_factor", "momentum"),
-    "reversal": ("value_factor", "rsi"),
-    "volatility": ("macro_timing", "ma_cross"),
+    "reversal": ("mean_reversion_short", "gap_fill", "rsi"),
+    "volatility": ("volatility_breakout", "macro_timing", "ma_cross"),
     "liquidity": ("ma_cross", "macro_timing"),
-    "capital_flow": ("momentum", "ma_cross"),
+    "capital_flow": ("north_capital_track", "momentum", "ma_cross"),
     "sentiment": ("momentum", "ma_cross"),
-    "event": ("macro_timing", "momentum"),
+    "event": ("sector_rotation", "macro_timing", "momentum"),
     "alternative_composite": ("multi_factor", "momentum"),
     "multi_factor": ("multi_factor",),
 }
@@ -86,13 +88,129 @@ PROVISIONAL_PASS_THRESHOLDS = {
     "trades_min": 2,
 }
 
-# 质量门 4 阶段验证阈值（strategy_manager._run_quality_gate 引用）
-QUALITY_GATE_THRESHOLDS = {
-    "walk_forward_ic_ir_min": 0.3,
-    "purged_kfold_ic_min": 0.02,
-    "bootstrap_ci_lower_min": 0.0,
-    "param_sensitivity_max": 0.30,
+# 研究 / 孵化 / 实盘三层准入阈值。
+# 现有 Gate-3 默认继续对齐 incubation 档，同时显式产出更宽松的 research
+# 与更严格的 live 档，避免“研究通过”与“实盘可用”混为一谈。
+RESEARCH_ADMISSION_THRESHOLDS: Dict[str, dict] = {
+    "trade_profiles": {
+        "default": {
+            "post_cost_sharpe_min": 0.05,
+            "trade_count_min": 3.0,
+            "total_return_min": -0.03,
+            "target_layer_oos_return_min": -0.02,
+            "max_drawdown_max": 0.50,
+            "event_window_hit_ratio_min": 0.0,
+            "post_event_decay_min": -1.0,
+            "trade_density_max": 1.4,
+            "parameter_perturbation_trade_stability_min": 0.20,
+        },
+        "event_trade_validation": {
+            "post_cost_sharpe_min": 0.08,
+            "trade_count_min": 3.0,
+            "total_return_min": -0.02,
+            "target_layer_oos_return_min": -0.01,
+            "max_drawdown_max": 0.48,
+            "event_window_hit_ratio_min": 0.30,
+            "post_event_decay_min": -0.9,
+            "trade_density_max": 1.3,
+            "parameter_perturbation_trade_stability_min": 0.20,
+        },
+    },
+    "statistical_validation": {
+        "walk_forward_ic_ir_min": 0.20,
+        "purged_kfold_ic_min": 0.01,
+        "bootstrap_ci_lower_min": -0.01,
+        "param_sensitivity_max": 0.35,
+    },
+    "multiple_testing": {
+        "deflated_sharpe_ratio_min": -0.10,
+        "pbo_max": 0.75,
+        "white_reality_check_pvalue_max": 0.35,
+        "hansen_spa_pvalue_max": 0.35,
+    },
 }
+
+INCUBATION_ADMISSION_THRESHOLDS: Dict[str, dict] = {
+    "trade_profiles": {
+        "default": {
+            "post_cost_sharpe_min": 0.10,
+            "trade_count_min": 4.0,
+            "total_return_min": -0.02,
+            "target_layer_oos_return_min": -0.01,
+            "max_drawdown_max": 0.45,
+            "event_window_hit_ratio_min": 0.0,
+            "post_event_decay_min": -1.0,
+            "trade_density_max": 1.2,
+            "parameter_perturbation_trade_stability_min": 0.25,
+        },
+        "event_trade_validation": {
+            "post_cost_sharpe_min": 0.10,
+            "trade_count_min": 4.0,
+            "total_return_min": -0.01,
+            "target_layer_oos_return_min": 0.0,
+            "max_drawdown_max": 0.45,
+            "event_window_hit_ratio_min": 0.40,
+            "post_event_decay_min": -0.6,
+            "trade_density_max": 0.9,
+            "parameter_perturbation_trade_stability_min": 0.25,
+        },
+    },
+    "statistical_validation": {
+        "walk_forward_ic_ir_min": 0.30,
+        "purged_kfold_ic_min": 0.02,
+        "bootstrap_ci_lower_min": 0.0,
+        "param_sensitivity_max": 0.30,
+    },
+    "multiple_testing": {
+        "deflated_sharpe_ratio_min": 0.0,
+        "pbo_max": 0.60,
+        "white_reality_check_pvalue_max": 0.25,
+        "hansen_spa_pvalue_max": 0.25,
+    },
+}
+
+LIVE_ADMISSION_THRESHOLDS: Dict[str, dict] = {
+    "trade_profiles": {
+        "default": {
+            "post_cost_sharpe_min": 0.35,
+            "trade_count_min": 8.0,
+            "total_return_min": 0.02,
+            "target_layer_oos_return_min": 0.01,
+            "max_drawdown_max": 0.25,
+            "event_window_hit_ratio_min": 0.55,
+            "post_event_decay_min": -0.40,
+            "trade_density_max": 1.0,
+            "parameter_perturbation_trade_stability_min": 0.50,
+        },
+        "event_trade_validation": {
+            "post_cost_sharpe_min": 0.30,
+            "trade_count_min": 6.0,
+            "total_return_min": 0.01,
+            "target_layer_oos_return_min": 0.02,
+            "max_drawdown_max": 0.25,
+            "event_window_hit_ratio_min": 0.67,
+            "post_event_decay_min": -0.30,
+            "trade_density_max": 0.9,
+            "parameter_perturbation_trade_stability_min": 0.55,
+        },
+    },
+    "statistical_validation": {
+        "walk_forward_ic_ir_min": 0.45,
+        "purged_kfold_ic_min": 0.04,
+        "bootstrap_ci_lower_min": 0.02,
+        "param_sensitivity_max": 0.20,
+    },
+    "multiple_testing": {
+        "deflated_sharpe_ratio_min": 0.10,
+        "pbo_max": 0.35,
+        "white_reality_check_pvalue_max": 0.10,
+        "hansen_spa_pvalue_max": 0.10,
+    },
+}
+
+# 质量门 4 阶段验证阈值（strategy_manager._run_quality_gate 引用）
+# 向后兼容：默认等同于孵化准入阈值。
+QUALITY_GATE_THRESHOLDS = dict(INCUBATION_ADMISSION_THRESHOLDS["statistical_validation"])
 
 VALIDATION_PROFILES = frozenset(
     {
@@ -119,30 +237,9 @@ REFRESH_MODES = frozenset(
     }
 )
 
-TRADE_GATE_PROFILE_THRESHOLDS: Dict[str, dict[str, float]] = {
-    "default": {
-        "post_cost_sharpe_min": 0.10,
-        "trade_count_min": 4.0,
-        "total_return_min": -0.02,
-        "target_layer_oos_return_min": -0.01,
-        "max_drawdown_max": 0.45,
-        "event_window_hit_ratio_min": 0.0,
-        "post_event_decay_min": -1.0,
-        "trade_density_max": 1.2,
-        "parameter_perturbation_trade_stability_min": 0.25,
-    },
-    "event_trade_validation": {
-        "post_cost_sharpe_min": 0.10,
-        "trade_count_min": 4.0,
-        "total_return_min": -0.01,
-        "target_layer_oos_return_min": 0.0,
-        "max_drawdown_max": 0.45,
-        "event_window_hit_ratio_min": 0.40,
-        "post_event_decay_min": -0.6,
-        "trade_density_max": 0.9,
-        "parameter_perturbation_trade_stability_min": 0.25,
-    },
-}
+TRADE_GATE_PROFILE_THRESHOLDS: Dict[str, dict[str, float]] = dict(
+    INCUBATION_ADMISSION_THRESHOLDS["trade_profiles"]
+)
 
 # AI 原型策略临时孵化的风险报告阈值
 RISK_REPORT_THRESHOLDS = {
@@ -165,24 +262,41 @@ DEPRECATION_THRESHOLDS = {
 }
 
 
-def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+def _env_names(name: str | tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    if isinstance(name, str):
+        return (name,)
+    return tuple(str(item).strip() for item in name if str(item).strip())
+
+
+def _env_raw(name: str | tuple[str, ...] | list[str], default: str) -> str:
+    for candidate in _env_names(name):
+        raw = os.getenv(candidate)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return text
+    return str(default)
+
+
+def _env_int(name: str | tuple[str, ...] | list[str], default: int, *, minimum: int, maximum: int) -> int:
     try:
-        value = int(os.getenv(name, str(default)) or default)
+        value = int(_env_raw(name, str(default)) or default)
     except Exception:
         value = default
     return max(minimum, min(maximum, value))
 
 
-def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+def _env_float(name: str | tuple[str, ...] | list[str], default: float, *, minimum: float, maximum: float) -> float:
     try:
-        value = float(os.getenv(name, str(default)) or default)
+        value = float(_env_raw(name, str(default)) or default)
     except Exception:
         value = default
     return max(minimum, min(maximum, value))
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    raw = str(os.getenv(name, "1" if default else "0") or "").strip().lower()
+def _env_bool(name: str | tuple[str, ...] | list[str], default: bool) -> bool:
+    raw = _env_raw(name, "1" if default else "0").strip().lower()
     if raw in {"1", "true", "yes", "y", "on"}:
         return True
     if raw in {"0", "false", "no", "n", "off"}:
@@ -190,10 +304,113 @@ def _env_bool(name: str, default: bool) -> bool:
     return bool(default)
 
 
+def resolve_stock_strategy_matrix_run_window(value: Optional[str] = None) -> str:
+    window = str(
+        value
+        or _env_raw(
+            (
+                "STRATEGY_FACTORY_BULK_RUN_WINDOW",
+                "STRATEGY_FACTORY_BULK_STOCK_MATRIX_RUN_WINDOW",
+            ),
+            "always",
+        )
+        or "always"
+    ).strip().lower()
+    return window if window in {"always", "off_hours", "market_hours"} else "always"
+
+
 AUTONOMY_MAX_RESEARCH_TASKS = _env_int("STRATEGY_FACTORY_MAX_RESEARCH_TASKS", 12, minimum=1, maximum=20)
+AUTONOMY_MAX_BULK_RESEARCH_TASKS = _env_int(
+    (
+        "STRATEGY_FACTORY_MAX_BULK_RESEARCH_TASKS",
+        "STRATEGY_FACTORY_RESERVED_BULK_RESEARCH_TASKS",
+        "STRATEGY_FACTORY_BULK_RESERVED_TASKS",
+    ),
+    20,
+    minimum=0,
+    maximum=50,
+)
+AUTONOMY_RESERVED_BULK_RESEARCH_TASKS = _env_int(
+    (
+        "STRATEGY_FACTORY_RESERVED_BULK_RESEARCH_TASKS",
+        "STRATEGY_FACTORY_BULK_RESERVED_TASKS",
+    ),
+    max(0, AUTONOMY_MAX_BULK_RESEARCH_TASKS),
+    minimum=0,
+    maximum=50,
+)
 AUTONOMY_CANDIDATES_PER_TASK = _env_int("STRATEGY_FACTORY_CANDIDATES_PER_TASK", 4, minimum=1, maximum=8)
+AUTONOMY_TASK_HARD_CAP = _env_int("STRATEGY_FACTORY_TASK_HARD_CAP", 24, minimum=4, maximum=50)
+# 机会扫描宇宙大小：分页汇总后参与机会扫描的全市场股票上限（默认接近全量，支持配置）
+OPPORTUNITY_UNIVERSE_LIMIT = _env_int("STRATEGY_FACTORY_OPPORTUNITY_UNIVERSE_LIMIT", 6000, minimum=50, maximum=10000)
+# 每个任务的目标股票数量（默认 8，支持配置）
+OPPORTUNITY_TARGET_SYMBOLS_PER_TASK = _env_int("STRATEGY_FACTORY_TARGET_SYMBOLS_PER_TASK", 8, minimum=3, maximum=20)
+# 每个行业最多选几只（行业分散化控制）
+OPPORTUNITY_MAX_PER_INDUSTRY = _env_int("STRATEGY_FACTORY_MAX_PER_INDUSTRY", 2, minimum=1, maximum=5)
 EVENT_TASK_GENERATION_LIMIT_MAX = _env_int("STRATEGY_FACTORY_EVENT_TASK_GENERATION_LIMIT_MAX", 8, minimum=2, maximum=10)
 EVENT_SNAPSHOT_MIX_MAX = _env_int("STRATEGY_FACTORY_EVENT_SNAPSHOT_MIX_MAX", 4, minimum=1, maximum=8)
+# 逐股策略矩阵生成入口默认关闭，避免未验证环境直接放量。
+# 关闭时维持保守默认；显式开启后自动切换到 P2 级别容量默认值。
+STOCK_STRATEGY_MATRIX_ENABLED: bool = _env_bool(
+    ("STRATEGY_FACTORY_BULK_ENABLED", "STRATEGY_FACTORY_BULK_STOCK_MATRIX_ENABLED"),
+    False,
+)
+STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT: int = _env_int(
+    (
+        "STRATEGY_FACTORY_BULK_UNIVERSE_LIMIT",
+        "STRATEGY_FACTORY_BULK_STOCK_MATRIX_UNIVERSE_LIMIT",
+    ),
+    6000 if STOCK_STRATEGY_MATRIX_ENABLED else 500,
+    minimum=50,
+    maximum=10000,
+)
+STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK: int = _env_int(
+    (
+        "STRATEGY_FACTORY_BULK_FAMILIES_PER_STOCK",
+        "STRATEGY_FACTORY_BULK_STOCK_MATRIX_FAMILIES_PER_STOCK",
+    ),
+    3,
+    minimum=1,
+    maximum=5,
+)
+STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN: int = _env_int(
+    "STRATEGY_FACTORY_BULK_STOCK_MATRIX_MAX_TASKS_PER_RUN",
+    15000 if STOCK_STRATEGY_MATRIX_ENABLED else 180,
+    minimum=10,
+    maximum=15000,
+)
+STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN: int = _env_int(
+    "STRATEGY_FACTORY_BULK_STOCK_MATRIX_MAX_CANDIDATES_PER_RUN",
+    15000 if STOCK_STRATEGY_MATRIX_ENABLED else 180,
+    minimum=1,
+    maximum=45000,
+)
+STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK: int = _env_int(
+    "STRATEGY_FACTORY_BULK_STOCK_MATRIX_GENERATION_LIMIT_PER_TASK",
+    1,
+    minimum=1,
+    maximum=3,
+)
+STOCK_STRATEGY_MATRIX_BATCH_SIZE: int = _env_int(
+    "STRATEGY_FACTORY_BULK_BATCH_SIZE",
+    100,
+    minimum=10,
+    maximum=500,
+)
+STOCK_STRATEGY_MATRIX_BULK_CONCURRENCY: int = _env_int(
+    "STRATEGY_FACTORY_BULK_CONCURRENCY",
+    20,
+    minimum=1,
+    maximum=50,
+)
+STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD: int = _env_int(
+    "STRATEGY_FACTORY_BULK_STOCK_MATRIX_TASKS_PER_SHARD",
+    24,
+    minimum=1,
+    maximum=500,
+)
+STOCK_STRATEGY_MATRIX_RUN_WINDOW: str = resolve_stock_strategy_matrix_run_window()
+FACTORY_PRE_GATE_ENABLED: bool = _env_bool("STRATEGY_FACTORY_PRE_GATE_ENABLED", True)
 AUTONOMY_STARTUP_DELAY_SEC = _env_int("STRATEGY_FACTORY_STARTUP_DELAY_SEC", 0, minimum=0, maximum=3600)
 FACTORY_SUBMISSION_MIN_BACKTEST_TRADES: int = _env_int(
     "STRATEGY_FACTORY_SUBMISSION_MIN_BACKTEST_TRADES",
@@ -210,6 +427,24 @@ FACTORY_SUBMISSION_MIN_EVENT_TARGET_COVERAGE: float = _env_float(
 FACTORY_SUBMISSION_REQUIRE_TASK_PREFERENCE_MATCH: bool = _env_bool(
     "STRATEGY_FACTORY_SUBMISSION_REQUIRE_TASK_PREFERENCE_MATCH",
     True,
+)
+FACTORY_INCUBATION_FORMAL_SLOT_COUNT: int = _env_int(
+    "STRATEGY_FACTORY_INCUBATION_FORMAL_SLOT_COUNT",
+    12,
+    minimum=1,
+    maximum=128,
+)
+FACTORY_INCUBATION_OBSERVE_SLOT_COUNT: int = _env_int(
+    "STRATEGY_FACTORY_INCUBATION_OBSERVE_SLOT_COUNT",
+    24,
+    minimum=0,
+    maximum=256,
+)
+FACTORY_INCUBATION_EXPLORATION_RATIO: float = _env_float(
+    "STRATEGY_FACTORY_INCUBATION_EXPLORATION_RATIO",
+    0.12,
+    minimum=0.0,
+    maximum=0.5,
 )
 FACTORY_SUBMISSION_REJECT_GENERIC_AI_NAMES: bool = _env_bool(
     "STRATEGY_FACTORY_SUBMISSION_REJECT_GENERIC_AI_NAMES",
@@ -320,7 +555,22 @@ LLM_FAN_OUT_COUNT: int = _env_int("STRATEGY_FACTORY_LLM_FAN_OUT_COUNT", 2, minim
 # --- Spawner 扩展 (Phase 2) ---
 SPAWNER_TARGET_TOTAL: int = _env_int("STRATEGY_FACTORY_SPAWNER_TARGET_TOTAL", 20, minimum=4, maximum=32)
 SPAWNER_FILL_BUDGET_MAX: int = _env_int("STRATEGY_FACTORY_SPAWNER_FILL_BUDGET_MAX", 10, minimum=2, maximum=16)
-SPAWNER_EVENT_FILL_BUDGET_MAX: int = _env_int("STRATEGY_FACTORY_SPAWNER_EVENT_FILL_BUDGET_MAX", 3, minimum=0, maximum=6)
+SPAWNER_EVENT_FILL_BUDGET_MAX: int = _env_int(
+    (
+        "STRATEGY_FACTORY_EVENT_FILL_BUDGET_MAX",
+        "STRATEGY_FACTORY_SPAWNER_EVENT_FILL_BUDGET_MAX",
+    ),
+    3,
+    minimum=0,
+    maximum=6,
+)
+SPAWNER_EVENT_SOURCE_BASE_CAP: int = _env_int("STRATEGY_FACTORY_SPAWNER_EVENT_SOURCE_BASE_CAP", 1, minimum=0, maximum=4)
+SPAWNER_EVENT_SOURCE_SUPPLEMENTAL_BONUS: int = _env_int(
+    "STRATEGY_FACTORY_SPAWNER_EVENT_SOURCE_SUPPLEMENTAL_BONUS",
+    1,
+    minimum=0,
+    maximum=3,
+)
 
 # --- 调度模式配置 ---
 # "continuous" = 24/7 循环（盘中15min、盘后60min）；"daily" = 每日定时一次（向后兼容）
@@ -345,6 +595,12 @@ BACKTEST_TYPE_THRESHOLDS: Dict[str, dict] = {
     "growth_factor": {"sharpe_min": 0.32, "mdd_max": 0.34, "trades_min": 4},
     "multi_factor": {"sharpe_min": 0.30, "mdd_max": 0.30, "trades_min": 4},
     "macro_timing": {"sharpe_min": 0.20, "mdd_max": 0.28, "trades_min": 2},
+    "volatility_breakout": {"sharpe_min": 0.32, "mdd_max": 0.35, "trades_min": 4},
+    "gap_fill": {"sharpe_min": 0.22, "mdd_max": 0.36, "trades_min": 4},
+    "mean_reversion_short": {"sharpe_min": 0.22, "mdd_max": 0.36, "trades_min": 5},
+    "sector_rotation": {"sharpe_min": 0.26, "mdd_max": 0.33, "trades_min": 3},
+    "north_capital_track": {"sharpe_min": 0.30, "mdd_max": 0.34, "trades_min": 4},
+    "margin_divergence": {"sharpe_min": 0.24, "mdd_max": 0.35, "trades_min": 3},
 }
 
 # --- 多阶段 Pipeline 配置 ---
@@ -379,7 +635,7 @@ PIPELINE_STAGE_TIMEOUTS: Dict[str, float] = {
 }
 
 PIPELINE_STAGE_MAX_TOKENS: Dict[str, int] = {
-    "event_recognition": 800,
+    "event_recognition": 400,
     "theme_propagation": 600,
     "exposure_mapping": 800,
     "market_confirmation": 600,
@@ -387,7 +643,7 @@ PIPELINE_STAGE_MAX_TOKENS: Dict[str, int] = {
 }
 
 PIPELINE_STAGE_TEMPERATURE: Dict[str, float] = {
-    "event_recognition": 0.2,
+    "event_recognition": 0.0,
     "theme_propagation": 0.2,
     "exposure_mapping": 0.25,
     "market_confirmation": 0.15,

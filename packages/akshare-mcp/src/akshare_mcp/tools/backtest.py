@@ -8,7 +8,9 @@ from ..services import backtest_engine
 from ..services.data_sync import data_sync_service
 from ..storage import get_db
 from ..utils import ok, fail, normalize_code, parse_date_input
+from .manager_protocol import fail_with_meta, ok_with_meta
 from .market import get_kline_data
+from .pit_middleware import build_pit_meta_simple
 
 # 检查Ray是否可用
 RAY_AVAILABLE = False
@@ -263,6 +265,46 @@ def _finalize_batch_backtest_payload(
     return payload
 
 
+def _build_backtest_pit_meta(
+    *,
+    as_of: Optional[str],
+    start_date: Optional[str],
+    end_date: Optional[str],
+    short_period: Optional[int] = None,
+    long_period: Optional[int] = None,
+) -> Dict[str, Any]:
+    event_time_window = None
+    if start_date or end_date:
+        event_time_window = {
+            "start": start_date,
+            "end": end_date,
+        }
+
+    feature_time_window = None
+    resolved_lookback = max(int(short_period or 0), int(long_period or 0), 0)
+    if resolved_lookback > 0:
+        feature_time_window = {"lookback_bars": resolved_lookback}
+
+    resolved_as_of = as_of or end_date or start_date
+    return build_pit_meta_simple(
+        resolved_as_of,
+        event_time=end_date or start_date,
+        event_time_window=event_time_window,
+        feature_time_window=feature_time_window,
+    )
+
+
+def _build_execution_reality_payload(cost: Dict[str, Any]) -> Dict[str, Any]:
+    from ..services.execution_reality import build_execution_reality_report
+
+    report = build_execution_reality_report(
+        mode="backtest",
+        fill_model="close_price",
+        kwargs=cost,
+    )
+    return report.to_dict()
+
+
 async def run_simple_backtest(
     code: str,
     strategy: str = 'ma_cross',
@@ -274,6 +316,7 @@ async def run_simple_backtest(
     long_period: int = 20,
     benchmark: str = '000300',
     slippage: float = 0.0,
+    as_of: Optional[str] = None,
 ):
     """模块级回测接口（兼容测试中的直接导入调用）。"""
     try:
@@ -306,9 +349,20 @@ async def run_simple_backtest(
             'benchmark_klines': benchmark_klines,
             '_cost_assumptions': cost,
         }
+        pit_meta = _build_backtest_pit_meta(
+            as_of=as_of,
+            start_date=start_date,
+            end_date=end_date,
+            short_period=short_period,
+            long_period=long_period,
+        )
+        execution_reality = _build_execution_reality_payload(cost)
         result = backtest_engine.run_backtest(code, klines, strategy, params)
         if result.get('success'):
-            return ok(result.get('data') or {})
+            payload = dict(result.get('data') or {})
+            payload["pit"] = pit_meta
+            payload["execution_reality"] = execution_reality
+            return ok(payload)
         return fail(result.get('error', 'Backtest failed'))
     except Exception as e:
         return fail(str(e))
@@ -326,6 +380,7 @@ async def run_batch_backtest(
     use_parallel: bool = True,
     fetch_concurrency: int = 8,
     warmup_before_fetch: bool = False,
+    as_of: Optional[str] = None,
 ):
     """模块级批量回测接口（兼容 tests 直接 import）。"""
     try:
@@ -357,6 +412,14 @@ async def run_batch_backtest(
             'long_period': long_period,
             '_cost_assumptions': cost,
         }
+        pit_meta = _build_backtest_pit_meta(
+            as_of=as_of,
+            start_date=start_date,
+            end_date=end_date,
+            short_period=short_period,
+            long_period=long_period,
+        )
+        execution_reality = _build_execution_reality_payload(cost)
         io_start = time.perf_counter()
         klines_dict, source_stats = await _fetch_klines_batch_global(
             db=db,
@@ -396,6 +459,8 @@ async def run_batch_backtest(
             failure_reasons=failure_reasons,
             processed_codes=list(klines_dict.keys()),
         )
+        payload["pit"] = pit_meta
+        payload["execution_reality"] = execution_reality
         return ok(payload)
     except Exception as e:
         return fail(str(e))
@@ -466,6 +531,7 @@ def register(mcp):
         long_period: int = 20,
         benchmark: str = '000300',
         slippage: float = 0.0,
+        as_of: Optional[str] = None,
     ):
         """
         运行简单回测
@@ -482,6 +548,15 @@ def register(mcp):
             benchmark: 基准代码（默认000300）
             slippage: 滑点成本率（与commission叠加）
         """
+        started_at = time.perf_counter()
+        source_chain = ["backtest.run_simple_backtest", "db.get_klines"]
+        pit_meta = _build_backtest_pit_meta(
+            as_of=as_of,
+            start_date=start_date,
+            end_date=end_date,
+            short_period=short_period,
+            long_period=long_period,
+        )
         try:
             db = get_db()
 
@@ -490,16 +565,38 @@ def register(mcp):
             # 日期格式处理：支持 YYYY 或 YYYY-MM-DD
             start_date, end_date = _normalize_dates(start_date, end_date)
 
-            klines, _ = await _fetch_klines(db, code, start_date, end_date)
+            klines, data_source_name = await _fetch_klines(db, code, start_date, end_date)
+            if data_source_name == "market_fallback":
+                source_chain.append("market.get_kline_data")
 
             if not klines:
-                return fail('No kline data found')
+                return fail_with_meta(
+                    'No kline data found',
+                    tool_name="run_simple_backtest",
+                    action="run",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta={
+                        "quality": {"status": "not_found", "data_source": data_source_name},
+                        "pit": pit_meta,
+                        "side_effect": {
+                            "level": "read_only",
+                            "target": code,
+                            "confirmation_required": False,
+                            "idempotent": True,
+                        },
+                        "degraded": True,
+                    },
+                )
 
             benchmark_klines: List[Dict[str, Any]] = []
             benchmark_code = (benchmark or '').strip()
+            benchmark_source: Optional[str] = None
             if benchmark_code:
                 bm_code = normalize_code(benchmark_code)
-                benchmark_klines, _ = await _fetch_klines(db, bm_code, start_date, end_date)
+                benchmark_klines, benchmark_source = await _fetch_klines(db, bm_code, start_date, end_date)
+                if benchmark_source == "market_fallback":
+                    source_chain.append("market.get_kline_data:benchmark")
 
             from ..services.cost_model import resolve_cost_assumptions
             cost = resolve_cost_assumptions(
@@ -516,16 +613,77 @@ def register(mcp):
                 'benchmark_klines': benchmark_klines,
                 '_cost_assumptions': cost,
             }
+            execution_reality = _build_execution_reality_payload(cost)
 
             result = backtest_engine.run_backtest(code, klines, strategy, params)
 
             if result.get('success'):
-                return ok(result['data'])
+                degraded = data_source_name != "timescaledb" or bool(benchmark_code and not benchmark_klines)
+                payload = dict(result['data'])
+                payload["pit"] = pit_meta
+                payload["execution_reality"] = execution_reality
+                return ok_with_meta(
+                    payload,
+                    tool_name="run_simple_backtest",
+                    action="run",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta={
+                        "quality": {
+                            "status": "partial" if degraded else "available",
+                            "data_source": data_source_name,
+                            "benchmark_source": benchmark_source,
+                            "strategy": strategy,
+                        },
+                        "pit": pit_meta,
+                        "side_effect": {
+                            "level": "read_only",
+                            "target": code,
+                            "confirmation_required": False,
+                            "idempotent": True,
+                        },
+                        "degraded": degraded,
+                    },
+                )
             else:
-                return fail(result.get('error', 'Backtest failed'))
+                return fail_with_meta(
+                    result.get('error', 'Backtest failed'),
+                    tool_name="run_simple_backtest",
+                    action="run",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta={
+                        "quality": {"status": "failed", "data_source": data_source_name, "strategy": strategy},
+                        "pit": pit_meta,
+                        "side_effect": {
+                            "level": "read_only",
+                            "target": code,
+                            "confirmation_required": False,
+                            "idempotent": True,
+                        },
+                        "degraded": True,
+                    },
+                )
 
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="run_simple_backtest",
+                action="run",
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta={
+                    "quality": {"status": "failed", "strategy": strategy},
+                    "pit": pit_meta,
+                    "side_effect": {
+                        "level": "read_only",
+                        "target": normalize_code(code),
+                        "confirmation_required": False,
+                        "idempotent": True,
+                    },
+                    "degraded": True,
+                },
+            )
 
     @mcp.tool()
     async def run_batch_backtest(
@@ -540,6 +698,7 @@ def register(mcp):
         use_parallel: bool = True,
         fetch_concurrency: int = 8,
         warmup_before_fetch: bool = False,
+        as_of: Optional[str] = None,
     ):
         """
         批量回测多只股票（支持Ray并行加速）- 性能优化版
@@ -559,6 +718,15 @@ def register(mcp):
         Returns:
             批量回测结果，包含每只股票的回测指标
         """
+        started_at = time.perf_counter()
+        source_chain = ["backtest.run_batch_backtest", "db.get_klines_batch"]
+        pit_meta = _build_backtest_pit_meta(
+            as_of=as_of,
+            start_date=start_date,
+            end_date=end_date,
+            short_period=short_period,
+            long_period=long_period,
+        )
         try:
             total_start = time.perf_counter()
             db = get_db()
@@ -567,11 +735,29 @@ def register(mcp):
             start_date, end_date = _normalize_dates(start_date, end_date)
             normalized_codes = [normalize_code(c) for c in (codes or [])]
             if not normalized_codes:
-                return fail("codes is empty")
+                return fail_with_meta(
+                    "codes is empty",
+                    tool_name="run_batch_backtest",
+                    action="run",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta={
+                        "quality": {"status": "invalid_params"},
+                        "pit": pit_meta,
+                        "side_effect": {
+                            "level": "read_only",
+                            "target": "batch_backtest",
+                            "confirmation_required": False,
+                            "idempotent": True,
+                        },
+                        "degraded": True,
+                    },
+                )
 
             # 可选：回测前预热（走统一 data_sync 流程）
             warmup_result = None
             if warmup_before_fetch:
+                source_chain.append("data_sync.sync_stock_klines")
                 warmup_result = await data_sync_service.sync_stock_klines(
                     codes=normalized_codes,
                     start_date=start_date or "",
@@ -589,9 +775,28 @@ def register(mcp):
                 fetch_concurrency=fetch_concurrency,
             )
             io_seconds = time.perf_counter() - io_start
+            if source_stats.get("market_fallback"):
+                source_chain.append("market.get_kline_data")
 
             if not klines_dict:
-                return fail("No kline data found for any code")
+                return fail_with_meta(
+                    "No kline data found for any code",
+                    tool_name="run_batch_backtest",
+                    action="run",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta={
+                        "quality": {"status": "not_found", "source_stats": source_stats},
+                        "pit": pit_meta,
+                        "side_effect": {
+                            "level": "read_only",
+                            "target": "batch_backtest",
+                            "confirmation_required": False,
+                            "idempotent": True,
+                        },
+                        "degraded": True,
+                    },
+                )
 
             from ..services.cost_model import resolve_cost_assumptions
             cost = resolve_cost_assumptions(
@@ -605,6 +810,7 @@ def register(mcp):
                 "long_period": long_period,
                 "_cost_assumptions": cost,
             }
+            execution_reality = _build_execution_reality_payload(cost)
 
             # 阶段2：回测计算
             compute_start = time.perf_counter()
@@ -656,7 +862,24 @@ def register(mcp):
             compute_seconds = time.perf_counter() - compute_start
 
             if not result.get("success"):
-                return fail(result.get("error", "Batch backtest failed"))
+                return fail_with_meta(
+                    result.get("error", "Batch backtest failed"),
+                    tool_name="run_batch_backtest",
+                    action="run",
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    extra_meta={
+                        "quality": {"status": "failed", "source_stats": source_stats},
+                        "pit": pit_meta,
+                        "side_effect": {
+                            "level": "read_only",
+                            "target": "batch_backtest",
+                            "confirmation_required": False,
+                            "idempotent": True,
+                        },
+                        "degraded": True,
+                    },
+                )
 
             # 阶段3：汇总统计
             aggregation_start = time.perf_counter()
@@ -680,7 +903,50 @@ def register(mcp):
                 "target": "same codes, total time reduce 30%+",
                 "io_parallel_enabled": True,
             }
+            payload["pit"] = pit_meta
+            payload["execution_reality"] = execution_reality
 
-            return ok(payload)
+            degraded = bool(payload.get("degraded")) or bool(source_stats.get("market_fallback")) or bool(source_stats.get("none"))
+            return ok_with_meta(
+                payload,
+                tool_name="run_batch_backtest",
+                action="run",
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta={
+                    "quality": {
+                        "status": "partial" if degraded else "available",
+                        "source_stats": source_stats,
+                        "successful_count": payload.get("successful_count"),
+                        "failed_count": payload.get("failed_count"),
+                        "execution_mode": execution_mode,
+                    },
+                    "pit": pit_meta,
+                    "side_effect": {
+                        "level": "read_only",
+                        "target": "batch_backtest",
+                        "confirmation_required": False,
+                        "idempotent": True,
+                    },
+                    "degraded": degraded,
+                },
+            )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="run_batch_backtest",
+                action="run",
+                started_at=started_at,
+                source_chain=source_chain,
+                extra_meta={
+                    "quality": {"status": "failed"},
+                    "pit": pit_meta,
+                    "side_effect": {
+                        "level": "read_only",
+                        "target": "batch_backtest",
+                        "confirmation_required": False,
+                        "idempotent": True,
+                    },
+                    "degraded": True,
+                },
+            )

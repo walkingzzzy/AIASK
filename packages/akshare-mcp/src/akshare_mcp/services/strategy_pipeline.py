@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -36,6 +37,68 @@ from .strategy_llm_provider import (
     StrategyLLMRequestError,
     get_strategy_llm_provider,
 )
+
+
+def _normalize_hint_text(value: Any) -> str:
+    return str(value or "").strip().lower().replace(" ", "").replace("_", "")
+
+
+def _extract_named_market_hints(snapshot: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any):
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        names.append(text)
+
+    for item in list(snapshot.get("hot_sectors") or snapshot.get("sectors") or [])[:12]:
+        if isinstance(item, dict):
+            for key in ("group", "name", "sector", "theme"):
+                add(item.get(key))
+        else:
+            add(item)
+    for item in list(snapshot.get("dragon_tiger") or [])[:10]:
+        if isinstance(item, dict):
+            add(item.get("name"))
+            add(item.get("industry"))
+    return names
+
+
+def _match_theme_candidates(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen_codes: set[str] = set()
+    hint_names = _extract_named_market_hints(snapshot)
+    for hint in hint_names:
+        normalized_hint = _normalize_hint_text(hint)
+        if not normalized_hint:
+            continue
+        for theme in EXTENDED_THEME_LIBRARY:
+            aliases = [str(alias or "").strip() for alias in list(theme.get("aliases") or []) if str(alias or "").strip()]
+            alias_tokens = [theme.get("name"), theme.get("theme_code"), *aliases]
+            normalized_tokens = [_normalize_hint_text(token) for token in alias_tokens if _normalize_hint_text(token)]
+            if not any(
+                normalized_hint in token or token in normalized_hint
+                for token in normalized_tokens
+            ):
+                continue
+            theme_code = str(theme.get("theme_code") or "").strip()
+            if not theme_code or theme_code in seen_codes:
+                break
+            seen_codes.add(theme_code)
+            candidates.append(
+                {
+                    "source_hint": hint,
+                    "theme_code": theme_code,
+                    "theme_name": theme.get("name"),
+                    "aliases": aliases[:4],
+                    "parent": theme.get("parent"),
+                }
+            )
+            break
+    return candidates
 
 logger = logging.getLogger(__name__)
 
@@ -101,20 +164,77 @@ class MultiStageStrategyPipeline:
         snapshot: Optional[dict[str, Any]] = None,
         research_task: Optional[dict[str, Any]] = None,
     ) -> PipelineResult:
-        """完整 5 阶段编排。"""
+        """两阶段并行编排。
+
+        Phase-1（并行）：event_recognition + theme_propagation + exposure_mapping
+          三路同时从初始 snapshot 出发，互不依赖，节省约 2 个 LLM 往返延迟。
+          theme_propagation / exposure_mapping 的 fallback 已增强，可在无上游
+          输出时从 snapshot 热门板块推断，保证输出非空。
+
+        Phase-2（串行）：market_confirmation → strategy_generation
+          依赖 Phase-1 合并后的上下文，必须顺序执行。
+        """
         snapshot = snapshot or {}
         pipeline_started = time.perf_counter()
         result = PipelineResult()
         PIPELINE_STAGE_TIMEOUT_SEC, PIPELINE_STAGE_TIMEOUTS = _get_pipeline_constants()
 
-        # 构建 Stage 1 的初始输入
         stage_input = self._build_initial_input(snapshot, research_task)
-
-        # 跟踪 LLM 失败状态：超时或连续验证失败后，后续阶段直接走 fallback
         skip_llm = False
-        consecutive_llm_failures = 0
 
-        for stage_id in STAGE_ORDER:
+        # ── Phase 1：三路并行 ────────────────────────────────────────────────
+        PARALLEL_STAGES = ["event_recognition", "theme_propagation", "exposure_mapping"]
+        parallel_results: list[Any] = await asyncio.gather(
+            *[
+                self.run_stage(
+                    db=db,
+                    stage_id=sid,
+                    input_data=stage_input,
+                    snapshot=snapshot,
+                    stage_def=self.registry.get(sid),
+                    skip_llm=skip_llm,
+                )
+                for sid in PARALLEL_STAGES
+            ],
+            return_exceptions=True,
+        )
+
+        timeout_hit = False
+        parallel_llm_failures = 0
+        fatal_error: Optional[str] = None
+
+        for sid, sr in zip(PARALLEL_STAGES, parallel_results):
+            if isinstance(sr, BaseException):
+                logger.warning("Pipeline stage %s raised exception: %s", sid, sr)
+                from .strategy_stages import StageResult as _SR
+                sr = _SR(stage_id=sid, output={}, used_fallback=True, error=str(sr))
+            result.stages[sid] = sr
+            if sr.error and not sr.output:
+                fatal_error = f"stage {sid} failed: {sr.error}"
+                break
+            if not skip_llm and sr.used_fallback:
+                parallel_llm_failures += 1
+                _limit = PIPELINE_STAGE_TIMEOUTS.get(sid, PIPELINE_STAGE_TIMEOUT_SEC)
+                if sr.elapsed_sec >= _limit * 0.8:
+                    timeout_hit = True
+            stage_input = {**stage_input, **sr.output}
+
+        if fatal_error:
+            result.error = fatal_error
+            result.candidates = list(stage_input.get("candidates") or [])
+            result.elapsed_sec = time.perf_counter() - pipeline_started
+            return result
+
+        if timeout_hit or parallel_llm_failures >= 2:
+            skip_llm = True
+            logger.info(
+                "Pipeline Phase-1: %d LLM failure(s), timeout_hit=%s → skip_llm for Phase-2",
+                parallel_llm_failures, timeout_hit,
+            )
+
+        # ── Phase 2：串行（依赖 Phase-1 合并上下文）────────────────────────
+        consecutive_llm_failures = 0
+        for stage_id in ["market_confirmation", "strategy_generation"]:
             stage_def = self.registry.get(stage_id)
             if stage_def is None:
                 logger.error("Pipeline stage %s not found in registry", stage_id)
@@ -132,9 +252,8 @@ class MultiStageStrategyPipeline:
 
             if not skip_llm:
                 if stage_result.used_fallback:
-                    if stage_def.prefer_fallback:
-                        consecutive_llm_failures = 0
-                    consecutive_llm_failures += 1
+                    if not stage_def.prefer_fallback:
+                        consecutive_llm_failures += 1
                     _stage_limit = PIPELINE_STAGE_TIMEOUTS.get(stage_id, PIPELINE_STAGE_TIMEOUT_SEC)
                     if stage_result.elapsed_sec >= _stage_limit * 0.8:
                         logger.info(
@@ -142,25 +261,21 @@ class MultiStageStrategyPipeline:
                             stage_id, stage_result.elapsed_sec,
                         )
                         skip_llm = True
-                    # 连续失败检测：连续 2 次 LLM 输出无效 → 跳过
                     elif consecutive_llm_failures >= 2:
                         logger.info(
-                            "LLM failed %d consecutive stages, skipping LLM for remaining stages",
+                            "LLM failed %d consecutive stages in Phase-2, skipping LLM",
                             consecutive_llm_failures,
                         )
                         skip_llm = True
                 else:
-                    consecutive_llm_failures = 0  # LLM 成功则重置计数
+                    consecutive_llm_failures = 0
 
             if stage_result.error and not stage_result.output:
-                # 严重失败 — 中断 pipeline
                 result.error = f"stage {stage_id} failed: {stage_result.error}"
                 break
 
-            # 链式传递: 当前 output 合并到下一阶段的 input
             stage_input = {**stage_input, **stage_result.output}
 
-        # 从最终 stage_input 中提取 candidates
         result.candidates = list(stage_input.get("candidates") or [])
         result.elapsed_sec = time.perf_counter() - pipeline_started
         return result
@@ -253,16 +368,32 @@ class MultiStageStrategyPipeline:
                 llm_error = str(exc)
                 llm_error_metrics = dict(getattr(exc, "metrics", {}) or {})
                 llm_error_type = str(llm_error_metrics.get("last_error_type") or exc.__class__.__name__)
-                logger.warning("Stage %s LLM call failed: %s, falling back", stage_id, exc)
+                if llm_error_metrics.get("status") == "cooldown_skip" and llm_error_type == exc.__class__.__name__:
+                    llm_error_type = (
+                        "RecentOverloadCooldown"
+                        if llm_error_metrics.get("cooldown_reason") == "recent_overload"
+                        else "RecentTimeoutCooldown"
+                    )
+                log_fn = logger.info if llm_error_metrics.get("status") == "cooldown_skip" else logger.warning
+                log_fn("Stage %s LLM call failed: %s, falling back", stage_id, exc)
             except Exception as exc:
                 llm_error = str(exc)
-                llm_error_type = exc.__class__.__name__
+                llm_error_metrics = dict(getattr(exc, "metrics", {}) or {})
+                llm_error_type = str(llm_error_metrics.get("last_error_type") or exc.__class__.__name__)
+                if llm_error_metrics.get("status") == "cooldown_skip" and llm_error_type == exc.__class__.__name__:
+                    llm_error_type = (
+                        "RecentOverloadCooldown"
+                        if llm_error_metrics.get("cooldown_reason") == "recent_overload"
+                        else "RecentTimeoutCooldown"
+                    )
                 llm_error_metrics = {
                     "stage_id": stage_id,
-                    "status": "failed",
+                    "status": llm_error_metrics.get("status") or "failed",
                     "last_error_type": llm_error_type,
+                    **llm_error_metrics,
                 }
-                logger.warning("Stage %s LLM call failed: %s, falling back", stage_id, exc)
+                log_fn = logger.info if llm_error_metrics.get("status") == "cooldown_skip" else logger.warning
+                log_fn("Stage %s LLM call failed: %s, falling back", stage_id, exc)
         elif skip_llm:
             logger.info("Stage %s skipping LLM (prior stage timed out)", stage_id)
 
@@ -400,14 +531,32 @@ class MultiStageStrategyPipeline:
             market_snapshot["dragon_tiger_summary"] = dragon_tiger[:10]
 
         theme_directory = [
-            {"theme_code": t["theme_code"], "name": t["name"]}
+            {
+                "theme_code": t["theme_code"],
+                "name": t["name"],
+                "aliases": list(t.get("aliases") or [])[:6],
+                "parent": t.get("parent"),
+            }
             for t in EXTENDED_THEME_LIBRARY
         ]
+        matched_theme_candidates = _match_theme_candidates(snapshot)
 
         initial: dict[str, Any] = {
             "market_snapshot": market_snapshot,
             "theme_library": theme_directory,
         }
+        if matched_theme_candidates:
+            initial["matched_theme_candidates"] = matched_theme_candidates[:8]
+        event_detection_hints = {
+            "hot_sector_names": _extract_named_market_hints(snapshot)[:8],
+            "north_fund_bias": (
+                "inflow"
+                if float((((market_snapshot.get("north_fund") or {}).get("net_inflow") or 0) or 0)) > 0
+                else "neutral_or_outflow"
+            ) if market_snapshot.get("north_fund") else None,
+        }
+        if any(value for value in event_detection_hints.values()):
+            initial["event_detection_hints"] = event_detection_hints
 
         factor_research = dict(snapshot.get("factor_research") or {})
         if factor_research:
@@ -422,10 +571,12 @@ class MultiStageStrategyPipeline:
             initial["research_task"] = {
                 k: research_task[k]
                 for k in (
+                    "task_id",
                     "task_key",
                     "task_source",
                     "theme_code",
                     "direction",
+                    "opportunity_type",
                     "target_symbols",
                     "strategy_preferences",
                     "preferred_strategy_types",
@@ -433,7 +584,16 @@ class MultiStageStrategyPipeline:
                     "target_symbol_policy",
                     "universe_expansion_policy",
                     "preference_strength",
+                    "preference_reason",
                     "validation_focus",
+                    "factor_name",
+                    "candidate_family",
+                    "candidate_name",
+                    "rationale",
+                    "expected_regime",
+                    "validation_score",
+                    "template_generation_profile",
+                    "generation_limit",
                 )
                 if k in research_task
             }
@@ -443,6 +603,111 @@ class MultiStageStrategyPipeline:
     @staticmethod
     def _prepare_stage_input(stage_id: str, input_data: dict[str, Any]) -> dict[str, Any]:
         """按阶段压缩输入，降低 LLM 延迟和超时概率。"""
+        if stage_id == "event_recognition":
+            prepared: dict[str, Any] = {}
+
+            market_snapshot = dict(input_data.get("market_snapshot") or {})
+            if market_snapshot:
+                prepared["market_snapshot"] = {
+                    key: market_snapshot.get(key)
+                    for key in (
+                        "date",
+                        "fear_greed",
+                        "fear_greed_index",
+                        "sentiment",
+                        "sectors",
+                        "north_fund",
+                        "dragon_tiger_summary",
+                    )
+                    if key in market_snapshot
+                }
+                if isinstance(prepared["market_snapshot"].get("sectors"), list):
+                    compact_sectors: list[str] = []
+                    for item in prepared["market_snapshot"]["sectors"][:6]:
+                        if isinstance(item, dict):
+                            compact_sectors.append(str(item.get("group") or item.get("name") or "").strip())
+                        else:
+                            compact_sectors.append(str(item).strip())
+                    prepared["market_snapshot"]["sectors"] = [item for item in compact_sectors if item]
+                if isinstance(prepared["market_snapshot"].get("north_fund"), dict):
+                    prepared["market_snapshot"]["north_fund"] = {
+                        key: prepared["market_snapshot"]["north_fund"].get(key)
+                        for key in ("net_inflow", "net_3d")
+                        if prepared["market_snapshot"]["north_fund"].get(key) is not None
+                    }
+                if isinstance(prepared["market_snapshot"].get("dragon_tiger_summary"), list):
+                    prepared["market_snapshot"]["dragon_tiger_summary"] = [
+                        str(item.get("name") or item.get("code") or "").strip()
+                        for item in prepared["market_snapshot"]["dragon_tiger_summary"][:4]
+                        if isinstance(item, dict)
+                    ]
+                    prepared["market_snapshot"]["dragon_tiger_summary"] = [
+                        item for item in prepared["market_snapshot"]["dragon_tiger_summary"] if item
+                    ]
+
+            hints = dict(input_data.get("event_detection_hints") or {})
+            if hints:
+                prepared["event_detection_hints"] = hints
+
+            matched_theme_candidates = list(input_data.get("matched_theme_candidates") or [])
+            if matched_theme_candidates:
+                prepared["matched_theme_candidates"] = matched_theme_candidates[:6]
+
+            research_task = dict(input_data.get("research_task") or {})
+            if research_task:
+                prepared["research_task"] = {
+                    key: research_task.get(key)
+                    for key in (
+                        "task_id",
+                        "task_key",
+                        "task_source",
+                        "theme_code",
+                        "direction",
+                        "opportunity_type",
+                        "target_symbols",
+                        "preferred_strategy_types",
+                        "allowed_strategy_types",
+                        "preference_reason",
+                        "validation_focus",
+                        "factor_name",
+                        "candidate_family",
+                        "candidate_name",
+                        "expected_regime",
+                        "validation_score",
+                        "template_generation_profile",
+                    )
+                    if key in research_task
+                }
+
+            theme_library = list(input_data.get("theme_library") or [])
+            prioritized_codes = [
+                str(item.get("theme_code") or "").strip()
+                for item in matched_theme_candidates[:6]
+                if str(item.get("theme_code") or "").strip()
+            ]
+            selected_theme_library: list[dict[str, Any]] = []
+            seen_theme_codes: set[str] = set()
+            for code in prioritized_codes:
+                for item in theme_library:
+                    item_code = str((item or {}).get("theme_code") or "").strip()
+                    if item_code != code or item_code in seen_theme_codes:
+                        continue
+                    seen_theme_codes.add(item_code)
+                    selected_theme_library.append(item)
+                    break
+            if not prioritized_codes:
+                for item in theme_library:
+                    item_code = str((item or {}).get("theme_code") or "").strip()
+                    if not item_code or item_code in seen_theme_codes:
+                        continue
+                    seen_theme_codes.add(item_code)
+                    selected_theme_library.append(item)
+                    if len(selected_theme_library) >= 4:
+                        break
+            if selected_theme_library:
+                prepared["theme_library"] = selected_theme_library[:6]
+            return prepared
+
         if stage_id != "strategy_generation":
             return input_data
 
@@ -461,6 +726,7 @@ class MultiStageStrategyPipeline:
             prepared["research_task"] = {
                 key: research_task.get(key)
                 for key in (
+                    "task_id",
                     "task_key",
                     "task_source",
                     "theme_code",
@@ -472,8 +738,17 @@ class MultiStageStrategyPipeline:
                     "target_symbol_policy",
                     "universe_expansion_policy",
                     "preference_strength",
+                    "preference_reason",
                     "validation_focus",
                     "opportunity_type",
+                    "factor_name",
+                    "candidate_family",
+                    "candidate_name",
+                    "rationale",
+                    "expected_regime",
+                    "validation_score",
+                    "template_generation_profile",
+                    "generation_limit",
                     "horizon",
                 )
                 if key in research_task

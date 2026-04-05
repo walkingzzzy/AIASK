@@ -24,6 +24,14 @@ from .single_factor_strategy import (
 )
 from .multi_factor_strategy import MultiFactorStrategy
 from .macro_timing_strategy import MacroTimingStrategy
+from .expanded_factory_strategies import (
+    VolatilityBreakoutStrategy,
+    GapFillStrategy,
+    MeanReversionShortStrategy,
+    SectorRotationStrategy,
+    NorthCapitalTrackStrategy,
+    MarginDivergenceStrategy,
+)
 
 # 自动注册内置策略
 for _s in [MaCrossStrategy, MomentumStrategy, RsiStrategy, BuyAndHoldStrategy, DslRuleStrategy]:
@@ -32,6 +40,16 @@ for _s in [MaCrossStrategy, MomentumStrategy, RsiStrategy, BuyAndHoldStrategy, D
 # 注册工厂策略
 for _s in [ValueFactorStrategy, QualityFactorStrategy, GrowthFactorStrategy,
            MultiFactorStrategy, MacroTimingStrategy]:
+    StrategyRegistry.register(_s)
+
+for _s in [
+    VolatilityBreakoutStrategy,
+    GapFillStrategy,
+    MeanReversionShortStrategy,
+    SectorRotationStrategy,
+    NorthCapitalTrackStrategy,
+    MarginDivergenceStrategy,
+]:
     StrategyRegistry.register(_s)
 
 # 条件导入并行引擎
@@ -54,4 +72,6 @@ __all__ = [
     'MaCrossStrategy', 'MomentumStrategy', 'RsiStrategy', 'BuyAndHoldStrategy', 'DslRuleStrategy',
     'ValueFactorStrategy', 'QualityFactorStrategy', 'GrowthFactorStrategy',
     'MultiFactorStrategy', 'MacroTimingStrategy',
+    'VolatilityBreakoutStrategy', 'GapFillStrategy', 'MeanReversionShortStrategy',
+    'SectorRotationStrategy', 'NorthCapitalTrackStrategy', 'MarginDivergenceStrategy',
 ]

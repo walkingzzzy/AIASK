@@ -158,6 +158,36 @@ class RuleStrategyGenerator:
                 'name': 'AI 宏观择时',
                 'description': '波动与风险偏好分化阶段偏向宏观择时。',
             },
+            'volatility_breakout': {
+                'params': {'lookback': 20, 'threshold': 0.025},
+                'name': 'AI 波动突破',
+                'description': '趋势扩张与波动放大阶段偏向波动率突破。',
+            },
+            'gap_fill': {
+                'params': {'gap_threshold': 0.02, 'rsi_period': 5, 'oversold': 24, 'overbought': 58},
+                'name': 'AI 跳空回补',
+                'description': '情绪错杀或事件冲击后偏向短线回补机会。',
+            },
+            'mean_reversion_short': {
+                'params': {'rsi_period': 6, 'oversold': 26, 'overbought': 62},
+                'name': 'AI 短线回归',
+                'description': '震荡与防御环境下偏向短周期均值回归。',
+            },
+            'sector_rotation': {
+                'params': {'lookback': 20, 'factor_weights': {'momentum': 0.45, 'quality': 0.30, 'value': 0.25}},
+                'name': 'AI 行业轮动',
+                'description': '主题扩散与风格切换阶段偏向行业轮动打分。',
+            },
+            'north_capital_track': {
+                'params': {'lookback': 15, 'threshold': 0.015},
+                'name': 'AI 北向跟踪',
+                'description': '资金偏好明确时偏向价量共振的北向跟踪。',
+            },
+            'margin_divergence': {
+                'params': {'fear_threshold': 40, 'greed_threshold': 60, 'lookback': 15},
+                'name': 'AI 融资背离',
+                'description': '价格与量能出现背离时偏向融资分歧修复。',
+            },
         }
         template = templates.get(strategy_type)
         if template is None:
@@ -204,9 +234,9 @@ class RuleStrategyGenerator:
                     if strategy_type in CATEGORY_MINIMUMS and strategy_type not in factor_preferred_types:
                         factor_preferred_types.append(strategy_type)
         regime_defaults = (
-            ['momentum', 'ma_cross', 'quality_factor']
+            ['momentum', 'volatility_breakout', 'north_capital_track', 'ma_cross', 'quality_factor']
             if regime == 'greed'
-            else ['value_factor', 'quality_factor', 'rsi']
+            else ['value_factor', 'quality_factor', 'mean_reversion_short', 'gap_fill', 'rsi']
         )
         preferred_anchor = requested_types or factor_preferred_types
         strategy_order = list(dict.fromkeys([*requested_types, *factor_preferred_types, *regime_defaults]))

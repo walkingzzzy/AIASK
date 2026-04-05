@@ -11,7 +11,7 @@ from ._strategy_factory_test_support_runtime import _StrategyDBRuntimeMixin
 from ._strategy_factory_test_support_vector import _StrategyDBVectorMixin
 
 class _DummyMCP:
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn

@@ -129,6 +129,21 @@ class TestReadinessService:
         result = svc.evaluate(snap, factor)
         assert result["readiness_score"] >= 0.0
 
+    def test_scheduler_success_without_governed_pool_becomes_critical_blocker(self):
+        svc = self._svc()
+        factor = self._good_factor()
+        factor["summary"]["factor_source_mode"] = "governed_pool_missing_after_scheduler_success"
+        factor["summary"]["active_candidate_count"] = 0
+        factor["summary"]["governed_source_candidate_count"] = 0
+        factor["summary"]["scheduler_recent_success"] = True
+        factor["summary"]["scheduler_llm_validation_status"] = "success"
+
+        result = svc.evaluate(self._good_snapshot(), factor)
+
+        assert result["can_proceed"] is False
+        assert "governed_candidate_pool_missing_after_scheduler_success" in result["blockers"]
+        assert result["critical_blocker_count"] == 1
+
 
 # ---------------------------------------------------------------------------
 # TaskOrchestrator – classify_tasks

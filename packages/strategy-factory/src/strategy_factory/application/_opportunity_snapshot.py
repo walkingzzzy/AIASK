@@ -4,10 +4,62 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from ..domain.constants import AUTONOMY_CANDIDATES_PER_TASK, preferred_strategy_types_for_factor
+from ..domain.constants import AUTONOMY_CANDIDATES_PER_TASK, OPPORTUNITY_TARGET_SYMBOLS_PER_TASK, preferred_strategy_types_for_factor
 
 
 class _MarketOpportunityScannerSnapshotMixin:
+    _CONSERVATIVE_MEAN_REVERSION_TOKENS = (
+        "closelocation",
+        "intradayresilience",
+        "trendefficiency",
+        "pullback",
+        "quality",
+        "stability",
+        "quiet",
+        "resilience",
+        "repair",
+        "reversion",
+        "defensive",
+    )
+    _CONSERVATIVE_FLOW_TOKENS = (
+        "capitalflow",
+        "northcapital",
+        "northbound",
+        "fundflow",
+        "liquidity",
+        "turnover",
+    )
+    _CONSERVATIVE_ROTATION_TOKENS = (
+        "rotation",
+        "sector",
+        "cycle",
+        "divergence",
+        "breadth",
+    )
+    _CONSERVATIVE_BREAKOUT_TOKENS = (
+        "momentum",
+        "macross",
+        "cross",
+        "trend",
+        "breakout",
+        "gapcontinuation",
+        "expansion",
+        "acceleration",
+        "volatility",
+    )
+    _PIPELINE_TEMPLATE_ALLOWED_TYPES = frozenset(
+        {
+            "ma_cross",
+            "rsi",
+            "gap_fill",
+            "mean_reversion_short",
+            "volatility_breakout",
+            "sector_rotation",
+            "north_capital_track",
+            "margin_divergence",
+        }
+    )
+
     @classmethod
     def _governed_regime_preferences(cls, regime_name: str, *, fear_greed: float) -> List[str]:
         lowered = str(regime_name or "").strip().lower()
@@ -27,9 +79,64 @@ class _MarketOpportunityScannerSnapshotMixin:
             return ["rsi", "value_factor", "quality_factor"]
         return ["ma_cross", "quality_factor", "growth_factor"]
 
+    @staticmethod
+    def _normalized_family_hint(value: Any) -> str:
+        return (
+            str(value or "")
+            .strip()
+            .lower()
+            .replace(" ", "")
+            .replace("_", "")
+            .replace("-", "")
+        )
+
+    @classmethod
+    def _governed_family_generation_contract(
+        cls,
+        family_name: str,
+        *,
+        base_preferences: List[str],
+    ) -> dict[str, Any]:
+        normalized = cls._normalized_family_hint(family_name)
+        if not normalized:
+            return {
+                "preferred_strategy_types": list(base_preferences),
+                "allowed_strategy_types": [],
+                "template_generation_profile": None,
+            }
+
+        if any(token in normalized for token in cls._CONSERVATIVE_MEAN_REVERSION_TOKENS):
+            preferred = ["rsi", "gap_fill", "ma_cross"]
+            profile = "conservative_mean_reversion"
+        elif any(token in normalized for token in cls._CONSERVATIVE_FLOW_TOKENS):
+            preferred = ["north_capital_track", "sector_rotation", "ma_cross"]
+            profile = "conservative_flow"
+        elif any(token in normalized for token in cls._CONSERVATIVE_ROTATION_TOKENS):
+            preferred = ["sector_rotation", "margin_divergence", "ma_cross"]
+            profile = "conservative_rotation"
+        elif any(token in normalized for token in cls._CONSERVATIVE_BREAKOUT_TOKENS):
+            preferred = ["volatility_breakout", "ma_cross", "sector_rotation"]
+            profile = "conservative_breakout"
+        else:
+            return {
+                "preferred_strategy_types": list(base_preferences),
+                "allowed_strategy_types": [],
+                "template_generation_profile": None,
+            }
+
+        ordered = list(dict.fromkeys([*preferred, *list(base_preferences or [])]))
+        ordered = [item for item in ordered if item != "momentum"]
+        allowed = [item for item in ordered if item in cls._PIPELINE_TEMPLATE_ALLOWED_TYPES]
+        return {
+            "preferred_strategy_types": ordered[:5],
+            "allowed_strategy_types": allowed[:5],
+            "template_generation_profile": profile,
+        }
+
     @classmethod
     def _build_snapshot_tasks(cls, snapshot: dict[str, Any], rows: List[dict]) -> List[dict]:
         tasks: List[dict] = []
+        target_selection_pressure: Dict[str, float] = {}
         fg = float(snapshot.get("fear_greed_index") or 50.0)
         factor_research = dict(snapshot.get("factor_research") or {})
         active_candidate_pool = dict(factor_research.get("active_candidate_pool") or {})
@@ -90,6 +197,32 @@ class _MarketOpportunityScannerSnapshotMixin:
                 f"{regime_rationale[:-1]}，治理后候选池主导 regime="
                 f"{primary_governed_regime_name} (count={int(primary_governed_regime.get('count') or 0)})。"
             )
+
+        def _select_snapshot_targets(
+            task_key: str,
+            task_rows: List[dict],
+            *,
+            hot: List[str] | None = None,
+            cold: List[str] | None = None,
+        ) -> List[str]:
+            selected = cls._factor_scored_top_codes(
+                task_rows,
+                limit=OPPORTUNITY_TARGET_SYMBOLS_PER_TASK,
+                snapshot=snapshot,
+                hot_sectors=hot or hot_sectors,
+                cold_sectors=cold or cold_sectors,
+                selection_pressure=target_selection_pressure,
+                task_seed=task_key,
+                candidate_pool_limit=max(OPPORTUNITY_TARGET_SYMBOLS_PER_TASK * 4, 24),
+            )
+            increment = 1.0 if len(selected) <= 1 else (0.75 if len(selected) <= 3 else 0.5)
+            for code in selected:
+                target_selection_pressure[code] = round(
+                    float(target_selection_pressure.get(code, 0.0)) + increment,
+                    4,
+                )
+            return selected
+
         tasks.append(
             cls._finalize_task(
                 {
@@ -114,7 +247,10 @@ class _MarketOpportunityScannerSnapshotMixin:
                         )
                     ),
                     "validation_focus": "target_plus_representative",
-                    "target_symbols": cls._top_codes(rows, limit=5),
+                    "target_symbols": _select_snapshot_targets(
+                        f"regime:{snapshot.get('date')}:{regime_type}",
+                        rows,
+                    ),
                     "focus_industries": hot_sectors[:2] if hot_sectors else [],
                     "focus_markets": [],
                     "priority": 100,
@@ -150,7 +286,12 @@ class _MarketOpportunityScannerSnapshotMixin:
                         "preference_reason": f"sector_heat:hot={','.join(hot_sectors[:2]) or 'none'}",
                         "validation_focus": "target_plus_representative",
                         "focus_industries": [sector],
-                        "target_symbols": cls._top_codes(matched or rows, limit=5),
+                        "target_symbols": _select_snapshot_targets(
+                            f"hot_sector:{snapshot.get('date')}:{sector}",
+                            matched or rows,
+                            hot=hot_sectors,
+                            cold=cold_sectors,
+                        ),
                         "focus_markets": [],
                         "priority": priority,
                         "generation_limit": cls._snapshot_generation_limit(AUTONOMY_CANDIDATES_PER_TASK, priority=priority),
@@ -179,7 +320,12 @@ class _MarketOpportunityScannerSnapshotMixin:
                         "preference_reason": f"sector_cold:cold={','.join(cold_sectors[:2]) or 'none'}",
                         "validation_focus": "target_plus_representative",
                         "focus_industries": [sector],
-                        "target_symbols": cls._top_codes(matched or rows, limit=5),
+                        "target_symbols": _select_snapshot_targets(
+                            f"cold_sector:{snapshot.get('date')}:{sector}",
+                            matched or rows,
+                            hot=hot_sectors,
+                            cold=[sector],
+                        ),
                         "focus_markets": [],
                         "priority": priority,
                         "generation_limit": cls._snapshot_generation_limit(AUTONOMY_CANDIDATES_PER_TASK, priority=priority),
@@ -210,10 +356,15 @@ class _MarketOpportunityScannerSnapshotMixin:
                 for item in governed_top_candidates
                 if str(item.get("family") or "").strip() == family_name
             ][:3]
-            family_preferences = preferred_strategy_types_for_factor(
+            family_base_preferences = preferred_strategy_types_for_factor(
                 family_name,
                 default=regime_preferences or ["ma_cross", "momentum"],
             )
+            family_contract = cls._governed_family_generation_contract(
+                family_name,
+                base_preferences=family_base_preferences,
+            )
+            family_preferences = list(family_contract.get("preferred_strategy_types") or family_base_preferences)
             family_rows = cls._focus_rows_for_family(
                 rows,
                 family_name=family_name,
@@ -246,15 +397,26 @@ class _MarketOpportunityScannerSnapshotMixin:
                         ),
                         "preferred_strategy_types": family_preferences,
                         "strategy_preferences": family_preferences,
+                        "allowed_strategy_types": list(family_contract.get("allowed_strategy_types") or []),
                         "target_symbol_policy": "prefer_intersection",
                         "universe_expansion_policy": "allow_market_fallback",
                         "preference_strength": "medium",
                         "preference_reason": (
                             f"governed_family:{family_name};avg_score={avg_total_score:.1f};count={count}"
+                            + (
+                                f";template_profile={family_contract.get('template_generation_profile')}"
+                                if family_contract.get("template_generation_profile")
+                                else ""
+                            )
                         ),
                         "validation_focus": "candidate_target_only",
                         "focus_industries": focus_industries,
-                        "target_symbols": cls._top_codes(family_rows, limit=5),
+                        "target_symbols": _select_snapshot_targets(
+                            f"governed_family:{snapshot.get('date')}:{family_name}",
+                            family_rows,
+                            hot=hot_sectors,
+                            cold=cold_sectors,
+                        ),
                         "focus_markets": [],
                         "priority": priority,
                         "generation_limit": cls._snapshot_generation_limit(
@@ -263,6 +425,7 @@ class _MarketOpportunityScannerSnapshotMixin:
                         ),
                         "factor_name": family_name,
                         "candidate_family": family_name,
+                        "template_generation_profile": family_contract.get("template_generation_profile"),
                         "validation_score": round(avg_total_score, 4),
                         "expected_regime": [
                             str(item.get("regime") or "").strip()
@@ -288,10 +451,15 @@ class _MarketOpportunityScannerSnapshotMixin:
                 for item in list(candidate.get("expected_regime") or [])
                 if str(item).strip()
             ]
-            candidate_preferences = preferred_strategy_types_for_factor(
+            candidate_base_preferences = preferred_strategy_types_for_factor(
                 family_name or candidate_name,
                 default=regime_preferences or ["ma_cross", "momentum"],
             )
+            candidate_contract = cls._governed_family_generation_contract(
+                family_name or candidate_name,
+                base_preferences=candidate_base_preferences,
+            )
+            candidate_preferences = list(candidate_contract.get("preferred_strategy_types") or candidate_base_preferences)
             family_rows = cls._focus_rows_for_family(
                 rows,
                 family_name=family_name or candidate_name,
@@ -342,16 +510,27 @@ class _MarketOpportunityScannerSnapshotMixin:
                         ),
                         "preferred_strategy_types": candidate_preferences,
                         "strategy_preferences": candidate_preferences,
+                        "allowed_strategy_types": list(candidate_contract.get("allowed_strategy_types") or []),
                         "target_symbol_policy": "prefer_intersection",
                         "universe_expansion_policy": "allow_market_fallback",
                         "preference_strength": "medium",
                         "preference_reason": (
                             f"governed_candidate:{artifact_id or candidate_name};"
                             f"family={family_name or 'unknown'};score={score:.1f}"
+                            + (
+                                f";template_profile={candidate_contract.get('template_generation_profile')}"
+                                if candidate_contract.get("template_generation_profile")
+                                else ""
+                            )
                         ),
                         "validation_focus": "candidate_target_only",
                         "focus_industries": focus_industries,
-                        "target_symbols": cls._top_codes(family_rows, limit=5),
+                        "target_symbols": _select_snapshot_targets(
+                            f"governed_candidate:{snapshot.get('date')}:{artifact_id or candidate_name}",
+                            family_rows,
+                            hot=hot_sectors,
+                            cold=cold_sectors,
+                        ),
                         "focus_markets": [],
                         "priority": priority,
                         "generation_limit": cls._snapshot_generation_limit(
@@ -366,6 +545,7 @@ class _MarketOpportunityScannerSnapshotMixin:
                         "memory_record_id": memory_record_id,
                         "candidate_registry_stage": candidate_registry_stage,
                         "candidate_name": candidate_name,
+                        "template_generation_profile": candidate_contract.get("template_generation_profile"),
                         "candidate_grade": candidate.get("grade"),
                         "validation_score": round(score, 4),
                         "expected_regime": expected_regime,
@@ -393,7 +573,12 @@ class _MarketOpportunityScannerSnapshotMixin:
             if str(item).strip()
         ]
         for idx, factor_name in enumerate(rising_factors[:3], 1):
-            preferences = preferred_strategy_types_for_factor(str(factor_name), default=["ma_cross", "momentum"])
+            factor_base_preferences = preferred_strategy_types_for_factor(str(factor_name), default=["ma_cross", "momentum"])
+            factor_contract = cls._governed_family_generation_contract(
+                str(factor_name),
+                base_preferences=factor_base_preferences,
+            )
+            preferences = list(factor_contract.get("preferred_strategy_types") or factor_base_preferences)
             priority = 80 - idx
             tasks.append(
                 cls._finalize_task(
@@ -407,17 +592,31 @@ class _MarketOpportunityScannerSnapshotMixin:
                         "rationale": f"因子 {factor_name} 在快照中呈上升趋势，自动生成围绕该因子的选股与择时策略。",
                         "preferred_strategy_types": preferences,
                         "strategy_preferences": preferences,
+                        "allowed_strategy_types": list(factor_contract.get("allowed_strategy_types") or []),
                         "target_symbol_policy": "prefer_intersection",
                         "universe_expansion_policy": "allow_market_fallback",
                         "preference_strength": "soft",
-                        "preference_reason": f"factor_research:{factor_name}",
+                        "preference_reason": (
+                            f"factor_research:{factor_name}"
+                            + (
+                                f";template_profile={factor_contract.get('template_generation_profile')}"
+                                if factor_contract.get("template_generation_profile")
+                                else ""
+                            )
+                        ),
                         "validation_focus": "target_plus_representative",
                         "focus_industries": hot_sectors[:1],
-                        "target_symbols": cls._top_codes(rows, limit=5),
+                        "target_symbols": _select_snapshot_targets(
+                            f"factor:{snapshot.get('date')}:{factor_name}",
+                            rows,
+                            hot=hot_sectors,
+                            cold=cold_sectors,
+                        ),
                         "focus_markets": [],
                         "priority": priority,
                         "generation_limit": cls._snapshot_generation_limit(AUTONOMY_CANDIDATES_PER_TASK, priority=priority),
                         "factor_name": factor_name,
+                        "template_generation_profile": factor_contract.get("template_generation_profile"),
                     }
                 )
             )
@@ -449,10 +648,18 @@ class _MarketOpportunityScannerSnapshotMixin:
                             "preference_reason": "breadth_rotation_mix",
                             "validation_focus": "target_plus_representative",
                             "focus_industries": [best_industry],
-                            "target_symbols": cls._top_codes(matched or rows, limit=5),
+                            "target_symbols": _select_snapshot_targets(
+                                f"industry:{snapshot.get('date')}:{best_industry}",
+                                matched or rows,
+                                hot=[best_industry],
+                                cold=cold_sectors,
+                            ),
                             "focus_markets": [],
                             "priority": priority,
-                            "generation_limit": cls._snapshot_generation_limit(AUTONOMY_CANDIDATES_PER_TASK, priority=priority),
+                            "generation_limit": cls._snapshot_generation_limit(
+                                AUTONOMY_CANDIDATES_PER_TASK,
+                                priority=priority,
+                            ),
                         }
                     )
                 )

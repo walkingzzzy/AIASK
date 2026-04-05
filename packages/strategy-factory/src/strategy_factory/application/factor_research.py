@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date, datetime
 from typing import Any, List, Optional, Tuple
 
-from ..domain.constants import FACTORY_RESEARCH_FACTORS, preferred_strategy_types_for_factor
+from ..domain.constants import (
+    FACTORY_RESEARCH_FACTORS,
+    STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK,
+    STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT,
+    preferred_strategy_types_for_factor,
+)
 from ..infrastructure.mcp_services import get_factor_scheduler_singleton, get_quant_manager_callable
+from ._stock_universe_loader import load_stock_universe_rows
 from .runtime import _call_optional_async
 
 
@@ -251,6 +258,207 @@ class FactorResearchBuilder:
         }
 
     @classmethod
+    def _extract_candidate_codes(cls, item: dict[str, Any]) -> List[str]:
+        codes: List[str] = []
+
+        def _extend(value: Any) -> None:
+            for code in cls._normalize_codes(value):
+                if code not in codes:
+                    codes.append(code)
+
+        payload = dict(item or {})
+        _extend(payload.get("codes"))
+        _extend(payload.get("target_symbols"))
+        _extend((payload.get("stock_pool") or {}).get("symbols"))
+        _extend((payload.get("validation_params") or {}).get("codes"))
+        _extend((payload.get("lineage") or {}).get("codes"))
+        _extend((payload.get("candidate") or {}).get("codes"))
+        source_symbol_summary = payload.get("source_symbol_summary")
+        if isinstance(source_symbol_summary, dict):
+            _extend(
+                [
+                    source_symbol_summary.get("code"),
+                    source_symbol_summary.get("symbol"),
+                    source_symbol_summary.get("stock_code"),
+                ]
+            )
+        return codes[:12]
+
+    @classmethod
+    def _build_candidate_hint_map(
+        cls,
+        candidates: List[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        hint_map: dict[str, dict[str, Any]] = {}
+        for item in list(candidates or []):
+            payload = dict(item or {})
+            family_name = str(payload.get("family") or "").strip().lower()
+            mapped_families = cls._preferred_types_for_factor(family_name)
+            families: List[str] = []
+            if family_name and family_name in mapped_families:
+                families.append(family_name)
+            for strategy_type in mapped_families:
+                lowered = str(strategy_type or "").strip().lower()
+                if lowered and lowered not in families:
+                    families.append(lowered)
+            if not families:
+                continue
+            hint_score = max(0.0, min(cls._safe_float(payload.get("total_score")) / 100.0, 1.0))
+            for code in cls._extract_candidate_codes(payload):
+                bucket = hint_map.setdefault(code, {"families": [], "scores": []})
+                for family in families:
+                    if family not in bucket["families"]:
+                        bucket["families"].append(family)
+                bucket["scores"].append(hint_score)
+        return hint_map
+
+    @staticmethod
+    def _family_allocation_entropy(family_counts: dict[str, int]) -> float:
+        total = sum(int(value or 0) for value in family_counts.values())
+        if total <= 0:
+            return 0.0
+        entropy = 0.0
+        for count in family_counts.values():
+            ratio = float(count or 0) / float(total)
+            if ratio > 0.0:
+                entropy -= ratio * math.log(ratio)
+        return round(entropy, 4)
+
+    @classmethod
+    async def _load_stock_family_allocation(
+        cls,
+        db,
+        snapshot: dict[str, Any],
+        *,
+        active_factors: List[str],
+        governed_top_candidates: List[dict[str, Any]],
+    ) -> dict[str, Any]:
+        candidate_hints = cls._build_candidate_hint_map(governed_top_candidates)
+        allocation: dict[str, dict[str, Any]] = {}
+        family_counts: dict[str, int] = {}
+        priorities: list[float] = []
+        limit = max(1, int(STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT))
+        families_per_stock = max(1, int(STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK))
+
+        def _track(code: str, families: List[str], priority: float, *, source_mode: str, row: Optional[dict[str, Any]] = None) -> None:
+            normalized_code = str(code or "").strip()
+            normalized_families = [str(item or "").strip().lower() for item in list(families or []) if str(item or "").strip()]
+            if not normalized_code or not normalized_families:
+                return
+            selected_families = list(dict.fromkeys(normalized_families))[:families_per_stock]
+            if not selected_families:
+                return
+            bounded_priority = round(max(0.01, min(float(priority or 0.0), 0.99)), 4)
+            allocation[normalized_code] = {
+                "families": selected_families,
+                "priority": bounded_priority,
+                "source_mode": source_mode,
+            }
+            if isinstance(row, dict):
+                industry = str(row.get("industry") or row.get("sector") or "").strip()
+                if industry:
+                    allocation[normalized_code]["industry"] = industry
+            priorities.append(bounded_priority)
+            for family in selected_families:
+                family_counts[family] = int(family_counts.get(family, 0)) + 1
+
+        rows: list[dict[str, Any]] = []
+        universe_page_size = max(100, min(limit, 1000))
+        try:
+            rows, _ = await load_stock_universe_rows(
+                db,
+                limit=limit,
+                page_size=universe_page_size,
+                start_offset=0,
+            )
+        except Exception:
+            rows = []
+
+        if rows:
+            from .stock_strategy_matrix import StockStrategyMatrixPlanner
+
+            hot_sectors = {
+                str(item).strip()
+                for item in list(snapshot.get("hot_sectors") or [])
+                if str(item).strip()
+            }
+            cold_sectors = {
+                str(item).strip()
+                for item in list(snapshot.get("cold_sectors") or [])
+                if str(item).strip()
+            }
+            for row in rows:
+                code = str(row.get("code") or "").strip()
+                if not code:
+                    continue
+                families: List[str] = []
+                hint = dict(candidate_hints.get(code) or {})
+                for family in list(hint.get("families") or []):
+                    lowered = str(family or "").strip().lower()
+                    if lowered and lowered not in families:
+                        families.append(lowered)
+                for family in StockStrategyMatrixPlanner._families_for_row(
+                    row,
+                    snapshot=snapshot,
+                    hot_sectors=hot_sectors,
+                    cold_sectors=cold_sectors,
+                    active_factors=active_factors,
+                ):
+                    lowered = str(family or "").strip().lower()
+                    if lowered and lowered not in families:
+                        families.append(lowered)
+                if not families:
+                    continue
+                base_score = StockStrategyMatrixPlanner._row_priority_score(
+                    row,
+                    snapshot=snapshot,
+                    hot_sectors=hot_sectors,
+                    cold_sectors=cold_sectors,
+                    active_factors=active_factors,
+                )
+                base_priority = max(0.05, min((base_score - 20.0) / 45.0, 0.92))
+                hint_bonus = min(max(list(hint.get("scores") or [0.0]) or [0.0]), 1.0) * 0.18
+                _track(
+                    code,
+                    families,
+                    base_priority + hint_bonus,
+                    source_mode="stock_universe_projection" if not hint else "stock_universe_projection_with_candidate_hints",
+                    row=row,
+                )
+        elif candidate_hints:
+            for code, hint in candidate_hints.items():
+                hint_score = max(list(hint.get("scores") or [0.0]) or [0.0])
+                _track(
+                    code,
+                    list(hint.get("families") or []),
+                    0.55 + hint_score * 0.35,
+                    source_mode="governed_candidate_hint_only",
+                )
+
+        family_counts = dict(sorted(family_counts.items(), key=lambda item: (-int(item[1]), item[0])))
+        summary = {
+            "count": len(allocation),
+            "family_counts": family_counts,
+            "allocation_entropy": cls._family_allocation_entropy(family_counts),
+            "avg_priority": round(sum(priorities) / len(priorities), 4) if priorities else 0.0,
+            "max_priority": round(max(priorities), 4) if priorities else 0.0,
+            "min_priority": round(min(priorities), 4) if priorities else 0.0,
+            "candidate_hint_count": len(candidate_hints),
+            "universe_limit": limit,
+            "source_mode": (
+                "stock_universe_projection"
+                if rows
+                else ("governed_candidate_hint_only" if candidate_hints else "unavailable")
+            ),
+        }
+        return {
+            "available": bool(allocation),
+            "reason": None if allocation else ("stock_universe_unavailable" if not rows and not candidate_hints else "empty_stock_allocation"),
+            "allocation": allocation,
+            "summary": summary,
+        }
+
+    @classmethod
     async def build(cls, db, snapshot: dict[str, Any]) -> dict[str, Any]:
         factor_ic = dict(snapshot.get("factor_ic") or {})
         factor_trend = dict(snapshot.get("factor_ic_trend") or {})
@@ -268,6 +476,12 @@ class FactorResearchBuilder:
         governed_pool = dict(await cls._load_governed_candidate_pool(snapshot) or {})
         active_candidate_pool = dict(governed_pool.get("active_pool") or {})
         governed_registry_summary = dict(governed_pool.get("summary") or {})
+        governed_candidate_pool_mode = (
+            str(active_candidate_pool.get("active_pool_mode") or "").strip().lower() or None
+        )
+        governed_candidate_pool_provisional = governed_candidate_pool_mode == "provisional_validated_watch"
+        governed_candidate_pool_strict_count = int(active_candidate_pool.get("strict_count") or 0)
+        governed_candidate_pool_provisional_count = int(active_candidate_pool.get("provisional_count") or 0)
         governed_top_candidates = [
             dict(item or {})
             for item in list(active_candidate_pool.get("top_candidates") or [])
@@ -442,6 +656,14 @@ class FactorResearchBuilder:
             for strategy_type in list(item.get("preferred_strategy_types") or []):
                 if strategy_type not in preferred_strategy_types:
                     preferred_strategy_types.append(strategy_type)
+        stock_family_allocation_payload = await cls._load_stock_family_allocation(
+            db,
+            snapshot,
+            active_factors=active_factors,
+            governed_top_candidates=governed_top_candidates,
+        )
+        stock_family_allocation = dict(stock_family_allocation_payload.get("allocation") or {})
+        stock_family_allocation_summary = dict(stock_family_allocation_payload.get("summary") or {})
 
         top_factor_names = [
             str(item.get("factor_name") or "")
@@ -460,6 +682,7 @@ class FactorResearchBuilder:
                 "name": str(entry.get("name") or "").strip() or None,
                 "family": str(entry.get("family") or "").strip() or None,
                 "registry_stage": str(entry.get("registry_stage") or "").strip() or None,
+                "pool_entry_mode": str(entry.get("pool_entry_mode") or "").strip() or None,
                 "expected_regime": [
                     str(value).strip()
                     for value in list(entry.get("expected_regime") or [])
@@ -531,7 +754,13 @@ class FactorResearchBuilder:
         if preferred_strategy_types:
             rationale.append(f"优先策略类型: {', '.join(preferred_strategy_types[:4])}")
         if governed_top_candidates:
-            rationale.append(f"治理后候选池已接入，Top 候选: {', '.join(top_candidate_names[:3])}")
+            if governed_candidate_pool_provisional:
+                rationale.append(
+                    "治理候选池当前以 provisional validated/watch 候选供给，"
+                    f"Top 候选: {', '.join(top_candidate_names[:3])}"
+                )
+            else:
+                rationale.append(f"治理后候选池已接入，Top 候选: {', '.join(top_candidate_names[:3])}")
         elif governed_blocked_candidate_count:
             rationale.append(f"治理候选池存在 {governed_blocked_candidate_count} 个高风险候选，当前未纳入活跃池。")
         elif governed_pool.get("reason"):
@@ -545,9 +774,18 @@ class FactorResearchBuilder:
                 f"challenger={int(model_lineage_summary.get('challenger_count') or 0)} "
                 f"retrain_plan={int(model_lineage_summary.get('retrain_plan_count') or 0)}"
             )
+        if stock_family_allocation:
+            rationale.append(
+                "逐股 family 分配已生成: "
+                f"覆盖 {int(stock_family_allocation_summary.get('count') or 0)} 只股票，"
+                f"allocation_entropy={stock_family_allocation_summary.get('allocation_entropy')}"
+            )
         if governed_blocked_ratio >= 0.40:
             rationale.append(f"治理候选池 blocked 比例偏高: {round(governed_blocked_ratio * 100, 1)}%")
-        if scheduler_recent_success and not governed_top_candidates:
+        governed_pool_missing_after_scheduler_success = bool(
+            scheduler_recent_success and not governed_top_candidates
+        )
+        if governed_pool_missing_after_scheduler_success:
             rationale.append("调度器近期已成功运行，但治理活跃池仍为空，建议核查验证与晋级门槛。")
 
         freshness_days = cls._days_since(latest_factor_date, reference_date=snapshot_date)
@@ -572,6 +810,8 @@ class FactorResearchBuilder:
             quality_flags.append("decay_detected")
         if governed_top_candidates:
             quality_flags.append("governed_candidate_pool_active")
+        if governed_candidate_pool_provisional:
+            quality_flags.append("governed_candidate_pool_provisional")
         if model_registry_lineage.get("available"):
             quality_flags.append("model_registry_lineage_available")
         if governed_blocked_candidate_count:
@@ -586,6 +826,8 @@ class FactorResearchBuilder:
             quality_flags.append("governed_candidate_pool_stale")
         if scheduler_recent_success and not governed_top_candidates:
             quality_flags.append("scheduler_recent_success_without_governed_pool")
+        if governed_pool_missing_after_scheduler_success:
+            quality_flags.append("governed_pool_missing_after_scheduler_success")
         factor_ic_status = str(factor_ic_source.get("status") or "")
         if factor_ic_status and factor_ic_status != "success":
             quality_flags.append(f"factor_ic_{factor_ic_status}")
@@ -612,6 +854,7 @@ class FactorResearchBuilder:
             "blocked_candidate_lineage": blocked_candidate_lineage,
             "model_registry_lineage": model_registry_lineage,
             "active_candidate_pool": active_candidate_pool,
+            "stock_family_allocation": stock_family_allocation,
             "active_family_summary": governed_family_summary,
             "active_regime_summary": governed_regime_summary,
             "research_rationale": rationale,
@@ -652,11 +895,20 @@ class FactorResearchBuilder:
                 "active_family_names": [str(item.get("family") or "") for item in governed_family_summary if str(item.get("family") or "")],
                 "active_regime_names": [str(item.get("regime") or "") for item in governed_regime_summary if str(item.get("regime") or "")],
                 "preferred_strategy_types": preferred_strategy_types,
-                "factor_source_mode": "governed_candidate_pool" if governed_top_candidates else "seed_fallback",
+                "factor_source_mode": (
+                    "governed_candidate_pool"
+                    if governed_top_candidates
+                    else ("governed_pool_missing_after_scheduler_success" if governed_pool_missing_after_scheduler_success else "seed_fallback")
+                ),
+                "governed_candidate_pool_mode": governed_candidate_pool_mode,
+                "governed_candidate_pool_provisional": governed_candidate_pool_provisional,
+                "governed_candidate_pool_strict_count": governed_candidate_pool_strict_count,
+                "governed_candidate_pool_provisional_count": governed_candidate_pool_provisional_count,
                 "scheduler_last_run": scheduler_status.get("last_run"),
                 "scheduler_freshness_sec": scheduler_status.get("freshness_sec"),
                 "scheduler_recent_success": scheduler_recent_success,
                 "scheduler_llm_validation_status": scheduler_llm_validation_status,
+                "governed_pool_missing_after_scheduler_success": governed_pool_missing_after_scheduler_success,
                 "governed_exclusion_reason_counts": governed_exclusion_reason_counts,
                 "governed_registry_stage_counts": dict(governed_registry_summary.get("registry_stage_counts") or {}),
                 "top_candidate_lineage": top_candidate_lineage,
@@ -667,6 +919,11 @@ class FactorResearchBuilder:
                     "multiple_testing": dict(governed_registry_summary.get("multiple_testing_risk_counts") or {}),
                     "overall": dict(governed_registry_summary.get("overall_risk_counts") or {}),
                 },
+                "stock_family_allocation_count": int(stock_family_allocation_summary.get("count") or 0),
+                "stock_family_allocation_family_counts": dict(stock_family_allocation_summary.get("family_counts") or {}),
+                "stock_family_allocation_entropy": stock_family_allocation_summary.get("allocation_entropy"),
+                "stock_family_allocation_avg_priority": stock_family_allocation_summary.get("avg_priority"),
+                "stock_family_allocation_source_mode": stock_family_allocation_summary.get("source_mode"),
                 "degraded": degraded,
                 "freshness_days": freshness_days,
                 "latest_factor_date": latest_factor_date.isoformat() if latest_factor_date else None,

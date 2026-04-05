@@ -304,8 +304,15 @@ async def handle_rank(db, params: dict) -> dict:
 
 
 async def handle_capabilities(db, params: dict) -> dict:
+    from strategy_factory import get_factory_constants
+
+    factory_constants = get_factory_constants()
     return ok({
         "daily_snapshot": hasattr(db, "get_daily_snapshot") and hasattr(db, "list_daily_snapshots"),
+        "factory_runs": hasattr(db, "save_strategy_factory_run") and hasattr(db, "get_latest_strategy_factory_run"),
+        "factory_bulk_lane": hasattr(db, "list_stock_universe") and hasattr(db, "save_strategy_factory_run"),
+        "factory_bulk_lane_enabled": bool(factory_constants.get("STOCK_STRATEGY_MATRIX_ENABLED")),
+        "factory_pre_gate_enabled": bool(factory_constants.get("FACTORY_PRE_GATE_ENABLED")),
         "paper_incubation": hasattr(db, "save_strategy_incubation_account") and hasattr(db, "save_strategy_incubation_metric"),
         "paper_trading": hasattr(db, "save_paper_account") and hasattr(db, "save_paper_order") and hasattr(db, "get_paper_nav_rows"),
         "incubation_pipeline": hasattr(db, "save_strategy_incubation_pipeline_snapshot") and hasattr(db, "list_strategy_incubation_metrics"),

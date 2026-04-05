@@ -7,7 +7,7 @@ import akshare_mcp.tools.managers.strategy_manager as strategy_manager_mod
 
 
 class _DummyMCP:
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn

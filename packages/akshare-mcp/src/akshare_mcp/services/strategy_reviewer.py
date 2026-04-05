@@ -8,7 +8,23 @@ from .strategy_spec import StrategySpec
 
 
 class MultiAgentStrategyReviewer:
-    SUPPORTED_TYPES = {'momentum', 'ma_cross', 'rsi', 'value_factor', 'quality_factor', 'growth_factor', 'multi_factor', 'macro_timing', 'dsl_rule'}
+    SUPPORTED_TYPES = {
+        'momentum',
+        'ma_cross',
+        'rsi',
+        'value_factor',
+        'quality_factor',
+        'growth_factor',
+        'multi_factor',
+        'macro_timing',
+        'volatility_breakout',
+        'gap_fill',
+        'mean_reversion_short',
+        'sector_rotation',
+        'north_capital_track',
+        'margin_divergence',
+        'dsl_rule',
+    }
 
     @staticmethod
     def _factor_research_alignment(spec: StrategySpec, snapshot: dict) -> tuple[float, dict[str, Any]]:
@@ -44,14 +60,18 @@ class MultiAgentStrategyReviewer:
         fg = int(snapshot.get('fear_greed_index') or 50)
         stype = spec.strategy_type
         base_score = 0.6
-        if fg >= 60 and stype in {'momentum', 'ma_cross'}:
+        if fg >= 60 and stype in {'momentum', 'ma_cross', 'volatility_breakout', 'north_capital_track'}:
             base_score = 0.9
-        elif fg < 45 and stype in {'rsi', 'value_factor', 'quality_factor'}:
+        elif fg < 45 and stype in {'rsi', 'value_factor', 'quality_factor', 'gap_fill', 'mean_reversion_short'}:
             base_score = 0.85
         elif stype == 'multi_factor':
             base_score = 0.82
         elif stype == 'macro_timing':
             base_score = 0.78
+        elif stype == 'sector_rotation':
+            base_score = 0.8
+        elif stype == 'margin_divergence':
+            base_score = 0.77
         elif stype == 'dsl_rule':
             base_score = 0.74
         factor_delta, factor_context = cls._factor_research_alignment(spec, snapshot)

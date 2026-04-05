@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import time
+from copy import deepcopy
 from statistics import median
 from typing import Any, Dict, List, Optional
+
+import numpy as np
 
 from .legacy_bridge import get_compat_symbol, get_compat_value
 from ..api.contracts import FactoryBacktestAssumptions
@@ -18,6 +23,7 @@ from ..domain.constants import (
     BACKTEST_TYPE_THRESHOLDS,
     REPRESENTATIVE_STOCKS,
 )
+from ..domain.targets import _build_target_alignment_contract
 from ..domain.targets import _extract_target_codes_from_payload
 from ..domain.targets import _normalize_research_task_contract
 from ..infrastructure.mcp_services import get_backtest_engine_class
@@ -39,6 +45,171 @@ def _get_strategy_factory_package():
         _runtime_get_strategy_factory_package,
     )
     return target()
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _unique_reasons(reasons: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        token = str(reason or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        ordered.append(token)
+    return ordered
+
+
+def build_target_quality_gate_summary(
+    candidate: Optional[dict],
+    *,
+    gate_1_metrics: Optional[dict[str, Any]] = None,
+    backtest_result: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    payload = dict(candidate or {})
+    research_task = _normalize_research_task_contract(payload.get("research_task") or {})
+    target_alignment_contract = _build_target_alignment_contract(research_task, candidate=payload)
+    target_codes = _extract_target_codes_from_payload(payload, limit=12)
+    research_target_symbols = list(research_task.get("target_symbols") or target_codes)
+    research_target_count = len(research_target_symbols)
+    quality_gate_enabled = bool(target_alignment_contract.get("quality_gate_enabled"))
+
+    constraint_check = dict(payload.get("constraint_check") or {})
+    result_payload = dict(backtest_result or {})
+    if isinstance(result_payload.get("constraint_check"), dict):
+        constraint_check = dict(result_payload.get("constraint_check") or {})
+
+    coverage_ratio_raw = constraint_check.get("coverage_ratio")
+    intersection_ratio_raw = constraint_check.get("intersection_ratio")
+    overlap_count_raw = constraint_check.get("target_overlap_count")
+    coverage_ratio = None if coverage_ratio_raw is None else round(_safe_float(coverage_ratio_raw, 0.0), 4)
+    intersection_ratio = None if intersection_ratio_raw is None else round(_safe_float(intersection_ratio_raw, 0.0), 4)
+    overlap_count = (
+        max(0, int(overlap_count_raw))
+        if overlap_count_raw is not None
+        else len(set(target_codes).intersection(research_target_symbols))
+    )
+
+    min_coverage_ratio = round(_safe_float(target_alignment_contract.get("min_coverage_ratio"), 0.0), 4)
+    min_intersection_ratio = round(_safe_float(target_alignment_contract.get("min_intersection_ratio"), 0.0), 4)
+    min_required_overlap_count = max(0, int(target_alignment_contract.get("min_required_overlap_count") or 0))
+    min_target_sample_count = max(0, int(target_alignment_contract.get("min_target_sample_count") or 0))
+    min_target_layer_stability = round(_safe_float(target_alignment_contract.get("min_target_layer_stability"), 0.0), 4)
+
+    sampled_target_count = None
+    target_sample_ratio = None
+    target_layer_stability = None
+    target_layer_dispersion = None
+    target_sharpe = None
+    representative_sharpe = None
+    combined_sharpe = None
+
+    gate_1_payload = dict(gate_1_metrics or {})
+    if gate_1_payload:
+        target_codes_payload = gate_1_payload.get("target_codes")
+        if target_codes_payload is not None:
+            sampled_target_count = len(list(target_codes_payload or []))
+        if sampled_target_count is not None and research_target_count > 0:
+            target_sample_ratio = round(sampled_target_count / research_target_count, 4)
+        sharpe_values = [_safe_float(item, 0.0) for item in list(gate_1_payload.get("sharpe_values") or [])]
+        if len(sharpe_values) >= 2:
+            target_sharpe = round(_safe_float(gate_1_payload.get("avg_sharpe"), 0.0), 4)
+            target_layer_dispersion = round(max(sharpe_values) - min(sharpe_values), 4)
+            stability_denominator = max(abs(target_sharpe), 0.5) + 1.0
+            target_layer_stability = round(
+                max(0.0, min(1.0, 1.0 - target_layer_dispersion / stability_denominator)),
+                4,
+            )
+
+    layers = dict(result_payload.get("layers") or {})
+    if layers:
+        target_layer = dict((layers.get("target") or {}))
+        representative_layer = dict((layers.get("representative") or {}))
+        combined_layer = dict((layers.get("combined") or {}))
+        if sampled_target_count is None:
+            sampled_target_count = len(list(target_layer.get("successful_codes") or []))
+            if research_target_count > 0:
+                target_sample_ratio = round(sampled_target_count / research_target_count, 4)
+        target_metrics = dict(target_layer.get("metrics") or {})
+        representative_metrics = dict(representative_layer.get("metrics") or {})
+        combined_metrics = dict(combined_layer.get("metrics") or result_payload.get("metrics") or {})
+        target_sharpe = round(_safe_float(target_metrics.get("sharpe_ratio"), 0.0), 4)
+        representative_sharpe = round(_safe_float(representative_metrics.get("sharpe_ratio"), 0.0), 4)
+        combined_sharpe = round(_safe_float(combined_metrics.get("sharpe_ratio"), 0.0), 4)
+        stability_scale = max(abs(target_sharpe), abs(combined_sharpe), abs(representative_sharpe), 0.25)
+        target_layer_dispersion = round(
+            abs(target_sharpe - combined_sharpe) + abs(target_sharpe - representative_sharpe),
+            4,
+        )
+        target_layer_stability = round(
+            max(0.0, min(1.0, 1.0 - target_layer_dispersion / (stability_scale * 4.0))),
+            4,
+        )
+
+    reasons: list[str] = []
+    alignment_ok = True
+    sample_sufficient = True
+    target_layer_stable = True
+
+    if quality_gate_enabled:
+        if not target_codes:
+            alignment_ok = False
+            reasons.append("target_universe_alignment_too_low")
+        elif coverage_ratio is not None and coverage_ratio < min_coverage_ratio:
+            alignment_ok = False
+            reasons.append("target_universe_alignment_too_low")
+        elif intersection_ratio is not None and intersection_ratio < min_intersection_ratio:
+            alignment_ok = False
+            reasons.append("target_universe_alignment_too_low")
+        elif min_required_overlap_count > 0 and overlap_count < min_required_overlap_count:
+            alignment_ok = False
+            reasons.append("target_universe_alignment_too_low")
+
+        if sampled_target_count is not None and min_target_sample_count > 0 and sampled_target_count < min_target_sample_count:
+            sample_sufficient = False
+            reasons.append("target_sample_sufficiency_too_low")
+
+        if (
+            target_layer_stability is not None
+            and min_target_layer_stability > 0.0
+            and target_layer_stability < min_target_layer_stability
+        ):
+            target_layer_stable = False
+            reasons.append("target_layer_stability_too_low")
+
+    return {
+        "profile": target_alignment_contract.get("profile"),
+        "quality_gate_enabled": quality_gate_enabled,
+        "targeted_snapshot": bool(target_alignment_contract.get("targeted_snapshot")),
+        "research_target_count": research_target_count,
+        "target_symbol_count": len(target_codes),
+        "coverage_ratio": coverage_ratio,
+        "min_coverage_ratio": min_coverage_ratio,
+        "intersection_ratio": intersection_ratio,
+        "min_intersection_ratio": min_intersection_ratio,
+        "target_overlap_count": int(overlap_count),
+        "min_required_overlap_count": min_required_overlap_count,
+        "sampled_target_count": sampled_target_count,
+        "min_target_sample_count": min_target_sample_count,
+        "target_sample_ratio": target_sample_ratio,
+        "target_layer_stability": target_layer_stability,
+        "min_target_layer_stability": min_target_layer_stability,
+        "target_layer_dispersion": target_layer_dispersion,
+        "target_sharpe": target_sharpe,
+        "representative_sharpe": representative_sharpe,
+        "combined_sharpe": combined_sharpe,
+        "alignment_ok": alignment_ok,
+        "sample_sufficient": sample_sufficient,
+        "target_layer_stable": target_layer_stable,
+        "target_alignment_contract": dict(target_alignment_contract),
+        "reasons": _unique_reasons(reasons),
+    }
 
 
 class BacktestFilter:
@@ -157,6 +328,128 @@ class BacktestFilter:
                 ordered_codes.append(code)
         return ordered_codes
 
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): BacktestFilter._json_safe(item)
+                for key, item in sorted(value.items(), key=lambda entry: str(entry[0]))
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [BacktestFilter._json_safe(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    def _build_shared_result_key(self, candidate: dict) -> str:
+        strategy_type = str(candidate.get("strategy_type") or "unknown").strip().lower() or "unknown"
+        research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
+        evaluated_codes, target_codes, representative_codes, code_source, validation_focus = self._resolve_backtest_plan(candidate)
+        signature_payload = {
+            "strategy_type": strategy_type,
+            "params": dict(candidate.get("params") or {}),
+            "research_task": research_task,
+            "target_codes": target_codes,
+            "representative_codes": representative_codes,
+            "evaluated_codes": evaluated_codes,
+            "code_source": code_source,
+            "validation_focus": validation_focus,
+            "execution_assumptions": dict(candidate.get("execution_assumptions") or {}),
+            "portfolio_spec": dict(candidate.get("portfolio_spec") or {}),
+            "generator_type": str(candidate.get("generator_type") or "").strip().lower(),
+            "tags": sorted(
+                str(tag).strip().lower()
+                for tag in list(candidate.get("tags") or [])
+                if str(tag).strip()
+            ),
+            "parent_strategy_id": str(candidate.get("parent_strategy_id") or "").strip(),
+            "thresholds": self._get_thresholds(strategy_type, candidate),
+        }
+        serialized = json.dumps(
+            self._json_safe(signature_payload),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return f"shared:{hashlib.sha1(serialized.encode('utf-8')).hexdigest()}"
+
+    @staticmethod
+    def _build_candidate_exception_result(candidate: dict, error: BaseException) -> dict:
+        return {
+            "passed": False,
+            "reason_code": "candidate_exception",
+            "reason": f"候选策略回测异常: {type(error).__name__}",
+            "strategy_type": candidate.get("strategy_type") or "unknown",
+            "sample_count": 0,
+            "required_sample_count": 0,
+            "evaluated_code_count": 0,
+            "successful_code_count": 0,
+            "evaluated_codes": [],
+            "successful_codes": [],
+            "target_codes": _extract_target_codes_from_payload(candidate),
+            "representative_codes": [],
+            "code_source": "candidate_exception",
+            "primary_layer": "none",
+            "queue_wait_ms": 0.0,
+            "backtest_run_ms": 0.0,
+            "code_run_ms_total": 0.0,
+            "code_run_count": 0,
+            "failed_metrics": [],
+            "failed_codes": [],
+            "skipped_codes": [],
+            "metrics": {},
+            "error": f"{type(error).__name__}: {error}",
+        }
+
+    @staticmethod
+    def _annotate_shared_result(candidate: dict, result: dict, *, key: str, reused: bool, reuse_count: int) -> dict:
+        payload = deepcopy(dict(result or {}))
+        payload["constraint_check"] = dict(candidate.get("constraint_check") or payload.get("constraint_check") or {})
+        payload["shared_result_key"] = key
+        payload["shared_result_reused"] = bool(reused)
+        payload["shared_result_reuse_count"] = max(0, int(reuse_count or 0))
+        return payload
+
+    def _apply_result_to_candidate(
+        self,
+        candidate: dict,
+        result: dict,
+        passed: List[dict],
+        failed: List[dict],
+    ) -> None:
+        candidate["backtest_result"] = result
+        if result.get("passed"):
+            derived_trade_metrics = self._derive_trade_validation_metrics(candidate, result)
+            candidate["backtest_metrics"] = {
+                **dict(result.get("metrics") or {}),
+                "constraint_check": dict(result.get("constraint_check") or {}),
+                "target_quality_summary": dict(result.get("target_quality_summary") or {}),
+                "validation_focus": result.get("validation_focus"),
+                "primary_validation_layer": result.get("primary_validation_layer"),
+                "event_window_config": dict(result.get("event_window_config") or {}),
+                "contamination_summary": dict(result.get("contamination_summary") or {}),
+                "cost_assumptions": dict(result.get("cost_assumptions") or {}),
+                "explicit_cost_breakdown": dict(result.get("explicit_cost_breakdown") or {}),
+                "implicit_cost_breakdown": dict(result.get("implicit_cost_breakdown") or {}),
+                "tradability_summary": dict(result.get("tradability_summary") or {}),
+                "capacity_summary": dict(result.get("capacity_summary") or {}),
+                "implementation_shortfall_model_source": result.get("implementation_shortfall_model_source"),
+                "implementation_shortfall_components": dict(result.get("implementation_shortfall_components") or {}),
+                "position_assumption": result.get("position_assumption"),
+                "target_layer_metrics": dict(((result.get("layers") or {}).get("target") or {}).get("metrics") or {}),
+                "representative_layer_metrics": dict(((result.get("layers") or {}).get("representative") or {}).get("metrics") or {}),
+                "combined_layer_metrics": dict(((result.get("layers") or {}).get("combined") or {}).get("metrics") or {}),
+                "event_window_metrics": dict(result.get("event_window_metrics") or {}),
+                "target_layer_oos_return": float((((result.get("layers") or {}).get("target") or {}).get("metrics") or {}).get("total_return") or 0.0),
+                "post_cost_sharpe": float((result.get("metrics") or {}).get("sharpe_ratio") or 0.0),
+                "backtest_assumptions": dict(result.get("backtest_assumptions") or {}),
+                **derived_trade_metrics,
+            }
+            passed.append(candidate)
+        else:
+            candidate.pop("backtest_metrics", None)
+            failed.append(candidate)
+
     def _build_last_report(self, candidates: List[dict], passed: List[dict], failed: List[dict]) -> dict:
         failed_reason_counts: Dict[str, int] = {}
         thresholds_by_type: Dict[str, dict] = {}
@@ -165,6 +458,8 @@ class BacktestFilter:
         code_run_count = 0
         cache_hit_total = 0
         evaluated_code_total = 0
+        shared_result_reused_count = 0
+        shared_result_keys: set[str] = set()
         for item in candidates:
             strategy_type = str(item.get("strategy_type") or "unknown")
             result = item.get("backtest_result") or {}
@@ -174,6 +469,9 @@ class BacktestFilter:
             code_run_count += int(result.get("code_run_count") or 0)
             cache_hit_total += int(result.get("kline_cache_hit_count") or 0)
             evaluated_code_total += int(result.get("evaluated_code_count") or 0)
+            shared_result_reused_count += int(bool(result.get("shared_result_reused")))
+            if int(result.get("shared_result_reuse_count") or 0) > 0 and str(result.get("shared_result_key") or "").strip():
+                shared_result_keys.add(str(result.get("shared_result_key")))
         for item in failed:
             reason_code = str((item.get("backtest_result") or {}).get("reason_code") or "unknown")
             failed_reason_counts[reason_code] = failed_reason_counts.get(reason_code, 0) + 1
@@ -191,6 +489,8 @@ class BacktestFilter:
                 "avg_candidate_ms": round(candidate_run_ms_total / candidate_count, 2) if candidate_count else 0.0,
                 "avg_code_ms": round(code_run_ms_total / code_run_count, 2) if code_run_count else 0.0,
                 "cache_hit_ratio": round(cache_hit_total / evaluated_code_total, 4) if evaluated_code_total else 0.0,
+                "shared_result_reused_count": shared_result_reused_count,
+                "shared_result_group_count": len(shared_result_keys),
             },
             "passed": [self._build_report_entry(item) for item in passed],
             "failed": [self._build_report_entry(item) for item in failed],
@@ -205,6 +505,17 @@ class BacktestFilter:
         preload_codes = self._collect_preload_codes(candidates)
         if preload_codes:
             await self.preload_klines(db, preload_codes)
+        shared_key_by_candidate: dict[int, str] = {}
+        shared_groups: dict[str, list[dict]] = {}
+        shared_group_order: list[str] = []
+        for candidate in candidates:
+            shared_key = self._build_shared_result_key(candidate)
+            shared_key_by_candidate[id(candidate)] = shared_key
+            if shared_key not in shared_groups:
+                shared_groups[shared_key] = []
+                shared_group_order.append(shared_key)
+            shared_groups[shared_key].append(candidate)
+        unique_candidates = [shared_groups[key][0] for key in shared_group_order]
 
         async def _test_guarded(candidate: dict) -> tuple:
             queued_at = time.perf_counter()
@@ -215,10 +526,13 @@ class BacktestFilter:
                 return candidate, result
 
         results = await asyncio.gather(
-            *[_test_guarded(c) for c in candidates],
+            *[_test_guarded(c) for c in unique_candidates],
             return_exceptions=True,
         )
-        for candidate, item in zip(candidates, results):
+        shared_results: dict[str, dict] = {}
+        for candidate, item in zip(unique_candidates, results):
+            shared_key = shared_key_by_candidate[id(candidate)]
+            reuse_count = max(len(shared_groups.get(shared_key) or []) - 1, 0)
             if isinstance(item, BaseException):
                 logger.warning(
                     "BacktestFilter candidate failed unexpectedly strategy_type=%s error=%s",
@@ -226,71 +540,42 @@ class BacktestFilter:
                     item,
                     exc_info=item,
                 )
-                candidate["backtest_result"] = {
-                    "passed": False,
-                    "reason_code": "candidate_exception",
-                    "reason": f"候选策略回测异常: {type(item).__name__}",
-                    "strategy_type": candidate.get("strategy_type") or "unknown",
-                    "sample_count": 0,
-                    "required_sample_count": 0,
-                    "evaluated_code_count": 0,
-                    "successful_code_count": 0,
-                    "evaluated_codes": [],
-                    "successful_codes": [],
-                    "target_codes": _extract_target_codes_from_payload(candidate),
-                    "representative_codes": [],
-                    "code_source": "candidate_exception",
-                    "primary_layer": "none",
-                    "queue_wait_ms": 0.0,
-                    "backtest_run_ms": 0.0,
-                    "code_run_ms_total": 0.0,
-                    "code_run_count": 0,
-                    "failed_metrics": [],
-                    "failed_codes": [],
-                    "skipped_codes": [],
-                    "metrics": {},
-                    "error": f"{type(item).__name__}: {item}",
-                }
-                candidate.pop("backtest_metrics", None)
-                failed.append(candidate)
-                continue
-            _, result = item
-            candidate["backtest_result"] = result
-            if result.get("passed"):
-                derived_trade_metrics = self._derive_trade_validation_metrics(candidate, result)
-                candidate["backtest_metrics"] = {
-                    **dict(result.get("metrics") or {}),
-                    "constraint_check": dict(result.get("constraint_check") or {}),
-                    "validation_focus": result.get("validation_focus"),
-                    "primary_validation_layer": result.get("primary_validation_layer"),
-                    "event_window_config": dict(result.get("event_window_config") or {}),
-                    "contamination_summary": dict(result.get("contamination_summary") or {}),
-                    "cost_assumptions": dict(result.get("cost_assumptions") or {}),
-                    "explicit_cost_breakdown": dict(result.get("explicit_cost_breakdown") or {}),
-                    "implicit_cost_breakdown": dict(result.get("implicit_cost_breakdown") or {}),
-                    "tradability_summary": dict(result.get("tradability_summary") or {}),
-                    "capacity_summary": dict(result.get("capacity_summary") or {}),
-                    "implementation_shortfall_model_source": result.get("implementation_shortfall_model_source"),
-                    "implementation_shortfall_components": dict(result.get("implementation_shortfall_components") or {}),
-                    "position_assumption": result.get("position_assumption"),
-                    "target_layer_metrics": dict(((result.get("layers") or {}).get("target") or {}).get("metrics") or {}),
-                    "representative_layer_metrics": dict(((result.get("layers") or {}).get("representative") or {}).get("metrics") or {}),
-                    "combined_layer_metrics": dict(((result.get("layers") or {}).get("combined") or {}).get("metrics") or {}),
-                    "event_window_metrics": dict(result.get("event_window_metrics") or {}),
-                    "target_layer_oos_return": float((((result.get("layers") or {}).get("target") or {}).get("metrics") or {}).get("total_return") or 0.0),
-                    "post_cost_sharpe": float((result.get("metrics") or {}).get("sharpe_ratio") or 0.0),
-                    "backtest_assumptions": dict(result.get("backtest_assumptions") or {}),
-                    **derived_trade_metrics,
-                }
-                passed.append(candidate)
+                result = self._build_candidate_exception_result(candidate, item)
             else:
-                candidate.pop("backtest_metrics", None)
-                failed.append(candidate)
+                _, result = item
+            shared_results[shared_key] = self._annotate_shared_result(
+                candidate,
+                result,
+                key=shared_key,
+                reused=False,
+                reuse_count=reuse_count,
+            )
+        for candidate in candidates:
+            shared_key = shared_key_by_candidate[id(candidate)]
+            leader = (shared_groups.get(shared_key) or [candidate])[0]
+            result = shared_results.get(shared_key)
+            if result is None:
+                result = self._annotate_shared_result(
+                    candidate,
+                    self._build_candidate_exception_result(candidate, RuntimeError("missing_shared_result")),
+                    key=shared_key,
+                    reused=False,
+                    reuse_count=0,
+                )
+            elif candidate is not leader:
+                result = self._annotate_shared_result(
+                    candidate,
+                    result,
+                    key=shared_key,
+                    reused=True,
+                    reuse_count=max(len(shared_groups.get(shared_key) or []) - 1, 0),
+                )
+            self._apply_result_to_candidate(candidate, result, passed, failed)
         self.last_report = self._build_last_report(candidates, passed, failed)
         return passed
 
     @staticmethod
-    def _summarize_result_set(results: List[dict]) -> dict:
+    def _build_median_summary(results: List[dict]) -> dict:
         if not results:
             return {}
         avg_holding_days = [
@@ -311,6 +596,467 @@ class BacktestFilter:
             "trades_count": float(median([metric["trades_count"] for metric in results])),
             "avg_holding_days": float(median(avg_holding_days)) if avg_holding_days else 0.0,
             "turnover_proxy": float(median(turnover_values)) if turnover_values else 0.0,
+        }
+
+    @staticmethod
+    def _coerce_equity_curve(metric: dict) -> Optional[np.ndarray]:
+        raw_curve = metric.get("equity_curve")
+        if not isinstance(raw_curve, (list, tuple)):
+            return None
+        try:
+            curve = np.asarray(raw_curve, dtype=float)
+        except (TypeError, ValueError):
+            return None
+        if curve.ndim != 1 or curve.size < 2:
+            return None
+        if not np.all(np.isfinite(curve)) or float(curve[0]) <= 0 or np.any(curve <= 0):
+            return None
+        return curve
+
+    @staticmethod
+    def _resample_curve(curve: np.ndarray, target_len: int) -> np.ndarray:
+        if curve.size == target_len:
+            return curve.astype(float, copy=True)
+        if target_len <= 1:
+            return np.asarray([float(curve[-1])], dtype=float)
+        source_x = np.linspace(0.0, 1.0, curve.size)
+        target_x = np.linspace(0.0, 1.0, target_len)
+        return np.interp(target_x, source_x, curve).astype(float, copy=False)
+
+    @staticmethod
+    def _weighted_average(values: List[float], weights: Optional[List[float]] = None) -> float:
+        if not values:
+            return 0.0
+        if not weights or len(weights) != len(values) or sum(weights) <= 0:
+            return float(sum(values) / len(values))
+        total_weight = float(sum(weights))
+        return float(sum(value * weight for value, weight in zip(values, weights)) / total_weight)
+
+    @staticmethod
+    def _normalize_weight_scheme(target_weight_scheme: str) -> str:
+        normalized = str(target_weight_scheme or "single_name").strip().lower()
+        if normalized in {"equal", "equal_weight_proxy"}:
+            return "equal_weight"
+        if not normalized:
+            return "single_name"
+        return normalized
+
+    @staticmethod
+    def _normalize_target_weight_map(
+        codes: List[str],
+        target_weight_map: Optional[dict[str, Any]],
+    ) -> dict[str, float]:
+        normalized_codes = [str(code or "").strip() for code in list(codes or []) if str(code or "").strip()]
+        if not normalized_codes:
+            return {}
+        raw_map = dict(target_weight_map or {})
+        weights: dict[str, float] = {}
+        for code in normalized_codes:
+            try:
+                value = float(raw_map.get(code, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value > 0:
+                weights[code] = value
+        total = float(sum(weights.values()))
+        if total <= 0:
+            equal_weight = 1.0 / float(len(normalized_codes))
+            return {code: equal_weight for code in normalized_codes}
+        return {
+            code: float(value) / total
+            for code, value in weights.items()
+        }
+
+    @classmethod
+    def _resolve_portfolio_allocation(
+        cls,
+        results: List[dict],
+        *,
+        target_weight_scheme: str,
+        target_weight_map: Optional[dict[str, Any]] = None,
+    ) -> tuple[dict[str, float], str]:
+        normalized_scheme = cls._normalize_weight_scheme(target_weight_scheme)
+        codes = [
+            str(metric.get("code") or "").strip()
+            for metric in results
+            if str(metric.get("code") or "").strip()
+        ]
+        if not codes:
+            return {}, normalized_scheme
+        if normalized_scheme == "single_name":
+            return {codes[0]: 1.0}, normalized_scheme
+        normalized_map = cls._normalize_target_weight_map(codes, target_weight_map)
+        if not normalized_map:
+            return {}, normalized_scheme
+        return normalized_map, normalized_scheme
+
+    @classmethod
+    def _build_portfolio_curve_payload(
+        cls,
+        results: List[dict],
+        *,
+        target_weight_scheme: str,
+        initial_capital: float,
+        target_weight_map: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
+        if len(results) <= 1:
+            return None
+
+        allocation_weights, normalized_scheme = cls._resolve_portfolio_allocation(
+            results,
+            target_weight_scheme=target_weight_scheme,
+            target_weight_map=target_weight_map,
+        )
+        if len(allocation_weights) <= 1:
+            return None
+
+        entries: List[tuple[str, np.ndarray, dict]] = []
+        for metric in results:
+            code = str(metric.get("code") or "").strip()
+            if not code or code not in allocation_weights:
+                continue
+            curve = cls._coerce_equity_curve(metric)
+            if curve is None:
+                continue
+            entries.append((code, curve / float(curve[0]), metric))
+        if len(entries) <= 1:
+            return None
+
+        target_len = max(curve.size for _, curve, _ in entries)
+        aggregated_curve = np.zeros(target_len, dtype=float)
+        used_metrics: List[dict] = []
+        used_weights: List[float] = []
+        allocation_snapshot: dict[str, float] = {}
+        for code, curve, metric in entries:
+            weight = float(allocation_weights.get(code, 0.0) or 0.0)
+            if weight <= 0:
+                continue
+            aggregated_curve += cls._resample_curve(curve, target_len) * weight
+            allocation_snapshot[code] = round(weight, 6)
+            used_metrics.append(metric)
+            used_weights.append(weight)
+        if len(used_metrics) <= 1:
+            return None
+
+        capital_base = max(float(initial_capital or 0.0), 1.0)
+        aggregated_curve = aggregated_curve * capital_base
+        allocation_mode = (
+            "target_weight_map"
+            if target_weight_map and normalized_scheme != "equal_weight"
+            else "equal_weight"
+        )
+        aggregation_mode = (
+            "portfolio_equal_weight"
+            if allocation_mode == "equal_weight"
+            else "portfolio_weighted"
+        )
+        return {
+            "curve": aggregated_curve.astype(float, copy=False),
+            "aggregation_mode": aggregation_mode,
+            "allocation_mode": allocation_mode,
+            "allocation_weights": allocation_snapshot,
+            "component_count": len(used_metrics),
+            "curve_points": int(target_len),
+            "metrics": used_metrics,
+            "weights": used_weights,
+            "requested_weight_scheme": normalized_scheme,
+        }
+
+    @staticmethod
+    def _metrics_from_equity_curve(curve: np.ndarray) -> dict:
+        if curve.size < 2 or float(curve[0]) <= 0:
+            return {
+                "total_return": 0.0,
+                "max_drawdown": 0.0,
+                "sharpe_ratio": 0.0,
+            }
+        total_return = float(curve[-1] / curve[0] - 1.0)
+        peaks = np.maximum.accumulate(curve)
+        drawdowns = np.where(peaks > 0, (peaks - curve) / peaks, 0.0)
+        max_drawdown = float(np.max(drawdowns)) if drawdowns.size else 0.0
+        sharpe_ratio = 0.0
+        prev = curve[:-1]
+        curr = curve[1:]
+        valid = prev > 0
+        if np.any(valid):
+            returns = (curr[valid] - prev[valid]) / prev[valid]
+            returns = returns[np.isfinite(returns)]
+            if returns.size > 1:
+                std = float(np.std(returns))
+                if std > 0:
+                    annual_return = float(np.mean(returns)) * 252.0
+                    annual_std = std * np.sqrt(252.0)
+                    sharpe_ratio = float((annual_return - 0.02) / annual_std)
+        return {
+            "total_return": total_return,
+            "max_drawdown": max_drawdown,
+            "sharpe_ratio": sharpe_ratio,
+        }
+
+    @classmethod
+    def _summarize_portfolio_result_set(
+        cls,
+        results: List[dict],
+        *,
+        target_weight_scheme: str,
+        initial_capital: float,
+        target_weight_map: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict]:
+        payload = cls._build_portfolio_curve_payload(
+            results,
+            target_weight_scheme=target_weight_scheme,
+            initial_capital=initial_capital,
+            target_weight_map=target_weight_map,
+        )
+        if payload is None:
+            return None
+
+        curve_metrics = list(payload.get("metrics") or [])
+        portfolio_curve = np.asarray(payload["curve"], dtype=float)
+        portfolio_metrics = cls._metrics_from_equity_curve(portfolio_curve)
+        component_trade_counts = [max(float(metric.get("trades_count") or 0.0), 0.0) for metric in curve_metrics]
+        trade_weights = component_trade_counts if sum(component_trade_counts) > 0 else None
+        avg_holding_days = [
+            float(metric.get("avg_holding_days") or 0.0)
+            for metric in curve_metrics
+        ]
+        win_rates = [
+            float(metric.get("win_rate") or 0.0)
+            for metric in curve_metrics
+        ]
+        turnover_values = [
+            float(metric.get("turnover_proxy") or 0.0)
+            for metric in curve_metrics
+        ]
+
+        return {
+            "sharpe_ratio": float(portfolio_metrics["sharpe_ratio"]),
+            "total_return": float(portfolio_metrics["total_return"]),
+            "max_drawdown": float(portfolio_metrics["max_drawdown"]),
+            "win_rate": cls._weighted_average(win_rates, trade_weights),
+            "trades_count": float(sum(component_trade_counts)),
+            "avg_holding_days": cls._weighted_average(avg_holding_days, trade_weights or list(payload.get("weights") or [])),
+            "turnover_proxy": cls._weighted_average(turnover_values, list(payload.get("weights") or [])),
+            "aggregation_mode": str(payload.get("aggregation_mode") or "portfolio_equal_weight"),
+            "allocation_mode": str(payload.get("allocation_mode") or "equal_weight"),
+            "allocation_weights": dict(payload.get("allocation_weights") or {}),
+            "requested_weight_scheme": str(payload.get("requested_weight_scheme") or target_weight_scheme or "equal_weight"),
+            "component_count": int(payload.get("component_count") or len(curve_metrics)),
+            "portfolio_curve_points": int(payload.get("curve_points") or portfolio_curve.size),
+        }
+
+    @classmethod
+    def _summarize_result_set(
+        cls,
+        results: List[dict],
+        *,
+        target_weight_scheme: str = "single_name",
+        initial_capital: float = 100000.0,
+        target_weight_map: Optional[dict[str, Any]] = None,
+    ) -> dict:
+        if not results:
+            return {}
+        normalized_scheme = cls._normalize_weight_scheme(target_weight_scheme)
+        if normalized_scheme != "single_name":
+            portfolio_summary = cls._summarize_portfolio_result_set(
+                results,
+                target_weight_scheme=normalized_scheme,
+                initial_capital=initial_capital,
+                target_weight_map=target_weight_map,
+            )
+            if portfolio_summary:
+                return portfolio_summary
+            return {
+                **cls._build_median_summary(results),
+                "aggregation_mode": "median_proxy",
+                "requested_weight_scheme": normalized_scheme,
+                "component_count": len(results),
+            }
+        return cls._build_median_summary(results)
+
+    @classmethod
+    def _aggregate_result_curve(
+        cls,
+        results: List[dict],
+        *,
+        target_weight_scheme: str = "single_name",
+        initial_capital: float = 100000.0,
+        target_weight_map: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
+        if not results:
+            return None
+        normalized_scheme = cls._normalize_weight_scheme(target_weight_scheme)
+        if normalized_scheme != "single_name":
+            payload = cls._build_portfolio_curve_payload(
+                results,
+                target_weight_scheme=normalized_scheme,
+                initial_capital=initial_capital,
+                target_weight_map=target_weight_map,
+            )
+            if payload is not None:
+                return {
+                    "curve": np.asarray(payload["curve"], dtype=float),
+                    "aggregation_mode": str(payload.get("aggregation_mode") or "portfolio_equal_weight"),
+                    "allocation_mode": str(payload.get("allocation_mode") or "equal_weight"),
+                    "allocation_weights": dict(payload.get("allocation_weights") or {}),
+                    "component_count": int(payload.get("component_count") or 0),
+                    "curve_points": int(payload.get("curve_points") or 0),
+                }
+
+        curves: List[np.ndarray] = []
+        for metric in results:
+            curve = cls._coerce_equity_curve(metric)
+            if curve is None:
+                continue
+            curves.append(curve / float(curve[0]))
+        if not curves:
+            return None
+
+        if len(curves) == 1:
+            curve = curves[0] * max(float(initial_capital or 0.0), 1.0)
+            return {
+                "curve": curve,
+                "aggregation_mode": "single_name_curve",
+                "component_count": 1,
+                "curve_points": int(curve.size),
+            }
+
+        target_len = max(curve.size for curve in curves)
+        aligned_curves = np.vstack([cls._resample_curve(curve, target_len) for curve in curves])
+        if normalized_scheme != "single_name":
+            aggregated = np.mean(aligned_curves, axis=0) * max(float(initial_capital or 0.0), 1.0)
+            mode = "portfolio_equal_weight"
+        else:
+            aggregated = np.median(aligned_curves, axis=0) * max(float(initial_capital or 0.0), 1.0)
+            mode = "curve_median_proxy"
+        return {
+            "curve": aggregated.astype(float, copy=False),
+            "aggregation_mode": mode,
+            "component_count": len(curves),
+            "curve_points": int(target_len),
+        }
+
+    @staticmethod
+    def _daily_returns_from_curve(curve: np.ndarray) -> np.ndarray:
+        if curve.size < 2:
+            return np.array([], dtype=float)
+        prev = curve[:-1]
+        curr = curve[1:]
+        valid = prev > 0
+        if not np.any(valid):
+            return np.array([], dtype=float)
+        returns = (curr[valid] - prev[valid]) / prev[valid]
+        returns = returns[np.isfinite(returns)]
+        return returns.astype(float, copy=False)
+
+    @classmethod
+    def _build_event_window_metrics(
+        cls,
+        *,
+        target_results: List[dict],
+        representative_results: List[dict],
+        fallback_results: List[dict],
+        research_task: dict[str, Any],
+        target_weight_scheme: str,
+        initial_capital: float,
+        target_weight_map: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        event_window = dict(research_task.get("event_window") or {})
+        estimation_window = dict(research_task.get("estimation_window") or {})
+        pre_days = max(0, int(event_window.get("pre_days") or 0))
+        post_days = max(1, int(event_window.get("post_days") or 1))
+        lookback_days = max(5, int(estimation_window.get("lookback_days") or 60))
+
+        target_curve_payload = cls._aggregate_result_curve(
+            target_results or fallback_results,
+            target_weight_scheme=target_weight_scheme,
+            initial_capital=initial_capital,
+            target_weight_map=target_weight_map,
+        )
+        if target_curve_payload is None:
+            return {}
+
+        representative_curve_payload = cls._aggregate_result_curve(
+            representative_results,
+            target_weight_scheme=target_weight_scheme,
+            initial_capital=initial_capital,
+            target_weight_map=target_weight_map,
+        )
+        target_curve = np.asarray(target_curve_payload["curve"], dtype=float)
+        representative_curve = None
+        if representative_curve_payload is not None:
+            common_points = max(int(target_curve.size), int(representative_curve_payload["curve"].size))
+            target_curve = cls._resample_curve(target_curve, common_points)
+            representative_curve = cls._resample_curve(
+                np.asarray(representative_curve_payload["curve"], dtype=float),
+                common_points,
+            )
+
+        target_returns = cls._daily_returns_from_curve(target_curve)
+        if target_returns.size < 2:
+            return {}
+
+        if representative_curve is not None:
+            representative_returns = cls._daily_returns_from_curve(representative_curve)
+            aligned = min(target_returns.size, representative_returns.size)
+            target_returns = target_returns[-aligned:]
+            representative_returns = representative_returns[-aligned:]
+            benchmark_source = "representative_curve"
+        else:
+            representative_returns = None
+            benchmark_source = "estimation_mean"
+
+        total_returns = int(target_returns.size)
+        event_start = max(0, total_returns - post_days)
+        pre_start = max(0, event_start - pre_days)
+        estimation_end = pre_start if pre_start > 0 else event_start
+        estimation_start = max(0, estimation_end - lookback_days)
+
+        post_target = target_returns[event_start:]
+        if representative_returns is not None:
+            benchmark_estimation = representative_returns[estimation_start:estimation_end]
+            post_benchmark = representative_returns[event_start:]
+            pre_benchmark = representative_returns[pre_start:event_start]
+        else:
+            benchmark_estimation = target_returns[estimation_start:estimation_end]
+            baseline = float(np.mean(benchmark_estimation)) if benchmark_estimation.size else 0.0
+            post_benchmark = np.full(post_target.shape, baseline, dtype=float)
+            pre_benchmark = np.full((max(0, event_start - pre_start),), baseline, dtype=float)
+
+        pre_target = target_returns[pre_start:event_start]
+        abnormal_post = post_target - post_benchmark
+        abnormal_pre = pre_target - pre_benchmark if pre_target.size and pre_benchmark.size else np.array([], dtype=float)
+
+        target_total_return = float(np.prod(1.0 + post_target) - 1.0) if post_target.size else 0.0
+        benchmark_total_return = float(np.prod(1.0 + post_benchmark) - 1.0) if post_benchmark.size else 0.0
+        abnormal_return = float(target_total_return - benchmark_total_return)
+        car = float(np.sum(abnormal_post)) if abnormal_post.size else 0.0
+        denom = max(float(np.prod(1.0 + post_benchmark)), 1e-9)
+        bhar = float(np.prod(1.0 + post_target) / denom - 1.0) if post_target.size else 0.0
+        hit_ratio = float(np.mean(abnormal_post > 0)) if abnormal_post.size else 0.0
+
+        split = max(1, int(len(abnormal_post) // 2))
+        early_car = float(np.sum(abnormal_post[:split])) if abnormal_post.size else 0.0
+        late_car = float(np.sum(abnormal_post[split:])) if abnormal_post.size > split else 0.0
+        decay_denominator = max(abs(early_car), 0.01)
+        post_event_decay = float(late_car / decay_denominator - 1.0)
+
+        return {
+            "total_return": round(target_total_return, 4),
+            "benchmark_return": round(benchmark_total_return, 4),
+            "abnormal_return": round(abnormal_return, 4),
+            "car": round(car, 4),
+            "bhar": round(bhar, 4),
+            "hit_ratio": round(hit_ratio, 4),
+            "pre_event_abnormal_return": round(float(np.sum(abnormal_pre)) if abnormal_pre.size else 0.0, 4),
+            "post_event_decay": round(post_event_decay, 4),
+            "pre_days_used": int(event_start - pre_start),
+            "post_days_used": int(post_target.size),
+            "estimation_days_used": int(estimation_end - estimation_start),
+            "benchmark_source": benchmark_source,
+            "aggregation_mode": target_curve_payload.get("aggregation_mode"),
+            "component_count": int(target_curve_payload.get("component_count") or 0),
+            "curve_points": int(target_curve_payload.get("curve_points") or target_curve.size),
         }
 
     @staticmethod
@@ -341,6 +1087,11 @@ class BacktestFilter:
             capacity_bucket=execution_assumptions.get("capacity_bucket"),
             position_assumption=portfolio_spec.get("position_assumption") or ("equal_weight_proxy" if len(target_symbols) > 1 else "single_name_full_notional"),
             target_weight_scheme=target_weight_scheme,
+            target_weight_map=dict(portfolio_spec.get("target_weight_map") or {}),
+            market_ruleset=str(execution_assumptions.get("market_ruleset") or "cn_equity"),
+            sell_tax_rate=float(execution_assumptions.get("sell_tax_rate", 0.001) or 0.001),
+            min_trade_lot=max(1, int(execution_assumptions.get("min_trade_lot", 100) or 100)),
+            t_plus_one=bool(execution_assumptions.get("t_plus_one", True)),
             validation_focus=research_task.get("validation_focus") or "target_plus_representative",
         )
 
@@ -372,16 +1123,41 @@ class BacktestFilter:
         target_layer_oos_return = float(target_metrics.get("total_return") or metrics.get("total_return") or 0.0)
         representative_return = float(representative_metrics.get("total_return") or 0.0)
         combined_return = float(combined_metrics.get("total_return") or metrics.get("total_return") or 0.0)
-        event_window_return = float((result.get("event_window_metrics") or {}).get("total_return") or target_layer_oos_return or combined_return or 0.0)
-        target_layer_abnormal_return = round(target_layer_oos_return - representative_return, 4)
+        event_window_metrics = dict(result.get("event_window_metrics") or {})
+        event_window_return = float(
+            event_window_metrics.get("bhar")
+            or event_window_metrics.get("abnormal_return")
+            or event_window_metrics.get("total_return")
+            or target_layer_oos_return
+            or combined_return
+            or 0.0
+        )
+        target_layer_abnormal_return = round(
+            float(event_window_metrics.get("abnormal_return"))
+            if event_window_metrics.get("abnormal_return") is not None
+            else target_layer_oos_return - representative_return,
+            4,
+        )
 
-        decay_denominator = max(abs(event_window_return), 0.01)
-        post_event_decay = round((target_layer_oos_return - event_window_return) / decay_denominator, 4)
+        post_event_decay = round(
+            float(event_window_metrics.get("post_event_decay"))
+            if event_window_metrics.get("post_event_decay") is not None
+            else ((target_layer_oos_return - event_window_return) / max(abs(event_window_return), 0.01)),
+            4,
+        )
 
-        event_window_positive = 1.0 if event_window_return > 0 else 0.0
-        target_outperform = 1.0 if target_layer_abnormal_return > 0 else 0.0
-        target_positive = 1.0 if target_layer_oos_return > 0 else 0.0
-        event_window_hit_ratio = round((event_window_positive + target_outperform + target_positive) / 3.0, 4)
+        event_window_hit_ratio = round(
+            float(event_window_metrics.get("hit_ratio"))
+            if event_window_metrics.get("hit_ratio") is not None
+            else (
+                (
+                    (1.0 if event_window_return > 0 else 0.0)
+                    + (1.0 if target_layer_abnormal_return > 0 else 0.0)
+                    + (1.0 if target_layer_oos_return > 0 else 0.0)
+                ) / 3.0
+            ),
+            4,
+        )
 
         lookback_days = float((research_task.get("estimation_window") or {}).get("lookback_days") or 60.0)
         post_days = float(event_window.get("post_days") or holding_window.get("max_days") or avg_holding_days or 20.0)
@@ -552,9 +1328,32 @@ class BacktestFilter:
             else:
                 failed_codes.append({"code": code, "reason": item.get("reason"), "layer": layer})
 
-        target_metrics = self._summarize_result_set(layer_results["target"])
-        representative_metrics = self._summarize_result_set(layer_results["representative"])
-        combined_metrics = self._summarize_result_set(results)
+        target_metrics = self._summarize_result_set(
+            layer_results["target"],
+            target_weight_scheme=assumptions.target_weight_scheme,
+            initial_capital=assumptions.initial_capital,
+            target_weight_map=assumptions.target_weight_map,
+        )
+        representative_metrics = self._summarize_result_set(
+            layer_results["representative"],
+            target_weight_scheme=assumptions.target_weight_scheme,
+            initial_capital=assumptions.initial_capital,
+        )
+        combined_metrics = self._summarize_result_set(
+            results,
+            target_weight_scheme=assumptions.target_weight_scheme,
+            initial_capital=assumptions.initial_capital,
+            target_weight_map=assumptions.target_weight_map,
+        )
+        event_window_metrics = self._build_event_window_metrics(
+            target_results=layer_results["target"],
+            representative_results=layer_results["representative"],
+            fallback_results=results,
+            research_task=research_task,
+            target_weight_scheme=assumptions.target_weight_scheme,
+            initial_capital=assumptions.initial_capital,
+            target_weight_map=assumptions.target_weight_map,
+        )
         if validation_focus == "event_target_only":
             primary_results = layer_results["target"]
             primary_layer = "target"
@@ -577,6 +1376,15 @@ class BacktestFilter:
             "representative_included": bool([code for code in evaluated_codes if code not in target_set]),
             "mixed_layer_used": primary_layer == "combined",
         }
+
+        def _finalize_result(result_payload: dict[str, Any]) -> dict[str, Any]:
+            payload = dict(result_payload or {})
+            payload["target_quality_summary"] = build_target_quality_gate_summary(
+                candidate,
+                backtest_result=payload,
+            )
+            return payload
+
         base_result = {
             "passed": False,
             "reason_code": "unknown",
@@ -615,6 +1423,16 @@ class BacktestFilter:
             "implementation_shortfall_components": dict(sample_audit.get("implementation_shortfall_components") or {}),
             "position_assumption": sample_audit.get("position_assumption"),
             "backtest_assumptions": assumptions.to_audit_dict(),
+            "portfolio_backtest_mode": (
+                "weighted_multi_name"
+                if assumptions.target_weight_scheme != "single_name" and len(target_codes) > 1
+                else "single_name"
+            ),
+            "portfolio_backtest_coverage": (
+                1.0
+                if assumptions.target_weight_scheme != "single_name" and len(target_codes) > 1 and bool(target_metrics)
+                else 0.0
+            ),
             "layers": {
                 "target": {
                     "requested_codes": target_codes,
@@ -635,48 +1453,53 @@ class BacktestFilter:
                     "metrics": combined_metrics,
                 },
             },
-            "event_window_metrics": dict(target_metrics or combined_metrics),
+            "event_window_metrics": dict(event_window_metrics or target_metrics or combined_metrics),
             "metrics": {},
             "failed_metric": None,
         }
 
         if len(primary_results) < thresholds["min_samples"]:
-            return {
+            return _finalize_result({
                 **base_result,
                 "reason_code": "insufficient_samples",
                 "reason": f"有效样本 {len(primary_results)} 小于要求 {thresholds['min_samples']}",
                 "failed_metric": self._build_failed_metric("sample_count", "<", thresholds["min_samples"], len(primary_results), "有效样本数"),
-            }
+            })
 
-        avg = self._summarize_result_set(primary_results)
+        avg = self._summarize_result_set(
+            primary_results,
+            target_weight_scheme=assumptions.target_weight_scheme,
+            initial_capital=assumptions.initial_capital,
+            target_weight_map=assumptions.target_weight_map,
+        )
         if avg["sharpe_ratio"] < thresholds["sharpe_min"]:
-            return {
+            return _finalize_result({
                 **base_result,
                 "reason_code": "sharpe_below_threshold",
                 "reason": f"Sharpe {avg['sharpe_ratio']:.4f} 低于阈值 {thresholds['sharpe_min']:.2f}",
                 "metrics": avg,
                 "failed_metric": self._build_failed_metric("sharpe_ratio", "<", thresholds["sharpe_min"], round(avg["sharpe_ratio"], 4), "Sharpe"),
-            }
+            })
         if abs(avg["max_drawdown"]) > thresholds["mdd_max"]:
-            return {
+            return _finalize_result({
                 **base_result,
                 "reason_code": "max_drawdown_above_threshold",
                 "reason": f"回撤 {abs(avg['max_drawdown']):.4f} 高于阈值 {thresholds['mdd_max']:.2f}",
                 "metrics": avg,
                 "failed_metric": self._build_failed_metric("max_drawdown", ">", thresholds["mdd_max"], round(abs(avg["max_drawdown"]), 4), "最大回撤"),
-            }
+            })
         if avg["trades_count"] < thresholds["trades_min"]:
-            return {
+            return _finalize_result({
                 **base_result,
                 "reason_code": "trades_below_threshold",
                 "reason": f"交易次数 {avg['trades_count']:.1f} 低于阈值 {thresholds['trades_min']}",
                 "metrics": avg,
                 "failed_metric": self._build_failed_metric("trades_count", "<", thresholds["trades_min"], round(avg["trades_count"], 4), "交易次数"),
-            }
-        return {
+            })
+        return _finalize_result({
             **base_result,
             "passed": True,
             "reason_code": "passed",
             "reason": "通过初筛回测",
             "metrics": avg,
-        }
+        })

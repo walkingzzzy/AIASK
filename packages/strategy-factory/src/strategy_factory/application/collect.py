@@ -487,9 +487,10 @@ class DataCollector:
                     round(sum(final_scores) / len(final_scores), 4) if final_scores else 0.0
                 )
                 max_final_score = round(max(final_scores), 4) if final_scores else 0.0
+                from ..domain.constants import OPPORTUNITY_TARGET_SYMBOLS_PER_TASK as _COLLECT_LIMIT
                 target_symbols = [
                     item.get("symbol") for item in signal_values if item.get("symbol")
-                ][:5]
+                ][:_COLLECT_LIMIT]
                 opportunity_hint = (
                     "factor_acceleration"
                     if "factor" in str(theme_code or "").lower()

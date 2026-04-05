@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 class _StrategyDBLifecycleMixin:
     async def list_strategies(self, status, strategy_type=None, limit=20, offset=0):
         allowed_statuses = self._expand_strategy_status_filter(status)

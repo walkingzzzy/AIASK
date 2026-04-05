@@ -119,6 +119,21 @@ def _build_similar_pattern_report(klines: list[dict], window_days: int, top_n: i
     return {"matches": matches, "aggregate_prediction": aggregate, "pattern_window": window_days}
 
 
+async def _load_factor_klines(
+    db,
+    code: str,
+    *,
+    start_date: Optional[str],
+    end_date: Optional[str],
+    limit: int,
+):
+    """Support both new and legacy db.get_klines signatures."""
+    try:
+        return await db.get_klines(code, start_date=start_date, end_date=end_date, limit=limit)
+    except TypeError:
+        return await db.get_klines(code, limit=limit)
+
+
 # ---------------------------------------------------------------------------
 # MCP tool registration
 # ---------------------------------------------------------------------------
@@ -172,7 +187,13 @@ def register(mcp):
                 return fail(f"Unsupported factor: {factor_name}. Supported: {', '.join(sorted(SUPPORTED_FACTORS.keys()))}")
 
             db = get_db()
-            klines = await db.get_klines(code, start_date=start_date, end_date=end_date, limit=100)
+            klines = await _load_factor_klines(
+                db,
+                code,
+                start_date=start_date,
+                end_date=end_date,
+                limit=100,
+            )
             if not klines:
                 return fail("No kline data")
 

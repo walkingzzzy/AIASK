@@ -9,6 +9,7 @@ Gate-3: 提交门禁 — 质量报告 + 风险报告 + 去重（委托 submissio
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 from copy import deepcopy
@@ -18,20 +19,61 @@ from typing import Any, Dict, List, Optional
 from .legacy_bridge import get_compat_symbol, get_compat_value
 from ..domain.constants import (
     BACKTEST_CONCURRENCY,
+    FACTORY_PRE_GATE_ENABLED,
     GATE1_PASS_RATIO,
     GATE1_REPRESENTATIVE_COUNT,
     GATE1_SHARPE_MIN,
     REPRESENTATIVE_STOCKS,
 )
+from ..domain.strategy_profile import candidate_signature, infer_candidate_strategy_profile
+from ..domain.targets import _build_target_alignment_contract
 from ..domain.targets import _extract_target_codes_from_payload
 from ..domain.targets import _normalize_research_task_contract
 from ..infrastructure.mcp_services import get_strategy_dsl_compiler
+from .backtest_filter import build_target_quality_gate_summary
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
 
 logger = logging.getLogger(__name__)
 
 _LEGACY_QUALITY_GATES_MODULE = "akshare_mcp.services.strategy_factory.quality_gates"
 _LEGACY_RUNTIME_MODULE = "akshare_mcp.services.strategy_factory.runtime"
+
+_PRE_GATE_SIGNAL_DENSITY_MIN = 4.0
+_PRE_GATE_SIGNAL_DENSITY_MAX = 100.0
+_PRE_GATE_FAMILY_QUOTA_DEFAULT = 8
+_PRE_GATE_PER_STOCK_QUOTA_DEFAULT = 5
+_GATE_0_BATCH_SIZE = 100
+_SNAPSHOT_ALIGNMENT_HARD_BLOCK_COVERAGE = 0.05
+_SNAPSHOT_ALIGNMENT_HARD_BLOCK_INTERSECTION = 0.05
+_SNAPSHOT_ALIGNMENT_SOFT_COVERAGE = 0.35
+_SNAPSHOT_ALIGNMENT_SOFT_INTERSECTION = 0.25
+_SNAPSHOT_HIGH_TURNOVER_THRESHOLD = 1.25
+_SNAPSHOT_VERY_HIGH_TURNOVER_THRESHOLD = 1.75
+_SNAPSHOT_LOW_EDGE_BUFFER = 0.12
+_PIPELINE_MA_CROSS_GATE1_REPRESENTATIVE_FLOOR = 5
+_PIPELINE_RSI_GATE1_REPRESENTATIVE_FLOOR = 4
+_PIPELINE_RSI_ALIGNMENT_HARD_BLOCK_INTERSECTION = 0.5
+_PIPELINE_MA_CROSS_HIGH_TURNOVER_THRESHOLD = 1.5
+_PIPELINE_MA_CROSS_VERY_HIGH_TURNOVER_THRESHOLD = 2.0
+_PIPELINE_MA_CROSS_EDGE_RETURN_FLOOR = 0.01
+_RL_BANDIT_ALIGNMENT_HARD_BLOCK_COVERAGE = 0.3
+_RL_BANDIT_ALIGNMENT_HARD_BLOCK_INTERSECTION = 0.45
+_RL_BANDIT_ALIGNMENT_SOFT_COVERAGE = 0.4
+_RL_BANDIT_ALIGNMENT_SOFT_INTERSECTION = 0.5
+_RL_BANDIT_VOLATILITY_BREAKOUT_ALIGNMENT_HARD_BLOCK_INTERSECTION = 0.15
+_RL_BANDIT_VOLATILITY_BREAKOUT_ALIGNMENT_MIN_TARGET_COUNT = 10
+_PRE_GATE_MARKET_CAP_THRESHOLDS = {
+    "high": 20_000_000_000.0,
+    "medium": 8_000_000_000.0,
+    "low": 2_000_000_000.0,
+    "all": 0.0,
+}
+_PRE_GATE_TURNOVER_THRESHOLDS = {
+    "high": 1_500_000_000.0,
+    "medium": 300_000_000.0,
+    "low": 50_000_000.0,
+    "all": 0.0,
+}
 
 def _compat_setting(name: str, default):
     return get_compat_value(_LEGACY_QUALITY_GATES_MODULE, name, default)
@@ -58,11 +100,13 @@ def get_strategy_factory_package():
 
 def _normalized_gate_3_counts(submission_result: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
     payload = dict(submission_result or {})
+    input_count = int(payload.get("gate_3_input", payload.get("submitted", 0)))
     submitted = int(payload.get("submitted", 0))
     passed_count = int(payload.get("gate_3_passed", payload.get("passed_quality_gate", 0)))
-    failed_count = int(payload.get("gate_3_failed", max(submitted - passed_count, 0)))
+    failed_count = int(payload.get("gate_3_failed", max(input_count - passed_count, 0)))
     provisional_passed_count = int(payload.get("gate_3_provisional_passed", 0))
     return {
+        "input_count": input_count,
         "submitted": submitted,
         "passed_count": passed_count,
         "failed_count": failed_count,
@@ -88,7 +132,7 @@ def build_completed_gate_3_report(submission_result: Optional[Dict[str, Any]] = 
     return {
         "gate_3": {
             "status": "completed_submission_gate",
-            "input_count": counts["submitted"],
+            "input_count": counts["input_count"],
             "passed_count": counts["passed_count"],
             "failed_count": counts["failed_count"],
             "pending_count": 0,
@@ -128,6 +172,530 @@ def _gate_2_group_key(candidate: dict) -> str:
     return f"type:{strategy_type}"
 
 
+def _is_bulk_stock_matrix_candidate(candidate: dict) -> bool:
+    payload = dict(candidate or {})
+    research_task = dict(payload.get("research_task") or {})
+    task_source = str(
+        research_task.get("task_source")
+        or payload.get("task_source")
+        or payload.get("generator_mode")
+        or ""
+    ).strip().lower()
+    return task_source == "bulk_stock_matrix"
+
+
+def _resolve_gate_1_representative_count(candidate: dict, default_count: int) -> int:
+    payload = dict(candidate or {})
+    research_task = dict(payload.get("research_task") or {})
+    normalized_task = _normalize_research_task_contract(research_task)
+    explicit = (
+        payload.get("gate_1_representative_count")
+        or research_task.get("gate_1_representative_count")
+    )
+    if explicit is not None:
+        try:
+            resolved = max(1, int(explicit))
+        except Exception:
+            resolved = max(1, int(default_count or 1))
+    elif _is_bulk_stock_matrix_candidate(payload):
+        resolved = 1
+    else:
+        resolved = max(1, int(default_count or 1))
+
+    target_count = len(_extract_target_codes_from_payload(payload, limit=12))
+    validation_focus = str(normalized_task.get("validation_focus") or "").strip().lower()
+    target_alignment_contract = _build_target_alignment_contract(normalized_task, candidate=payload)
+    min_target_sample_count = int(target_alignment_contract.get("min_target_sample_count") or 0)
+    if (
+        target_count > 1
+        and _is_targeted_snapshot_candidate(
+            payload,
+            normalized_task,
+            target_count=target_count,
+            validation_focus=validation_focus,
+        )
+        and min_target_sample_count > 0
+    ):
+        resolved = max(resolved, min(target_count, min_target_sample_count))
+    if (
+        target_count > 1
+        and _is_targeted_snapshot_candidate(
+            payload,
+            normalized_task,
+            target_count=target_count,
+            validation_focus=validation_focus,
+        )
+        and _is_pipeline_staged_ma_cross_candidate(payload, normalized_task)
+    ):
+        # Snapshot basket ma_cross routinely looked strong on a single-stock fast screen
+        # and then collapsed once Gate-2 evaluated the whole basket. Widen the Gate-1
+        # sample so these fragile candidates are filtered earlier.
+        resolved = max(
+            resolved,
+            min(target_count, _PIPELINE_MA_CROSS_GATE1_REPRESENTATIVE_FLOOR),
+        )
+
+    if (
+        target_count > 1
+        and _is_targeted_snapshot_candidate(
+            payload,
+            normalized_task,
+            target_count=target_count,
+            validation_focus=validation_focus,
+        )
+        and _is_pipeline_staged_rsi_candidate(payload, normalized_task)
+    ):
+        # Snapshot basket RSI has become the main Gate-2 leak source. We now force a
+        # wider target sample so Gate-1 can expose low-overlap / low-stability
+        # baskets before they consume full-backtest capacity.
+        resolved = max(
+            resolved,
+            min(target_count, _PIPELINE_RSI_GATE1_REPRESENTATIVE_FLOOR),
+        )
+
+    return resolved
+
+
+def _resolve_gate_1_codes(
+    candidate: dict,
+) -> tuple[list[str], list[str], str, str, dict[str, Any]]:
+    representative_stocks = list(_compat_setting("REPRESENTATIVE_STOCKS", REPRESENTATIVE_STOCKS))
+    representative_count = _resolve_gate_1_representative_count(
+        candidate,
+        int(_compat_setting("GATE1_REPRESENTATIVE_COUNT", GATE1_REPRESENTATIVE_COUNT) or GATE1_REPRESENTATIVE_COUNT),
+    )
+    research_task = _normalize_research_task_contract(candidate.get("research_task"))
+    validation_focus = str(research_task.get("validation_focus") or "target_plus_representative").strip().lower()
+    target_codes = _extract_target_codes_from_payload(candidate, limit=max(representative_count, 12))
+    prioritized_target_codes = list(target_codes[:representative_count])
+    padded_representatives = [code for code in representative_stocks if code not in prioritized_target_codes]
+    if validation_focus == "event_target_only" and prioritized_target_codes:
+        codes = list(prioritized_target_codes)
+        code_source = "event_target_only"
+    else:
+        codes = list(dict.fromkeys([*prioritized_target_codes, *padded_representatives]))[
+            : max(representative_count, len(prioritized_target_codes))
+        ]
+        code_source = "candidate_target_symbols" if prioritized_target_codes else "representative_only"
+    return codes, prioritized_target_codes, code_source, validation_focus, research_task
+
+
+def _collect_gate_1_preload_codes(candidates: list[dict]) -> list[str]:
+    ordered_codes: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        codes, _target_codes, _code_source, _validation_focus, _research_task = _resolve_gate_1_codes(candidate)
+        for code in codes:
+            if code in seen:
+                continue
+            seen.add(code)
+            ordered_codes.append(code)
+    return ordered_codes
+
+
+def _candidate_constraint_check(candidate: dict) -> dict[str, Any]:
+    payload = dict(candidate or {})
+    for source in (
+        payload,
+        dict(payload.get("params") or {}),
+        _normalize_research_task_contract(payload.get("research_task") or {}),
+    ):
+        constraint_check = source.get("constraint_check")
+        if isinstance(constraint_check, dict) and constraint_check:
+            return dict(constraint_check)
+    return {}
+
+
+def _candidate_tags(candidate: dict) -> set[str]:
+    payload = dict(candidate or {})
+    return {
+        str(tag).strip().lower()
+        for tag in list(payload.get("tags") or [])
+        if str(tag).strip()
+    }
+
+
+def _candidate_generation_mode(candidate: dict, research_task: Optional[dict] = None) -> str:
+    payload = dict(candidate or {})
+    normalized_task = _normalize_research_task_contract(research_task or payload.get("research_task") or {})
+    dsl_metadata = dict((dict((payload.get("params") or {}).get("dsl") or {}).get("metadata") or {}))
+    strategy_profile = dict(dsl_metadata.get("strategy_profile") or {})
+    candidate_provenance = dict(payload.get("candidate_provenance") or {})
+    generation_reason = dict(payload.get("generation_reason") or {})
+    for source in (
+        payload,
+        dict(payload.get("params") or {}),
+        normalized_task,
+        strategy_profile,
+        candidate_provenance,
+        generation_reason,
+    ):
+        if not isinstance(source, dict):
+            continue
+        for key in ("generator_type", "generator_mode"):
+            value = str(source.get(key) or "").strip().lower()
+            if value:
+                return value
+    return ""
+
+
+def _is_targeted_snapshot_candidate(
+    candidate: dict,
+    research_task: Optional[dict] = None,
+    *,
+    tags: Optional[set[str]] = None,
+    target_count: Optional[int] = None,
+    validation_focus: Optional[str] = None,
+) -> bool:
+    payload = dict(candidate or {})
+    normalized_task = _normalize_research_task_contract(research_task or payload.get("research_task") or {})
+    resolved_tags = tags if tags is not None else _candidate_tags(payload)
+    resolved_target_count = int(target_count if target_count is not None else len(_extract_target_codes_from_payload(payload, limit=12)))
+    resolved_validation_focus = str(
+        validation_focus if validation_focus is not None else normalized_task.get("validation_focus") or ""
+    ).strip().lower()
+    task_source = str(
+        normalized_task.get("task_source")
+        or payload.get("task_source")
+        or payload.get("generator_mode")
+        or ""
+    ).strip().lower()
+    return (
+        task_source == "snapshot"
+        and resolved_target_count > 1
+        and (
+            "targeted_universe" in resolved_tags
+            or resolved_validation_focus in {"candidate_target_only", "event_target_only", "target_plus_representative"}
+        )
+    )
+
+
+def _is_pipeline_staged_ma_cross_candidate(candidate: dict, research_task: Optional[dict] = None) -> bool:
+    payload = dict(candidate or {})
+    strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+    generation_mode = _candidate_generation_mode(payload, research_task)
+    tags = _candidate_tags(payload)
+    return strategy_type == "ma_cross" and (
+        generation_mode == "pipeline_staged"
+        or "pipeline_staged" in tags
+        or "generator_pipeline_staged" in tags
+    )
+
+
+def _is_pipeline_staged_rsi_candidate(candidate: dict, research_task: Optional[dict] = None) -> bool:
+    payload = dict(candidate or {})
+    strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+    generation_mode = _candidate_generation_mode(payload, research_task)
+    tags = _candidate_tags(payload)
+    return strategy_type == "rsi" and (
+        generation_mode == "pipeline_staged"
+        or "pipeline_staged" in tags
+        or "generator_pipeline_staged" in tags
+    )
+
+
+def _is_rl_bandit_momentum_candidate(candidate: dict, research_task: Optional[dict] = None) -> bool:
+    payload = dict(candidate or {})
+    strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+    generation_mode = _candidate_generation_mode(payload, research_task)
+    tags = _candidate_tags(payload)
+    return strategy_type == "momentum" and (
+        generation_mode == "rl_bandit"
+        or "generator_rl_bandit" in tags
+        or "rl_bandit" in tags
+        or "rl_evolved" in tags
+    )
+
+
+def _is_rl_bandit_volatility_breakout_candidate(candidate: dict, research_task: Optional[dict] = None) -> bool:
+    payload = dict(candidate or {})
+    strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+    generation_mode = _candidate_generation_mode(payload, research_task)
+    tags = _candidate_tags(payload)
+    return strategy_type == "volatility_breakout" and (
+        generation_mode == "rl_bandit"
+        or "generator_rl_bandit" in tags
+        or "rl_bandit" in tags
+        or "rl_evolved" in tags
+    )
+
+
+def _gate_2_selection_signature(candidate: dict) -> str:
+    try:
+        return candidate_signature(candidate)
+    except Exception:
+        return json.dumps(
+            {
+                "strategy_type": str((candidate or {}).get("strategy_type") or "").strip().lower(),
+                "target_symbols": list(_extract_target_codes_from_payload(candidate or {}, limit=12)),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+
+
+def _gate_2_priority_adjustments(candidate: dict, research_task: dict, gate_1_score: float) -> dict[str, Any]:
+    payload = dict(candidate or {})
+    tags = _candidate_tags(payload)
+    strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+    target_codes = _extract_target_codes_from_payload(payload, limit=12)
+    target_count = len(target_codes)
+    validation_focus = str(research_task.get("validation_focus") or "").strip().lower()
+    gate_1_metrics = dict((payload.get("gate_1_result") or {}).get("metrics") or {})
+    constraint_check = _candidate_constraint_check(payload)
+    coverage_ratio_raw = constraint_check.get("coverage_ratio")
+    intersection_ratio_raw = constraint_check.get("intersection_ratio")
+    coverage_ratio = None if coverage_ratio_raw is None else _safe_float(coverage_ratio_raw, 0.0)
+    intersection_ratio = None if intersection_ratio_raw is None else _safe_float(intersection_ratio_raw, 0.0)
+    avg_turnover_proxy = _safe_float(gate_1_metrics.get("avg_turnover_proxy"), 0.0)
+    avg_total_return = _safe_float(gate_1_metrics.get("avg_total_return"), 0.0)
+    target_quality_summary = build_target_quality_gate_summary(payload, gate_1_metrics=gate_1_metrics)
+    sampled_target_count = int(target_quality_summary.get("sampled_target_count") or 0)
+    min_target_sample_count = int(target_quality_summary.get("min_target_sample_count") or 0)
+    target_layer_stability = (
+        None
+        if target_quality_summary.get("target_layer_stability") is None
+        else _safe_float(target_quality_summary.get("target_layer_stability"), 0.0)
+    )
+    min_target_layer_stability = _safe_float(target_quality_summary.get("min_target_layer_stability"), 0.0)
+    gate_1_threshold = float(_compat_setting("GATE1_SHARPE_MIN", GATE1_SHARPE_MIN) or GATE1_SHARPE_MIN)
+    low_edge_cutoff = gate_1_threshold + _SNAPSHOT_LOW_EDGE_BUFFER
+    targeted_snapshot = _is_targeted_snapshot_candidate(
+        payload,
+        research_task,
+        tags=tags,
+        target_count=target_count,
+        validation_focus=validation_focus,
+    )
+    pipeline_staged_ma_cross = _is_pipeline_staged_ma_cross_candidate(payload, research_task)
+    rl_bandit_momentum = _is_rl_bandit_momentum_candidate(payload, research_task)
+
+    adjustments: dict[str, float] = {}
+    if targeted_snapshot:
+        if coverage_ratio is not None:
+            if coverage_ratio <= 0.0:
+                adjustments["coverage_zero_penalty"] = -12.0
+            elif coverage_ratio < _SNAPSHOT_ALIGNMENT_SOFT_COVERAGE:
+                adjustments["coverage_penalty"] = -8.0
+            elif coverage_ratio < 0.6:
+                adjustments["coverage_penalty"] = -4.0
+            elif coverage_ratio >= 0.85:
+                adjustments["coverage_bonus"] = 2.0
+        if intersection_ratio is not None:
+            if intersection_ratio <= 0.0:
+                adjustments["intersection_zero_penalty"] = adjustments.get("intersection_zero_penalty", 0.0) - 8.0
+            elif intersection_ratio < _SNAPSHOT_ALIGNMENT_SOFT_INTERSECTION:
+                adjustments["intersection_penalty"] = adjustments.get("intersection_penalty", 0.0) - 4.0
+            elif intersection_ratio < 0.5:
+                adjustments["intersection_penalty"] = adjustments.get("intersection_penalty", 0.0) - 2.0
+            else:
+                adjustments["intersection_bonus"] = adjustments.get("intersection_bonus", 0.0) + 1.5
+        if avg_turnover_proxy >= _SNAPSHOT_VERY_HIGH_TURNOVER_THRESHOLD and gate_1_score < (low_edge_cutoff + 0.06):
+            adjustments["turnover_penalty"] = adjustments.get("turnover_penalty", 0.0) - 10.0
+        elif avg_turnover_proxy >= _SNAPSHOT_HIGH_TURNOVER_THRESHOLD and gate_1_score < low_edge_cutoff:
+            adjustments["turnover_penalty"] = adjustments.get("turnover_penalty", 0.0) - 6.0
+        if avg_total_return <= 0.0 and gate_1_score < (low_edge_cutoff + 0.03):
+            adjustments["low_edge_penalty"] = adjustments.get("low_edge_penalty", 0.0) - 4.0
+        if avg_turnover_proxy > 0.0 and avg_turnover_proxy <= 0.6 and avg_total_return > 0.0 and gate_1_score >= (gate_1_threshold + 0.15):
+            adjustments["efficient_turnover_bonus"] = adjustments.get("efficient_turnover_bonus", 0.0) + 3.0
+        if min_target_sample_count > 0 and sampled_target_count < min_target_sample_count:
+            adjustments["target_sample_penalty"] = adjustments.get("target_sample_penalty", 0.0) - 8.0
+        if (
+            target_layer_stability is not None
+            and min_target_layer_stability > 0.0
+            and target_layer_stability < min_target_layer_stability
+        ):
+            adjustments["target_layer_stability_penalty"] = adjustments.get("target_layer_stability_penalty", 0.0) - 6.0
+        if pipeline_staged_ma_cross:
+            if avg_turnover_proxy >= _PIPELINE_MA_CROSS_VERY_HIGH_TURNOVER_THRESHOLD:
+                adjustments["pipeline_ma_cross_turnover_penalty"] = adjustments.get("pipeline_ma_cross_turnover_penalty", 0.0) - 18.0
+            elif avg_turnover_proxy >= _PIPELINE_MA_CROSS_HIGH_TURNOVER_THRESHOLD:
+                adjustments["pipeline_ma_cross_turnover_penalty"] = adjustments.get("pipeline_ma_cross_turnover_penalty", 0.0) - 12.0
+            elif avg_turnover_proxy >= _SNAPSHOT_HIGH_TURNOVER_THRESHOLD:
+                adjustments["pipeline_ma_cross_turnover_penalty"] = adjustments.get("pipeline_ma_cross_turnover_penalty", 0.0) - 6.0
+            if avg_total_return <= 0.0:
+                adjustments["pipeline_ma_cross_edge_penalty"] = adjustments.get("pipeline_ma_cross_edge_penalty", 0.0) - 5.0
+            elif avg_total_return < _PIPELINE_MA_CROSS_EDGE_RETURN_FLOOR:
+                adjustments["pipeline_ma_cross_edge_penalty"] = adjustments.get("pipeline_ma_cross_edge_penalty", 0.0) - 3.0
+            if avg_turnover_proxy >= _PIPELINE_MA_CROSS_HIGH_TURNOVER_THRESHOLD and gate_1_score < (gate_1_threshold + 0.45):
+                adjustments["pipeline_ma_cross_fragility_penalty"] = adjustments.get("pipeline_ma_cross_fragility_penalty", 0.0) - 4.0
+        if rl_bandit_momentum:
+            if coverage_ratio is not None:
+                if coverage_ratio < _RL_BANDIT_ALIGNMENT_SOFT_COVERAGE:
+                    adjustments["rl_bandit_coverage_penalty"] = adjustments.get("rl_bandit_coverage_penalty", 0.0) - 6.0
+                if coverage_ratio < _RL_BANDIT_ALIGNMENT_HARD_BLOCK_COVERAGE:
+                    adjustments["rl_bandit_coverage_penalty"] = adjustments.get("rl_bandit_coverage_penalty", 0.0) - 4.0
+            if intersection_ratio is not None:
+                if intersection_ratio < _RL_BANDIT_ALIGNMENT_SOFT_INTERSECTION:
+                    adjustments["rl_bandit_intersection_penalty"] = adjustments.get("rl_bandit_intersection_penalty", 0.0) - 5.0
+                if intersection_ratio < _RL_BANDIT_ALIGNMENT_HARD_BLOCK_INTERSECTION:
+                    adjustments["rl_bandit_intersection_penalty"] = adjustments.get("rl_bandit_intersection_penalty", 0.0) - 4.0
+            if target_count > 10:
+                adjustments["rl_bandit_basket_penalty"] = adjustments.get("rl_bandit_basket_penalty", 0.0) - 2.5
+
+    return {
+        "score_delta": round(sum(adjustments.values()), 4),
+        "adjustments": {key: round(value, 4) for key, value in adjustments.items()},
+        "coverage_ratio": None if coverage_ratio is None else round(coverage_ratio, 4),
+        "intersection_ratio": None if intersection_ratio is None else round(intersection_ratio, 4),
+        "avg_turnover_proxy": round(avg_turnover_proxy, 4),
+        "avg_total_return": round(avg_total_return, 6),
+        "target_quality_summary": dict(target_quality_summary),
+        "targeted_snapshot": targeted_snapshot,
+    }
+
+
+def _gate_2_disallow_same_group_fill(candidate: dict) -> bool:
+    payload = dict(candidate or {})
+    research_task = _normalize_research_task_contract(payload.get("research_task") or {})
+    if not _is_targeted_snapshot_candidate(payload, research_task):
+        return False
+    return _is_rl_bandit_momentum_candidate(payload, research_task)
+
+
+def _post_gate_1_target_quality_block_reason(candidate: dict, gate_1_score: float) -> Optional[str]:
+    payload = dict(candidate or {})
+    research_task = _normalize_research_task_contract(payload.get("research_task") or {})
+    target_codes = _extract_target_codes_from_payload(payload, limit=12)
+    target_count = len(target_codes)
+    if target_count <= 1:
+        return None
+
+    tags = _candidate_tags(payload)
+    validation_focus = str(research_task.get("validation_focus") or "").strip().lower()
+    if not _is_targeted_snapshot_candidate(
+        payload,
+        research_task,
+        tags=tags,
+        target_count=target_count,
+        validation_focus=validation_focus,
+    ):
+        return None
+
+    gate_1_metrics = dict((payload.get("gate_1_result") or {}).get("metrics") or {})
+    constraint_check = _candidate_constraint_check(payload)
+    coverage_ratio_raw = constraint_check.get("coverage_ratio")
+    intersection_ratio_raw = constraint_check.get("intersection_ratio")
+    coverage_ratio = None if coverage_ratio_raw is None else _safe_float(coverage_ratio_raw, 0.0)
+    intersection_ratio = None if intersection_ratio_raw is None else _safe_float(intersection_ratio_raw, 0.0)
+    avg_turnover_proxy = _safe_float(gate_1_metrics.get("avg_turnover_proxy"), 0.0)
+    avg_total_return = _safe_float(gate_1_metrics.get("avg_total_return"), 0.0)
+    gate_1_threshold = float(_compat_setting("GATE1_SHARPE_MIN", GATE1_SHARPE_MIN) or GATE1_SHARPE_MIN)
+    target_quality_summary = build_target_quality_gate_summary(payload, gate_1_metrics=gate_1_metrics)
+    target_quality_reasons = list(target_quality_summary.get("reasons") or [])
+
+    for reason in target_quality_reasons:
+        if reason in {
+            "target_universe_alignment_too_low",
+            "target_sample_sufficiency_too_low",
+            "target_layer_stability_too_low",
+        }:
+            return reason
+
+    if _is_pipeline_staged_ma_cross_candidate(payload, research_task):
+        if (
+            avg_turnover_proxy >= _PIPELINE_MA_CROSS_VERY_HIGH_TURNOVER_THRESHOLD
+            and gate_1_score < (gate_1_threshold + 0.75)
+        ):
+            return "snapshot_turnover_fragility_too_high"
+        if (
+            avg_turnover_proxy >= _PIPELINE_MA_CROSS_HIGH_TURNOVER_THRESHOLD
+            and target_count >= 4
+            and (
+                gate_1_score < (gate_1_threshold + 0.55)
+                or avg_total_return <= _PIPELINE_MA_CROSS_EDGE_RETURN_FLOOR
+            )
+        ):
+            return "snapshot_turnover_fragility_too_high"
+
+    if (
+        _is_pipeline_staged_rsi_candidate(payload, research_task)
+        and target_count >= 6
+        and intersection_ratio is not None
+        and intersection_ratio < _PIPELINE_RSI_ALIGNMENT_HARD_BLOCK_INTERSECTION
+    ):
+        return "target_universe_alignment_too_low"
+
+    if _is_rl_bandit_momentum_candidate(payload, research_task):
+        if (
+            coverage_ratio is not None
+            and coverage_ratio < _RL_BANDIT_ALIGNMENT_HARD_BLOCK_COVERAGE
+            and intersection_ratio is not None
+            and intersection_ratio < _RL_BANDIT_ALIGNMENT_HARD_BLOCK_INTERSECTION
+        ):
+            return "target_universe_alignment_too_low"
+        if (
+            target_count > 8
+            and intersection_ratio is not None
+            and intersection_ratio < _RL_BANDIT_ALIGNMENT_SOFT_INTERSECTION
+        ):
+            return "target_universe_alignment_too_low"
+
+    return None
+
+
+def _gate_2_priority_score(candidate: dict, gate_1_score: float, *, return_meta: bool = False):
+    payload = dict(candidate or {})
+    research_task = _normalize_research_task_contract(payload.get("research_task") or {})
+    target_codes = _extract_target_codes_from_payload(payload, limit=12)
+    target_count = len(target_codes)
+    task_source = str(
+        research_task.get("task_source")
+        or payload.get("task_source")
+        or payload.get("generator_mode")
+        or ""
+    ).strip().lower()
+    validation_focus = str(research_task.get("validation_focus") or "").strip().lower()
+    tags = {
+        str(tag).strip().lower()
+        for tag in list(payload.get("tags") or [])
+        if str(tag).strip()
+    }
+    priority = _safe_float(payload.get("priority") or research_task.get("priority"))
+    matrix_priority = _safe_float(
+        payload.get("matrix_priority_score")
+        or research_task.get("matrix_priority_score")
+    )
+    stock_family_priority = _safe_float(
+        payload.get("stock_family_priority")
+        or research_task.get("stock_family_priority")
+    )
+    base_score = _safe_float(gate_1_score) * 100.0
+    priority_bonus = priority * 0.35
+    matrix_bonus = matrix_priority * 0.25
+    family_bonus = stock_family_priority * 25.0
+    target_bonus = min(target_count, 8) * 0.9
+    score = base_score + priority_bonus + matrix_bonus + family_bonus + target_bonus
+    if target_count > 0:
+        score += 4.0
+    if "targeted_universe" in tags:
+        score += 3.0
+    if validation_focus in {"candidate_target_only", "event_target_only"}:
+        score += 4.0
+    if task_source in {"snapshot", "event_driven", "bulk_stock_matrix"} and target_count > 0:
+        score += 2.0
+    if not target_count and not research_task:
+        score -= 12.0
+    if _is_bulk_stock_matrix_candidate(payload):
+        score += 8.0
+    if str(research_task.get("candidate_family") or payload.get("candidate_family") or "").strip():
+        score += 2.0
+    quality_meta = _gate_2_priority_adjustments(payload, research_task, _safe_float(gate_1_score))
+    score += _safe_float(quality_meta.get("score_delta"), 0.0)
+    final_score = round(score, 4)
+    if return_meta:
+        return final_score, {
+            "base_score": round(base_score, 4),
+            "priority_bonus": round(priority_bonus, 4),
+            "matrix_bonus": round(matrix_bonus, 4),
+            "family_bonus": round(family_bonus, 4),
+            "target_count_bonus": round(target_bonus, 4),
+            **quality_meta,
+        }
+    return final_score
+
+
 def _select_gate_2_candidates(
     gate_1_scored: list[tuple[dict, float]],
     top_k: int,
@@ -140,19 +708,26 @@ def _select_gate_2_candidates(
     selected: list[dict] = []
     selected_groups: dict[str, int] = {}
     selected_ids: set[int] = set()
+    selected_signatures: set[str] = set()
 
     def try_select(candidate: dict, *, require_new_group: bool, enforce_cap: bool) -> bool:
         group_key = _gate_2_group_key(candidate)
         current = int(selected_groups.get(group_key) or 0)
         if require_new_group and current > 0:
             return False
+        if current > 0 and _gate_2_disallow_same_group_fill(candidate):
+            return False
         if enforce_cap and current >= max(1, per_group_cap):
             return False
         marker = id(candidate)
         if marker in selected_ids:
             return False
+        selection_signature = _gate_2_selection_signature(candidate)
+        if selection_signature in selected_signatures:
+            return False
         selected.append(candidate)
         selected_ids.add(marker)
+        selected_signatures.add(selection_signature)
         selected_groups[group_key] = current + 1
         return True
 
@@ -187,6 +762,146 @@ class GateResult:
     metrics: Dict[str, Any] = field(default_factory=dict)
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _per_stock_quota_increment(candidate: dict, research_task: dict, target_codes: list[str]) -> float:
+    count = len(list(target_codes or []))
+    if count <= 1:
+        return 1.0
+
+    task_source = str(research_task.get("task_source") or "").strip().lower()
+    validation_focus = str(research_task.get("validation_focus") or "").strip().lower()
+    if task_source == "bulk_stock_matrix":
+        return 1.0
+    if validation_focus in {"candidate_target_only", "event_target_only"}:
+        return 0.5 if count >= 4 else 0.75
+    if count >= 4:
+        return 0.5
+    if count >= 3:
+        return 0.65
+    return 0.8
+
+
+def _resolve_gate_2_top_k(total_passed: int, pass_ratio: float) -> int:
+    if total_passed <= 0:
+        return 0
+    scaled = float(total_passed) * max(0.0, float(pass_ratio or 0.0))
+    return max(1, min(int(total_passed), int(round(scaled))))
+
+
+def _collect_symbol_summaries(candidate: dict, research_task: dict) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for source in (candidate, research_task, dict(research_task.get("stock_pool") or {})):
+        if not isinstance(source, dict):
+            continue
+        for key in (
+            "source_symbol_summary",
+            "target_symbol_summary",
+            "source_symbol_summaries",
+            "target_symbol_summaries",
+            "symbol_summaries",
+        ):
+            payload = source.get(key)
+            if isinstance(payload, dict):
+                summaries.append(dict(payload))
+            elif isinstance(payload, list):
+                summaries.extend(dict(item) for item in payload if isinstance(item, dict))
+    return summaries
+
+
+def _resolve_liquidity_requirement(candidate: dict, research_task: dict, target_codes: list[str]) -> str:
+    explicit = str(
+        candidate.get("liquidity_requirement")
+        or research_task.get("liquidity_requirement")
+        or candidate.get("market_liquidity_requirement")
+        or ""
+    ).strip().lower()
+    if explicit in {"high", "medium", "low", "all"}:
+        return explicit
+    return "medium" if len(target_codes) <= 1 else "low"
+
+
+def _estimate_liquidity_proxy(candidate: dict, research_task: dict, target_codes: list[str]) -> dict[str, Any]:
+    summaries = _collect_symbol_summaries(candidate, research_task)
+    if not summaries:
+        return {"available": False, "proxy_kind": None, "proxy_value": None}
+
+    target_set = {str(code).strip() for code in list(target_codes or []) if str(code).strip()}
+    matched = [
+        summary
+        for summary in summaries
+        if not target_set
+        or not str(summary.get("code") or summary.get("symbol") or summary.get("stock_code") or "").strip()
+        or str(summary.get("code") or summary.get("symbol") or summary.get("stock_code") or "").strip() in target_set
+    ]
+    if not matched:
+        matched = summaries
+
+    turnover_values = []
+    for summary in matched:
+        for field in ("avg_daily_turnover", "daily_turnover", "avg_turnover", "turnover", "amount"):
+            value = _safe_float(summary.get(field), 0.0)
+            if value > 0:
+                turnover_values.append(value)
+                break
+    if turnover_values:
+        return {
+            "available": True,
+            "proxy_kind": "avg_daily_turnover",
+            "proxy_value": min(turnover_values),
+        }
+
+    market_caps = [_safe_float(summary.get("market_cap"), 0.0) for summary in matched]
+    market_caps = [value for value in market_caps if value > 0]
+    if market_caps:
+        return {
+            "available": True,
+            "proxy_kind": "market_cap",
+            "proxy_value": min(market_caps),
+        }
+
+    return {"available": False, "proxy_kind": None, "proxy_value": None}
+
+
+def _liquidity_threshold(requirement: str, proxy_kind: Optional[str]) -> float:
+    requirement = str(requirement or "all").strip().lower() or "all"
+    if requirement == "all":
+        return 0.0
+    if proxy_kind == "avg_daily_turnover":
+        return float(_PRE_GATE_TURNOVER_THRESHOLDS.get(requirement, 0.0) or 0.0)
+    return float(_PRE_GATE_MARKET_CAP_THRESHOLDS.get(requirement, 0.0) or 0.0)
+
+
+def _estimate_signal_density(strategy_type: str, params: dict[str, Any]) -> float:
+    strategy_type = str(strategy_type or "").strip().lower()
+    lookback = max(2, int(params.get("lookback", params.get("period", 20)) or 20))
+    threshold = max(0.005, _safe_float(params.get("threshold", 0.02), 0.02))
+    if strategy_type == "ma_cross":
+        short_period = max(2, int(params.get("short_period", 5) or 5))
+        long_period = max(short_period + 1, int(params.get("long_period", 20) or 20))
+        return round(252.0 / max((short_period + long_period) / 2.0, 4.0), 4)
+    if strategy_type in {"momentum", "volatility_breakout", "north_capital_track"}:
+        density = 252.0 / max(float(lookback), 3.0)
+        density *= max(0.35, min(1.8, 0.02 / threshold))
+        return round(density, 4)
+    if strategy_type in {"rsi", "gap_fill", "mean_reversion_short"}:
+        period = max(2, int(params.get("rsi_period", 14) or 14))
+        band_width = max(5.0, _safe_float(params.get("overbought", 70), 70.0) - _safe_float(params.get("oversold", 30), 30.0))
+        density = 252.0 / max(period * 0.75, 2.0)
+        density *= max(0.5, min(1.5, 40.0 / band_width))
+        return round(density, 4)
+    if strategy_type in {"value_factor", "quality_factor", "growth_factor", "multi_factor", "sector_rotation"}:
+        return round(252.0 / max(lookback * 0.45, 8.0), 4)
+    if strategy_type in {"macro_timing", "margin_divergence"}:
+        return round(252.0 / max(lookback * 1.1, 6.0), 4)
+    return 12.0
+
+
 # ---------------------------------------------------------------------------
 # Gate-0: 结构校验
 # ---------------------------------------------------------------------------
@@ -195,7 +910,31 @@ _VALID_STRATEGY_TYPES = frozenset({
     "momentum", "ma_cross", "rsi",
     "value_factor", "quality_factor", "growth_factor",
     "multi_factor", "macro_timing", "dsl_rule",
+    "volatility_breakout", "gap_fill", "mean_reversion_short",
+    "sector_rotation", "north_capital_track", "margin_divergence",
 })
+_REQUIRED_TRADE_FIELDS = frozenset({
+    "holding_horizon",
+    "trade_plan",
+    "risk_rules",
+    "rebalance_rule",
+    "portfolio_spec",
+    "execution_assumptions",
+    "validation_profile",
+})
+
+
+def _candidate_contract_value(candidate: dict, key: str) -> Any:
+    payload = dict(candidate or {})
+    value = payload.get(key)
+    if value not in (None, "", [], {}):
+        return value
+    params = payload.get("params")
+    if isinstance(params, dict):
+        nested = params.get(key)
+        if nested not in (None, "", [], {}):
+            return nested
+    return None
 
 
 def gate_0_structural(candidate: dict) -> GateResult:
@@ -213,6 +952,13 @@ def gate_0_structural(candidate: dict) -> GateResult:
     elif not isinstance(params, dict):
         reasons.append("params_not_dict")
 
+    missing_trade_fields = [
+        key for key in sorted(_REQUIRED_TRADE_FIELDS)
+        if _candidate_contract_value(candidate, key) in (None, "", [], {})
+    ]
+    if missing_trade_fields:
+        reasons.append(f"missing_trade_fields:{','.join(missing_trade_fields)}")
+
     # DSL 编译检查（可选）
     if strategy_type == "dsl_rule":
         dsl = (params or {}).get("dsl") if isinstance(params, dict) else None
@@ -226,6 +972,175 @@ def gate_0_structural(candidate: dict) -> GateResult:
                 reasons.append(f"dsl_compile_failed:{type(exc).__name__}")
 
     return GateResult(passed=len(reasons) == 0, gate="gate_0", reasons=reasons)
+
+
+def pre_gate_screen(
+    candidate: dict,
+    *,
+    seen_signatures: Optional[set[str]] = None,
+    family_counts: Optional[Dict[str, int]] = None,
+    stock_counts: Optional[Dict[str, int]] = None,
+    family_quota_limit: int = _PRE_GATE_FAMILY_QUOTA_DEFAULT,
+    per_stock_quota_limit: int = _PRE_GATE_PER_STOCK_QUOTA_DEFAULT,
+) -> GateResult:
+    """廉价预筛：约束任务类型一致性、单股矩阵目标完整性与重复候选。"""
+    payload = dict(candidate or {})
+    reasons: list[str] = []
+    research_task = _normalize_research_task_contract(payload.get("research_task") or {})
+    strategy_type = str(payload.get("strategy_type") or "").strip().lower()
+    target_codes = _extract_target_codes_from_payload(payload, limit=12)
+    tags = _candidate_tags(payload)
+    allowed_strategy_types = {
+        str(item).strip().lower()
+        for item in list(research_task.get("allowed_strategy_types") or [])
+        if str(item).strip()
+    }
+    signature = candidate_signature(payload)
+    task_source = str(research_task.get("task_source") or "").strip().lower()
+    strategy_profile = infer_candidate_strategy_profile(payload, research_task=research_task)
+    candidate_family = str(
+        payload.get("candidate_family")
+        or strategy_profile.get("strategy_family")
+        or strategy_type
+        or "unknown"
+    ).strip().lower() or "unknown"
+    family_used_before = int((family_counts or {}).get(candidate_family) or 0)
+    per_stock_quota_increment = _per_stock_quota_increment(payload, research_task, target_codes)
+    stock_quota_snapshot = {
+        code: round(_safe_float((stock_counts or {}).get(code), 0.0), 4)
+        for code in target_codes
+    }
+    constraint_check = _candidate_constraint_check(payload)
+    coverage_ratio_raw = constraint_check.get("coverage_ratio")
+    intersection_ratio_raw = constraint_check.get("intersection_ratio")
+    coverage_ratio = None if coverage_ratio_raw is None else round(_safe_float(coverage_ratio_raw, 0.0), 4)
+    intersection_ratio = None if intersection_ratio_raw is None else round(_safe_float(intersection_ratio_raw, 0.0), 4)
+    validation_focus = str(research_task.get("validation_focus") or "").strip().lower()
+    targeted_snapshot = _is_targeted_snapshot_candidate(
+        payload,
+        research_task,
+        tags=tags,
+        target_count=len(target_codes),
+        validation_focus=validation_focus,
+    )
+    target_quality_summary = build_target_quality_gate_summary(payload)
+
+    if allowed_strategy_types and strategy_type and strategy_type not in allowed_strategy_types:
+        reasons.append("outside_allowed_strategy_types")
+    if task_source == "bulk_stock_matrix":
+        if not target_codes:
+            reasons.append("bulk_stock_matrix_missing_target_symbols")
+        elif len(target_codes) != 1:
+            reasons.append("bulk_stock_matrix_requires_single_target")
+    elif task_source == "event_driven" and not target_codes:
+        reasons.append("event_task_missing_target_symbols")
+    if len(target_codes) > 12:
+        reasons.append("target_symbol_count_exceeds_12")
+    if (
+        targeted_snapshot
+        and "target_universe_alignment_too_low" in list(target_quality_summary.get("reasons") or [])
+    ):
+        reasons.append("target_universe_alignment_too_low")
+    if (
+        targeted_snapshot
+        and _is_rl_bandit_momentum_candidate(payload, research_task)
+        and coverage_ratio is not None
+        and coverage_ratio <= _RL_BANDIT_ALIGNMENT_HARD_BLOCK_COVERAGE
+        and (
+            intersection_ratio is None
+            or intersection_ratio <= _RL_BANDIT_ALIGNMENT_HARD_BLOCK_INTERSECTION
+        )
+        and "target_universe_alignment_too_low" not in reasons
+    ):
+        reasons.append("target_universe_alignment_too_low")
+    if (
+        targeted_snapshot
+        and len(target_codes) >= 6
+        and _is_pipeline_staged_rsi_candidate(payload, research_task)
+        and intersection_ratio is not None
+        and intersection_ratio <= _PIPELINE_RSI_ALIGNMENT_HARD_BLOCK_INTERSECTION
+        and "target_universe_alignment_too_low" not in reasons
+    ):
+        reasons.append("target_universe_alignment_too_low")
+    if (
+        targeted_snapshot
+        and len(target_codes) >= _RL_BANDIT_VOLATILITY_BREAKOUT_ALIGNMENT_MIN_TARGET_COUNT
+        and _is_rl_bandit_volatility_breakout_candidate(payload, research_task)
+        and intersection_ratio is not None
+        and intersection_ratio <= _RL_BANDIT_VOLATILITY_BREAKOUT_ALIGNMENT_HARD_BLOCK_INTERSECTION
+        and "target_universe_alignment_too_low" not in reasons
+    ):
+        reasons.append("target_universe_alignment_too_low")
+    if seen_signatures is not None:
+        if signature in seen_signatures:
+            reasons.append("duplicate_candidate_signature")
+        else:
+            seen_signatures.add(signature)
+
+    liquidity_requirement = _resolve_liquidity_requirement(payload, research_task, target_codes)
+    liquidity = _estimate_liquidity_proxy(payload, research_task, target_codes)
+    liquidity_threshold = _liquidity_threshold(liquidity_requirement, liquidity.get("proxy_kind"))
+    liquidity_value = _safe_float(liquidity.get("proxy_value"), 0.0)
+    if liquidity.get("available") and liquidity_threshold > 0 and 0 < liquidity_value < liquidity_threshold:
+        reasons.append("liquidity_below_requirement")
+
+    signal_density = _estimate_signal_density(strategy_type, dict(payload.get("params") or {}))
+    if signal_density < _PRE_GATE_SIGNAL_DENSITY_MIN:
+        reasons.append("signal_density_too_sparse")
+    elif signal_density > _PRE_GATE_SIGNAL_DENSITY_MAX:
+        reasons.append("signal_density_too_dense")
+
+    if family_counts is not None and family_used_before >= max(1, int(family_quota_limit or 1)):
+        reasons.append("family_quota_exceeded")
+
+    per_stock_quota_hit = [
+        code
+        for code in target_codes
+        if _safe_float((stock_counts or {}).get(code), 0.0) >= max(1, int(per_stock_quota_limit or 1))
+    ]
+    if per_stock_quota_hit:
+        reasons.append("per_stock_quota_exceeded")
+
+    if not reasons:
+        if family_counts is not None:
+            family_counts[candidate_family] = family_used_before + 1
+        if stock_counts is not None:
+            for code in target_codes:
+                stock_counts[code] = round(
+                    _safe_float(stock_counts.get(code), 0.0) + per_stock_quota_increment,
+                    4,
+                )
+
+    return GateResult(
+        passed=len(reasons) == 0,
+        gate="pre_gate",
+        reasons=reasons,
+        metrics={
+            "task_source": task_source or None,
+            "target_symbol_count": len(target_codes),
+            "target_symbols": target_codes,
+            "allowed_strategy_types": sorted(allowed_strategy_types),
+            "candidate_signature": signature,
+            "candidate_family": candidate_family,
+            "coverage_ratio": coverage_ratio,
+            "intersection_ratio": intersection_ratio,
+            "target_quality_summary": dict(target_quality_summary),
+            "family_quota_limit": max(1, int(family_quota_limit or 1)),
+            "family_quota_used_before": family_used_before,
+            "per_stock_quota_limit": max(1, int(per_stock_quota_limit or 1)),
+            "per_stock_quota_used_before": stock_quota_snapshot,
+            "per_stock_quota_increment": per_stock_quota_increment,
+            "per_stock_quota_hit_symbols": per_stock_quota_hit,
+            "liquidity_requirement": liquidity_requirement,
+            "liquidity_proxy_available": bool(liquidity.get("available")),
+            "liquidity_proxy_kind": liquidity.get("proxy_kind"),
+            "liquidity_proxy_value": liquidity.get("proxy_value"),
+            "liquidity_threshold": liquidity_threshold,
+            "signal_density_estimate": signal_density,
+            "signal_density_min": _PRE_GATE_SIGNAL_DENSITY_MIN,
+            "signal_density_max": _PRE_GATE_SIGNAL_DENSITY_MAX,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -243,21 +1158,13 @@ async def gate_1_fast_screen(
     strategy_type = str(candidate.get("strategy_type") or "momentum")
     params = dict(candidate.get("params") or {})
 
-    representative_stocks = list(_compat_setting("REPRESENTATIVE_STOCKS", REPRESENTATIVE_STOCKS))
-    representative_count = int(_compat_setting("GATE1_REPRESENTATIVE_COUNT", GATE1_REPRESENTATIVE_COUNT) or GATE1_REPRESENTATIVE_COUNT)
     sharpe_min = float(_compat_setting("GATE1_SHARPE_MIN", GATE1_SHARPE_MIN) or GATE1_SHARPE_MIN)
-    research_task = _normalize_research_task_contract(candidate.get("research_task"))
-    validation_focus = str(research_task.get("validation_focus") or "target_plus_representative").strip().lower()
-    target_codes = _extract_target_codes_from_payload(candidate, limit=max(representative_count, 12))
-    prioritized_target_codes = list(target_codes[:representative_count])
-    padded_representatives = [code for code in representative_stocks if code not in prioritized_target_codes]
-    if validation_focus == "event_target_only" and prioritized_target_codes:
-        codes = list(prioritized_target_codes)
-        code_source = "event_target_only"
-    else:
-        codes = list(dict.fromkeys([*prioritized_target_codes, *padded_representatives]))[: max(representative_count, len(prioritized_target_codes))]
-        code_source = "candidate_target_symbols" if prioritized_target_codes else "representative_only"
+    codes, prioritized_target_codes, code_source, validation_focus, research_task = _resolve_gate_1_codes(candidate)
     sharpe_values: list[float] = []
+    total_return_values: list[float] = []
+    turnover_values: list[float] = []
+    trade_count_values: list[float] = []
+    max_drawdown_values: list[float] = []
     errors: list[str] = []
 
     for code in codes:
@@ -282,6 +1189,14 @@ async def gate_1_fast_screen(
                 raise ValueError(result.get("error") or "backtest_failed")
             sharpe = float(payload.get("sharpe_ratio") or payload.get("sharpe") or 0.0)
             sharpe_values.append(sharpe)
+            if payload.get("total_return") is not None:
+                total_return_values.append(_safe_float(payload.get("total_return"), 0.0))
+            if payload.get("turnover_proxy") is not None:
+                turnover_values.append(_safe_float(payload.get("turnover_proxy"), 0.0))
+            if payload.get("trades_count") is not None:
+                trade_count_values.append(_safe_float(payload.get("trades_count"), 0.0))
+            if payload.get("max_drawdown") is not None:
+                max_drawdown_values.append(abs(_safe_float(payload.get("max_drawdown"), 0.0)))
         except Exception as exc:
             errors.append(f"{code}:{type(exc).__name__}")
 
@@ -311,6 +1226,9 @@ async def gate_1_fast_screen(
 
     avg_sharpe = sum(sharpe_values) / len(sharpe_values)
     passed = avg_sharpe >= sharpe_min
+    target_sample_count = len(prioritized_target_codes)
+    research_target_count = len(_extract_target_codes_from_payload(candidate, limit=12))
+    target_sample_ratio = round(target_sample_count / max(1, research_target_count), 4) if research_target_count > 0 else None
 
     return GateResult(
         passed=passed,
@@ -319,10 +1237,17 @@ async def gate_1_fast_screen(
         metrics={
             "tested_codes": codes,
             "target_codes": prioritized_target_codes,
+            "target_sample_count": target_sample_count,
+            "research_target_count": research_target_count,
+            "target_sample_ratio": target_sample_ratio,
             "code_source": code_source,
             "validation_focus": validation_focus,
             "sharpe_values": [round(v, 4) for v in sharpe_values],
             "avg_sharpe": round(avg_sharpe, 4),
+            "avg_total_return": round(sum(total_return_values) / len(total_return_values), 6) if total_return_values else 0.0,
+            "avg_turnover_proxy": round(sum(turnover_values) / len(turnover_values), 4) if turnover_values else 0.0,
+            "avg_trades_count": round(sum(trade_count_values) / len(trade_count_values), 4) if trade_count_values else 0.0,
+            "avg_max_drawdown": round(sum(max_drawdown_values) / len(max_drawdown_values), 6) if max_drawdown_values else 0.0,
             "threshold": sharpe_min,
             "error_count": len(errors),
             "errors": errors,
@@ -362,19 +1287,80 @@ async def run_gated_filter(
     # --- Gate-0 ---
     gate_0_passed: list[dict] = []
     gate_0_failed: list[dict] = []
-    for candidate in candidates:
-        result = gate_0_structural(candidate)
-        candidate["gate_0_result"] = {"passed": result.passed, "reasons": result.reasons}
-        if result.passed:
-            gate_0_passed.append(candidate)
-        else:
-            gate_0_failed.append(candidate)
+    gate_0_batch_count = 0
+    for start in range(0, len(candidates), _GATE_0_BATCH_SIZE):
+        gate_0_batch_count += 1
+        for candidate in candidates[start : start + _GATE_0_BATCH_SIZE]:
+            result = gate_0_structural(candidate)
+            candidate["gate_0_result"] = {"passed": result.passed, "reasons": result.reasons}
+            if result.passed:
+                gate_0_passed.append(candidate)
+            else:
+                gate_0_failed.append(candidate)
 
     logger.info("Gate-0: %d/%d passed structural check", len(gate_0_passed), len(candidates))
+
+    # --- Pre-Gate ---
+    pre_gate_passed: list[dict] = []
+    pre_gate_failed: list[dict] = []
+    family_quota_limit = max(2, min(_PRE_GATE_FAMILY_QUOTA_DEFAULT, math.ceil(len(gate_0_passed) * 0.4))) if gate_0_passed else _PRE_GATE_FAMILY_QUOTA_DEFAULT
+    per_stock_quota_limit = _PRE_GATE_PER_STOCK_QUOTA_DEFAULT
+    if FACTORY_PRE_GATE_ENABLED:
+        seen_signatures: set[str] = set()
+        family_counts: dict[str, int] = {}
+        stock_counts: dict[str, int] = {}
+        for candidate in gate_0_passed:
+            result = pre_gate_screen(
+                candidate,
+                seen_signatures=seen_signatures,
+                family_counts=family_counts,
+                stock_counts=stock_counts,
+                family_quota_limit=family_quota_limit,
+                per_stock_quota_limit=per_stock_quota_limit,
+            )
+            candidate["pre_gate_result"] = {
+                "passed": result.passed,
+                "reasons": result.reasons,
+                "metrics": result.metrics,
+            }
+            if result.passed:
+                pre_gate_passed.append(candidate)
+            else:
+                pre_gate_failed.append(candidate)
+    else:
+        pre_gate_passed = list(gate_0_passed)
+
+    logger.info(
+        "Pre-Gate: %d/%d passed cheap filter",
+        len(pre_gate_passed),
+        len(gate_0_passed),
+    )
 
     # --- Gate-1 ---
     backtest_concurrency = int(_compat_setting("BACKTEST_CONCURRENCY", BACKTEST_CONCURRENCY) or BACKTEST_CONCURRENCY)
     sem = asyncio.Semaphore(backtest_concurrency)
+    gate_1_preload_codes: list[str] = []
+    gate_1_preload_status = "skipped"
+    gate_1_kline_cache_ready = bool(kline_cache)
+    if pre_gate_passed and hasattr(backtest_filter, "preload_klines"):
+        gate_1_preload_codes = _collect_gate_1_preload_codes(pre_gate_passed)
+        if gate_1_preload_codes:
+            try:
+                await backtest_filter.preload_klines(db, gate_1_preload_codes)
+                refreshed_cache = getattr(backtest_filter, "_kline_cache", None)
+                if refreshed_cache is not None:
+                    kline_cache = refreshed_cache
+                gate_1_kline_cache_ready = bool(kline_cache)
+                gate_1_preload_status = "ready"
+            except Exception as exc:
+                gate_1_preload_status = f"failed:{type(exc).__name__}"
+                logger.warning("Gate-1 preload failed for %d codes: %s", len(gate_1_preload_codes), exc)
+        else:
+            gate_1_preload_status = "no_codes"
+    elif pre_gate_passed:
+        gate_1_preload_status = "unsupported"
+    elif FACTORY_PRE_GATE_ENABLED:
+        gate_1_preload_status = "no_candidates"
 
     async def _screen_one(c: dict) -> tuple[dict, GateResult]:
         async with sem:
@@ -389,7 +1375,7 @@ async def run_gated_filter(
                     metrics={"exception": str(exc)},
                 )
 
-    gate_1_tasks = [_screen_one(c) for c in gate_0_passed]
+    gate_1_tasks = [_screen_one(c) for c in pre_gate_passed]
     gate_1_raw = await asyncio.gather(*gate_1_tasks, return_exceptions=False)
 
     gate_1_scored: list[tuple[dict, float]] = []
@@ -403,19 +1389,35 @@ async def run_gated_filter(
         }
         if result.passed:
             avg_sharpe = float(result.metrics.get("avg_sharpe") or 0.0)
-            gate_1_scored.append((candidate, avg_sharpe))
+            candidate["gate_1_result"]["metrics"]["target_quality_summary"] = build_target_quality_gate_summary(
+                candidate,
+                gate_1_metrics=result.metrics,
+            )
+            block_reason = _post_gate_1_target_quality_block_reason(candidate, avg_sharpe)
+            if block_reason:
+                candidate["gate_1_result"]["passed"] = False
+                candidate["gate_1_result"]["reasons"] = list(
+                    dict.fromkeys([*(result.reasons or []), block_reason])
+                )
+                candidate["gate_1_result"]["metrics"]["post_gate_1_target_quality_block_reason"] = block_reason
+                gate_1_failed.append(candidate)
+                continue
+            priority_score, priority_meta = _gate_2_priority_score(candidate, avg_sharpe, return_meta=True)
+            candidate["gate_1_result"]["metrics"]["gate_2_priority_score"] = priority_score
+            candidate["gate_1_result"]["metrics"]["gate_2_priority_meta"] = priority_meta
+            gate_1_scored.append((candidate, priority_score))
         else:
             gate_1_failed.append(candidate)
 
-    # 按 avg_sharpe 排序，取 Top-K
+    # 按综合优先级排序，进入 Gate-2 优先队列。
     gate_1_scored.sort(key=lambda x: x[1], reverse=True)
     gate1_pass_ratio = float(_compat_setting("GATE1_PASS_RATIO", GATE1_PASS_RATIO) or GATE1_PASS_RATIO)
-    top_k = max(1, math.ceil(len(gate_1_scored) * gate1_pass_ratio))
+    top_k = _resolve_gate_2_top_k(len(gate_1_scored), gate1_pass_ratio)
     gate_2_candidates = _select_gate_2_candidates(gate_1_scored, top_k)
 
     logger.info(
-        "Gate-1: %d/%d passed fast screen, top-%d enter Gate-2",
-        len(gate_1_scored), len(gate_0_passed), len(gate_2_candidates),
+        "Gate-1: %d/%d passed fast screen, top-%d enter Gate-2 priority queue",
+        len(gate_1_scored), len(pre_gate_passed), len(gate_2_candidates),
     )
 
     # --- Gate-2 (full backtest via BacktestFilter) ---
@@ -430,8 +1432,14 @@ async def run_gated_filter(
         "input_count": len(candidates),
         "gate_0_passed": len(gate_0_passed),
         "gate_0_failed": len(gate_0_failed),
+        "gate_0_batch_size": _GATE_0_BATCH_SIZE,
+        "gate_0_batch_count": gate_0_batch_count,
+        "pre_gate_passed": len(pre_gate_passed),
+        "pre_gate_failed": len(pre_gate_failed),
         "gate_1_passed": len(gate_1_scored),
         "gate_1_failed": len(gate_1_failed),
+        "gate_1_preload_code_count": len(gate_1_preload_codes),
+        "gate_1_kline_cache_ready": gate_1_kline_cache_ready,
         "gate_2_input": len(gate_2_candidates),
         "gate_2_passed": len(gate_2_passed),
         "gate_3_pending": len(gate_2_passed),
@@ -448,21 +1456,58 @@ async def run_gated_filter(
         }
         for c in gate_1_failed
     ]
+    pre_gate_failed_details = [
+        {
+            "strategy_type": c.get("strategy_type"),
+            "reasons": (c.get("pre_gate_result") or {}).get("reasons"),
+            "metrics": (c.get("pre_gate_result") or {}).get("metrics") or {},
+        }
+        for c in pre_gate_failed
+    ]
     gate_2_report = backtest_filter.get_last_report() if hasattr(backtest_filter, "get_last_report") else {}
     gate_report = {
         "gate_0": {
             "passed_count": len(gate_0_passed),
             "failed_count": len(gate_0_failed),
+            "batch_size": _GATE_0_BATCH_SIZE,
+            "batch_count": gate_0_batch_count,
             "failed": gate_0_failed_details,
+        },
+        "pre_gate": {
+            "status": "completed" if FACTORY_PRE_GATE_ENABLED else "disabled",
+            "passed_count": len(pre_gate_passed),
+            "failed_count": len(pre_gate_failed),
+            "failed": pre_gate_failed_details,
+            "limits": {
+                "family_quota_limit": family_quota_limit if FACTORY_PRE_GATE_ENABLED else None,
+                "per_stock_quota_limit": per_stock_quota_limit if FACTORY_PRE_GATE_ENABLED else None,
+                "signal_density_min": _PRE_GATE_SIGNAL_DENSITY_MIN if FACTORY_PRE_GATE_ENABLED else None,
+                "signal_density_max": _PRE_GATE_SIGNAL_DENSITY_MAX if FACTORY_PRE_GATE_ENABLED else None,
+            },
         },
         "gate_1": {
             "passed_count": len(gate_1_scored),
             "failed_count": len(gate_1_failed),
+            "selection_mode": "priority_queue",
+            "preload_status": gate_1_preload_status,
+            "preload_code_count": len(gate_1_preload_codes),
+            "kline_cache_ready": gate_1_kline_cache_ready,
             "failed": gate_1_failed_details,
             "passed_candidates": [
                 {
                     "strategy_type": candidate.get("strategy_type"),
-                    "avg_sharpe": round(score, 4),
+                    "candidate_family": candidate.get("candidate_family"),
+                    "task_source": ((candidate.get("research_task") or {}).get("task_source")),
+                    "task_id": ((candidate.get("research_task") or {}).get("task_id")),
+                    "opportunity_type": ((candidate.get("research_task") or {}).get("opportunity_type")),
+                    "target_symbols": _extract_target_codes_from_payload(candidate, limit=12),
+                    "avg_sharpe": round(
+                        _safe_float(
+                            ((candidate.get("gate_1_result") or {}).get("metrics") or {}).get("avg_sharpe")
+                        ),
+                        4,
+                    ),
+                    "priority_score": round(score, 4),
                 }
                 for candidate, score in gate_1_scored
             ],
@@ -470,6 +1515,7 @@ async def run_gated_filter(
         "gate_2": {
             "input_count": len(gate_2_candidates),
             "passed_count": len(gate_2_passed),
+            "selection_mode": "priority_queue",
             "passed_candidates": gate_2_passed,
             "report": gate_2_report,
         },
@@ -485,6 +1531,7 @@ async def run_gated_filter(
         "passed": gate_2_passed,
         "summary": summary,
         "gate_0_failed": gate_0_failed_details,
+        "pre_gate_failed": pre_gate_failed_details,
         "quality_gate": gate_report,
         "gate_report": gate_report,
     }
@@ -561,6 +1608,12 @@ def build_legacy_gate_report(
             "passed_count": None,
             "failed_count": None,
             "reason": "gate_0_not_recorded_in_legacy_path",
+        },
+        "pre_gate": {
+            "status": "legacy_backtest_only",
+            "passed_count": None,
+            "failed_count": None,
+            "reason": "pre_gate_not_recorded_in_legacy_path",
         },
         "gate_1": {
             "status": "legacy_backtest_only",

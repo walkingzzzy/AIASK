@@ -10,6 +10,10 @@ from datetime import datetime
 from typing import Any
 
 from .run_models import FactoryRunStatus, StageStatus
+from .services.readiness_service import (
+    resolve_factor_refresh_trigger,
+    resolve_governed_pool_state,
+)
 from ..domain.constants import (
     FACTORY_FACTOR_REFRESH_TIMEOUT_SEC,
     FACTORY_READINESS_MIN_COMPLETION_RATIO,
@@ -19,6 +23,7 @@ from ..domain.constants import (
     is_factory_runtime_enabled,
     resolve_event_runtime_mode,
 )
+from ..domain.strategy_profile import apply_candidate_strategy_profile
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +69,12 @@ class FactoryCycleRunner:
         }
         artifact = dict(await factor_gateway.build_artifact(gateway_db, snapshot) or {})
         summary = dict(artifact.get("summary") or {})
-        should_refresh = bool(auto_refresh_enabled and summary.get("stale"))
+        refresh_trigger = resolve_factor_refresh_trigger(artifact, factor_summary=summary)
+        should_refresh = bool(auto_refresh_enabled and refresh_trigger)
         refresh = getattr(factor_gateway, "refresh", None)
         if should_refresh:
             refresh_meta["refresh_attempted"] = True
-            refresh_meta["refresh_trigger"] = "stale_artifact"
+            refresh_meta["refresh_trigger"] = refresh_trigger
             if callable(refresh):
                 try:
                     refresh_result = refresh()
@@ -108,6 +114,9 @@ class FactoryCycleRunner:
         factor_source_mode = str(factor_summary.get("factor_source_mode") or "").strip().lower()
         active_candidate_count = int(factor_summary.get("active_candidate_count") or 0)
         governed_source_candidate_count = int(factor_summary.get("governed_source_candidate_count") or 0)
+        governed_pool_state = resolve_governed_pool_state(factor_summary)
+        governed_candidate_pool_mode = governed_pool_state.get("mode")
+        governed_candidate_pool_provisional = bool(governed_pool_state.get("provisional"))
         governed_blocked_candidate_count = int(factor_summary.get("governed_blocked_candidate_count") or 0)
         governed_blocked_ratio = scheduler._safe_float(factor_summary.get("governed_blocked_ratio"), default=0.0)
         governed_freshness_days = factor_summary.get("governed_freshness_days")
@@ -115,9 +124,10 @@ class FactoryCycleRunner:
         scheduler_llm_validation_status = factor_summary.get("scheduler_llm_validation_status")
         governed_exclusion_reason_counts = dict(factor_summary.get("governed_exclusion_reason_counts") or {})
         governed_risk_counts = dict(factor_summary.get("governed_risk_counts") or {})
-        governed_candidate_pool_active = bool(
-            factor_source_mode == "governed_candidate_pool"
-            or governed_source_candidate_count > 0
+        governed_candidate_pool_active = bool(governed_pool_state.get("active"))
+        governed_pool_missing_after_scheduler_success = bool(
+            factor_source_mode == "governed_pool_missing_after_scheduler_success"
+            or (scheduler_recent_success and not governed_candidate_pool_active)
         )
         sources = dict(snapshot.get("sources") or {})
         event_source = dict(sources.get("event_driven") or {})
@@ -126,6 +136,7 @@ class FactoryCycleRunner:
         completion_ratio = scheduler._safe_float(completion.get("completion_ratio"), default=1.0)
         warnings: list[str] = []
         blockers: list[str] = []
+        critical_blockers: list[str] = []
         score = 1.0
 
         if bool(snapshot.get("degraded")):
@@ -149,6 +160,9 @@ class FactoryCycleRunner:
         if bool(factor_summary.get("degraded")):
             warnings.append("factor_research_degraded")
             score -= 0.14
+        if governed_candidate_pool_provisional:
+            warnings.append("governed_candidate_pool_provisional")
+            score -= 0.04
         if governed_blocked_candidate_count > 0:
             warnings.append("governed_candidate_pool_blocked_candidates")
         if governed_blocked_ratio >= 0.75:
@@ -157,9 +171,11 @@ class FactoryCycleRunner:
         elif governed_blocked_ratio >= 0.40:
             warnings.append("governed_candidate_pool_blocked_ratio_elevated")
             score -= 0.06
-        if scheduler_recent_success and not governed_candidate_pool_active:
+        if governed_pool_missing_after_scheduler_success:
             warnings.append("factor_scheduler_recent_success_without_governed_pool")
-            score -= 0.08
+            blockers.append("governed_candidate_pool_missing_after_scheduler_success")
+            critical_blockers.append("governed_candidate_pool_missing_after_scheduler_success")
+            score -= 0.18
         if bool(factor_summary.get("stale")):
             if governed_candidate_pool_active:
                 warnings.append("factor_research_history_stale_governed_pool_active")
@@ -181,7 +197,9 @@ class FactoryCycleRunner:
 
         score = max(min(round(score, 4), 1.0), 0.0)
         hard_block = is_factory_readiness_hard_block_enabled()
-        can_proceed = not hard_block or (score >= FACTORY_READINESS_MIN_SCORE and not blockers)
+        can_proceed = not critical_blockers and (
+            not hard_block or (score >= FACTORY_READINESS_MIN_SCORE and not blockers)
+        )
         return {
             "runtime_enabled": is_factory_runtime_enabled(),
             "event_runtime_mode": resolve_event_runtime_mode(),
@@ -195,6 +213,8 @@ class FactoryCycleRunner:
             "warning_count": len(warnings),
             "blockers": blockers,
             "blocker_count": len(blockers),
+            "critical_blockers": critical_blockers,
+            "critical_blocker_count": len(critical_blockers),
             "snapshot_completion_ratio": completion_ratio,
             "snapshot_degraded": bool(snapshot.get("degraded")),
             "event_status": event_status,
@@ -203,6 +223,9 @@ class FactoryCycleRunner:
             "factor_research_degraded": bool(factor_summary.get("degraded")),
             "factor_source_mode": factor_summary.get("factor_source_mode"),
             "governed_candidate_pool_active": governed_candidate_pool_active,
+            "governed_candidate_pool_mode": governed_candidate_pool_mode,
+            "governed_candidate_pool_provisional": governed_candidate_pool_provisional,
+            "governed_pool_missing_after_scheduler_success": governed_pool_missing_after_scheduler_success,
             "active_candidate_count": active_candidate_count,
             "governed_source_candidate_count": governed_source_candidate_count,
             "governed_blocked_candidate_count": governed_blocked_candidate_count,
@@ -290,6 +313,7 @@ class FactoryCycleRunner:
                 "skip_reason": "runtime_disabled",
                 "elapsed_seconds": 0.0,
             }
+            results["summary"].update(scheduler._build_layered_run_summary(results["summary"], None))
             scheduler._apply_run_audit(results, persistence_failures=persistence_failures)
             return FactoryCycleOutcome(results, persistence_failures)
 
@@ -314,6 +338,10 @@ class FactoryCycleRunner:
 
             collector = factory_pkg.DataCollector()
             snapshot = await collector.collect(db)
+            # P2-D：将调度器累积的 family 历史表现注入 snapshot
+            _family_feedback = dict(getattr(scheduler, "_family_gate_feedback", {}) or {})
+            if _family_feedback:
+                snapshot["family_gate_feedback"] = _family_feedback
             results["snapshot_summary"] = {
                 "date": snapshot.get("date"),
                 "fear_greed": snapshot.get("fear_greed_index"),
@@ -362,6 +390,10 @@ class FactoryCycleRunner:
                         "active_regime_names": list(factor_summary.get("active_regime_names") or []),
                         "preferred_strategy_types": list(factor_summary.get("preferred_strategy_types") or []),
                         "factor_source_mode": factor_summary.get("factor_source_mode"),
+                        "governed_candidate_pool_mode": factor_summary.get("governed_candidate_pool_mode"),
+                        "governed_candidate_pool_provisional": bool(
+                            factor_summary.get("governed_candidate_pool_provisional")
+                        ),
                         "degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
                         "freshness_days": factor_summary.get("freshness_days"),
                         "governed_freshness_days": factor_summary.get("governed_freshness_days"),
@@ -370,6 +402,9 @@ class FactoryCycleRunner:
                         "latest_factor_date": factor_summary.get("latest_factor_date"),
                         "scheduler_recent_success": bool(factor_summary.get("scheduler_recent_success")),
                         "scheduler_llm_validation_status": factor_summary.get("scheduler_llm_validation_status"),
+                        "stock_family_allocation_count": int(factor_summary.get("stock_family_allocation_count") or 0),
+                        "stock_family_allocation_entropy": factor_summary.get("stock_family_allocation_entropy"),
+                        "stock_family_allocation_source_mode": factor_summary.get("stock_family_allocation_source_mode"),
                         "quality_flags": list(factor_summary.get("quality_flags") or []),
                         "refresh_attempted": bool(factor_summary.get("refresh_attempted")),
                         "refresh_status": factor_summary.get("refresh_status"),
@@ -492,6 +527,8 @@ class FactoryCycleRunner:
 
             if not bool(readiness.get("can_proceed")):
                 elapsed = (scheduler._now() - start).total_seconds()
+                factor_research_summary = dict((snapshot.get("factor_research") or {}).get("summary") or {})
+                factor_refresh_summary = dict((snapshot.get("factor_research") or {}).get("freshness_repair") or {})
                 results["status"] = FactoryRunStatus.SKIPPED.value
                 results["completed_at"] = scheduler._now().isoformat()
                 results["elapsed_seconds"] = round(elapsed, 1)
@@ -512,11 +549,17 @@ class FactoryCycleRunner:
                     "governed_freshness_days": readiness.get("governed_freshness_days"),
                     "scheduler_recent_success": bool(readiness.get("scheduler_recent_success")),
                     "scheduler_llm_validation_status": readiness.get("scheduler_llm_validation_status"),
+                    "factor_research_stale": bool(factor_research_summary.get("stale")),
+                    "factor_research_degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
+                    "factor_research_refresh_attempted": bool(factor_refresh_summary.get("refresh_attempted")),
+                    "factor_research_refresh_status": factor_refresh_summary.get("refresh_status"),
+                    "factor_research_refresh_trigger": factor_refresh_summary.get("refresh_trigger"),
                     "governed_exclusion_reason_counts": dict(readiness.get("governed_exclusion_reason_counts") or {}),
                     "governed_risk_counts": dict(readiness.get("governed_risk_counts") or {}),
                     "skip_reason": "readiness_blocked",
                     "elapsed_seconds": round(elapsed, 1),
                 }
+                results["summary"].update(scheduler._build_layered_run_summary(results["summary"], None))
                 logger.warning(
                     "StrategyFactory: run %s blocked by readiness controls: %s",
                     results.get("run_id"),
@@ -552,6 +595,10 @@ class FactoryCycleRunner:
                     params["factory_selected_count"] = factory_selected_count
                     ai_candidate["params"] = params
                 candidates = [*candidates, *ai_candidates]
+                candidates = [
+                    apply_candidate_strategy_profile(candidate, snapshot=snapshot)
+                    for candidate in candidates
+                ]
                 autonomy_stage = autonomy_batch.get("stage") or {"generated_count": len(ai_candidates)}
                 autonomy_stage_status = StageStatus.COMPLETED
                 external_llm_status = str(autonomy_stage.get("external_llm_status") or "").strip().lower()
@@ -572,6 +619,10 @@ class FactoryCycleRunner:
                 )
             except Exception as exc:
                 logger.warning("StrategyFactory: autonomy cycle failed: %s", exc)
+                candidates = [
+                    apply_candidate_strategy_profile(candidate, snapshot=snapshot)
+                    for candidate in candidates
+                ]
                 results["stages"]["autonomy"] = scheduler._with_stage_meta(
                     "autonomy",
                     trace_id,
@@ -704,6 +755,12 @@ class FactoryCycleRunner:
                 or task_scan_summary.get("task_sources")
                 or {}
             )
+            bulk_stock_matrix_family_counts = dict(
+                task_scan_summary.get("bulk_stock_matrix_family_counts") or {}
+            )
+            bulk_stock_matrix_allocation_pass_counts = dict(
+                task_scan_summary.get("bulk_stock_matrix_allocation_pass_counts") or {}
+            )
             snapshot_task_count = int(
                 autonomy_summary.get("snapshot_task_count")
                 or task_source_counts.get("snapshot", 0)
@@ -713,6 +770,7 @@ class FactoryCycleRunner:
                     "task_id": (item.get("task") or {}).get("task_id"),
                     "task_source": (item.get("task") or {}).get("task_source"),
                     "opportunity_type": (item.get("task") or {}).get("opportunity_type"),
+                    "target_symbols": list((item.get("task") or {}).get("target_symbols") or []),
                     "candidate_family": (item.get("task") or {}).get("candidate_family"),
                     "source_candidate_artifact_id": (item.get("task") or {}).get("source_candidate_artifact_id"),
                     "factor_name": (item.get("task") or {}).get("factor_name"),
@@ -724,6 +782,7 @@ class FactoryCycleRunner:
             factor_research_summary = dict((snapshot.get("factor_research") or {}).get("summary") or {})
             factor_refresh_summary = dict((snapshot.get("factor_research") or {}).get("freshness_repair") or {})
             gate_0_summary = dict(quality_gate_report.get("gate_0") or {})
+            pre_gate_summary = dict(quality_gate_report.get("pre_gate") or {})
             gate_1_summary = dict(quality_gate_report.get("gate_1") or {})
             gate_2_summary = dict(quality_gate_report.get("gate_2") or {})
             readiness_summary = dict(results.get("stages", {}).get("readiness") or {})
@@ -755,11 +814,67 @@ class FactoryCycleRunner:
                 "autonomy_failed_task_count": autonomy_summary.get("failed_task_count", 0),
                 "event_task_count": autonomy_summary.get("event_task_count", 0),
                 "snapshot_task_count": snapshot_task_count,
+                "bulk_stock_task_count": autonomy_summary.get("bulk_stock_task_count", 0),
+                "bulk_stock_matrix_enabled": bool(task_scan_summary.get("bulk_stock_matrix_enabled")),
+                "bulk_stock_matrix_configured_enabled": bool(
+                    task_scan_summary.get("bulk_stock_matrix_configured_enabled")
+                ),
+                "bulk_stock_matrix_stock_count": int(task_scan_summary.get("bulk_stock_matrix_stock_count") or 0),
+                "bulk_stock_matrix_eligible_stock_count": int(task_scan_summary.get("bulk_stock_matrix_eligible_stock_count") or 0),
+                "bulk_stock_matrix_loaded_stock_count": int(task_scan_summary.get("bulk_stock_matrix_loaded_stock_count") or 0),
+                "bulk_stock_matrix_pages_loaded": int(task_scan_summary.get("bulk_stock_matrix_pages_loaded") or 0),
+                "bulk_stock_matrix_analysis_complete": bool(task_scan_summary.get("bulk_stock_matrix_analysis_complete")),
+                "bulk_stock_matrix_analysis_stock_coverage_ratio": task_scan_summary.get("bulk_stock_matrix_analysis_stock_coverage_ratio"),
+                "bulk_stock_matrix_family_counts": bulk_stock_matrix_family_counts,
+                "bulk_stock_matrix_planned_family_counts": dict(task_scan_summary.get("bulk_stock_matrix_planned_family_counts") or {}),
+                "bulk_stock_matrix_universe_limit": int(task_scan_summary.get("bulk_stock_matrix_universe_limit") or 0),
+                "bulk_stock_matrix_batch_count": int(task_scan_summary.get("bulk_stock_matrix_batch_count") or 0),
+                "bulk_stock_matrix_selected_batch_count": int(task_scan_summary.get("bulk_stock_matrix_selected_batch_count") or 0),
+                "bulk_stock_matrix_run_window": task_scan_summary.get("bulk_stock_matrix_run_window"),
+                "bulk_stock_matrix_run_window_active": bool(task_scan_summary.get("bulk_stock_matrix_run_window_active")),
+                "bulk_stock_matrix_run_window_current_period": task_scan_summary.get("bulk_stock_matrix_run_window_current_period"),
+                "bulk_stock_matrix_skip_reason": task_scan_summary.get("bulk_stock_matrix_skip_reason"),
+                "bulk_stock_matrix_requested_universe_offset": int(task_scan_summary.get("bulk_stock_matrix_requested_universe_offset") or 0),
+                "bulk_stock_matrix_effective_universe_offset": int(task_scan_summary.get("bulk_stock_matrix_effective_universe_offset") or 0),
+                "bulk_stock_matrix_universe_offset_fallback": bool(task_scan_summary.get("bulk_stock_matrix_universe_offset_fallback")),
+                "bulk_stock_matrix_next_universe_offset": int(task_scan_summary.get("bulk_stock_matrix_next_universe_offset") or 0),
+                "bulk_stock_matrix_cursor_wrapped": bool(task_scan_summary.get("bulk_stock_matrix_cursor_wrapped")),
+                "bulk_stock_matrix_cursor_mode": task_scan_summary.get("bulk_stock_matrix_cursor_mode"),
+                "bulk_stock_matrix_requested_task_offset": int(task_scan_summary.get("bulk_stock_matrix_requested_task_offset") or 0),
+                "bulk_stock_matrix_effective_task_offset": int(task_scan_summary.get("bulk_stock_matrix_effective_task_offset") or 0),
+                "bulk_stock_matrix_task_offset_fallback": bool(task_scan_summary.get("bulk_stock_matrix_task_offset_fallback")),
+                "bulk_stock_matrix_next_task_offset": int(task_scan_summary.get("bulk_stock_matrix_next_task_offset") or 0),
+                "bulk_stock_matrix_task_cursor_wrapped": bool(task_scan_summary.get("bulk_stock_matrix_task_cursor_wrapped")),
+                "bulk_stock_matrix_cursor_source": task_scan_summary.get("bulk_stock_matrix_cursor_source"),
+                "bulk_stock_matrix_cursor_resume_from_run_id": task_scan_summary.get("bulk_stock_matrix_cursor_resume_from_run_id"),
+                "bulk_stock_matrix_effective_task_budget": int(task_scan_summary.get("bulk_stock_matrix_effective_task_budget") or 0),
+                "bulk_stock_matrix_max_candidates_per_run": int(task_scan_summary.get("bulk_stock_matrix_max_candidates_per_run") or 0),
+                "bulk_stock_matrix_estimated_candidate_count": int(task_scan_summary.get("bulk_stock_matrix_estimated_candidate_count") or 0),
+                "bulk_stock_matrix_planned_task_count": int(task_scan_summary.get("bulk_stock_matrix_planned_task_count") or 0),
+                "bulk_stock_matrix_planned_candidate_count": int(task_scan_summary.get("bulk_stock_matrix_planned_candidate_count") or 0),
+                "bulk_stock_matrix_tasks_per_shard": int(task_scan_summary.get("bulk_stock_matrix_tasks_per_shard") or 0),
+                "bulk_stock_matrix_shard_count": int(task_scan_summary.get("bulk_stock_matrix_shard_count") or 0),
+                "bulk_stock_matrix_selected_shard_count": int(task_scan_summary.get("bulk_stock_matrix_selected_shard_count") or 0),
+                "bulk_stock_matrix_selected_shard_ids": list(task_scan_summary.get("bulk_stock_matrix_selected_shard_ids") or []),
+                "bulk_stock_matrix_stock_coverage_ratio": task_scan_summary.get("bulk_stock_matrix_stock_coverage_ratio"),
+                "bulk_stock_matrix_allocation_mode": task_scan_summary.get("bulk_stock_matrix_allocation_mode"),
+                "bulk_stock_matrix_allocation_pass_counts": bulk_stock_matrix_allocation_pass_counts,
+                "bulk_stock_matrix_planned_allocation_pass_counts": dict(task_scan_summary.get("bulk_stock_matrix_planned_allocation_pass_counts") or {}),
+                "bulk_stock_matrix_overflow_task_count": int(task_scan_summary.get("bulk_stock_matrix_overflow_task_count") or 0),
                 "task_source_counts": task_source_counts,
                 "scanner_task_types": task_scan_summary.get("task_types") or {},
                 "event_snapshot_mixed": bool(
                     int(autonomy_summary.get("event_task_count") or 0) > 0 and snapshot_task_count > 0
                 ),
+                "max_research_tasks": int(autonomy_summary.get("max_research_tasks") or 0),
+                "max_bulk_research_tasks": int(autonomy_summary.get("max_bulk_research_tasks") or 0),
+                "combined_research_task_budget": int(autonomy_summary.get("combined_research_task_budget") or 0),
+                "scan_research_task_budget": int(autonomy_summary.get("scan_research_task_budget") or 0),
+                "reserved_bulk_task_budget": int(autonomy_summary.get("reserved_bulk_task_budget") or 0),
+                "selected_scan_task_count": int(autonomy_summary.get("selected_scan_task_count") or 0),
+                "selected_bulk_task_count": int(autonomy_summary.get("selected_bulk_task_count") or 0),
+                "planned_bulk_task_count": int(autonomy_summary.get("planned_bulk_task_count") or 0),
+                "clipped_bulk_task_count": int(autonomy_summary.get("clipped_bulk_task_count") or 0),
                 "factor_research_used": bool(snapshot.get("factor_research")),
                 "active_factor_count": int(factor_research_summary.get("active_factor_count") or 0),
                 "active_candidate_count": int(factor_research_summary.get("active_candidate_count") or 0),
@@ -777,9 +892,23 @@ class FactoryCycleRunner:
                 "active_family_names": list(factor_research_summary.get("active_family_names") or []),
                 "active_regime_names": list(factor_research_summary.get("active_regime_names") or []),
                 "factor_source_mode": factor_research_summary.get("factor_source_mode"),
+                "governed_candidate_pool_mode": factor_research_summary.get("governed_candidate_pool_mode"),
+                "governed_candidate_pool_provisional": bool(
+                    factor_research_summary.get("governed_candidate_pool_provisional")
+                ),
+                "governed_candidate_pool_strict_count": int(
+                    factor_research_summary.get("governed_candidate_pool_strict_count") or 0
+                ),
+                "governed_candidate_pool_provisional_count": int(
+                    factor_research_summary.get("governed_candidate_pool_provisional_count") or 0
+                ),
+                "stock_family_allocation_count": int(factor_research_summary.get("stock_family_allocation_count") or 0),
+                "stock_family_allocation_family_counts": dict(factor_research_summary.get("stock_family_allocation_family_counts") or {}),
+                "stock_family_allocation_entropy": factor_research_summary.get("stock_family_allocation_entropy"),
+                "stock_family_allocation_avg_priority": factor_research_summary.get("stock_family_allocation_avg_priority"),
+                "stock_family_allocation_source_mode": factor_research_summary.get("stock_family_allocation_source_mode"),
                 "governed_candidate_pool_active": bool(
-                    str(factor_research_summary.get("factor_source_mode") or "").strip().lower()
-                    == "governed_candidate_pool"
+                    resolve_governed_pool_state(factor_research_summary).get("active")
                 ),
                 "factor_research_degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
                 "factor_research_stale": bool(factor_research_summary.get("stale")),
@@ -803,6 +932,8 @@ class FactoryCycleRunner:
                 ),
                 "gate_0_passed": gate_0_summary.get("passed_count"),
                 "gate_0_failed": gate_0_summary.get("failed_count"),
+                "pre_gate_passed": pre_gate_summary.get("passed_count"),
+                "pre_gate_failed": pre_gate_summary.get("failed_count"),
                 "gate_1_passed": gate_1_summary.get("passed_count"),
                 "gate_1_failed": gate_1_summary.get("failed_count"),
                 "gate_2_input": gate_2_summary.get("input_count", backtest_summary.get("input_count", len(candidates))),
@@ -811,18 +942,33 @@ class FactoryCycleRunner:
                 "candidates_failed_backtest": backtest_summary.get("failed_count", max(len(candidates) - len(passed), 0)),
                 "backtest_failed_reason_counts": backtest_summary.get("failed_reason_counts") or {},
                 "candidates_after_dedup": len(unique),
+                "created": submit_result.get("created", 0),
+                "created_strategy_pool": submit_result.get(
+                    "created_strategy_pool",
+                    submit_result.get("created", 0),
+                ),
+                "created_audit_only": submit_result.get("created_audit_only", 0),
+                "created_total": submit_result.get(
+                    "created_total",
+                    int(submit_result.get("created", 0)) + int(submit_result.get("created_audit_only", 0)),
+                ),
+                "gate_3_input": submit_result.get("gate_3_input", len(unique)),
                 "submitted": submit_result.get("submitted", 0),
                 "passed_quality_gate": submit_result.get("passed_quality_gate", 0),
                 "gate_3_passed": submit_result.get("gate_3_passed", submit_result.get("passed_quality_gate", 0)),
                 "gate_3_failed": submit_result.get(
                     "gate_3_failed",
                     max(
-                        int(submit_result.get("submitted", 0)) - int(submit_result.get("passed_quality_gate", 0)),
+                        int(submit_result.get("gate_3_input", len(unique))) - int(submit_result.get("passed_quality_gate", 0)),
                         0,
                     ),
                 ),
                 "gate_3_provisional_passed": submit_result.get("gate_3_provisional_passed", 0),
                 "gate_3_failure_reason_topn": list(submit_result.get("gate_3_failure_reason_topn") or []),
+                # P2-D 孵化预算反馈：按 family 的孵化成功数（供下一周期 EMA 更新）
+                "incubation_budget_family_counts": dict(
+                    (submit_result.get("incubation_budget_summary") or {}).get("family_counts") or {}
+                ),
                 **submission_audit_summary,
                 **backtest_audit_summary,
                 **vector_summary,
@@ -835,6 +981,7 @@ class FactoryCycleRunner:
                 "external_llm_elapsed_seconds": autonomy_summary.get("external_llm_elapsed_seconds"),
                 "elapsed_seconds": round(elapsed, 1),
             }
+            results["summary"].update(scheduler._build_layered_run_summary(results["summary"], submit_result))
             scheduler._apply_run_audit(results, persistence_failures=persistence_failures)
 
             logger.info(
@@ -854,6 +1001,7 @@ class FactoryCycleRunner:
             results["elapsed_seconds"] = round(elapsed, 1)
             results["error"] = str(exc)
             results["summary"] = {"trace_id": trace_id, "elapsed_seconds": round(elapsed, 1), "error": str(exc)}
+            results["summary"].update(scheduler._build_layered_run_summary(results["summary"], None))
             scheduler._apply_run_audit(results, persistence_failures=persistence_failures)
 
         return FactoryCycleOutcome(results, persistence_failures)

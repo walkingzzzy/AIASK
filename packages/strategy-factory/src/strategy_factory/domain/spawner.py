@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 
 from .constants import (
     CATEGORY_MINIMUMS,
+    SPAWNER_EVENT_SOURCE_BASE_CAP,
+    SPAWNER_EVENT_SOURCE_SUPPLEMENTAL_BONUS,
     SPAWNER_EVENT_FILL_BUDGET_MAX,
     SPAWNER_FILL_BUDGET_MAX,
     SPAWNER_TARGET_TOTAL,
@@ -65,7 +67,15 @@ class StrategySpawner:
         }
 
     @staticmethod
-    def _build_spawn_report(candidates: List[dict]) -> dict:
+    def _build_spawn_report(
+        candidates: List[dict],
+        *,
+        event_ready: bool = False,
+        event_ready_supplemental: bool = False,
+        source_raw_counts: Optional[Dict[str, int]] = None,
+        source_budget_caps: Optional[Dict[str, Optional[int]]] = None,
+        source_budget_weights: Optional[Dict[str, Optional[float]]] = None,
+    ) -> dict:
         source_counts: Dict[str, int] = {}
         strategy_type_counts: Dict[str, int] = {}
         quota_fill_count = 0
@@ -82,6 +92,13 @@ class StrategySpawner:
                 quota_fill_count += 1
             else:
                 signal_trigger_count += 1
+        raw_counts = dict(source_raw_counts or {})
+        budget_caps = dict(source_budget_caps or {})
+        budget_weights = dict(source_budget_weights or {})
+        trimmed_count = sum(
+            max(0, int(raw_counts.get(source, 0) or 0) - int(source_counts.get(source, 0) or 0))
+            for source in raw_counts
+        )
         return {
             "summary": {
                 "candidate_count": len(candidates),
@@ -90,6 +107,12 @@ class StrategySpawner:
                 "quota_fill_count": quota_fill_count,
                 "signal_trigger_count": signal_trigger_count,
                 "threshold_hit_count": threshold_hit_count,
+                "event_ready": bool(event_ready),
+                "event_ready_supplemental": bool(event_ready_supplemental),
+                "source_raw_counts": raw_counts,
+                "source_budget_caps": budget_caps,
+                "source_budget_weights": budget_weights,
+                "source_trimmed_count": trimmed_count,
             }
         }
 
@@ -166,21 +189,115 @@ class StrategySpawner:
         return derived
 
     def spawn(self, snapshot: dict) -> List[dict]:
-        signal_candidates: List[dict] = []
         event_ready = self._event_research_ready(snapshot)
         event_ready_supplemental = self._event_ready_supports_local_fill(snapshot)
-        fear_greed = float(snapshot.get("fear_greed_index") or 50.0)
-        if not event_ready or fear_greed < 30 or fear_greed > 70:
-            signal_candidates += self._from_fear_greed(snapshot)
-        signal_candidates += self._from_factor_ic(snapshot)
-        if not event_ready or event_ready_supplemental:
-            signal_candidates += self._from_volatility(snapshot)
-            signal_candidates += self._from_fund_flow(snapshot)
+        source_batches = self._build_signal_batches(snapshot)
+        signal_candidates, source_raw_counts, source_budget_caps, source_budget_weights = self._merge_signal_batches(
+            source_batches,
+            event_ready=event_ready,
+            event_ready_supplemental=event_ready_supplemental,
+        )
         signal_candidates += self._expand_signal_variants(snapshot, signal_candidates)
         quota_candidates = self._fill_gaps(snapshot, signal_candidates)
         candidates = [*signal_candidates, *quota_candidates]
-        self.last_report = self._build_spawn_report(candidates)
+        self.last_report = self._build_spawn_report(
+            candidates,
+            event_ready=event_ready,
+            event_ready_supplemental=event_ready_supplemental,
+            source_raw_counts=source_raw_counts,
+            source_budget_caps=source_budget_caps,
+            source_budget_weights=source_budget_weights,
+        )
         return candidates
+
+    def _build_signal_batches(self, snapshot: dict) -> Dict[str, List[dict]]:
+        return {
+            "fear_greed": self._from_fear_greed(snapshot),
+            "factor_ic": self._from_factor_ic(snapshot),
+            "volatility": self._from_volatility(snapshot),
+            "fund_flow": self._from_fund_flow(snapshot),
+        }
+
+    @staticmethod
+    def _event_ready_source_cap(*, event_ready_supplemental: bool) -> int:
+        return max(0, SPAWNER_EVENT_SOURCE_BASE_CAP + (SPAWNER_EVENT_SOURCE_SUPPLEMENTAL_BONUS if event_ready_supplemental else 0))
+
+    @staticmethod
+    def _event_ready_source_weights(*, event_ready_supplemental: bool) -> Dict[str, float]:
+        if event_ready_supplemental:
+            return {
+                "fear_greed": 0.75,
+                "factor_ic": 1.0,
+                "volatility": 0.70,
+                "fund_flow": 0.80,
+            }
+        return {
+            "fear_greed": 0.45,
+            "factor_ic": 1.0,
+            "volatility": 0.40,
+            "fund_flow": 0.50,
+        }
+
+    @staticmethod
+    def _weighted_source_cap(raw_count: int, *, weight: float, minimum_floor: int) -> int:
+        if raw_count <= 0:
+            return 0
+        scaled = int(round(raw_count * max(0.0, weight)))
+        return max(1, min(raw_count, max(minimum_floor, scaled)))
+
+    @classmethod
+    def _merge_signal_batches(
+        cls,
+        source_batches: Dict[str, List[dict]],
+        *,
+        event_ready: bool,
+        event_ready_supplemental: bool,
+    ) -> tuple[List[dict], Dict[str, int], Dict[str, Optional[int]], Dict[str, Optional[float]]]:
+        source_raw_counts = {source: len(list(items or [])) for source, items in dict(source_batches or {}).items()}
+        if not event_ready:
+            ordered = [
+                *list(source_batches.get("fear_greed") or []),
+                *list(source_batches.get("factor_ic") or []),
+                *list(source_batches.get("volatility") or []),
+                *list(source_batches.get("fund_flow") or []),
+            ]
+            return (
+                ordered,
+                source_raw_counts,
+                {source: None for source in source_raw_counts},
+                {source: None for source in source_raw_counts},
+            )
+
+        local_source_floor = cls._event_ready_source_cap(event_ready_supplemental=event_ready_supplemental)
+        source_weights = cls._event_ready_source_weights(event_ready_supplemental=event_ready_supplemental)
+        capped_batches: Dict[str, List[dict]] = {}
+        source_budget_caps: Dict[str, Optional[int]] = {}
+        source_budget_weights: Dict[str, Optional[float]] = {}
+
+        for source in ("fear_greed", "factor_ic", "volatility", "fund_flow"):
+            items = list(source_batches.get(source) or [])
+            weight = float(source_weights.get(source, 1.0) or 0.0)
+            if source == "factor_ic":
+                capped_batches[source] = items
+                source_budget_caps[source] = None
+                source_budget_weights[source] = weight
+                continue
+            cap = cls._weighted_source_cap(
+                len(items),
+                weight=weight,
+                minimum_floor=local_source_floor,
+            )
+            capped_batches[source] = items[:cap]
+            source_budget_caps[source] = cap
+            source_budget_weights[source] = weight
+
+        ordered = [
+            *capped_batches["fear_greed"],
+            *capped_batches["factor_ic"],
+            *capped_batches["volatility"],
+            *capped_batches["fund_flow"],
+        ]
+        return ordered, source_raw_counts, source_budget_caps, source_budget_weights
 
     @staticmethod
     def _event_research_ready(snapshot: dict) -> bool:
@@ -532,6 +649,14 @@ class StrategySpawner:
             periods = [6, 14, 21]
             period = periods[idx % len(periods)]
             return {"rsi_period": self._jitter(period, 4, 28), "oversold": self._jitter(30, 20, 40), "overbought": self._jitter(70, 60, 80)}
+        if strategy_type == "volatility_breakout":
+            lookbacks = [10, 15, 20]
+            lookback = lookbacks[idx % len(lookbacks)]
+            return {"lookback": self._jitter(lookback, 5, 30), "threshold": self._jitter_f(0.025, 0.01, 0.06)}
+        if strategy_type == "gap_fill":
+            return {"rsi_period": self._jitter(5, 3, 10), "oversold": self._jitter(24, 18, 35), "overbought": self._jitter(58, 50, 70)}
+        if strategy_type == "mean_reversion_short":
+            return {"rsi_period": self._jitter(6, 3, 12), "oversold": self._jitter(26, 18, 35), "overbought": self._jitter(62, 50, 75)}
         if strategy_type == "value_factor":
             return {"lookback": self._jitter(60, 30, 90), "buy_quantile": self._jitter_f(0.8, 0.7, 0.9), "sell_quantile": self._jitter_f(0.2, 0.1, 0.3)}
         if strategy_type == "quality_factor":
@@ -549,6 +674,13 @@ class StrategySpawner:
             return {"factor_weights": weights, "lookback": self._jitter(60, 30, 90)}
         if strategy_type == "macro_timing":
             return {"fear_threshold": self._jitter(35, 25, 45), "greed_threshold": self._jitter(65, 55, 75), "lookback": self._jitter(20, 10, 35)}
+        if strategy_type == "sector_rotation":
+            weights = {"momentum": 0.45, "quality": 0.3, "value": 0.25}
+            return {"factor_weights": weights, "lookback": self._jitter(20, 10, 40)}
+        if strategy_type == "north_capital_track":
+            return {"lookback": self._jitter(15, 5, 30), "threshold": self._jitter_f(0.015, 0.005, 0.04)}
+        if strategy_type == "margin_divergence":
+            return {"fear_threshold": self._jitter(40, 30, 50), "greed_threshold": self._jitter(60, 50, 70), "lookback": self._jitter(15, 8, 25)}
         return {}
 
     @staticmethod

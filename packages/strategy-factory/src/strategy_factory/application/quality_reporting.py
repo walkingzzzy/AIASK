@@ -20,6 +20,12 @@ PROVISIONAL_TECHNICAL_STRATEGY_TYPES = frozenset({
     "ma_cross",
     "rsi",
     "macro_timing",
+    "volatility_breakout",
+    "gap_fill",
+    "mean_reversion_short",
+    "sector_rotation",
+    "north_capital_track",
+    "margin_divergence",
 })
 
 _DEGENERATE_STAT_EPSILON = 1e-9
@@ -323,6 +329,56 @@ def build_quality_report(
     dedup = dict(dedup_report or {})
     backtest = dict(backtest_metrics or {})
     audit = dict(submission_audit or {})
+    candidate_provenance = dict(audit.get("candidate_provenance") or {})
+    strategy_profile = dict(candidate_provenance.get("strategy_profile") or {})
+    event_window_metrics = dict(backtest.get("event_window_metrics") or {})
+    cost_assumptions = dict(backtest.get("cost_assumptions") or {})
+    backtest_assumptions = dict(backtest.get("backtest_assumptions") or {})
+    execution_reality = {
+        "market_ruleset": cost_assumptions.get("market_ruleset") or backtest_assumptions.get("market_ruleset"),
+        "sell_tax_rate": (
+            cost_assumptions.get("sell_tax_rate")
+            if cost_assumptions.get("sell_tax_rate") is not None
+            else backtest_assumptions.get("sell_tax_rate")
+        ),
+        "min_trade_lot": (
+            cost_assumptions.get("min_trade_lot")
+            if cost_assumptions.get("min_trade_lot") is not None
+            else backtest_assumptions.get("min_trade_lot")
+        ),
+        "t_plus_one": (
+            cost_assumptions.get("t_plus_one")
+            if cost_assumptions.get("t_plus_one") is not None
+            else backtest_assumptions.get("t_plus_one")
+        ),
+        "arrival_price_policy": (
+            cost_assumptions.get("arrival_price_policy")
+            or backtest_assumptions.get("arrival_price_policy")
+        ),
+        "market_impact_bps": (
+            cost_assumptions.get("market_impact_bps")
+            if cost_assumptions.get("market_impact_bps") is not None
+            else backtest_assumptions.get("market_impact_bps")
+        ),
+        "implementation_shortfall_proxy": (
+            cost_assumptions.get("implementation_shortfall_proxy")
+            if cost_assumptions.get("implementation_shortfall_proxy") is not None
+            else backtest_assumptions.get("implementation_shortfall_proxy")
+        ),
+        "max_position_pct": backtest_assumptions.get("max_position_pct"),
+        "target_weight_scheme": backtest_assumptions.get("target_weight_scheme"),
+        "position_assumption": backtest.get("position_assumption") or backtest_assumptions.get("position_assumption"),
+        "tradability_filter": backtest_assumptions.get("tradability_filter"),
+    }
+    submission_lane = audit.get("submission_lane")
+    direct_trade_candidate = bool(audit.get("direct_trade_candidate"))
+    live_review_ready = bool(audit.get("live_review_ready"))
+    paper_account_id = audit.get("paper_account_id") or audit.get("live_review_account_id")
+    runtime_control_mode = audit.get("runtime_control_mode")
+    runtime_control_status = audit.get("runtime_control_status")
+    promotion_review_id = audit.get("promotion_review_id")
+    promotion_review_status = audit.get("promotion_review_status")
+    promotion_review_recommendation = audit.get("promotion_review_recommendation")
     summary = {
         "strategy_id": strategy_id,
         "strategy_type": strategy_type,
@@ -330,9 +386,32 @@ def build_quality_report(
         "validation_grade": rating.get("grade"),
         "review_source": review_source,
         "primary_validation_layer": normalized_gate.get("primary_validation_layer"),
+        "admission_stage": normalized_gate.get("admission_stage"),
+        "incubation_pass_mode": normalized_gate.get("incubation_pass_mode"),
+        "research_candidate_ready": bool(normalized_gate.get("research_candidate_ready")),
+        "incubation_candidate_ready": bool(normalized_gate.get("incubation_candidate_ready")),
+        "live_candidate_ready": bool(normalized_gate.get("live_candidate_ready")),
+        "submission_lane": submission_lane,
+        "direct_trade_candidate": direct_trade_candidate,
+        "live_review_ready": live_review_ready,
+        "paper_account_id": paper_account_id,
+        "runtime_control_mode": runtime_control_mode,
+        "runtime_control_status": runtime_control_status,
+        "promotion_review_id": promotion_review_id,
+        "promotion_review_status": promotion_review_status,
+        "promotion_review_recommendation": promotion_review_recommendation,
         "refresh_mode": audit.get("refresh_mode") or dedup.get("refresh_mode"),
-        "source_candidate_artifact_id": dict(audit.get("candidate_provenance") or {}).get("source_candidate_artifact_id"),
-        "candidate_family": dict(audit.get("candidate_provenance") or {}).get("candidate_family"),
+        "source_candidate_artifact_id": candidate_provenance.get("source_candidate_artifact_id"),
+        "candidate_family": candidate_provenance.get("candidate_family"),
+        "candidate_family_id": candidate_provenance.get("candidate_family_id"),
+        "holding_period_bucket": candidate_provenance.get("holding_period_bucket"),
+        "alpha_source": candidate_provenance.get("alpha_source"),
+        "risk_level": candidate_provenance.get("risk_level"),
+        "regime_fit": candidate_provenance.get("regime_fit"),
+        "generator_mode": candidate_provenance.get("generator_mode"),
+        "market_ruleset": execution_reality.get("market_ruleset"),
+        "target_weight_scheme": execution_reality.get("target_weight_scheme"),
+        "position_assumption": execution_reality.get("position_assumption"),
     }
     if spawn_reason:
         summary["spawn_reason"] = spawn_reason
@@ -351,16 +430,34 @@ def build_quality_report(
             "validation_focus": normalized_gate.get("validation_focus"),
             "primary_validation_layer": normalized_gate.get("primary_validation_layer"),
         },
+        "admission_stage": normalized_gate.get("admission_stage"),
+        "incubation_pass_mode": normalized_gate.get("incubation_pass_mode"),
+        "research_candidate_ready": bool(normalized_gate.get("research_candidate_ready")),
+        "incubation_candidate_ready": bool(normalized_gate.get("incubation_candidate_ready")),
+        "live_candidate_ready": bool(normalized_gate.get("live_candidate_ready")),
+        "submission_lane": submission_lane,
+        "direct_trade_candidate": direct_trade_candidate,
+        "live_review_ready": live_review_ready,
+        "paper_account_id": paper_account_id,
+        "runtime_control_mode": runtime_control_mode,
+        "runtime_control_status": runtime_control_status,
+        "promotion_review_id": promotion_review_id,
+        "promotion_review_status": promotion_review_status,
+        "promotion_review_recommendation": promotion_review_recommendation,
+        "admission_block_reasons": list(normalized_gate.get("admission_block_reasons") or []),
+        "admission_evaluations": dict(normalized_gate.get("admission_evaluations") or {}),
         "event_window_config": dict(backtest.get("event_window_config") or {}),
+        "event_window_metrics": event_window_metrics,
         "position_assumption": backtest.get("position_assumption"),
-        "cost_assumptions": dict(backtest.get("cost_assumptions") or {}),
+        "cost_assumptions": cost_assumptions,
         "explicit_cost_breakdown": dict(backtest.get("explicit_cost_breakdown") or {}),
         "implicit_cost_breakdown": dict(backtest.get("implicit_cost_breakdown") or {}),
         "tradability_summary": dict(backtest.get("tradability_summary") or {}),
         "capacity_summary": dict(backtest.get("capacity_summary") or {}),
         "implementation_shortfall_model_source": backtest.get("implementation_shortfall_model_source"),
         "implementation_shortfall_components": dict(backtest.get("implementation_shortfall_components") or {}),
-        "backtest_assumptions": dict(backtest.get("backtest_assumptions") or {}),
+        "backtest_assumptions": backtest_assumptions,
+        "execution_reality": execution_reality,
         "attempt_adjustment": dict(normalized_gate.get("attempt_adjustment") or {}),
         "run_correction": {
             "mode": normalized_gate.get("run_correction_mode"),
@@ -378,9 +475,11 @@ def build_quality_report(
             "hansen_spa_pvalue": normalized_gate.get("hansen_spa_pvalue"),
             "multiple_testing": dict(normalized_gate.get("multiple_testing") or {}),
         },
+        "multiple_testing_registry": dict(normalized_gate.get("multiple_testing_registry") or {}),
         "task_signature": audit.get("task_signature"),
         "refresh_mode": audit.get("refresh_mode") or dedup.get("refresh_mode"),
         "task_preference": dict(audit.get("task_preference") or {}),
-        "candidate_provenance": dict(audit.get("candidate_provenance") or {}),
+        "candidate_provenance": candidate_provenance,
+        "strategy_profile": strategy_profile,
         "snapshot": dict(snapshot or {}),
     }

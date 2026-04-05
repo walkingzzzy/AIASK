@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class _StrategyCrudUtilsMixin:
+        @staticmethod
         def _decode_json_field(value: Any, default: Any) -> Any:
             if value is None:
                 return default
@@ -21,6 +22,7 @@ class _StrategyCrudUtilsMixin:
                     return default
             return value
 
+        @staticmethod
         def _coerce_timestamp(value: Any) -> Optional[datetime]:
             if value is None or isinstance(value, datetime):
                 return value
@@ -33,6 +35,7 @@ class _StrategyCrudUtilsMixin:
             except Exception:
                 return None
 
+        @staticmethod
         def _coerce_date(value: Any) -> Optional[date]:
             if value is None:
                 return None
@@ -53,6 +56,7 @@ class _StrategyCrudUtilsMixin:
             except Exception:
                 return None
 
+        @staticmethod
         def _coerce_ts_code(value: Any) -> Optional[str]:
             if value is None:
                 return None
@@ -67,6 +71,7 @@ class _StrategyCrudUtilsMixin:
                 return f"{digits}.{suffix}"
             return raw
 
+        @staticmethod
         def _normalize_strategy_statuses(status: Any) -> Optional[list[str]]:
             if status is None:
                 return None
@@ -84,6 +89,7 @@ class _StrategyCrudUtilsMixin:
                     normalized.append(token)
             return normalized or None
 
+        @staticmethod
         def _encode_pgvector(values: Any) -> Optional[str]:
             try:
                 vector = [float(item) for item in list(values or [])]
@@ -99,11 +105,13 @@ class _StrategyCrudUtilsMixin:
                     cleaned.append(float(item))
             return '[' + ','.join(format(item, '.10g') for item in cleaned) + ']'
 
+        @staticmethod
         def _resolve_vector_index_name(payload: dict) -> str:
             meta = dict(payload.get('metadata') or {})
             return str(payload.get('index_name') or meta.get('index_name') or 'strategy_behavior')
 
-        def _pgvector_distance_sql(cls, column: str, metric: str, dim: int, query_ref: str = '$1') -> tuple[str, str]:
+        @staticmethod
+        def _pgvector_distance_sql(column: str, metric: str, dim: int, query_ref: str = '$1') -> tuple[str, str]:
             cast_column = f"{column}::vector({int(dim)})"
             cast_query = f"{query_ref}::vector({int(dim)})"
             resolved_metric = str(metric or 'cosine').lower()
@@ -115,16 +123,20 @@ class _StrategyCrudUtilsMixin:
             similarity = f"(1 - {distance})"
             return distance, similarity
 
+        @staticmethod
         def _pgvector_opclass(metric: str) -> str:
             return 'vector_l2_ops' if str(metric or 'cosine').lower() == 'euclidean' else 'vector_cosine_ops'
 
+        @staticmethod
         def _sql_quote(value: Any) -> str:
             return "'" + str(value or '').replace("'", "''") + "'"
 
-        def _pgvector_partial_index_name(cls, prefix: str, *parts: Any) -> str:
+        @staticmethod
+        def _pgvector_partial_index_name(prefix: str, *parts: Any) -> str:
             digest = hashlib.sha1('|'.join(str(part or '') for part in parts).encode('utf-8')).hexdigest()[:12]
             return f"{prefix}_{digest}"
 
+        @staticmethod
         def _coerce_positive_int(value: Any, default: int) -> int:
             try:
                 resolved = int(value)
@@ -132,6 +144,7 @@ class _StrategyCrudUtilsMixin:
                 resolved = int(default)
             return max(1, resolved)
 
+        @classmethod
         def _resolve_pgvector_hnsw_params(cls, index_params: Optional[dict] = None) -> dict:
             params = dict(index_params or {})
             m = (
@@ -161,6 +174,7 @@ class _StrategyCrudUtilsMixin:
                 "ef_search": cls._coerce_positive_int(ef_search, 80),
             }
 
+        @classmethod
         def _pgvector_hnsw_with_clause(cls, index_params: Optional[dict] = None) -> str:
             params = cls._resolve_pgvector_hnsw_params(index_params)
             return (

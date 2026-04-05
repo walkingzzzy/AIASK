@@ -10,7 +10,7 @@ from akshare_mcp.services.live_broker import build_live_order_events
 
 
 class _DummyMCP:
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn

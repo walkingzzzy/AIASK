@@ -9,7 +9,7 @@ RUNTIME_TOOL_COUNT = 174 if platform.system() == "Windows" else 145
 
 
 class _DummyMCP:
-    def tool(self):
+    def tool(self, **_kwargs):
         def _decorator(fn):
             setattr(self, fn.__name__, fn)
             return fn
