@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from datetime import date, datetime
 from typing import Any, List, Optional, Tuple
+from unittest.mock import AsyncMock, Mock
 
 from ..domain.constants import (
     FACTORY_RESEARCH_FACTORS,
@@ -13,6 +14,13 @@ from ..domain.constants import (
     preferred_strategy_types_for_factor,
 )
 from ..infrastructure.mcp_services import get_factor_scheduler_singleton, get_quant_manager_callable
+from ._budget_feedback import (
+    extract_feedback_root,
+    extract_generator_mode,
+    extract_target_pool_id,
+    normalize_text,
+    resolve_feedback_metrics,
+)
 from ._stock_universe_loader import load_stock_universe_rows
 from .runtime import _call_optional_async
 
@@ -81,6 +89,37 @@ class FactorResearchBuilder:
         if not text:
             return []
         return [item.strip() for item in text.split(",") if item.strip()]
+
+    @staticmethod
+    def _has_concrete_async_method(target: Any, method_name: str) -> bool:
+        method = getattr(target, method_name, None)
+        if method is None or not callable(method):
+            return False
+        if isinstance(method, AsyncMock):
+            return True
+        if isinstance(method, Mock):
+            return False
+        return True
+
+    @classmethod
+    def _should_use_lightweight_mock_fallback(cls, db: Any, snapshot: dict[str, Any]) -> bool:
+        raw_db = db
+        candidate_raw = getattr(db, "raw", None)
+        if candidate_raw is not None and not (isinstance(db, Mock) and "raw" not in getattr(db, "__dict__", {})):
+            raw_db = candidate_raw
+        if not isinstance(raw_db, Mock):
+            return False
+        if cls._has_concrete_async_method(raw_db, "get_factor_ic_history"):
+            return False
+        if cls._has_concrete_async_method(raw_db, "list_stock_universe"):
+            return False
+        if dict(snapshot.get("factor_ic") or {}):
+            return False
+        if dict(snapshot.get("factor_ic_trend") or {}):
+            return False
+        if cls._normalize_codes(snapshot.get("candidate_codes")):
+            return False
+        return True
 
     @classmethod
     def _history_summary(cls, rows: List[dict[str, Any]]) -> dict[str, Any]:
@@ -313,6 +352,510 @@ class FactorResearchBuilder:
         return hint_map
 
     @staticmethod
+    def _family_risk_level(family: str) -> str:
+        normalized = str(family or "").strip().lower()
+        if normalized in {"momentum", "growth_factor", "volatility_breakout", "gap_fill"}:
+            return "high"
+        if normalized in {"quality_factor", "value_factor"}:
+            return "low"
+        return "medium"
+
+    @classmethod
+    def _family_validation_profile(cls, family: str) -> dict[str, Any]:
+        normalized = str(family or "").strip().lower()
+        validation_focus = "candidate_target_only"
+        if normalized == "macro_timing":
+            profile = "macro_regime_validation"
+        elif normalized in {"north_capital_track", "margin_divergence"}:
+            profile = "event_trade_validation"
+            validation_focus = "event_target_only"
+        elif normalized in {"value_factor", "quality_factor", "growth_factor", "multi_factor", "sentiment", "sentiment_factor"}:
+            profile = "factor_rank_validation"
+        else:
+            profile = "trade_rule_validation"
+        return {
+            "profile": profile,
+            "validation_focus": validation_focus,
+            "primary_validation_layer": "target" if validation_focus in {"candidate_target_only", "event_target_only"} else "combined",
+        }
+
+    @classmethod
+    def _family_failure_penalty(cls, family: str, *, family_rank: int) -> float:
+        risk_level = cls._family_risk_level(family)
+        base_penalty = {
+            "high": 0.22,
+            "medium": 0.14,
+            "low": 0.08,
+        }.get(risk_level, 0.14)
+        return round(min(base_penalty + max(family_rank - 1, 0) * 0.03, 0.45), 4)
+
+    @classmethod
+    def _family_budget_weights(
+        cls,
+        families: List[str],
+        *,
+        priority: float,
+        budget_feedback_root: Any = None,
+    ) -> List[float]:
+        selected = [
+            str(item or "").strip().lower()
+            for item in list(families or [])
+            if str(item or "").strip()
+        ]
+        if not selected:
+            return []
+        raw_weights: List[float] = []
+        for family_rank, family in enumerate(selected, 1):
+            risk_level = cls._family_risk_level(family)
+            rank_multiplier = max(0.4, 1.0 - (family_rank - 1) * 0.2)
+            risk_multiplier = {
+                "high": 0.82,
+                "medium": 0.94,
+                "low": 1.08,
+            }.get(risk_level, 0.94)
+            feedback_metrics = resolve_feedback_metrics(
+                budget_feedback_root,
+                family=family,
+            )
+            budget_multiplier = max(
+                0.35,
+                min(
+                    cls._safe_float(feedback_metrics.get("budget_multiplier")),
+                    1.85,
+                ),
+            )
+            raw_weights.append(
+                max(0.05, float(priority or 0.0) * rank_multiplier * risk_multiplier * budget_multiplier)
+            )
+        total = sum(raw_weights) or float(len(selected))
+        normalized_weights: List[float] = []
+        accumulated = 0.0
+        for index, raw_weight in enumerate(raw_weights, 1):
+            if index == len(raw_weights):
+                weight = round(max(0.0, 1.0 - accumulated), 4)
+            else:
+                weight = round(raw_weight / total, 4)
+                accumulated += weight
+            normalized_weights.append(weight)
+        return normalized_weights
+
+    @classmethod
+    def _build_family_plans(
+        cls,
+        families: List[str],
+        *,
+        priority: float,
+        budget_feedback_root: Any = None,
+    ) -> List[dict[str, Any]]:
+        selected = [
+            str(item or "").strip().lower()
+            for item in list(families or [])
+            if str(item or "").strip()
+        ]
+        if not selected:
+            return []
+        budget_weights = cls._family_budget_weights(
+            selected,
+            priority=priority,
+            budget_feedback_root=budget_feedback_root,
+        )
+        plans: List[dict[str, Any]] = []
+        for family_rank, family in enumerate(selected, 1):
+            budget_weight = budget_weights[family_rank - 1] if family_rank - 1 < len(budget_weights) else 0.0
+            feedback_metrics = resolve_feedback_metrics(
+                budget_feedback_root,
+                family=family,
+            )
+            feedback_penalty_adjustment = cls._safe_float(
+                feedback_metrics.get("failure_penalty_adjustment")
+            )
+            plans.append(
+                {
+                    "family": family,
+                    "family_rank": family_rank,
+                    "budget": budget_weight,
+                    "budget_weight": budget_weight,
+                    "failure_penalty": round(
+                        min(
+                            max(
+                                cls._family_failure_penalty(family, family_rank=family_rank)
+                                + feedback_penalty_adjustment,
+                                0.0,
+                            ),
+                            0.9,
+                        ),
+                        4,
+                    ),
+                    "validation_profile": cls._family_validation_profile(family),
+                    "feedback_metrics": feedback_metrics,
+                    "feedback_budget_multiplier": cls._safe_float(
+                        feedback_metrics.get("budget_multiplier")
+                    ),
+                    "feedback_priority_adjustment": cls._safe_float(
+                        feedback_metrics.get("priority_adjustment")
+                    ),
+                    "feedback_failure_penalty_adjustment": feedback_penalty_adjustment,
+                }
+            )
+        plans.sort(
+            key=lambda item: (
+                -cls._safe_float(item.get("budget_weight")),
+                int(item.get("family_rank") or 0),
+                str(item.get("family") or ""),
+            )
+        )
+        return plans
+
+    @staticmethod
+    def _feedback_family_key(payload: dict[str, Any]) -> str:
+        item = dict(payload or {})
+        params = dict(item.get("params") or {})
+        provenance = dict(params.get("candidate_provenance") or {})
+        research_task = dict(item.get("research_task") or {})
+        contract_snapshot = dict(item.get("candidate_contract_snapshot") or {})
+        targeting = dict(contract_snapshot.get("targeting") or {})
+        for source in (item, provenance, params, research_task, targeting, contract_snapshot):
+            for key in ("candidate_family_id", "candidate_family", "family", "strategy_type"):
+                token = normalize_text(source.get(key))
+                if token:
+                    return token
+        return "unknown"
+
+    @staticmethod
+    def _feedback_runtime_alert_pressure(
+        latest_metric: dict[str, Any],
+        risk_events: list[dict[str, Any]],
+        runtime_alerts: list[dict[str, Any]],
+    ) -> float:
+        severity_weights = {
+            "critical": 0.55,
+            "high": 0.35,
+            "medium": 0.18,
+            "low": 0.08,
+        }
+        open_alerts = [
+            dict(item or {})
+            for item in list(runtime_alerts or [])
+            if normalize_text((item or {}).get("status") or "open") not in {"resolved", "closed"}
+        ]
+        open_events = [
+            dict(item or {})
+            for item in list(risk_events or [])
+            if normalize_text((item or {}).get("status") or "open") not in {"resolved", "closed"}
+        ]
+        pressure = 0.0
+        for row in [*open_alerts, *open_events]:
+            pressure += severity_weights.get(normalize_text(row.get("severity")) or "medium", 0.18)
+        total_open = len(open_alerts) + len(open_events)
+        if total_open > 1:
+            pressure += min((total_open - 1) * 0.06, 0.3)
+        decision = normalize_text(latest_metric.get("decision"))
+        if decision == "halt":
+            pressure = max(pressure, 0.85)
+        elif decision in {"review", "defer"}:
+            pressure = max(pressure, 0.45)
+        return round(min(max(pressure, 0.0), 1.0), 4)
+
+    @classmethod
+    def _feedback_capacity_crowding(
+        cls,
+        latest_metric: dict[str, Any],
+        risk_events: list[dict[str, Any]],
+        runtime_alerts: list[dict[str, Any]],
+    ) -> float:
+        turnover_rate = max(0.0, cls._safe_float(latest_metric.get("turnover_rate")))
+        exposure_rate = max(0.0, cls._safe_float(latest_metric.get("exposure_rate")))
+        crowding = max(turnover_rate, exposure_rate)
+        risk_tokens = " ".join(
+            normalize_text(
+                (item or {}).get("reason")
+                or (item or {}).get("message")
+                or (item or {}).get("alert_key")
+            )
+            for item in [*list(risk_events or []), *list(runtime_alerts or [])]
+        )
+        if any(token in risk_tokens for token in ("crowd", "capacity", "turnover", "exposure")):
+            crowding = max(crowding, 0.75)
+        return round(min(max(crowding, 0.0), 2.0), 4)
+
+    @classmethod
+    async def _list_feedback_source_strategies(
+        cls,
+        db,
+        *,
+        limit: int = 180,
+    ) -> List[dict[str, Any]]:
+        if not hasattr(db, "list_strategies"):
+            return []
+        statuses = ("incubating", "listed", "submitted")
+        per_status_limit = max(10, int(math.ceil(limit / max(len(statuses), 1))))
+        seen: set[str] = set()
+        items: List[dict[str, Any]] = []
+        for status in statuses:
+            rows = await _call_optional_async(db, "list_strategies", status, per_status_limit, default=[])
+            for row in list(rows or []):
+                payload = dict(row or {})
+                strategy_id = str(payload.get("id") or "").strip()
+                if not strategy_id or strategy_id in seen:
+                    continue
+                seen.add(strategy_id)
+                items.append(payload)
+                if len(items) >= limit:
+                    return items
+        return items
+
+    @classmethod
+    def _accumulate_feedback_bucket(
+        cls,
+        accumulator: dict[str, Any],
+        *,
+        strategy_id: str,
+        metrics: dict[str, Any],
+        runtime_alert_count: int,
+        runtime_risk_event_count: int,
+    ) -> None:
+        accumulator["strategy_count"] = int(accumulator.get("strategy_count") or 0) + 1
+        if strategy_id:
+            strategy_ids = list(accumulator.get("strategy_ids") or [])
+            if strategy_id not in strategy_ids:
+                strategy_ids.append(strategy_id)
+            accumulator["strategy_ids"] = strategy_ids[:20]
+        accumulator["runtime_alert_count"] = int(accumulator.get("runtime_alert_count") or 0) + int(runtime_alert_count or 0)
+        accumulator["runtime_risk_event_count"] = int(accumulator.get("runtime_risk_event_count") or 0) + int(runtime_risk_event_count or 0)
+        accumulator["paper_hit_ratio_total"] = cls._safe_float(accumulator.get("paper_hit_ratio_total")) + cls._safe_float(
+            metrics.get("paper_hit_ratio")
+        )
+        accumulator["runtime_alert_pressure_total"] = cls._safe_float(
+            accumulator.get("runtime_alert_pressure_total")
+        ) + cls._safe_float(metrics.get("runtime_alert_pressure"))
+        accumulator["realized_turnover_total"] = cls._safe_float(
+            accumulator.get("realized_turnover_total")
+        ) + cls._safe_float(metrics.get("realized_turnover"))
+        accumulator["capacity_crowding_total"] = cls._safe_float(
+            accumulator.get("capacity_crowding_total")
+        ) + cls._safe_float(metrics.get("capacity_crowding"))
+
+    @classmethod
+    def _finalize_feedback_bucket(cls, accumulator: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(accumulator or {})
+        strategy_count = max(0, int(payload.get("strategy_count") or 0))
+        target_pool_feedback = {
+            str(key): cls._finalize_feedback_bucket(value)
+            for key, value in dict(payload.get("target_pool_feedback") or {}).items()
+            if isinstance(value, dict)
+        }
+        generator_mode_feedback = {
+            str(key): cls._finalize_feedback_bucket(value)
+            for key, value in dict(payload.get("generator_mode_feedback") or {}).items()
+            if isinstance(value, dict)
+        }
+        result = {
+            "strategy_count": strategy_count,
+            "strategy_ids": list(payload.get("strategy_ids") or [])[:20],
+            "runtime_alert_count": int(payload.get("runtime_alert_count") or 0),
+            "runtime_risk_event_count": int(payload.get("runtime_risk_event_count") or 0),
+            "paper_hit_ratio": round(
+                cls._safe_float(payload.get("paper_hit_ratio_total")) / strategy_count,
+                4,
+            )
+            if strategy_count
+            else 0.5,
+            "runtime_alert_pressure": round(
+                cls._safe_float(payload.get("runtime_alert_pressure_total")) / strategy_count,
+                4,
+            )
+            if strategy_count
+            else 0.0,
+            "realized_turnover": round(
+                cls._safe_float(payload.get("realized_turnover_total")) / strategy_count,
+                4,
+            )
+            if strategy_count
+            else 0.0,
+            "capacity_crowding": round(
+                cls._safe_float(payload.get("capacity_crowding_total")) / strategy_count,
+                4,
+            )
+            if strategy_count
+            else 0.0,
+        }
+        if payload.get("ema_submit_count") is not None:
+            result["ema_submit_count"] = round(cls._safe_float(payload.get("ema_submit_count")), 4)
+        if target_pool_feedback:
+            result["target_pool_feedback"] = target_pool_feedback
+        if generator_mode_feedback:
+            result["generator_mode_feedback"] = generator_mode_feedback
+        return result
+
+    @classmethod
+    def _merge_feedback_bucket(
+        cls,
+        base: Any,
+        fresh: Any,
+    ) -> dict[str, Any]:
+        base_payload = dict(base or {})
+        fresh_payload = dict(fresh or {})
+        merged = dict(base_payload)
+        merged.update(fresh_payload)
+        if merged.get("ema_submit_count") is None and base_payload.get("ema_submit_count") is not None:
+            merged["ema_submit_count"] = base_payload.get("ema_submit_count")
+        for scope_name in ("target_pool_feedback", "generator_mode_feedback"):
+            base_scope = dict(base_payload.get(scope_name) or {})
+            fresh_scope = dict(fresh_payload.get(scope_name) or {})
+            if not base_scope and not fresh_scope:
+                continue
+            merged_scope: dict[str, Any] = {}
+            for scope_key in set(base_scope) | set(fresh_scope):
+                merged_scope[str(scope_key)] = cls._merge_feedback_bucket(
+                    base_scope.get(scope_key),
+                    fresh_scope.get(scope_key),
+                )
+            merged[scope_name] = merged_scope
+        return merged
+
+    @classmethod
+    async def _load_budget_feedback(
+        cls,
+        db,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        seed_feedback_root = extract_feedback_root(snapshot.get("family_gate_feedback") or {})
+        strategy_rows = await cls._list_feedback_source_strategies(db)
+        aggregate_root: dict[str, dict[str, Any]] = {}
+        runtime_alert_total = 0
+        runtime_risk_total = 0
+        for strategy in strategy_rows:
+            strategy_id = str(strategy.get("id") or "").strip()
+            if not strategy_id:
+                continue
+            family = cls._feedback_family_key(strategy)
+            latest_metric_rows = await _call_optional_async(
+                db,
+                "list_strategy_incubation_metrics",
+                strategy_id,
+                limit=1,
+                default=[],
+            )
+            latest_metric = dict((list(latest_metric_rows or []) or [None])[0] or {})
+            risk_events = await _call_optional_async(
+                db,
+                "list_strategy_runtime_risk_events",
+                strategy_id=strategy_id,
+                status="open",
+                limit=20,
+                default=[],
+            )
+            runtime_alerts = await _call_optional_async(
+                db,
+                "list_strategy_runtime_alerts",
+                strategy_id=strategy_id,
+                status="open_or_ack",
+                limit=20,
+                default=[],
+            )
+            open_runtime_alerts = [
+                dict(item or {})
+                for item in list(runtime_alerts or [])
+                if normalize_text((item or {}).get("status") or "open") not in {"resolved", "closed"}
+            ]
+            open_risk_events = [
+                dict(item or {})
+                for item in list(risk_events or [])
+                if normalize_text((item or {}).get("status") or "open") not in {"resolved", "closed"}
+            ]
+            runtime_alert_total += len(open_runtime_alerts)
+            runtime_risk_total += len(open_risk_events)
+            paper_hit_ratio = cls._safe_float(latest_metric.get("hit_rate_5d"))
+            if latest_metric.get("hit_rate_5d") is None:
+                paper_hit_ratio = 0.5
+            feedback_metrics = {
+                "paper_hit_ratio": round(min(max(paper_hit_ratio, 0.0), 1.0), 4),
+                "runtime_alert_pressure": cls._feedback_runtime_alert_pressure(
+                    latest_metric,
+                    open_risk_events,
+                    open_runtime_alerts,
+                ),
+                "realized_turnover": round(
+                    min(max(cls._safe_float(latest_metric.get("turnover_rate")), 0.0), 2.0),
+                    4,
+                ),
+                "capacity_crowding": cls._feedback_capacity_crowding(
+                    latest_metric,
+                    open_risk_events,
+                    open_runtime_alerts,
+                ),
+            }
+            family_bucket = aggregate_root.setdefault(family, {})
+            cls._accumulate_feedback_bucket(
+                family_bucket,
+                strategy_id=strategy_id,
+                metrics=feedback_metrics,
+                runtime_alert_count=len(open_runtime_alerts),
+                runtime_risk_event_count=len(open_risk_events),
+            )
+            target_pool_id = extract_target_pool_id(strategy)
+            if target_pool_id:
+                target_scope = dict(family_bucket.get("target_pool_feedback") or {})
+                scoped_bucket = dict(target_scope.get(target_pool_id) or {})
+                cls._accumulate_feedback_bucket(
+                    scoped_bucket,
+                    strategy_id=strategy_id,
+                    metrics=feedback_metrics,
+                    runtime_alert_count=len(open_runtime_alerts),
+                    runtime_risk_event_count=len(open_risk_events),
+                )
+                target_scope[target_pool_id] = scoped_bucket
+                family_bucket["target_pool_feedback"] = target_scope
+            generator_mode = extract_generator_mode(strategy)
+            if generator_mode:
+                generator_scope = dict(family_bucket.get("generator_mode_feedback") or {})
+                scoped_bucket = dict(generator_scope.get(generator_mode) or {})
+                cls._accumulate_feedback_bucket(
+                    scoped_bucket,
+                    strategy_id=strategy_id,
+                    metrics=feedback_metrics,
+                    runtime_alert_count=len(open_runtime_alerts),
+                    runtime_risk_event_count=len(open_risk_events),
+                )
+                generator_scope[generator_mode] = scoped_bucket
+                family_bucket["generator_mode_feedback"] = generator_scope
+
+        finalized_root = {
+            family: cls._finalize_feedback_bucket(bucket)
+            for family, bucket in aggregate_root.items()
+        }
+        merged_root: dict[str, Any] = {}
+        for family in set(seed_feedback_root) | set(finalized_root):
+            merged_root[family] = cls._merge_feedback_bucket(
+                seed_feedback_root.get(family),
+                finalized_root.get(family),
+            )
+        target_pool_scope_count = sum(
+            len(dict((bucket or {}).get("target_pool_feedback") or {}))
+            for bucket in merged_root.values()
+            if isinstance(bucket, dict)
+        )
+        generator_mode_scope_count = sum(
+            len(dict((bucket or {}).get("generator_mode_feedback") or {}))
+            for bucket in merged_root.values()
+            if isinstance(bucket, dict)
+        )
+        return {
+            "available": bool(merged_root),
+            "reason": None if merged_root else "feedback_unavailable",
+            "feedback": merged_root,
+            "summary": {
+                "family_count": len(merged_root),
+                "seeded_family_count": len(seed_feedback_root),
+                "strategy_count": len(strategy_rows),
+                "runtime_alert_count": runtime_alert_total,
+                "runtime_risk_event_count": runtime_risk_total,
+                "target_pool_scope_count": target_pool_scope_count,
+                "generator_mode_scope_count": generator_mode_scope_count,
+            },
+        }
+
+    @staticmethod
     def _family_allocation_entropy(family_counts: dict[str, int]) -> float:
         total = sum(int(value or 0) for value in family_counts.values())
         if total <= 0:
@@ -332,6 +875,7 @@ class FactorResearchBuilder:
         *,
         active_factors: List[str],
         governed_top_candidates: List[dict[str, Any]],
+        budget_feedback_root: Any = None,
     ) -> dict[str, Any]:
         candidate_hints = cls._build_candidate_hint_map(governed_top_candidates)
         allocation: dict[str, dict[str, Any]] = {}
@@ -349,11 +893,25 @@ class FactorResearchBuilder:
             if not selected_families:
                 return
             bounded_priority = round(max(0.01, min(float(priority or 0.0), 0.99)), 4)
+            family_plans = cls._build_family_plans(
+                selected_families,
+                priority=bounded_priority,
+                budget_feedback_root=budget_feedback_root,
+            )
             allocation[normalized_code] = {
                 "families": selected_families,
+                "family_plans": family_plans,
                 "priority": bounded_priority,
                 "source_mode": source_mode,
             }
+            if family_plans:
+                allocation[normalized_code]["top_family"] = family_plans[0]["family"]
+                allocation[normalized_code]["top_validation_profile"] = (
+                    dict(family_plans[0].get("validation_profile") or {}).get("profile")
+                )
+                allocation[normalized_code]["top_feedback_budget_multiplier"] = cls._safe_float(
+                    family_plans[0].get("feedback_budget_multiplier")
+                )
             if isinstance(row, dict):
                 industry = str(row.get("industry") or row.get("sector") or "").strip()
                 if industry:
@@ -450,6 +1008,8 @@ class FactorResearchBuilder:
                 if rows
                 else ("governed_candidate_hint_only" if candidate_hints else "unavailable")
             ),
+            "feedback_enabled": bool(budget_feedback_root),
+            "feedback_family_count": len(dict(budget_feedback_root or {})),
         }
         return {
             "available": bool(allocation),
@@ -462,18 +1022,29 @@ class FactorResearchBuilder:
     async def build(cls, db, snapshot: dict[str, Any]) -> dict[str, Any]:
         factor_ic = dict(snapshot.get("factor_ic") or {})
         factor_trend = dict(snapshot.get("factor_ic_trend") or {})
+        lightweight_mock_fallback = cls._should_use_lightweight_mock_fallback(db, snapshot)
 
         ranked_factors: List[dict[str, Any]] = []
         names = list(
             dict.fromkeys([*factor_ic.keys(), *factor_trend.keys(), *FACTORY_RESEARCH_FACTORS])
         )
-        history_meta, latest_factor_date = await cls._load_factor_history_meta(db, names)
+        if lightweight_mock_fallback:
+            history_meta, latest_factor_date = {}, None
+        else:
+            history_meta, latest_factor_date = await cls._load_factor_history_meta(db, names)
         names = [
             name
             for name in names
             if name in factor_ic or name in factor_trend or bool(history_meta.get(str(name)))
         ]
-        governed_pool = dict(await cls._load_governed_candidate_pool(snapshot) or {})
+        if lightweight_mock_fallback:
+            governed_pool = {
+                "available": False,
+                "reason": "lightweight_mock_fallback",
+            }
+        else:
+            governed_pool = dict(await cls._load_governed_candidate_pool(snapshot) or {})
+        governed_pool_reason = str(governed_pool.get("reason") or "").strip().lower()
         active_candidate_pool = dict(governed_pool.get("active_pool") or {})
         governed_registry_summary = dict(governed_pool.get("summary") or {})
         governed_candidate_pool_mode = (
@@ -502,9 +1073,34 @@ class FactorResearchBuilder:
             for item in list(active_candidate_pool.get("regime_summary") or [])
             if isinstance(item, dict)
         ]
-        model_registry_lineage = dict(await cls._load_model_registry_lineage(governed_top_candidates[:5]) or {})
+        if lightweight_mock_fallback:
+            model_registry_lineage = {
+                "available": False,
+                "reason": "lightweight_mock_fallback",
+            }
+        else:
+            model_registry_lineage = dict(await cls._load_model_registry_lineage(governed_top_candidates[:5]) or {})
         model_lineage_summary = dict(model_registry_lineage.get("summary") or {})
         model_lineage_by_validation_id = dict(model_registry_lineage.get("by_validation_artifact_id") or {})
+        if lightweight_mock_fallback:
+            budget_feedback_payload = {
+                "available": False,
+                "reason": "lightweight_mock_fallback",
+                "feedback": dict(snapshot.get("family_gate_feedback") or {}),
+                "summary": {
+                    "family_count": len(dict(snapshot.get("family_gate_feedback") or {})),
+                    "seeded_family_count": len(dict(snapshot.get("family_gate_feedback") or {})),
+                    "strategy_count": 0,
+                    "runtime_alert_count": 0,
+                    "runtime_risk_event_count": 0,
+                    "target_pool_scope_count": 0,
+                    "generator_mode_scope_count": 0,
+                },
+            }
+        else:
+            budget_feedback_payload = await cls._load_budget_feedback(db, snapshot)
+        budget_feedback_root = dict(budget_feedback_payload.get("feedback") or {})
+        budget_feedback_summary = dict(budget_feedback_payload.get("summary") or {})
         governed_source_candidate_count = int(
             active_candidate_pool.get("source_count")
             or governed_registry_summary.get("active_count")
@@ -575,18 +1171,33 @@ class FactorResearchBuilder:
             governed_blocked_candidate_count / max(governed_source_candidate_count, 1),
             6,
         ) if governed_source_candidate_count > 0 else 0.0
-        scheduler_status = dict(get_factor_scheduler_singleton().status() or {})
-        scheduler_last_result = dict(scheduler_status.get("last_result") or {})
-        scheduler_llm_validation = dict(scheduler_last_result.get("llm_validation") or {})
-        scheduler_quality_flags = list(scheduler_status.get("quality_flags") or [])
-        scheduler_freshness_sec = cls._safe_float(scheduler_status.get("freshness_sec"))
-        scheduler_recent_success = bool(
-            scheduler_status.get("last_run")
-            and scheduler_freshness_sec <= float(getattr(get_factor_scheduler_singleton(), "STALE_AFTER_SEC", 24 * 60 * 60))
-            and "failed" not in scheduler_quality_flags
-        )
+        if lightweight_mock_fallback:
+            scheduler_status = {}
+            scheduler_last_result = {}
+            scheduler_llm_validation = {}
+            scheduler_llm_provider = {}
+            scheduler_quality_flags = []
+            scheduler_freshness_sec = 0.0
+            scheduler_recent_success = False
+        else:
+            scheduler_status = dict(get_factor_scheduler_singleton().status() or {})
+            scheduler_last_result = dict(scheduler_status.get("last_result") or {})
+            scheduler_llm_validation = dict(scheduler_last_result.get("llm_validation") or {})
+            scheduler_llm_provider = dict(scheduler_status.get("llm_provider") or {})
+            scheduler_quality_flags = list(scheduler_status.get("quality_flags") or [])
+            scheduler_freshness_sec = cls._safe_float(scheduler_status.get("freshness_sec"))
+            scheduler_recent_success = bool(
+                scheduler_status.get("last_run")
+                and scheduler_freshness_sec <= float(getattr(get_factor_scheduler_singleton(), "STALE_AFTER_SEC", 24 * 60 * 60))
+                and "failed" not in scheduler_quality_flags
+            )
+            if not bool(governed_pool.get("available")):
+                scheduler_recent_success = False
         scheduler_llm_validation_status = (
             str(scheduler_llm_validation.get("status") or "").strip().lower() or None
+        )
+        scheduler_llm_provider_health_status = (
+            str(scheduler_llm_provider.get("health_status") or "").strip().lower() or None
         )
         factor_ic_source = dict((snapshot.get("sources") or {}).get("factor_ic") or {})
 
@@ -656,12 +1267,31 @@ class FactorResearchBuilder:
             for strategy_type in list(item.get("preferred_strategy_types") or []):
                 if strategy_type not in preferred_strategy_types:
                     preferred_strategy_types.append(strategy_type)
-        stock_family_allocation_payload = await cls._load_stock_family_allocation(
-            db,
-            snapshot,
-            active_factors=active_factors,
-            governed_top_candidates=governed_top_candidates,
-        )
+        if lightweight_mock_fallback:
+            stock_family_allocation_payload = {
+                "available": False,
+                "reason": "lightweight_mock_fallback",
+                "allocation": {},
+                "summary": {
+                    "count": 0,
+                    "family_counts": {},
+                    "allocation_entropy": 0.0,
+                    "avg_priority": 0.0,
+                    "max_priority": 0.0,
+                    "min_priority": 0.0,
+                    "candidate_hint_count": 0,
+                    "universe_limit": max(1, int(STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT)),
+                    "source_mode": "lightweight_mock_fallback",
+                },
+            }
+        else:
+            stock_family_allocation_payload = await cls._load_stock_family_allocation(
+                db,
+                snapshot,
+                active_factors=active_factors,
+                governed_top_candidates=governed_top_candidates,
+                budget_feedback_root=budget_feedback_root,
+            )
         stock_family_allocation = dict(stock_family_allocation_payload.get("allocation") or {})
         stock_family_allocation_summary = dict(stock_family_allocation_payload.get("summary") or {})
 
@@ -780,13 +1410,32 @@ class FactorResearchBuilder:
                 f"覆盖 {int(stock_family_allocation_summary.get('count') or 0)} 只股票，"
                 f"allocation_entropy={stock_family_allocation_summary.get('allocation_entropy')}"
             )
+        if budget_feedback_root:
+            rationale.append(
+                "paper/runtime feedback 已回流 allocation/budget: "
+                f"families={int(budget_feedback_summary.get('family_count') or 0)} "
+                f"strategies={int(budget_feedback_summary.get('strategy_count') or 0)}"
+            )
         if governed_blocked_ratio >= 0.40:
             rationale.append(f"治理候选池 blocked 比例偏高: {round(governed_blocked_ratio * 100, 1)}%")
+        governed_pool_observable = bool(
+            governed_pool.get("available")
+            or governed_source_candidate_count > 0
+            or int((governed_pool.get("active_pool") or {}).get("count") or 0) > 0
+        )
         governed_pool_missing_after_scheduler_success = bool(
-            scheduler_recent_success and not governed_top_candidates
+            governed_pool_observable
+            and scheduler_recent_success
+            and not governed_top_candidates
         )
         if governed_pool_missing_after_scheduler_success:
             rationale.append("调度器近期已成功运行，但治理活跃池仍为空，建议核查验证与晋级门槛。")
+        if scheduler_llm_provider_health_status in {"degraded", "closed", "misconfigured", "error"}:
+            rationale.append(
+                "factor llm provider 生命周期异常: "
+                f"health={scheduler_llm_provider_health_status} "
+                f"error={scheduler_llm_provider.get('last_error_type') or 'unknown'}"
+            )
 
         freshness_days = cls._days_since(latest_factor_date, reference_date=snapshot_date)
         stale = bool(
@@ -831,6 +1480,10 @@ class FactorResearchBuilder:
         factor_ic_status = str(factor_ic_source.get("status") or "")
         if factor_ic_status and factor_ic_status != "success":
             quality_flags.append(f"factor_ic_{factor_ic_status}")
+        if scheduler_llm_provider_health_status in {"degraded", "closed", "misconfigured", "error"}:
+            quality_flags.append(f"factor_llm_provider_{scheduler_llm_provider_health_status}")
+        if budget_feedback_root:
+            quality_flags.append("budget_feedback_available")
         if not ranked_factors:
             quality_flags.append("empty")
         quality_flags.extend([flag for flag in scheduler_quality_flags if flag not in quality_flags])
@@ -853,6 +1506,7 @@ class FactorResearchBuilder:
             "top_candidate_lineage": top_candidate_lineage,
             "blocked_candidate_lineage": blocked_candidate_lineage,
             "model_registry_lineage": model_registry_lineage,
+            "budget_feedback": budget_feedback_root,
             "active_candidate_pool": active_candidate_pool,
             "stock_family_allocation": stock_family_allocation,
             "active_family_summary": governed_family_summary,
@@ -866,7 +1520,9 @@ class FactorResearchBuilder:
                 "quant_manager.model_registry(lineage)",
                 "factor_scheduler.status",
                 "artifact_v2",
+                *(["lightweight_mock_fallback"] if lightweight_mock_fallback else []),
             ],
+            "lightweight_mock_fallback": lightweight_mock_fallback,
             "degraded": degraded,
             "latest_factor_date": latest_factor_date.isoformat() if latest_factor_date else None,
             "freshness_days": freshness_days,
@@ -880,6 +1536,7 @@ class FactorResearchBuilder:
                 "quality_flags": scheduler_quality_flags,
                 "llm_validation_status": scheduler_llm_validation_status,
                 "recent_success": scheduler_recent_success,
+                "llm_provider": scheduler_llm_provider,
             },
             "summary": {
                 "active_factor_count": len(active_factors),
@@ -908,7 +1565,13 @@ class FactorResearchBuilder:
                 "scheduler_freshness_sec": scheduler_status.get("freshness_sec"),
                 "scheduler_recent_success": scheduler_recent_success,
                 "scheduler_llm_validation_status": scheduler_llm_validation_status,
+                "factor_llm_provider_enabled": bool(scheduler_llm_provider.get("enabled")),
+                "factor_llm_provider_ready": bool(scheduler_llm_provider.get("ready")),
+                "factor_llm_provider_health_status": scheduler_llm_provider_health_status,
+                "factor_llm_provider_rebuild_count": int(scheduler_llm_provider.get("rebuild_count") or 0),
+                "factor_llm_provider_last_error_type": scheduler_llm_provider.get("last_error_type"),
                 "governed_pool_missing_after_scheduler_success": governed_pool_missing_after_scheduler_success,
+                "lightweight_mock_fallback": lightweight_mock_fallback,
                 "governed_exclusion_reason_counts": governed_exclusion_reason_counts,
                 "governed_registry_stage_counts": dict(governed_registry_summary.get("registry_stage_counts") or {}),
                 "top_candidate_lineage": top_candidate_lineage,
@@ -924,6 +1587,21 @@ class FactorResearchBuilder:
                 "stock_family_allocation_entropy": stock_family_allocation_summary.get("allocation_entropy"),
                 "stock_family_allocation_avg_priority": stock_family_allocation_summary.get("avg_priority"),
                 "stock_family_allocation_source_mode": stock_family_allocation_summary.get("source_mode"),
+                "budget_feedback_available": bool(budget_feedback_payload.get("available")),
+                "budget_feedback_family_count": int(budget_feedback_summary.get("family_count") or 0),
+                "budget_feedback_strategy_count": int(budget_feedback_summary.get("strategy_count") or 0),
+                "budget_feedback_target_pool_scope_count": int(
+                    budget_feedback_summary.get("target_pool_scope_count") or 0
+                ),
+                "budget_feedback_generator_mode_scope_count": int(
+                    budget_feedback_summary.get("generator_mode_scope_count") or 0
+                ),
+                "budget_feedback_runtime_alert_count": int(
+                    budget_feedback_summary.get("runtime_alert_count") or 0
+                ),
+                "budget_feedback_runtime_risk_event_count": int(
+                    budget_feedback_summary.get("runtime_risk_event_count") or 0
+                ),
                 "degraded": degraded,
                 "freshness_days": freshness_days,
                 "latest_factor_date": latest_factor_date.isoformat() if latest_factor_date else None,

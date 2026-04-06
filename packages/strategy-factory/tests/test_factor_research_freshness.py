@@ -347,10 +347,68 @@ async def test_factor_research_builds_stock_family_allocation(monkeypatch):
     assert set(allocation) == {"300001", "600001"}
     assert allocation["300001"]["families"][0] == "momentum"
     assert "value_factor" in allocation["600001"]["families"]
+    assert allocation["300001"]["top_family"] == "momentum"
+    assert allocation["300001"]["top_validation_profile"] == "trade_rule_validation"
+    assert allocation["300001"]["family_plans"][0]["family"] == "momentum"
+    assert allocation["300001"]["family_plans"][0]["family_rank"] == 1
+    assert allocation["300001"]["family_plans"][0]["budget_weight"] > 0.0
+    assert allocation["300001"]["family_plans"][0]["failure_penalty"] > 0.0
+    assert allocation["300001"]["family_plans"][0]["validation_profile"]["profile"] == "trade_rule_validation"
+    assert allocation["300001"]["family_plans"][0]["validation_profile"]["validation_focus"] == "candidate_target_only"
+    assert any(
+        plan["validation_profile"]["profile"] == "factor_rank_validation"
+        for plan in allocation["600001"]["family_plans"]
+    )
+    assert sum(plan["budget_weight"] for plan in allocation["300001"]["family_plans"]) == pytest.approx(1.0)
     assert allocation["300001"]["priority"] > allocation["600001"]["priority"]
     assert artifact["summary"]["stock_family_allocation_count"] == 2
     assert artifact["summary"]["stock_family_allocation_source_mode"] == "stock_universe_projection"
     assert artifact["summary"]["stock_family_allocation_entropy"] > 0.0
+
+
+@pytest.mark.asyncio
+async def test_factor_research_surfaces_scheduler_provider_health(monkeypatch):
+    db = MagicMock()
+    db.get_factor_ic_history = AsyncMock(return_value=[])
+
+    class _Scheduler:
+        def status(self):
+            return {
+                "running": False,
+                "quality_flags": [],
+                "last_run": "2026-04-05T09:30:00+08:00",
+                "freshness_sec": 60,
+                "last_result": {
+                    "llm_validation": {"status": "partial"},
+                },
+                "llm_provider": {
+                    "enabled": True,
+                    "ready": False,
+                    "health_status": "degraded",
+                    "rebuild_count": 2,
+                    "last_error_type": "ReadTimeout",
+                },
+            }
+
+    monkeypatch.setattr(factor_research_mod, "get_quant_manager_callable", lambda: None)
+    monkeypatch.setattr(factor_research_mod, "get_factor_scheduler_singleton", lambda: _Scheduler())
+
+    artifact = await FactorResearchBuilder.build(
+        db,
+        {
+            "date": "2026-04-05",
+            "factor_ic": {"value": 0.06},
+            "factor_ic_trend": {"value": "rising"},
+            "sources": {"factor_ic": {"status": "success"}},
+        },
+    )
+
+    assert artifact["summary"]["factor_llm_provider_enabled"] is True
+    assert artifact["summary"]["factor_llm_provider_ready"] is False
+    assert artifact["summary"]["factor_llm_provider_health_status"] == "degraded"
+    assert artifact["summary"]["factor_llm_provider_rebuild_count"] == 2
+    assert artifact["summary"]["factor_llm_provider_last_error_type"] == "ReadTimeout"
+    assert "factor_llm_provider_degraded" in artifact["quality_flags"]
 
 
 def test_spawner_factor_maps_can_use_governed_candidate_pool():

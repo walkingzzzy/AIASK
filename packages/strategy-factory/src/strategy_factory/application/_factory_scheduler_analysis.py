@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from .candidate_contract import build_candidate_contract_hash
 from .legacy_bridge import get_compat_symbol
 from ..domain.constants import (
     AUTONOMY_CANDIDATES_PER_TASK,
@@ -588,6 +589,77 @@ class _StrategyFactorySchedulerAnalysisMixin:
             except Exception:
                 return float(default)
 
+        @staticmethod
+        def _safe_int(value: Any, default: int = 0) -> int:
+            try:
+                return int(value or default)
+            except Exception:
+                return int(default)
+
+        @staticmethod
+        def _normalize_text(value: Any) -> str:
+            return str(value or "").strip().lower()
+
+        @classmethod
+        def _safe_ratio(cls, numerator: Any, denominator: Any) -> float:
+            den = cls._safe_float(denominator)
+            if den <= 0.0:
+                return 0.0
+            return round(cls._safe_float(numerator) / den, 4)
+
+        @staticmethod
+        def _governance_status(*, critical: bool = False, warning: bool = False, available: bool = True) -> str:
+            if not available:
+                return "unavailable"
+            if critical:
+                return "critical"
+            if warning:
+                return "warning"
+            return "healthy"
+
+        @classmethod
+        def _iso_week_label(cls, value: Any = None) -> str:
+            resolved = None
+            if isinstance(value, datetime):
+                resolved = value
+            elif value is not None:
+                try:
+                    resolved = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                except Exception:
+                    resolved = None
+            if resolved is None:
+                resolved = datetime.now(_MARKET_TIMEZONE)
+            if resolved.tzinfo is None:
+                resolved = resolved.replace(tzinfo=_MARKET_TIMEZONE)
+            iso = resolved.isocalendar()
+            return f"{iso.year}-W{iso.week:02d}"
+
+        @staticmethod
+        def _iter_strategy_records(results: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+            submit_stage = dict(((results or {}).get("stages") or {}).get("submit") or {})
+            records = submit_stage.get("strategies")
+            if isinstance(records, list):
+                return [dict(item or {}) for item in records if isinstance(item, dict)]
+            return []
+
+        @staticmethod
+        def _iter_backtest_records(results: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+            backtest_stage = dict(((results or {}).get("stages") or {}).get("backtest") or {})
+            records: list[dict[str, Any]] = []
+            for bucket_name in ("passed", "failed"):
+                for item in list(backtest_stage.get(bucket_name) or []):
+                    if isinstance(item, dict):
+                        records.append(dict(item or {}))
+            if records:
+                return records
+            gate_report = dict((results or {}).get("quality_gate") or (results or {}).get("gate_report") or {})
+            gate_2 = dict(gate_report.get("gate_2") or {})
+            for bucket_name in ("passed", "failed"):
+                for item in list(gate_2.get(bucket_name) or []):
+                    if isinstance(item, dict):
+                        records.append(dict(item or {}))
+            return records
+
         @classmethod
         def _summarize_refresh_result(cls, payload: Any) -> dict[str, Any]:
             if not isinstance(payload, dict):
@@ -600,6 +672,480 @@ class _StrategyFactorySchedulerAnalysisMixin:
             if flags:
                 summary["quality_flags"] = flags
             return summary
+
+        @classmethod
+        def _build_scheduler_slo_summary(
+            cls,
+            results: dict[str, Any],
+            current_summary: Optional[dict[str, Any]],
+            previous_summary: Optional[dict[str, Any]] = None,
+        ) -> dict[str, Any]:
+            summary = dict(current_summary or {})
+            previous = dict(previous_summary or {})
+            alerts: list[dict[str, Any]] = []
+
+            def _append_alert(code: str, severity: str, message: str, **payload: Any) -> None:
+                alerts.append(
+                    {
+                        "code": str(code),
+                        "severity": str(severity),
+                        "message": str(message),
+                        **payload,
+                    }
+                )
+
+            factor_source_mode = cls._normalize_text(summary.get("factor_source_mode"))
+            staleness_days = summary.get("governed_freshness_days")
+            if staleness_days is None or factor_source_mode != "governed_candidate_pool":
+                staleness_days = summary.get("factor_research_freshness_days")
+            staleness_days = cls._safe_float(staleness_days)
+            staleness_status = cls._governance_status(
+                critical=bool(summary.get("factor_research_stale")) and staleness_days >= 5.0,
+                warning=bool(summary.get("factor_research_stale")) or staleness_days >= 2.0,
+            )
+            if staleness_status != "healthy":
+                _append_alert(
+                    "scheduler_staleness_high",
+                    "critical" if staleness_status == "critical" else "warning",
+                    "Factor research freshness drifted beyond the scheduler SLO.",
+                    staleness_days=round(staleness_days, 4),
+                    factor_source_mode=factor_source_mode or None,
+                )
+
+            autonomy_stage = dict((results.get("stages") or {}).get("autonomy") or {})
+            autonomy_status_counts = {
+                str(key): cls._safe_int(value)
+                for key, value in dict(autonomy_stage.get("external_llm_status_counts") or {}).items()
+            }
+            fallback_components: dict[str, float] = {
+                "factor_source_mode": 1.0 if factor_source_mode == "seed_fallback" else 0.0,
+            }
+            autonomy_total = sum(autonomy_status_counts.values())
+            if autonomy_total > 0:
+                fallback_components["autonomy_external_llm"] = cls._safe_ratio(
+                    autonomy_status_counts.get("fallback_only", 0),
+                    autonomy_total,
+                )
+            bulk_fallback_signals = [
+                1.0 if summary.get("bulk_stock_matrix_universe_offset_fallback") else 0.0,
+                1.0 if summary.get("bulk_stock_matrix_task_offset_fallback") else 0.0,
+            ]
+            if bulk_fallback_signals:
+                fallback_components["bulk_cursor"] = round(
+                    sum(bulk_fallback_signals) / len(bulk_fallback_signals),
+                    4,
+                )
+            fallback_ratio = round(
+                sum(fallback_components.values()) / max(len(fallback_components), 1),
+                4,
+            )
+            fallback_status = cls._governance_status(
+                critical=fallback_ratio >= 0.65,
+                warning=fallback_ratio >= 0.25,
+            )
+            if fallback_status != "healthy":
+                _append_alert(
+                    "scheduler_fallback_ratio_high",
+                    "critical" if fallback_status == "critical" else "warning",
+                    "Fallback paths are carrying too much of the scheduler pipeline.",
+                    ratio=fallback_ratio,
+                    components=fallback_components,
+                )
+
+            def _gate_rates(payload: dict[str, Any]) -> dict[str, float]:
+                return {
+                    "gate_0": cls._safe_ratio(payload.get("gate_0_passed"), payload.get("candidates_spawned")),
+                    "pre_gate": cls._safe_ratio(payload.get("pre_gate_passed"), payload.get("gate_0_passed")),
+                    "gate_1": cls._safe_ratio(payload.get("gate_1_passed"), payload.get("pre_gate_passed")),
+                    "gate_2": cls._safe_ratio(payload.get("gate_2_passed"), payload.get("gate_2_input")),
+                    "gate_3": cls._safe_ratio(payload.get("gate_3_passed"), payload.get("gate_3_input")),
+                }
+
+            current_gate_rates = _gate_rates(summary)
+            previous_gate_rates = _gate_rates(previous) if previous else {}
+            gate_rate_deltas = {
+                key: round(current_gate_rates.get(key, 0.0) - previous_gate_rates.get(key, 0.0), 4)
+                for key in current_gate_rates
+                if previous_gate_rates
+            }
+            gate_drift_value = (
+                round(max(abs(delta) for delta in gate_rate_deltas.values()), 4)
+                if gate_rate_deltas
+                else 0.0
+            )
+            gate_drift_status = cls._governance_status(
+                critical=gate_drift_value >= 0.3,
+                warning=gate_drift_value >= 0.12,
+            )
+            if gate_drift_status != "healthy":
+                _append_alert(
+                    "scheduler_gate_drift_high",
+                    "critical" if gate_drift_status == "critical" else "warning",
+                    "Gate conversion rates drifted sharply versus the previous run.",
+                    value=gate_drift_value,
+                    deltas=gate_rate_deltas,
+                )
+
+            current_refresh_ratio = cls._safe_float(
+                dict(summary.get("incubation_summary") or {}).get("refresh_ratio", {}).get("ratio")
+            )
+            if current_refresh_ratio <= 0.0:
+                current_refresh_ratio = cls._safe_ratio(
+                    summary.get("refresh_metrics_only_count"),
+                    summary.get("candidates_after_dedup"),
+                )
+            previous_refresh_ratio = cls._safe_float(
+                dict(previous.get("incubation_summary") or {}).get("refresh_ratio", {}).get("ratio")
+            )
+            if previous_refresh_ratio <= 0.0:
+                previous_refresh_ratio = cls._safe_ratio(
+                    previous.get("refresh_metrics_only_count"),
+                    previous.get("candidates_after_dedup"),
+                )
+            refresh_failed = bool(summary.get("factor_research_refresh_attempted")) and cls._normalize_text(
+                summary.get("factor_research_refresh_status")
+            ) not in {"success", "succeeded", "completed"}
+            refresh_drift_value = abs(current_refresh_ratio - previous_refresh_ratio) if previous else 0.0
+            if refresh_failed:
+                refresh_drift_value = max(refresh_drift_value, 0.45)
+            refresh_drift_value = round(refresh_drift_value, 4)
+            refresh_drift_status = cls._governance_status(
+                critical=refresh_drift_value >= 0.35,
+                warning=refresh_drift_value >= 0.1,
+            )
+            if refresh_drift_status != "healthy":
+                _append_alert(
+                    "scheduler_refresh_drift_high",
+                    "critical" if refresh_drift_status == "critical" else "warning",
+                    "Refresh behaviour drifted versus the previous run or the latest refresh failed.",
+                    value=refresh_drift_value,
+                    refresh_failed=refresh_failed,
+                    current_ratio=current_refresh_ratio,
+                    previous_ratio=previous_refresh_ratio,
+                )
+
+            planned_bulk = cls._safe_int(summary.get("planned_bulk_task_count"))
+            selected_bulk = cls._safe_int(summary.get("selected_bulk_task_count"))
+            selected_batch_count = cls._safe_int(summary.get("bulk_stock_matrix_selected_batch_count"))
+            batch_count = cls._safe_int(summary.get("bulk_stock_matrix_batch_count"))
+            bulk_fill_ratio = cls._safe_ratio(selected_bulk, planned_bulk) if planned_bulk > 0 else 1.0
+            batch_fill_ratio = cls._safe_ratio(selected_batch_count, batch_count) if batch_count > 0 else 1.0
+            bulk_imbalance_value = round(
+                max(0.0, 1.0 - min(bulk_fill_ratio, batch_fill_ratio)),
+                4,
+            ) if planned_bulk > 0 or batch_count > 0 else 0.0
+            bulk_imbalance_status = cls._governance_status(
+                critical=(planned_bulk > 0 or batch_count > 0) and min(bulk_fill_ratio, batch_fill_ratio) < 0.35,
+                warning=(planned_bulk > 0 or batch_count > 0) and min(bulk_fill_ratio, batch_fill_ratio) < 0.8,
+            )
+            if bulk_imbalance_status != "healthy":
+                _append_alert(
+                    "bulk_queue_imbalance",
+                    "critical" if bulk_imbalance_status == "critical" else "warning",
+                    "Bulk stock matrix queue fill fell below the expected scheduler SLO.",
+                    value=bulk_imbalance_value,
+                    selected_bulk_task_count=selected_bulk,
+                    planned_bulk_task_count=planned_bulk,
+                    selected_batch_count=selected_batch_count,
+                    batch_count=batch_count,
+                )
+
+            warmup_status = cls._normalize_text(summary.get("warmup_status"))
+            warmup_failed = cls._safe_int(summary.get("warmup_failed"))
+            if warmup_status in {"failed", "partial"} or warmup_failed > 0:
+                _append_alert(
+                    "scheduler_warmup_failed",
+                    "critical" if warmup_status == "failed" or warmup_failed > 0 else "warning",
+                    "Warmup did not complete cleanly before the run started.",
+                    warmup_status=warmup_status or None,
+                    warmup_failed=warmup_failed,
+                )
+
+            provider_health_status = cls._normalize_text(summary.get("factor_llm_provider_health_status"))
+            provider_enabled = bool(summary.get("factor_llm_provider_enabled"))
+            provider_ready = bool(summary.get("factor_llm_provider_ready"))
+            external_llm_status = cls._normalize_text(summary.get("external_llm_status"))
+            provider_degraded = provider_health_status in {"degraded", "failed", "error"} or (
+                provider_enabled and not provider_ready
+            ) or external_llm_status in {"failed", "partial"}
+            if provider_degraded:
+                _append_alert(
+                    "factor_provider_degraded",
+                    "critical" if provider_health_status in {"failed", "error"} or external_llm_status == "failed" else "warning",
+                    "Provider health degraded during the scheduler run.",
+                    factor_llm_provider_health_status=provider_health_status or None,
+                    factor_llm_provider_ready=provider_ready,
+                    external_llm_status=external_llm_status or None,
+                )
+
+            governed_pool_active = bool(summary.get("governed_candidate_pool_active"))
+            governed_blocked_ratio = cls._safe_float(summary.get("governed_blocked_ratio"))
+            if not governed_pool_active or governed_blocked_ratio >= 0.5:
+                _append_alert(
+                    "governed_pool_blocked",
+                    "critical" if (not governed_pool_active) or governed_blocked_ratio >= 0.75 else "warning",
+                    "Governed candidate pool is unavailable or heavily blocked.",
+                    governed_candidate_pool_active=governed_pool_active,
+                    governed_blocked_ratio=round(governed_blocked_ratio, 4),
+                    factor_source_mode=factor_source_mode or None,
+                )
+
+            overall_status = "healthy"
+            if any(str(item.get("severity")) == "critical" for item in alerts):
+                overall_status = "critical"
+            elif alerts:
+                overall_status = "warning"
+
+            return {
+                "status": overall_status,
+                "alert_count": len(alerts),
+                "alert_codes": [str(item.get("code")) for item in alerts],
+                "alerts": alerts,
+                "staleness": {
+                    "status": staleness_status,
+                    "days": round(staleness_days, 4),
+                    "factor_source_mode": factor_source_mode or None,
+                },
+                "fallback_ratio": {
+                    "status": fallback_status,
+                    "ratio": fallback_ratio,
+                    "components": fallback_components,
+                },
+                "gate_drift": {
+                    "status": gate_drift_status,
+                    "value": gate_drift_value,
+                    "current_rates": current_gate_rates,
+                    "previous_rates": previous_gate_rates,
+                    "deltas": gate_rate_deltas,
+                },
+                "refresh_drift": {
+                    "status": refresh_drift_status,
+                    "value": refresh_drift_value,
+                    "current_ratio": round(current_refresh_ratio, 4),
+                    "previous_ratio": round(previous_refresh_ratio, 4),
+                    "refresh_failed": refresh_failed,
+                },
+                "bulk_queue_imbalance": {
+                    "status": bulk_imbalance_status,
+                    "value": bulk_imbalance_value,
+                    "bulk_fill_ratio": round(bulk_fill_ratio, 4),
+                    "batch_fill_ratio": round(batch_fill_ratio, 4),
+                    "selected_bulk_task_count": selected_bulk,
+                    "planned_bulk_task_count": planned_bulk,
+                    "selected_batch_count": selected_batch_count,
+                    "batch_count": batch_count,
+                },
+            }
+
+        @classmethod
+        def _build_factory_architecture_review(
+            cls,
+            results: dict[str, Any],
+            current_summary: Optional[dict[str, Any]],
+            previous_summary: Optional[dict[str, Any]] = None,
+        ) -> dict[str, Any]:
+            del current_summary
+            previous = dict(previous_summary or {})
+            strategy_records = cls._iter_strategy_records(results)
+            backtest_records = cls._iter_backtest_records(results)
+
+            contract_issues: list[dict[str, Any]] = []
+            contract_consistent_count = 0
+            contract_missing_count = 0
+            for record in strategy_records:
+                strategy_id = str(record.get("strategy_id") or record.get("name") or "unknown")
+                contract_hash = str(record.get("candidate_contract_hash") or "").strip()
+                contract_snapshot = dict(record.get("candidate_contract_snapshot") or {})
+                if not contract_hash or not contract_snapshot:
+                    contract_missing_count += 1
+                    contract_issues.append(
+                        {
+                            "strategy_id": strategy_id,
+                            "issue": "missing_candidate_contract",
+                        }
+                    )
+                    continue
+                recomputed_hash = build_candidate_contract_hash(contract=contract_snapshot)
+                if recomputed_hash == contract_hash:
+                    contract_consistent_count += 1
+                    continue
+                contract_issues.append(
+                    {
+                        "strategy_id": strategy_id,
+                        "issue": "candidate_contract_hash_mismatch",
+                        "candidate_contract_hash": contract_hash,
+                        "recomputed_contract_hash": recomputed_hash,
+                    }
+                )
+
+            validation_issues: list[dict[str, Any]] = []
+            validation_consistent_count = 0
+            validation_missing_count = 0
+            validation_total_count = 0
+            for index, record in enumerate(backtest_records, 1):
+                payload = dict(record.get("backtest_result") or record or {})
+                candidate_hash = str(payload.get("candidate_contract_hash") or "").strip()
+                tested_hash = str(payload.get("tested_object_hash") or "").strip()
+                if not candidate_hash and not tested_hash:
+                    continue
+                validation_total_count += 1
+                if not candidate_hash or not tested_hash:
+                    validation_missing_count += 1
+                    validation_issues.append(
+                        {
+                            "record": index,
+                            "issue": "missing_tested_object_hash",
+                            "candidate_contract_hash": candidate_hash or None,
+                            "tested_object_hash": tested_hash or None,
+                        }
+                    )
+                    continue
+                if candidate_hash == tested_hash:
+                    validation_consistent_count += 1
+                    continue
+                validation_issues.append(
+                    {
+                        "record": index,
+                        "issue": "tested_object_hash_mismatch",
+                        "candidate_contract_hash": candidate_hash,
+                        "tested_object_hash": tested_hash,
+                    }
+                )
+
+            admission_issues: list[dict[str, Any]] = []
+            admission_consistent_count = 0
+            for record in strategy_records:
+                strategy_id = str(record.get("strategy_id") or record.get("name") or "unknown")
+                admission_stage = cls._normalize_text(record.get("admission_stage"))
+                action_type = cls._normalize_text(record.get("submission_action_type"))
+                submission_lane = cls._normalize_text(record.get("submission_lane"))
+                passed = bool(record.get("passed"))
+                live_candidate_ready = bool(record.get("live_candidate_ready"))
+                live_review_ready = bool(record.get("live_review_ready"))
+                direct_trade_candidate = bool(record.get("direct_trade_candidate"))
+                pool_admission_applied = bool(record.get("pool_admission_applied"))
+                admission_block_reasons = list(record.get("admission_block_reasons") or [])
+
+                record_issues: list[str] = []
+                if pool_admission_applied and action_type != "pool_admission":
+                    record_issues.append("pool_admission_action_mismatch")
+                if pool_admission_applied and admission_stage != "live":
+                    record_issues.append("pool_admission_stage_mismatch")
+                if pool_admission_applied and admission_block_reasons:
+                    record_issues.append("pool_admission_has_blockers")
+                if admission_stage == "live" and not live_candidate_ready:
+                    record_issues.append("live_stage_without_live_candidate")
+                if action_type in {"pool_admission", "runtime_review"} and not (
+                    live_candidate_ready or live_review_ready or direct_trade_candidate
+                ):
+                    record_issues.append("live_ready_action_without_live_ready_candidate")
+                if submission_lane == "live_ready_review" and not (
+                    live_candidate_ready or live_review_ready or direct_trade_candidate
+                ):
+                    record_issues.append("live_ready_lane_without_live_ready_candidate")
+                if not passed and pool_admission_applied:
+                    record_issues.append("failed_candidate_pool_admitted")
+                if record_issues:
+                    admission_issues.append(
+                        {
+                            "strategy_id": strategy_id,
+                            "issues": record_issues,
+                            "admission_stage": admission_stage or None,
+                            "submission_action_type": action_type or None,
+                            "submission_lane": submission_lane or None,
+                        }
+                    )
+                else:
+                    admission_consistent_count += 1
+
+            def _category_payload(
+                *,
+                total: int,
+                consistent: int,
+                missing: int,
+                issues: list[dict[str, Any]],
+            ) -> dict[str, Any]:
+                mismatch_count = len(issues)
+                return {
+                    "status": cls._governance_status(
+                        critical=mismatch_count > 0,
+                        warning=missing > 0,
+                        available=total > 0,
+                    ),
+                    "total_count": total,
+                    "consistent_count": consistent,
+                    "missing_count": missing,
+                    "mismatch_count": mismatch_count,
+                    "issues": issues[:8],
+                }
+
+            categories = {
+                "contract_consistency": _category_payload(
+                    total=len(strategy_records),
+                    consistent=contract_consistent_count,
+                    missing=contract_missing_count,
+                    issues=contract_issues,
+                ),
+                "validation_object_consistency": _category_payload(
+                    total=validation_total_count,
+                    consistent=validation_consistent_count,
+                    missing=validation_missing_count,
+                    issues=validation_issues,
+                ),
+                "admission_consistency": _category_payload(
+                    total=len(strategy_records),
+                    consistent=admission_consistent_count,
+                    missing=0,
+                    issues=admission_issues,
+                ),
+            }
+
+            current_week = cls._iso_week_label((results or {}).get("completed_at") or (results or {}).get("started_at"))
+            previous_review = dict(previous.get("architecture_review") or {})
+            previous_review_week = str(previous_review.get("review_week") or "").strip() or None
+            cadence_due = previous_review_week != current_week
+
+            overall_status = "healthy"
+            category_statuses = {payload.get("status") for payload in categories.values()}
+            if "critical" in category_statuses:
+                overall_status = "attention_required"
+            elif "warning" in category_statuses:
+                overall_status = "warning"
+            elif category_statuses == {"unavailable"}:
+                overall_status = "unavailable"
+
+            return {
+                "status": overall_status,
+                "review_week": current_week,
+                "previous_review_week": previous_review_week,
+                "cadence_due": cadence_due,
+                "generated_at": (results or {}).get("completed_at") or datetime.now(_MARKET_TIMEZONE).isoformat(),
+                "categories": categories,
+                "strategy_record_count": len(strategy_records),
+                "validation_record_count": validation_total_count,
+            }
+
+        @classmethod
+        def _attach_runtime_governance(
+            cls,
+            results: dict[str, Any],
+            *,
+            previous_result: Optional[dict[str, Any]] = None,
+        ) -> dict[str, Any]:
+            summary = dict(results.get("summary") or {})
+            previous_summary = dict((previous_result or {}).get("summary") or {})
+            summary["scheduler_slo"] = cls._build_scheduler_slo_summary(
+                results,
+                summary,
+                previous_summary=previous_summary,
+            )
+            summary["architecture_review"] = cls._build_factory_architecture_review(
+                results,
+                summary,
+                previous_summary=previous_summary,
+            )
+            results["summary"] = summary
+            return results
 
         @staticmethod
         def _aggregate_backtest_audit_metrics(backtest_report: Optional[dict]) -> dict[str, Any]:
@@ -785,9 +1331,89 @@ class _StrategyFactorySchedulerAnalysisMixin:
             base = dict(summary or {})
             strategies = list((submit_result or {}).get("strategies") or [])
             submission_lane_counts: dict[str, int] = {}
+            submission_action_type_counts: dict[str, int] = {}
             strategy_status_counts: dict[str, int] = {}
             live_candidate_ready_count = 0
             live_review_ready_count = 0
+
+            def _normalized_text(value: Any) -> str:
+                return str(value or "").strip().lower()
+
+            def _count_value(bucket: dict[str, int], value: Any) -> None:
+                key = _normalized_text(value)
+                if not key:
+                    return
+                bucket[key] = bucket.get(key, 0) + 1
+
+            def _family_value(record: dict[str, Any]) -> str:
+                provenance = dict(record.get("candidate_provenance") or {})
+                return _normalized_text(
+                    record.get("candidate_family_id")
+                    or provenance.get("candidate_family_id")
+                    or record.get("candidate_family")
+                    or provenance.get("candidate_family")
+                    or record.get("strategy_type")
+                )
+
+            def _task_source_value(record: dict[str, Any]) -> str:
+                research_task = dict(record.get("research_task") or {})
+                return _normalized_text(research_task.get("task_source") or record.get("task_source"))
+
+            def _generator_value(record: dict[str, Any]) -> str:
+                provenance = dict(record.get("candidate_provenance") or {})
+                return _normalized_text(
+                    record.get("generator_type")
+                    or record.get("generator_mode")
+                    or provenance.get("generator_mode")
+                    or provenance.get("generator_type")
+                )
+
+            def _refresh_mode_value(record: dict[str, Any]) -> str:
+                return _normalized_text(
+                    record.get("refresh_mode")
+                    or dict(record.get("dedup_result") or {}).get("refresh_mode")
+                )
+
+            def _source_mix(records: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+                generator_counts: dict[str, int] = {}
+                task_source_counts: dict[str, int] = {}
+                lane_counts: dict[str, int] = {}
+                for record in records:
+                    _count_value(generator_counts, _generator_value(record))
+                    _count_value(task_source_counts, _task_source_value(record))
+                    _count_value(lane_counts, record.get("submission_lane"))
+                return {
+                    "generator_type_counts": generator_counts,
+                    "task_source_counts": task_source_counts,
+                    "submission_lane_counts": lane_counts,
+                }
+
+            def _family_mix(records: list[dict[str, Any]]) -> dict[str, int]:
+                counts: dict[str, int] = {}
+                for record in records:
+                    _count_value(counts, _family_value(record))
+                return counts
+
+            def _refresh_ratio(records: list[dict[str, Any]]) -> dict[str, Any]:
+                mode_counts: dict[str, int] = {}
+                for record in records:
+                    _count_value(mode_counts, _refresh_mode_value(record))
+                refresh_count = sum(count for key, count in mode_counts.items() if key)
+                denominator = len(records)
+                return {
+                    "count": refresh_count,
+                    "denominator": denominator,
+                    "ratio": round(refresh_count / denominator, 4) if denominator else 0.0,
+                    "mode_counts": mode_counts,
+                }
+
+            def _promotion_ratio(numerator: int, denominator: int) -> dict[str, Any]:
+                return {
+                    "count": int(numerator),
+                    "denominator": int(denominator),
+                    "ratio": round(float(numerator) / float(denominator), 4) if denominator else 0.0,
+                }
+
             for item in strategies:
                 record = dict(item or {})
                 if bool(record.get("live_candidate_ready")):
@@ -797,9 +1423,27 @@ class _StrategyFactorySchedulerAnalysisMixin:
                 submission_lane = str(record.get("submission_lane") or "").strip().lower()
                 if submission_lane:
                     submission_lane_counts[submission_lane] = submission_lane_counts.get(submission_lane, 0) + 1
+                submission_action_type = str(record.get("submission_action_type") or "").strip().lower()
+                if submission_action_type:
+                    submission_action_type_counts[submission_action_type] = (
+                        submission_action_type_counts.get(submission_action_type, 0) + 1
+                    )
                 status = str(record.get("status") or record.get("final_status") or "").strip().lower()
                 if status:
                     strategy_status_counts[status] = strategy_status_counts.get(status, 0) + 1
+
+            research_records = [dict(item or {}) for item in strategies]
+            incubation_records = [dict(item or {}) for item in strategies]
+            live_ready_records = [
+                dict(item or {})
+                for item in strategies
+                if bool((item or {}).get("live_candidate_ready"))
+                or bool((item or {}).get("live_review_ready"))
+                or bool((item or {}).get("direct_trade_candidate"))
+                or bool((item or {}).get("promotion_review_id"))
+                or bool((item or {}).get("paper_account_id"))
+                or _normalized_text((item or {}).get("submission_lane")) == "live_ready_review"
+            ]
 
             return {
                 "research_summary": {
@@ -808,7 +1452,10 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "readiness_score": base.get("factory_readiness_score"),
                     "readiness_can_proceed": bool(base.get("factory_readiness_can_proceed", True)),
                     "factor_source_mode": base.get("factor_source_mode"),
+                    "factor_llm_provider_health_status": base.get("factor_llm_provider_health_status"),
+                    "factor_llm_provider_ready": bool(base.get("factor_llm_provider_ready")),
                     "governed_candidate_pool_active": bool(base.get("governed_candidate_pool_active")),
+                    "governed_candidate_pool_runtime_state": base.get("governed_candidate_pool_runtime_state"),
                     "governed_candidate_pool_mode": base.get("governed_candidate_pool_mode"),
                     "governed_candidate_pool_provisional": bool(base.get("governed_candidate_pool_provisional")),
                     "spawned_candidate_count": int(base.get("candidates_spawned") or 0),
@@ -822,6 +1469,21 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "gate_2_input": int(base.get("gate_2_input") or 0),
                     "gate_2_passed": int(base.get("gate_2_passed") or 0),
                     "gate_2_failed": int(base.get("candidates_failed_backtest") or 0),
+                    "source_mix": _source_mix(research_records),
+                    "family_mix": _family_mix(research_records),
+                    "gate_hit": {
+                        "gate_0_passed": int(base.get("gate_0_passed") or 0),
+                        "pre_gate_passed": int(base.get("pre_gate_passed") or 0),
+                        "gate_1_passed": int(base.get("gate_1_passed") or 0),
+                        "gate_2_input": int(base.get("gate_2_input") or 0),
+                        "gate_2_passed": int(base.get("gate_2_passed") or 0),
+                        "gate_2_failed": int(base.get("candidates_failed_backtest") or 0),
+                    },
+                    "refresh_ratio": _refresh_ratio(research_records),
+                    "promotion_ratio": _promotion_ratio(
+                        live_candidate_ready_count,
+                        len(research_records),
+                    ),
                 },
                 "incubation_summary": {
                     "candidates_after_dedup": int(base.get("candidates_after_dedup") or 0),
@@ -837,7 +1499,22 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "refresh_metrics_only_count": int(base.get("refresh_metrics_only_count") or 0),
                     "spawn_revision_from_existing_count": int(base.get("spawn_revision_from_existing_count") or 0),
                     "submission_lane_counts": submission_lane_counts,
+                    "submission_action_type_counts": submission_action_type_counts,
                     "strategy_status_counts": strategy_status_counts,
+                    "source_mix": _source_mix(incubation_records),
+                    "family_mix": _family_mix(incubation_records),
+                    "gate_hit": {
+                        "gate_3_input": int(base.get("gate_3_input") or 0),
+                        "gate_3_passed": int(base.get("gate_3_passed") or 0),
+                        "gate_3_failed": int(base.get("gate_3_failed") or 0),
+                        "submitted_count": int(base.get("submitted") or 0),
+                        "created_strategy_pool_count": int(base.get("created_strategy_pool") or 0),
+                    },
+                    "refresh_ratio": _refresh_ratio(incubation_records),
+                    "promotion_ratio": _promotion_ratio(
+                        int(base.get("live_ready_review_count") or live_review_ready_count),
+                        len(incubation_records),
+                    ),
                 },
                 "live_ready_summary": {
                     "live_candidate_ready_count": live_candidate_ready_count,
@@ -847,7 +1524,27 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "paper_account_bound_count": int(base.get("paper_account_bound_count") or 0),
                     "runtime_review_count": int(base.get("runtime_review_count") or 0),
                     "promotion_review_count": int(base.get("promotion_review_count") or 0),
+                    "submission_action_type_counts": submission_action_type_counts,
                     "promotion_review_status_counts": dict(base.get("promotion_review_status_counts") or {}),
+                    "source_mix": _source_mix(live_ready_records),
+                    "family_mix": _family_mix(live_ready_records),
+                    "gate_hit": {
+                        "live_candidate_ready_count": live_candidate_ready_count,
+                        "live_review_ready_count": live_review_ready_count,
+                        "live_ready_review_count": int(base.get("live_ready_review_count") or 0),
+                        "direct_trade_candidate_count": int(base.get("direct_trade_candidate_count") or 0),
+                        "paper_account_bound_count": int(base.get("paper_account_bound_count") or 0),
+                        "runtime_review_count": int(base.get("runtime_review_count") or 0),
+                        "promotion_review_count": int(base.get("promotion_review_count") or 0),
+                    },
+                    "refresh_ratio": _refresh_ratio(live_ready_records),
+                    "promotion_ratio": _promotion_ratio(
+                        int(base.get("promotion_review_count") or 0),
+                        max(
+                            int(base.get("live_ready_review_count") or 0),
+                            len(live_ready_records),
+                        ),
+                    ),
                 },
             }
 

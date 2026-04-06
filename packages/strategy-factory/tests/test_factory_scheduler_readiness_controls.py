@@ -8,6 +8,10 @@ from strategy_factory.application.cycle_runner import (
     FactoryCycleRunner,
     FactoryRunContext,
 )
+from strategy_factory.application.candidate_contract import (
+    build_candidate_contract_hash,
+    build_portfolio_candidate_contract,
+)
 from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
 from strategy_factory.domain.targets import _extract_target_codes_from_payload
 
@@ -521,6 +525,10 @@ class _AuditSubmitter:
             "strategies": [
                 {
                     "strategy_id": "sid_1",
+                    "strategy_type": "mean_reversion_short",
+                    "candidate_family": "mean_reversion_short",
+                    "generator_type": "rule",
+                    "research_task": {"task_source": "snapshot"},
                     "created_total": False,
                     "created_strategy_pool": False,
                     "created_audit_only": False,
@@ -542,14 +550,20 @@ class _AuditSubmitter:
                         "white_reality_check_pvalue": 0.24,
                         "hansen_spa_pvalue": 0.31,
                     },
+                    "submission_action_type": "research_only",
                 },
                 {
                     "strategy_id": "sid_2",
+                    "strategy_type": "volatility_breakout",
+                    "candidate_family": "volatility_breakout",
+                    "generator_type": "external_llm",
+                    "research_task": {"task_source": "event_driven"},
                     "created_total": True,
                     "created_strategy_pool": True,
                     "created_audit_only": False,
                     "status": "submitted",
                     "submission_lane": "live_ready_review",
+                    "submission_action_type": "runtime_review",
                     "live_candidate_ready": True,
                     "live_review_ready": True,
                     "direct_trade_candidate": True,
@@ -580,9 +594,14 @@ class _AuditSubmitter:
                 },
                 {
                     "strategy_id": "sid_3",
+                    "strategy_type": "sector_rotation",
+                    "candidate_family": "sector_rotation",
+                    "generator_type": "rule",
+                    "research_task": {"task_source": "bulk_stock_matrix"},
                     "created_total": True,
                     "created_strategy_pool": False,
                     "created_audit_only": True,
+                    "submission_action_type": "research_only",
                     "refresh_mode": None,
                     "constraint_check": {
                         "constraint_violation": None,
@@ -1202,11 +1221,40 @@ async def test_scheduler_summary_exposes_run_level_audit_metrics(monkeypatch):
     assert result["summary"]["refresh_metrics_only_count"] == 1
     assert result["summary"]["spawn_revision_from_existing_count"] == 1
     assert result["summary"]["research_summary"]["gate_2_passed"] == 3
+    assert result["summary"]["research_summary"]["source_mix"]["generator_type_counts"] == {"rule": 2, "external_llm": 1}
+    assert result["summary"]["research_summary"]["source_mix"]["task_source_counts"] == {
+        "snapshot": 1,
+        "event_driven": 1,
+        "bulk_stock_matrix": 1,
+    }
+    assert result["summary"]["research_summary"]["family_mix"] == {
+        "mean_reversion_short": 1,
+        "volatility_breakout": 1,
+        "sector_rotation": 1,
+    }
+    assert result["summary"]["research_summary"]["gate_hit"]["gate_2_passed"] == 3
+    assert result["summary"]["research_summary"]["refresh_ratio"]["ratio"] == pytest.approx(0.6667, abs=1e-4)
+    assert result["summary"]["research_summary"]["promotion_ratio"]["ratio"] == pytest.approx(0.3333, abs=1e-4)
     assert result["summary"]["incubation_summary"]["gate_3_failed"] == 2
     assert result["summary"]["incubation_summary"]["submission_lane_counts"]["live_ready_review"] == 1
+    assert result["summary"]["incubation_summary"]["submission_action_type_counts"]["runtime_review"] == 1
+    assert result["summary"]["incubation_summary"]["submission_action_type_counts"]["research_only"] == 2
+    assert result["summary"]["incubation_summary"]["family_mix"]["volatility_breakout"] == 1
+    assert result["summary"]["incubation_summary"]["gate_hit"]["gate_3_passed"] == 1
+    assert result["summary"]["incubation_summary"]["refresh_ratio"]["mode_counts"] == {
+        "refresh_metrics_only": 1,
+        "spawn_revision_from_existing": 1,
+    }
+    assert result["summary"]["incubation_summary"]["promotion_ratio"]["ratio"] == pytest.approx(0.3333, abs=1e-4)
     assert result["summary"]["live_ready_summary"]["live_candidate_ready_count"] == 1
     assert result["summary"]["live_ready_summary"]["live_review_ready_count"] == 1
+    assert result["summary"]["live_ready_summary"]["submission_action_type_counts"]["runtime_review"] == 1
     assert result["summary"]["live_ready_summary"]["promotion_review_status_counts"] == {"watch": 1}
+    assert result["summary"]["live_ready_summary"]["source_mix"]["submission_lane_counts"] == {"live_ready_review": 1}
+    assert result["summary"]["live_ready_summary"]["family_mix"] == {"volatility_breakout": 1}
+    assert result["summary"]["live_ready_summary"]["gate_hit"]["promotion_review_count"] == 1
+    assert result["summary"]["live_ready_summary"]["refresh_ratio"]["ratio"] == pytest.approx(1.0)
+    assert result["summary"]["live_ready_summary"]["promotion_ratio"]["ratio"] == pytest.approx(1.0)
 
 
 @pytest.mark.asyncio
@@ -1255,6 +1303,234 @@ async def test_cycle_runner_can_be_executed_without_scheduler_loop(monkeypatch):
     assert outcome.result["status"] == "skipped"
     assert outcome.result["summary"]["skip_reason"] == "runtime_disabled"
     assert outcome.result["stages"]["readiness"]["status"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_summary_surfaces_factor_llm_provider_health(monkeypatch):
+    db = MagicMock()
+    db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
+
+    class _ProviderHealthGateway:
+        async def build_artifact(self, db, snapshot):
+            return {
+                "degraded": False,
+                "summary": {
+                    "active_factor_count": 1,
+                    "active_candidate_count": 1,
+                    "governed_source_candidate_count": 1,
+                    "top_factor_names": ["value"],
+                    "top_candidate_names": ["value_pool_factor"],
+                    "active_family_names": ["value"],
+                    "active_regime_names": ["neutral"],
+                    "preferred_strategy_types": ["value_factor"],
+                    "factor_source_mode": "governed_candidate_pool",
+                    "governed_candidate_pool_mode": "strict_governed",
+                    "governed_candidate_pool_provisional": False,
+                    "governed_candidate_pool_strict_count": 1,
+                    "governed_candidate_pool_provisional_count": 0,
+                    "degraded": False,
+                    "stale": False,
+                    "freshness_days": 0,
+                    "scheduler_recent_success": True,
+                    "scheduler_llm_validation_status": "success",
+                    "factor_llm_provider_enabled": True,
+                    "factor_llm_provider_ready": False,
+                    "factor_llm_provider_health_status": "degraded",
+                    "factor_llm_provider_rebuild_count": 2,
+                    "factor_llm_provider_last_error_type": "ReadTimeout",
+                },
+            }
+
+        def status(self):
+            return {"running": False}
+
+    scheduler = StrategyFactoryScheduler(factor_research_gateway=_ProviderHealthGateway())
+
+    class _Collector(_DummyCollector):
+        def __init__(self):
+            super().__init__(degraded=False, completion_ratio=1.0)
+
+    _patch_factory(monkeypatch, db, _Collector)
+
+    result = await scheduler.run_once()
+
+    assert result["status"] == "success"
+    assert result["summary"]["factor_llm_provider_enabled"] is True
+    assert result["summary"]["factor_llm_provider_ready"] is False
+    assert result["summary"]["factor_llm_provider_health_status"] == "degraded"
+    assert result["summary"]["factor_llm_provider_rebuild_count"] == 2
+    assert result["summary"]["factor_llm_provider_last_error_type"] == "ReadTimeout"
+    assert result["summary"]["research_summary"]["factor_llm_provider_health_status"] == "degraded"
+    assert result["summary"]["research_summary"]["factor_llm_provider_ready"] is False
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_once_attaches_governance_slo_and_architecture_review(monkeypatch):
+    db = object()
+    scheduler = StrategyFactoryScheduler(db_provider=lambda: db)
+    scheduler._persist_run_result = AsyncMock()
+    scheduler._now = lambda: datetime(2026, 4, 6, 9, 30, 0, tzinfo=scheduler._market_timezone)
+    expected_review_week = f"{scheduler._now().isocalendar().year}-W{scheduler._now().isocalendar().week:02d}"
+    scheduler.last_result = {
+        "summary": {
+            "gate_0_passed": 5,
+            "candidates_spawned": 6,
+            "pre_gate_passed": 4,
+            "gate_1_passed": 4,
+            "gate_2_input": 4,
+            "gate_2_passed": 3,
+            "gate_3_input": 3,
+            "gate_3_passed": 2,
+            "refresh_metrics_only_count": 0,
+            "candidates_after_dedup": 3,
+            "incubation_summary": {"refresh_ratio": {"ratio": 0.05}},
+            "architecture_review": {"review_week": "2026-W14"},
+        }
+    }
+
+    good_contract = build_portfolio_candidate_contract(
+        {
+            "strategy_type": "momentum",
+            "target_symbols": ["600519"],
+            "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+            "portfolio_spec": {"position_assumption": "single_name_full_notional", "target_weight_scheme": "single_name"},
+            "execution_assumptions": {"slippage_bps": 5, "commission_rate": 0.00025, "tradability_filter": True},
+            "validation_profile": {"profile": "trade_rule_validation", "validation_focus": "target_plus_representative"},
+            "research_task": {"task_source": "snapshot", "target_symbols": ["600519"]},
+        }
+    )
+    good_hash = build_candidate_contract_hash(contract=good_contract)
+    mismatched_contract = build_portfolio_candidate_contract(
+        {
+            "strategy_type": "mean_reversion",
+            "target_symbols": ["000858"],
+            "stock_pool": {"selection_mode": "explicit", "symbols": ["000858"]},
+            "portfolio_spec": {"position_assumption": "single_name_full_notional", "target_weight_scheme": "single_name"},
+            "execution_assumptions": {"slippage_bps": 5, "commission_rate": 0.00025, "tradability_filter": True},
+            "validation_profile": {"profile": "trade_rule_validation", "validation_focus": "target_plus_representative"},
+            "research_task": {"task_source": "snapshot", "target_symbols": ["000858"]},
+        }
+    )
+
+    class _DummyRunner:
+        def __init__(self, owner, context):
+            del owner, context
+
+        async def run(self):
+            return FactoryCycleOutcome(
+                {
+                    "run_id": "factory_run_governance",
+                    "trace_id": "strategy_factory:governance",
+                    "started_at": "2026-04-06T09:30:00+08:00",
+                    "completed_at": "2026-04-06T09:31:00+08:00",
+                    "status": "partial",
+                    "summary": {
+                        "warmup_status": "failed",
+                        "warmup_failed": 1,
+                        "factor_source_mode": "seed_fallback",
+                        "governed_candidate_pool_active": False,
+                        "governed_blocked_ratio": 0.76,
+                        "factor_research_stale": True,
+                        "factor_research_freshness_days": 7,
+                        "factor_llm_provider_enabled": True,
+                        "factor_llm_provider_ready": False,
+                        "factor_llm_provider_health_status": "degraded",
+                        "external_llm_status": "failed",
+                        "candidates_spawned": 6,
+                        "gate_0_passed": 1,
+                        "pre_gate_passed": 1,
+                        "gate_1_passed": 1,
+                        "gate_2_input": 4,
+                        "gate_2_passed": 1,
+                        "gate_3_input": 2,
+                        "gate_3_passed": 0,
+                        "planned_bulk_task_count": 5,
+                        "selected_bulk_task_count": 1,
+                        "bulk_stock_matrix_batch_count": 4,
+                        "bulk_stock_matrix_selected_batch_count": 1,
+                        "factor_research_refresh_attempted": True,
+                        "factor_research_refresh_status": "failed",
+                        "refresh_metrics_only_count": 1,
+                        "candidates_after_dedup": 2,
+                        "incubation_summary": {"refresh_ratio": {"ratio": 0.5}},
+                    },
+                    "stages": {
+                        "autonomy": {
+                            "external_llm_status_counts": {
+                                "fallback_only": 2,
+                                "failed": 1,
+                            }
+                        },
+                        "backtest": {
+                            "passed": [
+                                {
+                                    "backtest_result": {
+                                        "candidate_contract_hash": good_hash,
+                                        "tested_object_hash": "mismatch_tested_hash",
+                                    }
+                                }
+                            ],
+                            "failed": [],
+                        },
+                        "submit": {
+                            "strategies": [
+                                {
+                                    "strategy_id": "sid_mismatch",
+                                    "candidate_contract_hash": "wrong_contract_hash",
+                                    "candidate_contract_snapshot": mismatched_contract,
+                                    "passed": True,
+                                    "live_candidate_ready": False,
+                                    "live_review_ready": False,
+                                    "direct_trade_candidate": False,
+                                    "pool_admission_applied": True,
+                                    "submission_action_type": "runtime_review",
+                                    "submission_lane": "live_ready_review",
+                                    "admission_stage": "incubation",
+                                    "admission_block_reasons": ["formal_runtime_required"],
+                                },
+                                {
+                                    "strategy_id": "sid_ok",
+                                    "candidate_contract_hash": good_hash,
+                                    "candidate_contract_snapshot": good_contract,
+                                    "passed": True,
+                                    "live_candidate_ready": True,
+                                    "live_review_ready": True,
+                                    "direct_trade_candidate": True,
+                                    "pool_admission_applied": False,
+                                    "submission_action_type": "runtime_review",
+                                    "submission_lane": "live_ready_review",
+                                    "admission_stage": "live",
+                                    "admission_block_reasons": [],
+                                },
+                            ]
+                        },
+                    },
+                },
+                [],
+            )
+
+    monkeypatch.setattr("strategy_factory.application.factory_scheduler.FactoryCycleRunner", _DummyRunner)
+
+    result = await scheduler.run_once()
+    status = scheduler.status()
+    scheduler_slo = result["summary"]["scheduler_slo"]
+    architecture_review = result["summary"]["architecture_review"]
+
+    assert scheduler_slo["status"] == "critical"
+    assert "scheduler_warmup_failed" in scheduler_slo["alert_codes"]
+    assert "factor_provider_degraded" in scheduler_slo["alert_codes"]
+    assert "governed_pool_blocked" in scheduler_slo["alert_codes"]
+    assert "bulk_queue_imbalance" in scheduler_slo["alert_codes"]
+    assert architecture_review["review_week"] == expected_review_week
+    assert architecture_review["previous_review_week"] == "2026-W14"
+    assert architecture_review["cadence_due"] is True
+    assert architecture_review["status"] == "attention_required"
+    assert architecture_review["categories"]["contract_consistency"]["mismatch_count"] == 1
+    assert architecture_review["categories"]["validation_object_consistency"]["mismatch_count"] == 1
+    assert architecture_review["categories"]["admission_consistency"]["mismatch_count"] == 1
+    assert status["scheduler_slo"]["status"] == "critical"
+    assert status["architecture_review"]["review_week"] == expected_review_week
 
 
 @pytest.mark.asyncio

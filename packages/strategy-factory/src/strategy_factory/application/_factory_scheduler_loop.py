@@ -637,10 +637,113 @@ class _StrategyFactorySchedulerLoopMixin:
         ) -> tuple[list[dict[str, Any]], dict[str, int]]:
             """Keep scan and bulk lanes on separate task budgets."""
 
+            def _task_family_key(task: dict[str, Any]) -> str:
+                payload = dict(task or {})
+                research_task = dict(payload.get("research_task") or {})
+                for source in (payload, research_task):
+                    for key in ("candidate_family", "candidate_family_id", "strategy_family", "family"):
+                        value = str(source.get(key) or "").strip().lower()
+                        if value:
+                            return value
+                return str(
+                    payload.get("opportunity_type")
+                    or payload.get("strategy_type")
+                    or payload.get("task_source")
+                    or "unknown"
+                ).strip().lower() or "unknown"
+
+            def _interleave_by_family(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                buckets: dict[str, list[dict[str, Any]]] = {}
+                order: list[str] = []
+                for task in list(tasks or []):
+                    family = _task_family_key(task)
+                    if family not in buckets:
+                        buckets[family] = []
+                        order.append(family)
+                    buckets[family].append(task)
+                if len(order) <= 1:
+                    return list(tasks or [])
+                interleaved: list[dict[str, Any]] = []
+                remaining = sum(len(bucket) for bucket in buckets.values())
+                while remaining > 0:
+                    progressed = False
+                    for family in order:
+                        bucket = buckets.get(family) or []
+                        if not bucket:
+                            continue
+                        interleaved.append(bucket.pop(0))
+                        remaining -= 1
+                        progressed = True
+                    if not progressed:
+                        break
+                return interleaved
+
+            def _safe_int(value: Any) -> int:
+                try:
+                    return int(value or 0)
+                except Exception:
+                    return 0
+
+            def _safe_float(value: Any) -> float:
+                try:
+                    return float(value or 0.0)
+                except Exception:
+                    return 0.0
+
+            def _uses_bulk_matrix_plan(task: dict[str, Any]) -> bool:
+                payload = dict(task or {})
+                if str(payload.get("task_source") or "").strip().lower() != "bulk_stock_matrix":
+                    return False
+                if any(
+                    _safe_int(payload.get(key)) > 0
+                    for key in (
+                        "matrix_budget_slot",
+                        "matrix_plan_slot",
+                        "matrix_allocation_pass",
+                        "matrix_family_rank",
+                        "matrix_stock_rank",
+                        "matrix_shard_id",
+                        "matrix_batch_id",
+                    )
+                ):
+                    return True
+                return (
+                    _safe_float(payload.get("stock_family_priority")) > 0.0
+                    or bool(payload.get("stock_family_allocation_source"))
+                )
+
+            def _bulk_task_plan_key(task: dict[str, Any]) -> tuple[Any, ...]:
+                payload = dict(task or {})
+                if _uses_bulk_matrix_plan(payload):
+                    return (
+                        0,
+                        _safe_int(payload.get("matrix_budget_slot")) or 10**9,
+                        _safe_int(payload.get("matrix_plan_slot")) or 10**9,
+                        _safe_int(payload.get("matrix_allocation_pass")) or 10**9,
+                        _safe_int(payload.get("matrix_family_rank")) or 10**9,
+                        _safe_int(payload.get("matrix_stock_rank")) or 10**9,
+                        _safe_int(payload.get("matrix_shard_id")) or 10**9,
+                        _safe_int(payload.get("matrix_batch_id")) or 10**9,
+                        -_safe_float(payload.get("stock_family_priority")),
+                        -_safe_float(payload.get("matrix_priority_score")),
+                        -_safe_float(payload.get("priority")),
+                        str(payload.get("task_id") or payload.get("task_key") or ""),
+                    )
+                return (
+                    1,
+                    -_safe_float(scanner._task_sort_key(payload)),
+                    str(payload.get("task_id") or payload.get("task_key") or ""),
+                )
+
             normalized_scan_tasks = scanner._deduplicate_tasks(list(scan_tasks or []))
             normalized_scan_tasks.sort(key=scanner._task_sort_key, reverse=True)
             normalized_bulk_tasks = scanner._deduplicate_tasks(list(bulk_tasks or []))
-            normalized_bulk_tasks.sort(key=scanner._task_sort_key, reverse=True)
+            bulk_selection_mode = "family_interleave"
+            if any(_uses_bulk_matrix_plan(task) for task in normalized_bulk_tasks):
+                normalized_bulk_tasks.sort(key=_bulk_task_plan_key)
+                bulk_selection_mode = "matrix_plan_slot"
+            else:
+                normalized_bulk_tasks.sort(key=scanner._task_sort_key, reverse=True)
             scan_task_budget = max(0, int(AUTONOMY_MAX_RESEARCH_TASKS))
             bulk_task_budget = 0
             if normalized_bulk_tasks:
@@ -650,10 +753,11 @@ class _StrategyFactorySchedulerLoopMixin:
                 )
             if len(normalized_scan_tasks) > scan_task_budget:
                 normalized_scan_tasks = normalized_scan_tasks[:scan_task_budget]
-            selected_bulk_tasks = normalized_bulk_tasks[:bulk_task_budget]
+            selected_bulk_tasks = list(normalized_bulk_tasks[:bulk_task_budget])
+            if bulk_selection_mode == "family_interleave":
+                selected_bulk_tasks = _interleave_by_family(selected_bulk_tasks)
 
             merged_tasks = scanner._deduplicate_tasks([*normalized_scan_tasks, *selected_bulk_tasks])
-            merged_tasks.sort(key=scanner._task_sort_key, reverse=True)
 
             selected_bulk_count = len(
                 [
@@ -674,6 +778,7 @@ class _StrategyFactorySchedulerLoopMixin:
                 "selected_bulk_task_count": int(selected_bulk_count),
                 "planned_bulk_task_count": int(planned_bulk_count),
                 "clipped_bulk_task_count": int(max(0, planned_bulk_count - selected_bulk_count)),
+                "bulk_selection_mode": bulk_selection_mode,
             }
 
         async def _run_autonomy_batches(self, db, snapshot: dict) -> dict:
@@ -685,6 +790,19 @@ class _StrategyFactorySchedulerLoopMixin:
             scan_summary = dict(scan_report.get("summary") or {})
             bulk_cursor = await self._resolve_bulk_stock_matrix_cursor(db)
             bulk_window_state = self._bulk_stock_matrix_run_window_state(self._now())
+            resume_from_cursor = bool(
+                bulk_cursor.get("available")
+                and bulk_cursor.get("enabled")
+                and str(bulk_cursor.get("source") or "").strip().lower() in {"last_result", "persisted_run"}
+                and not bool(bulk_window_state.get("run_window_active"))
+            )
+            if resume_from_cursor:
+                bulk_window_state = {
+                    **bulk_window_state,
+                    "configured_enabled": True,
+                    "run_window_active": True,
+                    "skip_reason": None,
+                }
             bulk_report: dict[str, Any] = {
                 "summary": {
                     "enabled": bool(bulk_window_state.get("run_window_active")),
@@ -1232,6 +1350,7 @@ class _StrategyFactorySchedulerLoopMixin:
             """执行一次完整的策略工厂流程。"""
             db = self._load_db() if db is None else db
             start = self._now()
+            previous_result = self.last_result
             context = FactoryRunContext(
                 db=db,
                 factory_pkg=get_strategy_factory_package(),
@@ -1244,6 +1363,7 @@ class _StrategyFactorySchedulerLoopMixin:
 
             outcome = await scheduler_module.FactoryCycleRunner(self, context).run()
             results = outcome.result
+            self._attach_runtime_governance(results, previous_result=previous_result)
             self.last_run = self._now()
             self.last_result = results
             await self._persist_run_result(
@@ -1298,6 +1418,7 @@ class _StrategyFactorySchedulerLoopMixin:
                 "tasks_per_shard": int(STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD),
                 "pre_gate_enabled": bool(FACTORY_PRE_GATE_ENABLED),
             }
+            last_summary = (self.last_result or {}).get("summary") if self.last_result else None
             return {
                 "running": self._running,
                 "schedule_mode": self.schedule_mode,
@@ -1311,7 +1432,9 @@ class _StrategyFactorySchedulerLoopMixin:
                 "readiness_min_completion_ratio": FACTORY_READINESS_MIN_COMPLETION_RATIO,
                 "last_run": str(self.last_run) if self.last_run else None,
                 "last_result": self.last_result,
-                "last_summary": (self.last_result or {}).get("summary") if self.last_result else None,
+                "last_summary": last_summary,
+                "scheduler_slo": dict((last_summary or {}).get("scheduler_slo") or {}) if last_summary else None,
+                "architecture_review": dict((last_summary or {}).get("architecture_review") or {}) if last_summary else None,
                 "bulk_stock_matrix_config": bulk_stock_matrix_config,
                 "bulk_stock_matrix_cursor": bulk_stock_matrix_cursor,
                 "daily_run_count": self._daily_run_count,

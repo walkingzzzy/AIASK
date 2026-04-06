@@ -61,3 +61,100 @@ def test_incubation_budgeter_marks_single_candidate_as_formal():
 
     assert plan["plans"][id(candidate)]["track"] == "formal_incubation"
     assert plan["summary"]["track_counts"]["formal_incubation"] == 1
+
+
+def test_incubation_budgeter_applies_budget_feedback_to_priority(monkeypatch):
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_FORMAL_SLOT_COUNT", 1)
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_OBSERVE_SLOT_COUNT", 1)
+    monkeypatch.setattr(budgeter_mod, "FACTORY_INCUBATION_EXPLORATION_RATIO", 0.0)
+
+    momentum_candidate = {
+        "name": "momentum_feedback",
+        "strategy_type": "momentum",
+        "backtest_metrics": {"sharpe_ratio": 0.8, "total_return": 0.10, "max_drawdown": 0.08},
+        "candidate_contract_snapshot": {
+            "targeting": {
+                "target_pool_id": "explicit:600519",
+                "target_symbols": ["600519"],
+            }
+        },
+        "params": {
+            "candidate_provenance": {
+                "candidate_family": "momentum",
+                "generator_mode": "external_llm",
+            }
+        },
+        "research_task": {"priority": 72, "candidate_family": "momentum"},
+    }
+    mean_reversion_candidate = {
+        "name": "mean_reversion_feedback",
+        "strategy_type": "mean_reversion",
+        "backtest_metrics": {"sharpe_ratio": 0.8, "total_return": 0.10, "max_drawdown": 0.08},
+        "params": {
+            "candidate_provenance": {
+                "candidate_family": "mean_reversion",
+                "generator_mode": "rule",
+            }
+        },
+        "research_task": {"priority": 72, "candidate_family": "mean_reversion"},
+    }
+
+    plan = IncubationBudgeter.plan(
+        [momentum_candidate, mean_reversion_candidate],
+        {
+            "fear_greed_index": 55,
+            "factor_research": {
+                "summary": {"active_family_names": ["momentum"]},
+                "budget_feedback": {
+                    "momentum": {
+                        "paper_hit_ratio": 0.76,
+                        "runtime_alert_pressure": 0.02,
+                        "realized_turnover": 0.18,
+                        "capacity_crowding": 0.14,
+                        "ema_submit_count": 4.0,
+                        "target_pool_feedback": {
+                            "explicit:600519": {
+                                "paper_hit_ratio": 0.82,
+                                "runtime_alert_pressure": 0.0,
+                                "realized_turnover": 0.12,
+                                "capacity_crowding": 0.1,
+                            }
+                        },
+                        "generator_mode_feedback": {
+                            "external_llm": {
+                                "paper_hit_ratio": 0.8,
+                                "runtime_alert_pressure": 0.01,
+                                "realized_turnover": 0.16,
+                                "capacity_crowding": 0.12,
+                            }
+                        },
+                    },
+                    "mean_reversion": {
+                        "paper_hit_ratio": 0.32,
+                        "runtime_alert_pressure": 0.74,
+                        "realized_turnover": 1.12,
+                        "capacity_crowding": 0.88,
+                        "ema_submit_count": 0.1,
+                    },
+                },
+            },
+        },
+    )
+
+    momentum_plan = plan["plans"][id(momentum_candidate)]
+    mean_reversion_plan = plan["plans"][id(mean_reversion_candidate)]
+
+    assert momentum_plan["track"] == "formal_incubation"
+    assert mean_reversion_plan["track"] == "observe_incubation"
+    assert momentum_plan["feedback_budget_multiplier"] > 1.0
+    assert mean_reversion_plan["feedback_budget_multiplier"] < 1.0
+    assert momentum_plan["feedback_scope"]["target_pool_feedback_available"] is True
+    assert momentum_plan["feedback_scope"]["generator_mode_feedback_available"] is True
+    assert momentum_plan["feedback_priority_adjustment"] > 0.0
+    assert mean_reversion_plan["feedback_priority_adjustment"] < 0.0
+    assert momentum_plan["priority_score"] > mean_reversion_plan["priority_score"]
+    assert plan["summary"]["feedback_available"] is True
+    assert plan["summary"]["feedback_candidate_count"] == 2
+    assert plan["summary"]["feedback_family_count"] == 2
+    assert plan["summary"]["feedback_target_pool_scope_count"] == 1
+    assert plan["summary"]["feedback_generator_mode_scope_count"] == 1

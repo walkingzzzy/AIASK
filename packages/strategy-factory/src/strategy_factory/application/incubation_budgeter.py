@@ -5,6 +5,12 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from ._budget_feedback import (
+    extract_feedback_root,
+    extract_generator_mode,
+    extract_target_pool_id,
+    resolve_feedback_metrics,
+)
 from ..domain.constants import (
     FACTORY_INCUBATION_EXPLORATION_RATIO,
     FACTORY_INCUBATION_FORMAL_SLOT_COUNT,
@@ -36,6 +42,61 @@ class IncubationBudgeter:
             or payload.get("strategy_type")
             or "unknown"
         ).strip().lower() or "unknown"
+
+    @staticmethod
+    def _resolve_budget_feedback_root(snapshot: dict[str, Any]) -> dict[str, Any]:
+        factor_research = dict(snapshot.get("factor_research") or {})
+        for payload in (
+            factor_research.get("budget_feedback"),
+            snapshot.get("family_gate_feedback"),
+        ):
+            if isinstance(payload, dict):
+                feedback_root = extract_feedback_root(payload)
+                if feedback_root:
+                    return feedback_root
+        return {}
+
+    @classmethod
+    def _candidate_feedback(
+        cls,
+        candidate: dict[str, Any],
+        snapshot: dict[str, Any],
+        *,
+        budget_feedback_root: Any = None,
+    ) -> dict[str, Any]:
+        feedback_root = (
+            dict(budget_feedback_root or {})
+            if isinstance(budget_feedback_root, dict)
+            else cls._resolve_budget_feedback_root(snapshot)
+        )
+        family_name = cls._candidate_family(candidate)
+        feedback_metrics = resolve_feedback_metrics(
+            feedback_root,
+            family=family_name,
+            target_pool_id=extract_target_pool_id(candidate),
+            generator_mode=extract_generator_mode(candidate),
+        )
+        feedback_scope = {
+            "family": family_name,
+            "target_pool_id": feedback_metrics.get("target_pool_id"),
+            "generator_mode": feedback_metrics.get("generator_mode"),
+            "family_feedback_available": bool(feedback_metrics.get("family_feedback_available")),
+            "target_pool_feedback_available": bool(feedback_metrics.get("target_pool_feedback_available")),
+            "generator_mode_feedback_available": bool(feedback_metrics.get("generator_mode_feedback_available")),
+        }
+        feedback_scope["feedback_available"] = any(
+            bool(feedback_scope.get(key))
+            for key in (
+                "family_feedback_available",
+                "target_pool_feedback_available",
+                "generator_mode_feedback_available",
+            )
+        )
+        return {
+            "root": feedback_root,
+            "metrics": feedback_metrics,
+            "scope": feedback_scope,
+        }
 
     @staticmethod
     def _expected_regimes(candidate: dict[str, Any]) -> list[str]:
@@ -92,7 +153,13 @@ class IncubationBudgeter:
         return 0.0
 
     @classmethod
-    def _priority_score(cls, candidate: dict[str, Any], snapshot: dict[str, Any]) -> float:
+    def _priority_score(
+        cls,
+        candidate: dict[str, Any],
+        snapshot: dict[str, Any],
+        *,
+        budget_feedback_root: Any = None,
+    ) -> float:
         payload = dict(candidate or {})
         metrics = dict(payload.get("backtest_metrics") or {})
         research_task = dict(payload.get("research_task") or {})
@@ -158,16 +225,29 @@ class IncubationBudgeter:
         elif risk_level == "high":
             score -= 4.0
 
-        # P2-D 反馈回路：历史孵化成功率奖励（EMA 平滑）
-        family_feedback = dict((snapshot.get("family_gate_feedback") or {}).get(family_name) or {})
-        ema_submit = cls._safe_float(family_feedback.get("ema_submit_count"), -1.0)
-        if ema_submit >= 0.0:
-            if ema_submit > 3.0:
-                score += 5.0
-            elif ema_submit > 1.0:
-                score += 2.5
-            elif ema_submit < 0.3:
-                score -= 2.0
+        feedback_payload = cls._candidate_feedback(
+            payload,
+            snapshot,
+            budget_feedback_root=budget_feedback_root,
+        )
+        feedback_metrics = dict(feedback_payload.get("metrics") or {})
+        feedback_scope = dict(feedback_payload.get("scope") or {})
+        feedback_priority_adjustment = cls._safe_float(feedback_metrics.get("priority_adjustment"))
+        feedback_budget_multiplier = cls._safe_float(feedback_metrics.get("budget_multiplier"), 1.0)
+        score += feedback_priority_adjustment
+        score *= max(0.7, min(1.3, 0.7 + feedback_budget_multiplier * 0.3))
+
+        # P2-D 反馈回路：对纯 family EMA 的轻量兼容，避免没有 P3 feedback 时退化。
+        if not bool(feedback_scope.get("feedback_available")):
+            family_feedback = dict((snapshot.get("family_gate_feedback") or {}).get(family_name) or {})
+            ema_submit = cls._safe_float(family_feedback.get("ema_submit_count"), -1.0)
+            if ema_submit >= 0.0:
+                if ema_submit > 3.0:
+                    score += 5.0
+                elif ema_submit > 1.0:
+                    score += 2.5
+                elif ema_submit < 0.3:
+                    score -= 2.0
 
         return round(score, 4)
 
@@ -222,6 +302,15 @@ class IncubationBudgeter:
 
         family_counts: dict[str, int] = {}
         family_best_scores: dict[str, float] = {}
+        budget_feedback_root = cls._resolve_budget_feedback_root(snapshot)
+        feedback_family_names: set[str] = set()
+        feedback_target_pool_ids: set[str] = set()
+        feedback_generator_modes: set[str] = set()
+        feedback_candidate_count = 0
+        feedback_budget_multiplier_values: list[float] = []
+        feedback_priority_adjustment_values: list[float] = []
+        feedback_budget_promoted_count = 0
+        feedback_budget_constrained_count = 0
         active_family_names = {
             str(item or "").strip().lower()
             for item in list(((snapshot.get("factor_research") or {}).get("summary") or {}).get("active_family_names") or [])
@@ -230,15 +319,55 @@ class IncubationBudgeter:
         entries: list[dict[str, Any]] = []
         for candidate in list(candidates or []):
             family_name = cls._candidate_family(candidate)
-            score = cls._priority_score(candidate, snapshot)
+            feedback_payload = cls._candidate_feedback(
+                candidate,
+                snapshot,
+                budget_feedback_root=budget_feedback_root,
+            )
+            feedback_metrics = dict(feedback_payload.get("metrics") or {})
+            feedback_scope = dict(feedback_payload.get("scope") or {})
+            score = cls._priority_score(
+                candidate,
+                snapshot,
+                budget_feedback_root=budget_feedback_root,
+            )
             family_counts[family_name] = family_counts.get(family_name, 0) + 1
             family_best_scores[family_name] = max(score, family_best_scores.get(family_name, score))
+            if bool(feedback_scope.get("feedback_available")):
+                feedback_candidate_count += 1
+                feedback_family_names.add(family_name)
+                target_pool_id = str(feedback_scope.get("target_pool_id") or "").strip()
+                generator_mode = str(feedback_scope.get("generator_mode") or "").strip().lower()
+                if target_pool_id and bool(feedback_scope.get("target_pool_feedback_available")):
+                    feedback_target_pool_ids.add(target_pool_id)
+                if generator_mode and bool(feedback_scope.get("generator_mode_feedback_available")):
+                    feedback_generator_modes.add(generator_mode)
+                feedback_budget_multiplier = cls._safe_float(feedback_metrics.get("budget_multiplier"), 1.0)
+                feedback_priority_adjustment = cls._safe_float(feedback_metrics.get("priority_adjustment"))
+                feedback_budget_multiplier_values.append(feedback_budget_multiplier)
+                feedback_priority_adjustment_values.append(feedback_priority_adjustment)
+                if feedback_budget_multiplier > 1.02 or feedback_priority_adjustment > 0.5:
+                    feedback_budget_promoted_count += 1
+                if feedback_budget_multiplier < 0.98 or feedback_priority_adjustment < -0.5:
+                    feedback_budget_constrained_count += 1
             entries.append(
                 {
                     "marker": id(candidate),
                     "candidate": candidate,
                     "family": family_name,
                     "priority_score": score,
+                    "feedback_metrics": feedback_metrics,
+                    "feedback_scope": feedback_scope,
+                    "feedback_budget_multiplier": cls._safe_float(
+                        feedback_metrics.get("budget_multiplier"),
+                        1.0,
+                    ),
+                    "feedback_priority_adjustment": cls._safe_float(
+                        feedback_metrics.get("priority_adjustment")
+                    ),
+                    "feedback_failure_penalty_adjustment": cls._safe_float(
+                        feedback_metrics.get("failure_penalty_adjustment")
+                    ),
                 }
             )
 
@@ -364,6 +493,13 @@ class IncubationBudgeter:
                     "rank": rank,
                     "priority_score": float(entry.get("priority_score") or 0.0),
                     "family": entry.get("family"),
+                    "feedback_metrics": dict(entry.get("feedback_metrics") or {}),
+                    "feedback_scope": dict(entry.get("feedback_scope") or {}),
+                    "feedback_budget_multiplier": float(entry.get("feedback_budget_multiplier") or 1.0),
+                    "feedback_priority_adjustment": float(entry.get("feedback_priority_adjustment") or 0.0),
+                    "feedback_failure_penalty_adjustment": float(
+                        entry.get("feedback_failure_penalty_adjustment") or 0.0
+                    ),
                     "exploration_candidate": cls._is_exploration_candidate(
                         candidate,
                         dominant_families=dominant_families,
@@ -383,6 +519,13 @@ class IncubationBudgeter:
                 "rank": rank,
                 "priority_score": float(entry.get("priority_score") or 0.0),
                 "family": entry.get("family"),
+                "feedback_metrics": dict(entry.get("feedback_metrics") or {}),
+                "feedback_scope": dict(entry.get("feedback_scope") or {}),
+                "feedback_budget_multiplier": float(entry.get("feedback_budget_multiplier") or 1.0),
+                "feedback_priority_adjustment": float(entry.get("feedback_priority_adjustment") or 0.0),
+                "feedback_failure_penalty_adjustment": float(
+                    entry.get("feedback_failure_penalty_adjustment") or 0.0
+                ),
                 "exploration_candidate": cls._is_exploration_candidate(
                     dict(entry.get("candidate") or {}),
                     dominant_families=dominant_families,
@@ -403,6 +546,25 @@ class IncubationBudgeter:
                 "track_counts": track_counts,
                 "family_counts": dict(sorted(family_counts.items(), key=lambda item: (-item[1], item[0]))),
                 "dominant_families": [family for family, _score in dominant_family_pairs[:3]],
+                "feedback_available": bool(budget_feedback_root),
+                "feedback_candidate_count": feedback_candidate_count,
+                "feedback_family_count": len(feedback_family_names),
+                "feedback_target_pool_scope_count": len(feedback_target_pool_ids),
+                "feedback_generator_mode_scope_count": len(feedback_generator_modes),
+                "feedback_budget_multiplier_avg": round(
+                    sum(feedback_budget_multiplier_values) / len(feedback_budget_multiplier_values),
+                    4,
+                )
+                if feedback_budget_multiplier_values
+                else 0.0,
+                "feedback_priority_adjustment_avg": round(
+                    sum(feedback_priority_adjustment_values) / len(feedback_priority_adjustment_values),
+                    4,
+                )
+                if feedback_priority_adjustment_values
+                else 0.0,
+                "feedback_budget_promoted_count": feedback_budget_promoted_count,
+                "feedback_budget_constrained_count": feedback_budget_constrained_count,
                 "priority_score_avg": round(
                     sum(float(item.get("priority_score") or 0.0) for item in sorted_entries) / len(sorted_entries),
                     4,
