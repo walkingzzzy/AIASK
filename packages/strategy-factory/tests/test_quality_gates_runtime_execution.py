@@ -121,6 +121,10 @@ async def test_gate_1_fast_screen_uses_backtest_engine_run_backtest(monkeypatch)
     assert result.metrics["avg_sharpe"] == 1.25
     assert [item["code"] for item in calls] == result.metrics["tested_codes"]
     assert calls[0]["code"] == "600519"
+    assert calls[0]["params"]["commission"] == pytest.approx(0.00025)
+    assert calls[0]["params"]["slippage"] == pytest.approx(0.0005)
+    assert result.metrics["candidate_contract_hash"] == result.metrics["tested_object_hash"]
+    assert result.metrics["backtest_assumptions"]["commission_rate"] == pytest.approx(0.00025)
 
 
 @pytest.mark.asyncio
@@ -567,7 +571,37 @@ def test_pre_gate_rejects_low_liquidity_single_name_candidate():
 
     assert result.passed is False
     assert "liquidity_below_requirement" in result.reasons
-    assert result.metrics["liquidity_proxy_kind"] == "market_cap"
+
+
+def test_pre_gate_rejects_targeted_snapshot_with_insufficient_planned_gate_1_target_sample():
+    candidate = _complete_candidate(
+        {
+            "strategy_type": "momentum",
+            "params": {"lookback": 20, "threshold": 0.02},
+            "tags": ["targeted_universe"],
+            "target_symbols": [f"60{i:04d}" for i in range(1, 9)],
+            "constraint_check": {
+                "coverage_ratio": 0.875,
+                "intersection_ratio": 0.25,
+                "target_overlap_count": 2,
+            },
+            "research_task": {
+                "task_source": "snapshot",
+                "validation_focus": "target_plus_representative",
+                "target_symbols": [f"60{i:04d}" for i in range(1, 9)],
+                "gate_1_representative_count": 1,
+            },
+        }
+    )
+
+    result = pre_gate_screen(candidate)
+
+    assert result.passed is False
+    assert "target_sample_sufficiency_too_low" in result.reasons
+    assert result.metrics["planned_target_sample_count"] == 1
+    assert result.metrics["resolved_target_sample_count"] == 2
+    assert result.metrics["min_target_sample_count"] == 2
+    assert result.metrics["liquidity_proxy_kind"] is None
 
 
 def test_pre_gate_rejects_snapshot_candidate_with_zero_target_alignment():

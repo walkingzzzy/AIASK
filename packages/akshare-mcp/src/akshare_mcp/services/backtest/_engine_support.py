@@ -391,6 +391,155 @@ def _build_tradability_mask(
             mask[i] = False
     return mask
 
+def _round_down_lot(shares: int, lot_size: int) -> int:
+    normalized_shares = max(0, int(shares or 0))
+    normalized_lot = max(1, int(lot_size or 1))
+    if normalized_lot <= 1:
+        return normalized_shares
+    return (normalized_shares // normalized_lot) * normalized_lot
+
+def _rolling_average_volume(volumes: np.ndarray, index: int, window: int = 20) -> float:
+    if index < 0:
+        return 0.0
+    start = max(0, int(index) - max(1, int(window or 20)) + 1)
+    slice_ = np.asarray(volumes[start : int(index) + 1], dtype=float)
+    positive = slice_[np.isfinite(slice_) & (slice_ > 0)]
+    if positive.size == 0:
+        return 0.0
+    return float(np.mean(positive))
+
+def _estimate_capacity_penalty_bps(
+    args: Dict[str, Any],
+    *,
+    actual_participation_rate: float,
+    adv_utilization: Optional[float],
+) -> float:
+    capacity_bps = 0.0
+    if actual_participation_rate > 0:
+        capacity_bps += min(45.0, actual_participation_rate * 2500.0)
+    if adv_utilization is not None and adv_utilization > 1.0:
+        capacity_bps += min(60.0, (adv_utilization - 1.0) * 25.0)
+    capacity_bucket = str(args.get("capacity_bucket") or "").strip().lower()
+    if capacity_bucket:
+        capacity_bps += _CAPACITY_BUCKET_BPS.get(capacity_bucket, 0.0)
+    return max(0.0, capacity_bps)
+
+def _resolve_order_fill(
+    requested_shares: int,
+    *,
+    index: int,
+    volumes: np.ndarray,
+    tradability_mask: Optional[np.ndarray],
+    lot_size: int,
+    args: Dict[str, Any],
+) -> Dict[str, Any]:
+    requested = max(0, int(requested_shares or 0))
+    normalized_lot = max(1, int(lot_size or 1))
+    if requested <= 0:
+        return {
+            "requested_shares": 0,
+            "filled_shares": 0,
+            "rejected_shares": 0,
+            "partial_fill": False,
+            "blocked_reason": "no_requested_shares",
+            "actual_participation_rate": 0.0,
+            "adv_utilization": None,
+            "rolling_adv_20": _rolling_average_volume(volumes, index),
+            "capacity_limited": False,
+            "execution_penalty_bps": 0.0,
+        }
+
+    day_volume = float(volumes[index]) if 0 <= index < len(volumes) else 0.0
+    rolling_adv_20 = _rolling_average_volume(volumes, index)
+    tradable = True if tradability_mask is None else bool(tradability_mask[index])
+    if not tradable:
+        return {
+            "requested_shares": requested,
+            "filled_shares": 0,
+            "rejected_shares": requested,
+            "partial_fill": False,
+            "blocked_reason": "not_tradable",
+            "day_volume": day_volume,
+            "rolling_adv_20": rolling_adv_20,
+            "actual_participation_rate": 0.0,
+            "adv_utilization": None,
+            "capacity_limited": False,
+            "execution_penalty_bps": 0.0,
+        }
+    if day_volume <= 0:
+        return {
+            "requested_shares": requested,
+            "filled_shares": 0,
+            "rejected_shares": requested,
+            "partial_fill": False,
+            "blocked_reason": "zero_volume",
+            "day_volume": day_volume,
+            "rolling_adv_20": rolling_adv_20,
+            "actual_participation_rate": 0.0,
+            "adv_utilization": None,
+            "capacity_limited": False,
+            "execution_penalty_bps": 0.0,
+        }
+
+    max_fillable = requested
+    capacity_caps: list[int] = []
+    capacity_participation_rate = _safe_float(args.get("capacity_participation_rate"), 0.0)
+    adv_ratio_limit = _safe_float(args.get("adv_ratio_limit"), 0.0)
+    if capacity_participation_rate > 0:
+        capacity_caps.append(max(0, int(np.floor(day_volume * capacity_participation_rate))))
+    if adv_ratio_limit > 0 and rolling_adv_20 > 0:
+        capacity_caps.append(max(0, int(np.floor(rolling_adv_20 * adv_ratio_limit))))
+    if capacity_caps:
+        max_fillable = min(max_fillable, min(capacity_caps))
+    filled = _round_down_lot(max_fillable, normalized_lot)
+    if filled <= 0:
+        blocked_reason = "capacity_below_lot" if capacity_caps else "below_min_trade_lot"
+        return {
+            "requested_shares": requested,
+            "filled_shares": 0,
+            "rejected_shares": requested,
+            "partial_fill": False,
+            "blocked_reason": blocked_reason,
+            "day_volume": day_volume,
+            "rolling_adv_20": rolling_adv_20,
+            "actual_participation_rate": 0.0,
+            "adv_utilization": None,
+            "capacity_limited": bool(capacity_caps),
+            "execution_penalty_bps": 0.0,
+        }
+
+    rejected = max(0, requested - filled)
+    actual_participation_rate = (filled / day_volume) if day_volume > 0 else 0.0
+    actual_adv_ratio = (filled / rolling_adv_20) if rolling_adv_20 > 0 else 0.0
+    adv_utilization = (actual_adv_ratio / adv_ratio_limit) if adv_ratio_limit > 0 else None
+
+    arrival_policy = str(args.get("arrival_price_policy") or "next_open_proxy").strip().lower()
+    arrival_bps = _ARRIVAL_PRICE_POLICY_BPS.get(arrival_policy)
+    if arrival_bps is None:
+        arrival_bps = 2.0 if "open" in arrival_policy else 1.0
+    market_impact_bps = _safe_float(args.get("market_impact_bps"), 0.0)
+    capacity_penalty_bps = _estimate_capacity_penalty_bps(
+        args,
+        actual_participation_rate=actual_participation_rate,
+        adv_utilization=adv_utilization,
+    )
+
+    return {
+        "requested_shares": requested,
+        "filled_shares": filled,
+        "rejected_shares": rejected,
+        "partial_fill": rejected > 0,
+        "blocked_reason": "capacity_limited" if rejected > 0 else None,
+        "day_volume": day_volume,
+        "rolling_adv_20": rolling_adv_20,
+        "actual_participation_rate": round(actual_participation_rate, 6),
+        "actual_adv_ratio": round(actual_adv_ratio, 6) if actual_adv_ratio > 0 else 0.0,
+        "adv_utilization": round(adv_utilization, 4) if adv_utilization is not None else None,
+        "capacity_limited": bool(capacity_caps and rejected > 0),
+        "execution_penalty_bps": round(arrival_bps + max(0.0, market_impact_bps) + capacity_penalty_bps, 4),
+        "capacity_penalty_bps": round(capacity_penalty_bps, 4),
+    }
+
 def _build_strategy_masks(
     strategy: str,
     closes: np.ndarray,
@@ -517,7 +666,7 @@ def _simulate_trades_from_masks(
     explicit_slippage = _safe_float(args.get("slippage", 0.0), 0.0)
     model_slippage = _compute_slippage_rate(closes, volumes, args, 0.0)
     market_impact_bps = _safe_float(args.get("market_impact_bps", 0.0), 0.0)
-    implementation_shortfall_proxy, _shortfall_source, shortfall_components, _tradability_summary, _capacity_summary = _estimate_implementation_shortfall(
+    _implementation_shortfall_proxy, _shortfall_source, shortfall_components, _tradability_summary, _capacity_summary = _estimate_implementation_shortfall(
         payload_context,
         args,
         closes=closes,
@@ -526,20 +675,31 @@ def _simulate_trades_from_masks(
         model_slippage_rate=model_slippage,
         market_impact_bps=market_impact_bps,
     )
-    execution_total_bps = float(shortfall_components.get("effective_total_bps") or implementation_shortfall_proxy or 0.0)
-    if slippage_calc is not None:
-        execution_total_bps = max(0.0, execution_total_bps - float(shortfall_components.get("effective_slippage_bps") or 0.0))
-    per_side_extra_cost_rate = max(0.0, execution_total_bps / 10000.0 / 2.0)
+    base_slippage_bps = 0.0 if slippage_calc is not None else float(shortfall_components.get("effective_slippage_bps") or 0.0)
+    per_side_extra_cost_rate = max(0.0, base_slippage_bps / 10000.0)
     cash = float(initial_capital)
     shares = 0
     buy_price = 0.0
     buy_index = -1
+    pending_exit = False
     trades = 0
     wins = 0
     equity = np.full(n, float(initial_capital), dtype=np.float64)
     trades_detail: List[Dict[str, Any]] = []
+    fills_detail: List[Dict[str, Any]] = []
     total_traded_notional = 0.0
     holding_periods: List[int] = []
+    order_attempt_count = 0
+    failed_order_count = 0
+    partial_fill_count = 0
+    requested_shares_total = 0
+    filled_shares_total = 0
+    rejected_shares_total = 0
+    blocked_reason_counts: Dict[str, int] = {}
+    actual_participation_rates: List[float] = []
+    adv_utilizations: List[float] = []
+    execution_penalty_bps_notional = 0.0
+    execution_penalty_bps_weight = 0.0
 
     for i in range(n - 1):
         tradable = True if tradability_mask is None else bool(tradability_mask[i])
@@ -547,16 +707,61 @@ def _simulate_trades_from_masks(
         next_tradable = True if tradability_mask is None else bool(tradability_mask[i + 1])
         if entry_mask[i] and shares == 0 and cash > 0 and tradable and next_tradable:
             exec_price = float(closes[i + 1])
+            approx_price = exec_price * (1 + commission_rate + per_side_extra_cost_rate)
+            max_entry_notional = max(0.0, (cash + shares * closes[i]) * position_pct)
+            affordable_cash = min(cash, max_entry_notional) if max_entry_notional > 0 else cash
+            est_shares = int(affordable_cash / approx_price) if approx_price > 0 else 0
+            est_shares = _round_down_lot(est_shares, lot_size)
+            fill_info = _resolve_order_fill(
+                est_shares,
+                index=i + 1,
+                volumes=volumes,
+                tradability_mask=tradability_mask,
+                lot_size=lot_size,
+                args=args,
+            )
+            order_attempt_count += 1
+            requested_shares_total += int(fill_info.get("requested_shares") or 0)
+            filled_shares_total += int(fill_info.get("filled_shares") or 0)
+            rejected_shares_total += int(fill_info.get("rejected_shares") or 0)
+            if fill_info.get("actual_participation_rate"):
+                actual_participation_rates.append(float(fill_info["actual_participation_rate"]))
+            if fill_info.get("adv_utilization") is not None:
+                adv_utilizations.append(float(fill_info["adv_utilization"]))
+            if int(fill_info.get("filled_shares") or 0) <= 0:
+                failed_order_count += 1
+                blocked_reason = str(fill_info.get("blocked_reason") or "entry_blocked")
+                blocked_reason_counts[blocked_reason] = blocked_reason_counts.get(blocked_reason, 0) + 1
+                if return_trades:
+                    trade_time = ""
+                    if klines is not None and i + 1 < len(klines):
+                        row = klines[i + 1]
+                        trade_time = str(row.get("date", row.get("trade_date", row.get("time", ""))))
+                    fills_detail.append(
+                        {
+                            "index": int(i + 1),
+                            "time": trade_time,
+                            "signal": 1,
+                            "requested_shares": int(fill_info.get("requested_shares") or 0),
+                            "filled_shares": 0,
+                            "rejected_shares": int(fill_info.get("rejected_shares") or 0),
+                            "fill_ratio": 0.0,
+                            "blocked_reason": blocked_reason,
+                        }
+                    )
+                equity[i] = cash
+                continue
+            if fill_info.get("partial_fill"):
+                partial_fill_count += 1
+                blocked_reason = str(fill_info.get("blocked_reason") or "capacity_limited")
+                blocked_reason_counts[blocked_reason] = blocked_reason_counts.get(blocked_reason, 0) + 1
+
+            est_shares = int(fill_info.get("filled_shares") or 0)
+            dynamic_extra_cost_rate = max(
+                per_side_extra_cost_rate,
+                float(fill_info.get("execution_penalty_bps") or 0.0) / 10000.0 / 2.0,
+            )
             if slippage_calc is not None:
-                approx_price = exec_price * (1 + commission_rate + per_side_extra_cost_rate)
-                max_entry_notional = max(0.0, (cash + shares * closes[i]) * position_pct)
-                affordable_cash = min(cash, max_entry_notional) if max_entry_notional > 0 else cash
-                est_shares = int(affordable_cash / approx_price) if approx_price > 0 else 0
-                if lot_size > 1:
-                    est_shares = (est_shares // lot_size) * lot_size
-                if est_shares <= 0:
-                    equity[i] = cash
-                    continue
                 slip = slippage_calc.calculate(
                     price=exec_price,
                     volume=float(volumes[i + 1]) if i + 1 < len(volumes) else 0.0,
@@ -565,18 +770,20 @@ def _simulate_trades_from_masks(
                 )
                 exec_price = float(slip.get("execution_price", exec_price))
 
-            buy_price = exec_price * (1 + commission_rate + per_side_extra_cost_rate)
+            buy_price = exec_price * (1 + commission_rate + dynamic_extra_cost_rate)
             max_entry_notional = max(0.0, (cash + shares * closes[i]) * position_pct)
             affordable_cash = min(cash, max_entry_notional) if max_entry_notional > 0 else cash
             max_shares = int(affordable_cash / buy_price) if buy_price > 0 else 0
-            if lot_size > 1:
-                max_shares = (max_shares // lot_size) * lot_size
+            max_shares = _round_down_lot(min(max_shares, est_shares), lot_size)
             if max_shares > 0:
                 shares = max_shares
                 cash -= shares * buy_price
                 trades += 1
                 buy_index = int(i + 1)
+                pending_exit = False
                 total_traded_notional += float(shares * buy_price)
+                execution_penalty_bps_notional += float(fill_info.get("execution_penalty_bps") or 0.0) * float(shares * buy_price)
+                execution_penalty_bps_weight += float(shares * buy_price)
                 if return_trades:
                     trade_time = ""
                     if klines is not None and i + 1 < len(klines):
@@ -592,31 +799,96 @@ def _simulate_trades_from_masks(
                             "profit": 0.0,
                         }
                     )
+                    fills_detail.append(
+                        {
+                            "index": int(i + 1),
+                            "time": trade_time,
+                            "price": float(buy_price),
+                            "signal": 1,
+                            "requested_shares": int(fill_info.get("requested_shares") or shares),
+                            "filled_shares": int(shares),
+                            "rejected_shares": int(fill_info.get("rejected_shares") or 0),
+                            "fill_ratio": round(int(shares) / max(int(fill_info.get("requested_shares") or shares), 1), 6),
+                            "blocked_reason": fill_info.get("blocked_reason"),
+                            "partial_fill": bool(fill_info.get("partial_fill")),
+                        }
+                    )
 
-        elif exit_mask[i] and shares > 0 and tradable and next_tradable:
+        elif (pending_exit or exit_mask[i]) and shares > 0 and tradable and next_tradable:
             if t_plus_one and buy_index >= 0 and (i + 1) <= buy_index:
                 equity[i] = cash + shares * closes[i]
                 continue
+            pending_exit = True
             exec_price = float(closes[i + 1])
+            fill_info = _resolve_order_fill(
+                shares,
+                index=i + 1,
+                volumes=volumes,
+                tradability_mask=tradability_mask,
+                lot_size=lot_size,
+                args=args,
+            )
+            order_attempt_count += 1
+            requested_shares_total += int(fill_info.get("requested_shares") or 0)
+            filled_shares_total += int(fill_info.get("filled_shares") or 0)
+            rejected_shares_total += int(fill_info.get("rejected_shares") or 0)
+            if fill_info.get("actual_participation_rate"):
+                actual_participation_rates.append(float(fill_info["actual_participation_rate"]))
+            if fill_info.get("adv_utilization") is not None:
+                adv_utilizations.append(float(fill_info["adv_utilization"]))
+            if int(fill_info.get("filled_shares") or 0) <= 0:
+                failed_order_count += 1
+                blocked_reason = str(fill_info.get("blocked_reason") or "exit_blocked")
+                blocked_reason_counts[blocked_reason] = blocked_reason_counts.get(blocked_reason, 0) + 1
+                if return_trades:
+                    trade_time = ""
+                    if klines is not None and i + 1 < len(klines):
+                        row = klines[i + 1]
+                        trade_time = str(row.get("date", row.get("trade_date", row.get("time", ""))))
+                    fills_detail.append(
+                        {
+                            "index": int(i + 1),
+                            "time": trade_time,
+                            "signal": -1,
+                            "requested_shares": int(fill_info.get("requested_shares") or 0),
+                            "filled_shares": 0,
+                            "rejected_shares": int(fill_info.get("rejected_shares") or 0),
+                            "fill_ratio": 0.0,
+                            "blocked_reason": blocked_reason,
+                        }
+                    )
+                equity[i] = cash + shares * closes[i]
+                continue
+            if fill_info.get("partial_fill"):
+                partial_fill_count += 1
+                blocked_reason = str(fill_info.get("blocked_reason") or "capacity_limited")
+                blocked_reason_counts[blocked_reason] = blocked_reason_counts.get(blocked_reason, 0) + 1
+            sell_shares = int(fill_info.get("filled_shares") or 0)
+            dynamic_extra_cost_rate = max(
+                per_side_extra_cost_rate,
+                float(fill_info.get("execution_penalty_bps") or 0.0) / 10000.0 / 2.0,
+            )
             if slippage_calc is not None:
                 slip = slippage_calc.calculate(
                     price=exec_price,
                     volume=float(volumes[i + 1]) if i + 1 < len(volumes) else 0.0,
-                    order_size=float(shares),
+                    order_size=float(sell_shares),
                     is_buy=False,
                 )
                 exec_price = float(slip.get("execution_price", exec_price))
 
-            sell_price = exec_price * (1 - commission_rate - per_side_extra_cost_rate - sell_tax_rate)
+            sell_price = exec_price * (1 - commission_rate - dynamic_extra_cost_rate - sell_tax_rate)
             sell_price = max(0.0, sell_price)
-            revenue = shares * sell_price
-            profit = revenue - (shares * buy_price)
+            revenue = sell_shares * sell_price
+            profit = revenue - (sell_shares * buy_price)
             if profit > 0:
                 wins += 1
             cash += revenue
             trades += 1
             total_traded_notional += float(revenue)
-            if buy_index >= 0:
+            execution_penalty_bps_notional += float(fill_info.get("execution_penalty_bps") or 0.0) * float(revenue)
+            execution_penalty_bps_weight += float(revenue)
+            if buy_index >= 0 and shares == sell_shares:
                 holding_periods.append(max(1, int(i + 1 - buy_index)))
             if return_trades:
                 trade_time = ""
@@ -626,16 +898,32 @@ def _simulate_trades_from_masks(
                 trades_detail.append(
                     {
                         "index": int(i + 1),
+                            "time": trade_time,
+                            "price": float(sell_price),
+                            "signal": -1,
+                            "shares": int(sell_shares),
+                            "profit": float(profit),
+                            "holding_days": max(1, int(i + 1 - buy_index)) if buy_index >= 0 else 0,
+                        }
+                    )
+                fills_detail.append(
+                    {
+                        "index": int(i + 1),
                         "time": trade_time,
                         "price": float(sell_price),
                         "signal": -1,
-                        "shares": int(shares),
-                        "profit": float(profit),
-                        "holding_days": max(1, int(i + 1 - buy_index)) if buy_index >= 0 else 0,
+                        "requested_shares": int(fill_info.get("requested_shares") or sell_shares),
+                        "filled_shares": int(sell_shares),
+                        "rejected_shares": int(fill_info.get("rejected_shares") or 0),
+                        "fill_ratio": round(int(sell_shares) / max(int(fill_info.get("requested_shares") or sell_shares), 1), 6),
+                        "blocked_reason": fill_info.get("blocked_reason"),
+                        "partial_fill": bool(fill_info.get("partial_fill")),
                     }
                 )
-            shares = 0
-            buy_index = -1
+            shares = max(0, shares - sell_shares)
+            if shares == 0:
+                buy_index = -1
+                pending_exit = False
 
         equity[i] = cash + shares * closes[i]
     equity[n - 1] = cash + shares * float(closes[n - 1])
@@ -643,23 +931,98 @@ def _simulate_trades_from_masks(
     if shares > 0:
         i = n - 1
         exec_price = float(closes[i])
+        fill_info = _resolve_order_fill(
+            shares,
+            index=i,
+            volumes=volumes,
+            tradability_mask=tradability_mask,
+            lot_size=lot_size,
+            args=args,
+        )
+        order_attempt_count += 1
+        requested_shares_total += int(fill_info.get("requested_shares") or 0)
+        filled_shares_total += int(fill_info.get("filled_shares") or 0)
+        rejected_shares_total += int(fill_info.get("rejected_shares") or 0)
+        if fill_info.get("actual_participation_rate"):
+            actual_participation_rates.append(float(fill_info["actual_participation_rate"]))
+        if fill_info.get("adv_utilization") is not None:
+            adv_utilizations.append(float(fill_info["adv_utilization"]))
+        if int(fill_info.get("filled_shares") or 0) <= 0:
+            failed_order_count += 1
+            blocked_reason = str(fill_info.get("blocked_reason") or "final_exit_blocked")
+            blocked_reason_counts[blocked_reason] = blocked_reason_counts.get(blocked_reason, 0) + 1
+            if return_trades:
+                trade_time = ""
+                if klines is not None and i < len(klines):
+                    row = klines[i]
+                    trade_time = str(row.get("date", row.get("trade_date", row.get("time", ""))))
+                fills_detail.append(
+                    {
+                        "index": int(i),
+                        "time": trade_time,
+                        "signal": -1,
+                        "requested_shares": int(fill_info.get("requested_shares") or 0),
+                        "filled_shares": 0,
+                        "rejected_shares": int(fill_info.get("rejected_shares") or 0),
+                        "fill_ratio": 0.0,
+                        "blocked_reason": blocked_reason,
+                    }
+                )
+            equity[n - 1] = cash + shares * float(closes[n - 1])
+            shares = 0
+            buy_index = -1
+            return {
+                "final_capital": float(equity[n - 1]),
+                "total_return": float((float(equity[n - 1]) - initial_capital) / initial_capital if initial_capital > 0 else 0.0),
+                "max_drawdown": float(np.max((np.maximum.accumulate(equity) - equity) / np.maximum(np.maximum.accumulate(equity), 1e-9))),
+                "sharpe_ratio": 0.0,
+                "trades_count": int(trades),
+                "win_rate": float(wins / max(1, trades // 2)) if trades > 0 else 0.0,
+                "avg_holding_days": float(np.mean(holding_periods)) if holding_periods else 0.0,
+                "turnover_proxy": float(total_traded_notional / initial_capital) if initial_capital > 0 else 0.0,
+                "equity": equity,
+                "trades": trades_detail if return_trades else None,
+                "fills": fills_detail if return_trades else None,
+                "execution_summary": {
+                    "order_attempt_count": int(order_attempt_count),
+                    "failed_order_count": int(failed_order_count),
+                    "partial_fill_count": int(partial_fill_count),
+                    "requested_shares": int(requested_shares_total),
+                    "filled_shares": int(filled_shares_total),
+                    "rejected_shares": int(rejected_shares_total),
+                    "fill_rate": round(filled_shares_total / max(requested_shares_total, 1), 6) if requested_shares_total > 0 else 0.0,
+                    "failed_fill_rate": round(failed_order_count / max(order_attempt_count, 1), 6) if order_attempt_count > 0 else 0.0,
+                    "blocked_reason_counts": blocked_reason_counts,
+                },
+            }
+        if fill_info.get("partial_fill"):
+            partial_fill_count += 1
+            blocked_reason = str(fill_info.get("blocked_reason") or "capacity_limited")
+            blocked_reason_counts[blocked_reason] = blocked_reason_counts.get(blocked_reason, 0) + 1
+        sell_shares = int(fill_info.get("filled_shares") or 0)
+        dynamic_extra_cost_rate = max(
+            per_side_extra_cost_rate,
+            float(fill_info.get("execution_penalty_bps") or 0.0) / 10000.0 / 2.0,
+        )
         if slippage_calc is not None:
             slip = slippage_calc.calculate(
                 price=exec_price,
                 volume=float(volumes[i]) if i < len(volumes) else 0.0,
-                order_size=float(shares),
+                order_size=float(sell_shares),
                 is_buy=False,
             )
             exec_price = float(slip.get("execution_price", exec_price))
-        sell_price = exec_price * (1 - commission_rate - per_side_extra_cost_rate - sell_tax_rate)
+        sell_price = exec_price * (1 - commission_rate - dynamic_extra_cost_rate - sell_tax_rate)
         sell_price = max(0.0, sell_price)
-        revenue = shares * sell_price
-        profit = revenue - (shares * buy_price)
+        revenue = sell_shares * sell_price
+        profit = revenue - (sell_shares * buy_price)
         if profit > 0:
             wins += 1
         cash += revenue
         trades += 1
         total_traded_notional += float(revenue)
+        execution_penalty_bps_notional += float(fill_info.get("execution_penalty_bps") or 0.0) * float(revenue)
+        execution_penalty_bps_weight += float(revenue)
         if buy_index >= 0:
             holding_periods.append(max(1, int(i - buy_index)))
         if return_trades:
@@ -669,19 +1032,33 @@ def _simulate_trades_from_masks(
                 trade_time = str(row.get("date", row.get("trade_date", row.get("time", ""))))
             trades_detail.append(
                 {
+                        "index": int(i),
+                        "time": trade_time,
+                        "price": float(sell_price),
+                        "signal": -1,
+                        "shares": int(sell_shares),
+                        "profit": float(profit),
+                        "holding_days": max(1, int(i - buy_index)) if buy_index >= 0 else 0,
+                    }
+                )
+            fills_detail.append(
+                {
                     "index": int(i),
                     "time": trade_time,
                     "price": float(sell_price),
                     "signal": -1,
-                    "shares": int(shares),
-                    "profit": float(profit),
-                    "holding_days": max(1, int(i - buy_index)) if buy_index >= 0 else 0,
+                    "requested_shares": int(fill_info.get("requested_shares") or sell_shares),
+                    "filled_shares": int(sell_shares),
+                    "rejected_shares": int(fill_info.get("rejected_shares") or 0),
+                    "fill_ratio": round(int(sell_shares) / max(int(fill_info.get("requested_shares") or sell_shares), 1), 6),
+                    "blocked_reason": fill_info.get("blocked_reason"),
+                    "partial_fill": bool(fill_info.get("partial_fill")),
                 }
             )
-        shares = 0
+        shares = max(0, shares - sell_shares)
         buy_index = -1
 
-    final_capital = float(cash)
+    final_capital = float(cash + shares * float(closes[n - 1]))
     total_return = (final_capital - initial_capital) / initial_capital if initial_capital > 0 else 0.0
 
     max_dd = 0.0
@@ -712,6 +1089,28 @@ def _simulate_trades_from_masks(
     win_rate = wins / max(1, trades // 2) if trades > 0 else 0.0  # round-trip = trades//2
     avg_holding_days = float(np.mean(holding_periods)) if holding_periods else 0.0
     turnover_proxy = (total_traded_notional / initial_capital) if initial_capital > 0 else 0.0
+    fill_rate = (filled_shares_total / requested_shares_total) if requested_shares_total > 0 else 0.0
+    failed_fill_rate = (failed_order_count / order_attempt_count) if order_attempt_count > 0 else 0.0
+    execution_summary = {
+        "order_attempt_count": int(order_attempt_count),
+        "filled_order_count": int(max(0, order_attempt_count - failed_order_count)),
+        "failed_order_count": int(failed_order_count),
+        "partial_fill_count": int(partial_fill_count),
+        "requested_shares": int(requested_shares_total),
+        "filled_shares": int(filled_shares_total),
+        "rejected_shares": int(rejected_shares_total),
+        "fill_rate": round(fill_rate, 6),
+        "failed_fill_rate": round(failed_fill_rate, 6),
+        "blocked_reason_counts": dict(blocked_reason_counts),
+        "avg_participation_rate": round(float(np.mean(actual_participation_rates)), 6) if actual_participation_rates else 0.0,
+        "max_participation_rate": round(float(np.max(actual_participation_rates)), 6) if actual_participation_rates else 0.0,
+        "avg_adv_utilization": round(float(np.mean(adv_utilizations)), 6) if adv_utilizations else None,
+        "max_adv_utilization": round(float(np.max(adv_utilizations)), 6) if adv_utilizations else None,
+        "avg_execution_penalty_bps": round(
+            execution_penalty_bps_notional / execution_penalty_bps_weight,
+            4,
+        ) if execution_penalty_bps_weight > 0 else 0.0,
+    }
     return {
         "final_capital": final_capital,
         "total_return": float(total_return),
@@ -723,4 +1122,6 @@ def _simulate_trades_from_masks(
         "turnover_proxy": float(turnover_proxy),
         "equity": equity,
         "trades": trades_detail if return_trades else None,
+        "fills": fills_detail if return_trades else None,
+        "execution_summary": execution_summary,
     }

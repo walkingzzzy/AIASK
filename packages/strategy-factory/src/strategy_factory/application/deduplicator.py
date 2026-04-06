@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 import numpy as np
 
 from .legacy_bridge import get_compat_symbol, get_compat_value
+from .candidate_contract import build_candidate_identity_signature
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
 from .utils import _extract_event_context as _local_extract_event_context
 from ..domain.constants import DEDUP_CONCURRENCY
@@ -464,6 +465,38 @@ class Deduplicator:
             return ""
         return str(signature).strip()
 
+    @staticmethod
+    def _candidate_identity_signature(candidate: Optional[dict]) -> str:
+        return build_candidate_identity_signature(candidate)
+
+    @staticmethod
+    def _has_explicit_identity_contract(item: Optional[dict]) -> bool:
+        payload = dict(item or {})
+        params = dict(payload.get("params") or {})
+        for source in (payload, params):
+            for key in (
+                "portfolio_spec",
+                "execution_assumptions",
+                "validation_profile",
+                "holding_horizon",
+                "trade_plan",
+                "risk_rules",
+                "rebalance_rule",
+                "stock_pool",
+                "target_pool_id",
+                "lineage",
+            ):
+                value = source.get(key)
+                if value not in (None, "", [], {}):
+                    return True
+        return False
+
+    @classmethod
+    def _existing_identity_signature(cls, existing_item: Optional[dict]) -> str:
+        if not cls._has_explicit_identity_contract(existing_item):
+            return ""
+        return build_candidate_identity_signature(existing_item)
+
     @classmethod
     def _should_refresh_existing(
         cls,
@@ -485,9 +518,13 @@ class Deduplicator:
         event_context = dict(candidate.get("event_context") or {}) or _extract_event_context(research_task)
         candidate_signature = cls._candidate_task_signature(candidate)
         existing_signature = cls._existing_task_signature(existing_item) if existing_item is not None else ""
+        candidate_identity = cls._candidate_identity_signature(candidate)
+        existing_identity = cls._existing_identity_signature(existing_item) if existing_item is not None else ""
         explicit_candidate_universe = cls._has_explicit_universe(candidate)
         explicit_existing_universe = cls._has_explicit_universe(existing_item)
         target_overlap = float(match.get("target_overlap") or 0.0)
+        if existing_item is not None and candidate_identity and existing_identity and candidate_identity != existing_identity:
+            return False
         if existing_item is not None and candidate_signature and existing_signature:
             if candidate_signature != existing_signature:
                 return False
@@ -514,6 +551,8 @@ class Deduplicator:
     ) -> bool:
         candidate_signature = cls._candidate_task_signature(candidate)
         existing_signature = cls._existing_task_signature(existing_item)
+        candidate_identity = cls._candidate_identity_signature(candidate)
+        existing_identity = cls._existing_identity_signature(existing_item)
         matched_strategy_id = str((match or {}).get("matched_strategy_id") or "").strip()
         if not matched_strategy_id:
             return False
@@ -522,14 +561,17 @@ class Deduplicator:
         target_overlap = float((match or {}).get("target_overlap") or 0.0)
         explicit_candidate_universe = cls._has_explicit_universe(candidate)
         explicit_existing_universe = cls._has_explicit_universe(existing_item)
+        identity_changed = bool(candidate_identity and existing_identity and candidate_identity != existing_identity)
         if (
             explicit_candidate_universe
             and explicit_existing_universe
             and candidate_signature
             and existing_signature
             and candidate_signature == existing_signature
-            and 0.8 <= target_overlap < 0.999
+            and (0.8 <= target_overlap < 0.999 or identity_changed)
         ):
+            return True
+        if identity_changed and target_overlap >= 0.8:
             return True
         if not candidate_signature or not existing_signature or candidate_signature == existing_signature:
             return False

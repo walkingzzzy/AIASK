@@ -556,7 +556,13 @@ def register_screener_manager(mcp):
                 fundamental_codes = None
                 fundamental_stock_map = {}
                 if fundamental_criteria:
-                    fund_result = await screener_manager(action='screen', criteria=fundamental_criteria, limit=result_limit)
+                    fund_result = await screener_manager(
+                        action='screen',
+                        kwargs={
+                            'criteria': fundamental_criteria,
+                            'limit': result_limit,
+                        },
+                    )
                     if fund_result.get('success') and fund_result.get('data'):
                         stocks = fund_result['data'].get('stocks', [])
                         normalized_stocks = []

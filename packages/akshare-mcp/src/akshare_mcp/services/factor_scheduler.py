@@ -21,7 +21,7 @@ import logging
 import os
 from contextlib import suppress
 from datetime import datetime, time, timedelta
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -216,6 +216,9 @@ class FactorScheduler:
         stages = dict(result.get("stages") or {})
         lineage = dict(result.get("lineage") or {})
         llm_validation = dict(result.get("llm_validation") or {})
+        llm_provider = dict(result.get("llm_provider") or {})
+        llm_mining = dict(result.get("llm_mining") or {})
+        llm_payload = dict(llm_mining.get("data") or {})
         quality_flags = list(result.get("quality_flags") or [])
         return {
             "run_id": result.get("run_id"),
@@ -243,11 +246,155 @@ class FactorScheduler:
             "validated_candidate_count": int(llm_validation.get("validated_candidate_count") or 0),
             "active_pool_count_after_run": int(llm_validation.get("active_pool_count_after_run") or 0),
             "governed_active_count_after_run": int(llm_validation.get("governed_active_count_after_run") or 0),
+            "llm_generation_mode": llm_payload.get("generation_mode"),
+            "llm_fallback_used": bool(llm_payload.get("fallback_used")),
+            "llm_fallback_reason": llm_payload.get("fallback_reason"),
+            "llm_allow_local_rule_fallback": llm_payload.get("allow_local_rule_fallback"),
+            "llm_provider_gate_status": llm_payload.get("provider_gate_status"),
+            "llm_provider_gate_reason": llm_payload.get("provider_gate_reason"),
+            "llm_provider_health_status": llm_provider.get("health_status"),
+            "llm_provider_ready": bool(llm_provider.get("ready")),
+            "llm_provider_enabled": bool(llm_provider.get("enabled")),
+            "llm_provider_rebuild_count": int(llm_provider.get("rebuild_count") or 0),
+            "llm_provider_last_error_type": llm_provider.get("last_error_type"),
         }
 
     def _record_run_history(self, result: dict) -> None:
         summary = self._build_run_summary(result)
         self._run_history = [summary, *list(self._run_history or [])][: self.RUN_HISTORY_LIMIT]
+
+    @staticmethod
+    def _provider_runtime():
+        from .factor_llm_provider import get_factor_llm_provider
+
+        return get_factor_llm_provider()
+
+    def _provider_status(self) -> dict[str, Any]:
+        try:
+            provider = self._provider_runtime()
+        except Exception as exc:
+            return {
+                "enabled": False,
+                "configured": False,
+                "ready": False,
+                "health_status": "error",
+                "rebuild_recommended": False,
+                "last_error_type": exc.__class__.__name__,
+                "last_error": str(exc),
+                "request_count": 0,
+                "success_count": 0,
+                "consecutive_failures": 0,
+                "rebuild_count": 0,
+            }
+        status = getattr(provider, "status", None)
+        if callable(status):
+            try:
+                payload = dict(status() or {})
+                payload.setdefault("enabled", bool(getattr(provider, "is_enabled", lambda: False)()))
+                payload.setdefault("ready", bool(payload.get("enabled")) and not bool(payload.get("client_closed")))
+                return payload
+            except Exception as exc:
+                return {
+                    "enabled": False,
+                    "configured": False,
+                    "ready": False,
+                    "health_status": "error",
+                    "rebuild_recommended": False,
+                    "last_error_type": exc.__class__.__name__,
+                    "last_error": str(exc),
+                    "request_count": 0,
+                    "success_count": 0,
+                    "consecutive_failures": 0,
+                    "rebuild_count": 0,
+                }
+        enabled = bool(getattr(provider, "is_enabled", lambda: False)())
+        return {
+            "enabled": enabled,
+            "configured": enabled,
+            "ready": enabled,
+            "health_status": "ready" if enabled else "disabled",
+            "rebuild_recommended": False,
+            "request_count": 0,
+            "success_count": 0,
+            "consecutive_failures": 0,
+            "rebuild_count": 0,
+        }
+
+    async def _prepare_llm_provider(self, *, llm_enabled: bool, scheduler_llm: bool) -> dict[str, Any]:
+        if not (llm_enabled and scheduler_llm):
+            return {
+                "status": "skipped",
+                "action": None,
+                "error": None,
+                "before": {},
+                "after": {},
+            }
+        before = self._provider_status()
+        action = None
+        error = None
+        after = dict(before)
+        if bool(before.get("rebuild_recommended")):
+            try:
+                provider = self._provider_runtime()
+                rebuild_client = getattr(provider, "rebuild_client", None)
+                if callable(rebuild_client):
+                    result = rebuild_client(reason="factor_scheduler_preflight")
+                    if asyncio.iscoroutine(result):
+                        await result
+                    action = "rebuild_client"
+                    after = self._provider_status()
+            except Exception as exc:
+                error = str(exc)
+                action = "rebuild_failed"
+                after = self._provider_status()
+        return {
+            "status": "completed" if error is None else "failed",
+            "action": action,
+            "error": error,
+            "before": before,
+            "after": after,
+        }
+
+    @classmethod
+    def _scheduler_local_fallback_enabled(cls) -> bool:
+        # Scheduler is the governed path. Keep local-rule fallback opt-in so
+        # provider health issues do not silently become the main supply source.
+        return cls._env_enabled("FACTOR_SCHEDULER_ALLOW_LOCAL_RULE_FALLBACK", default=False)
+
+    @classmethod
+    def _resolve_provider_gate(
+        cls,
+        *,
+        llm_enabled: bool,
+        scheduler_llm: bool,
+        provider_status: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        allow_local_rule_fallback = cls._scheduler_local_fallback_enabled()
+        if not (llm_enabled and scheduler_llm):
+            return {
+                "status": "skipped",
+                "reason": None,
+                "allow_local_rule_fallback": allow_local_rule_fallback,
+            }
+
+        status = dict(provider_status or {})
+        if bool(status.get("ready")):
+            return {
+                "status": "ready",
+                "reason": None,
+                "allow_local_rule_fallback": allow_local_rule_fallback,
+            }
+        if allow_local_rule_fallback:
+            return {
+                "status": "fallback_override",
+                "reason": "scheduler_local_rule_fallback_override",
+                "allow_local_rule_fallback": True,
+            }
+        return {
+            "status": "blocked",
+            "reason": "provider_not_ready_after_preflight",
+            "allow_local_rule_fallback": False,
+        }
 
     @classmethod
     def _build_quality_meta(
@@ -537,28 +684,42 @@ class FactorScheduler:
                     }
                 )
 
-        # Optional: run LLM factor mining after classic batch
         llm_enabled = os.getenv("FACTOR_LLM_ENABLED", "0").strip() in ("1", "true", "yes")
         scheduler_llm = os.getenv("FACTOR_SCHEDULER_LLM_MINING", "1").strip().lower() in ("1", "true", "yes", "on")
+        llm_provider_preflight = {
+            "status": "skipped",
+            "action": None,
+            "error": None,
+            "before": {},
+            "after": {},
+        }
         if llm_enabled and scheduler_llm:
-            try:
-                from ..tools.managers.quant_manager import quant_manager
-                llm_mining_result = await quant_manager(
-                    action="llm_factor_mining",
-                    kwargs=json.dumps({
-                        "codes": self.universe,
-                        "allow_fallback": True,
-                        "dedup_mode": "penalty",
-                    }, ensure_ascii=False),
-                )
-                llm_validation_result = await self._run_llm_validation_cycle(
-                    quant_manager,
-                    llm_mining_result,
-                )
-                logger.info("FactorScheduler: LLM mining completed")
-            except Exception as e:
-                logger.warning("FactorScheduler: LLM mining failed: %s", e)
-                llm_mining_result = {"error": str(e)}
+            llm_provider_preflight = await self._prepare_llm_provider(
+                llm_enabled=llm_enabled,
+                scheduler_llm=scheduler_llm,
+            )
+        llm_provider_status = self._provider_status() if (llm_enabled and scheduler_llm) else {}
+        llm_provider_gate = self._resolve_provider_gate(
+            llm_enabled=llm_enabled,
+            scheduler_llm=scheduler_llm,
+            provider_status=llm_provider_status,
+        )
+        if llm_enabled and scheduler_llm:
+            if str(llm_provider_gate.get("status") or "").strip().lower() == "blocked":
+                reason = str(llm_provider_gate.get("reason") or "provider_not_ready_after_preflight")
+                llm_mining_result = {
+                    "success": False,
+                    "error": "factor llm provider not ready after preflight",
+                    "data": {
+                        "warnings": [reason],
+                        "generation_mode": "provider_blocked",
+                        "fallback_used": False,
+                        "fallback_reason": None,
+                        "allow_local_rule_fallback": False,
+                        "provider_gate_status": llm_provider_gate.get("status"),
+                        "provider_gate_reason": reason,
+                    },
+                }
                 llm_validation_result = {
                     "status": "failed",
                     "validation_attempted": False,
@@ -567,13 +728,73 @@ class FactorScheduler:
                     "validation_failed_count": 0,
                     "validation_codes": [],
                     "validation_artifact_ids": [],
-                    "failed_candidates": [{"reason": str(e)}],
+                    "failed_candidates": [{"reason": reason}],
                     "registry_refresh_status": "failed",
                     "registry_summary": {},
                     "active_pool_count_after_run": 0,
                     "governed_active_count_after_run": 0,
                     "blocked_active_count_after_run": 0,
                 }
+            else:
+                try:
+                    from ..tools.managers.quant_manager import quant_manager
+                    llm_mining_result = await quant_manager(
+                        action="llm_factor_mining",
+                        kwargs=json.dumps({
+                            "codes": self.universe,
+                            "allow_fallback": bool(llm_provider_gate.get("allow_local_rule_fallback")),
+                            "dedup_mode": "penalty",
+                        }, ensure_ascii=False),
+                    )
+                    llm_validation_result = await self._run_llm_validation_cycle(
+                        quant_manager,
+                        llm_mining_result,
+                    )
+                    logger.info("FactorScheduler: LLM mining completed")
+                except Exception as e:
+                    logger.warning("FactorScheduler: LLM mining failed: %s", e)
+                    llm_mining_result = {"error": str(e)}
+                    llm_validation_result = {
+                        "status": "failed",
+                        "validation_attempted": False,
+                        "generated_candidate_count": 0,
+                        "validated_candidate_count": 0,
+                        "validation_failed_count": 0,
+                        "validation_codes": [],
+                        "validation_artifact_ids": [],
+                        "failed_candidates": [{"reason": str(e)}],
+                        "registry_refresh_status": "failed",
+                        "registry_summary": {},
+                        "active_pool_count_after_run": 0,
+                        "governed_active_count_after_run": 0,
+                        "blocked_active_count_after_run": 0,
+                    }
+
+        llm_provider_status = self._provider_status() if (llm_enabled and scheduler_llm) else {}
+        if isinstance(llm_mining_result, dict):
+            if isinstance(llm_mining_result.get("data"), dict):
+                llm_mining_result["data"].setdefault(
+                    "allow_local_rule_fallback",
+                    bool(llm_provider_gate.get("allow_local_rule_fallback")),
+                )
+                llm_mining_result["data"].setdefault(
+                    "provider_gate_status",
+                    llm_provider_gate.get("status"),
+                )
+                llm_mining_result["data"].setdefault(
+                    "provider_gate_reason",
+                    llm_provider_gate.get("reason"),
+                )
+                llm_mining_result["data"]["provider_health"] = dict(llm_provider_status)
+                llm_mining_result["data"]["provider_preflight"] = dict(llm_provider_preflight)
+            else:
+                llm_mining_result["allow_local_rule_fallback"] = bool(
+                    llm_provider_gate.get("allow_local_rule_fallback")
+                )
+                llm_mining_result["provider_gate_status"] = llm_provider_gate.get("status")
+                llm_mining_result["provider_gate_reason"] = llm_provider_gate.get("reason")
+                llm_mining_result["provider_health"] = dict(llm_provider_status)
+                llm_mining_result["provider_preflight"] = dict(llm_provider_preflight)
 
         llm_payload = llm_mining_result.get("data") if isinstance((llm_mining_result or {}).get("data"), dict) else {}
         llm_generation_artifact_id = str(llm_payload.get("artifact_id") or "").strip() or None
@@ -638,6 +859,19 @@ class FactorScheduler:
                     "blocked_candidate_count": int(len(llm_payload.get("blocked_candidates") or [])),
                     "degraded": bool(llm_payload.get("degraded")),
                     "warnings": list(llm_payload.get("warnings") or []),
+                    "generation_mode": llm_payload.get("generation_mode"),
+                    "fallback_used": bool(llm_payload.get("fallback_used")),
+                    "fallback_reason": llm_payload.get("fallback_reason"),
+                    "allow_local_rule_fallback": llm_payload.get("allow_local_rule_fallback"),
+                    "provider_gate_status": llm_payload.get("provider_gate_status"),
+                    "provider_gate_reason": llm_payload.get("provider_gate_reason"),
+                    "provider_health_status": llm_provider_status.get("health_status"),
+                    "provider_ready": bool(llm_provider_status.get("ready")),
+                    "provider_enabled": bool(llm_provider_status.get("enabled")),
+                    "provider_rebuild_count": int(llm_provider_status.get("rebuild_count") or 0),
+                    "provider_last_error_type": llm_provider_status.get("last_error_type"),
+                    "provider_preflight_status": llm_provider_preflight.get("status"),
+                    "provider_preflight_action": llm_provider_preflight.get("action"),
                 },
                 retry_boundary="workflow_stage",
             ),
@@ -710,6 +944,8 @@ class FactorScheduler:
             "universe_size": len(self.universe),
             "llm_mining": llm_mining_result,
             "llm_validation": llm_validation_result,
+            "llm_provider": llm_provider_status,
+            "llm_provider_preflight": llm_provider_preflight,
             "stages": stages,
             "stage_summary": stage_summary,
             "recovery_checkpoint": recovery_checkpoint,
@@ -757,6 +993,7 @@ class FactorScheduler:
             "last_result": self.last_result,
             "last_summary": (self.last_result or {}).get("summary") if self.last_result else None,
             "run_history": list(self._run_history or []),
+            "llm_provider": dict((self.last_result or {}).get("llm_provider") or self._provider_status()),
             "quality_status": self._quality_status(list(quality_meta.get("quality_flags") or [])),
             "stale": "stale" in list(quality_meta.get("quality_flags") or []),
             **quality_meta,

@@ -1,0 +1,1104 @@
+[
+  {
+    "name": "ai_workflow_artifact",
+    "payload": {
+      "artifact_id": "smoke_nonexistent"
+    },
+    "unset": []
+  },
+  {
+    "name": "alerts_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "analyze_portfolio_risk",
+    "payload": {
+      "codes": [
+        "600519"
+      ],
+      "weights": [
+        1.0
+      ]
+    },
+    "unset": []
+  },
+  {
+    "name": "analyze_portfolio_risk_barra",
+    "payload": {
+      "holdings": [
+        {
+          "code": "600519",
+          "weight": 1.0
+        }
+      ]
+    },
+    "unset": []
+  },
+  {
+    "name": "analyze_research_report",
+    "payload": {
+      "code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "analyze_stock_sentiment",
+    "payload": {
+      "code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "analyze_stock_workflow",
+    "payload": {
+      "code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "available_tools",
+    "payload": {
+      "category": null,
+      "include_contracts": false
+    },
+    "unset": []
+  },
+  {
+    "name": "backtest_factor",
+    "payload": {
+      "codes": [
+        "600519",
+        "000001"
+      ],
+      "factor": "mom_5d",
+      "max_periods": 5
+    },
+    "unset": []
+  },
+  {
+    "name": "backtest_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "batch_sync_klines",
+    "payload": {
+      "codes": [
+        "600519"
+      ]
+    },
+    "unset": []
+  },
+  {
+    "name": "benchmark_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "build_event_context",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "build_quant_context",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "build_stock_context",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "calculate_factor",
+    "payload": {
+      "codes": [
+        "600519"
+      ],
+      "factor": "mom_5d"
+    },
+    "unset": []
+  },
+  {
+    "name": "calculate_factor_ic",
+    "payload": {
+      "codes": [
+        "600519",
+        "000001"
+      ],
+      "factor": "mom_5d"
+    },
+    "unset": []
+  },
+  {
+    "name": "calculate_fear_greed_index",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "calculate_technical_indicators",
+    "payload": {
+      "code": "600519",
+      "indicators": [
+        "MA"
+      ],
+      "limit": 30
+    },
+    "unset": []
+  },
+  {
+    "name": "check_all_alerts",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "check_candlestick_patterns",
+    "payload": {
+      "code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "clear_cache",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "clear_dead_letters",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "compliance_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "comprehensive_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "create_combo_alert",
+    "payload": {
+      "name": "mcp_smoke_combo",
+      "conditions": [
+        {
+          "code": "600519",
+          "indicator": "rsi",
+          "condition": ">",
+          "value": 99
+        }
+      ],
+      "logic": "AND"
+    },
+    "unset": []
+  },
+  {
+    "name": "create_indicator_alert",
+    "payload": {
+      "code": "600519",
+      "indicator": "rsi",
+      "condition": ">",
+      "value": 99.0
+    },
+    "unset": []
+  },
+  {
+    "name": "data_quality_workflow",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "data_sync_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "data_validation",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "data_warmup",
+    "payload": {
+      "action": "help"
+    },
+    "unset": []
+  },
+  {
+    "name": "dcf_valuation",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "ddm_valuation",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "decision_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "event_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "execution_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "experiment_tracker",
+    "payload": {
+      "action": "help"
+    },
+    "unset": []
+  },
+  {
+    "name": "factor_candidate_workflow",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "factor_robustness_check",
+    "payload": {
+      "codes": [
+        "600519",
+        "000001"
+      ],
+      "factor": "mom_5d"
+    },
+    "unset": []
+  },
+  {
+    "name": "find_similar_patterns",
+    "payload": {
+      "code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "fundamental_analysis_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "fuse_decision_payload",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "generate_daily_report",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_analyst_ranking",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_available_categories",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_available_patterns",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_batch_quotes",
+    "payload": {
+      "stock_codes": [
+        "600519"
+      ]
+    },
+    "unset": []
+  },
+  {
+    "name": "get_batch_quotes_compat",
+    "payload": {
+      "codes": [
+        "600519"
+      ]
+    },
+    "unset": []
+  },
+  {
+    "name": "get_block_stocks",
+    "payload": {
+      "block_code": "new_jjhy"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_block_trades",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_cache_stats",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_cb_info",
+    "payload": {
+      "code": "110079"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_concept_fund_flow",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_conditional_returns",
+    "payload": {
+      "code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_dead_letters",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_dragon_tiger",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_factor_library",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_factor_profile",
+    "payload": {
+      "code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_financials",
+    "payload": {
+      "stock_code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_historical_valuation",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_index_quote",
+    "payload": {
+      "index_code": "000001"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_industry_chain",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_investment_analysis",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_ipo_info",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_kline",
+    "payload": {
+      "stock_code": "600519",
+      "limit": 3
+    },
+    "unset": []
+  },
+  {
+    "name": "get_kline_data",
+    "payload": {
+      "code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_limit_up_statistics",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_limit_up_stocks",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_macro_indicator",
+    "payload": {
+      "indicator": "cpi",
+      "limit": 5
+    },
+    "unset": []
+  },
+  {
+    "name": "get_margin_data",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_margin_ranking",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_market_blocks",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_market_news",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_market_sentiment_context",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_minute_kline",
+    "payload": {
+      "stock_code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_north_fund",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_north_fund_holding",
+    "payload": {
+      "stock_code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_north_fund_top",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_option_chain",
+    "payload": {
+      "underlying": "510050"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_order_book",
+    "payload": {
+      "stock_code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_profit_forecast",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_realtime_quote",
+    "payload": {
+      "stock_code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_research_reports",
+    "payload": {
+      "stock_code": "600519",
+      "limit": 3
+    },
+    "unset": []
+  },
+  {
+    "name": "get_research_summary",
+    "payload": {
+      "code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_sector_fund_flow",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_signal_hit_rate",
+    "payload": {
+      "code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_stock_capital",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_stock_fund_flow",
+    "payload": {
+      "stock_code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_stock_info",
+    "payload": {
+      "stock_code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_stock_list",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_stock_news",
+    "payload": {
+      "stock_code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_stock_notices",
+    "payload": {
+      "stock_code": "600519",
+      "limit": 3
+    },
+    "unset": []
+  },
+  {
+    "name": "get_stock_research",
+    "payload": {
+      "stock_code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_stock_text_signals",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_sync_status",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_tool_contract",
+    "payload": {
+      "tool_name": "available_tools"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_trade_details",
+    "payload": {
+      "stock_code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_trading_dates",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_unified_decision",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_unified_decision_details",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_unified_decision_summary",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "get_user_profile",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "get_valuation_metrics",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "governance_check_workflow",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "industry_chain_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "insight_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "limit_up_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "list_factors",
+    "payload": {
+      "category": "all"
+    },
+    "unset": []
+  },
+  {
+    "name": "list_industry_templates",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "list_skills",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "live_trading_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "log_recommendation_audit",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "macro_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "market_insight_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "optimize_portfolio",
+    "payload": {
+      "codes": [
+        "600519",
+        "000001"
+      ],
+      "target_return": 0.1
+    },
+    "unset": []
+  },
+  {
+    "name": "options_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "paper_trading_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "parse_selection_query",
+    "payload": {
+      "query": "市盈率小于20"
+    },
+    "unset": []
+  },
+  {
+    "name": "performance_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "portfolio_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "prediction_diagnosis_workflow",
+    "payload": {
+      "code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "quant_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "relative_valuation",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "research_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "risk_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "run_batch_backtest",
+    "payload": {
+      "codes": [
+        "600519"
+      ]
+    },
+    "unset": []
+  },
+  {
+    "name": "run_decision_gate",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "run_simple_backtest",
+    "payload": {
+      "code": "600519",
+      "strategy": "buy_and_hold",
+      "start_date": "2024-01-01",
+      "end_date": "2024-02-01"
+    },
+    "unset": []
+  },
+  {
+    "name": "run_skill",
+    "payload": {
+      "skill_id": "akshare-market",
+      "task": "smoke_test",
+      "params": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "scenario_dcf_valuation",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "screener_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "search_by_kline",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "search_research",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "search_research_db",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "search_similar_stocks",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "search_skills",
+    "payload": {
+      "query": "akshare",
+      "limit": 5
+    },
+    "unset": []
+  },
+  {
+    "name": "search_stocks",
+    "payload": {
+      "keyword": "茅台"
+    },
+    "unset": []
+  },
+  {
+    "name": "sector_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "semantic_stock_search",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "sentiment_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "should_i_buy",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "should_i_sell",
+    "payload": {
+      "args": "600519",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "smart_stock_diagnosis",
+    "payload": {
+      "stock_code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "strategy_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "strategy_review_workflow",
+    "payload": {
+      "strategy_id": "smoke_nonexistent"
+    },
+    "unset": []
+  },
+  {
+    "name": "stress_test_portfolio",
+    "payload": {
+      "holdings": [
+        {
+          "code": "600519",
+          "weight": 1.0
+        }
+      ]
+    },
+    "unset": []
+  },
+  {
+    "name": "sync_kline_data",
+    "payload": {
+      "stock_code": "600519"
+    },
+    "unset": []
+  },
+  {
+    "name": "sync_trading_calendar",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "technical_analysis_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "trading_data_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "update_user_profile",
+    "payload": {},
+    "unset": []
+  },
+  {
+    "name": "user_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "validate_factor_oos",
+    "payload": {
+      "codes": [
+        "600519",
+        "000001"
+      ],
+      "factor": "mom_5d"
+    },
+    "unset": []
+  },
+  {
+    "name": "vector_search_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  },
+  {
+    "name": "watchlist_manager",
+    "payload": {
+      "action": "help",
+      "kwargs": "{}"
+    },
+    "unset": []
+  }
+]

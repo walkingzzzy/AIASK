@@ -11,6 +11,11 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any, List, Optional
 from uuid import uuid4
 
+from .candidate_contract import (
+    build_candidate_contract_hash,
+    build_candidate_identity_signature,
+    build_portfolio_candidate_contract,
+)
 from .legacy_bridge import call_compat_async, get_compat_symbol, get_compat_value
 from .incubation_budgeter import IncubationBudgeter
 from .quality_gates import build_completed_gate_3_report
@@ -212,6 +217,16 @@ class _StrategySubmitterActionsMixin:
             name = self._candidate_name(candidate, existing_strategy)
             metrics = candidate.get("backtest_metrics", {})
             data = self._build_strategy_data(strategy_id, name, candidate, metrics, existing=existing_strategy)
+            candidate = {
+                **dict(candidate or {}),
+                "id": strategy_id,
+                "name": name,
+                "params": dict(data.get("params") or {}),
+                "candidate_contract_snapshot": dict((data.get("params") or {}).get("candidate_contract_snapshot") or {}),
+                "candidate_contract_hash": str((data.get("params") or {}).get("candidate_contract_hash") or ""),
+                "candidate_identity_signature": str((data.get("params") or {}).get("candidate_identity_signature") or ""),
+                "candidate_lineage_contract": dict((data.get("params") or {}).get("candidate_lineage_contract") or {}),
+            }
             validation_report, risk_report = await self._evaluate_reports(candidate, db)
             gate = await run_submission_quality_gate(
                 db,
@@ -236,12 +251,14 @@ class _StrategySubmitterActionsMixin:
             incubation_budget = dict(candidate.get("incubation_budget") or {})
             incubation_budget_track = str(incubation_budget.get("track") or "formal_incubation").strip().lower()
 
-            submission_lane, final_status = self._resolve_submission_lane(
+            submission_action = self._resolve_submission_action_plan(
                 gate,
                 refresh_existing=refresh_existing,
                 existing_status=existing_status,
                 incubation_budget_track=incubation_budget_track,
             )
+            submission_lane = str(submission_action.get("submission_lane") or "deferred_submission")
+            final_status = str(submission_action.get("final_status") or "submitted")
             should_persist_strategy = not refresh_existing or bool(gate.get("passed"))
             if should_persist_strategy:
                 await db.save_strategy(data)
@@ -270,6 +287,21 @@ class _StrategySubmitterActionsMixin:
                 final_status=final_status,
                 submission_lane=submission_lane,
             )
+            quality_summary = dict(quality_report.get("summary") or {})
+            quality_summary["candidate_contract_hash"] = candidate.get("candidate_contract_hash")
+            quality_summary["candidate_identity_signature"] = candidate.get("candidate_identity_signature")
+            quality_summary["target_pool_id"] = (
+                dict((candidate.get("candidate_contract_snapshot") or {}).get("targeting") or {}).get("target_pool_id")
+            )
+            quality_summary["lineage_id"] = (
+                dict((candidate.get("candidate_contract_snapshot") or {}).get("lineage") or {}).get("lineage_id")
+            )
+            quality_summary["multiple_testing_registry"] = dict(gate.get("multiple_testing_registry") or {})
+            quality_report["summary"] = quality_summary
+            quality_report["candidate_contract_hash"] = candidate.get("candidate_contract_hash")
+            quality_report["candidate_identity_signature"] = candidate.get("candidate_identity_signature")
+            quality_report["candidate_contract_snapshot"] = dict(candidate.get("candidate_contract_snapshot") or {})
+            quality_report["candidate_lineage_contract"] = dict(candidate.get("candidate_lineage_contract") or {})
 
             multiple_testing_registry = dict(gate.get("multiple_testing_registry") or {})
             multiple_testing_registry_record_id = None
@@ -287,6 +319,7 @@ class _StrategySubmitterActionsMixin:
                     db,
                     existing_status=existing_status,
                     submission_lane=submission_lane,
+                    submission_action=submission_action,
                 )
             else:
                 post_gate = await self._handle_post_gate(
@@ -302,6 +335,7 @@ class _StrategySubmitterActionsMixin:
                     risk_report,
                     db,
                     submission_lane=submission_lane,
+                    submission_action=submission_action,
                 )
                 try:
                     parent_strategy_id = (
@@ -309,14 +343,22 @@ class _StrategySubmitterActionsMixin:
                         or str(candidate.get("parent_strategy_id") or "").strip()
                         or None
                     )
-                    await db.save_strategy_lineage(strategy_id, parent_strategy_id, candidate.get("spawn_reason", ""), snapshot)
+                    await self._save_strategy_lineage_record(
+                        db,
+                        strategy_id=strategy_id,
+                        parent_strategy_id=parent_strategy_id,
+                        reason=str(candidate.get("spawn_reason") or ""),
+                        snapshot=snapshot,
+                        candidate={**dict(candidate or {}), "multiple_testing_registry": multiple_testing_registry},
+                    )
                 except Exception as exc:
                     logger.warning("StrategySubmitter: save lineage failed for %s: %s", strategy_id, exc)
                 if multiple_testing_registry and callable(getattr(db, "save_factory_task_evidence", None)):
                     research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
                     evidence_payload = {
                         "task_key": str(
-                            multiple_testing_registry.get("registry_key")
+                            multiple_testing_registry.get("task_key")
+                            or multiple_testing_registry.get("registry_key")
                             or multiple_testing_registry.get("task_signature")
                             or strategy_id
                         ).strip(),
@@ -352,6 +394,25 @@ class _StrategySubmitterActionsMixin:
             if self._get_optional_db_method(db, "save_strategy_quality_report") is not None:
                 await db.save_strategy_quality_report(strategy_id, "submission", quality_report)
 
+            resolved_submission_action = dict(post_gate.get("submission_action") or submission_action.get("submission_action") or {})
+            resolved_submission_action_type = post_gate.get("submission_action_type", submission_action.get("submission_action_type"))
+            resolved_submission_action_trigger = post_gate.get("submission_action_trigger", submission_action.get("submission_action_trigger"))
+            resolved_submission_action_gaps = list(
+                post_gate.get("submission_action_gaps", submission_action.get("submission_action_gaps") or [])
+                or []
+            )
+            resolved_submission_action_fallback_conditions = list(
+                post_gate.get(
+                    "submission_action_fallback_conditions",
+                    submission_action.get("submission_action_fallback_conditions") or [],
+                )
+                or []
+            )
+            resolved_submission_action_next_step = post_gate.get(
+                "submission_action_next_step",
+                submission_action.get("submission_action_next_step"),
+            )
+
             summary = {
                 "strategy_id": strategy_id,
                 "experiment_id": candidate.get("experiment_id"),
@@ -367,7 +428,18 @@ class _StrategySubmitterActionsMixin:
                 "incubation_candidate_ready": bool(gate.get("incubation_candidate_ready")),
                 "live_candidate_ready": bool(gate.get("live_candidate_ready")),
                 "submission_lane": submission_lane,
+                "submission_action_type": resolved_submission_action_type,
+                "submission_action_trigger": resolved_submission_action_trigger,
+                "submission_action_gaps": resolved_submission_action_gaps,
+                "submission_action_fallback_conditions": resolved_submission_action_fallback_conditions,
+                "submission_action_next_step": resolved_submission_action_next_step,
+                "submission_action_completed": bool(
+                    post_gate.get("submission_action_completed", submission_action.get("submission_action_completed"))
+                ),
+                "submission_action": resolved_submission_action,
                 "direct_trade_candidate": bool(gate.get("live_candidate_ready")),
+                "pool_admission_applied": bool(post_gate.get("pool_admission_applied")),
+                "promotion_applied_transition": dict(post_gate.get("promotion_applied_transition") or {}),
                 "admission_block_reasons": list(gate.get("admission_block_reasons") or []),
                 "admission_evaluations": dict(gate.get("admission_evaluations") or {}),
                 "reasons": gate.get("reasons") or [],
@@ -407,6 +479,13 @@ class _StrategySubmitterActionsMixin:
                 "multiple_testing_registry_record_id": multiple_testing_registry_record_id,
                 "task_preference": dict(gate.get("task_preference") or {}),
                 "task_signature": _build_task_signature(candidate.get("research_task") or {}),
+                "candidate_contract_hash": candidate.get("candidate_contract_hash"),
+                "candidate_identity_signature": candidate.get("candidate_identity_signature"),
+                "candidate_contract_snapshot": dict(candidate.get("candidate_contract_snapshot") or {}),
+                "candidate_lineage_contract": dict(candidate.get("candidate_lineage_contract") or {}),
+                "target_pool_id": (
+                    dict((candidate.get("candidate_contract_snapshot") or {}).get("targeting") or {}).get("target_pool_id")
+                ),
                 "candidate_provenance": candidate_provenance,
                 "strategy_profile": strategy_profile,
                 "source_candidate_artifact_id": candidate_provenance.get("source_candidate_artifact_id"),
@@ -474,6 +553,51 @@ class _StrategySubmitterActionsMixin:
                 logger.warning("StrategySubmitter: load existing strategy failed for %s: %s", strategy_id, exc)
                 return None
             return dict(existing or {}) if existing else None
+
+        @classmethod
+        async def _save_strategy_lineage_record(
+            cls,
+            db,
+            *,
+            strategy_id: str,
+            parent_strategy_id: Optional[str],
+            reason: str,
+            snapshot: dict,
+            candidate: Optional[dict] = None,
+        ) -> None:
+            save_lineage = cls._get_optional_db_method(db, "save_strategy_lineage")
+            if save_lineage is None:
+                return
+            contract_snapshot = dict((candidate or {}).get("candidate_contract_snapshot") or {})
+            targeting = dict(contract_snapshot.get("targeting") or {})
+            lineage_metadata = {
+                "candidate_contract_hash": (candidate or {}).get("candidate_contract_hash"),
+                "candidate_identity_signature": (candidate or {}).get("candidate_identity_signature"),
+                "candidate_contract_snapshot": contract_snapshot,
+                "candidate_lineage_contract": dict((candidate or {}).get("candidate_lineage_contract") or contract_snapshot.get("lineage") or {}),
+                "target_pool_id": targeting.get("target_pool_id"),
+                "task_signature": dict(contract_snapshot.get("lineage") or {}).get("task_signature"),
+                "validation_profile": dict(contract_snapshot.get("validation_profile") or {}),
+                "lineage_id": dict(contract_snapshot.get("lineage") or {}).get("lineage_id"),
+                "multiple_testing_registry": dict((candidate or {}).get("multiple_testing_registry") or {}),
+            }
+            accepts_metadata = False
+            try:
+                signature = inspect.signature(save_lineage)
+                params = list(signature.parameters.values())
+                accepts_metadata = (
+                    "metadata" in signature.parameters
+                    or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params)
+                )
+            except (TypeError, ValueError):
+                accepts_metadata = False
+            result = (
+                save_lineage(strategy_id, parent_strategy_id, reason, snapshot, metadata=lineage_metadata)
+                if accepts_metadata
+                else save_lineage(strategy_id, parent_strategy_id, reason, snapshot)
+            )
+            if inspect.isawaitable(result):
+                await result
 
         @classmethod
         def _build_strategy_data(
@@ -568,6 +692,22 @@ class _StrategySubmitterActionsMixin:
                 stored_params["selection_logic"] = list(candidate.get("selection_logic") or existing_params.get("selection_logic") or [])
             if candidate.get("incubation_budget"):
                 stored_params["incubation_budget"] = dict(candidate.get("incubation_budget") or {})
+            contract_source = {
+                **existing,
+                **dict(candidate or {}),
+                "id": strategy_id,
+                "name": name,
+                "strategy_type": candidate["strategy_type"],
+                "params": dict(stored_params),
+                "target_symbols": list(stored_params.get("target_symbols") or []),
+                "stock_pool": dict(stored_params.get("stock_pool") or {}),
+                "research_task": dict(stored_params.get("research_task") or {}),
+            }
+            contract_snapshot = build_portfolio_candidate_contract(contract_source)
+            stored_params["candidate_contract_snapshot"] = contract_snapshot
+            stored_params["candidate_contract_hash"] = build_candidate_contract_hash(contract=contract_snapshot)
+            stored_params["candidate_identity_signature"] = build_candidate_identity_signature(contract_source)
+            stored_params["candidate_lineage_contract"] = dict(contract_snapshot.get("lineage") or {})
             return {
                 "id": strategy_id,
                 "name": name,
@@ -655,24 +795,117 @@ class _StrategySubmitterActionsMixin:
                     logger.warning("StrategySubmitter: save risk metrics failed for %s: %s", strategy_id, exc)
 
         @staticmethod
+        def _resolve_submission_action_plan(
+            gate: dict,
+            *,
+            refresh_existing: bool,
+            existing_status: str,
+            incubation_budget_track: str,
+        ) -> dict[str, Any]:
+            normalized_gate = dict(gate or {})
+            admission_block_reasons = list(normalized_gate.get("admission_block_reasons") or normalized_gate.get("reasons") or [])
+            if refresh_existing:
+                action_type = "refresh_existing"
+                submission_lane = "refresh_existing"
+                final_status = str(existing_status or "draft")
+                trigger = "existing_strategy_refresh"
+                gaps = []
+                fallback_conditions = ["manual_review_if_contract_changes"]
+                next_step = "existing_status_preserved"
+                completed = True
+            elif not bool(normalized_gate.get("passed")):
+                action_type = "research_only"
+                submission_lane = "rejected"
+                final_status = "rejected"
+                trigger = "quality_gate_failed"
+                gaps = admission_block_reasons
+                fallback_conditions = ["re_enter_after_quality_gaps_closed"]
+                next_step = "incubation"
+                completed = True
+            elif bool(normalized_gate.get("live_candidate_ready")):
+                action_type = "runtime_review"
+                submission_lane = "live_ready_review"
+                final_status = "submitted"
+                trigger = "live_candidate_ready"
+                gaps = []
+                fallback_conditions = [
+                    "downgrade_to_paper_if_runtime_review_fails",
+                    "return_to_research_if_runtime_alerts_fire",
+                ]
+                next_step = "pool_admission"
+                completed = False
+            elif str(incubation_budget_track or "").strip().lower() == "formal_incubation":
+                action_type = "incubation"
+                submission_lane = "formal_incubation"
+                final_status = "incubating"
+                trigger = "strict_incubation_ready_and_budget_formal"
+                gaps = admission_block_reasons
+                fallback_conditions = [
+                    "downgrade_to_paper_if_incubation_readiness_drops",
+                    "return_to_research_if_runtime_risk_accumulates",
+                ]
+                next_step = "paper"
+                completed = False
+            elif str(incubation_budget_track or "").strip().lower() == "observe_incubation":
+                action_type = "paper"
+                submission_lane = "observe_incubation"
+                final_status = "submitted"
+                trigger = "observe_track_paper_route"
+                gaps = admission_block_reasons
+                fallback_conditions = [
+                    "return_to_research_if_paper_fill_quality_weak",
+                    "promote_to_runtime_review_after_paper_pass",
+                ]
+                next_step = "runtime_review"
+                completed = False
+            else:
+                action_type = "research_only"
+                submission_lane = "deferred_submission"
+                final_status = "submitted"
+                trigger = "budget_deferred_research_only"
+                gaps = admission_block_reasons
+                fallback_conditions = ["promote_to_incubation_after_budget_released"]
+                next_step = "incubation"
+                completed = True
+
+            plan = {
+                "type": action_type,
+                "trigger_reason": trigger,
+                "gaps": list(gaps),
+                "fallback_conditions": list(fallback_conditions),
+                "next_step": next_step,
+                "submission_lane": submission_lane,
+                "final_status": final_status,
+                "completed": bool(completed),
+            }
+            return {
+                "submission_action": plan,
+                "submission_action_type": action_type,
+                "submission_action_trigger": trigger,
+                "submission_action_gaps": list(gaps),
+                "submission_action_fallback_conditions": list(fallback_conditions),
+                "submission_action_next_step": next_step,
+                "submission_action_completed": bool(completed),
+                "submission_lane": submission_lane,
+                "final_status": final_status,
+            }
+
+        @classmethod
         def _resolve_submission_lane(
+            cls,
             gate: dict,
             *,
             refresh_existing: bool,
             existing_status: str,
             incubation_budget_track: str,
         ) -> tuple[str, str]:
-            if refresh_existing:
-                return "refresh_existing", str(existing_status or "draft")
-            if not bool((gate or {}).get("passed")):
-                return "rejected", "rejected"
-            if bool((gate or {}).get("live_candidate_ready")):
-                return "live_ready_review", "submitted"
-            if str(incubation_budget_track or "").strip().lower() == "formal_incubation":
-                return "formal_incubation", "incubating"
-            if str(incubation_budget_track or "").strip().lower() == "observe_incubation":
-                return "observe_incubation", "submitted"
-            return "deferred_submission", "submitted"
+            plan = cls._resolve_submission_action_plan(
+                gate,
+                refresh_existing=refresh_existing,
+                existing_status=existing_status,
+                incubation_budget_track=incubation_budget_track,
+            )
+            return str(plan.get("submission_lane") or "deferred_submission"), str(plan.get("final_status") or "submitted")
 
         @staticmethod
         def _apply_submission_action_audit(
@@ -690,7 +923,9 @@ class _StrategySubmitterActionsMixin:
             report["submission_lane"] = submission_lane
             field_names = (
                 "live_review_ready",
+                "paper_lane_ready",
                 "paper_account_id",
+                "paper_account_status",
                 "live_review_account_id",
                 "runtime_control_mode",
                 "runtime_control_status",
@@ -698,15 +933,67 @@ class _StrategySubmitterActionsMixin:
                 "promotion_review_status",
                 "promotion_review_recommendation",
                 "promotion_review_score",
+                "pool_admission_applied",
+                "promotion_applied_transition",
+                "submission_action",
+                "submission_action_type",
+                "submission_action_trigger",
+                "submission_action_gaps",
+                "submission_action_fallback_conditions",
+                "submission_action_next_step",
+                "submission_action_completed",
             )
+            clearable_fields = {"submission_action_next_step"}
             for field_name in field_names:
+                if field_name not in audit:
+                    continue
                 value = audit.get(field_name)
-                if value in (None, [], {}, ""):
+                if value in (None, [], {}, "") and field_name not in clearable_fields:
                     continue
                 summary[field_name] = value
                 report[field_name] = value
             report["summary"] = summary
             return report
+
+        async def _enqueue_paper_observation(
+            self,
+            db,
+            strategy: dict,
+            snapshot: dict,
+        ) -> dict:
+            paper_account_id = None
+            paper_account_status = None
+            incubation_gateway = self._get_incubation_gateway()
+
+            try:
+                binding = await incubation_gateway.ensure_account(
+                    db,
+                    strategy,
+                    source_run_id=snapshot.get("date"),
+                    stage="paper",
+                )
+                paper_account_id = (
+                    ((binding or {}).get("account") or {}).get("id")
+                    or ((binding or {}).get("binding") or {}).get("account_id")
+                )
+                if paper_account_id:
+                    updated = await self._call_optional_db_method(
+                        db,
+                        "update_paper_account_status",
+                        paper_account_id,
+                        "active",
+                        stage="paper",
+                        observation_candidate=True,
+                    )
+                    paper_account_status = (updated or {}).get("status") if isinstance(updated, dict) else "active"
+            except Exception as exc:
+                logger.warning("StrategyFactory: ensure paper observation account failed for %s: %s", strategy.get("id"), exc)
+
+            return {
+                "paper_lane_ready": bool(paper_account_id),
+                "paper_account_id": paper_account_id,
+                "paper_account_status": paper_account_status or ("active" if paper_account_id else None),
+            }
 
         async def _enqueue_live_ready_review(
             self,
@@ -771,12 +1058,42 @@ class _StrategySubmitterActionsMixin:
                     db,
                     strategy,
                     source="strategy_factory_live_ready_review",
-                    auto_apply=False,
+                    auto_apply=True,
                 )
             except Exception as exc:
                 logger.warning("StrategyFactory: trigger live-ready promotion review failed for %s: %s", strategy.get("id"), exc)
 
             review_payload = dict((promotion_review or {}).get("review") or {})
+            applied_transition = dict((promotion_review or {}).get("applied_transition") or {})
+            applied_status = str(applied_transition.get("to") or "").strip().lower()
+            action_audit: dict[str, Any] = {}
+            if applied_status:
+                action_audit["final_status"] = applied_status
+                action_audit["pool_admission_applied"] = applied_status == "listed"
+                action_audit["promotion_applied_transition"] = applied_transition
+            if applied_status == "listed":
+                action_audit.update(
+                    {
+                        "submission_action": {
+                            "type": "pool_admission",
+                            "trigger_reason": "live_candidate_ready_pool_admission",
+                            "gaps": [],
+                            "fallback_conditions": ["return_to_runtime_review_if_post_admission_controls_fail"],
+                            "next_step": None,
+                            "submission_lane": "live_ready_review",
+                            "final_status": applied_status,
+                            "completed": True,
+                        },
+                        "submission_action_type": "pool_admission",
+                        "submission_action_trigger": "live_candidate_ready_pool_admission",
+                        "submission_action_gaps": [],
+                        "submission_action_fallback_conditions": [
+                            "return_to_runtime_review_if_post_admission_controls_fail"
+                        ],
+                        "submission_action_next_step": None,
+                        "submission_action_completed": True,
+                    }
+                )
             return {
                 "live_review_ready": bool(review_account_id or runtime_control or review_payload),
                 "paper_account_id": review_account_id,
@@ -787,6 +1104,7 @@ class _StrategySubmitterActionsMixin:
                 "promotion_review_status": review_payload.get("status"),
                 "promotion_review_recommendation": review_payload.get("recommendation"),
                 "promotion_review_score": review_payload.get("score"),
+                **action_audit,
             }
 
         async def _handle_existing_refresh(
@@ -804,12 +1122,14 @@ class _StrategySubmitterActionsMixin:
             *,
             existing_status: str,
             submission_lane: str,
+            submission_action: Optional[dict[str, Any]] = None,
         ) -> dict:
             """复用已有策略时，仅刷新质量报告与实验留痕。"""
             self._apply_submission_action_audit(
                 quality_report,
                 final_status=existing_status,
                 submission_lane=submission_lane,
+                submission_audit=dict(submission_action or {}),
             )
             await self._record_experiment(
                 db,
@@ -831,6 +1151,7 @@ class _StrategySubmitterActionsMixin:
                 "existing_status": existing_status,
                 "submission_lane": submission_lane,
                 "final_status": existing_status,
+                **dict(submission_action or {}),
             }
 
         async def _handle_post_gate(
@@ -847,6 +1168,7 @@ class _StrategySubmitterActionsMixin:
             risk_report: Optional[dict],
             db,
             submission_lane: str,
+            submission_action: Optional[dict[str, Any]] = None,
         ) -> dict:
             """质检通过后：创建孵化账户、运行孵化 pipeline、构建向量画像、记录实验。"""
             incubation_binding = None
@@ -854,9 +1176,11 @@ class _StrategySubmitterActionsMixin:
             vector_profile = None
             vector_audit: dict = {}
             live_review_action: dict = {}
+            paper_action: dict = {}
             incubation_budget = dict(candidate.get("incubation_budget") or {})
             incubation_budget_track = str(incubation_budget.get("track") or "formal_incubation").strip().lower()
             final_status = "rejected"
+            action_audit = dict(submission_action or {})
 
             if gate.get("passed"):
                 enriched_data = {**data, "id": strategy_id, "name": name}
@@ -902,15 +1226,18 @@ class _StrategySubmitterActionsMixin:
                         final_status=final_status,
                         submission_lane=submission_lane,
                         submission_audit={
+                            **action_audit,
                             "paper_account_id": ((incubation_binding or {}).get("account") or {}).get("id"),
+                            "submission_action_completed": True,
                         },
                     )
+                    action_audit = {**action_audit, "submission_action_completed": True}
                 else:
                     final_status = "submitted"
                     if submission_lane == "live_ready_review":
                         queue_reason = "quality_gate_live_ready"
-                    elif incubation_budget_track == "observe_incubation":
-                        queue_reason = "incubation_budget_observe_queue"
+                    elif submission_lane == "observe_incubation":
+                        queue_reason = "paper_observation_queue"
                     else:
                         queue_reason = "incubation_budget_deferred_queue"
                     await _update_strategy_status(
@@ -934,12 +1261,38 @@ class _StrategySubmitterActionsMixin:
                             snapshot,
                             gate,
                         )
+                        final_status = str(live_review_action.get("final_status") or final_status)
+                    elif submission_lane == "observe_incubation":
+                        paper_action = await self._enqueue_paper_observation(
+                            db,
+                            {**enriched_data, "status": final_status},
+                            snapshot,
+                        )
                     self._apply_submission_action_audit(
                         quality_report,
                         final_status=final_status,
                         submission_lane=submission_lane,
-                        submission_audit=live_review_action,
+                        submission_audit={
+                            **action_audit,
+                            **paper_action,
+                            **live_review_action,
+                            "submission_action_completed": bool(
+                                live_review_action
+                                or paper_action
+                                or action_audit.get("submission_action_completed")
+                            ),
+                        },
                     )
+                    action_audit = {
+                        **action_audit,
+                        **paper_action,
+                        **live_review_action,
+                        "submission_action_completed": bool(
+                            live_review_action
+                            or paper_action
+                            or action_audit.get("submission_action_completed")
+                        ),
+                    }
                 await self._record_experiment(
                     db,
                     candidate,
@@ -968,6 +1321,7 @@ class _StrategySubmitterActionsMixin:
                     quality_report,
                     final_status=final_status,
                     submission_lane=submission_lane,
+                    submission_audit=dict(action_audit or {}),
                 )
                 await self._record_experiment(
                     db,
@@ -1001,7 +1355,9 @@ class _StrategySubmitterActionsMixin:
                 "vector_fallback_used": (vector_audit or {}).get("fallback_used"),
                 "vector_fallback_reason": (vector_audit or {}).get("fallback_reason"),
                 "vector_latency_ms": (vector_audit or {}).get("latency_ms"),
+                **paper_action,
                 **live_review_action,
+                **action_audit,
                 "final_status": final_status,
             }
 
@@ -1097,6 +1453,10 @@ class _StrategySubmitterActionsMixin:
                 _assign_if_present(strategy_spec, "direction_bias", candidate_provenance.get("direction_bias"))
                 _assign_if_present(strategy_spec, "validation_profile_name", candidate_provenance.get("validation_profile"))
                 _assign_if_present(strategy_spec, "target_symbol_count", candidate_provenance.get("target_symbol_count"))
+                _assign_if_present(strategy_spec, "candidate_contract_hash", candidate.get("candidate_contract_hash"))
+                _assign_if_present(strategy_spec, "candidate_identity_signature", candidate.get("candidate_identity_signature"))
+                _assign_if_present(strategy_spec, "candidate_contract_snapshot", dict(candidate.get("candidate_contract_snapshot") or {}))
+                _assign_if_present(strategy_spec, "candidate_lineage_contract", dict(candidate.get("candidate_lineage_contract") or {}))
 
                 evaluation = dict(existing_evaluation)
                 _assign_if_present(evaluation, "generation_reason", candidate.get("generation_reason") or existing_evaluation.get("generation_reason"))
@@ -1121,6 +1481,10 @@ class _StrategySubmitterActionsMixin:
                 _assign_if_present(evaluation, "direction_bias", candidate_provenance.get("direction_bias"))
                 _assign_if_present(evaluation, "validation_profile_name", candidate_provenance.get("validation_profile"))
                 _assign_if_present(evaluation, "target_symbol_count", candidate_provenance.get("target_symbol_count"))
+                _assign_if_present(evaluation, "candidate_contract_hash", candidate.get("candidate_contract_hash"))
+                _assign_if_present(evaluation, "candidate_identity_signature", candidate.get("candidate_identity_signature"))
+                _assign_if_present(evaluation, "candidate_contract_snapshot", dict(candidate.get("candidate_contract_snapshot") or {}))
+                _assign_if_present(evaluation, "candidate_lineage_contract", dict(candidate.get("candidate_lineage_contract") or {}))
                 evaluation["quality_gate"] = gate
                 if validation_report is not None or "validation_report" not in evaluation:
                     evaluation["validation_report"] = validation_report or {}
@@ -1166,6 +1530,10 @@ class _StrategySubmitterActionsMixin:
                 _assign_if_present(result, "direction_bias", candidate_provenance.get("direction_bias"))
                 _assign_if_present(result, "validation_profile_name", candidate_provenance.get("validation_profile"))
                 _assign_if_present(result, "target_symbol_count", candidate_provenance.get("target_symbol_count"))
+                _assign_if_present(result, "candidate_contract_hash", candidate.get("candidate_contract_hash"))
+                _assign_if_present(result, "candidate_identity_signature", candidate.get("candidate_identity_signature"))
+                _assign_if_present(result, "candidate_contract_snapshot", dict(candidate.get("candidate_contract_snapshot") or {}))
+                _assign_if_present(result, "candidate_lineage_contract", dict(candidate.get("candidate_lineage_contract") or {}))
                 _assign_if_present(result, "quality_summary", quality_summary)
                 _assign_if_present(result, "backtest_metrics", backtest_payload)
                 _assign_if_present(result, "event_window_config", event_window_config)

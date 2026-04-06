@@ -97,3 +97,11 @@ def test_local_fallback_expands_breakout_and_reversal_into_new_families():
     assert breakout_spec.strategy_type == "sector_rotation"
     assert reversal_spec.strategy_type == "gap_fill"
     assert volatility_spec.strategy_type == "volatility_breakout"
+
+    breakout_candidate = breakout_spec.to_candidate("strategy_factory:test", "exp_breakout")
+    volatility_candidate = volatility_spec.to_candidate("strategy_factory:test", "exp_volatility")
+
+    assert breakout_candidate["generation_reason"]["template_generation_profile"] == "conservative_rotation"
+    assert breakout_candidate["generation_reason"]["rule_template_contract"]["portfolio_weight_method"] == "sector_score_tilt"
+    assert volatility_candidate["generation_reason"]["template_generation_profile"] == "conservative_breakout"
+    assert volatility_candidate["generation_reason"]["rule_template_contract"]["target_layer"] == "target"

@@ -390,3 +390,69 @@ def test_resolve_bulk_research_task_concurrency_obeys_provider_limit_when_bulk_l
 
     assert scheduler._resolve_research_task_concurrency(fake_autonomy, has_bulk_tasks=True) == 2
     assert scheduler._resolve_bulk_research_task_concurrency(fake_autonomy, has_bulk_tasks=True) == 2
+
+
+def test_merge_autonomy_tasks_preserves_scan_lane_and_interleaves_bulk_families():
+    scan_tasks = [
+        {
+            "task_id": "scan_1",
+            "task_key": "scan_1",
+            "task_source": "snapshot",
+            "opportunity_type": "snapshot_case",
+            "priority": 1,
+        }
+    ]
+    bulk_tasks = [
+        {
+            "task_id": "bulk_momentum_1",
+            "task_key": "bulk_momentum_1",
+            "task_source": "bulk_stock_matrix",
+            "candidate_family": "momentum",
+            "priority": 100,
+        },
+        {
+            "task_id": "bulk_momentum_2",
+            "task_key": "bulk_momentum_2",
+            "task_source": "bulk_stock_matrix",
+            "candidate_family": "momentum",
+            "priority": 99,
+        },
+        {
+            "task_id": "bulk_mean_reversion_1",
+            "task_key": "bulk_mean_reversion_1",
+            "task_source": "bulk_stock_matrix",
+            "candidate_family": "mean_reversion",
+            "priority": 98,
+        },
+        {
+            "task_id": "bulk_mean_reversion_2",
+            "task_key": "bulk_mean_reversion_2",
+            "task_source": "bulk_stock_matrix",
+            "candidate_family": "mean_reversion",
+            "priority": 97,
+        },
+        {
+            "task_id": "bulk_breakout_1",
+            "task_key": "bulk_breakout_1",
+            "task_source": "bulk_stock_matrix",
+            "candidate_family": "breakout",
+            "priority": 96,
+        },
+    ]
+
+    merged_tasks, budget_meta = StrategyFactoryScheduler._merge_autonomy_tasks_with_budget(
+        _FakeScanner(scan_tasks),
+        scan_tasks,
+        bulk_tasks,
+    )
+
+    assert [task["task_id"] for task in merged_tasks] == [
+        "scan_1",
+        "bulk_momentum_1",
+        "bulk_mean_reversion_1",
+        "bulk_breakout_1",
+        "bulk_momentum_2",
+        "bulk_mean_reversion_2",
+    ]
+    assert budget_meta["selected_scan_task_count"] == 1
+    assert budget_meta["selected_bulk_task_count"] == 5

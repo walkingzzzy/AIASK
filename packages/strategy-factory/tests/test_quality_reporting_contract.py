@@ -118,12 +118,27 @@ def test_build_quality_report_keeps_summary_fields():
             "submission_lane": "live_ready_review",
             "direct_trade_candidate": True,
             "live_review_ready": True,
+            "paper_lane_ready": True,
             "paper_account_id": "paper_001",
+            "paper_account_status": "active",
             "runtime_control_mode": "monitor",
             "runtime_control_status": "active",
             "promotion_review_id": "pr_001",
             "promotion_review_status": "watch",
             "promotion_review_recommendation": "observe",
+            "submission_action": {
+                "type": "runtime_review",
+                "trigger_reason": "live_candidate_ready",
+                "gaps": [],
+                "fallback_conditions": ["downgrade_to_paper_if_runtime_review_fails"],
+                "next_step": "pool_admission",
+            },
+            "submission_action_type": "runtime_review",
+            "submission_action_trigger": "live_candidate_ready",
+            "submission_action_gaps": [],
+            "submission_action_fallback_conditions": ["downgrade_to_paper_if_runtime_review_fails"],
+            "submission_action_next_step": "pool_admission",
+            "submission_action_completed": True,
             "task_preference": {
                 "preferred_strategy_types": ["momentum"],
                 "preference_strength": "medium",
@@ -148,9 +163,15 @@ def test_build_quality_report_keeps_summary_fields():
     assert report["summary"]["submission_lane"] == "live_ready_review"
     assert report["summary"]["direct_trade_candidate"] is True
     assert report["summary"]["live_review_ready"] is True
+    assert report["summary"]["paper_lane_ready"] is True
     assert report["summary"]["paper_account_id"] == "paper_001"
+    assert report["summary"]["paper_account_status"] == "active"
     assert report["summary"]["runtime_control_mode"] == "monitor"
     assert report["summary"]["promotion_review_status"] == "watch"
+    assert report["summary"]["submission_action_type"] == "runtime_review"
+    assert report["summary"]["submission_action_trigger"] == "live_candidate_ready"
+    assert report["summary"]["submission_action_next_step"] == "pool_admission"
+    assert report["summary"]["submission_action_completed"] is True
     assert report["summary"]["market_ruleset"] == "cn_equity"
     assert report["summary"]["target_weight_scheme"] == "equal_weight"
     assert report["task_signature"] == "event_driven|evt_1|ai||event_target_only|600519"
@@ -166,10 +187,17 @@ def test_build_quality_report_keeps_summary_fields():
     assert report["submission_lane"] == "live_ready_review"
     assert report["direct_trade_candidate"] is True
     assert report["live_review_ready"] is True
+    assert report["paper_lane_ready"] is True
     assert report["paper_account_id"] == "paper_001"
+    assert report["paper_account_status"] == "active"
     assert report["runtime_control_status"] == "active"
     assert report["promotion_review_id"] == "pr_001"
     assert report["promotion_review_recommendation"] == "observe"
+    assert report["submission_action"]["type"] == "runtime_review"
+    assert report["submission_action_type"] == "runtime_review"
+    assert report["submission_action_trigger"] == "live_candidate_ready"
+    assert report["submission_action_next_step"] == "pool_admission"
+    assert report["submission_action_completed"] is True
     assert report["admission_evaluations"]["live"]["passed"] is True
     assert report["position_assumption"] == "single_name_full_notional"
     assert report["cost_assumptions"]["commission_bps"] == 8

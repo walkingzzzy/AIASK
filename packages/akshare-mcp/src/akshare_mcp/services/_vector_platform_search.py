@@ -275,16 +275,25 @@ class _StrategyVectorPlatformSearchMixin:
                 return []
             pgvector_available = getattr(db, 'supports_pgvector', lambda: False)() and hasattr(db, 'search_strategy_vector_index_items_by_embedding')
             if requested_backend == 'pgvector' and pgvector_available:
-                pg_rows = await db.search_strategy_vector_index_items_by_embedding(
-                    query_embedding=query_embedding.tolist(),
-                    index_name=resolved_index_name,
-                    index_version=str(snapshot.get('index_version') or ''),
-                    profile_type=profile_type,
-                    exclude_strategy_id=strategy_id,
-                    limit=max(1, min(int(candidate_limit or 80), 500)),
-                    metric=str(query_profile.get('metric') or 'cosine'),
-                    index_params=dict(snapshot.get('index_params') or {}),
-                )
+                search_kwargs = {
+                    'query_embedding': query_embedding.tolist(),
+                    'index_name': resolved_index_name,
+                    'index_version': str(snapshot.get('index_version') or ''),
+                    'profile_type': profile_type,
+                    'exclude_strategy_id': strategy_id,
+                    'limit': max(1, min(int(candidate_limit or 80), 500)),
+                    'metric': str(query_profile.get('metric') or 'cosine'),
+                }
+                index_params = dict(snapshot.get('index_params') or {})
+                if index_params:
+                    search_kwargs['index_params'] = index_params
+                try:
+                    pg_rows = await db.search_strategy_vector_index_items_by_embedding(**search_kwargs)
+                except TypeError as exc:
+                    if 'index_params' not in str(exc):
+                        raise
+                    search_kwargs.pop('index_params', None)
+                    pg_rows = await db.search_strategy_vector_index_items_by_embedding(**search_kwargs)
                 if pg_rows:
                     results = []
                     candidate_count = 0

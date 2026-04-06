@@ -49,6 +49,20 @@ def resolve_governed_pool_state(factor_summary: dict[str, Any] | None = None) ->
     }
 
 
+def _has_legacy_factor_signal_summary(factor_summary: dict[str, Any] | None = None) -> bool:
+    summary = dict(factor_summary or {})
+    factor_source_mode = str(summary.get("factor_source_mode") or "").strip().lower()
+    if factor_source_mode:
+        return False
+    if int(summary.get("active_factor_count") or 0) > 0:
+        return True
+    if list(summary.get("top_factor_names") or []):
+        return True
+    if list(summary.get("preferred_strategy_types") or []):
+        return True
+    return False
+
+
 def resolve_factor_refresh_trigger(
     factor_research: dict[str, Any] | None = None,
     *,
@@ -58,6 +72,8 @@ def resolve_factor_refresh_trigger(
 
     artifact = dict(factor_research or {})
     summary = dict(factor_summary or artifact.get("summary") or {})
+    if bool(artifact.get("lightweight_mock_fallback")) or bool(summary.get("lightweight_mock_fallback")):
+        return None
     factor_source_mode = str(summary.get("factor_source_mode") or "").strip().lower()
     active_candidate_count = int(summary.get("active_candidate_count") or 0)
     governed_source_candidate_count = int(summary.get("governed_source_candidate_count") or 0)
@@ -74,6 +90,8 @@ def resolve_factor_refresh_trigger(
         return "governed_pool_missing_after_scheduler_success"
     if governed_candidate_pool_active:
         return None
+    if _has_legacy_factor_signal_summary(summary):
+        return None
     if factor_source_mode == "seed_fallback":
         return (
             "seed_fallback_without_governed_pool"
@@ -83,6 +101,37 @@ def resolve_factor_refresh_trigger(
     if not scheduler_last_run and active_candidate_count <= 0 and governed_source_candidate_count <= 0:
         return "scheduler_warmup_missing_governed_pool"
     return None
+
+
+def resolve_governed_pool_runtime_state(
+    factor_summary: dict[str, Any] | None = None,
+    *,
+    factor_refresh: dict[str, Any] | None = None,
+    factor_refresh_recommendation_reason: str | None = None,
+) -> str:
+    summary = dict(factor_summary or {})
+    refresh = dict(factor_refresh or {})
+    governed_pool_state = resolve_governed_pool_state(summary)
+    governed_candidate_pool_active = bool(governed_pool_state.get("active"))
+    scheduler_recent_success = bool(summary.get("scheduler_recent_success"))
+    factor_source_mode = str(summary.get("factor_source_mode") or "").strip().lower()
+    refresh_attempted = bool(refresh.get("refresh_attempted"))
+    refresh_status = str(refresh.get("refresh_status") or "").strip().lower()
+    auto_refresh_enabled = bool(refresh.get("auto_refresh_enabled"))
+    governed_pool_missing_after_scheduler_success = bool(
+        factor_source_mode == "governed_pool_missing_after_scheduler_success"
+        or bool(summary.get("governed_pool_missing_after_scheduler_success"))
+        or (scheduler_recent_success and not governed_candidate_pool_active)
+    )
+    if governed_candidate_pool_active:
+        return "governed_pool_active"
+    if governed_pool_missing_after_scheduler_success:
+        return "blocked_by_governed_pool"
+    if refresh_attempted and refresh_status in {"failed", "timeout"}:
+        return "blocked_by_governed_pool"
+    if auto_refresh_enabled and (refresh_attempted or factor_refresh_recommendation_reason):
+        return "refreshing_pool"
+    return "seed_fallback"
 
 
 class ReadinessService:
@@ -139,7 +188,13 @@ class ReadinessService:
         governed_candidate_pool_active = bool(governed_pool_state.get("active"))
         governed_pool_missing_after_scheduler_success = bool(
             factor_source_mode == "governed_pool_missing_after_scheduler_success"
+            or bool(factor_summary.get("governed_pool_missing_after_scheduler_success"))
             or (scheduler_recent_success and not governed_candidate_pool_active)
+        )
+        governed_pool_runtime_state = resolve_governed_pool_runtime_state(
+            factor_summary,
+            factor_refresh=factor_refresh,
+            factor_refresh_recommendation_reason=factor_refresh_recommendation_reason,
         )
 
         sources = dict(snapshot.get("sources") or {})
@@ -189,6 +244,14 @@ class ReadinessService:
             warnings.append("factor_scheduler_recent_success_without_governed_pool")
             blockers.append("governed_candidate_pool_missing_after_scheduler_success")
             critical_blockers.append("governed_candidate_pool_missing_after_scheduler_success")
+            score -= 0.18
+        if governed_pool_runtime_state == "refreshing_pool":
+            warnings.append("governed_candidate_pool_refreshing")
+            score -= 0.05
+        elif governed_pool_runtime_state == "blocked_by_governed_pool" and not governed_pool_missing_after_scheduler_success:
+            warnings.append("governed_candidate_pool_refresh_blocked")
+            blockers.append("governed_candidate_pool_unavailable_after_refresh")
+            critical_blockers.append("governed_candidate_pool_unavailable_after_refresh")
             score -= 0.18
         if bool(factor_summary.get("stale")):
             if governed_candidate_pool_active:
@@ -244,6 +307,7 @@ class ReadinessService:
             "factor_research_degraded": bool(factor_summary.get("degraded")),
             "factor_source_mode": factor_summary.get("factor_source_mode"),
             "governed_candidate_pool_active": governed_candidate_pool_active,
+            "governed_candidate_pool_runtime_state": governed_pool_runtime_state,
             "governed_candidate_pool_mode": governed_candidate_pool_mode,
             "governed_candidate_pool_provisional": governed_candidate_pool_provisional,
             "governed_pool_missing_after_scheduler_success": governed_pool_missing_after_scheduler_success,
@@ -271,5 +335,9 @@ class ReadinessService:
         except (TypeError, ValueError):
             return default
 
-
-__all__ = ["ReadinessService", "resolve_factor_refresh_trigger", "resolve_governed_pool_state"]
+__all__ = [
+    "ReadinessService",
+    "resolve_factor_refresh_trigger",
+    "resolve_governed_pool_runtime_state",
+    "resolve_governed_pool_state",
+]

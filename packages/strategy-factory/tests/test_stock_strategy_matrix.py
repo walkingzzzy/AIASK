@@ -236,11 +236,39 @@ async def test_stock_strategy_matrix_planner_prefers_factor_research_stock_famil
                 "stock_family_allocation": {
                     "600001": {
                         "families": ["value_factor"],
+                        "family_plans": [
+                            {
+                                "family": "value_factor",
+                                "family_rank": 1,
+                                "budget": 1.0,
+                                "budget_weight": 1.0,
+                                "failure_penalty": 0.08,
+                                "validation_profile": {
+                                    "profile": "factor_rank_validation",
+                                    "validation_focus": "candidate_target_only",
+                                    "primary_validation_layer": "target",
+                                },
+                            }
+                        ],
                         "priority": 0.95,
                         "source_mode": "stock_universe_projection",
                     },
                     "300001": {
                         "families": ["momentum"],
+                        "family_plans": [
+                            {
+                                "family": "momentum",
+                                "family_rank": 1,
+                                "budget": 1.0,
+                                "budget_weight": 1.0,
+                                "failure_penalty": 0.22,
+                                "validation_profile": {
+                                    "profile": "trade_rule_validation",
+                                    "validation_focus": "candidate_target_only",
+                                    "primary_validation_layer": "target",
+                                },
+                            }
+                        ],
                         "priority": 0.30,
                         "source_mode": "stock_universe_projection",
                     },
@@ -257,6 +285,98 @@ async def test_stock_strategy_matrix_planner_prefers_factor_research_stock_famil
     assert report["summary"]["stock_family_allocation_applied_count"] == 2
     assert report["summary"]["stock_family_allocation_coverage_ratio"] == pytest.approx(1.0)
     assert tasks[0]["stock_family_priority"] == pytest.approx(0.95)
+    assert tasks[0]["stock_family_budget_weight"] == pytest.approx(1.0)
+    assert tasks[0]["stock_family_failure_penalty"] == pytest.approx(0.08)
+    assert tasks[0]["validation_profile"]["profile"] == "factor_rank_validation"
+    assert tasks[0]["validation_profile"]["validation_focus"] == "candidate_target_only"
+
+
+@pytest.mark.asyncio
+async def test_stock_strategy_matrix_planner_uses_allocation_family_plan_as_primary_driver(monkeypatch):
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_ENABLED", True)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK", 2)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN", 4)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN", 4)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK", 1)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_TASKS_PER_SHARD", 10)
+
+    class _DB:
+        async def list_stock_universe(self, limit=500, offset=0):
+            del limit, offset
+            return [
+                {
+                    "code": "300001",
+                    "name": "算力成长A",
+                    "industry": "算力",
+                    "sector": "算力",
+                    "market_cap": 120_000_000_000,
+                    "pe_ratio": 48,
+                    "pb_ratio": 4.1,
+                },
+                {
+                    "code": "600001",
+                    "name": "银行价值A",
+                    "industry": "银行",
+                    "sector": "银行",
+                    "market_cap": 88_000_000_000,
+                    "pe_ratio": 8.5,
+                    "pb_ratio": 0.9,
+                },
+            ]
+
+    report = await StockStrategyMatrixPlanner().plan(
+        _DB(),
+        {
+            "date": "2026-04-02",
+            "fear_greed_index": 68,
+            "fg_level": "greed",
+            "hot_sectors": ["算力"],
+            "cold_sectors": ["银行"],
+            "factor_research": {
+                "active_factors": ["growth", "value"],
+                "stock_family_allocation": {
+                    "300001": {
+                        "families": ["quality_factor", "momentum"],
+                        "family_plans": [
+                            {
+                                "family": "quality_factor",
+                                "family_rank": 1,
+                                "budget_weight": 0.68,
+                                "failure_penalty": 0.08,
+                                "validation_profile": {
+                                    "profile": "factor_rank_validation",
+                                    "validation_focus": "candidate_target_only",
+                                    "primary_validation_layer": "target",
+                                },
+                            },
+                            {
+                                "family": "momentum",
+                                "family_rank": 2,
+                                "budget_weight": 0.32,
+                                "failure_penalty": 0.25,
+                                "validation_profile": {
+                                    "profile": "trade_rule_validation",
+                                    "validation_focus": "candidate_target_only",
+                                    "primary_validation_layer": "target",
+                                },
+                            },
+                        ],
+                        "priority": 0.91,
+                        "source_mode": "stock_universe_projection",
+                    }
+                },
+            },
+        },
+    )
+
+    tasks = [task for task in report["tasks"] if task["target_symbols"][0] == "300001"]
+    assert [task["candidate_family"] for task in tasks] == ["quality_factor", "momentum"]
+    assert [task["matrix_family_rank"] for task in tasks] == [1, 2]
+    assert tasks[0]["stock_family_budget_weight"] == pytest.approx(0.68)
+    assert tasks[1]["stock_family_budget_weight"] == pytest.approx(0.32)
+    assert tasks[0]["validation_profile"]["profile"] == "factor_rank_validation"
+    assert tasks[1]["validation_profile"]["profile"] == "trade_rule_validation"
+    assert all(task["candidate_family"] != "growth_factor" for task in tasks)
 
 
 @pytest.mark.asyncio

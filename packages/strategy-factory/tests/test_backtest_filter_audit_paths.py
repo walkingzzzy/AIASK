@@ -148,6 +148,66 @@ class _WeightedPortfolioBacktestEngine:
         }
 
 
+class _SharedCashPortfolioBacktestEngine:
+    portfolio_calls = []
+
+    @classmethod
+    def run_backtest(cls, code, klines, strategy_type, params):
+        return {
+            "success": True,
+            "data": {
+                "code": code,
+                "strategy": strategy_type,
+                "sharpe_ratio": 0.5,
+                "total_return": 0.04,
+                "max_drawdown": 0.12,
+                "win_rate": 0.45,
+                "trades_count": 3,
+                "avg_holding_days": 5.0,
+                "turnover_proxy": 0.8,
+                "equity_curve": [100.0, 101.0, 102.0],
+            },
+        }
+
+    @classmethod
+    def run_portfolio_backtest(cls, market_data, strategy_type, params):
+        cls.portfolio_calls.append(
+            {
+                "codes": list(market_data.keys()),
+                "strategy_type": strategy_type,
+                "params": dict(params or {}),
+            }
+        )
+        return {
+            "success": True,
+            "data": {
+                "strategy": strategy_type,
+                "portfolio_mode": "shared_cash",
+                "aggregation_mode": "portfolio_engine_shared_cash",
+                "allocation_mode": "equal_weight",
+                "allocation_weights": {"600519": 1 / 3, "000858": 1 / 3, "000001": 1 / 3},
+                "component_count": 3,
+                "total_return": 0.18,
+                "max_drawdown": 0.05,
+                "sharpe_ratio": 1.4,
+                "win_rate": 0.6,
+                "trades_count": 12,
+                "avg_holding_days": 7.0,
+                "turnover_proxy": 1.4,
+                "cost_assumptions": {"commission_rate": params.get("commission")},
+                "explicit_cost_breakdown": {"commission_rate": params.get("commission")},
+                "implicit_cost_breakdown": {"implementation_shortfall_proxy": 12.0},
+                "tradability_summary": {"tradability_filter": params.get("tradability_filter"), "tradable_ratio": 0.97},
+                "capacity_summary": {"capacity_participation_rate": params.get("capacity_participation_rate")},
+                "implementation_shortfall_model_source": "estimated",
+                "implementation_shortfall_components": {"effective_total_bps": 12.0},
+                "position_assumption": params.get("position_assumption"),
+                "equity_curve": [100000.0, 108000.0, 118000.0],
+                "portfolio_engine_used": True,
+            },
+        }
+
+
 def _patch_runtime(monkeypatch, engine_cls=_FakeBacktestEngine):
     monkeypatch.setattr(backtest_filter_module, "get_backtest_engine_class", lambda: engine_cls)
     monkeypatch.setattr(backtest_filter_module, "_get_strategy_factory_package", lambda: SimpleNamespace(asyncio=asyncio))
@@ -308,6 +368,117 @@ async def test_backtest_filter_builds_real_event_window_metrics(monkeypatch):
     assert derived_metrics["event_window_hit_ratio"] == pytest.approx(event_metrics["hit_ratio"], abs=1e-4)
 
 
+@pytest.mark.asyncio
+async def test_backtest_filter_prefers_event_samples_over_curve_tail_proxy(monkeypatch):
+    _patch_runtime(monkeypatch, engine_cls=_FakeBacktestEngine)
+    db = MagicMock()
+    db.get_klines = AsyncMock(return_value=_make_klines())
+
+    candidate = {
+        "strategy_type": "momentum",
+        "params": {"lookback": 20, "threshold": 0.02},
+        "target_symbols": ["600519", "000858", "000001"],
+        "research_task": {
+            "task_source": "event_driven",
+            "event_id": "evt_sample_driven",
+            "target_symbols": ["600519", "000858", "000001"],
+            "validation_focus": "event_target_only",
+            "event_samples": [
+                {
+                    "sample_id": "sample_1",
+                    "event_id": "evt_sample_driven",
+                    "event_time": "2026-03-01T09:30:00+08:00",
+                    "target_return": 0.11,
+                    "benchmark_return": 0.03,
+                    "abnormal_return": 0.08,
+                    "car": 0.075,
+                    "bhar": 0.079,
+                    "hit": True,
+                    "post_event_decay": -0.22,
+                    "pre_days": 2,
+                    "post_days": 5,
+                    "estimation_days": 30,
+                    "control_group": ["000300"],
+                },
+                {
+                    "sample_id": "sample_2",
+                    "event_id": "evt_sample_driven",
+                    "event_time": "2026-03-05T09:30:00+08:00",
+                    "target_return": 0.07,
+                    "benchmark_return": 0.01,
+                    "abnormal_return": 0.06,
+                    "car": 0.058,
+                    "bhar": 0.061,
+                    "hit": False,
+                    "post_event_decay": -0.35,
+                    "pre_days": 2,
+                    "post_days": 4,
+                    "estimation_days": 28,
+                    "control_group": ["000905"],
+                },
+            ],
+        },
+    }
+
+    passed = await BacktestFilter().filter([candidate], db)
+
+    assert len(passed) == 1
+    event_metrics = passed[0]["backtest_result"]["event_window_metrics"]
+    assert event_metrics["event_study_mode"] == "sample_driven"
+    assert event_metrics["event_sample_count"] == 2
+    assert event_metrics["event_anchor_count"] == 2
+    assert event_metrics["benchmark_source"] == "sample_control_group"
+    assert event_metrics["abnormal_return"] == pytest.approx(0.07)
+    assert event_metrics["car"] == pytest.approx(0.0665)
+    assert event_metrics["bhar"] == pytest.approx(0.07)
+    assert event_metrics["hit_ratio"] == pytest.approx(0.5)
+    assert event_metrics["control_group_count"] == 2
+    assert event_metrics["traceable_to_event_samples"] is True
+
+
+@pytest.mark.asyncio
+async def test_backtest_filter_builds_minimal_event_samples_from_context(monkeypatch):
+    _patch_runtime(monkeypatch, engine_cls=_EventWindowBacktestEngine)
+    db = MagicMock()
+    db.get_klines = AsyncMock(return_value=_make_klines())
+
+    candidate = {
+        "strategy_type": "momentum",
+        "params": {"lookback": 20, "threshold": 0.02},
+        "target_symbols": ["600519", "600000", "601318"],
+        "research_task": {
+            "task_source": "event_driven",
+            "event_id": "evt_auto_minimal",
+            "target_symbols": ["600519", "600000", "601318"],
+            "validation_focus": "event_target_only",
+            "event_window": {"pre_days": 1, "post_days": 2},
+            "estimation_window": {"lookback_days": 5},
+            "event_context": {
+                "event_id": "evt_auto_minimal",
+                "event_time": "2026-03-10T09:30:00+08:00",
+                "control_symbols": ["000858"],
+            },
+        },
+    }
+
+    passed = await BacktestFilter().filter([candidate], db)
+
+    assert len(passed) == 1
+    event_metrics = passed[0]["backtest_result"]["event_window_metrics"]
+    assert event_metrics["event_study_mode"] == "sample_driven_minimal"
+    assert event_metrics["event_sample_source"] == "auto_context_minimal"
+    assert event_metrics["event_sample_count"] == 3
+    assert event_metrics["event_anchor_count"] == 1
+    assert event_metrics["benchmark_source"] == "event_context_control_group"
+    assert event_metrics["control_group_count"] == 1
+    assert event_metrics["traceable_to_event_samples"] is True
+    assert event_metrics["event_sample_ids"] == [
+        "evt_auto_minimal:600519",
+        "evt_auto_minimal:600000",
+        "evt_auto_minimal:601318",
+    ]
+
+
 def test_build_target_quality_gate_summary_flags_gate_1_sample_and_stability_risks():
     candidate = {
         "strategy_type": "rsi",
@@ -379,3 +550,45 @@ async def test_backtest_filter_honors_target_weight_map_for_portfolio_aggregatio
     assert metrics["allocation_weights"]["600519"] == pytest.approx(0.75, abs=1e-6)
     assert metrics["allocation_weights"]["000858"] == pytest.approx(0.25, abs=1e-6)
     assert metrics["total_return"] == pytest.approx(0.10, abs=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_backtest_filter_prefers_portfolio_engine_for_multi_name_candidates(monkeypatch):
+    _SharedCashPortfolioBacktestEngine.portfolio_calls = []
+    _patch_runtime(monkeypatch, engine_cls=_SharedCashPortfolioBacktestEngine)
+    db = MagicMock()
+    db.get_klines = AsyncMock(return_value=_make_klines())
+
+    candidate = {
+        "strategy_type": "momentum",
+        "params": {"lookback": 20, "threshold": 0.02},
+        "target_symbols": ["600519", "000858", "000001"],
+        "research_task": {
+            "task_source": "snapshot",
+            "target_symbols": ["600519", "000858", "000001"],
+            "validation_focus": "target_plus_representative",
+        },
+        "execution_assumptions": {
+            "commission_rate": 0.00025,
+            "tradability_filter": True,
+            "capacity_participation_rate": 0.12,
+        },
+        "portfolio_spec": {
+            "position_assumption": "equal_weight_proxy",
+            "target_weight_scheme": "equal_weight",
+        },
+    }
+
+    passed = await BacktestFilter().filter([candidate], db)
+
+    assert len(passed) == 1
+    result = passed[0]["backtest_result"]
+    metrics = result["metrics"]
+    target_layer = result["layers"]["target"]
+    assert _SharedCashPortfolioBacktestEngine.portfolio_calls
+    assert metrics["aggregation_mode"] == "portfolio_engine_shared_cash"
+    assert metrics["total_return"] == pytest.approx(0.18)
+    assert metrics["trades_count"] == pytest.approx(12.0)
+    assert result["portfolio_backtest_mode"] == "portfolio_engine_shared_cash"
+    assert result["portfolio_backtest_coverage"] == pytest.approx(1.0)
+    assert target_layer["metrics_source"] == "portfolio_engine"

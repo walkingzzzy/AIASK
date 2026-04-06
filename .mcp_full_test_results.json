@@ -1,0 +1,983 @@
+{
+  "summary": {
+    "total": 155,
+    "ok": 116,
+    "failed": 20,
+    "error": 19,
+    "missing": 0,
+    "problem_tools": [
+      {
+        "tool": "ai_workflow_artifact",
+        "status": "failed",
+        "detail": "artifact not found: smoke_nonexistent"
+      },
+      {
+        "tool": "analyze_stock_workflow",
+        "status": "failed",
+        "detail": "name '_fail_quote_response' is not defined"
+      },
+      {
+        "tool": "backtest_factor",
+        "status": "failed",
+        "detail": "Not enough stocks for grouping: valid_codes=2, required>=5, stats={'input_codes': 2, 'processed_codes': 2, 'skipped_no_kline': 0, 'skipped_no_financials': 0, 'skipped_no_future_window': 0, 'skipped_no_factor_value': 0, 'skipped_invalid_return': 0, 'skipped_untradable': 0, 'periods_total': 0, 'periods_effective': 0, 'candidate_signals': 0, 'filled_signals': 0}"
+      },
+      {
+        "tool": "build_event_context",
+        "status": "error",
+        "detail": "ToolError: Error executing tool build_event_context: build_event_context() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "build_quant_context",
+        "status": "error",
+        "detail": "ToolError: Error executing tool build_quant_context: build_quant_context() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "build_stock_context",
+        "status": "error",
+        "detail": "ToolError: Error executing tool build_stock_context: build_stock_context() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "calculate_factor",
+        "status": "error",
+        "detail": "ToolError: Error executing tool calculate_factor: 1 validation error for calculate_factorArguments\ncode\n  Field required [type=missing, input_value={'codes': ['600519'], 'factor': 'mom_5d'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing"
+      },
+      {
+        "tool": "calculate_factor_ic",
+        "status": "failed",
+        "detail": "Not enough valid data for IC calculation: sample_size=2, required>=3, stats={'input_codes': 2, 'processed': 2, 'skipped_no_kline': 0, 'skipped_no_financials': 0, 'skipped_no_factor_value': 0, 'skipped_invalid_return': 0, 'style_info_available': 2}"
+      },
+      {
+        "tool": "check_all_alerts",
+        "status": "failed",
+        "detail": "name '_fail_quote_response' is not defined"
+      },
+      {
+        "tool": "data_validation",
+        "status": "failed",
+        "detail": "records is required and must be non-empty"
+      },
+      {
+        "tool": "data_warmup",
+        "status": "failed",
+        "detail": "Unknown action: help"
+      },
+      {
+        "tool": "dcf_valuation",
+        "status": "failed",
+        "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+      },
+      {
+        "tool": "ddm_valuation",
+        "status": "failed",
+        "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+      },
+      {
+        "tool": "experiment_tracker",
+        "status": "failed",
+        "detail": "Unknown action: help. Supported: backend, log_run, log_metric, log_artifact, get_run, list_runs."
+      },
+      {
+        "tool": "fuse_decision_payload",
+        "status": "error",
+        "detail": "ToolError: Error executing tool fuse_decision_payload: fuse_decision_payload() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "get_cb_info",
+        "status": "failed",
+        "detail": "可转债代码不能为空（支持 code / stock_code / symbol）"
+      },
+      {
+        "tool": "get_conditional_returns",
+        "status": "failed",
+        "detail": "conditions is required"
+      },
+      {
+        "tool": "get_historical_valuation",
+        "status": "failed",
+        "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+      },
+      {
+        "tool": "get_investment_analysis",
+        "status": "failed",
+        "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+      },
+      {
+        "tool": "get_realtime_quote",
+        "status": "error",
+        "detail": "ToolError: Error executing tool get_realtime_quote: name '_fail_quote_response' is not defined"
+      },
+      {
+        "tool": "get_stock_capital",
+        "status": "failed",
+        "detail": "股票代码不能为空（支持 code / stock_code / symbol / ticker）"
+      },
+      {
+        "tool": "get_stock_notices",
+        "status": "error",
+        "detail": "ToolError: Error executing tool get_stock_notices: 2 validation errors for get_stock_noticesArguments\nstart_date\n  Field required [type=missing, input_value={'stock_code': '600519', 'limit': 3}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing\nend_date\n  Field required [type=missing, input_value={'stock_code': '600519', 'limit': 3}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing"
+      },
+      {
+        "tool": "get_stock_text_signals",
+        "status": "failed",
+        "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+      },
+      {
+        "tool": "get_unified_decision",
+        "status": "error",
+        "detail": "ToolError: Error executing tool get_unified_decision: get_unified_decision() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "get_unified_decision_details",
+        "status": "error",
+        "detail": "ToolError: Error executing tool get_unified_decision_details: get_unified_decision_details() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "get_unified_decision_summary",
+        "status": "error",
+        "detail": "ToolError: Error executing tool get_unified_decision_summary: get_unified_decision_summary() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "get_valuation_metrics",
+        "status": "failed",
+        "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+      },
+      {
+        "tool": "optimize_portfolio",
+        "status": "error",
+        "detail": "ToolError: Error executing tool optimize_portfolio: 1 validation error for optimize_portfolioArguments\nstocks\n  Field required [type=missing, input_value={'codes': ['600519', '000...], 'target_return': 0.1}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing"
+      },
+      {
+        "tool": "prediction_diagnosis_workflow",
+        "status": "error",
+        "detail": "ToolError: Error executing tool prediction_diagnosis_workflow: 2 validation errors for prediction_diagnosis_workflowArguments\nprobabilities\n  Field required [type=missing, input_value={'code': '600519'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing\nlabels\n  Field required [type=missing, input_value={'code': '600519'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing"
+      },
+      {
+        "tool": "relative_valuation",
+        "status": "failed",
+        "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+      },
+      {
+        "tool": "run_decision_gate",
+        "status": "error",
+        "detail": "ToolError: Error executing tool run_decision_gate: run_decision_gate() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "scenario_dcf_valuation",
+        "status": "failed",
+        "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+      },
+      {
+        "tool": "search_by_kline",
+        "status": "error",
+        "detail": "ToolError: Error executing tool search_by_kline: search_by_kline() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "search_similar_stocks",
+        "status": "error",
+        "detail": "ToolError: Error executing tool search_similar_stocks: search_similar_stocks() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "search_skills",
+        "status": "error",
+        "detail": "ToolError: Error executing tool search_skills: 1 validation error for search_skillsArguments\nkeyword\n  Field required [type=missing, input_value={'query': 'akshare', 'limit': 5}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing"
+      },
+      {
+        "tool": "semantic_stock_search",
+        "status": "error",
+        "detail": "ToolError: Error executing tool semantic_stock_search: semantic_stock_search() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "should_i_buy",
+        "status": "error",
+        "detail": "ToolError: Error executing tool should_i_buy: should_i_buy() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "should_i_sell",
+        "status": "error",
+        "detail": "ToolError: Error executing tool should_i_sell: should_i_sell() got an unexpected keyword argument 'args'"
+      },
+      {
+        "tool": "validate_factor_oos",
+        "status": "failed",
+        "detail": "name '_build_factor_return_panels' is not defined"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "tool": "ai_workflow_artifact",
+      "status": "failed",
+      "detail": "artifact not found: smoke_nonexistent"
+    },
+    {
+      "tool": "alerts_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "analyze_portfolio_risk",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "analyze_portfolio_risk_barra",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "analyze_research_report",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "analyze_stock_sentiment",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "analyze_stock_workflow",
+      "status": "failed",
+      "detail": "name '_fail_quote_response' is not defined"
+    },
+    {
+      "tool": "available_tools",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "backtest_factor",
+      "status": "failed",
+      "detail": "Not enough stocks for grouping: valid_codes=2, required>=5, stats={'input_codes': 2, 'processed_codes': 2, 'skipped_no_kline': 0, 'skipped_no_financials': 0, 'skipped_no_future_window': 0, 'skipped_no_factor_value': 0, 'skipped_invalid_return': 0, 'skipped_untradable': 0, 'periods_total': 0, 'periods_effective': 0, 'candidate_signals': 0, 'filled_signals': 0}"
+    },
+    {
+      "tool": "backtest_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "batch_sync_klines",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "benchmark_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "build_event_context",
+      "status": "error",
+      "detail": "ToolError: Error executing tool build_event_context: build_event_context() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "build_quant_context",
+      "status": "error",
+      "detail": "ToolError: Error executing tool build_quant_context: build_quant_context() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "build_stock_context",
+      "status": "error",
+      "detail": "ToolError: Error executing tool build_stock_context: build_stock_context() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "calculate_factor",
+      "status": "error",
+      "detail": "ToolError: Error executing tool calculate_factor: 1 validation error for calculate_factorArguments\ncode\n  Field required [type=missing, input_value={'codes': ['600519'], 'factor': 'mom_5d'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing"
+    },
+    {
+      "tool": "calculate_factor_ic",
+      "status": "failed",
+      "detail": "Not enough valid data for IC calculation: sample_size=2, required>=3, stats={'input_codes': 2, 'processed': 2, 'skipped_no_kline': 0, 'skipped_no_financials': 0, 'skipped_no_factor_value': 0, 'skipped_invalid_return': 0, 'style_info_available': 2}"
+    },
+    {
+      "tool": "calculate_fear_greed_index",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "calculate_technical_indicators",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "check_all_alerts",
+      "status": "failed",
+      "detail": "name '_fail_quote_response' is not defined"
+    },
+    {
+      "tool": "check_candlestick_patterns",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "clear_cache",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "clear_dead_letters",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "compliance_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "comprehensive_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "create_combo_alert",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "create_indicator_alert",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "data_quality_workflow",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "data_sync_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "data_validation",
+      "status": "failed",
+      "detail": "records is required and must be non-empty"
+    },
+    {
+      "tool": "data_warmup",
+      "status": "failed",
+      "detail": "Unknown action: help"
+    },
+    {
+      "tool": "dcf_valuation",
+      "status": "failed",
+      "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+    },
+    {
+      "tool": "ddm_valuation",
+      "status": "failed",
+      "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+    },
+    {
+      "tool": "decision_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "event_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "execution_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "experiment_tracker",
+      "status": "failed",
+      "detail": "Unknown action: help. Supported: backend, log_run, log_metric, log_artifact, get_run, list_runs."
+    },
+    {
+      "tool": "factor_candidate_workflow",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "factor_robustness_check",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "find_similar_patterns",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "fundamental_analysis_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "fuse_decision_payload",
+      "status": "error",
+      "detail": "ToolError: Error executing tool fuse_decision_payload: fuse_decision_payload() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "generate_daily_report",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_analyst_ranking",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_available_categories",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_available_patterns",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_batch_quotes",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_batch_quotes_compat",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_block_stocks",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_block_trades",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_cache_stats",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_cb_info",
+      "status": "failed",
+      "detail": "可转债代码不能为空（支持 code / stock_code / symbol）"
+    },
+    {
+      "tool": "get_concept_fund_flow",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_conditional_returns",
+      "status": "failed",
+      "detail": "conditions is required"
+    },
+    {
+      "tool": "get_dead_letters",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_dragon_tiger",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_factor_library",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_factor_profile",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_financials",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_historical_valuation",
+      "status": "failed",
+      "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+    },
+    {
+      "tool": "get_index_quote",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_industry_chain",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_investment_analysis",
+      "status": "failed",
+      "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+    },
+    {
+      "tool": "get_ipo_info",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_kline",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_kline_data",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_limit_up_statistics",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_limit_up_stocks",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_macro_indicator",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_margin_data",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_margin_ranking",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_market_blocks",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_market_news",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_market_sentiment_context",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_minute_kline",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_north_fund",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_north_fund_holding",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_north_fund_top",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_option_chain",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_order_book",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_profit_forecast",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_realtime_quote",
+      "status": "error",
+      "detail": "ToolError: Error executing tool get_realtime_quote: name '_fail_quote_response' is not defined"
+    },
+    {
+      "tool": "get_research_reports",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_research_summary",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_sector_fund_flow",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_signal_hit_rate",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_stock_capital",
+      "status": "failed",
+      "detail": "股票代码不能为空（支持 code / stock_code / symbol / ticker）"
+    },
+    {
+      "tool": "get_stock_fund_flow",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_stock_info",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_stock_list",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_stock_news",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_stock_notices",
+      "status": "error",
+      "detail": "ToolError: Error executing tool get_stock_notices: 2 validation errors for get_stock_noticesArguments\nstart_date\n  Field required [type=missing, input_value={'stock_code': '600519', 'limit': 3}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing\nend_date\n  Field required [type=missing, input_value={'stock_code': '600519', 'limit': 3}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing"
+    },
+    {
+      "tool": "get_stock_research",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_stock_text_signals",
+      "status": "failed",
+      "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+    },
+    {
+      "tool": "get_sync_status",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_tool_contract",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_trade_details",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_trading_dates",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_unified_decision",
+      "status": "error",
+      "detail": "ToolError: Error executing tool get_unified_decision: get_unified_decision() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "get_unified_decision_details",
+      "status": "error",
+      "detail": "ToolError: Error executing tool get_unified_decision_details: get_unified_decision_details() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "get_unified_decision_summary",
+      "status": "error",
+      "detail": "ToolError: Error executing tool get_unified_decision_summary: get_unified_decision_summary() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "get_user_profile",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "get_valuation_metrics",
+      "status": "failed",
+      "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+    },
+    {
+      "tool": "governance_check_workflow",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "industry_chain_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "insight_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "limit_up_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "list_factors",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "list_industry_templates",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "list_skills",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "live_trading_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "log_recommendation_audit",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "macro_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "market_insight_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "optimize_portfolio",
+      "status": "error",
+      "detail": "ToolError: Error executing tool optimize_portfolio: 1 validation error for optimize_portfolioArguments\nstocks\n  Field required [type=missing, input_value={'codes': ['600519', '000...], 'target_return': 0.1}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing"
+    },
+    {
+      "tool": "options_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "paper_trading_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "parse_selection_query",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "performance_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "portfolio_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "prediction_diagnosis_workflow",
+      "status": "error",
+      "detail": "ToolError: Error executing tool prediction_diagnosis_workflow: 2 validation errors for prediction_diagnosis_workflowArguments\nprobabilities\n  Field required [type=missing, input_value={'code': '600519'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing\nlabels\n  Field required [type=missing, input_value={'code': '600519'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing"
+    },
+    {
+      "tool": "quant_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "relative_valuation",
+      "status": "failed",
+      "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+    },
+    {
+      "tool": "research_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "risk_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "run_batch_backtest",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "run_decision_gate",
+      "status": "error",
+      "detail": "ToolError: Error executing tool run_decision_gate: run_decision_gate() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "run_simple_backtest",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "run_skill",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "scenario_dcf_valuation",
+      "status": "failed",
+      "detail": "需要提供股票代码（支持 code / stock_code / symbol / ticker）"
+    },
+    {
+      "tool": "screener_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "search_by_kline",
+      "status": "error",
+      "detail": "ToolError: Error executing tool search_by_kline: search_by_kline() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "search_research",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "search_research_db",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "search_similar_stocks",
+      "status": "error",
+      "detail": "ToolError: Error executing tool search_similar_stocks: search_similar_stocks() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "search_skills",
+      "status": "error",
+      "detail": "ToolError: Error executing tool search_skills: 1 validation error for search_skillsArguments\nkeyword\n  Field required [type=missing, input_value={'query': 'akshare', 'limit': 5}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.12/v/missing"
+    },
+    {
+      "tool": "search_stocks",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "sector_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "semantic_stock_search",
+      "status": "error",
+      "detail": "ToolError: Error executing tool semantic_stock_search: semantic_stock_search() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "sentiment_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "should_i_buy",
+      "status": "error",
+      "detail": "ToolError: Error executing tool should_i_buy: should_i_buy() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "should_i_sell",
+      "status": "error",
+      "detail": "ToolError: Error executing tool should_i_sell: should_i_sell() got an unexpected keyword argument 'args'"
+    },
+    {
+      "tool": "smart_stock_diagnosis",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "strategy_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "strategy_review_workflow",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "stress_test_portfolio",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "sync_kline_data",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "sync_trading_calendar",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "technical_analysis_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "trading_data_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "update_user_profile",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "user_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "validate_factor_oos",
+      "status": "failed",
+      "detail": "name '_build_factor_return_panels' is not defined"
+    },
+    {
+      "tool": "vector_search_manager",
+      "status": "ok",
+      "detail": null
+    },
+    {
+      "tool": "watchlist_manager",
+      "status": "ok",
+      "detail": null
+    }
+  ]
+}

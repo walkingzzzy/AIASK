@@ -156,8 +156,20 @@ async def test_submitter_prefers_explicit_gateways_over_legacy_patch_points(monk
         db,
     )
 
-    assert validation_gateway.calls == [("momentum", {"lookback": 20, "threshold": 0.02})]
-    assert risk_gateway.calls == [("momentum", {"lookback": 20, "threshold": 0.02})]
+    assert len(validation_gateway.calls) == 1
+    assert len(risk_gateway.calls) == 1
+    validation_strategy_type, validation_params = validation_gateway.calls[0]
+    risk_strategy_type, risk_params = risk_gateway.calls[0]
+    assert validation_strategy_type == "momentum"
+    assert risk_strategy_type == "momentum"
+    assert validation_params["lookback"] == 20
+    assert validation_params["threshold"] == 0.02
+    assert "holding_horizon" in validation_params
+    assert "trade_plan" in validation_params
+    assert "risk_rules" in validation_params
+    assert "validation_profile" in validation_params
+    assert validation_params["task_signature"].startswith("snapshot|")
+    assert risk_params == validation_params
     assert len(incubation_gateway.ensure_calls) == 1
     assert len(incubation_gateway.pipeline_calls) == 1
     assert result["passed_quality_gate"] == 1

@@ -19,6 +19,17 @@ from strategy_factory.domain.targets import (
 )
 
 from ..env_loader import load_mcp_env
+from .strategy_spec import (
+    _default_execution_assumptions,
+    _default_holding_horizon,
+    _default_portfolio_spec,
+    _default_position_sizing,
+    _default_rebalance_rule,
+    _default_risk_rules,
+    _default_targeting_policy,
+    _default_trade_plan,
+    _default_validation_profile,
+)
 
 
 class StrategyLLMRequestError(RuntimeError):
@@ -205,10 +216,12 @@ class _StrategyLLMProviderNormalizeMixin:
             visit(values)
             return codes[: max(1, min(int(limit or 12), 40))]
 
+        @classmethod
         def _normalize_candidate_payload(cls, candidate: Any, research_task: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
             if not isinstance(candidate, dict):
                 return None
             normalized_task = _normalize_research_task_contract(research_task)
+            task_source = str(normalized_task.get('task_source') or '').strip().lower()
             research_symbols = cls._normalize_code_list(normalized_task.get('target_symbols'), limit=8)
             target_alignment_contract = dict(
                 _build_target_alignment_contract(normalized_task, candidate=candidate) or {}
@@ -313,11 +326,8 @@ class _StrategyLLMProviderNormalizeMixin:
             metadata['target_symbols'] = list(target_symbols)
             metadata['stock_pool'] = stock_pool
             metadata['constraint_check'] = constraint_check
-            metadata['targeting_policy'] = {
-                'target_symbol_policy': normalized_task.get('target_symbol_policy'),
-                'universe_expansion_policy': normalized_task.get('universe_expansion_policy'),
-                'validation_focus': normalized_task.get('validation_focus'),
-            }
+            targeting_policy = dict(metadata.get('targeting_policy') or _default_targeting_policy(normalized_task))
+            metadata['targeting_policy'] = targeting_policy
             metadata['target_alignment_contract'] = dict(target_alignment_contract)
             dsl['metadata'] = metadata
             dsl = cls._sanitize_dsl_for_candidate(dsl)
@@ -334,33 +344,25 @@ class _StrategyLLMProviderNormalizeMixin:
             holding_horizon = dict(candidate.get('holding_horizon') or {})
             if not holding_horizon:
                 holding_horizon = dict(normalized_task.get('holding_window') or {})
+            if not holding_horizon:
+                holding_horizon = _default_holding_horizon(strategy_type, normalized_task, task_source)
             risk_rules = dict(candidate.get('risk_rules') or dsl.get('risk_rules') or {})
             if not risk_rules:
-                max_holding_days = int(holding_horizon.get('max_days') or 0)
-                risk_rules = {
-                    'stop_loss_pct': 0.08 if normalized_task.get('task_source') == 'event_driven' else 0.1,
-                    'take_profit_pct': 0.18 if normalized_task.get('task_source') == 'event_driven' else 0.2,
-                    'max_holding_days': max_holding_days or 20,
-                }
+                risk_rules = _default_risk_rules(task_source, holding_horizon)
             dsl['risk_rules'] = dict(risk_rules)
             rebalance_rule = dict(candidate.get('rebalance_rule') or {})
             if not rebalance_rule:
-                rebalance_rule = {'mode': 'event_driven_hold' if normalized_task.get('task_source') == 'event_driven' else 'signal_rebalance'}
+                rebalance_rule = _default_rebalance_rule(strategy_type, task_source)
             trade_plan = candidate.get('trade_plan')
             if isinstance(trade_plan, dict):
                 normalized_trade_plan = dict(trade_plan)
             elif trade_plan not in (None, '', [], {}):
                 normalized_trade_plan = {'summary': str(trade_plan)}
             else:
-                normalized_trade_plan = {'entry_bias': 'trend_follow' if normalized_task.get('task_source') == 'event_driven' else 'signal_confirmed'}
+                normalized_trade_plan = _default_trade_plan(strategy_type, task_source)
             execution_assumptions = dict(candidate.get('execution_assumptions') or {})
             if not execution_assumptions:
-                execution_assumptions = {
-                    'commission_rate': 0.00025,
-                    'slippage_bps': 8 if normalized_task.get('task_source') == 'event_driven' else 5,
-                    'tradability_filter': True,
-                    'slippage_model': 'fixed',
-                }
+                execution_assumptions = _default_execution_assumptions(task_source)
             execution_notes = candidate.get('execution_notes')
             if execution_notes in (None, '', [], {}):
                 normalized_execution_notes = 'prefer liquid session execution with tradability filter'
@@ -370,30 +372,44 @@ class _StrategyLLMProviderNormalizeMixin:
                 normalized_execution_notes = str(execution_notes)
             portfolio_spec = dict(candidate.get('portfolio_spec') or {})
             if not portfolio_spec:
-                portfolio_spec = {
-                    'position_assumption': 'equal_weight_proxy' if len(target_symbols) > 1 else 'single_name_full_notional',
-                    'target_weight_scheme': 'equal_weight' if len(target_symbols) > 1 else 'single_name',
-                }
+                portfolio_spec = _default_portfolio_spec(target_symbols)
             position_sizing = candidate.get('position_sizing')
             if isinstance(position_sizing, dict):
                 normalized_position_sizing = dict(position_sizing)
             elif position_sizing not in (None, '', [], {}):
                 normalized_position_sizing = {'summary': str(position_sizing)}
             else:
-                normalized_position_sizing = {
-                    'mode': portfolio_spec.get('target_weight_scheme') or 'equal_weight',
-                    'position_assumption': portfolio_spec.get('position_assumption'),
-                }
+                normalized_position_sizing = _default_position_sizing(target_symbols)
             validation_profile = dict(candidate.get('validation_profile') or {})
             if not validation_profile:
-                validation_profile = {
-                    'profile': 'event_trade_validation' if normalized_task.get('validation_focus') == 'event_target_only' else 'trade_rule_validation',
-                    'validation_focus': normalized_task.get('validation_focus'),
-                    'primary_validation_layer': 'target' if normalized_task.get('validation_focus') == 'event_target_only' else 'combined',
-                }
+                validation_profile = _default_validation_profile(strategy_type, normalized_task, task_source)
+            metadata['portfolio_spec'] = dict(portfolio_spec)
+            metadata['execution_assumptions'] = dict(execution_assumptions)
+            metadata['validation_profile'] = dict(validation_profile)
+            metadata['targeting_policy'] = dict(targeting_policy)
+            metadata['constraint_check'] = dict(constraint_check)
+            dsl['metadata'] = metadata
+            normalized_params = {
+                'dsl': dict(dsl),
+                'target_symbols': list(target_symbols),
+                'stock_pool': dict(stock_pool),
+                'research_task': dict(normalized_task),
+                'holding_horizon': dict(holding_horizon),
+                'trade_plan': dict(normalized_trade_plan),
+                'risk_rules': dict(risk_rules),
+                'position_sizing': dict(normalized_position_sizing),
+                'execution_notes': normalized_execution_notes,
+                'rebalance_rule': dict(rebalance_rule),
+                'portfolio_spec': dict(portfolio_spec),
+                'execution_assumptions': dict(execution_assumptions),
+                'validation_profile': dict(validation_profile),
+                'targeting_policy': dict(targeting_policy),
+                'constraint_check': dict(constraint_check),
+            }
             normalized: dict[str, Any] = {
                 'name': str(candidate.get('name') or '外部 AI 候选策略'),
                 'strategy_type': strategy_type,
+                'params': normalized_params,
                 'target_symbols': list(target_symbols),
                 'stock_pool': stock_pool,
                 'dsl': dsl,
@@ -407,7 +423,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 'portfolio_spec': portfolio_spec,
                 'execution_assumptions': execution_assumptions,
                 'validation_profile': validation_profile,
-                'targeting_policy': dict(metadata.get('targeting_policy') or {}),
+                'targeting_policy': dict(targeting_policy),
                 'target_alignment_contract': dict(target_alignment_contract),
                 'constraint_check': constraint_check,
                 'tags': [str(item) for item in [*tags, 'target_contract_enforced'] if str(item or '').strip()][:8],
@@ -426,6 +442,7 @@ class _StrategyLLMProviderNormalizeMixin:
                     normalized['selection_logic'] = [str(selection_logic)]
             return normalized
 
+        @classmethod
         def _minimal_output_example(cls, target_symbols: list[str]) -> dict[str, Any]:
             symbols = cls._normalize_code_list(target_symbols, limit=2)
             if not symbols:
@@ -476,6 +493,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 }],
             }
 
+        @classmethod
         def _sanitize_expr_for_candidate(cls, expr: Any) -> dict[str, Any]:
             if not isinstance(expr, dict):
                 return dict(expr or {}) if isinstance(expr, dict) else {}
@@ -491,6 +509,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 payload['field'] = field
             return payload
 
+        @classmethod
         def _sanitize_condition_for_candidate(cls, node: Any) -> dict[str, Any]:
             if not isinstance(node, dict):
                 return {}
@@ -516,6 +535,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 right = {'value': 0.5 if op in {'gt', 'gte', 'cross_above'} else -0.5}
             return {'op': op, 'left': left, 'right': right}
 
+        @classmethod
         def _sanitize_dsl_for_candidate(cls, dsl: dict[str, Any]) -> dict[str, Any]:
             payload = dict(dsl or {})
             payload['entry'] = cls._sanitize_condition_for_candidate(payload.get('entry'))
@@ -558,6 +578,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 return "compact"
             return "minimal"
 
+        @classmethod
         def _compact_snapshot(cls, snapshot: dict[str, Any], compact_level: int = 0) -> dict[str, Any]:
             payload: dict[str, Any] = {}
             for key in (
@@ -607,6 +628,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 ]
             return payload
 
+        @classmethod
         def _compact_parent_strategies(cls, parent_strategies: list[dict[str, Any]], compact_level: int = 0) -> list[dict[str, Any]]:
             rows = []
             for item in list(parent_strategies or [])[: max(1, 3 - min(compact_level, 1))]:
@@ -619,6 +641,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 })
             return rows
 
+        @classmethod
         def _compact_history_summary(cls, history_summary: list[dict[str, Any]], compact_level: int = 0) -> list[dict[str, Any]]:
             rows = []
             for item in list(history_summary or [])[: max(2, 6 - compact_level * 2)]:
@@ -631,6 +654,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 })
             return rows
 
+        @classmethod
         def _compact_symbol_insight(cls, item: dict[str, Any], compact_level: int = 0) -> dict[str, Any]:
             payload = {
                 "code": item.get("code"),
@@ -648,6 +672,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 payload["price_vs_sma20"] = item.get("price_vs_sma20")
             return payload
 
+        @classmethod
         def _compact_candidate_universe_item(cls, item: dict[str, Any], compact_level: int = 0) -> dict[str, Any]:
             payload = {
                 "code": item.get("code"),
@@ -675,6 +700,7 @@ class _StrategyLLMProviderNormalizeMixin:
                     payload["factor_snapshot"] = {str(key): cls._round_number(value, digits=4) for key, value in top_factor_items}
             return payload
 
+        @classmethod
         def _compact_research_context(cls, research_context: Optional[dict[str, Any]], compact_level: int = 0) -> dict[str, Any]:
             context = dict(research_context or {})
             market_regime = dict(context.get("market_regime") or {})
@@ -746,6 +772,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 },
             }
 
+        @classmethod
         def _compact_market_summary(cls, market_summary: Optional[dict[str, Any]], compact_level: int = 0) -> dict[str, Any]:
             summary = dict(market_summary or {})
             if compact_level < 2:
@@ -766,6 +793,7 @@ class _StrategyLLMProviderNormalizeMixin:
                 }
             return payload
 
+        @classmethod
         def _compact_research_task(cls, research_task: Optional[dict[str, Any]], compact_level: int = 0) -> dict[str, Any]:
             task = _normalize_research_task_contract(research_task)
             target_alignment_contract = dict(task.get("target_alignment_contract") or {})

@@ -240,6 +240,31 @@ def test_rule_strategy_generator_to_candidate_materializes_trade_contract():
     assert candidate["execution_assumptions"]["tradability_filter"] is True
 
 
+def test_rule_strategy_generator_expanded_family_materializes_rule_template_contract():
+    generator = RuleStrategyGenerator()
+
+    specs = generator.generate(
+        {
+            "fear_greed_index": 66,
+            "factor_research": {
+                "preferred_strategy_types": ["sector_rotation"],
+            },
+        },
+        limit=1,
+        preferred_types=["sector_rotation"],
+    )
+
+    candidate = specs[0].to_candidate("strategy_factory:rule", "exp_rule_sector_rotation")
+
+    assert candidate["portfolio_spec"]["target_weight_scheme"] == "equal_weight"
+    assert candidate["portfolio_spec"]["weight_method"] == "sector_score_tilt"
+    assert candidate["risk_rules"]["max_holding_days"] == 20
+    assert candidate["validation_profile"]["primary_validation_layer"] == "combined"
+    assert candidate["targeting_policy"]["universe_scope"] == "liquid_sector_leaders"
+    assert candidate["generation_reason"]["template_generation_profile"] == "conservative_rotation"
+    assert candidate["generation_reason"]["rule_template_contract"]["target_layer"] == "combined"
+
+
 def test_committee_review_service_attaches_rank_and_lineage():
     service = CommitteeReviewService()
 

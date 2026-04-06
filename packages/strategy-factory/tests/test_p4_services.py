@@ -144,6 +144,44 @@ class TestReadinessService:
         assert "governed_candidate_pool_missing_after_scheduler_success" in result["blockers"]
         assert result["critical_blocker_count"] == 1
 
+    def test_governed_pool_refreshing_sets_runtime_state(self):
+        svc = self._svc()
+        factor = self._good_factor()
+        factor["summary"]["factor_source_mode"] = "seed_fallback"
+        factor["summary"]["active_candidate_count"] = 0
+        factor["summary"]["governed_source_candidate_count"] = 0
+        factor["summary"]["scheduler_last_run"] = "2026-04-05T09:00:00+08:00"
+        factor["freshness_repair"] = {
+            "auto_refresh_enabled": True,
+            "refresh_attempted": False,
+        }
+
+        result = svc.evaluate(self._good_snapshot(), factor)
+
+        assert result["governed_candidate_pool_runtime_state"] == "refreshing_pool"
+        assert "governed_candidate_pool_refreshing" in result["warnings"]
+        assert result["factor_refresh_recommended"] is True
+        assert result["factor_refresh_recommendation_reason"] == "seed_fallback_without_governed_pool"
+
+    def test_governed_pool_refresh_timeout_becomes_blocker(self):
+        svc = self._svc()
+        factor = self._good_factor()
+        factor["summary"]["factor_source_mode"] = "seed_fallback"
+        factor["summary"]["active_candidate_count"] = 0
+        factor["summary"]["governed_source_candidate_count"] = 0
+        factor["freshness_repair"] = {
+            "auto_refresh_enabled": True,
+            "refresh_attempted": True,
+            "refresh_status": "timeout",
+        }
+
+        result = svc.evaluate(self._good_snapshot(), factor)
+
+        assert result["governed_candidate_pool_runtime_state"] == "blocked_by_governed_pool"
+        assert "governed_candidate_pool_refresh_blocked" in result["warnings"]
+        assert "governed_candidate_pool_unavailable_after_refresh" in result["blockers"]
+        assert result["critical_blocker_count"] == 1
+
 
 # ---------------------------------------------------------------------------
 # TaskOrchestrator – classify_tasks

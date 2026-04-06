@@ -21,7 +21,59 @@ from ..manager_protocol import normalize_manager_payload
 
 logger = logging.getLogger(__name__)
 
-from ._data_sync_manager_support import *
+from . import _data_sync_manager_support_core as _data_sync_core_mod
+from . import _data_sync_manager_support_sync as _data_sync_sync_mod
+
+_normalize_codes = _data_sync_core_mod._normalize_codes
+_decode_json_obj = _data_sync_core_mod._decode_json_obj
+_as_bool = _data_sync_core_mod._as_bool
+_compute_next_run = _data_sync_core_mod._compute_next_run
+_build_schedule_params = _data_sync_core_mod._build_schedule_params
+_build_task_payload = _data_sync_core_mod._build_task_payload
+_execute_sync_task = _data_sync_core_mod._execute_sync_task
+_run_due_schedules = _data_sync_core_mod._run_due_schedules
+_load_market_aux_status = _data_sync_core_mod._load_market_aux_status
+
+_core_market_script_path = _data_sync_core_mod._core_market_script_path
+_factor_context_script_path = _data_sync_core_mod._factor_context_script_path
+_sync_klines_now = _data_sync_sync_mod._sync_klines_now
+_sync_financials_check = _data_sync_sync_mod._sync_financials_check
+_sync_core_market_now = _data_sync_sync_mod._sync_core_market_now
+_sync_factor_context_now = _data_sync_sync_mod._sync_factor_context_now
+_sync_vector_backfill_market_docs_now = _data_sync_sync_mod._sync_vector_backfill_market_docs_now
+_sync_vector_backfill_kline_patterns_now = _data_sync_sync_mod._sync_vector_backfill_kline_patterns_now
+_sync_vector_backfill_stock_profiles_now = _data_sync_sync_mod._sync_vector_backfill_stock_profiles_now
+_sync_vector_backfill_factor_candidates_now = _data_sync_sync_mod._sync_vector_backfill_factor_candidates_now
+_sync_vector_build_snapshot_now = _data_sync_sync_mod._sync_vector_build_snapshot_now
+_sync_vector_benchmark_collection_now = _data_sync_sync_mod._sync_vector_benchmark_collection_now
+
+
+def _sync_data_sync_support_overrides() -> None:
+    """Keep core/sync support modules aligned with top-level monkeypatches."""
+    _data_sync_core_mod.get_db = get_db
+    _data_sync_sync_mod.get_db = get_db
+
+    _data_sync_core_mod._sync_klines_now = _sync_klines_now
+    _data_sync_core_mod._sync_financials_check = _sync_financials_check
+    _data_sync_core_mod._sync_core_market_now = _sync_core_market_now
+    _data_sync_core_mod._sync_factor_context_now = _sync_factor_context_now
+    _data_sync_core_mod._sync_vector_backfill_market_docs_now = _sync_vector_backfill_market_docs_now
+    _data_sync_core_mod._sync_vector_backfill_kline_patterns_now = _sync_vector_backfill_kline_patterns_now
+    _data_sync_core_mod._sync_vector_backfill_stock_profiles_now = _sync_vector_backfill_stock_profiles_now
+    _data_sync_core_mod._sync_vector_backfill_factor_candidates_now = _sync_vector_backfill_factor_candidates_now
+    _data_sync_core_mod._sync_vector_build_snapshot_now = _sync_vector_build_snapshot_now
+    _data_sync_core_mod._sync_vector_benchmark_collection_now = _sync_vector_benchmark_collection_now
+
+    _data_sync_sync_mod._as_bool = _as_bool
+    _data_sync_sync_mod._load_market_aux_status = _load_market_aux_status
+    _data_sync_sync_mod._core_market_script_path = _core_market_script_path
+    _data_sync_sync_mod._factor_context_script_path = _factor_context_script_path
+
+
+async def run_runtime_data_warmup(*args, **kwargs):
+    """Run runtime warmup with top-level monkeypatches propagated to support modules."""
+    _sync_data_sync_support_overrides()
+    return await _data_sync_core_mod.run_runtime_data_warmup(*args, **kwargs)
 
 def register_data_sync_manager(mcp):
     """注册数据同步管理器工具"""
@@ -55,6 +107,7 @@ def register_data_sync_manager(mcp):
             data_sync_manager(action="list_tasks", kwargs="{}")
         """
         try:
+            _sync_data_sync_support_overrides()
             db = get_db()
             kwargs = normalize_manager_payload(
                 params=params,

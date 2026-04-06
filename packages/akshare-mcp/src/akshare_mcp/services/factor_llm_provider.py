@@ -8,6 +8,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -270,6 +271,18 @@ class FactorLLMProvider:
         self._client: httpx.AsyncClient | Any | None = self._build_client()
         self._closed = False
         self._request_semaphore = asyncio.Semaphore(max(1, int(self.config.max_concurrency or 1)))
+        self._created_at = datetime.now().astimezone()
+        self._last_request_at: Optional[datetime] = None
+        self._last_success_at: Optional[datetime] = None
+        self._last_error_at: Optional[datetime] = None
+        self._last_error: Optional[str] = None
+        self._last_error_type: Optional[str] = None
+        self._last_latency_ms: Optional[float] = None
+        self._request_count = 0
+        self._success_count = 0
+        self._consecutive_failures = 0
+        self._rebuild_count = 0
+        self._last_rebuild_at: Optional[datetime] = None
 
     def _build_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(follow_redirects=True, http2=False)
@@ -307,6 +320,96 @@ class FactorLLMProvider:
 
     def is_enabled(self) -> bool:
         return bool(self.config.enabled and self.config.base_url and self.config.api_key and self.config.model)
+
+    @staticmethod
+    def _isoformat(value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            observed = value if value.tzinfo is not None else value.astimezone()
+        except Exception:
+            observed = value
+        return observed.isoformat()
+
+    def _configured(self) -> bool:
+        return bool(self.config.base_url and self.config.api_key and self.config.model)
+
+    def _health_status(self) -> str:
+        if not bool(self.config.enabled):
+            return "disabled"
+        if not self._configured():
+            return "misconfigured"
+        if self.is_closed:
+            return "closed"
+        if self._consecutive_failures > 0:
+            return "degraded"
+        return "ready"
+
+    def _rebuild_recommended(self) -> bool:
+        return bool(
+            self.is_closed
+            or self._consecutive_failures > 0
+            or str(self._last_error_type or "").lower() in {"connecterror", "readtimeout", "writetimeout", "pooltimeout", "timeouterror"}
+        )
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "provider": str(self.config.provider or "openai_compatible"),
+            "model": str(self.config.model or ""),
+            "enabled": bool(self.config.enabled),
+            "configured": self._configured(),
+            "ready": bool(self.is_enabled() and not self.is_closed and self._consecutive_failures == 0),
+            "client_closed": bool(self.is_closed),
+            "health_status": self._health_status(),
+            "rebuild_recommended": self._rebuild_recommended(),
+            "request_count": int(self._request_count),
+            "success_count": int(self._success_count),
+            "consecutive_failures": int(self._consecutive_failures),
+            "rebuild_count": int(self._rebuild_count),
+            "created_at": self._isoformat(self._created_at),
+            "last_request_at": self._isoformat(self._last_request_at),
+            "last_success_at": self._isoformat(self._last_success_at),
+            "last_error_at": self._isoformat(self._last_error_at),
+            "last_error_type": self._last_error_type,
+            "last_error": self._last_error,
+            "last_latency_ms": self._last_latency_ms,
+            "last_rebuild_at": self._isoformat(self._last_rebuild_at),
+        }
+
+    async def rebuild_client(self, *, reason: str = "manual") -> dict[str, Any]:
+        previous = self.status()
+        await self.close()
+        await self._ensure_client()
+        self._consecutive_failures = 0
+        self._rebuild_count += 1
+        self._last_rebuild_at = datetime.now().astimezone()
+        current = self.status()
+        current["rebuild_reason"] = reason
+        return {
+            "status": "rebuilt",
+            "reason": reason,
+            "before": previous,
+            "after": current,
+        }
+
+    def _mark_success(self, *, latency_ms: float) -> None:
+        now = datetime.now().astimezone()
+        self._request_count += 1
+        self._success_count += 1
+        self._consecutive_failures = 0
+        self._last_request_at = now
+        self._last_success_at = now
+        self._last_latency_ms = round(float(latency_ms), 2)
+
+    def _mark_failure(self, exc: Exception, *, latency_ms: float) -> None:
+        now = datetime.now().astimezone()
+        self._request_count += 1
+        self._consecutive_failures += 1
+        self._last_request_at = now
+        self._last_error_at = now
+        self._last_latency_ms = round(float(latency_ms), 2)
+        self._last_error_type = exc.__class__.__name__
+        self._last_error = self._error_text(exc)
 
     def _endpoint(self) -> str:
         base = self.config.base_url.rstrip("/")
@@ -420,6 +523,7 @@ class FactorLLMProvider:
                         model=resolved_model,
                         provider=str(self.config.provider or "openai_compatible"),
                     )
+                    self._mark_success(latency_ms=(time.perf_counter() - started) * 1000)
                     return {
                         **validated,
                         "provider": str(self.config.provider or "openai_compatible"),
@@ -439,6 +543,7 @@ class FactorLLMProvider:
                             "candidate_count": max(1, int(candidate_count)),
                         },
                     )
+                    self._mark_failure(exc, latency_ms=(time.perf_counter() - started) * 1000)
                     if attempt >= int(self.config.retry_count or 0):
                         break
                     await asyncio.sleep(max(0.0, float(self.config.retry_backoff_sec or 0.0)) * (attempt + 1))

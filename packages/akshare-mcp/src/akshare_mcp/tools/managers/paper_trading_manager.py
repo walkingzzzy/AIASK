@@ -50,8 +50,8 @@ def _sync_paper_trading_support_overrides() -> None:
 def register_paper_trading_manager(mcp):
     """注册模拟交易管理器工具"""
 
-    @mcp.tool(structured_output=True)
-    async def paper_trading_manager(action: str, params: dict | None = None, kwargs: Any = None, user_id: str | None = None, account_id: str | None = None, code: str | None = None, price: float | None = None, shares: int | None = None, quantity: int | None = None, order_id: str | None = None, trade_type: str | None = None, direction: str | None = None, order_type: str | None = None, stop_price: float | None = None, name: str | None = None, initial_capital: float | None = None, limit: int | None = None) -> dict[str, Any]:
+    @mcp.tool()
+    async def paper_trading_manager(action: str, params: dict | None = None, kwargs: Any = None, user_id: str | None = None, account_id: str | None = None, code: str | None = None, price: float | None = None, shares: int | None = None, quantity: int | None = None, order_id: str | None = None, trade_type: str | None = None, direction: str | None = None, order_type: str | None = None, stop_price: float | None = None, name: str | None = None, initial_capital: float | None = None, limit: int | None = None) -> dict:
         """模拟交易管理器（统一 action + kwargs 协议）
 
         Args:

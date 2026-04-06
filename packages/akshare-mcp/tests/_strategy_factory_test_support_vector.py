@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 
 class _StrategyDBVectorMixin:
     async def save_strategy_vector_profile(self, profile):

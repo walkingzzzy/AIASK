@@ -314,6 +314,105 @@ async def test_factor_llm_provider_rebuilds_client_after_close(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_factor_llm_provider_status_tracks_failures_and_rebuild(monkeypatch):
+    from akshare_mcp.services.factor_llm_provider import (
+        FactorLLMConfig,
+        FactorLLMProvider,
+        FactorLLMRequestError,
+    )
+    from akshare_mcp.services.factor_prompt_builder import FactorMiningPrompt
+
+    class _FailingClient:
+        is_closed = False
+
+        async def post(self, *args, **kwargs):
+            raise RuntimeError("provider temporarily unavailable")
+
+        async def aclose(self):
+            self.is_closed = True
+
+    class _HealthyClient:
+        def __init__(self):
+            self.is_closed = False
+
+        async def post(self, *args, **kwargs):
+            return _FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": """{
+                                  "candidates": [
+                                    {
+                                      "name": "recovered_factor",
+                                      "hypothesis": "provider rebuild 后恢复正常。",
+                                      "family": "momentum",
+                                      "inputs": ["close", "volume"],
+                                      "expression_dsl": "zscore(close,20) + zscore(volume,20)",
+                                      "expected_holding_period": 5,
+                                      "expected_regime": ["trend"],
+                                      "complexity_hint": "low",
+                                      "novelty_rationale": "验证 provider 生命周期状态。"
+                                    }
+                                  ],
+                                  "analysis": {},
+                                  "warnings": []
+                                }"""
+                            }
+                        }
+                    ],
+                    "usage": {"total_tokens": 111},
+                }
+            )
+
+        async def aclose(self):
+            self.is_closed = True
+
+    provider = FactorLLMProvider(
+        FactorLLMConfig(
+            enabled=True,
+            provider="openai_compatible",
+            base_url="http://llm.local/v1",
+            api_key="test-key",
+            model="test-factor-model",
+            retry_count=0,
+        )
+    )
+    provider._client = _FailingClient()
+    prompt = FactorMiningPrompt(
+        system_prompt="system",
+        user_prompt="user",
+        context_summary={},
+        request_payload={},
+        source_chain=[],
+        schema_path="/tmp/factor_candidate.schema.json",
+    )
+
+    with pytest.raises(FactorLLMRequestError):
+        await provider.generate_candidates(prompt, candidate_count=1)
+
+    failed_status = provider.status()
+    assert failed_status["health_status"] == "degraded"
+    assert failed_status["rebuild_recommended"] is True
+    assert failed_status["consecutive_failures"] == 1
+    assert failed_status["last_error_type"] == "RuntimeError"
+
+    monkeypatch.setattr(FactorLLMProvider, "_build_client", lambda self: _HealthyClient())
+    rebuild = await provider.rebuild_client(reason="test_recovery")
+    recovered_status = provider.status()
+
+    assert rebuild["status"] == "rebuilt"
+    assert recovered_status["health_status"] == "ready"
+    assert recovered_status["rebuild_count"] == 1
+    assert recovered_status["consecutive_failures"] == 0
+
+    result = await provider.generate_candidates(prompt, candidate_count=1)
+
+    assert result["candidate_count"] == 1
+    assert provider.status()["success_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_factor_prompt_builder_builds_context(monkeypatch):
     import akshare_mcp.services.factor_prompt_builder as prompt_mod
 

@@ -30,7 +30,7 @@ def _sync_risk_support_overrides() -> None:
 def register_risk_manager(mcp):
     """Register risk manager tool."""
 
-    @mcp.tool(structured_output=True)
+    @mcp.tool()
     async def risk_manager(
         action: str,
         params: dict | None = None,
@@ -44,7 +44,7 @@ def register_risk_manager(mcp):
         method: str | None = None,
         lookback_days: int | None = None,
         portfolio_value: float | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict:
         """
         Risk manager with unified action + kwargs protocol.
 

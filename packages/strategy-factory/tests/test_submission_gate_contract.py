@@ -282,6 +282,138 @@ async def test_submission_gate_emits_trade_profile_and_run_correction_proxies(mo
 
 
 @pytest.mark.asyncio
+async def test_submission_gate_keeps_event_sample_audit_fields_on_trade_primary(monkeypatch):
+    import strategy_factory.application.submission_gate as submission_gate_mod
+
+    async def _fake_statistical_gate(_db, _strategy, *, profile, klass):
+        assert profile["profile"] == "event_trade_validation"
+        assert klass is object
+        return {
+            "passed": True,
+            "warnings": [],
+            "wf_ic_ir": 0.41,
+            "pkf_ic": 0.05,
+            "bootstrap_ci_lower": 0.01,
+        }
+
+    monkeypatch.setattr(
+        submission_gate_mod,
+        "get_strategy_registry",
+        lambda: SimpleNamespace(get=lambda strategy_type: object if strategy_type == "ma_cross" else None),
+    )
+    monkeypatch.setattr(submission_gate_mod, "_run_statistical_gate", _fake_statistical_gate)
+
+    result = await run_submission_quality_gate(
+        MagicMock(),
+        {
+            "strategy_type": "ma_cross",
+            "params": {"short_period": 5, "long_period": 20},
+            "research_task": {
+                "task_source": "event_driven",
+                "event_id": "evt_gate_event_samples",
+                "validation_focus": "event_target_only",
+            },
+            "target_symbols": ["600519"],
+        },
+        backtest_metrics={
+            "post_cost_sharpe": 0.66,
+            "trade_count": 9,
+            "avg_holding_days": 7,
+            "turnover_proxy": 0.8,
+            "target_layer_oos_return": 0.09,
+            "target_layer_abnormal_return": 0.06,
+            "event_window_hit_ratio": 0.75,
+            "post_event_decay": -0.18,
+            "trade_density": 0.45,
+            "parameter_perturbation_trade_stability": 0.76,
+            "primary_validation_layer": "target",
+            "max_drawdown": 0.11,
+            "event_study_mode": "sample_driven",
+            "event_sample_count": 3,
+            "event_anchor_count": 2,
+            "control_group_count": 2,
+            "event_sample_source": "research_task.event_samples",
+            "event_time_anchors": ["2026-03-01T09:30:00+08:00", "2026-03-05T09:30:00+08:00"],
+            "traceable_to_event_samples": True,
+        },
+        risk_report={"stress_loss_percent": -10.0},
+    )
+
+    assert result["passed"] is True
+    assert result["gate_protocol"] == "event_trade_validation:trade_primary"
+    assert result["event_study_mode"] == "sample_driven"
+    assert result["event_sample_count"] == 3
+    assert result["event_anchor_count"] == 2
+    assert result["control_group_count"] == 2
+    assert result["event_sample_source"] == "research_task.event_samples"
+    assert result["traceable_to_event_samples"] is True
+    assert result["warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_submission_gate_marks_minimal_event_samples_as_soft_warning(monkeypatch):
+    import strategy_factory.application.submission_gate as submission_gate_mod
+
+    async def _fake_statistical_gate(_db, _strategy, *, profile, klass):
+        assert profile["profile"] == "event_trade_validation"
+        assert klass is object
+        return {
+            "passed": True,
+            "warnings": [],
+            "wf_ic_ir": 0.36,
+            "pkf_ic": 0.04,
+            "bootstrap_ci_lower": 0.01,
+        }
+
+    monkeypatch.setattr(
+        submission_gate_mod,
+        "get_strategy_registry",
+        lambda: SimpleNamespace(get=lambda strategy_type: object if strategy_type == "ma_cross" else None),
+    )
+    monkeypatch.setattr(submission_gate_mod, "_run_statistical_gate", _fake_statistical_gate)
+
+    result = await run_submission_quality_gate(
+        MagicMock(),
+        {
+            "strategy_type": "ma_cross",
+            "params": {"short_period": 5, "long_period": 20},
+            "research_task": {
+                "task_source": "event_driven",
+                "event_id": "evt_gate_minimal_samples",
+                "validation_focus": "event_target_only",
+            },
+            "target_symbols": ["600519"],
+        },
+        backtest_metrics={
+            "post_cost_sharpe": 0.66,
+            "trade_count": 9,
+            "avg_holding_days": 7,
+            "turnover_proxy": 0.8,
+            "target_layer_oos_return": 0.09,
+            "target_layer_abnormal_return": 0.06,
+            "event_window_hit_ratio": 0.75,
+            "post_event_decay": -0.18,
+            "trade_density": 0.45,
+            "parameter_perturbation_trade_stability": 0.76,
+            "primary_validation_layer": "target",
+            "max_drawdown": 0.11,
+            "event_study_mode": "sample_driven_minimal",
+            "event_sample_count": 2,
+            "event_anchor_count": 1,
+            "control_group_count": 1,
+            "event_sample_source": "auto_context_minimal",
+            "event_time_anchors": ["2026-03-10T09:30:00+08:00"],
+            "traceable_to_event_samples": True,
+        },
+        risk_report={"stress_loss_percent": -10.0},
+    )
+
+    assert result["passed"] is True
+    assert "event_sample_count_missing" not in result["warnings"]
+    assert "event_study_mode_sample_driven_minimal" in result["warnings"]
+
+
+@pytest.mark.asyncio
 async def test_submission_gate_prefers_formal_multiple_testing_outputs(monkeypatch):
     import strategy_factory.application.submission_gate as submission_gate_mod
 
@@ -377,10 +509,76 @@ async def test_submission_gate_prefers_formal_multiple_testing_outputs(monkeypat
     assert result["multiple_testing"]["pbo"]["pbo"] == pytest.approx(0.21)
     registry = result["multiple_testing_registry"]
     assert registry["task_signature"]
+    assert registry["task_key"].startswith("task|")
     assert registry["strategy_family"] == "ma_cross"
+    assert registry["family_key"].startswith("family|")
     assert registry["target_symbols_signature"] == "600519"
+    assert registry["universe_key"].startswith("universe|")
+    assert registry["template_key"].startswith("template|")
+    assert registry["revision_key"].startswith("revision|")
     assert registry["formal_coverage"] is True
+    assert registry["formal_runtime_ready"] is True
+    assert registry["candidate_contract_hash"]
+    assert registry["candidate_identity_signature"]
+    assert registry["lineage_id"]
+    assert registry["revision_mode"] == "baseline"
+    assert registry["registry_axes"]["task"] == registry["task_key"]
     assert registry["multiple_testing"]["pbo_value"] == pytest.approx(0.21)
+
+
+@pytest.mark.asyncio
+async def test_submission_gate_registry_canonicalizes_target_symbol_order(monkeypatch):
+    import strategy_factory.application.submission_gate as submission_gate_mod
+
+    async def _fake_statistical_gate(_db, _strategy, *, profile, klass):
+        assert profile["profile"] == "trade_rule_validation"
+        assert klass is object
+        return {
+            "passed": True,
+            "passed_strict": True,
+            "reasons": [],
+            "warnings": [],
+            "wf_ic_ir": 0.61,
+            "pkf_ic": 0.07,
+            "bootstrap_ci_lower": 0.04,
+            "param_sensitivity": 0.11,
+            "deflated_sharpe_ratio": 0.24,
+            "pbo": 0.2,
+            "white_reality_check_pvalue": 0.05,
+            "hansen_spa_pvalue": 0.04,
+        }
+
+    monkeypatch.setattr(
+        submission_gate_mod,
+        "get_strategy_registry",
+        lambda: SimpleNamespace(get=lambda strategy_type: object if strategy_type == "momentum" else None),
+    )
+    monkeypatch.setattr(submission_gate_mod, "_run_statistical_gate", _fake_statistical_gate)
+
+    result = await run_submission_quality_gate(
+        MagicMock(),
+        {
+            "strategy_type": "momentum",
+            "target_symbols": ["600519", "000858"],
+            "research_task": {
+                "task_source": "snapshot",
+                "target_symbols": ["000858", "600519"],
+            },
+        },
+        backtest_metrics={
+            "post_cost_sharpe": 0.76,
+            "trade_count": 14,
+            "avg_holding_days": 8,
+            "turnover_proxy": 0.55,
+            "target_layer_oos_return": 0.08,
+            "trade_density": 0.35,
+            "parameter_perturbation_trade_stability": 0.72,
+            "primary_validation_layer": "target",
+        },
+        risk_report={"stress_loss_percent": -7.0},
+    )
+
+    assert result["multiple_testing_registry"]["target_symbols_signature"] == "000858,600519"
 
 
 @pytest.mark.asyncio
@@ -399,6 +597,7 @@ async def test_submission_gate_emits_live_candidate_ready_for_strong_trade_profi
             "pkf_ic": 0.08,
             "bootstrap_ci_lower": 0.05,
             "param_sensitivity": 0.12,
+            "multiple_testing_mode": "formal_runtime",
             "deflated_sharpe_ratio": 0.28,
             "pbo": 0.18,
             "white_reality_check_pvalue": 0.04,
@@ -439,6 +638,64 @@ async def test_submission_gate_emits_live_candidate_ready_for_strong_trade_profi
     assert result["incubation_pass_mode"] == "strict"
     assert result["admission_evaluations"]["live"]["passed"] is True
     assert result["admission_block_reasons"] == []
+
+
+@pytest.mark.asyncio
+async def test_submission_gate_blocks_live_admission_when_only_proxy_multiple_testing_exists(monkeypatch):
+    import strategy_factory.application.submission_gate as submission_gate_mod
+
+    async def _fake_statistical_gate(_db, _strategy, *, profile, klass):
+        assert profile["profile"] == "trade_rule_validation"
+        assert klass is object
+        return {
+            "passed": True,
+            "passed_strict": True,
+            "reasons": [],
+            "warnings": [],
+            "wf_ic_ir": 0.62,
+            "pkf_ic": 0.08,
+            "bootstrap_ci_lower": 0.05,
+            "param_sensitivity": 0.12,
+            "multiple_testing_mode": "bootstrap_family_proxy",
+            "deflated_sharpe_proxy": 0.28,
+            "pbo_proxy": 0.18,
+            "reality_check_pvalue_proxy": 0.04,
+            "spa_pvalue_proxy": 0.03,
+        }
+
+    monkeypatch.setattr(
+        submission_gate_mod,
+        "get_strategy_registry",
+        lambda: SimpleNamespace(get=lambda strategy_type: object if strategy_type == "ma_cross" else None),
+    )
+    monkeypatch.setattr(submission_gate_mod, "_run_statistical_gate", _fake_statistical_gate)
+
+    result = await run_submission_quality_gate(
+        MagicMock(),
+        {"strategy_type": "ma_cross", "params": {"short_period": 5, "long_period": 20}},
+        backtest_metrics={
+            "post_cost_sharpe": 0.82,
+            "trade_count": 16,
+            "avg_holding_days": 9,
+            "turnover_proxy": 0.65,
+            "target_layer_oos_return": 0.15,
+            "target_layer_abnormal_return": 0.09,
+            "event_window_hit_ratio": 0.80,
+            "post_event_decay": -0.10,
+            "trade_density": 0.35,
+            "parameter_perturbation_trade_stability": 0.76,
+            "primary_validation_layer": "target",
+            "max_drawdown": 0.14,
+        },
+        risk_report={"stress_loss_percent": -9.0},
+    )
+
+    assert result["passed"] is True
+    assert result["incubation_candidate_ready"] is True
+    assert result["live_candidate_ready"] is False
+    assert result["admission_stage"] == "incubation"
+    assert "formal_multiple_testing_mode_required_for_live_admission" in result["admission_block_reasons"]
+    assert result["admission_evaluations"]["live"]["passed"] is False
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from typing import Any
 from .run_models import FactoryRunStatus, StageStatus
 from .services.readiness_service import (
     resolve_factor_refresh_trigger,
+    resolve_governed_pool_runtime_state,
     resolve_governed_pool_state,
 )
 from ..domain.constants import (
@@ -127,7 +128,16 @@ class FactoryCycleRunner:
         governed_candidate_pool_active = bool(governed_pool_state.get("active"))
         governed_pool_missing_after_scheduler_success = bool(
             factor_source_mode == "governed_pool_missing_after_scheduler_success"
+            or bool(factor_summary.get("governed_pool_missing_after_scheduler_success"))
             or (scheduler_recent_success and not governed_candidate_pool_active)
+        )
+        governed_pool_runtime_state = resolve_governed_pool_runtime_state(
+            factor_summary,
+            factor_refresh=factor_refresh,
+            factor_refresh_recommendation_reason=resolve_factor_refresh_trigger(
+                factor_artifact,
+                factor_summary=factor_summary,
+            ),
         )
         sources = dict(snapshot.get("sources") or {})
         event_source = dict(sources.get("event_driven") or {})
@@ -176,6 +186,17 @@ class FactoryCycleRunner:
             blockers.append("governed_candidate_pool_missing_after_scheduler_success")
             critical_blockers.append("governed_candidate_pool_missing_after_scheduler_success")
             score -= 0.18
+        if governed_pool_runtime_state == "refreshing_pool":
+            warnings.append("governed_candidate_pool_refreshing")
+            score -= 0.05
+        elif (
+            governed_pool_runtime_state == "blocked_by_governed_pool"
+            and not governed_pool_missing_after_scheduler_success
+        ):
+            warnings.append("governed_candidate_pool_refresh_blocked")
+            blockers.append("governed_candidate_pool_unavailable_after_refresh")
+            critical_blockers.append("governed_candidate_pool_unavailable_after_refresh")
+            score -= 0.18
         if bool(factor_summary.get("stale")):
             if governed_candidate_pool_active:
                 warnings.append("factor_research_history_stale_governed_pool_active")
@@ -223,6 +244,7 @@ class FactoryCycleRunner:
             "factor_research_degraded": bool(factor_summary.get("degraded")),
             "factor_source_mode": factor_summary.get("factor_source_mode"),
             "governed_candidate_pool_active": governed_candidate_pool_active,
+            "governed_candidate_pool_runtime_state": governed_pool_runtime_state,
             "governed_candidate_pool_mode": governed_candidate_pool_mode,
             "governed_candidate_pool_provisional": governed_candidate_pool_provisional,
             "governed_pool_missing_after_scheduler_success": governed_pool_missing_after_scheduler_success,
@@ -542,6 +564,7 @@ class FactoryCycleRunner:
                     "factory_readiness_warning_count": readiness.get("warning_count", 0),
                     "factor_source_mode": readiness.get("factor_source_mode"),
                     "governed_candidate_pool_active": bool(readiness.get("governed_candidate_pool_active")),
+                    "governed_candidate_pool_runtime_state": readiness.get("governed_candidate_pool_runtime_state"),
                     "active_candidate_count": int(readiness.get("active_candidate_count") or 0),
                     "governed_source_candidate_count": int(readiness.get("governed_source_candidate_count") or 0),
                     "governed_blocked_candidate_count": int(readiness.get("governed_blocked_candidate_count") or 0),
@@ -549,6 +572,11 @@ class FactoryCycleRunner:
                     "governed_freshness_days": readiness.get("governed_freshness_days"),
                     "scheduler_recent_success": bool(readiness.get("scheduler_recent_success")),
                     "scheduler_llm_validation_status": readiness.get("scheduler_llm_validation_status"),
+                    "factor_llm_provider_enabled": factor_research_summary.get("factor_llm_provider_enabled"),
+                    "factor_llm_provider_ready": factor_research_summary.get("factor_llm_provider_ready"),
+                    "factor_llm_provider_health_status": factor_research_summary.get("factor_llm_provider_health_status"),
+                    "factor_llm_provider_rebuild_count": factor_research_summary.get("factor_llm_provider_rebuild_count"),
+                    "factor_llm_provider_last_error_type": factor_research_summary.get("factor_llm_provider_last_error_type"),
                     "factor_research_stale": bool(factor_research_summary.get("stale")),
                     "factor_research_degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
                     "factor_research_refresh_attempted": bool(factor_refresh_summary.get("refresh_attempted")),
@@ -910,6 +938,7 @@ class FactoryCycleRunner:
                 "governed_candidate_pool_active": bool(
                     resolve_governed_pool_state(factor_research_summary).get("active")
                 ),
+                "governed_candidate_pool_runtime_state": readiness_summary.get("governed_candidate_pool_runtime_state"),
                 "factor_research_degraded": bool((snapshot.get("factor_research") or {}).get("degraded")),
                 "factor_research_stale": bool(factor_research_summary.get("stale")),
                 "factor_research_freshness_days": factor_research_summary.get("freshness_days"),
@@ -917,6 +946,11 @@ class FactoryCycleRunner:
                 "scheduler_llm_validation_status": factor_research_summary.get("scheduler_llm_validation_status"),
                 "factor_scheduler_recent_success": bool(factor_research_summary.get("scheduler_recent_success")),
                 "factor_scheduler_llm_validation_status": factor_research_summary.get("scheduler_llm_validation_status"),
+                "factor_llm_provider_enabled": bool(factor_research_summary.get("factor_llm_provider_enabled")),
+                "factor_llm_provider_ready": bool(factor_research_summary.get("factor_llm_provider_ready")),
+                "factor_llm_provider_health_status": factor_research_summary.get("factor_llm_provider_health_status"),
+                "factor_llm_provider_rebuild_count": int(factor_research_summary.get("factor_llm_provider_rebuild_count") or 0),
+                "factor_llm_provider_last_error_type": factor_research_summary.get("factor_llm_provider_last_error_type"),
                 "factor_research_refresh_attempted": bool(factor_refresh_summary.get("refresh_attempted")),
                 "factor_research_refresh_status": factor_refresh_summary.get("refresh_status"),
                 "factor_research_refresh_trigger": factor_refresh_summary.get("refresh_trigger"),

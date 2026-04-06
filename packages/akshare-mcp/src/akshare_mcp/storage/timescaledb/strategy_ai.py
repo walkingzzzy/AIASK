@@ -1,5 +1,6 @@
 """TimescaleDB 适配器 — 策略 AI Mixin (generation experiments / task runs / factory runs)"""
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -177,26 +178,37 @@ class StrategyAIMixin:
         completed_at=None,
     ) -> Optional[dict]:
         completed_at_value = self._coerce_timestamp(completed_at)
-        async with self.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                UPDATE strategy_task_runs
-                SET status = COALESCE($2, status),
-                    result = CASE WHEN $3::jsonb IS NULL THEN result ELSE $3::jsonb END,
-                    error = COALESCE($4, error),
-                    completed_at = COALESCE($5::timestamptz, completed_at, NOW())
-                WHERE id = $1
-                RETURNING *
-                """,
-                int(run_id),
-                status,
-                None if result is None else json.dumps(result, ensure_ascii=False, default=str),
-                error,
-                completed_at_value,
-            )
-        if not row:
-            return None
-        return self._decode_task_run(dict(row))
+        result_json = None if result is None else json.dumps(result, ensure_ascii=False, default=str)
+        sql = """
+            UPDATE strategy_task_runs
+            SET status = COALESCE($2, status),
+                result = CASE WHEN $3::jsonb IS NULL THEN result ELSE $3::jsonb END,
+                error = COALESCE($4, error),
+                completed_at = COALESCE($5::timestamptz, completed_at, NOW())
+            WHERE id = $1
+            RETURNING *
+            """
+        for attempt in range(3):
+            try:
+                async with self.acquire() as conn:
+                    row = await conn.fetchrow(
+                        sql,
+                        int(run_id),
+                        status,
+                        result_json,
+                        error,
+                        completed_at_value,
+                        timeout=60.0,
+                    )
+                if not row:
+                    return None
+                return self._decode_task_run(dict(row))
+            except asyncio.TimeoutError:
+                if attempt >= 2:
+                    raise
+                await asyncio.sleep(1.0 * (attempt + 1))
+            except Exception:
+                raise
 
     async def list_strategy_task_runs(
         self,

@@ -92,6 +92,8 @@ class RiskExecutor:
                     rules = json.loads(rules)
                 except Exception:
                     rules = {}
+            if not isinstance(rules, dict):
+                rules = {}
 
             max_pos_pct = float(rules.get("max_position_pct", self.max_position_pct))
             max_dd_pct = float(rules.get("max_drawdown_pct", self.max_drawdown_pct))

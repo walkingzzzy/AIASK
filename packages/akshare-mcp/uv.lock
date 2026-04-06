@@ -168,6 +168,7 @@ name = "akshare-mcp"
 version = "2.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "asyncpg" },
     { name = "mcp" },
     { name = "numba" },
@@ -201,6 +202,7 @@ parallel = [
 [package.metadata]
 requires-dist = [
     { name = "akshare", marker = "extra == 'legacy'", specifier = ">=1.10.0" },
+    { name = "anyio", specifier = ">=4.0.0" },
     { name = "asyncpg", specifier = ">=0.29.0" },
     { name = "baostock", marker = "extra == 'legacy'", specifier = ">=0.8.8" },
     { name = "efinance", marker = "extra == 'legacy'", specifier = ">=0.5.5" },

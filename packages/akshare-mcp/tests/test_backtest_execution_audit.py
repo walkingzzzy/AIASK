@@ -47,6 +47,42 @@ def test_run_backtest_preserves_explicit_implementation_shortfall_input():
     assert data["turnover_proxy"] > 1.0
 
 
+def test_run_backtest_keeps_implementation_shortfall_proxy_out_of_pnl_chain():
+    base_params = {
+        "lookback": 5,
+        "threshold": 0.01,
+        "initial_capital": 100000,
+        "commission": 0.0003,
+        "slippage_model": "fixed",
+        "tradability_filter": True,
+        "position_assumption": "equal_weight_proxy",
+        "target_weight_scheme": "equal_weight",
+    }
+
+    base = BacktestEngine.run_backtest(
+        "600519",
+        _make_klines(n=120, start=10.0, volume=2_000_000.0),
+        "momentum",
+        dict(base_params),
+    )
+    stressed_audit = BacktestEngine.run_backtest(
+        "600519",
+        _make_klines(n=120, start=10.0, volume=2_000_000.0),
+        "momentum",
+        {
+            **base_params,
+            "implementation_shortfall_proxy": 55.0,
+        },
+    )
+
+    assert base["success"] is True
+    assert stressed_audit["success"] is True
+    assert stressed_audit["data"]["implementation_shortfall_proxy"] == pytest.approx(55.0)
+    assert stressed_audit["data"]["implementation_shortfall_model_source"] == "explicit_input"
+    assert stressed_audit["data"]["total_return"] == pytest.approx(base["data"]["total_return"])
+    assert stressed_audit["data"]["final_capital"] == pytest.approx(base["data"]["final_capital"])
+
+
 def test_run_backtest_estimates_shortfall_from_capacity_and_tradability_pressure():
     liquid = BacktestEngine.run_backtest(
         "600519",
@@ -144,3 +180,84 @@ def test_run_backtest_applies_market_rules_and_position_constraints_to_pnl():
     assert constrained_data["cost_assumptions"]["min_trade_lot"] == 100
     assert constrained_data["cost_assumptions"]["t_plus_one"] is True
     assert constrained_data["sell_tax_rate"] == pytest.approx(0.001)
+
+
+def test_run_portfolio_backtest_builds_shared_cash_portfolio_metrics():
+    market_data = {
+        "600519": _make_klines(n=100, start=10.0, volume=2_000_000.0),
+        "000858": _make_klines(n=100, start=12.0, volume=1_500_000.0),
+    }
+
+    result = BacktestEngine.run_portfolio_backtest(
+        market_data,
+        "buy_and_hold",
+        {
+            "initial_capital": 200000,
+            "commission": 0.0003,
+            "slippage_model": "volume_based",
+            "tradability_filter": True,
+            "target_weight_scheme": "equal_weight",
+            "position_assumption": "equal_weight_proxy",
+            "capacity_participation_rate": 0.05,
+            "adv_ratio_limit": 0.20,
+        },
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["portfolio_mode"] == "shared_cash"
+    assert data["portfolio_engine_version"] == "shared_cash_v1"
+    assert data["component_count"] == 2
+    assert data["allocation_mode"] == "equal_weight"
+    assert data["allocation_weights"]["600519"] == pytest.approx(0.5, abs=1e-6)
+    assert data["allocation_weights"]["000858"] == pytest.approx(0.5, abs=1e-6)
+    assert data["final_capital"] > data["initial_capital"]
+    assert data["trades_count"] == 4
+    assert data["avg_holding_days"] > 0
+    assert data["turnover_proxy"] > 1.0
+    assert data["implementation_shortfall_proxy"] > 0
+    assert data["tradability_summary"]["tradability_filter"] is True
+    assert data["execution_summary"]["order_attempt_count"] >= 4
+    assert data["execution_summary"]["fill_rate"] > 0
+    assert data["execution_summary"]["failed_fill_rate"] == pytest.approx(0.0)
+    assert len(data["cash_curve"]) == len(data["equity_curve"])
+    assert len(data["gross_exposure_curve"]) == len(data["equity_curve"])
+    assert data["capacity_summary"]["avg_participation_rate"] >= 0
+    assert len(data["equity_curve"]) >= 2
+
+
+def test_run_portfolio_backtest_keeps_implementation_shortfall_proxy_out_of_pnl_chain():
+    market_data = {
+        "600519": _make_klines(n=100, start=10.0, volume=2_000_000.0),
+        "000858": _make_klines(n=100, start=12.0, volume=1_500_000.0),
+    }
+    base_params = {
+        "initial_capital": 200000,
+        "commission": 0.0003,
+        "slippage_model": "volume_based",
+        "tradability_filter": True,
+        "target_weight_scheme": "equal_weight",
+        "position_assumption": "equal_weight_proxy",
+        "capacity_participation_rate": 0.05,
+        "adv_ratio_limit": 0.20,
+    }
+
+    base = BacktestEngine.run_portfolio_backtest(
+        market_data,
+        "buy_and_hold",
+        dict(base_params),
+    )
+    stressed_audit = BacktestEngine.run_portfolio_backtest(
+        market_data,
+        "buy_and_hold",
+        {
+            **base_params,
+            "implementation_shortfall_proxy": 48.0,
+        },
+    )
+
+    assert base["success"] is True
+    assert stressed_audit["success"] is True
+    assert stressed_audit["data"]["implementation_shortfall_proxy"] == pytest.approx(48.0)
+    assert stressed_audit["data"]["total_return"] == pytest.approx(base["data"]["total_return"])
+    assert stressed_audit["data"]["final_capital"] == pytest.approx(base["data"]["final_capital"])

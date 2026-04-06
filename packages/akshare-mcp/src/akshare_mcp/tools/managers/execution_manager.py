@@ -19,9 +19,11 @@ from ...utils import fail, ok, normalize_code
 from .compliance_manager import evaluate_order_compliance
 from ..manager_protocol import normalize_manager_payload
 from ..risk_guard import audit_event
+from . import _execution_manager_support as _execution_manager_support_mod
 
 from ._execution_manager_support import (
     _append_event,
+    _build_cost_model,
     _build_soft_gate_warnings,
     _create_task,
     _enrich_kwargs_with_realtime,
@@ -90,11 +92,22 @@ _SOFT_GATE_RUNTIME_CONFIG: dict[str, Any] = {
 
 from ._execution_manager_support import *
 
+
+def _sync_execution_support_overrides() -> None:
+    """Keep execution support helpers aligned with execution_manager monkeypatches."""
+    _execution_manager_support_mod.register_artifact_async = register_artifact_async
+    _execution_manager_support_mod.get_artifact_async = get_artifact_async
+    _execution_manager_support_mod.list_artifacts_async = list_artifacts_async
+    _execution_manager_support_mod.evaluate_order_compliance = evaluate_order_compliance
+    _execution_manager_support_mod.audit_event = audit_event
+    _execution_manager_support_mod._build_cost_model = _build_cost_model
+    _execution_manager_support_mod._enrich_kwargs_with_realtime = _enrich_kwargs_with_realtime
+
 def register_execution_manager(mcp):
     """Register execution manager tool."""
 
-    @mcp.tool(structured_output=True)
-    async def execution_manager(action: str, params: dict | None = None, kwargs: Any = None, dry_run: bool = False) -> dict[str, Any]:
+    @mcp.tool()
+    async def execution_manager(action: str, params: dict | None = None, kwargs: Any = None, dry_run: bool = False) -> dict:
         """
         Execution manager with unified action + kwargs protocol.
         Supports structured ``params`` in addition to legacy ``kwargs`` payloads.
@@ -145,6 +158,7 @@ def register_execution_manager(mcp):
         - execution_manager(action="summary", kwargs='{"task_id":"exec_xxx"}')
         """
         try:
+            _sync_execution_support_overrides()
             kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             kwargs = _normalize_kwargs(kwargs)
             dry_run = dry_run or bool(kwargs.get("dry_run", False))

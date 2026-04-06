@@ -34,6 +34,11 @@ from .quant_engine import (
     _minimum_factor_history,
 )
 
+# 显式声明需要通过 `from ._quant_analysis_support import *` 导出的私有 helper。
+__all__ = [
+    "_build_factor_return_panels",
+    "run_factor_robustness_check",
+]
 
 # ---------------------------------------------------------------------------
 # IC Analysis

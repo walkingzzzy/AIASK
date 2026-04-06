@@ -197,7 +197,7 @@ async def test_submitter_applies_incubation_budget_tracks(monkeypatch):
     assert result["created_audit_only"] == 0
     assert result["incubation_budget_summary"]["track_counts"]["formal_incubation"] == 1
     assert result["incubation_budget_summary"]["track_counts"]["observe_incubation"] == 1
-    incubation_gateway.ensure_account.assert_awaited_once()
+    assert incubation_gateway.ensure_account.await_count == 2
     incubation_gateway.run_pipeline.assert_awaited_once()
 
 
@@ -369,7 +369,28 @@ async def test_submitter_persists_candidate_provenance_into_summary_and_quality_
     monkeypatch.setattr(
         legacy_submission_gate,
         "run_submission_quality_gate",
-        AsyncMock(return_value={"passed": False, "reasons": ["bridge"], "reason_codes": ["bridge"]}),
+        AsyncMock(
+            return_value={
+                "passed": False,
+                "reasons": ["bridge"],
+                "reason_codes": ["bridge"],
+                "multiple_testing_registry": {
+                    "registry_key": "task|snapshot|family|sentiment|universe|explicit:600519|template|default|revision|baseline",
+                    "task_key": "task|snapshot",
+                    "family_key": "family|sentiment|dsl_rule",
+                    "universe_key": "universe|explicit:600519|600519",
+                    "template_key": "template|default|trade_rule_validation|dsl_rule",
+                    "revision_key": "revision|snapshot|baseline",
+                    "lineage_id": "snapshot",
+                    "target_pool_id": "explicit:600519",
+                    "candidate_contract_hash": "hash_mt_1",
+                    "candidate_identity_signature": "sig_mt_1",
+                    "revision_mode": "baseline",
+                    "refresh_mode": None,
+                    "multiple_testing_mode": "bootstrap_family_proxy",
+                },
+            }
+        ),
     )
     monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value=None))
     monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value=None))
@@ -438,6 +459,8 @@ async def test_submitter_persists_candidate_provenance_into_summary_and_quality_
     assert result["strategies"][0]["direction_bias"] == "long_only"
     assert result["strategies"][0]["target_symbol_count"] == 1
     assert result["strategies"][0]["strategy_profile"]["candidate_family_id"] == "sentiment_short_sentiment_1"
+    assert result["strategies"][0]["candidate_contract_hash"]
+    assert result["strategies"][0]["candidate_identity_signature"]
 
     saved_payload = db.save_strategy.await_args.args[0]
     assert saved_payload["params"]["candidate_provenance"]["source_candidate_artifact_id"] == "candidate_001"
@@ -453,6 +476,9 @@ async def test_submitter_persists_candidate_provenance_into_summary_and_quality_
     assert saved_payload["params"]["generator_mode"] == "external_llm"
     assert saved_payload["params"]["direction_bias"] == "long_only"
     assert saved_payload["params"]["target_symbol_count"] == 1
+    assert saved_payload["params"]["candidate_contract_hash"] == result["strategies"][0]["candidate_contract_hash"]
+    assert saved_payload["params"]["candidate_identity_signature"] == result["strategies"][0]["candidate_identity_signature"]
+    assert saved_payload["params"]["candidate_contract_snapshot"]["targeting"]["target_pool_id"] == "explicit:600519"
 
     quality_report = db.save_strategy_quality_report.await_args.args[2]
     assert quality_report["candidate_provenance"]["source_candidate_artifact_id"] == "candidate_001"
@@ -464,6 +490,16 @@ async def test_submitter_persists_candidate_provenance_into_summary_and_quality_
     assert quality_report["summary"]["risk_level"] == "high"
     assert quality_report["summary"]["regime_fit"] == "event_sensitive"
     assert quality_report["summary"]["generator_mode"] == "external_llm"
+    assert quality_report["candidate_contract_hash"] == result["strategies"][0]["candidate_contract_hash"]
+    assert quality_report["candidate_identity_signature"] == result["strategies"][0]["candidate_identity_signature"]
+    assert quality_report["summary"]["target_pool_id"] == "explicit:600519"
+    assert quality_report["summary"]["multiple_testing_registry"]["task_key"] == "task|snapshot"
+
+    lineage_metadata = db.save_strategy_lineage.await_args.kwargs["metadata"]
+    assert lineage_metadata["candidate_contract_hash"] == result["strategies"][0]["candidate_contract_hash"]
+    assert lineage_metadata["candidate_identity_signature"] == result["strategies"][0]["candidate_identity_signature"]
+    assert lineage_metadata["target_pool_id"] == "explicit:600519"
+    assert lineage_metadata["multiple_testing_registry"]["family_key"] == "family|sentiment|dsl_rule"
 
 
 @pytest.mark.asyncio
@@ -540,6 +576,10 @@ async def test_submitter_records_candidate_provenance_into_generation_experiment
     assert experiment_payload["evaluation"]["regime_fit"] == "rotation_balanced"
     assert experiment_payload["result"]["generator_mode"] == "external_llm"
     assert experiment_payload["result"]["target_symbol_count"] == 2
+    assert experiment_payload["strategy_spec"]["candidate_contract_hash"]
+    assert experiment_payload["strategy_spec"]["candidate_identity_signature"]
+    assert experiment_payload["evaluation"]["candidate_contract_hash"] == experiment_payload["strategy_spec"]["candidate_contract_hash"]
+    assert experiment_payload["result"]["candidate_identity_signature"] == experiment_payload["strategy_spec"]["candidate_identity_signature"]
 
 
 @pytest.mark.asyncio
@@ -697,7 +737,7 @@ async def test_submitter_routes_live_ready_candidates_into_review_chain(monkeypa
     class _DummyPromotionPipelineService:
         async def review(self, _db, strategy, **kwargs):
             assert strategy["id"]
-            assert kwargs["auto_apply"] is False
+            assert kwargs["auto_apply"] is True
             return {
                 "review": {
                     "id": "promotion_review_001",
@@ -778,6 +818,10 @@ async def test_submitter_routes_live_ready_candidates_into_review_chain(monkeypa
 
     strategy_summary = result["strategies"][0]
     assert strategy_summary["submission_lane"] == "live_ready_review"
+    assert strategy_summary["submission_action_type"] == "runtime_review"
+    assert strategy_summary["submission_action_trigger"] == "live_candidate_ready"
+    assert strategy_summary["submission_action_next_step"] == "pool_admission"
+    assert strategy_summary["submission_action_completed"] is True
     assert strategy_summary["live_review_ready"] is True
     assert strategy_summary["paper_account_id"] == "paper_live_001"
     assert strategy_summary["runtime_control_mode"] == "monitor"
@@ -788,7 +832,249 @@ async def test_submitter_routes_live_ready_candidates_into_review_chain(monkeypa
 
     quality_report = db.save_strategy_quality_report.await_args.args[2]
     assert quality_report["summary"]["submission_lane"] == "live_ready_review"
+    assert quality_report["summary"]["submission_action_type"] == "runtime_review"
+    assert quality_report["summary"]["submission_action_trigger"] == "live_candidate_ready"
+    assert quality_report["summary"]["submission_action_next_step"] == "pool_admission"
+    assert quality_report["summary"]["submission_action_completed"] is True
     assert quality_report["summary"]["live_review_ready"] is True
     assert quality_report["summary"]["paper_account_id"] == "paper_live_001"
     assert quality_report["summary"]["runtime_control_mode"] == "monitor"
     assert quality_report["summary"]["promotion_review_status"] == "watch"
+
+
+@pytest.mark.asyncio
+async def test_submitter_applies_pool_admission_for_promoted_live_ready_candidates(monkeypatch):
+    class _DummyIncubationGateway:
+        async def ensure_account(self, _db, _strategy, *, source_run_id=None, stage="warmup"):
+            assert source_run_id == "2026-03-19"
+            assert stage == "candidate"
+            return {
+                "account": {"id": "paper_live_approved_001"},
+                "binding": {"account_id": "paper_live_approved_001"},
+            }
+
+    class _DummyRuntimeControlService:
+        async def set_control(self, _db, strategy, **kwargs):
+            assert strategy["id"]
+            assert kwargs["control_mode"] == "monitor"
+            return {
+                "strategy_id": strategy["id"],
+                "control_mode": "monitor",
+                "status": "active",
+            }
+
+    class _DummyPromotionPipelineService:
+        async def review(self, _db, strategy, **kwargs):
+            assert strategy["id"]
+            assert kwargs["auto_apply"] is True
+            return {
+                "review": {
+                    "id": "promotion_review_approved_001",
+                    "status": "approved",
+                    "recommendation": "promote",
+                    "score": 0.93,
+                },
+                "applied_transition": {
+                    "from": "submitted",
+                    "to": "listed",
+                },
+            }
+
+    submitter = StrategySubmitter(incubation_gateway=_DummyIncubationGateway())
+
+    class _DB:
+        def __init__(self):
+            self.save_strategy = AsyncMock()
+            self.save_strategy_metrics = AsyncMock()
+            self.save_strategy_quality_report = AsyncMock()
+            self.update_strategy_status = AsyncMock()
+            self.update_paper_account_status = AsyncMock(return_value={"id": "paper_live_approved_001", "status": "active"})
+            self.save_strategy_lineage = AsyncMock()
+
+    db = _DB()
+
+    monkeypatch.setattr(
+        legacy_submission_gate,
+        "run_submission_quality_gate",
+        AsyncMock(
+            return_value={
+                "passed": True,
+                "passed_strict": True,
+                "provisional_pass": False,
+                "admission_stage": "live",
+                "incubation_pass_mode": "strict",
+                "research_candidate_ready": True,
+                "incubation_candidate_ready": True,
+                "live_candidate_ready": True,
+                "admission_block_reasons": [],
+                "admission_evaluations": {
+                    "research": {"passed": True},
+                    "incubation": {"passed": True},
+                    "live": {"passed": True},
+                },
+                "reasons": [],
+                "reason_codes": [],
+                "warnings": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "strategy_factory.application._submitter_actions.get_strategy_runtime_control_service",
+        lambda: _DummyRuntimeControlService(),
+    )
+    monkeypatch.setattr(
+        "strategy_factory.application._submitter_actions.get_strategy_promotion_pipeline_service",
+        lambda: _DummyPromotionPipelineService(),
+    )
+
+    result = await submitter.submit(
+        [
+            {
+                "name": "live_ready_promote_candidate",
+                "strategy_type": "dsl_rule",
+                "params": {"dsl": {"entry": {"all": []}, "exit": {"any": []}, "metadata": {}}},
+                "target_symbols": ["600519"],
+                "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+                "backtest_metrics": {
+                    "sharpe_ratio": 1.4,
+                    "total_return": 0.18,
+                    "max_drawdown": 0.07,
+                    "trades_count": 9,
+                },
+                "spawn_reason": "live-ready-promote-chain",
+            }
+        ],
+        {"date": "2026-03-19", "fg_level": "neutral", "fear_greed_index": 50},
+        db,
+    )
+
+    strategy_summary = result["strategies"][0]
+    assert strategy_summary["status"] == "listed"
+    assert strategy_summary["submission_lane"] == "live_ready_review"
+    assert strategy_summary["submission_action_type"] == "pool_admission"
+    assert strategy_summary["submission_action_trigger"] == "live_candidate_ready_pool_admission"
+    assert strategy_summary["submission_action_next_step"] is None
+    assert strategy_summary["submission_action_completed"] is True
+    assert strategy_summary["pool_admission_applied"] is True
+    assert strategy_summary["promotion_applied_transition"] == {"from": "submitted", "to": "listed"}
+    assert strategy_summary["promotion_review_status"] == "approved"
+    assert strategy_summary["promotion_review_recommendation"] == "promote"
+
+    quality_report = db.save_strategy_quality_report.await_args.args[2]
+    assert quality_report["summary"]["status_after_review"] == "listed"
+    assert quality_report["summary"]["submission_action_type"] == "pool_admission"
+    assert quality_report["summary"]["submission_action_next_step"] is None
+    assert quality_report["summary"]["pool_admission_applied"] is True
+    assert quality_report["pool_admission_applied"] is True
+    assert quality_report["promotion_applied_transition"] == {"from": "submitted", "to": "listed"}
+
+
+@pytest.mark.asyncio
+async def test_submitter_routes_observe_candidates_into_paper_lane(monkeypatch):
+    import strategy_factory.application.incubation_budgeter as budgeter_mod
+
+    class _DummyIncubationGateway:
+        async def ensure_account(self, _db, _strategy, *, source_run_id=None, stage="warmup"):
+            assert source_run_id == "2026-03-19"
+            assert stage == "paper"
+            return {
+                "account": {"id": "paper_observe_001"},
+                "binding": {"account_id": "paper_observe_001"},
+            }
+
+    submitter = StrategySubmitter(incubation_gateway=_DummyIncubationGateway())
+
+    class _DB:
+        def __init__(self):
+            self.save_strategy = AsyncMock()
+            self.save_strategy_metrics = AsyncMock()
+            self.save_strategy_quality_report = AsyncMock()
+            self.update_strategy_status = AsyncMock()
+            self.update_paper_account_status = AsyncMock(return_value={"id": "paper_observe_001", "status": "active"})
+            self.save_strategy_lineage = AsyncMock()
+
+    db = _DB()
+
+    monkeypatch.setattr(
+        legacy_submission_gate,
+        "run_submission_quality_gate",
+        AsyncMock(
+            return_value={
+                "passed": True,
+                "passed_strict": True,
+                "provisional_pass": False,
+                "admission_stage": "incubation",
+                "incubation_pass_mode": "strict",
+                "research_candidate_ready": True,
+                "incubation_candidate_ready": True,
+                "live_candidate_ready": False,
+                "admission_block_reasons": ["deflated_sharpe 0.120 < 0.300"],
+                "admission_evaluations": {
+                    "research": {"passed": True},
+                    "incubation": {"passed": True},
+                    "live": {"passed": False, "reasons": ["deflated_sharpe 0.120 < 0.300"]},
+                },
+                "reasons": [],
+                "reason_codes": [],
+                "warnings": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        budgeter_mod.IncubationBudgeter,
+        "plan",
+        staticmethod(
+            lambda candidates, _snapshot: {
+                "summary": {"track_counts": {"observe_incubation": 1}},
+                "plans": {
+                    int(id(candidates[0])): {
+                        "track": "observe_incubation",
+                        "rank": 1,
+                        "priority_score": 0.31,
+                    }
+                },
+            }
+        ),
+    )
+
+    result = await submitter.submit(
+        [
+            {
+                "name": "observe_paper_candidate",
+                "strategy_type": "dsl_rule",
+                "params": {"dsl": {"entry": {"all": []}, "exit": {"any": []}, "metadata": {}}},
+                "target_symbols": ["600519"],
+                "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+                "backtest_metrics": {
+                    "sharpe_ratio": 0.92,
+                    "total_return": 0.11,
+                    "max_drawdown": 0.12,
+                    "trades_count": 7,
+                },
+                "incubation_budget": {"track": "observe_incubation", "rank": 2, "priority_score": 0.31},
+                "spawn_reason": "paper-observe-route",
+            }
+        ],
+        {"date": "2026-03-19", "fg_level": "neutral", "fear_greed_index": 50},
+        db,
+    )
+
+    strategy_summary = result["strategies"][0]
+    assert strategy_summary["submission_lane"] == "observe_incubation"
+    assert strategy_summary["submission_action_type"] == "paper"
+    assert strategy_summary["submission_action_trigger"] == "observe_track_paper_route"
+    assert strategy_summary["submission_action_next_step"] == "runtime_review"
+    assert strategy_summary["paper_lane_ready"] is True
+    assert strategy_summary["paper_account_id"] == "paper_observe_001"
+    assert strategy_summary["paper_account_status"] == "active"
+    assert strategy_summary["submission_action_completed"] is True
+
+    quality_report = db.save_strategy_quality_report.await_args.args[2]
+    assert quality_report["summary"]["submission_lane"] == "observe_incubation"
+    assert quality_report["summary"]["submission_action_type"] == "paper"
+    assert quality_report["summary"]["paper_lane_ready"] is True
+    assert quality_report["summary"]["paper_account_id"] == "paper_observe_001"

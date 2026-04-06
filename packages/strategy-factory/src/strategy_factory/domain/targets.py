@@ -389,7 +389,7 @@ def _normalize_research_task_contract(task: Optional[dict]) -> dict[str, Any]:
         "target_alignment_contract": target_alignment_contract,
         **event_windows,
         "task_signature": task_signature,
-        "target_symbols_signature": ",".join(target_symbols),
+        "target_symbols_signature": ",".join(sorted(target_symbols)),
     }
 
 

@@ -373,12 +373,23 @@ def build_quality_report(
     submission_lane = audit.get("submission_lane")
     direct_trade_candidate = bool(audit.get("direct_trade_candidate"))
     live_review_ready = bool(audit.get("live_review_ready"))
+    paper_lane_ready = bool(audit.get("paper_lane_ready"))
     paper_account_id = audit.get("paper_account_id") or audit.get("live_review_account_id")
+    paper_account_status = audit.get("paper_account_status")
     runtime_control_mode = audit.get("runtime_control_mode")
     runtime_control_status = audit.get("runtime_control_status")
     promotion_review_id = audit.get("promotion_review_id")
     promotion_review_status = audit.get("promotion_review_status")
     promotion_review_recommendation = audit.get("promotion_review_recommendation")
+    pool_admission_applied = bool(audit.get("pool_admission_applied"))
+    promotion_applied_transition = dict(audit.get("promotion_applied_transition") or {})
+    submission_action = dict(audit.get("submission_action") or {})
+    submission_action_type = audit.get("submission_action_type")
+    submission_action_trigger = audit.get("submission_action_trigger")
+    submission_action_gaps = list(audit.get("submission_action_gaps") or [])
+    submission_action_fallback_conditions = list(audit.get("submission_action_fallback_conditions") or [])
+    submission_action_next_step = audit.get("submission_action_next_step")
+    submission_action_completed = bool(audit.get("submission_action_completed"))
     summary = {
         "strategy_id": strategy_id,
         "strategy_type": strategy_type,
@@ -394,12 +405,21 @@ def build_quality_report(
         "submission_lane": submission_lane,
         "direct_trade_candidate": direct_trade_candidate,
         "live_review_ready": live_review_ready,
+        "paper_lane_ready": paper_lane_ready,
         "paper_account_id": paper_account_id,
+        "paper_account_status": paper_account_status,
         "runtime_control_mode": runtime_control_mode,
         "runtime_control_status": runtime_control_status,
         "promotion_review_id": promotion_review_id,
         "promotion_review_status": promotion_review_status,
         "promotion_review_recommendation": promotion_review_recommendation,
+        "pool_admission_applied": pool_admission_applied,
+        "submission_action_type": submission_action_type,
+        "submission_action_trigger": submission_action_trigger,
+        "submission_action_gaps": submission_action_gaps,
+        "submission_action_fallback_conditions": submission_action_fallback_conditions,
+        "submission_action_next_step": submission_action_next_step,
+        "submission_action_completed": submission_action_completed,
         "refresh_mode": audit.get("refresh_mode") or dedup.get("refresh_mode"),
         "source_candidate_artifact_id": candidate_provenance.get("source_candidate_artifact_id"),
         "candidate_family": candidate_provenance.get("candidate_family"),
@@ -438,12 +458,23 @@ def build_quality_report(
         "submission_lane": submission_lane,
         "direct_trade_candidate": direct_trade_candidate,
         "live_review_ready": live_review_ready,
+        "paper_lane_ready": paper_lane_ready,
         "paper_account_id": paper_account_id,
+        "paper_account_status": paper_account_status,
         "runtime_control_mode": runtime_control_mode,
         "runtime_control_status": runtime_control_status,
         "promotion_review_id": promotion_review_id,
         "promotion_review_status": promotion_review_status,
         "promotion_review_recommendation": promotion_review_recommendation,
+        "pool_admission_applied": pool_admission_applied,
+        "promotion_applied_transition": promotion_applied_transition,
+        "submission_action": submission_action,
+        "submission_action_type": submission_action_type,
+        "submission_action_trigger": submission_action_trigger,
+        "submission_action_gaps": submission_action_gaps,
+        "submission_action_fallback_conditions": submission_action_fallback_conditions,
+        "submission_action_next_step": submission_action_next_step,
+        "submission_action_completed": submission_action_completed,
         "admission_block_reasons": list(normalized_gate.get("admission_block_reasons") or []),
         "admission_evaluations": dict(normalized_gate.get("admission_evaluations") or {}),
         "event_window_config": dict(backtest.get("event_window_config") or {}),

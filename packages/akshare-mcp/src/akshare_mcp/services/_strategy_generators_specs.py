@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+from copy import deepcopy
 from typing import Any, Optional
 
 import pandas as pd
@@ -92,6 +93,240 @@ from .strategy_spec import (
 logger = logging.getLogger(__name__)
 
 
+def _rule_template_contract(strategy_type: str) -> dict[str, Any]:
+    contracts: dict[str, dict[str, Any]] = {
+        'volatility_breakout': {
+            'template_generation_profile': 'conservative_breakout',
+            'holding_horizon': {'min_days': 3, 'max_days': 15},
+            'trade_plan': {'entry_bias': 'breakout_confirmation', 'exit_bias': 'trailing_stop_or_time_stop'},
+            'risk_rules': {'stop_loss_pct': 0.07, 'take_profit_pct': 0.16, 'max_holding_days': 15, 'max_position_pct': 0.18},
+            'position_sizing': {'mode': 'equal_weight', 'position_assumption': 'equal_weight_proxy'},
+            'rebalance_rule': {'mode': 'signal_rebalance', 'frequency_days': 3},
+            'portfolio_spec': {
+                'position_assumption': 'equal_weight_proxy',
+                'target_weight_scheme': 'equal_weight',
+                'weight_method': 'volatility_budget',
+                'max_position_pct': 0.18,
+            },
+            'execution_assumptions': {
+                'commission_rate': 0.00025,
+                'slippage_bps': 6,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+                'market_ruleset': 'cn_equity',
+            },
+            'validation_profile': {
+                'profile': 'trade_rule_validation',
+                'validation_focus': 'target_plus_representative',
+                'primary_validation_layer': 'target',
+            },
+            'targeting_policy': {
+                'target_symbol_policy': 'dynamic_signal_universe',
+                'universe_scope': 'liquid_large_mid',
+                'universe_expansion_policy': 'trend_leaders_only',
+            },
+            'rule_template_contract': {
+                'template_generation_profile': 'conservative_breakout',
+                'applicable_universe': {'market_cap': 'mid_large', 'liquidity': 'high', 'style_bias': 'trend_expansion'},
+                'target_layer': 'target',
+                'default_risk_constraints': {'stop_loss_pct': 0.07, 'take_profit_pct': 0.16, 'max_holding_days': 15, 'max_position_pct': 0.18},
+                'portfolio_weight_method': 'volatility_budget',
+            },
+        },
+        'gap_fill': {
+            'template_generation_profile': 'conservative_mean_reversion',
+            'holding_horizon': {'min_days': 1, 'max_days': 8},
+            'trade_plan': {'entry_bias': 'gap_repair_confirmation', 'exit_bias': 'mean_reversion_completion'},
+            'risk_rules': {'stop_loss_pct': 0.05, 'take_profit_pct': 0.12, 'max_holding_days': 8, 'max_position_pct': 0.14},
+            'position_sizing': {'mode': 'equal_weight', 'position_assumption': 'equal_weight_proxy'},
+            'rebalance_rule': {'mode': 'signal_rebalance', 'frequency_days': 2},
+            'portfolio_spec': {
+                'position_assumption': 'equal_weight_proxy',
+                'target_weight_scheme': 'equal_weight',
+                'weight_method': 'repair_equal_weight',
+                'max_position_pct': 0.14,
+            },
+            'execution_assumptions': {
+                'commission_rate': 0.00025,
+                'slippage_bps': 5,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+                'market_ruleset': 'cn_equity',
+            },
+            'validation_profile': {
+                'profile': 'trade_rule_validation',
+                'validation_focus': 'target_plus_representative',
+                'primary_validation_layer': 'target',
+            },
+            'targeting_policy': {
+                'target_symbol_policy': 'dynamic_signal_universe',
+                'universe_scope': 'liquid_repair_candidates',
+                'universe_expansion_policy': 'oversold_repair_only',
+            },
+            'rule_template_contract': {
+                'template_generation_profile': 'conservative_mean_reversion',
+                'applicable_universe': {'market_cap': 'all_liquid', 'liquidity': 'medium_high', 'style_bias': 'oversold_repair'},
+                'target_layer': 'target',
+                'default_risk_constraints': {'stop_loss_pct': 0.05, 'take_profit_pct': 0.12, 'max_holding_days': 8, 'max_position_pct': 0.14},
+                'portfolio_weight_method': 'repair_equal_weight',
+            },
+        },
+        'mean_reversion_short': {
+            'template_generation_profile': 'conservative_mean_reversion',
+            'holding_horizon': {'min_days': 1, 'max_days': 7},
+            'trade_plan': {'entry_bias': 'short_horizon_reversal', 'exit_bias': 'time_stop_or_signal_reset'},
+            'risk_rules': {'stop_loss_pct': 0.05, 'take_profit_pct': 0.1, 'max_holding_days': 7, 'max_position_pct': 0.12},
+            'position_sizing': {'mode': 'equal_weight', 'position_assumption': 'equal_weight_proxy'},
+            'rebalance_rule': {'mode': 'signal_rebalance', 'frequency_days': 2},
+            'portfolio_spec': {
+                'position_assumption': 'equal_weight_proxy',
+                'target_weight_scheme': 'equal_weight',
+                'weight_method': 'short_horizon_equal_weight',
+                'max_position_pct': 0.12,
+            },
+            'execution_assumptions': {
+                'commission_rate': 0.00025,
+                'slippage_bps': 5,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+                'market_ruleset': 'cn_equity',
+            },
+            'validation_profile': {
+                'profile': 'trade_rule_validation',
+                'validation_focus': 'target_plus_representative',
+                'primary_validation_layer': 'target',
+            },
+            'targeting_policy': {
+                'target_symbol_policy': 'dynamic_signal_universe',
+                'universe_scope': 'liquid_defensive_reversion',
+                'universe_expansion_policy': 'short_horizon_only',
+            },
+            'rule_template_contract': {
+                'template_generation_profile': 'conservative_mean_reversion',
+                'applicable_universe': {'market_cap': 'all_liquid', 'liquidity': 'high', 'style_bias': 'defensive_mean_reversion'},
+                'target_layer': 'target',
+                'default_risk_constraints': {'stop_loss_pct': 0.05, 'take_profit_pct': 0.1, 'max_holding_days': 7, 'max_position_pct': 0.12},
+                'portfolio_weight_method': 'short_horizon_equal_weight',
+            },
+        },
+        'sector_rotation': {
+            'template_generation_profile': 'conservative_rotation',
+            'holding_horizon': {'min_days': 5, 'max_days': 20},
+            'trade_plan': {'entry_bias': 'relative_strength_rotation', 'exit_bias': 'leadership_decay_or_time_stop'},
+            'risk_rules': {'stop_loss_pct': 0.08, 'take_profit_pct': 0.18, 'max_holding_days': 20, 'max_position_pct': 0.15},
+            'position_sizing': {'mode': 'equal_weight', 'position_assumption': 'equal_weight_proxy'},
+            'rebalance_rule': {'mode': 'periodic_rebalance', 'frequency_days': 5},
+            'portfolio_spec': {
+                'position_assumption': 'equal_weight_proxy',
+                'target_weight_scheme': 'equal_weight',
+                'weight_method': 'sector_score_tilt',
+                'max_position_pct': 0.15,
+            },
+            'execution_assumptions': {
+                'commission_rate': 0.00025,
+                'slippage_bps': 6,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+                'market_ruleset': 'cn_equity',
+            },
+            'validation_profile': {
+                'profile': 'trade_rule_validation',
+                'validation_focus': 'target_plus_representative',
+                'primary_validation_layer': 'combined',
+            },
+            'targeting_policy': {
+                'target_symbol_policy': 'sector_leader_rotation',
+                'universe_scope': 'liquid_sector_leaders',
+                'universe_expansion_policy': 'sector_relative_strength',
+            },
+            'rule_template_contract': {
+                'template_generation_profile': 'conservative_rotation',
+                'applicable_universe': {'market_cap': 'mid_large', 'liquidity': 'high', 'style_bias': 'sector_leadership'},
+                'target_layer': 'combined',
+                'default_risk_constraints': {'stop_loss_pct': 0.08, 'take_profit_pct': 0.18, 'max_holding_days': 20, 'max_position_pct': 0.15},
+                'portfolio_weight_method': 'sector_score_tilt',
+            },
+        },
+        'north_capital_track': {
+            'template_generation_profile': 'conservative_flow',
+            'holding_horizon': {'min_days': 4, 'max_days': 12},
+            'trade_plan': {'entry_bias': 'capital_flow_confirmation', 'exit_bias': 'flow_reversal_or_time_stop'},
+            'risk_rules': {'stop_loss_pct': 0.07, 'take_profit_pct': 0.16, 'max_holding_days': 12, 'max_position_pct': 0.16},
+            'position_sizing': {'mode': 'equal_weight', 'position_assumption': 'equal_weight_proxy'},
+            'rebalance_rule': {'mode': 'periodic_rebalance', 'frequency_days': 3},
+            'portfolio_spec': {
+                'position_assumption': 'equal_weight_proxy',
+                'target_weight_scheme': 'equal_weight',
+                'weight_method': 'flow_score_tilt',
+                'max_position_pct': 0.16,
+            },
+            'execution_assumptions': {
+                'commission_rate': 0.00025,
+                'slippage_bps': 6,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+                'market_ruleset': 'cn_equity',
+            },
+            'validation_profile': {
+                'profile': 'trade_rule_validation',
+                'validation_focus': 'target_plus_representative',
+                'primary_validation_layer': 'combined',
+            },
+            'targeting_policy': {
+                'target_symbol_policy': 'northbound_eligible_focus',
+                'universe_scope': 'northbound_liquid_core',
+                'universe_expansion_policy': 'flow_leaders_only',
+            },
+            'rule_template_contract': {
+                'template_generation_profile': 'conservative_flow',
+                'applicable_universe': {'northbound_eligible': True, 'liquidity': 'high', 'style_bias': 'capital_flow_leaders'},
+                'target_layer': 'combined',
+                'default_risk_constraints': {'stop_loss_pct': 0.07, 'take_profit_pct': 0.16, 'max_holding_days': 12, 'max_position_pct': 0.16},
+                'portfolio_weight_method': 'flow_score_tilt',
+            },
+        },
+        'margin_divergence': {
+            'template_generation_profile': 'conservative_flow',
+            'holding_horizon': {'min_days': 3, 'max_days': 10},
+            'trade_plan': {'entry_bias': 'divergence_repair_confirmation', 'exit_bias': 'divergence_resolution'},
+            'risk_rules': {'stop_loss_pct': 0.06, 'take_profit_pct': 0.14, 'max_holding_days': 10, 'max_position_pct': 0.14},
+            'position_sizing': {'mode': 'equal_weight', 'position_assumption': 'equal_weight_proxy'},
+            'rebalance_rule': {'mode': 'signal_rebalance', 'frequency_days': 3},
+            'portfolio_spec': {
+                'position_assumption': 'equal_weight_proxy',
+                'target_weight_scheme': 'equal_weight',
+                'weight_method': 'divergence_tilt',
+                'max_position_pct': 0.14,
+            },
+            'execution_assumptions': {
+                'commission_rate': 0.00025,
+                'slippage_bps': 6,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+                'market_ruleset': 'cn_equity',
+            },
+            'validation_profile': {
+                'profile': 'trade_rule_validation',
+                'validation_focus': 'target_plus_representative',
+                'primary_validation_layer': 'target',
+            },
+            'targeting_policy': {
+                'target_symbol_policy': 'margin_activity_focus',
+                'universe_scope': 'liquid_margin_active',
+                'universe_expansion_policy': 'divergence_repair_only',
+            },
+            'rule_template_contract': {
+                'template_generation_profile': 'conservative_flow',
+                'applicable_universe': {'margin_active': True, 'liquidity': 'high', 'style_bias': 'capital_divergence'},
+                'target_layer': 'target',
+                'default_risk_constraints': {'stop_loss_pct': 0.06, 'take_profit_pct': 0.14, 'max_holding_days': 10, 'max_position_pct': 0.14},
+                'portfolio_weight_method': 'divergence_tilt',
+            },
+        },
+    }
+    return deepcopy(contracts.get(str(strategy_type or '').strip().lower()) or {})
+
+
 class RuleStrategyGenerator:
     @staticmethod
     def _factor_research_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -158,25 +393,74 @@ class RuleStrategyGenerator:
                 'name': 'AI 宏观择时',
                 'description': '波动与风险偏好分化阶段偏向宏观择时。',
             },
+            'volatility_breakout': {
+                'params': {'lookback': 20, 'threshold': 0.025},
+                'name': 'AI 波动突破',
+                'description': '趋势扩张与波动放大阶段偏向波动率突破。',
+            },
+            'gap_fill': {
+                'params': {'gap_threshold': 0.02, 'rsi_period': 5, 'oversold': 24, 'overbought': 58},
+                'name': 'AI 跳空回补',
+                'description': '情绪错杀或事件冲击后偏向短线回补机会。',
+            },
+            'mean_reversion_short': {
+                'params': {'rsi_period': 6, 'oversold': 26, 'overbought': 62},
+                'name': 'AI 短线回归',
+                'description': '震荡与防御环境下偏向短周期均值回归。',
+            },
+            'sector_rotation': {
+                'params': {'lookback': 20, 'factor_weights': {'momentum': 0.45, 'quality': 0.30, 'value': 0.25}},
+                'name': 'AI 行业轮动',
+                'description': '主题扩散与风格切换阶段偏向行业轮动打分。',
+            },
+            'north_capital_track': {
+                'params': {'lookback': 15, 'threshold': 0.015},
+                'name': 'AI 北向跟踪',
+                'description': '资金偏好明确时偏向价量共振的北向跟踪。',
+            },
+            'margin_divergence': {
+                'params': {'fear_threshold': 40, 'greed_threshold': 60, 'lookback': 15},
+                'name': 'AI 融资背离',
+                'description': '价格与量能出现背离时偏向融资分歧修复。',
+            },
         }
         template = templates.get(strategy_type)
         if template is None:
             return None
+        template_contract = _rule_template_contract(strategy_type)
+        metadata = {
+            'generator_type': 'rule',
+            'generation_reason': {
+                'source': source,
+                'fg': fg,
+                'regime': regime,
+                'factor_research': factor_summary,
+                'template_generation_profile': template_contract.get('template_generation_profile'),
+                'rule_template_contract': dict(template_contract.get('rule_template_contract') or {}),
+            },
+        }
+        for key in (
+            'holding_horizon',
+            'trade_plan',
+            'risk_rules',
+            'position_sizing',
+            'rebalance_rule',
+            'portfolio_spec',
+            'execution_assumptions',
+            'validation_profile',
+            'targeting_policy',
+            'rule_template_contract',
+        ):
+            value = template_contract.get(key)
+            if value:
+                metadata[key] = deepcopy(value)
         return StrategySpec(
             strategy_type=strategy_type,
             params=dict(template['params']),
             name=str(template['name']),
             description=str(template['description']),
             tags=['rule', 'factor_research' if source == 'factor_research' else 'fear_greed'],
-            metadata={
-                'generator_type': 'rule',
-                'generation_reason': {
-                    'source': source,
-                    'fg': fg,
-                    'regime': regime,
-                    'factor_research': factor_summary,
-                },
-            },
+            metadata=metadata,
         )
 
     def generate(
@@ -204,9 +488,9 @@ class RuleStrategyGenerator:
                     if strategy_type in CATEGORY_MINIMUMS and strategy_type not in factor_preferred_types:
                         factor_preferred_types.append(strategy_type)
         regime_defaults = (
-            ['momentum', 'ma_cross', 'quality_factor']
+            ['momentum', 'volatility_breakout', 'north_capital_track', 'ma_cross', 'quality_factor']
             if regime == 'greed'
-            else ['value_factor', 'quality_factor', 'rsi']
+            else ['value_factor', 'quality_factor', 'mean_reversion_short', 'gap_fill', 'rsi']
         )
         preferred_anchor = requested_types or factor_preferred_types
         strategy_order = list(dict.fromkeys([*requested_types, *factor_preferred_types, *regime_defaults]))
@@ -518,6 +802,7 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
             stock_pool = cls._normalize_stock_pool(candidate.get('stock_pool'), target_symbols)
             strategy_type, params = target
             params, fallback_profile = cls._adapt_local_fallback_params(strategy_type, params, task, candidate, target_symbols)
+            template_contract = _rule_template_contract(strategy_type)
             validation_profile = {
                 'profile': 'event_trade_validation' if task.get('validation_focus') == 'event_target_only' else 'trade_rule_validation',
                 'validation_focus': task.get('validation_focus'),
@@ -550,6 +835,11 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                         'target_symbols': list(target_symbols),
                         'stock_pool': stock_pool,
                         'fallback_profile': fallback_profile,
+                        'template_generation_profile': (
+                            template_contract.get('template_generation_profile')
+                            or dict(template_contract.get('rule_template_contract') or {}).get('template_generation_profile')
+                        ),
+                        'rule_template_contract': dict(template_contract.get('rule_template_contract') or {}),
                     },
                     'target_symbols': list(target_symbols),
                     'stock_pool': stock_pool,
@@ -588,6 +878,7 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                     },
                     'constraint_check': dict(target_resolution.get('constraint_check') or {}),
                     'fallback_profile': fallback_profile,
+                    'rule_template_contract': dict(template_contract.get('rule_template_contract') or {}),
                     'source_candidate': candidate,
                 },
             )

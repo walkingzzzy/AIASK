@@ -156,6 +156,8 @@ def get_realtime_quote(stock_code: str) -> dict:
             fallback_reason=str(e),
         )
 
+
+
 def get_batch_quotes(stock_codes: list[str]) -> dict:
     """批量获取股票实时行情
 

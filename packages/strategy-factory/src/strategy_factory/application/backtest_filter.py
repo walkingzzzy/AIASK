@@ -27,6 +27,11 @@ from ..domain.targets import _build_target_alignment_contract
 from ..domain.targets import _extract_target_codes_from_payload
 from ..domain.targets import _normalize_research_task_contract
 from ..infrastructure.mcp_services import get_backtest_engine_class
+from .candidate_contract import (
+    build_candidate_contract_hash,
+    build_factory_backtest_assumptions,
+    build_portfolio_candidate_contract,
+)
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
 
 
@@ -345,7 +350,9 @@ class BacktestFilter:
         strategy_type = str(candidate.get("strategy_type") or "unknown").strip().lower() or "unknown"
         research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
         evaluated_codes, target_codes, representative_codes, code_source, validation_focus = self._resolve_backtest_plan(candidate)
+        contract_hash = build_candidate_contract_hash(candidate)
         signature_payload = {
+            "candidate_contract_hash": contract_hash,
             "strategy_type": strategy_type,
             "params": dict(candidate.get("params") or {}),
             "research_task": research_task,
@@ -436,6 +443,10 @@ class BacktestFilter:
                 "implementation_shortfall_model_source": result.get("implementation_shortfall_model_source"),
                 "implementation_shortfall_components": dict(result.get("implementation_shortfall_components") or {}),
                 "position_assumption": result.get("position_assumption"),
+                "execution_summary": dict(result.get("execution_summary") or {}),
+                "cash_curve": list(result.get("cash_curve") or []),
+                "gross_exposure_curve": list(result.get("gross_exposure_curve") or []),
+                "net_exposure_curve": list(result.get("net_exposure_curve") or []),
                 "target_layer_metrics": dict(((result.get("layers") or {}).get("target") or {}).get("metrics") or {}),
                 "representative_layer_metrics": dict(((result.get("layers") or {}).get("representative") or {}).get("metrics") or {}),
                 "combined_layer_metrics": dict(((result.get("layers") or {}).get("combined") or {}).get("metrics") or {}),
@@ -597,6 +608,85 @@ class BacktestFilter:
             "avg_holding_days": float(median(avg_holding_days)) if avg_holding_days else 0.0,
             "turnover_proxy": float(median(turnover_values)) if turnover_values else 0.0,
         }
+
+    @staticmethod
+    def _filter_target_weight_map_for_codes(
+        target_weight_map: Optional[dict[str, Any]],
+        codes: List[str],
+    ) -> dict[str, float]:
+        if not isinstance(target_weight_map, dict):
+            return {}
+        filtered: dict[str, float] = {}
+        for code in list(codes or []):
+            token = str(code or "").strip()
+            if not token or token not in target_weight_map:
+                continue
+            try:
+                value = float(target_weight_map.get(token, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value > 0:
+                filtered[token] = value
+        return filtered
+
+    async def _run_portfolio_engine_summary(
+        self,
+        *,
+        candidate: dict,
+        engine,
+        codes: List[str],
+        assumptions: FactoryBacktestAssumptions,
+    ) -> Optional[dict[str, Any]]:
+        portfolio_runner = getattr(engine, "run_portfolio_backtest", None)
+        if not callable(portfolio_runner):
+            return None
+        normalized_codes = [str(code or "").strip() for code in list(codes or []) if str(code or "").strip()]
+        if len(normalized_codes) <= 1:
+            return None
+
+        market_data: dict[str, list] = {}
+        for code in normalized_codes:
+            klines = list(self._kline_cache.get(code) or [])
+            if klines:
+                market_data[code] = klines
+        if len(market_data) <= 1:
+            return None
+
+        portfolio_params = {
+            **dict(candidate.get("params") or {}),
+            **assumptions.to_backtest_kwargs(),
+        }
+        filtered_weight_map = self._filter_target_weight_map_for_codes(
+            assumptions.target_weight_map,
+            list(market_data.keys()),
+        )
+        if filtered_weight_map:
+            portfolio_params["target_weight_map"] = filtered_weight_map
+        elif portfolio_params.get("target_weight_scheme") == "target_weight_map":
+            portfolio_params["target_weight_scheme"] = "equal_weight"
+
+        try:
+            result = await asyncio.to_thread(
+                portfolio_runner,
+                market_data,
+                candidate["strategy_type"],
+                portfolio_params,
+            )
+        except Exception:
+            logger.warning(
+                "BacktestFilter portfolio engine failed strategy_type=%s codes=%s",
+                candidate.get("strategy_type"),
+                list(market_data.keys()),
+                exc_info=True,
+            )
+            return None
+        if not isinstance(result, dict) or not result.get("success"):
+            return None
+        payload = dict(result.get("data") or {})
+        payload["portfolio_engine_used"] = True
+        payload.setdefault("component_count", len(market_data))
+        payload.setdefault("component_codes", list(market_data.keys()))
+        return payload
 
     @staticmethod
     def _coerce_equity_curve(metric: dict) -> Optional[np.ndarray]:
@@ -950,9 +1040,375 @@ class BacktestFilter:
         return returns.astype(float, copy=False)
 
     @classmethod
+    def _coerce_return_series(cls, value: Any) -> Optional[np.ndarray]:
+        if not isinstance(value, (list, tuple, np.ndarray)):
+            return None
+        try:
+            arr = np.asarray(value, dtype=float)
+        except (TypeError, ValueError):
+            return None
+        arr = arr[np.isfinite(arr)]
+        if arr.size <= 0:
+            return None
+        return arr.astype(float, copy=False)
+
+    @staticmethod
+    def _event_sample_float(sample: dict[str, Any], *keys: str) -> Optional[float]:
+        for key in keys:
+            if key not in sample or sample.get(key) is None:
+                continue
+            try:
+                return float(sample.get(key) or 0.0)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _event_sample_list(value: Any, *, limit: int = 8) -> list[str]:
+        if isinstance(value, str):
+            values = [value]
+        elif isinstance(value, (list, tuple, set)):
+            values = list(value)
+        else:
+            values = []
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for item in values:
+            token = str(item or "").strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            ordered.append(token)
+        return ordered[: max(1, int(limit or 8))]
+
+    @classmethod
+    def _extract_event_samples(
+        cls,
+        *,
+        candidate: Optional[dict[str, Any]],
+        research_task: Optional[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], Optional[str]]:
+        payload = dict(candidate or {})
+        task = dict(research_task or {})
+        sources: list[tuple[str, Any]] = [
+            ("research_task.event_samples", task.get("event_samples")),
+            ("research_task.event_sample_set", task.get("event_sample_set")),
+            ("research_task.event_study.samples", dict(task.get("event_study") or {}).get("samples")),
+            ("candidate.event_samples", payload.get("event_samples")),
+            ("candidate.event_context.event_samples", dict(payload.get("event_context") or {}).get("event_samples")),
+            ("candidate.event_context.samples", dict(payload.get("event_context") or {}).get("samples")),
+        ]
+        for source_name, value in sources:
+            if isinstance(value, dict):
+                value = value.get("samples")
+            if not isinstance(value, list) or not value:
+                continue
+            normalized: list[dict[str, Any]] = []
+            for idx, item in enumerate(value, 1):
+                if not isinstance(item, dict):
+                    continue
+                sample = dict(item)
+                event_id = str(sample.get("event_id") or task.get("event_id") or "").strip()
+                if event_id:
+                    sample["event_id"] = event_id
+                event_time = str(
+                    sample.get("event_time")
+                    or sample.get("anchor_time")
+                    or sample.get("anchor_date")
+                    or ""
+                ).strip()
+                if event_time:
+                    sample["event_time"] = event_time
+                if not sample.get("sample_id"):
+                    sample["sample_id"] = str(sample.get("event_id") or f"event_sample_{idx}")
+                normalized.append(sample)
+            if normalized:
+                return normalized, source_name
+        return [], None
+
+    @classmethod
+    def _build_minimal_event_samples(
+        cls,
+        *,
+        candidate: Optional[dict[str, Any]],
+        research_task: Optional[dict[str, Any]],
+        target_results: Optional[List[dict]],
+        representative_results: Optional[List[dict]],
+        fallback_results: Optional[List[dict]],
+    ) -> tuple[list[dict[str, Any]], Optional[str]]:
+        payload = dict(candidate or {})
+        task = dict(research_task or {})
+        task_event_context = dict(task.get("event_context") or {})
+        payload_event_context = dict(payload.get("event_context") or {})
+        event_context = task_event_context or payload_event_context
+        event_id = str(
+            task.get("event_id")
+            or payload.get("event_id")
+            or event_context.get("event_id")
+            or ""
+        ).strip()
+        target_codes = _extract_target_codes_from_payload(payload, limit=12)
+        if not target_codes:
+            target_codes = cls._event_sample_list(
+                task.get("target_symbols")
+                or event_context.get("target_symbols")
+                or payload.get("target_symbols"),
+                limit=12,
+            )
+        target_set = set(target_codes)
+        source_results = list(target_results or [])
+        if not source_results and fallback_results:
+            source_results = [
+                dict(item or {})
+                for item in list(fallback_results or [])
+                if not target_set or str((item or {}).get("code") or "").strip() in target_set
+            ]
+        if not source_results:
+            return [], None
+
+        event_window = dict(task.get("event_window") or {})
+        estimation_window = dict(task.get("estimation_window") or {})
+        representative_codes = cls._event_sample_list(
+            event_context.get("control_group")
+            or event_context.get("benchmark_symbols")
+            or event_context.get("control_symbols")
+            or [item.get("code") for item in list(representative_results or [])],
+            limit=8,
+        )
+        representative_returns = [
+            cls._event_sample_float(dict(item or {}), "total_return")
+            for item in list(representative_results or [])
+        ]
+        representative_returns = [float(value) for value in representative_returns if value is not None]
+        benchmark_return = cls._event_sample_float(
+            event_context,
+            "benchmark_return",
+            "control_return",
+            "baseline_return",
+        )
+        if benchmark_return is None and representative_returns:
+            benchmark_return = float(sum(representative_returns) / len(representative_returns))
+        if benchmark_return is None:
+            benchmark_return = 0.0
+        benchmark_source = "event_context_control_group" if representative_codes else "event_context_minimal_baseline"
+        base_anchor = str(
+            event_context.get("event_time")
+            or event_context.get("event_date")
+            or event_context.get("snapshot_date")
+            or task.get("event_time")
+            or task.get("event_date")
+            or task.get("snapshot_date")
+            or payload.get("snapshot_date")
+            or event_id
+            or ""
+        ).strip()
+
+        normalized: list[dict[str, Any]] = []
+        for idx, item in enumerate(source_results, 1):
+            sample_payload = dict(item or {})
+            code = str(sample_payload.get("code") or "").strip()
+            if target_set and code and code not in target_set:
+                continue
+            target_return = cls._event_sample_float(sample_payload, "total_return")
+            if target_return is None:
+                continue
+            sample_event_id = event_id or f"auto_event_{code or idx}"
+            sample_anchor = base_anchor or f"{sample_event_id}:{code or idx}"
+            abnormal_return = float(target_return - benchmark_return)
+            normalized.append(
+                {
+                    "sample_id": f"{sample_event_id}:{code or idx}",
+                    "event_id": sample_event_id,
+                    "event_time": sample_anchor,
+                    "target_return": float(target_return),
+                    "benchmark_return": float(benchmark_return),
+                    "abnormal_return": abnormal_return,
+                    "car": abnormal_return,
+                    "bhar": abnormal_return,
+                    "hit": abnormal_return > 0,
+                    "benchmark_source": benchmark_source,
+                    "control_group": representative_codes,
+                    "pre_days": max(0, int(event_window.get("pre_days") or 0)),
+                    "post_days": max(1, int(event_window.get("post_days") or 1)),
+                    "estimation_days": max(0, int(estimation_window.get("lookback_days") or 0)),
+                    "minimal_context_sample": True,
+                }
+            )
+        return normalized, ("auto_context_minimal" if normalized else None)
+
+    @classmethod
+    def _build_event_sample_metrics(
+        cls,
+        *,
+        candidate: Optional[dict[str, Any]],
+        research_task: Optional[dict[str, Any]],
+        target_results: Optional[List[dict]] = None,
+        representative_results: Optional[List[dict]] = None,
+        fallback_results: Optional[List[dict]] = None,
+    ) -> Optional[dict[str, Any]]:
+        event_samples, sample_source = cls._extract_event_samples(candidate=candidate, research_task=research_task)
+        event_study_mode = "sample_driven"
+        validation_focus = str(dict(research_task or {}).get("validation_focus") or "").strip().lower()
+        if not event_samples and validation_focus == "event_target_only":
+            event_samples, sample_source = cls._build_minimal_event_samples(
+                candidate=candidate,
+                research_task=research_task,
+                target_results=target_results,
+                representative_results=representative_results,
+                fallback_results=fallback_results,
+            )
+            if event_samples:
+                event_study_mode = "sample_driven_minimal"
+        if not event_samples:
+            return None
+
+        sample_metrics: list[dict[str, Any]] = []
+        benchmark_sources: dict[str, int] = {}
+        event_time_anchors: list[str] = []
+        event_sample_ids: list[str] = []
+        unique_control_codes: set[str] = set()
+
+        for sample in event_samples:
+            abnormal_post = cls._coerce_return_series(
+                sample.get("abnormal_returns") or sample.get("abnormal_post_returns")
+            )
+            post_target = cls._coerce_return_series(
+                sample.get("post_returns") or sample.get("target_post_returns")
+            )
+            post_benchmark = cls._coerce_return_series(
+                sample.get("benchmark_post_returns") or sample.get("control_post_returns")
+            )
+            estimation_returns = cls._coerce_return_series(
+                sample.get("estimation_returns") or sample.get("benchmark_estimation_returns")
+            )
+
+            target_total_return = cls._event_sample_float(sample, "target_return")
+            if target_total_return is None and post_target is not None:
+                target_total_return = float(np.prod(1.0 + post_target) - 1.0)
+
+            benchmark_total_return = cls._event_sample_float(sample, "benchmark_return", "control_return")
+            if benchmark_total_return is None and post_benchmark is not None:
+                benchmark_total_return = float(np.prod(1.0 + post_benchmark) - 1.0)
+
+            abnormal_return = cls._event_sample_float(sample, "abnormal_return")
+            if abnormal_return is None and target_total_return is not None and benchmark_total_return is not None:
+                abnormal_return = float(target_total_return - benchmark_total_return)
+
+            car = cls._event_sample_float(sample, "car")
+            if car is None and abnormal_post is not None:
+                car = float(np.sum(abnormal_post))
+
+            bhar = cls._event_sample_float(sample, "bhar")
+            if bhar is None and post_target is not None and post_benchmark is not None:
+                denominator = max(float(np.prod(1.0 + post_benchmark)), 1e-9)
+                bhar = float(np.prod(1.0 + post_target) / denominator - 1.0)
+            elif bhar is None and abnormal_return is not None:
+                bhar = float(abnormal_return)
+
+            pre_event_abnormal_return = cls._event_sample_float(sample, "pre_event_abnormal_return")
+            if pre_event_abnormal_return is None:
+                pre_abnormal = cls._coerce_return_series(
+                    sample.get("pre_abnormal_returns") or sample.get("abnormal_pre_returns")
+                )
+                if pre_abnormal is not None:
+                    pre_event_abnormal_return = float(np.sum(pre_abnormal))
+
+            hit_ratio = cls._event_sample_float(sample, "hit_ratio")
+            if hit_ratio is None:
+                hit_flag = sample.get("hit")
+                if hit_flag is not None:
+                    hit_ratio = 1.0 if bool(hit_flag) else 0.0
+                elif abnormal_return is not None:
+                    hit_ratio = 1.0 if abnormal_return > 0 else 0.0
+
+            post_event_decay = cls._event_sample_float(sample, "post_event_decay", "decay")
+            if post_event_decay is None and abnormal_post is not None and abnormal_post.size > 0:
+                split = max(1, int(abnormal_post.size // 2))
+                early_car = float(np.sum(abnormal_post[:split]))
+                late_car = float(np.sum(abnormal_post[split:])) if abnormal_post.size > split else 0.0
+                decay_denominator = max(abs(early_car), 0.01)
+                post_event_decay = float(late_car / decay_denominator - 1.0)
+
+            if all(metric is None for metric in (abnormal_return, car, bhar, hit_ratio)):
+                continue
+
+            control_codes = cls._event_sample_list(
+                sample.get("control_group")
+                or sample.get("benchmark_symbols")
+                or sample.get("control_symbols")
+            )
+            unique_control_codes.update(control_codes)
+            benchmark_source = str(
+                sample.get("benchmark_source")
+                or ("sample_control_group" if control_codes else "sample_baseline")
+            ).strip().lower() or "sample_baseline"
+            benchmark_sources[benchmark_source] = benchmark_sources.get(benchmark_source, 0) + 1
+
+            pre_abnormal = cls._coerce_return_series(sample.get("pre_abnormal_returns") or sample.get("abnormal_pre_returns"))
+            post_observation = post_target if post_target is not None else abnormal_post
+
+            sample_id = str(sample.get("sample_id") or sample.get("event_id") or "").strip()
+            if sample_id and sample_id not in event_sample_ids:
+                event_sample_ids.append(sample_id)
+            anchor = str(sample.get("event_time") or sample.get("event_id") or "").strip()
+            if anchor and anchor not in event_time_anchors:
+                event_time_anchors.append(anchor)
+
+            sample_metrics.append(
+                {
+                    "target_total_return": float(target_total_return or 0.0),
+                    "benchmark_total_return": float(benchmark_total_return or 0.0),
+                    "abnormal_return": float(abnormal_return or 0.0),
+                    "car": float(car if car is not None else abnormal_return or 0.0),
+                    "bhar": float(bhar if bhar is not None else abnormal_return or 0.0),
+                    "hit_ratio": float(hit_ratio if hit_ratio is not None else 0.0),
+                    "pre_event_abnormal_return": float(pre_event_abnormal_return or 0.0),
+                    "post_event_decay": float(post_event_decay or 0.0),
+                    "pre_days_used": int(sample.get("pre_days") or (int(pre_abnormal.size) if pre_abnormal is not None else 0)),
+                    "post_days_used": int(sample.get("post_days") or (int(post_observation.size) if post_observation is not None else 0)),
+                    "estimation_days_used": int(sample.get("estimation_days") or (int(estimation_returns.size) if estimation_returns is not None else 0)),
+                }
+            )
+
+        if not sample_metrics:
+            return None
+
+        def _mean_value(key: str) -> float:
+            values = [float(item.get(key) or 0.0) for item in sample_metrics]
+            return float(sum(values) / len(values)) if values else 0.0
+
+        benchmark_source = max(benchmark_sources.items(), key=lambda item: item[1])[0] if benchmark_sources else "sample_baseline"
+        return {
+            "total_return": round(_mean_value("target_total_return"), 4),
+            "benchmark_return": round(_mean_value("benchmark_total_return"), 4),
+            "abnormal_return": round(_mean_value("abnormal_return"), 4),
+            "car": round(_mean_value("car"), 4),
+            "bhar": round(_mean_value("bhar"), 4),
+            "hit_ratio": round(_mean_value("hit_ratio"), 4),
+            "pre_event_abnormal_return": round(_mean_value("pre_event_abnormal_return"), 4),
+            "post_event_decay": round(_mean_value("post_event_decay"), 4),
+            "pre_days_used": int(round(_mean_value("pre_days_used"))),
+            "post_days_used": int(round(_mean_value("post_days_used"))),
+            "estimation_days_used": int(round(_mean_value("estimation_days_used"))),
+            "benchmark_source": benchmark_source,
+            "aggregation_mode": "event_sample_average",
+            "component_count": len(_extract_target_codes_from_payload(candidate or {}, limit=12)),
+            "curve_points": 0,
+            "event_study_mode": event_study_mode,
+            "event_sample_source": sample_source,
+            "event_sample_count": len(sample_metrics),
+            "event_anchor_count": len(event_time_anchors),
+            "event_time_anchors": event_time_anchors[:8],
+            "event_sample_ids": event_sample_ids[:8],
+            "control_group_count": len(unique_control_codes),
+            "traceable_to_event_samples": True,
+        }
+
+    @classmethod
     def _build_event_window_metrics(
         cls,
         *,
+        candidate: Optional[dict[str, Any]],
         target_results: List[dict],
         representative_results: List[dict],
         fallback_results: List[dict],
@@ -961,6 +1417,15 @@ class BacktestFilter:
         initial_capital: float,
         target_weight_map: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        sample_metrics = cls._build_event_sample_metrics(
+            candidate=candidate,
+            research_task=research_task,
+            target_results=target_results,
+            representative_results=representative_results,
+            fallback_results=fallback_results,
+        )
+        if sample_metrics is not None:
+            return sample_metrics
         event_window = dict(research_task.get("event_window") or {})
         estimation_window = dict(research_task.get("estimation_window") or {})
         pre_days = max(0, int(event_window.get("pre_days") or 0))
@@ -1057,43 +1522,19 @@ class BacktestFilter:
             "aggregation_mode": target_curve_payload.get("aggregation_mode"),
             "component_count": int(target_curve_payload.get("component_count") or 0),
             "curve_points": int(target_curve_payload.get("curve_points") or target_curve.size),
+            "event_study_mode": "curve_tail_proxy",
+            "event_sample_source": None,
+            "event_sample_count": 0,
+            "event_anchor_count": 0,
+            "event_time_anchors": [],
+            "event_sample_ids": [],
+            "control_group_count": 0,
+            "traceable_to_event_samples": False,
         }
 
     @staticmethod
     def _build_backtest_assumptions(candidate: dict) -> FactoryBacktestAssumptions:
-        execution_assumptions = dict(candidate.get("execution_assumptions") or {})
-        portfolio_spec = dict(candidate.get("portfolio_spec") or {})
-        research_task = _normalize_research_task_contract(candidate.get("research_task"))
-        target_symbols = _extract_target_codes_from_payload(candidate, limit=12)
-        target_weight_scheme = str(
-            portfolio_spec.get("target_weight_scheme")
-            or ("equal_weight" if len(target_symbols) > 1 else "single_name")
-        ).strip() or ("equal_weight" if len(target_symbols) > 1 else "single_name")
-        return FactoryBacktestAssumptions(
-            initial_capital=float(execution_assumptions.get("initial_capital", 100000) or 100000),
-            commission_rate=float(execution_assumptions.get("commission_rate", 0.00025) or 0.00025),
-            slippage_bps=float(
-                execution_assumptions.get("slippage_bps", 0.0)
-                or float(execution_assumptions.get("slippage", 0.0) or 0.0) * 10000.0
-            ),
-            market_impact_bps=float(execution_assumptions.get("market_impact_bps", 0.0) or 0.0),
-            arrival_price_policy=str(execution_assumptions.get("arrival_price_policy") or "next_open_proxy"),
-            implementation_shortfall_proxy=float(execution_assumptions.get("implementation_shortfall_proxy", 0.0) or 0.0),
-            tradability_filter=bool(execution_assumptions.get("tradability_filter", True)),
-            slippage_model=execution_assumptions.get("slippage_model") or "fixed",
-            max_position_pct=float(portfolio_spec.get("max_position_pct")) if portfolio_spec.get("max_position_pct") is not None else None,
-            capacity_participation_rate=float(execution_assumptions.get("capacity_participation_rate", 0.0) or 0.0),
-            adv_ratio_limit=float(execution_assumptions.get("adv_ratio_limit", 0.0) or 0.0),
-            capacity_bucket=execution_assumptions.get("capacity_bucket"),
-            position_assumption=portfolio_spec.get("position_assumption") or ("equal_weight_proxy" if len(target_symbols) > 1 else "single_name_full_notional"),
-            target_weight_scheme=target_weight_scheme,
-            target_weight_map=dict(portfolio_spec.get("target_weight_map") or {}),
-            market_ruleset=str(execution_assumptions.get("market_ruleset") or "cn_equity"),
-            sell_tax_rate=float(execution_assumptions.get("sell_tax_rate", 0.001) or 0.001),
-            min_trade_lot=max(1, int(execution_assumptions.get("min_trade_lot", 100) or 100)),
-            t_plus_one=bool(execution_assumptions.get("t_plus_one", True)),
-            validation_focus=research_task.get("validation_focus") or "target_plus_representative",
-        )
+        return build_factory_backtest_assumptions(candidate)
 
     @staticmethod
     def _derive_trade_validation_metrics(candidate: dict, result: dict) -> dict[str, Any]:
@@ -1223,6 +1664,8 @@ class BacktestFilter:
         skipped_codes: List[dict] = []
         failed_codes: List[dict] = []
         evaluated_codes, target_codes, representative_codes, code_source, validation_focus = self._resolve_backtest_plan(candidate)
+        contract_snapshot = build_portfolio_candidate_contract(candidate)
+        contract_hash = build_candidate_contract_hash(contract=contract_snapshot)
         assumptions = self._build_backtest_assumptions(candidate)
         assumptions_kwargs = assumptions.to_backtest_kwargs()
         research_task = _normalize_research_task_contract(candidate.get("research_task"))
@@ -1328,7 +1771,20 @@ class BacktestFilter:
             else:
                 failed_codes.append({"code": code, "reason": item.get("reason"), "layer": layer})
 
-        target_metrics = self._summarize_result_set(
+        target_portfolio_metrics = await self._run_portfolio_engine_summary(
+            candidate=candidate,
+            engine=engine,
+            codes=layer_successful_codes["target"],
+            assumptions=assumptions,
+        )
+        combined_portfolio_metrics = await self._run_portfolio_engine_summary(
+            candidate=candidate,
+            engine=engine,
+            codes=successful_codes,
+            assumptions=assumptions,
+        )
+
+        target_metrics = target_portfolio_metrics or self._summarize_result_set(
             layer_results["target"],
             target_weight_scheme=assumptions.target_weight_scheme,
             initial_capital=assumptions.initial_capital,
@@ -1339,13 +1795,14 @@ class BacktestFilter:
             target_weight_scheme=assumptions.target_weight_scheme,
             initial_capital=assumptions.initial_capital,
         )
-        combined_metrics = self._summarize_result_set(
+        combined_metrics = combined_portfolio_metrics or self._summarize_result_set(
             results,
             target_weight_scheme=assumptions.target_weight_scheme,
             initial_capital=assumptions.initial_capital,
             target_weight_map=assumptions.target_weight_map,
         )
         event_window_metrics = self._build_event_window_metrics(
+            candidate=candidate,
             target_results=layer_results["target"],
             representative_results=layer_results["representative"],
             fallback_results=results,
@@ -1363,7 +1820,18 @@ class BacktestFilter:
         else:
             primary_results = layer_results["target"] if layer_results["target"] else results
             primary_layer = "target" if layer_results["target"] else "combined"
-        sample_audit = dict(primary_results[0] or {}) if primary_results else (dict(results[0] or {}) if results else {})
+        primary_metrics_payload = (
+            target_metrics
+            if primary_layer == "target"
+            else combined_metrics
+        )
+        if primary_layer == "target" and not target_metrics:
+            primary_metrics_payload = combined_metrics
+        sample_audit = (
+            dict(primary_metrics_payload or {})
+            if bool((primary_metrics_payload or {}).get("portfolio_engine_used"))
+            else (dict(primary_results[0] or {}) if primary_results else (dict(results[0] or {}) if results else {}))
+        )
         event_window_config = {
             "event_window": dict(research_task.get("event_window") or {}),
             "estimation_window": dict(research_task.get("estimation_window") or {}),
@@ -1402,6 +1870,9 @@ class BacktestFilter:
             "primary_layer": primary_layer,
             "primary_validation_layer": primary_layer,
             "validation_focus": validation_focus,
+            "candidate_contract_hash": contract_hash,
+            "tested_object_hash": contract_hash,
+            "candidate_contract_snapshot": contract_snapshot,
             "queue_wait_ms": 0.0,
             "backtest_run_ms": round((time.perf_counter() - candidate_started_at) * 1000, 2),
             "code_run_ms_total": round(code_run_ms_total, 2),
@@ -1424,14 +1895,22 @@ class BacktestFilter:
             "position_assumption": sample_audit.get("position_assumption"),
             "backtest_assumptions": assumptions.to_audit_dict(),
             "portfolio_backtest_mode": (
-                "weighted_multi_name"
-                if assumptions.target_weight_scheme != "single_name" and len(target_codes) > 1
-                else "single_name"
+                "portfolio_engine_shared_cash"
+                if bool((primary_metrics_payload or {}).get("portfolio_engine_used"))
+                else (
+                    "weighted_multi_name"
+                    if assumptions.target_weight_scheme != "single_name" and len(target_codes) > 1
+                    else "single_name"
+                )
             ),
             "portfolio_backtest_coverage": (
                 1.0
-                if assumptions.target_weight_scheme != "single_name" and len(target_codes) > 1 and bool(target_metrics)
-                else 0.0
+                if bool((primary_metrics_payload or {}).get("portfolio_engine_used"))
+                else (
+                    1.0
+                    if assumptions.target_weight_scheme != "single_name" and len(target_codes) > 1 and bool(target_metrics)
+                    else 0.0
+                )
             ),
             "layers": {
                 "target": {
@@ -1439,18 +1918,21 @@ class BacktestFilter:
                     "successful_codes": layer_successful_codes["target"],
                     "sample_count": len(layer_results["target"]),
                     "metrics": target_metrics,
+                    "metrics_source": "portfolio_engine" if target_portfolio_metrics else "proxy_aggregation",
                 },
                 "representative": {
                     "requested_codes": representative_codes,
                     "successful_codes": layer_successful_codes["representative"],
                     "sample_count": len(layer_results["representative"]),
                     "metrics": representative_metrics,
+                    "metrics_source": "proxy_aggregation",
                 },
                 "combined": {
                     "requested_codes": evaluated_codes,
                     "successful_codes": successful_codes,
                     "sample_count": len(results),
                     "metrics": combined_metrics,
+                    "metrics_source": "portfolio_engine" if combined_portfolio_metrics else "proxy_aggregation",
                 },
             },
             "event_window_metrics": dict(event_window_metrics or target_metrics or combined_metrics),
@@ -1466,11 +1948,15 @@ class BacktestFilter:
                 "failed_metric": self._build_failed_metric("sample_count", "<", thresholds["min_samples"], len(primary_results), "有效样本数"),
             })
 
-        avg = self._summarize_result_set(
-            primary_results,
-            target_weight_scheme=assumptions.target_weight_scheme,
-            initial_capital=assumptions.initial_capital,
-            target_weight_map=assumptions.target_weight_map,
+        avg = (
+            dict(primary_metrics_payload or {})
+            if bool((primary_metrics_payload or {}).get("portfolio_engine_used"))
+            else self._summarize_result_set(
+                primary_results,
+                target_weight_scheme=assumptions.target_weight_scheme,
+                initial_capital=assumptions.initial_capital,
+                target_weight_map=assumptions.target_weight_map,
+            )
         )
         if avg["sharpe_ratio"] < thresholds["sharpe_min"]:
             return _finalize_result({

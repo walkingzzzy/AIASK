@@ -19,6 +19,11 @@ from ..domain.constants import (
 )
 from ..domain.targets import _build_task_signature, _extract_target_codes_from_payload, _normalize_research_task_contract
 from ..infrastructure.mcp_services import get_normalize_klines, get_strategy_registry, get_validation_runtime
+from .candidate_contract import (
+    build_candidate_contract_hash,
+    build_candidate_identity_signature,
+    build_portfolio_candidate_contract,
+)
 from .quality_reporting import maybe_grant_provisional_incubation, normalize_quality_gate_result, safe_metric_value
 
 
@@ -137,20 +142,43 @@ def _build_multiple_testing_registry(
 ) -> dict[str, Any]:
     normalized_gate = normalize_quality_gate_result(gate)
     research_task = dict(profile.get("research_task") or {})
+    generation_reason = dict(
+        _strategy_payload_value(strategy, "generation_reason")
+        or strategy.get("generation_reason")
+        or {}
+    )
     target_codes = _extract_target_codes_from_payload(strategy)
     candidate_provenance = dict(
         _strategy_payload_value(strategy, "candidate_provenance")
         or strategy.get("candidate_provenance")
         or {}
     )
+    dedup_result = dict(
+        _strategy_payload_value(strategy, "dedup_result")
+        or strategy.get("dedup_result")
+        or {}
+    )
     attempt_adjustment = dict(normalized_gate.get("attempt_adjustment") or _build_attempt_adjustment(strategy))
     multiple_testing = dict(normalized_gate.get("multiple_testing") or {})
+    contract_snapshot = dict(
+        _strategy_payload_value(strategy, "candidate_contract_snapshot")
+        or strategy.get("candidate_contract_snapshot")
+        or {}
+    )
+    if not contract_snapshot:
+        try:
+            contract_snapshot = build_portfolio_candidate_contract(strategy)
+        except Exception:
+            contract_snapshot = {}
+    targeting = dict(contract_snapshot.get("targeting") or {})
+    lineage = dict(contract_snapshot.get("lineage") or {})
     task_signature = str(
         _strategy_payload_value(strategy, "task_signature")
         or research_task.get("task_signature")
+        or lineage.get("task_signature")
         or _build_task_signature(research_task)
     ).strip()
-    target_symbols_signature = ",".join(target_codes)
+    target_symbols_signature = ",".join(sorted(dict.fromkeys(target_codes)))
     strategy_family = str(
         candidate_provenance.get("candidate_family")
         or _strategy_payload_value(strategy, "candidate_family")
@@ -164,6 +192,62 @@ def _build_multiple_testing_registry(
         or _strategy_payload_value(strategy, "source_validation_artifact_id")
         or ""
     ).strip() or None
+    strategy_type = str(strategy.get("strategy_type") or "").strip().lower() or "unknown"
+    strategy_family_id = str(
+        candidate_provenance.get("candidate_family_id")
+        or _strategy_payload_value(strategy, "candidate_family_id")
+        or strategy_family
+        or ""
+    ).strip() or None
+    candidate_contract_hash = str(
+        _strategy_payload_value(strategy, "candidate_contract_hash")
+        or strategy.get("candidate_contract_hash")
+        or ""
+    ).strip()
+    if not candidate_contract_hash:
+        candidate_contract_hash = (
+            build_candidate_contract_hash(contract=contract_snapshot)
+            if contract_snapshot
+            else build_candidate_contract_hash(strategy)
+        )
+    candidate_identity_signature = str(
+        _strategy_payload_value(strategy, "candidate_identity_signature")
+        or strategy.get("candidate_identity_signature")
+        or ""
+    ).strip()
+    if not candidate_identity_signature:
+        candidate_identity_signature = build_candidate_identity_signature(strategy)
+    lineage_id = str(
+        lineage.get("lineage_id")
+        or _strategy_payload_value(strategy, "lineage_id")
+        or task_signature
+        or ""
+    ).strip() or None
+    target_pool_id = str(
+        targeting.get("target_pool_id")
+        or _strategy_payload_value(strategy, "target_pool_id")
+        or ""
+    ).strip() or None
+    template_generation_profile = str(
+        research_task.get("template_generation_profile")
+        or generation_reason.get("template_generation_profile")
+        or dict(generation_reason.get("rule_template_contract") or {}).get("template_generation_profile")
+        or candidate_provenance.get("template_generation_profile")
+        or _strategy_payload_value(strategy, "template_generation_profile")
+        or ""
+    ).strip().lower() or None
+    refresh_mode = str(
+        dedup_result.get("refresh_mode")
+        or _strategy_payload_value(strategy, "refresh_mode")
+        or candidate_provenance.get("refresh_mode")
+        or ""
+    ).strip().lower() or None
+    revision_mode = str(
+        _strategy_payload_value(strategy, "revision_mode")
+        or research_task.get("revision_mode")
+        or candidate_provenance.get("revision_mode")
+        or ("spawn_revision_from_existing" if refresh_mode == "spawn_revision_from_existing" else "baseline")
+    ).strip().lower() or None
     formal_coverage = all(
         normalized_gate.get(field) is not None
         for field in (
@@ -173,27 +257,45 @@ def _build_multiple_testing_registry(
             "hansen_spa_pvalue",
         )
     )
-    registry_key = "|".join(
-        part
-        for part in (
-            task_signature,
-            strategy_family,
-            target_symbols_signature,
-            str(profile.get("profile") or "").strip().lower(),
-        )
-        if part
+
+    def _axis_key(prefix: str, *parts: Any, fallback: str = "unknown") -> str:
+        tokens = [str(part).strip() for part in parts if str(part or "").strip()]
+        return f"{prefix}|{'|'.join(tokens)}" if tokens else f"{prefix}|{fallback}"
+
+    task_key = _axis_key("task", task_signature)
+    family_key = _axis_key("family", strategy_family_id or strategy_family, strategy_type)
+    universe_key = _axis_key("universe", target_pool_id, target_symbols_signature)
+    template_key = _axis_key(
+        "template",
+        template_generation_profile,
+        str(profile.get("profile") or "").strip().lower(),
+        strategy_type,
     )
-    if not registry_key:
-        registry_key = f"registry|{strategy_family or 'unknown'}"
+    revision_key = _axis_key("revision", lineage_id, revision_mode, refresh_mode)
+    registry_key = "|".join((task_key, family_key, universe_key, template_key, revision_key))
+
     return {
         "registry_key": registry_key,
         "task_signature": task_signature,
+        "task_key": task_key,
         "strategy_family": strategy_family,
-        "strategy_family_id": str(candidate_provenance.get("candidate_family_id") or strategy_family or "").strip() or None,
+        "strategy_family_id": strategy_family_id,
+        "family_key": family_key,
+        "strategy_type": strategy_type,
         "target_symbols_signature": target_symbols_signature,
+        "target_pool_id": target_pool_id,
+        "universe_key": universe_key,
         "validation_profile": str(profile.get("profile") or "").strip().lower() or None,
         "validation_focus": str(profile.get("validation_focus") or "").strip().lower() or None,
         "primary_validation_layer": str(profile.get("primary_validation_layer") or "").strip().lower() or None,
+        "template_generation_profile": template_generation_profile,
+        "template_key": template_key,
+        "lineage_id": lineage_id,
+        "revision_mode": revision_mode,
+        "refresh_mode": refresh_mode,
+        "revision_key": revision_key,
+        "candidate_contract_hash": candidate_contract_hash or None,
+        "candidate_identity_signature": candidate_identity_signature or None,
         "attempt_count": int(attempt_adjustment.get("attempt_count") or 1),
         "selected_count": int(attempt_adjustment.get("selected_count") or 0),
         "selection_ratio": float(attempt_adjustment.get("selection_ratio") or 0.0),
@@ -202,7 +304,15 @@ def _build_multiple_testing_registry(
         "external_llm_attempt_count": int(_strategy_payload_value(strategy, "external_llm_attempt_count", 0) or 0),
         "family_matrix_artifact_id": family_matrix_artifact_id,
         "formal_coverage": formal_coverage,
+        "formal_runtime_ready": formal_coverage and str(normalized_gate.get("multiple_testing_mode") or "").strip().lower() == "formal_runtime",
         "multiple_testing_mode": normalized_gate.get("multiple_testing_mode"),
+        "registry_axes": {
+            "task": task_key,
+            "family": family_key,
+            "universe": universe_key,
+            "template": template_key,
+            "revision": revision_key,
+        },
         "multiple_testing": {
             "deflated_sharpe": dict(multiple_testing.get("deflated_sharpe") or {}),
             "pbo": dict(multiple_testing.get("pbo") or {}),
@@ -260,6 +370,44 @@ def _first_float_value(payload: Optional[dict], *keys: str) -> Optional[float]:
         except Exception:
             continue
     return None
+
+
+def _live_multiple_testing_reasons(payload: Optional[dict], thresholds: dict[str, float]) -> list[str]:
+    normalized = dict(payload or {})
+    reasons: list[str] = []
+    multiple_testing_mode = str(normalized.get("multiple_testing_mode") or "").strip().lower()
+    if multiple_testing_mode != "formal_runtime":
+        reasons.append("formal_multiple_testing_mode_required_for_live_admission")
+
+    deflated_sharpe = _first_float_value(normalized, "deflated_sharpe_ratio")
+    pbo = _first_float_value(normalized, "pbo")
+    white_rc = _first_float_value(normalized, "white_reality_check_pvalue")
+    spa_pvalue = _first_float_value(normalized, "hansen_spa_pvalue")
+
+    if deflated_sharpe is None:
+        reasons.append("deflated_sharpe_missing_for_live_admission")
+    elif deflated_sharpe < thresholds["deflated_sharpe_ratio_min"]:
+        reasons.append(
+            f"deflated_sharpe {deflated_sharpe:.3f} < {thresholds['deflated_sharpe_ratio_min']:.3f}"
+        )
+    if pbo is None:
+        reasons.append("pbo_missing_for_live_admission")
+    elif pbo > thresholds["pbo_max"]:
+        reasons.append(f"pbo {pbo:.3f} > {thresholds['pbo_max']:.3f}")
+    if white_rc is None:
+        reasons.append("white_reality_check_missing_for_live_admission")
+    elif white_rc > thresholds["white_reality_check_pvalue_max"]:
+        reasons.append(
+            "white_reality_check_pvalue "
+            f"{white_rc:.3f} > {thresholds['white_reality_check_pvalue_max']:.3f}"
+        )
+    if spa_pvalue is None:
+        reasons.append("hansen_spa_missing_for_live_admission")
+    elif spa_pvalue > thresholds["hansen_spa_pvalue_max"]:
+        reasons.append(
+            f"hansen_spa_pvalue {spa_pvalue:.3f} > {thresholds['hansen_spa_pvalue_max']:.3f}"
+        )
+    return reasons
 
 
 def _observed_sharpe_proxy(series: Optional[np.ndarray], fallback_score: float) -> float:
@@ -540,6 +688,8 @@ def _evaluate_trade_profile(
         attempt_adjustment,
         admission_level=admission_level,
     )
+    validation_focus = str(profile.get("validation_focus") or "target_plus_representative")
+    is_event = str(profile.get("profile") or "") == "event_trade_validation" or validation_focus == "event_target_only"
     reasons: list[str] = []
     warnings: list[str] = []
 
@@ -557,6 +707,13 @@ def _evaluate_trade_profile(
     post_event_decay = safe_metric_value(metrics, "post_event_decay")
     trade_density = safe_metric_value(metrics, "trade_density")
     parameter_stability = safe_metric_value(metrics, "parameter_perturbation_trade_stability")
+    event_study_mode = str(metrics.get("event_study_mode") or "").strip().lower()
+    event_sample_count = int(safe_metric_value(metrics, "event_sample_count"))
+    event_anchor_count = int(safe_metric_value(metrics, "event_anchor_count"))
+    control_group_count = int(safe_metric_value(metrics, "control_group_count"))
+    event_sample_source = metrics.get("event_sample_source")
+    event_time_anchors = list(metrics.get("event_time_anchors") or [])
+    traceable_to_event_samples = bool(metrics.get("traceable_to_event_samples"))
 
     if post_cost_sharpe < thresholds["post_cost_sharpe_min"]:
         reasons.append(f"post_cost_sharpe {post_cost_sharpe:.3f} < {thresholds['post_cost_sharpe_min']:.3f}")
@@ -590,6 +747,13 @@ def _evaluate_trade_profile(
             "parameter_perturbation_trade_stability "
             f"{parameter_stability:.3f} < {thresholds['parameter_perturbation_trade_stability_min']:.3f}"
         )
+    if is_event:
+        if event_sample_count <= 0:
+            warnings.append("event_sample_count_missing")
+        if event_study_mode and event_study_mode != "sample_driven":
+            warnings.append(f"event_study_mode_{event_study_mode}")
+        if event_sample_count > 0 and not traceable_to_event_samples:
+            warnings.append("event_sample_traceability_missing")
 
     risk = dict(risk_report or {})
     stress_loss_percent = safe_metric_value(risk, "stress_loss_percent")
@@ -598,33 +762,7 @@ def _evaluate_trade_profile(
 
     if admission_level == "live":
         mt_thresholds = _multiple_testing_thresholds(admission_level)
-        deflated_sharpe = _first_float_value(metrics, "deflated_sharpe_ratio", "deflated_sharpe_proxy")
-        pbo = _first_float_value(metrics, "pbo", "pbo_proxy")
-        white_rc = _first_float_value(metrics, "white_reality_check_pvalue", "reality_check_pvalue_proxy")
-        spa_pvalue = _first_float_value(metrics, "hansen_spa_pvalue", "spa_pvalue_proxy")
-        if deflated_sharpe is None:
-            reasons.append("deflated_sharpe_missing_for_live_admission")
-        elif deflated_sharpe < mt_thresholds["deflated_sharpe_ratio_min"]:
-            reasons.append(
-                f"deflated_sharpe {deflated_sharpe:.3f} < {mt_thresholds['deflated_sharpe_ratio_min']:.3f}"
-            )
-        if pbo is None:
-            reasons.append("pbo_missing_for_live_admission")
-        elif pbo > mt_thresholds["pbo_max"]:
-            reasons.append(f"pbo {pbo:.3f} > {mt_thresholds['pbo_max']:.3f}")
-        if white_rc is None:
-            reasons.append("white_reality_check_missing_for_live_admission")
-        elif white_rc > mt_thresholds["white_reality_check_pvalue_max"]:
-            reasons.append(
-                "white_reality_check_pvalue "
-                f"{white_rc:.3f} > {mt_thresholds['white_reality_check_pvalue_max']:.3f}"
-            )
-        if spa_pvalue is None:
-            reasons.append("hansen_spa_missing_for_live_admission")
-        elif spa_pvalue > mt_thresholds["hansen_spa_pvalue_max"]:
-            reasons.append(
-                f"hansen_spa_pvalue {spa_pvalue:.3f} > {mt_thresholds['hansen_spa_pvalue_max']:.3f}"
-            )
+        reasons.extend(_live_multiple_testing_reasons(metrics, mt_thresholds))
 
     return normalize_quality_gate_result(
         {
@@ -648,6 +786,13 @@ def _evaluate_trade_profile(
             "post_event_decay": round(post_event_decay, 4),
             "trade_density": round(trade_density, 4),
             "parameter_perturbation_trade_stability": round(parameter_stability, 4),
+            "event_study_mode": event_study_mode or None,
+            "event_sample_count": int(event_sample_count),
+            "event_anchor_count": int(event_anchor_count),
+            "control_group_count": int(control_group_count),
+            "event_sample_source": event_sample_source,
+            "event_time_anchors": event_time_anchors[:8],
+            "traceable_to_event_samples": bool(traceable_to_event_samples),
         }
     )
 
@@ -698,33 +843,7 @@ def _evaluate_statistical_admission(
 
     if admission_level == "live":
         mt_thresholds = _multiple_testing_thresholds(admission_level)
-        deflated_sharpe = _first_float_value(payload, "deflated_sharpe_ratio", "deflated_sharpe_proxy")
-        pbo = _first_float_value(payload, "pbo", "pbo_proxy")
-        white_rc = _first_float_value(payload, "white_reality_check_pvalue", "reality_check_pvalue_proxy")
-        spa_pvalue = _first_float_value(payload, "hansen_spa_pvalue", "spa_pvalue_proxy")
-        if deflated_sharpe is None:
-            reasons.append("deflated_sharpe_missing_for_live_admission")
-        elif deflated_sharpe < mt_thresholds["deflated_sharpe_ratio_min"]:
-            reasons.append(
-                f"deflated_sharpe {deflated_sharpe:.3f} < {mt_thresholds['deflated_sharpe_ratio_min']:.3f}"
-            )
-        if pbo is None:
-            reasons.append("pbo_missing_for_live_admission")
-        elif pbo > mt_thresholds["pbo_max"]:
-            reasons.append(f"pbo {pbo:.3f} > {mt_thresholds['pbo_max']:.3f}")
-        if white_rc is None:
-            reasons.append("white_reality_check_missing_for_live_admission")
-        elif white_rc > mt_thresholds["white_reality_check_pvalue_max"]:
-            reasons.append(
-                "white_reality_check_pvalue "
-                f"{white_rc:.3f} > {mt_thresholds['white_reality_check_pvalue_max']:.3f}"
-            )
-        if spa_pvalue is None:
-            reasons.append("hansen_spa_missing_for_live_admission")
-        elif spa_pvalue > mt_thresholds["hansen_spa_pvalue_max"]:
-            reasons.append(
-                f"hansen_spa_pvalue {spa_pvalue:.3f} > {mt_thresholds['hansen_spa_pvalue_max']:.3f}"
-            )
+        reasons.extend(_live_multiple_testing_reasons(payload, mt_thresholds))
 
     return normalize_quality_gate_result(
         {

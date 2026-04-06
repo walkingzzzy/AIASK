@@ -284,7 +284,7 @@ class _StrategyVectorPlatformBackendMixin:
 
         @staticmethod
         def _normalize_embedding(values: Any) -> np.ndarray:
-            vector = StrategyVectorPlatform._as_float_array(values)
+            vector = _StrategyVectorPlatformBackendMixin._as_float_array(values)
             if vector.ndim != 1 or len(vector) == 0:
                 return np.asarray([], dtype=np.float64)
             norm = float(np.linalg.norm(vector))

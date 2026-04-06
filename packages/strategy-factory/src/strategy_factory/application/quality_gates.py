@@ -31,6 +31,12 @@ from ..domain.targets import _extract_target_codes_from_payload
 from ..domain.targets import _normalize_research_task_contract
 from ..infrastructure.mcp_services import get_strategy_dsl_compiler
 from .backtest_filter import build_target_quality_gate_summary
+from .candidate_contract import (
+    build_candidate_contract_hash,
+    build_factory_backtest_assumptions,
+    build_portfolio_candidate_contract,
+    candidate_contract_value,
+)
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
 
 logger = logging.getLogger(__name__)
@@ -924,17 +930,68 @@ _REQUIRED_TRADE_FIELDS = frozenset({
 })
 
 
-def _candidate_contract_value(candidate: dict, key: str) -> Any:
+def _should_enrich_legacy_gate_0_candidate(candidate: dict) -> bool:
     payload = dict(candidate or {})
-    value = payload.get(key)
-    if value not in (None, "", [], {}):
-        return value
-    params = payload.get("params")
-    if isinstance(params, dict):
-        nested = params.get(key)
-        if nested not in (None, "", [], {}):
-            return nested
-    return None
+    if not payload:
+        return False
+    has_factory_context = any(
+        [
+            payload.get("research_task"),
+            payload.get("event_context"),
+            payload.get("target_symbols"),
+            payload.get("stock_pool"),
+            payload.get("generator_type"),
+            payload.get("generator_mode"),
+            payload.get("source"),
+            list(payload.get("tags") or []),
+        ]
+    )
+    if has_factory_context:
+        return False
+    missing_trade_fields = [
+        key for key in sorted(_REQUIRED_TRADE_FIELDS)
+        if candidate_contract_value(payload, key) in (None, "", [], {})
+    ]
+    return len(missing_trade_fields) == len(_REQUIRED_TRADE_FIELDS)
+
+
+def _enrich_legacy_gate_0_candidate(candidate: dict) -> dict:
+    if not _should_enrich_legacy_gate_0_candidate(candidate):
+        return candidate
+    payload = dict(candidate or {})
+    contract_snapshot = build_portfolio_candidate_contract(payload)
+    assumptions = build_factory_backtest_assumptions(payload)
+    holding_horizon = dict(contract_snapshot.get("holding_horizon") or {})
+    max_days = max(1, int(holding_horizon.get("max_days") or 10))
+    defaults = {
+        "holding_horizon": {"max_days": max_days},
+        "trade_plan": {"entry_bias": "signal_confirmed", "exit_bias": "signal_or_time_stop"},
+        "risk_rules": {
+            "stop_loss_pct": 0.08,
+            "take_profit_pct": 0.18,
+            "max_holding_days": max_days,
+        },
+        "rebalance_rule": {"mode": "signal_rebalance"},
+        "portfolio_spec": {
+            "position_assumption": assumptions.position_assumption,
+            "target_weight_scheme": assumptions.target_weight_scheme,
+        },
+        "execution_assumptions": {
+            "slippage_bps": assumptions.slippage_bps,
+            "commission_rate": assumptions.commission_rate,
+            "tradability_filter": assumptions.tradability_filter,
+        },
+        "validation_profile": dict(contract_snapshot.get("validation_profile") or {}),
+    }
+    enriched = dict(payload)
+    params = dict(enriched.get("params") or {})
+    for key in sorted(_REQUIRED_TRADE_FIELDS):
+        default_value = deepcopy(defaults.get(key) or contract_snapshot.get(key))
+        if candidate_contract_value(enriched, key) in (None, "", [], {}):
+            enriched[key] = deepcopy(default_value)
+        params.setdefault(key, deepcopy(default_value))
+    enriched["params"] = params
+    return enriched
 
 
 def gate_0_structural(candidate: dict) -> GateResult:
@@ -954,7 +1011,7 @@ def gate_0_structural(candidate: dict) -> GateResult:
 
     missing_trade_fields = [
         key for key in sorted(_REQUIRED_TRADE_FIELDS)
-        if _candidate_contract_value(candidate, key) in (None, "", [], {})
+        if candidate_contract_value(candidate, key) in (None, "", [], {})
     ]
     if missing_trade_fields:
         reasons.append(f"missing_trade_fields:{','.join(missing_trade_fields)}")
@@ -1024,6 +1081,24 @@ def pre_gate_screen(
         validation_focus=validation_focus,
     )
     target_quality_summary = build_target_quality_gate_summary(payload)
+    explicit_target_sample_count = None
+    if targeted_snapshot:
+        explicit_raw = (
+            payload.get("gate_1_representative_count")
+            or research_task.get("gate_1_representative_count")
+        )
+        if explicit_raw is not None:
+            try:
+                explicit_target_sample_count = max(1, int(explicit_raw))
+            except Exception:
+                explicit_target_sample_count = None
+    resolved_target_sample_count = len(_resolve_gate_1_codes(payload)[1]) if targeted_snapshot else None
+    planned_target_sample_count = (
+        explicit_target_sample_count
+        if explicit_target_sample_count is not None
+        else resolved_target_sample_count
+    )
+    min_target_sample_count = int(target_quality_summary.get("min_target_sample_count") or 0)
 
     if allowed_strategy_types and strategy_type and strategy_type not in allowed_strategy_types:
         reasons.append("outside_allowed_strategy_types")
@@ -1041,6 +1116,13 @@ def pre_gate_screen(
         and "target_universe_alignment_too_low" in list(target_quality_summary.get("reasons") or [])
     ):
         reasons.append("target_universe_alignment_too_low")
+    if (
+        targeted_snapshot
+        and planned_target_sample_count is not None
+        and min_target_sample_count > 0
+        and planned_target_sample_count < min_target_sample_count
+    ):
+        reasons.append("target_sample_sufficiency_too_low")
     if (
         targeted_snapshot
         and _is_rl_bandit_momentum_candidate(payload, research_task)
@@ -1125,6 +1207,9 @@ def pre_gate_screen(
             "coverage_ratio": coverage_ratio,
             "intersection_ratio": intersection_ratio,
             "target_quality_summary": dict(target_quality_summary),
+            "planned_target_sample_count": planned_target_sample_count,
+            "resolved_target_sample_count": resolved_target_sample_count,
+            "min_target_sample_count": min_target_sample_count,
             "family_quota_limit": max(1, int(family_quota_limit or 1)),
             "family_quota_used_before": family_used_before,
             "per_stock_quota_limit": max(1, int(per_stock_quota_limit or 1)),
@@ -1155,8 +1240,14 @@ async def gate_1_fast_screen(
 ) -> GateResult:
     """用少量代表性股票做快速回测，Sharpe ≥ GATE1_SHARPE_MIN 即通过。"""
     factory_pkg = get_strategy_factory_package()
-    strategy_type = str(candidate.get("strategy_type") or "momentum")
-    params = dict(candidate.get("params") or {})
+    contract_snapshot = build_portfolio_candidate_contract(candidate)
+    contract_hash = build_candidate_contract_hash(contract=contract_snapshot)
+    strategy_type = str(contract_snapshot.get("strategy_type") or candidate.get("strategy_type") or "momentum")
+    assumptions = build_factory_backtest_assumptions(candidate)
+    params = {
+        **dict(candidate.get("params") or {}),
+        **assumptions.to_backtest_kwargs(),
+    }
 
     sharpe_min = float(_compat_setting("GATE1_SHARPE_MIN", GATE1_SHARPE_MIN) or GATE1_SHARPE_MIN)
     codes, prioritized_target_codes, code_source, validation_focus, research_task = _resolve_gate_1_codes(candidate)
@@ -1220,6 +1311,10 @@ async def gate_1_fast_screen(
                     "representative_included": bool([code for code in codes if code not in prioritized_target_codes]),
                     "representative_code_count": len([code for code in codes if code not in prioritized_target_codes]),
                 },
+                "candidate_contract_hash": contract_hash,
+                "tested_object_hash": contract_hash,
+                "candidate_contract_snapshot": contract_snapshot,
+                "backtest_assumptions": assumptions.to_audit_dict(),
                 "sharpe_values": [],
             },
         )
@@ -1251,6 +1346,10 @@ async def gate_1_fast_screen(
             "threshold": sharpe_min,
             "error_count": len(errors),
             "errors": errors,
+            "candidate_contract_hash": contract_hash,
+            "tested_object_hash": contract_hash,
+            "candidate_contract_snapshot": contract_snapshot,
+            "backtest_assumptions": assumptions.to_audit_dict(),
             "event_window_config": {
                 "event_window": dict(research_task.get("event_window") or {}),
                 "estimation_window": dict(research_task.get("estimation_window") or {}),
@@ -1291,6 +1390,10 @@ async def run_gated_filter(
     for start in range(0, len(candidates), _GATE_0_BATCH_SIZE):
         gate_0_batch_count += 1
         for candidate in candidates[start : start + _GATE_0_BATCH_SIZE]:
+            prepared_candidate = _enrich_legacy_gate_0_candidate(candidate)
+            if prepared_candidate is not candidate:
+                candidate.clear()
+                candidate.update(prepared_candidate)
             result = gate_0_structural(candidate)
             candidate["gate_0_result"] = {"passed": result.passed, "reasons": result.reasons}
             if result.passed:

@@ -250,6 +250,9 @@ class MatchingEngine:
                     rules = json.loads(rules)
                 except Exception:
                     rules = {}
+            if not isinstance(rules, dict):
+                rules = {}
+
             stop_loss_pct = float(rules.get('stop_loss_pct', 0))
             if stop_loss_pct <= 0:
                 continue
@@ -316,7 +319,7 @@ class MatchingEngine:
                         logger.info("[MatchingEngine] risk_executor triggered %d actions for %s",
                                     len(actions), acct['id'])
                 except Exception as e:
-                    logger.warning("[MatchingEngine] risk_executor error for %s: %s", acct['id'], e)
+                    logger.warning("[MatchingEngine] risk_executor error for %s: %s", acct['id'], e, exc_info=True)
         except Exception as e:
             logger.warning("[MatchingEngine] risk_executor import/run error: %s", e)
 

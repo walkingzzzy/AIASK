@@ -76,6 +76,13 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
         }
 
     @staticmethod
+    def _safe_int(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except Exception:
+            return 0
+
+    @staticmethod
     def _normalize_factor_names(snapshot: dict[str, Any]) -> list[str]:
         factor_research = dict(snapshot.get("factor_research") or {})
         summary = dict(factor_research.get("summary") or {})
@@ -92,6 +99,116 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
         return list(dict.fromkeys(names))[:6]
 
     @classmethod
+    def _default_validation_profile_for_family(
+        cls,
+        family: str,
+        *,
+        validation_focus: str = "candidate_target_only",
+    ) -> dict[str, Any]:
+        normalized_family = str(family or "").strip().lower()
+        normalized_focus = str(validation_focus or "candidate_target_only").strip().lower() or "candidate_target_only"
+        if normalized_family == "macro_timing":
+            profile = "macro_regime_validation"
+        elif normalized_focus == "event_target_only" or normalized_family in {"north_capital_track", "margin_divergence"}:
+            profile = "event_trade_validation"
+            normalized_focus = "event_target_only"
+        elif normalized_family in {"value_factor", "quality_factor", "growth_factor", "multi_factor", "sentiment", "sentiment_factor"}:
+            profile = "factor_rank_validation"
+        else:
+            profile = "trade_rule_validation"
+        return {
+            "profile": profile,
+            "validation_focus": normalized_focus,
+            "primary_validation_layer": "target" if normalized_focus in {"candidate_target_only", "event_target_only"} else "combined",
+        }
+
+    @classmethod
+    def _normalize_validation_profile(
+        cls,
+        family: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        profile = dict(payload or {})
+        default_profile = cls._default_validation_profile_for_family(
+            family,
+            validation_focus=str(profile.get("validation_focus") or "candidate_target_only"),
+        )
+        normalized_profile = str(profile.get("profile") or default_profile.get("profile") or "").strip().lower()
+        validation_focus = str(
+            profile.get("validation_focus")
+            or default_profile.get("validation_focus")
+            or "candidate_target_only"
+        ).strip().lower() or "candidate_target_only"
+        if not normalized_profile:
+            normalized_profile = str(
+                cls._default_validation_profile_for_family(
+                    family,
+                    validation_focus=validation_focus,
+                ).get("profile")
+                or "trade_rule_validation"
+            )
+        primary_layer = str(
+            profile.get("primary_validation_layer")
+            or default_profile.get("primary_validation_layer")
+            or ("target" if validation_focus in {"candidate_target_only", "event_target_only"} else "combined")
+        ).strip().lower() or "target"
+        return {
+            "profile": normalized_profile,
+            "validation_focus": validation_focus,
+            "primary_validation_layer": primary_layer,
+        }
+
+    @staticmethod
+    def _default_failure_penalty_for_family(family: str, *, family_rank: int) -> float:
+        normalized_family = str(family or "").strip().lower()
+        if normalized_family in {"momentum", "growth_factor", "volatility_breakout", "gap_fill"}:
+            base_penalty = 0.22
+        elif normalized_family in {"quality_factor", "value_factor"}:
+            base_penalty = 0.08
+        else:
+            base_penalty = 0.14
+        return round(min(base_penalty + max(family_rank - 1, 0) * 0.03, 0.45), 4)
+
+    @classmethod
+    def _default_family_plans(
+        cls,
+        families: list[str],
+        *,
+        priority: float,
+    ) -> list[dict[str, Any]]:
+        selected = [
+            str(item or "").strip().lower()
+            for item in list(families or [])
+            if str(item or "").strip()
+        ][: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+        if not selected:
+            return []
+        raw_weights: list[float] = []
+        for family_rank, _family in enumerate(selected, 1):
+            rank_multiplier = max(0.4, 1.0 - (family_rank - 1) * 0.2)
+            raw_weights.append(max(0.05, max(priority, 0.35) * rank_multiplier))
+        total = sum(raw_weights) or float(len(selected))
+        plans: list[dict[str, Any]] = []
+        allocated = 0.0
+        for family_rank, family in enumerate(selected, 1):
+            if family_rank == len(selected):
+                budget_weight = round(max(0.0, 1.0 - allocated), 4)
+            else:
+                budget_weight = round(raw_weights[family_rank - 1] / total, 4)
+                allocated += budget_weight
+            plans.append(
+                {
+                    "family": family,
+                    "family_rank": family_rank,
+                    "budget": budget_weight,
+                    "budget_weight": budget_weight,
+                    "failure_penalty": cls._default_failure_penalty_for_family(family, family_rank=family_rank),
+                    "validation_profile": cls._normalize_validation_profile(family),
+                }
+            )
+        return plans
+
+    @classmethod
     def _normalize_stock_family_allocation(cls, snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
         factor_research = dict(snapshot.get("factor_research") or {})
         allocation = dict(factor_research.get("stock_family_allocation") or {})
@@ -99,18 +216,121 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
         for code, item in allocation.items():
             normalized_code = str(code or "").strip()
             payload = dict(item or {})
+            priority = max(0.0, min(cls._safe_float(payload.get("priority")), 1.0))
             families = [
                 str(family or "").strip().lower()
                 for family in list(payload.get("families") or [])
                 if str(family or "").strip()
             ]
+            normalized_family_plans: list[dict[str, Any]] = []
+            for index, raw_plan in enumerate(list(payload.get("family_plans") or []), 1):
+                plan_payload = dict(raw_plan or {})
+                family = str(plan_payload.get("family") or "").strip().lower()
+                if not family:
+                    continue
+                family_rank = max(1, cls._safe_int(plan_payload.get("family_rank")) or index)
+                normalized_family_plans.append(
+                    {
+                        "family": family,
+                        "family_rank": family_rank,
+                        "budget": max(
+                            0.0,
+                            min(
+                                cls._safe_float(plan_payload.get("budget") or plan_payload.get("budget_weight")),
+                                1.0,
+                            ),
+                        ),
+                        "budget_weight": max(
+                            0.0,
+                            min(
+                                cls._safe_float(plan_payload.get("budget_weight") or plan_payload.get("budget")),
+                                1.0,
+                            ),
+                        ),
+                        "failure_penalty": max(
+                            0.0,
+                            min(
+                                cls._safe_float(plan_payload.get("failure_penalty")),
+                                1.0,
+                            ),
+                        ),
+                        "validation_profile": cls._normalize_validation_profile(
+                            family,
+                            dict(plan_payload.get("validation_profile") or {}),
+                        ),
+                    }
+                )
+            normalized_family_plans.sort(
+                key=lambda plan: (
+                    int(plan.get("family_rank") or 0),
+                    str(plan.get("family") or ""),
+                )
+            )
+            if normalized_family_plans:
+                families = [
+                    str(plan.get("family") or "").strip().lower()
+                    for plan in normalized_family_plans
+                    if str(plan.get("family") or "").strip()
+                ]
             if not normalized_code or not families:
                 continue
+            default_family_plans = cls._default_family_plans(families, priority=priority or 0.5)
+            default_plan_lookup = {
+                str(plan.get("family") or "").strip().lower(): dict(plan or {})
+                for plan in default_family_plans
+                if str(plan.get("family") or "").strip()
+            }
+            if not normalized_family_plans:
+                normalized_family_plans = default_family_plans
+            else:
+                resolved_plans: list[dict[str, Any]] = []
+                seen_families: set[str] = set()
+                for plan in normalized_family_plans:
+                    family = str(plan.get("family") or "").strip().lower()
+                    if not family or family in seen_families:
+                        continue
+                    seen_families.add(family)
+                    fallback = dict(default_plan_lookup.get(family) or {})
+                    budget_weight = cls._safe_float(plan.get("budget_weight") or plan.get("budget"))
+                    if budget_weight <= 0.0:
+                        budget_weight = cls._safe_float(fallback.get("budget_weight") or fallback.get("budget"))
+                    failure_penalty = cls._safe_float(plan.get("failure_penalty"))
+                    if failure_penalty <= 0.0:
+                        failure_penalty = cls._safe_float(fallback.get("failure_penalty"))
+                    resolved_plans.append(
+                        {
+                            "family": family,
+                            "family_rank": max(1, cls._safe_int(plan.get("family_rank")) or len(resolved_plans) + 1),
+                            "budget": max(0.0, min(budget_weight, 1.0)),
+                            "budget_weight": max(0.0, min(budget_weight, 1.0)),
+                            "failure_penalty": max(0.0, min(failure_penalty, 1.0)),
+                            "validation_profile": cls._normalize_validation_profile(
+                                family,
+                                dict(plan.get("validation_profile") or fallback.get("validation_profile") or {}),
+                            ),
+                        }
+                    )
+                normalized_family_plans = resolved_plans
+            normalized_family_plans = normalized_family_plans[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+            families = [
+                str(plan.get("family") or "").strip().lower()
+                for plan in normalized_family_plans
+                if str(plan.get("family") or "").strip()
+            ]
             normalized[normalized_code] = {
                 "families": list(dict.fromkeys(families))[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)],
-                "priority": max(0.0, min(cls._safe_float(payload.get("priority")), 1.0)),
+                "family_plans": normalized_family_plans,
+                "priority": priority,
                 "source_mode": str(payload.get("source_mode") or "").strip() or None,
             }
+            industry = str(payload.get("industry") or "").strip()
+            if industry:
+                normalized[normalized_code]["industry"] = industry
+            if normalized_family_plans:
+                normalized[normalized_code]["top_family"] = normalized_family_plans[0]["family"]
+                normalized[normalized_code]["top_validation_profile"] = (
+                    dict(normalized_family_plans[0].get("validation_profile") or {}).get("profile")
+                )
         return normalized
 
     @classmethod
@@ -182,7 +402,20 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
                     families.append(lowered)
 
         if allocation_item:
-            add(*list(allocation_item.get("families") or []))
+            allocation_families = [
+                str(plan.get("family") or "").strip().lower()
+                for plan in list(allocation_item.get("family_plans") or [])
+                if str(plan.get("family") or "").strip()
+            ]
+            if not allocation_families:
+                allocation_families = [
+                    str(item or "").strip().lower()
+                    for item in list(allocation_item.get("families") or [])
+                    if str(item or "").strip()
+                ]
+            if allocation_families:
+                add(*allocation_families)
+                return families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
         if industry and industry in hot_sectors:
             add("momentum", "growth_factor")
         if industry and industry in cold_sectors:
@@ -194,6 +427,82 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
             add(*preferred_strategy_types_for_factor(factor_name, default=[]))
 
         return families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+
+    @classmethod
+    def _family_plans_for_row(
+        cls,
+        row: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+        hot_sectors: set[str],
+        cold_sectors: set[str],
+        active_factors: list[str],
+        allocation_item: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        allocation_plans = [
+            dict(plan or {})
+            for plan in list((allocation_item or {}).get("family_plans") or [])
+            if isinstance(plan, dict)
+        ]
+        if allocation_plans:
+            normalized_plans: list[dict[str, Any]] = []
+            for index, plan in enumerate(allocation_plans, 1):
+                family = str(plan.get("family") or "").strip().lower()
+                if not family:
+                    continue
+                family_rank = max(1, cls._safe_int(plan.get("family_rank")) or index)
+                normalized_plans.append(
+                    {
+                        "family": family,
+                        "family_rank": family_rank,
+                        "budget": max(
+                            0.0,
+                            min(
+                                cls._safe_float(plan.get("budget") or plan.get("budget_weight")),
+                                1.0,
+                            ),
+                        ),
+                        "budget_weight": max(
+                            0.0,
+                            min(
+                                cls._safe_float(plan.get("budget_weight") or plan.get("budget")),
+                                1.0,
+                            ),
+                        ),
+                        "failure_penalty": max(
+                            0.0,
+                            min(
+                                cls._safe_float(plan.get("failure_penalty")),
+                                1.0,
+                            ),
+                        ),
+                        "validation_profile": cls._normalize_validation_profile(
+                            family,
+                            dict(plan.get("validation_profile") or {}),
+                        ),
+                    }
+                )
+            normalized_plans.sort(
+                key=lambda plan: (
+                    int(plan.get("family_rank") or 0),
+                    str(plan.get("family") or ""),
+                )
+            )
+            if normalized_plans:
+                return normalized_plans[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+
+        families = cls._families_for_row(
+            row,
+            snapshot=snapshot,
+            hot_sectors=hot_sectors,
+            cold_sectors=cold_sectors,
+            active_factors=active_factors,
+            allocation_item=allocation_item,
+        )
+        return cls._default_family_plans(
+            families,
+            priority=max(0.0, min(cls._safe_float((allocation_item or {}).get("priority")), 1.0)),
+        )
 
     @staticmethod
     def _holding_bucket_for_family(family: str) -> str:
@@ -335,6 +644,7 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
         priority_score: float,
         snapshot: dict[str, Any],
         generation_limit: int,
+        family_plan: dict[str, Any] | None = None,
         allocation_item: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         code = str(row.get("code") or "").strip()
@@ -342,7 +652,28 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
         holding_bucket = cls._holding_bucket_for_family(family)
         alpha_source = cls._alpha_source_for_family(family)
         risk_level = cls._risk_level_for_family(family)
-        priority = max(45, min(98, int(round(priority_score - (rank - 1) * 1.5))))
+        resolved_family_plan = dict(family_plan or {})
+        resolved_rank = max(1, int(resolved_family_plan.get("family_rank") or rank))
+        validation_profile = cls._normalize_validation_profile(
+            family,
+            dict(resolved_family_plan.get("validation_profile") or {}),
+        )
+        budget_weight = max(
+            0.0,
+            min(
+                cls._safe_float(resolved_family_plan.get("budget_weight") or resolved_family_plan.get("budget")),
+                1.0,
+            ),
+        )
+        failure_penalty = max(
+            0.0,
+            min(
+                cls._safe_float(resolved_family_plan.get("failure_penalty"))
+                or cls._default_failure_penalty_for_family(family, family_rank=resolved_rank),
+                1.0,
+            ),
+        )
+        priority = max(45, min(98, int(round(priority_score - (resolved_rank - 1) * 1.5))))
         task = {
             "task_id": f"bulk_matrix_{snapshot.get('date')}_{code}_{family}",
             "task_key": f"bulk_matrix:{snapshot.get('date')}:{code}:{family}",
@@ -366,16 +697,20 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
             "universe_expansion_policy": "forbid",
             "preference_strength": "hard",
             "preference_reason": f"stock_matrix:{code}:{family}",
-            "validation_focus": "candidate_target_only",
+            "validation_focus": str(validation_profile.get("validation_focus") or "candidate_target_only"),
+            "validation_profile": validation_profile,
             "target_symbols": [code],
             "stock_pool": {"selection_mode": "explicit", "symbols": [code]},
             "focus_industries": [str(row.get("industry") or row.get("sector") or "").strip()] if str(row.get("industry") or row.get("sector") or "").strip() else [],
             "priority": priority,
             "generation_limit": generation_limit,
-            "matrix_rank": rank,
+            "matrix_rank": resolved_rank,
             "matrix_stock_rank": stock_rank,
-            "matrix_family_rank": rank,
+            "matrix_family_rank": resolved_rank,
             "matrix_priority_score": priority_score,
+            "stock_family_budget": budget_weight,
+            "stock_family_budget_weight": budget_weight,
+            "stock_family_failure_penalty": failure_penalty,
             "source_symbol_summary": cls._summarize_symbol(row),
             "source_snapshot": {
                 "fear_greed_index": cls._safe_float(snapshot.get("fear_greed_index") or 50.0),
@@ -503,26 +838,27 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
                 allocation_item=allocation_item,
             )
             row_tasks: list[dict[str, Any]] = []
-            for family_rank, family in enumerate(
-                self._families_for_row(
-                    row,
-                    snapshot=snapshot,
-                    hot_sectors=hot_sectors,
-                    cold_sectors=cold_sectors,
-                    active_factors=active_factors,
-                    allocation_item=allocation_item,
-                ),
-                1,
+            for family_plan in self._family_plans_for_row(
+                row,
+                snapshot=snapshot,
+                hot_sectors=hot_sectors,
+                cold_sectors=cold_sectors,
+                active_factors=active_factors,
+                allocation_item=allocation_item,
             ):
+                family = str(family_plan.get("family") or "").strip().lower()
+                if not family:
+                    continue
                 row_tasks.append(
                     self._build_task(
                         row,
                         family=family,
-                        rank=family_rank,
+                        rank=max(1, self._safe_int(family_plan.get("family_rank")) or len(row_tasks) + 1),
                         stock_rank=stock_rank,
                         priority_score=row_score,
                         snapshot=snapshot,
                         generation_limit=effective_generation_limit,
+                        family_plan=family_plan,
                         allocation_item=allocation_item,
                     )
                 )

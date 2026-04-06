@@ -113,13 +113,13 @@ def _filter_market_codes(values) -> list[str]:
 def register_quant_manager(mcp):
     """Register quant manager tool."""
 
-    @mcp.tool(structured_output=True)
+    @mcp.tool()
     async def quant_manager(
         action: str,
         code: Optional[str] = None,
         kwargs: Any = None,
         params: Any = None,
-    ) -> dict[str, Any]:
+    ) -> dict:
         """Quant manager with unified action + kwargs protocol."""
         try:
             start_time = time.perf_counter()

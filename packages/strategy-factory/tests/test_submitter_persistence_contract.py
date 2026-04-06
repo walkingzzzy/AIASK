@@ -85,6 +85,12 @@ def test_build_strategy_data_persists_extended_strategy_contract():
     assert params["expected_regime"] == ["trend", "event"]
     assert params["expected_holding_period"] == 10
     assert params["candidate_latest_validation_age_days"] == 1
+    assert params["candidate_contract_hash"]
+    assert params["candidate_identity_signature"]
+    assert params["candidate_contract_snapshot"]["targeting"]["target_pool_id"] == "ai"
+    assert params["candidate_contract_snapshot"]["targeting"]["target_symbols"] == ["600519"]
+    assert params["candidate_contract_snapshot"]["validation_profile"]["profile"] == "event_trade_validation"
+    assert params["candidate_lineage_contract"]["task_signature"].startswith("event_driven|evt_1|ai|")
 
 
 def test_candidate_report_params_merges_target_universe_contract():

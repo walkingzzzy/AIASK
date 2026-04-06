@@ -208,13 +208,21 @@ class _StrategyVectorPlatformIndexesMixin:
                     await db.replace_strategy_vector_index_items(index_name, index_version, items)
                 if items and getattr(db, 'supports_pgvector', lambda: False)() and hasattr(db, 'ensure_strategy_vector_index_item_pgvector_index'):
                     try:
-                        await db.ensure_strategy_vector_index_item_pgvector_index(
-                            index_name=index_name,
-                            index_version=index_version,
-                            vector_dim=int(layout.get('vector_dim') or 0),
-                            metric=str((profiles[0] if profiles else {}).get('metric') or 'cosine'),
-                            index_params=hnsw_index_params,
-                        )
+                        ensure_kwargs = {
+                            'index_name': index_name,
+                            'index_version': index_version,
+                            'vector_dim': int(layout.get('vector_dim') or 0),
+                            'metric': str((profiles[0] if profiles else {}).get('metric') or 'cosine'),
+                        }
+                        if hnsw_index_params:
+                            ensure_kwargs['index_params'] = hnsw_index_params
+                        try:
+                            await db.ensure_strategy_vector_index_item_pgvector_index(**ensure_kwargs)
+                        except TypeError as exc:
+                            if 'index_params' not in str(exc):
+                                raise
+                            ensure_kwargs.pop('index_params', None)
+                            await db.ensure_strategy_vector_index_item_pgvector_index(**ensure_kwargs)
                     except Exception as exc:
                         logger.warning('StrategyVectorPlatform.build_persisted_ann_index failed to create pgvector index: %s', exc)
                 if hasattr(db, 'save_strategy_vector_index_snapshot'):

@@ -27,6 +27,29 @@ except ImportError:
     ak = None
 import pandas as pd
 
+# 显式声明需要通过 `from ._quote_support import *` 导出的私有 helper。
+# Python 的 import * 默认跳过下划线开头的名称，因此必须在 __all__ 中列明。
+__all__ = [
+    "_current_data_timestamp",
+    "_log_quote_source_error",
+    "_get_daily_snapshot",
+    "_coalesce_price",
+    "_calc_change",
+    "_normalize_quote_for_storage",
+    "_save_quote_best_effort",
+    "_save_quote_nonblocking",
+    "_save_quotes_nonblocking",
+    "_quote_missing_fields",
+    "_backfill_prev_close",
+    "_ok_quote_response",
+    "_fail_quote_response",
+    "_get_minute_quote",
+    "_get_daily_quote",
+    "_get_quote_sina",
+    "_get_quote_tencent",
+    "_get_realtime_quote_akshare",
+]
+
 def _current_data_timestamp() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 

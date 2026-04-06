@@ -30,8 +30,8 @@ from ._performance_manager_support import (
 def register_performance_manager(mcp):
     """注册绩效管理器工具"""
 
-    @mcp.tool(structured_output=True)
-    async def performance_manager(action: str, params: dict | None = None, kwargs: Any = None, portfolio_id: str | int | None = None, backtest_id: str | None = None, artifact_id: str | None = None, benchmark: str | None = None, lookback_days: int | None = None) -> dict[str, Any]:
+    @mcp.tool()
+    async def performance_manager(action: str, params: dict | None = None, kwargs: Any = None, portfolio_id: str | int | None = None, backtest_id: str | None = None, artifact_id: str | None = None, benchmark: str | None = None, lookback_days: int | None = None) -> dict:
         """绩效管理器（统一 action + kwargs 协议）
 
         Args:

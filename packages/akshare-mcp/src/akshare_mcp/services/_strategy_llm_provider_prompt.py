@@ -75,6 +75,7 @@ class StrategyLLMConfig:
 
 
 class _StrategyLLMProviderPromptMixin:
+        @classmethod
         def _build_prompt(
             cls,
             snapshot: dict[str, Any],
@@ -127,12 +128,25 @@ class _StrategyLLMProviderPromptMixin:
                 ], limit=2)
                 if not example_symbols:
                     example_symbols = cls._normalize_code_list((research_task or {}).get('target_symbols'), limit=2)
+                required_contract_fields = [
+                    'holding_horizon',
+                    'trade_plan',
+                    'risk_rules',
+                    'position_sizing',
+                    'execution_notes',
+                    'rebalance_rule',
+                    'portfolio_spec',
+                    'execution_assumptions',
+                    'validation_profile',
+                ]
                 output_contract = {
                     'root': 'json_object',
                     'required': ['candidates'],
                     'analysis_fields': [],
                     'candidate_fields': ['name', 'strategy_type', 'hypothesis', 'holding_horizon', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'dsl', 'tags'],
+                    'required_candidate_fields': ['name', 'strategy_type', 'target_symbols', 'stock_pool', 'dsl', *required_contract_fields],
                     'dsl_required_fields': ['version', 'timeframe', 'entry', 'exit', 'metadata'],
+                    'contract_required_fields': required_contract_fields,
                     'target_symbol_rule': prompt_target_symbol_rule,
                     'target_alignment_contract': {
                         'max_target_symbols': max_target_symbols,
@@ -150,13 +164,14 @@ class _StrategyLLMProviderPromptMixin:
                     '如果 research_task 提供了 event_id/theme_code/direction/evidence_summary，必须围绕该事件证据输出。',
                     '不要 analysis，不要解释，不要 markdown。',
                     '返回根对象 {"candidates":[...]}。',
-                    'candidate 仅保留 name,target_symbols,stock_pool,dsl,tags。',
+                    'candidate 必须包含 name,strategy_type,hypothesis,holding_horizon,trade_plan,risk_rules,position_sizing,execution_notes,rebalance_rule,portfolio_spec,execution_assumptions,validation_profile,target_symbols,stock_pool,dsl,tags。',
+                    'portfolio_spec / execution_assumptions / validation_profile 必须给出完整对象，不得省略，也不得依赖系统回填默认值。',
                     'dsl 必须是对象，且必须包含 version,timeframe,entry,exit,metadata。',
+                    'dsl.metadata 必须回填 target_symbols,stock_pool,portfolio_spec,execution_assumptions,validation_profile,targeting_policy,constraint_check。',
                     strict_snapshot_rule,
                     '字段仅限 open/high/low/close/volume；指标优先仅用 sma,ema,roc,rsi,volume_ratio；',
                     '条件运算仅限 gt,gte,lt,lte,cross_above,cross_below；组合仅限 all,any,not。',
                     '不要使用 highest/lowest/atr/stddev，也不要写 close 与 highest/lowest 的交叉突破。',
-                    'dsl.metadata 必须回填 target_symbols 和 stock_pool。',
                     'volume_ratio 右侧优先用 value≈1.0；rsi 右侧优先用 value 40/60；不要把 volume_ratio/rsi/roc 直接和 open/high/low/close/volume 比较。',
                 ])
                 user_payload = {
@@ -214,14 +229,16 @@ class _StrategyLLMProviderPromptMixin:
                     f"analysis 必须包含: {', '.join(analysis_fields)}。",
                     '根对象只允许包含 analysis 与 candidates。',
                 '每个 candidate 必须包含: name, description, rationale, hypothesis, holding_horizon, trade_plan, risk_rules, position_sizing, execution_notes, rebalance_rule, portfolio_spec, execution_assumptions, validation_profile, target_symbols, stock_pool, selection_logic, dsl, tags。',
+                'holding_horizon / trade_plan / risk_rules / position_sizing / rebalance_rule / portfolio_spec / execution_assumptions / validation_profile 必须是完整对象，不得留空，不得依赖系统回填默认值。',
                 'DSL 条件节点必须使用标准对象格式 {"op":...,"left":...,"right":...}，不要使用 {"gt":[...]} 这类简写。',
-                f'target_symbols 数量建议 1-{max_target_symbols} 只；stock_pool 必须包含 selection_mode 与 symbols；dsl.metadata 必须回填 target_symbols 与 stock_pool。',
+                f'target_symbols 数量建议 1-{max_target_symbols} 只；stock_pool 必须包含 selection_mode 与 symbols；dsl.metadata 必须回填 target_symbols,stock_pool,portfolio_spec,execution_assumptions,validation_profile,targeting_policy,constraint_check。',
                 '不要生成 Python 代码，不要生成自然语言规则，只能生成 JSON DSL。',
             ])
             output_contract = {
                 'root': 'json_object',
                 'required': ['analysis', 'candidates'],
                 'analysis_fields': analysis_fields,
+                'required_candidate_fields': ['name', 'strategy_type', 'hypothesis', 'holding_horizon', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'dsl'],
                 'target_symbol_rule': prompt_target_symbol_rule,
                 'target_alignment_contract': {
                     'max_target_symbols': max_target_symbols,

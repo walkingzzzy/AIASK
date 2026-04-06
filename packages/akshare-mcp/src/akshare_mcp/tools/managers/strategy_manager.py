@@ -244,7 +244,31 @@ async def _handle_vector_profiles(db, params: dict) -> dict:
         from ...services.vector_platform import get_strategy_vector_platform
         rows = await get_strategy_vector_platform().find_similar_profiles(db, str(params.get("similar_to")), limit=limit)
     else:
-        rows = await db.list_strategy_vector_profiles(strategy_id=sid, profile_type=params.get("profile_type"), limit=limit) if hasattr(db, "list_strategy_vector_profiles") else []
+        if hasattr(db, "list_strategy_vector_profiles"):
+            rows = await db.list_strategy_vector_profiles(
+                strategy_id=sid,
+                profile_type=params.get("profile_type"),
+                limit=limit,
+            )
+        elif hasattr(db, "list_vector_profiles"):
+            unified_rows = await db.list_vector_profiles(
+                entity_type="strategy",
+                entity_id=sid,
+                profile_type=params.get("profile_type"),
+                limit=limit,
+            )
+            rows = [
+                {
+                    **dict(item),
+                    "strategy_id": item.get("strategy_id") or item.get("entity_id"),
+                    "index_name": item.get("index_name") or dict(item.get("metadata") or {}).get("index_name"),
+                    "index_version": item.get("index_version") or item.get("version"),
+                    "source": item.get("source") or "unified_profile",
+                }
+                for item in list(unified_rows or [])
+            ]
+        else:
+            rows = []
     return ok({"items": rows, "count": len(rows)})
 
 
@@ -256,12 +280,30 @@ async def _handle_vector_indexes(db, params: dict) -> dict:
 
 async def _handle_vector_index_snapshots(db, params: dict) -> dict:
     limit = min(max(int(params.get("limit", 20)), 1), 200)
-    rows = await db.list_strategy_vector_index_snapshots(
-        index_name=(str(params.get("index_name") or "").strip() or None),
-        index_version=(str(params.get("index_version") or "").strip() or None),
-        status=(str(params.get("status") or "").strip() or None),
-        limit=limit,
-    ) if hasattr(db, "list_strategy_vector_index_snapshots") else []
+    if hasattr(db, "list_strategy_vector_index_snapshots"):
+        rows = await db.list_strategy_vector_index_snapshots(
+            index_name=(str(params.get("index_name") or "").strip() or None),
+            index_version=(str(params.get("index_version") or "").strip() or None),
+            status=(str(params.get("status") or "").strip() or None),
+            limit=limit,
+        )
+    elif hasattr(db, "list_vector_index_snapshots"):
+        unified_rows = await db.list_vector_index_snapshots(
+            collection_name=(str(params.get("collection_name") or "").strip() or None),
+            index_version=(str(params.get("index_version") or "").strip() or None),
+            status=(str(params.get("status") or "").strip() or None),
+            limit=limit,
+        )
+        rows = [
+            {
+                **dict(item),
+                "index_name": item.get("index_name") or dict(item.get("metadata") or {}).get("index_name") or params.get("index_name"),
+                "source": item.get("source") or "unified_snapshot",
+            }
+            for item in list(unified_rows or [])
+        ]
+    else:
+        rows = []
     latest = rows[0] if rows else None
     return ok({"items": rows, "count": len(rows), "latest": latest})
 

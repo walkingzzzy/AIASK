@@ -1215,6 +1215,7 @@ def test_strategy_llm_prompt_tightens_snapshot_target_pool_contract():
     contract = payload["output_contract"]["target_alignment_contract"]
 
     assert "不得扩展到 candidate_universe 或全市场" in system_prompt
+    assert "不得依赖系统回填默认值" in system_prompt
     assert contract["min_target_overlap_count"] == 4
     assert contract["max_target_symbols"] == 4
     assert contract["disallow_market_fallback"] is True
@@ -1260,6 +1261,61 @@ def test_strategy_llm_normalize_rejects_low_alignment_snapshot_candidate():
     )
 
     assert normalized is None
+
+
+def test_strategy_llm_normalize_materializes_complete_trade_contract():
+    from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
+
+    provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
+
+    normalized = provider._normalize_candidate_payload(
+        {
+            "name": "snapshot_rsi_full_contract",
+            "strategy_type": "rsi",
+            "target_symbols": ["603855", "603279", "002833", "601766"],
+            "dsl": {
+                "version": "1.0",
+                "timeframe": "daily",
+                "entry": {
+                    "any": [{
+                        "op": "lt",
+                        "left": {"indicator": "rsi", "field": "close", "window": 14},
+                        "right": {"value": 30},
+                    }],
+                },
+                "exit": {
+                    "any": [{
+                        "op": "gt",
+                        "left": {"indicator": "rsi", "field": "close", "window": 14},
+                        "right": {"value": 60},
+                    }],
+                },
+                "metadata": {},
+            },
+        },
+        research_task={
+            "task_source": "snapshot",
+            "task_id": "task_pipeline_rsi_contract",
+            "allowed_strategy_types": ["rsi"],
+            "target_symbols": ["603855", "603279", "002833", "601766", "600528", "600582", "600894", "920599"],
+        },
+    )
+
+    assert normalized is not None
+    assert normalized["holding_horizon"]["max_days"] > 0
+    assert normalized["trade_plan"]
+    assert normalized["risk_rules"]["max_holding_days"] == normalized["holding_horizon"]["max_days"]
+    assert normalized["position_sizing"]["position_assumption"] == normalized["portfolio_spec"]["position_assumption"]
+    assert normalized["execution_assumptions"]["tradability_filter"] is True
+    assert normalized["validation_profile"]["profile"] == "trade_rule_validation"
+    assert normalized["params"]["holding_horizon"] == normalized["holding_horizon"]
+    assert normalized["params"]["portfolio_spec"] == normalized["portfolio_spec"]
+    assert normalized["params"]["execution_assumptions"] == normalized["execution_assumptions"]
+    assert normalized["params"]["validation_profile"] == normalized["validation_profile"]
+    assert normalized["dsl"]["metadata"]["portfolio_spec"] == normalized["portfolio_spec"]
+    assert normalized["dsl"]["metadata"]["execution_assumptions"] == normalized["execution_assumptions"]
+    assert normalized["dsl"]["metadata"]["validation_profile"] == normalized["validation_profile"]
+    assert normalized["dsl"]["metadata"]["targeting_policy"] == normalized["targeting_policy"]
 
 
 # ===========================================================================
