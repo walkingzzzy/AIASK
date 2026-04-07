@@ -3,7 +3,7 @@
 > **测试时间**: 2026-02-03  
 > **测试环境**: Windows 11 + Python 3.11  
 > **Tushare版本**: 1.4.24  
-> **API代理地址**: http://lianghua.nanyangqiankun.top
+> **API代理地址**: `http://your-tushare-proxy`
 
 ---
 
@@ -87,10 +87,10 @@
 
 ```env
 # Tushare Pro Token
-TUSHARE_TOKEN=2ecc5201dcf93fff3ee466a622d40687b86ecfa6a69481aa8ff0b01ef02f
+TUSHARE_TOKEN=your_tushare_token
 
 # Tushare API 代理地址
-TUSHARE_HTTP_URL=http://lianghua.nanyangqiankun.top
+TUSHARE_HTTP_URL=http://your-tushare-proxy
 ```
 
 ### 4.2 API调用方式
@@ -102,7 +102,7 @@ import requests
 import pandas as pd
 
 TUSHARE_TOKEN = 'your_token'
-TUSHARE_HTTP_URL = 'http://lianghua.nanyangqiankun.top'
+TUSHARE_HTTP_URL = 'http://your-tushare-proxy'
 
 def call_api(api_name, params=None, fields=''):
     payload = {
@@ -182,9 +182,8 @@ Total stocks: 5478
 1. **可用性**: 100%的测试API（25/25）通过代理服务可正常使用
 2. **稳定性**: 所有API测试均通过，无失败项
 3. **数据质量**: 返回数据完整，格式规范
-4. **代理服务**: 代理服务 `http://lianghua.nanyangqiankun.top` 运行稳定
+4. **代理服务**: 使用自建或受控的 Tushare 代理地址
 
 ---
 
 **报告生成时间**: 2026-02-03 20:30:00
-

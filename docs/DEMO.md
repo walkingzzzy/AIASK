@@ -4,6 +4,20 @@
 > 说明：本文属于演示文档，不代表所有场景在任意环境下都可直接运行；工具数量、Skills 数量与能力覆盖请以当前运行时审计结果和实际部署环境为准。
 > 约束：本文示例只使用当前仓库可见的 skill / tool 名称，但不代表每个场景都已经过当前机器的端到端回归。
 
+## 0. 当前演示基线（2026-04-07 复核）
+
+- MCP tools：`155`
+- MCP resources：`3`
+- MCP prompts：`6`
+- 本地 skills：`19`
+- Web 页面路由：`46`
+- BFF 一级模块：`38`
+
+补充说明：
+
+1. 本文出现的核心示例工具名已和当前运行时注册结果核对，包括：`get_realtime_quote`、`get_kline`、`get_order_book`、`get_minute_kline`、`get_financials`、`get_valuation_metrics`、`get_stock_research`、`run_simple_backtest`、`backtest_manager`、`optimize_portfolio`、`analyze_portfolio_risk`、`stress_test_portfolio`、`create_indicator_alert`、`create_combo_alert`、`generate_daily_report`、`should_i_buy`、`smart_stock_diagnosis`、`decision_manager`、`strategy_manager`、`strategy_review_workflow`。
+2. 若要先完成接入与启动，优先看 [`MCP_CONFIG_GUIDE.md`](./MCP_CONFIG_GUIDE.md) 和 [`../packages/akshare-mcp/README.md`](../packages/akshare-mcp/README.md)。
+
 ## 1. 快速开始（5 分钟上手）
 
 ### 1.1 目标
@@ -13,6 +27,7 @@
 - MCP 服务已启动并可被 AI 客户端连接（Claude Desktop / Cursor）。
 - 若要提升结构化覆盖：建议配置 `TUSHARE_TOKEN`。
 - 若要提升缓存命中与回放能力：建议启用数据库与同步任务。
+- 若不确定配置是否完整，先对照 [`MCP_CONFIG_GUIDE.md`](./MCP_CONFIG_GUIDE.md)。
 
 ### 1.3 对话式最小用例（可直接复制）
 **你对 AI 说：**
@@ -48,6 +63,7 @@
 | 量化回测 | 策略有效性验证与参数对比 | Skills: `akshare-quant-research-process` / Tools: `run_simple_backtest`、`backtest_manager` |
 | 组合管理 | 持仓优化、风险暴露、压力测试 | Skills: `akshare-fund-manager-pro` / Tools: portfolio、risk、optimize |
 | 告警与跟踪 | 价格提醒、条件组合、日报输出 | Skills: `akshare-macro-options-alerts` / Tools: alerts、watchlist、report |
+| 策略工厂 | 查看工厂运行状态、策略评审与孵化信息 | Skills: `akshare-strategy-factory` / Tools: `strategy_manager`、`strategy_review_workflow` |
 
 ---
 
@@ -170,6 +186,31 @@
 
 **注意事项**：预警是辅助提醒，不应替代仓位控制和合规判断。
 
+### 3.6 场景 F：策略工厂与策略评审
+**场景描述**：查看当前工厂运行状态、最近运行记录，并对单个策略做只读评审聚合。
+
+**推荐使用**：
+- Skills：`akshare-strategy-factory`
+- MCP Tools：`strategy_manager`、`strategy_review_workflow`
+
+**对话式测试**
+- 你对 AI 说：
+  > 帮我查看当前策略工厂运行状态，列出最近 3 次工厂运行摘要；再对某个策略做一次 review 汇总，重点看当前状态、质量报告和运行告警。
+- AI 预期调用：
+  1. `strategy_manager(action="factory_status")`
+  2. `strategy_manager(action="factory_runs", params={"limit": 3})`
+  3. `strategy_review_workflow(strategy_id="...", include_factory_status=true, include_review_report=true, include_runtime_alerts=true)`
+- 预期返回（示例）：
+  - 当前工厂是否运行、最近一次运行结果、候选/提交/门禁摘要
+  - 最近 3 次工厂运行记录
+  - 单个策略的当前状态、review 报告、runtime alerts、只读聚合摘要
+
+**关键配置**：建议启用数据库与策略工厂相关表，便于看到完整运行历史。
+
+**注意事项**：
+- `strategy_review_workflow` 默认是只读聚合；只有显式打开 `run_factory_once` 或 `run_runtime_cycle` 才会产生状态性动作。
+- 当前开发入口以 [`../策略工厂/README.md`](../策略工厂/README.md) 和 [`../策略工厂/策略工厂整改详细清单.md`](../策略工厂/策略工厂整改详细清单.md) 为准。
+
 ---
 
 ## 4. AI 客户端提示词示例（Claude Desktop / Cursor）
@@ -201,6 +242,7 @@
 2. **验证阶段**：`akshare-quant-research-process`
 3. **风控阶段**：`akshare-fund-manager-pro`
 4. **跟踪阶段**：`alerts_manager` / `watchlist_manager` / `generate_daily_report`
+5. **策略工厂评审阶段**：`strategy_manager` / `strategy_review_workflow`
 
 **工作流输出应至少包含**：
 - 投资结论（买入/观察/回避）

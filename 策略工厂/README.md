@@ -1,96 +1,51 @@
-# 策略工厂方案文档集
+# 策略工厂导读
 
-本目录用于沉淀“策略工厂”相关方案文档，但不同文档的定位并不相同。
+`策略工厂/` 现在只承担“当前导读 + 当前整改主线”两件事，历史方案已经迁出，不再作为默认入口。
 
-## 2026-03-21 更新说明
+## 当前应从哪里开始
 
-- 当前这一组文档已统一按“**当前真实能力 / 整改主线 / 研究蓝图**”三层口径校准。
-- 结合最新代码审查与运行复盘，当前实现更准确的表述是：**AI 候选生成 + 质量门禁 + 生命周期框架**，还不能直接等同于“完整股票交易策略工厂”。
-- 本轮整改的当前主文档是根目录的 `../策略工厂整改详细清单.md`；凡与旧方案口径冲突之处，以该清单和当前代码事实为准。
-- 在“策略对象定义补全、事件目标池约束、质量门禁按策略类型分层、`refresh_existing` 语义收窄”之前，吞吐优化、向量扩容、增加外部模型调用都不应排在更前面。
+1. [`策略工厂整改详细清单.md`](./策略工厂整改详细清单.md)
+2. [`../packages/strategy-factory/README.md`](../packages/strategy-factory/README.md)
+3. [`../docs/plans/策略工厂策略对象协议.md`](../docs/plans/策略工厂策略对象协议.md)
+4. [`../docs/plans/统一决策对象协议.md`](../docs/plans/统一决策对象协议.md)
 
-## 文档分层
+## 当前代码主线
 
-- **整改主线**：`../策略工厂整改详细清单.md`
-  - 定位：当前整改源文档 / 工程拆解清单
-  - 特征：直接收束“当前实现与完整股票交易策略定义之间的偏差”
-  - 使用方式：用于排优先级、拆 PR、定义验收口径
+### 主实现
 
-- **研究蓝图**：`策略工厂系统设计与实现.md`
-  - 定位：研究报告 / 理论参考
-  - 特征：包含事件溯源、完整模拟盘孵化、pgvector/HNSW、LLM/RL 生成等超前方案
-  - 使用方式：用于理解长期方向，不作为当前仓库的实施承诺
+- `packages/strategy-factory/src/strategy_factory/`
 
-- **落地方案**：`01` ~ `05`
-  - 定位：基于当前仓库能力整理出的**现状说明 + 缺口分析 + 分期演进建议**
-  - 使用方式：用于排期、评审和后续增量实施
-  - 重要约束：文档中的“建议新增 / 中期演进 / 远期规划”均不代表仓库已实现
+### MCP 兼容层与入口
 
-## 场景路由（按角色选读）
+- `packages/akshare-mcp/src/akshare_mcp/services/strategy_factory/`
+- `packages/akshare-mcp/src/akshare_mcp/tools/managers/strategy_manager.py`
 
-| 你的角色 | 推荐阅读 | 目的 |
-|:---------|:---------|:-----|
-| **排期评审 / PM** | `README.md` → `01` → `03` 第 4 节（排期顺序） | 了解当前能力边界与分期优先级 |
-| **开发实施** | `README.md` → `docs/plans/策略工厂方案.md`（核心实施文档）→ `02`（接口契约）→ `04`（状态机） | 获取代码级实现细节与验收标准 |
-| **技术审查 / 架构评审** | `README.md` → `docs/plans/策略超市集成可行性分析报告.md`（代码级审计）→ `01` → `策略工厂系统设计与实现.md`（研究蓝图） | 评估系统成熟度与技术风险 |
-| **长期规划** | `策略工厂系统设计与实现.md` → `docs/plans/策略超市五期开发方案.md` | 理解愿景方向与分期路线 |
+### BFF / Web 消费面
 
-## 关联文档（含根目录整改文档与 docs/plans/）
+- `apps/bff/src/strategy/`
+- `apps/web/app/strategy-market/`
 
-| 文档 | 定位 | 与本目录文档的关系 |
-|:-----|:-----|:-------------------|
-| `策略工厂整改详细清单.md` | 当前整改主线 | 明确当前实现偏差、优先级重排与详细修改计划；本目录所有文档均应与其口径一致 |
+## 当前文档分层
 
-### docs/plans/ 下
+### 当前入口
 
-| 文档 | 定位 | 与本目录文档的关系 |
-|:-----|:-----|:-------------------|
-| `docs/plans/策略工厂方案.md` | 实施方案（含完整代码） | 01-04 的开发实施补充，含 P0 修复、数据信号映射、新增策略算法、每日流程等 |
-| `docs/plans/策略超市集成可行性分析报告.md` | 代码级审计报告 | 01 第 4 节引用的缺陷来源，含 12 个代码缺陷详细分析 |
-| `docs/plans/策略超市五期开发方案.md` | 五期分期规划 | 范围超出策略工厂，涵盖 UI/WebSocket/KYC/NLP 等更广议题 |
+- [`README.md`](./README.md)
+- [`策略工厂整改详细清单.md`](./策略工厂整改详细清单.md)
 
-## 推荐阅读顺序
+### 当前稳定协议
 
-1. `README.md`：先明确文档分层和使用边界
-2. `../策略工厂整改详细清单.md`：先建立“当前偏差是什么、先修什么”的统一认知
-3. `01-系统架构设计文档.md`：看当前架构基线与演进原则
-4. `02-接口定义与数据模型.md`：看已实现接口、运行时对象与需要补齐的策略契约
-5. `03-模块功能方案.md`：看模块优先级重排，明确不是所有优化都应先做
-6. `04-策略生命周期管理流程图.md`：看当前状态机与候选/实验/刷新语义边界
-7. `05-向量设计方案.md`：看当前向量接线边界与其辅助定位
-8. `策略工厂系统设计与实现.md`：仅作为研究蓝图补充阅读
+- [`../docs/plans/策略工厂策略对象协议.md`](../docs/plans/策略工厂策略对象协议.md)
+- [`../docs/plans/统一决策对象协议.md`](../docs/plans/统一决策对象协议.md)
 
-## 当前代码基线
+### 历史参考
 
-| 层级 | 路径 | 说明 |
-|:-----|:-----|:-----|
-| MCP 工厂 | `packages/akshare-mcp/src/akshare_mcp/services/strategy_factory.py` | 数据采集、规则生成、AI 候选接入、回测筛选、参数+向量复筛、提交、淘汰、调度 |
-| MCP 生命周期 | `packages/akshare-mcp/src/akshare_mcp/tools/managers/strategy_manager.py` | 状态转换、质量门禁、生命周期扫描、审查报告、事件流、工厂运行态 |
-| MCP 验证 | `packages/akshare-mcp/src/akshare_mcp/services/validation.py` | Walk-Forward / Purged K-Fold / Bootstrap |
-| MCP AI 生成 | `packages/akshare-mcp/src/akshare_mcp/services/strategy_autonomy.py` | 规则候选、LLM 代理候选、参数演化、实验记录、任务运行记录 |
-| MCP 向量检索 | `packages/akshare-mcp/src/akshare_mcp/services/vector_search.py` | 向量检索基础能力，已被 `Deduplicator` 用于可疑候选复筛 |
-| MCP 向量平台 | `packages/akshare-mcp/src/akshare_mcp/services/vector_platform.py` | 构建策略画像、登记索引、支持相似画像查询 |
-| MCP 孵化 | `packages/akshare-mcp/src/akshare_mcp/services/incubation.py` | 孵化账户绑定、信号转模拟订单、孵化指标记录与决策输出 |
-| MCP 模拟盘 | `packages/akshare-mcp/src/akshare_mcp/services/paper_trading.py` | 模拟交易引擎，被孵化服务部分复用，但尚未形成完整生产级 NAV 晋级闭环 |
-| MCP 信号跟踪 | `packages/akshare-mcp/src/akshare_mcp/services/signal_tracker.py` | 信号生成、前向收益验证 |
-| MCP 存储 | `packages/akshare-mcp/src/akshare_mcp/storage/timescaledb/strategy.py` | 策略 CRUD、质量报告、状态事件、运行历史、血缘、淘汰日志、快照、孵化与向量画像 |
-| BFF | `apps/bff/src/strategy/` | 已暴露工厂状态、运行历史、审查报告、事件流、孵化概览等 REST 接口 |
-| Web | `apps/web/app/strategy-market/page.tsx` | 已展示工厂运行态、运行历史详情、失败聚合、趋势与对比视图 |
+- [`../docs/archive/strategy-factory/README.md`](../docs/archive/strategy-factory/README.md)
 
-## 文档使用约束
+历史分析、阶段方案、研究蓝图和专题优化文档都已迁入统一归档目录，只保留背景价值，不再作为当前执行入口。
 
-- 以代码为准，文档不能倒逼事实。
-- 任何未在代码中出现的接口、表结构、状态或服务，必须标明为“建议新增”或“草案”。
-- 任何涉及 `pgvector/HNSW`、完整 Event Sourcing、真实模拟撮合、LLM/RL 自动生成的描述，默认归入中长期规划，除非后续代码落地。
+## 已完成的文档整理动作
 
-## 本轮整理目标
-
-本次更新重点不是扩写研究蓝图，而是把文档统一收敛为：
-
-1. **当前已实现能力**
-2. **当前偏差与整改主线**
-3. **短期可增量补齐项**
-4. **中期可演进能力**
-5. **远期研究方向**
-
-这样可以避免把“理论方案”误读为“现有系统说明”，也避免把“候选生成器”误读为“完整交易策略工厂”。
+- 根目录 dated 方案已迁入 `docs/archive/root/`
+- 因子挖掘专题长文已迁入 `docs/archive/factor-mining/`
+- 历史策略工厂方案与研究长文已迁入 `docs/archive/strategy-factory/`
+- 当前策略工厂入口统一收敛到本目录和 `packages/strategy-factory`

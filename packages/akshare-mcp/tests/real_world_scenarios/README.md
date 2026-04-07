@@ -12,8 +12,8 @@
 
 - 场景范围：12 个 legacy 对话式回归场景
 - 详细步骤文档：已退役，不再维护
-- 历史执行结果：见 `MCP_TOOL_TEST_RESULTS.md`
-- 历史质量评估：见 `EVALUATION_REPORT.md`
+- 历史执行结果：见 [`../archive/real_world_scenarios/MCP_TOOL_TEST_RESULTS.md`](../archive/real_world_scenarios/MCP_TOOL_TEST_RESULTS.md)
+- 历史质量评估：见 [`../archive/real_world_scenarios/EVALUATION_REPORT.md`](../archive/real_world_scenarios/EVALUATION_REPORT.md)
 
 ## legacy 场景清单
 
@@ -37,3 +37,4 @@
 - 本目录适合做历史口径比对、人工复盘和 audit 样例。
 - 若历史结果中的工具计数、字段结构或数据源链路与当前代码不一致，应以后者为准。
 - 若需要重新建立逐场景手册，建议基于当前运行时工具重新生成，不再沿用旧版平台专用步骤。
+- 如需查看 tests 目录文档分层，请回到 [`../README.md`](../README.md)。

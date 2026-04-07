@@ -6,6 +6,35 @@
 >
 > 若需把其中结论作为“当前事实”引用，应结合最新页面实现、组件回归测试或重新审计结果再次确认。
 
+> 2026-04-07 快速复核补充：本文提到的核心组件路径仍存在于当前代码中，且代码检索仍能看到主要 ARIA 语义已保留；但这次只做了静态路径与属性核对，没有重新执行完整的 WCAG 审计或页面级回归。
+
+## 2026-04-07 快速复核
+
+### 当前仍可对上的核心组件
+
+- `apps/web/components/app-shell.tsx`
+- `apps/web/components/spotlight.tsx`
+- `apps/web/components/ui/extended.tsx`
+- `apps/web/components/ui/toast.tsx`
+- `apps/web/components/ui/tab-bar.tsx`
+- `apps/web/components/ui/skeleton.tsx`
+- `apps/web/app/globals.css`
+
+### 当前静态检索仍可见的可访问性语义
+
+- `app-shell.tsx` 仍保留导航展开/收起的 `aria-label` 与装饰层 `aria-hidden`
+- `spotlight.tsx` 仍保留 `role="dialog"`、`aria-modal`、`role="listbox"`、`role="option"` 等搜索交互语义
+- `ui/toast.tsx` 和 `alert-toast.tsx` 仍保留 `aria-live` 提示区域
+- `ui/extended.tsx`、`confirm-dialog.tsx`、`CartDrawer.tsx` 仍保留对话框语义
+- `ui/tab-bar.tsx` 仍保留 `role="tablist"`
+
+### 这次复核没有覆盖的内容
+
+- 没有重新跑整站键盘导航
+- 没有重新做颜色对比度测量
+- 没有重新做屏幕阅读器实测
+- 没有新增自动化 a11y 测试脚本验证
+
 
 ## 审计范围
 

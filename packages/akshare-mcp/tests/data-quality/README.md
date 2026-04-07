@@ -4,7 +4,7 @@
 
 > 校准说明：本文描述的是测试套件覆盖范围与运行前提，不等价于“当前环境已全部通过”。
 >
-> 实际通过/失败情况请结合同目录数据质量报告与最近一次运行结果判断；尤其是 Tushare Token、数据库、代理和网络条件等外部依赖会直接影响结果。
+> 当前测试目录主路径中不再维护单独的 Markdown 结果报告；实际通过/失败情况请以最近一次运行结果、pytest 输出或 CI 记录判断。尤其是 Tushare Token、数据库、代理和网络条件等外部依赖会直接影响结果。
 
 
 ## 测试分类
@@ -34,3 +34,4 @@ python tests/data-quality/test_01_tushare_macro.py
 ## 环境要求
 
 - Tushare 测试需要配置 TUSHARE_TOKEN 和代理地址
+- 如需查看 tests 目录中的历史 Markdown 报告，请回到 [`../README.md`](../README.md) 和 [`../archive/README.md`](../archive/README.md)

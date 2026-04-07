@@ -1,5 +1,7 @@
 # AIASK UI 视觉审计与 Glassmorphism 重构方案
 
+> 归档说明：本文已迁入 `docs/archive/root/`，保留 2026-03-28 至 2026-03-29 的阶段性 UI 审计结论。当前 Web 实际状态请以 `apps/web/` 代码和最新运行页面为准。
+
 **最新更新：2026-03-29 19:45 CST**（第二轮截图审计 · Playwright 实时截图补充）
 初版审计：2026-03-28 10:47 CST
 审计范围：`apps/web` 全部 App Router 页面、公共认证页、动态详情页
