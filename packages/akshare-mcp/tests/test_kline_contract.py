@@ -30,7 +30,44 @@ class _FakeDB(KlineMixin):
 
 
 @pytest.mark.asyncio
-async def test_get_klines_queries_ascending_time_order():
+async def test_get_klines_limit_fetches_latest_rows_but_returns_ascending_series():
+    rows = [
+        {
+            "time": datetime(2026, 3, 20, tzinfo=timezone.utc),
+            "code": "600519",
+            "open": 101.0,
+            "high": 102.0,
+            "low": 100.0,
+            "close": 101.5,
+            "volume": 1200,
+            "amount": 121800.0,
+            "turnover": 1.4,
+            "change_pct": 1.0,
+        },
+        {
+            "time": datetime(2026, 3, 19, tzinfo=timezone.utc),
+            "code": "600519",
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000,
+            "amount": 100500.0,
+            "turnover": 1.2,
+            "change_pct": 0.5,
+        },
+    ]
+    db = _FakeDB(rows)
+
+    data = await db.get_klines("600519", limit=2)
+
+    assert "ORDER BY time DESC" in db._conn.last_query
+    assert db._conn.last_params == ("600519", 2)
+    assert [row["date"] for row in data] == ["2026-03-19", "2026-03-20"]
+
+
+@pytest.mark.asyncio
+async def test_get_klines_without_limit_keeps_ascending_query_order():
     rows = [
         {
             "time": datetime(2026, 3, 19, tzinfo=timezone.utc),
@@ -59,7 +96,8 @@ async def test_get_klines_queries_ascending_time_order():
     ]
     db = _FakeDB(rows)
 
-    data = await db.get_klines("600519", limit=2)
+    data = await db.get_klines("600519")
 
     assert "ORDER BY time ASC" in db._conn.last_query
+    assert db._conn.last_params == ("600519",)
     assert [row["date"] for row in data] == ["2026-03-19", "2026-03-20"]

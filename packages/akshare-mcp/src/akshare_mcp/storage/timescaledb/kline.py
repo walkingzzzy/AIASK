@@ -61,13 +61,18 @@ class KlineMixin:
                     params.append(end_date_obj)
                     param_idx += 1
 
-            query += " ORDER BY time ASC"
-
+            reverse_after_fetch = False
             if limit:
+                query += " ORDER BY time DESC"
                 query += f" LIMIT ${param_idx}"
-                params.append(limit)
+                params.append(int(limit))
+                reverse_after_fetch = True
+            else:
+                query += " ORDER BY time ASC"
 
-            rows = await conn.fetch(query, *params)
+            rows = list(await conn.fetch(query, *params))
+            if reverse_after_fetch:
+                rows.reverse()
 
             return [
                 {

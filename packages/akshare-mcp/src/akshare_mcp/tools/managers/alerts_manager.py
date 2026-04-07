@@ -389,7 +389,18 @@ def register_alerts_manager(mcp):
                 )
 
             if action == "check":
-                alerts = [alert for alert in await _load_user_alerts(user_id, status="active") if alert.get("active", True)]
+                resolved_alert_id = str(kwargs.get("alert_id") or "").strip()
+                if resolved_alert_id:
+                    resolved_alert = await _load_alert_by_id(user_id, resolved_alert_id)
+                    if not resolved_alert:
+                        return fail(f"告警不存在: {resolved_alert_id}")
+                    alerts = [resolved_alert] if resolved_alert.get("active", True) else []
+                else:
+                    alerts = [
+                        alert
+                        for alert in await _load_user_alerts(user_id, status="active")
+                        if alert.get("active", True)
+                    ]
                 triggered = []
                 quote_cache: dict[str, Any] = {}
 
@@ -423,8 +434,14 @@ def register_alerts_manager(mcp):
                                 "message": f"{code} {indicator} {condition} {target_value} (当前: {current_value})",
                             }
                         )
-
-                return ok({"triggered": triggered, "count": len(triggered)})
+                return ok(
+                    {
+                        "triggered": triggered,
+                        "count": len(triggered),
+                        "checked_alert_ids": [alert.get("alert_id") for alert in alerts],
+                        "checked_count": len(alerts),
+                    }
+                )
 
             if action == "update":
                 resolved_alert_id = str(kwargs.get("alert_id") or "").strip()

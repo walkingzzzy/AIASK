@@ -25,6 +25,21 @@ from uuid import uuid4
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
 
+
+def _is_missing_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    return False
+
+
+def _resolve_min_quality_threshold(expectations: dict[str, Any]) -> float:
+    raw_value = expectations.get("minimum_quality_threshold")
+    if raw_value is None:
+        raw_value = expectations.get("min_quality_threshold", 0.95)
+    return float(raw_value)
+
 class ValidationResult:
     """Result of a data validation run."""
 
@@ -128,18 +143,30 @@ class BuiltinValidationAdapter(DataValidationAdapter):
 
         # Check 2: required_fields
         required = list(exp.get("required_fields", []))
-        if required and records:
+        if required:
             total_checks += 1
-            sample = records[0]
-            missing = [f for f in required if f not in sample]
-            ok = len(missing) == 0
+            invalid_records: list[dict[str, Any]] = []
+            for index, row in enumerate(records):
+                missing = [
+                    field
+                    for field in required
+                    if field not in row or _is_missing_value(row.get(field))
+                ]
+                if missing:
+                    invalid_records.append(
+                        {
+                            "index": index,
+                            "missing": missing,
+                        }
+                    )
+            ok = len(invalid_records) == 0
             if ok:
                 passed_checks += 1
             details.append({
                 "expectation": "required_fields",
                 "passed": ok,
                 "expected": required,
-                "missing": missing,
+                "invalid_records": invalid_records,
             })
 
         # Check 3: max_null_ratio (per field)
@@ -175,7 +202,7 @@ class BuiltinValidationAdapter(DataValidationAdapter):
             })
 
         quality_score = round(passed_checks / max(total_checks, 1), 4)
-        min_threshold = float(exp.get("min_quality_threshold", 0.95))
+        min_threshold = _resolve_min_quality_threshold(exp)
         overall_passed = quality_score >= min_threshold
 
         return ValidationResult(
@@ -184,6 +211,7 @@ class BuiltinValidationAdapter(DataValidationAdapter):
                 "record_count": len(records),
                 "quality_score": quality_score,
                 "min_quality_threshold": min_threshold,
+                "minimum_quality_threshold": min_threshold,
             },
             method="builtin_expectations",
             backend="builtin",

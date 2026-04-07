@@ -225,7 +225,12 @@ def register(mcp) -> None:
                         started_at=started_at,
                         error_code="PARAM_ERROR",
                     )
-                exp.setdefault("minimum_quality_threshold", minimum_quality_threshold)
+                if "minimum_quality_threshold" not in exp and "min_quality_threshold" not in exp:
+                    exp["minimum_quality_threshold"] = minimum_quality_threshold
+                elif "minimum_quality_threshold" not in exp and "min_quality_threshold" in exp:
+                    exp["minimum_quality_threshold"] = exp.get("min_quality_threshold")
+                elif "min_quality_threshold" not in exp and "minimum_quality_threshold" in exp:
+                    exp["min_quality_threshold"] = exp.get("minimum_quality_threshold")
                 result = adapter.validate_dataset(rows, exp)
                 payload: dict[str, Any] = {
                     "dataset_id": dataset_id,

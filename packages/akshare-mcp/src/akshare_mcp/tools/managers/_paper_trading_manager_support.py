@@ -202,6 +202,19 @@ def _normalize_risk_pct(value, default: float) -> float:
         numeric *= 100.0
     return float(max(numeric, 0.0))
 
+
+def _normalize_account_row(row) -> dict | None:
+    if not row:
+        return None
+    account = dict(row)
+    risk_rules = account.get("risk_rules")
+    if isinstance(risk_rules, str):
+        try:
+            account["risk_rules"] = json.loads(risk_rules or "{}")
+        except Exception:
+            pass
+    return account
+
 def _price_limit_pct(code: str, stock_name: str | None = None) -> float:
     normalized = _canonical_stock_code(code)
     name = str(stock_name or '').upper()

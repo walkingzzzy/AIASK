@@ -19,6 +19,7 @@ from ._paper_trading_manager_support import (
     _fill_order,
     _get_quote_snapshot,
     _get_price,
+    _normalize_account_row,
     _get_sellable_quantity,
     _normalize_kwargs,
     _normalize_risk_pct,
@@ -51,7 +52,7 @@ def register_paper_trading_manager(mcp):
     """注册模拟交易管理器工具"""
 
     @mcp.tool()
-    async def paper_trading_manager(action: str, params: dict | None = None, kwargs: Any = None, user_id: str | None = None, account_id: str | None = None, code: str | None = None, price: float | None = None, shares: int | None = None, quantity: int | None = None, order_id: str | None = None, trade_type: str | None = None, direction: str | None = None, order_type: str | None = None, stop_price: float | None = None, name: str | None = None, initial_capital: float | None = None, limit: int | None = None) -> dict:
+    async def paper_trading_manager(action: str, params: dict | None = None, kwargs: Any = None, user_id: str | None = None, account_id: str | None = None, code: str | None = None, price: float | None = None, shares: int | None = None, quantity: int | None = None, order_id: str | None = None, trade_type: str | None = None, direction: str | None = None, order_type: str | None = None, stop_price: float | None = None, name: str | None = None, initial_capital: float | None = None, limit: int | None = None, rules: dict | str | None = None) -> dict:
         """模拟交易管理器（统一 action + kwargs 协议）
 
         Args:
@@ -83,6 +84,7 @@ def register_paper_trading_manager(mcp):
                     "name": name,
                     "initial_capital": initial_capital,
                     "limit": limit,
+                    "rules": rules,
                 },
             )
             kwargs = _normalize_kwargs(kwargs)
@@ -392,7 +394,7 @@ def register_paper_trading_manager(mcp):
                     )
                 if not positions:
                     positions = await _ensure_positions_consistency(db, account_id)
-                acct = dict(account)
+                acct = _normalize_account_row(account) or {}
                 initial = float(acct.get('initial_capital') or 0)
                 total = float(acct.get('total_value') or 0)
                 return ok({
@@ -410,7 +412,7 @@ def register_paper_trading_manager(mcp):
                     rows = await conn.fetch(
                         "SELECT * FROM paper_accounts WHERE user_id=$1 ORDER BY created_at", user_id
                     )
-                return ok({'accounts': [dict(r) for r in rows], 'count': len(rows)})
+                return ok({'accounts': [_normalize_account_row(r) or {} for r in rows], 'count': len(rows)})
 
             # --- update_prices ---
             elif action == 'update_prices':
@@ -434,7 +436,7 @@ def register_paper_trading_manager(mcp):
                     'account_id': account_id,
                     'positions': enriched_positions,
                     'count': len(enriched_positions),
-                    'account': dict(account) if account else None,
+                    'account': _normalize_account_row(account),
                 })
 
             # --- nav_history ---
