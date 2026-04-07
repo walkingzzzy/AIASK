@@ -1,12 +1,16 @@
 """搜索工具"""
 
+from copy import deepcopy
 import time
-from typing import Optional
+from typing import Any, Optional
 from ..storage import get_db
 from ..utils import normalize_code
 from ..data_source import data_source
 from .manager_protocol import fail_with_meta, ok_with_meta
-from .tool_catalog import get_tool_contract as get_catalog_tool_contract
+from .tool_catalog import (
+    STANDARD_ENVELOPE_OUTPUT_SCHEMA,
+    get_tool_contract as get_catalog_tool_contract,
+)
 
 
 _CATEGORY_DESCRIPTIONS = {
@@ -123,6 +127,41 @@ _TOOL_CATEGORY_MAP = {
     "get_sector_fund_flow": "fund_flow",
 }
 
+_FRESHNESS_BY_CATEGORY = {
+    "alerts": "runtime_alert_state",
+    "backtest": "latest_backtest_or_runtime_state",
+    "basic_data": "latest_reference_snapshot",
+    "compliance": "latest_compliance_rules_or_runtime_state",
+    "data_sync": "latest_sync_or_cache_state",
+    "decision": "latest_market_and_context_snapshot",
+    "execution": "execution_runtime_state",
+    "factor": "latest_factor_research_snapshot",
+    "finance": "latest_financial_or_valuation_snapshot",
+    "fund_flow": "intraday_or_latest_fund_flow_snapshot",
+    "industry_chain": "latest_industry_relationship_snapshot",
+    "macro": "latest_macro_snapshot",
+    "market": "intraday_or_latest_market_snapshot",
+    "news": "latest_news_and_notice_snapshot",
+    "options": "intraday_or_latest_options_snapshot",
+    "paper_trading": "latest_paper_trading_state",
+    "performance": "latest_performance_snapshot",
+    "portfolio": "latest_portfolio_snapshot",
+    "quant": "latest_quant_snapshot",
+    "research": "latest_research_snapshot",
+    "risk": "latest_risk_snapshot",
+    "screening": "latest_screening_snapshot",
+    "search": "runtime_tool_registry",
+    "sector": "latest_sector_snapshot",
+    "semantic": "latest_semantic_snapshot",
+    "sentiment": "latest_sentiment_snapshot",
+    "skills": "runtime_skill_registry",
+    "strategy": "latest_strategy_snapshot",
+    "technical": "latest_technical_snapshot",
+    "user": "latest_user_profile_snapshot",
+    "vector": "latest_vector_snapshot",
+    "watchlist": "latest_watchlist_snapshot",
+}
+
 
 def _search_stocks_tushare_fallback(keyword: str, limit: int) -> list:
     """DB 无数据时用 Tushare Pro 股票列表按名称/代码/行业筛选"""
@@ -198,6 +237,16 @@ def _iter_registered_tools(mcp):
     return []
 
 
+def _lookup_registered_tool(mcp, tool_name: str):
+    target_name = str(tool_name or "").strip()
+    if not target_name:
+        return None
+    for name, tool in _iter_registered_tools(mcp):
+        if str(name or "").strip() == target_name:
+            return tool
+    return None
+
+
 def _infer_tool_category(name: str, tool) -> str:
     explicit = getattr(tool, "category", None)
     if isinstance(explicit, str) and explicit.strip():
@@ -225,6 +274,92 @@ def _infer_tool_category(name: str, tool) -> str:
         return "factor"
 
     return "general"
+
+
+def _normalize_schema(parameters: Any) -> dict:
+    if not isinstance(parameters, dict):
+        return {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": True,
+        }
+    schema = deepcopy(parameters)
+    schema.setdefault("type", "object")
+    schema.setdefault("properties", {})
+    schema.setdefault("additionalProperties", True)
+    return schema
+
+
+def _tool_description(tool) -> str | None:
+    desc = getattr(tool, "description", None)
+    if isinstance(desc, str) and desc.strip():
+        return desc.strip()
+    fn = getattr(tool, "fn", None)
+    doc = getattr(fn, "__doc__", None)
+    if isinstance(doc, str) and doc.strip():
+        return doc.strip()
+    return None
+
+
+def _infer_runtime_side_effect_level(name: str, category: str, description: str | None) -> str:
+    lowered_name = str(name or "").strip().lower()
+    lowered_desc = str(description or "").strip().lower()
+
+    if category == "execution":
+        return "trade_risk"
+
+    trade_risk_tokens = ("submit", "cancel", "execute", "place_order", "trade")
+    if any(token in lowered_name for token in trade_risk_tokens) or any(
+        token in lowered_desc for token in trade_risk_tokens
+    ):
+        return "trade_risk"
+
+    stateful_prefixes = ("create_", "update_", "delete_", "clear_", "sync_", "log_", "generate_")
+    stateful_tokens = ("persist", "artifact", "write", "snapshot", "warmup", "schedule")
+    if lowered_name.startswith(stateful_prefixes) or any(token in lowered_desc for token in stateful_tokens):
+        return "stateful"
+
+    return "read_only"
+
+
+def _build_runtime_tool_contract(name: str, tool) -> dict[str, Any] | None:
+    if tool is None:
+        return None
+
+    schema = _normalize_schema(getattr(tool, "parameters", None))
+    required_params = [str(item) for item in schema.get("required", []) if str(item or "").strip()]
+    category = _infer_tool_category(str(name), tool)
+    description = _tool_description(tool) or f"Runtime-inferred contract for {name}."
+    side_effect_level = _infer_runtime_side_effect_level(str(name), category, description)
+    title = getattr(tool, "title", None) or str(name).replace("_", " ").title()
+
+    return {
+        "name": str(name),
+        "title": title,
+        "category": category,
+        "description": description,
+        "required_params": required_params,
+        "input_schema": schema,
+        "output_schema": deepcopy(STANDARD_ENVELOPE_OUTPUT_SCHEMA),
+        "side_effect": {
+            "level": side_effect_level,
+            "confirmation_required": side_effect_level == "trade_risk",
+        },
+        "freshness": {
+            "expectation": _FRESHNESS_BY_CATEGORY.get(category, "runtime_registered_tool"),
+        },
+        "examples": [],
+        "tags": [category, "runtime-inferred"],
+        "contract_version": "ai_tool_contract_v1",
+        "inferred_from_runtime": True,
+    }
+
+
+def _resolve_tool_contract(name: str, tool=None) -> dict[str, Any] | None:
+    contract = get_catalog_tool_contract(name)
+    if contract is not None:
+        return contract
+    return _build_runtime_tool_contract(name, tool)
 
 
 def _category_description(category: str) -> str:
@@ -369,7 +504,7 @@ def register(mcp):
                 'description': desc.strip() if isinstance(desc, str) else None,
             }
             if include_contracts:
-                contract = get_catalog_tool_contract(str(name))
+                contract = _resolve_tool_contract(str(name), tool=tool)
                 if contract is not None:
                     contract_count += 1
                     row.update(
@@ -411,7 +546,8 @@ def register(mcp):
     def get_tool_contract(tool_name: str):
         """获取单个工具的 AI 调用契约。"""
         started_at = time.perf_counter()
-        contract = get_catalog_tool_contract(tool_name)
+        tool = _lookup_registered_tool(mcp, tool_name)
+        contract = _resolve_tool_contract(tool_name, tool=tool)
         if contract is None:
             return fail_with_meta(
                 f"tool contract not found: {tool_name}",
@@ -431,11 +567,18 @@ def register(mcp):
             tool_name="get_tool_contract",
             action="get",
             started_at=started_at,
-            source_chain=["search.get_tool_contract", "tool_catalog"],
+            source_chain=[
+                "search.get_tool_contract",
+                "tool_catalog" if not contract.get("inferred_from_runtime") else "tool_registry.runtime_inferred_contract",
+            ],
             extra_meta=_read_only_meta(
                 status="available",
                 target=tool_name.strip() or "tool_catalog",
-                extra_quality={"contract_version": contract.get("contract_version")},
+                degraded=bool(contract.get("inferred_from_runtime")),
+                extra_quality={
+                    "contract_version": contract.get("contract_version"),
+                    "contract_source": "runtime_inferred" if contract.get("inferred_from_runtime") else "catalog",
+                },
             ),
         )
 

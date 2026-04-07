@@ -55,15 +55,19 @@ async def get_investment_analysis(
     symbol: str | None = None,
     ticker: str | None = None,
 ):
-    """投资分析数据汇聚：透传顶层 monkeypatch 到底层实现。"""
-    async with _decision_lock:
-        _sync_decision_overrides()
-        return await _decision_common_mod.get_investment_analysis(
-            code=code,
-            stock_code=stock_code,
-            symbol=symbol,
-            ticker=ticker,
-        )
+    """投资分析数据汇聚：透传顶层 monkeypatch 到底层实现。
+
+    注意：这里不能再次等待 ``_decision_lock``。
+    ``should_i_buy`` / ``should_i_sell`` 会在持有该锁时调用当前函数；
+    如果在这里重入同一把锁，会形成自锁并最终把整个 MCP 请求拖到超时。
+    """
+    _sync_decision_overrides()
+    return await _decision_common_mod.get_investment_analysis(
+        code=code,
+        stock_code=stock_code,
+        symbol=symbol,
+        ticker=ticker,
+    )
 
 
 async def should_i_buy(
