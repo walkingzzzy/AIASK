@@ -391,7 +391,7 @@ def search_research(keyword: str = "", stock_code: str = "", days: int = 90) -> 
 
 
 @cached(ttl=86400.0)
-def get_analyst_ranking(year: str = "") -> dict:
+def get_analyst_ranking(year: str | int = "") -> dict:
     """
     获取分析师排名（基于研报数量统计）
 
@@ -402,6 +402,7 @@ def get_analyst_ranking(year: str = "") -> dict:
     limiter.acquire()
 
     try:
+        year = str(year or "").strip()
         if not year:
             year = str(date.today().year)
 

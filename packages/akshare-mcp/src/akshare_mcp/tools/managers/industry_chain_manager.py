@@ -106,7 +106,19 @@ def register_industry_chain_manager(mcp):
     """注册产业链管理器工具"""
     
     @mcp.tool()
-    async def industry_chain_manager(action: str, params: dict | None = None, kwargs: Any = None):
+    async def industry_chain_manager(
+        action: str,
+        params: dict | None = None,
+        kwargs: Any = None,
+        keyword: str | None = None,
+        chain_id: str | None = None,
+        code: str | None = None,
+        industry: str | None = None,
+        industry_name: str | None = None,
+        query: str | None = None,
+        sector: str | None = None,
+        name: str | None = None,
+    ):
         """产业链管理器（统一 action + kwargs 协议）
 
         Args:
@@ -129,6 +141,20 @@ def register_industry_chain_manager(mcp):
         """
         start_time = time.perf_counter()
         try:
+            kwargs = normalize_manager_payload(
+                params=params,
+                kwargs=kwargs,
+                extra={
+                    "keyword": keyword,
+                    "chain_id": chain_id,
+                    "code": code,
+                    "industry": industry,
+                    "industry_name": industry_name,
+                    "query": query,
+                    "sector": sector,
+                    "name": name,
+                },
+            )
             kwargs = normalize_manager_kwargs(kwargs)
             db = get_db()
 

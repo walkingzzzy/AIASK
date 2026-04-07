@@ -1,12 +1,34 @@
 """组合管理工具"""
 
 import time
+import json
 from typing import List, Dict, Any, Optional
 from ..services.portfolio_optimization import simple_portfolio_optimizer as portfolio_optimizer
 from ..services.risk_model import risk_model
 from ..storage import get_db
 from .manager_protocol import fail_with_meta, ok_with_meta
 import numpy as np
+
+
+def _normalize_stress_scenarios(scenarios: Optional[List[str]] | str) -> list[str]:
+    if scenarios is None:
+        return []
+    if isinstance(scenarios, str):
+        text = scenarios.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item or "").strip() for item in parsed if str(item or "").strip()]
+        return [
+            token.strip()
+            for token in text.replace(";", ",").split(",")
+            if token.strip()
+        ]
+    return [str(item or "").strip() for item in list(scenarios or []) if str(item or "").strip()]
 
 
 def register(mcp):
@@ -484,7 +506,7 @@ def register(mcp):
     @mcp.tool()
     async def stress_test_portfolio(
         holdings: List[Dict[str, Any]],
-        scenarios: Optional[List[str]] = None
+        scenarios: Optional[List[str]] | str = None
     ):
         """
         组合压力测试（委托服务层 RiskModel.stress_test 执行 4 种场景 + 自定义冲击）
@@ -496,8 +518,9 @@ def register(mcp):
         started_at = time.perf_counter()
         source_chain = ["portfolio.stress_test_portfolio", "risk_model.stress_test"]
         try:
-            if not scenarios:
-                scenarios = ['market_crash', 'sector_rotation', 'interest_rate_hike', 'black_swan']
+            resolved_scenarios = _normalize_stress_scenarios(scenarios)
+            if not resolved_scenarios:
+                resolved_scenarios = ['market_crash', 'sector_rotation', 'interest_rate_hike', 'black_swan']
 
             # 如果 holdings 缺少 value 字段，用 weight * 1000000 估算
             for h in holdings:
@@ -505,13 +528,14 @@ def register(mcp):
                     h['value'] = h.get('weight', 0) * 1_000_000
 
             results = {}
-            for scenario in scenarios:
+            for scenario in resolved_scenarios:
                 result = risk_model.stress_test(holdings, scenario=scenario)
                 results[scenario] = result
 
             return ok_with_meta(
                 {
                     'holdings_count': len(holdings),
+                    'scenarios': resolved_scenarios,
                     'stress_tests': results,
                 },
                 tool_name="stress_test_portfolio",
@@ -521,7 +545,7 @@ def register(mcp):
                 extra_meta=_meta(
                     status="available",
                     target="portfolio_stress",
-                    extra_quality={"holdings_count": len(holdings or []), "scenario_count": len(scenarios or [])},
+                    extra_quality={"holdings_count": len(holdings or []), "scenario_count": len(resolved_scenarios or [])},
                 ),
             )
 

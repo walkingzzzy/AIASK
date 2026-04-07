@@ -52,6 +52,19 @@ _OVERSOLD_SIGNAL_MAP = {
 
 # ── 辅助计算 ──
 
+
+def _normalize_requested_factors(factors: str | list[str] | tuple[str, ...] | None) -> list[str]:
+    if isinstance(factors, str):
+        return [f.strip().lower() for f in factors.split(",") if f.strip()]
+    if isinstance(factors, (list, tuple, set)):
+        normalized: list[str] = []
+        for item in factors:
+            text = str(item or "").strip().lower()
+            if text:
+                normalized.append(text)
+        return normalized
+    return []
+
 def _percentile_of(series: np.ndarray, current: float, lookback: int) -> float | None:
     """计算 current 在 series[-lookback:] 中的百分位"""
     valid = series[-lookback:] if len(series) >= lookback else series
@@ -200,7 +213,7 @@ def register(mcp):
     @mcp.tool()
     async def get_factor_profile(
         code: str,
-        factors: str = "rsi,macd,momentum",
+        factors: str | list[str] = "rsi,macd,momentum",
         lookback_days: int = 250,
     ):
         """
@@ -240,7 +253,7 @@ def register(mcp):
             industry_codes, market_codes = await _fetch_peer_codes(db, code, industry)
 
             # 解析请求的因子列表
-            requested = [f.strip().lower() for f in factors.split(",") if f.strip()]
+            requested = _normalize_requested_factors(factors)
             if not requested:
                 requested = ["rsi", "macd", "momentum"]
 

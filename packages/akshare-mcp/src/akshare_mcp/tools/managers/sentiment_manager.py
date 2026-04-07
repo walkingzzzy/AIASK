@@ -69,7 +69,13 @@ def register_sentiment_manager(mcp):
     """注册情绪分析管理器工具"""
     
     @mcp.tool()
-    async def sentiment_manager(action: str, params: dict | None = None, kwargs: Any = None):
+    async def sentiment_manager(
+        action: str,
+        params: dict | None = None,
+        kwargs: Any = None,
+        code: str | None = None,
+        sector: str | None = None,
+    ):
         """情绪分析管理器（统一 action + kwargs 协议）
 
         Args:
@@ -96,6 +102,14 @@ def register_sentiment_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
+            kwargs = normalize_manager_payload(
+                params=params,
+                kwargs=kwargs,
+                extra={
+                    "code": code,
+                    "sector": sector,
+                },
+            )
             kwargs = normalize_manager_kwargs(
                 kwargs,
                 field_aliases={

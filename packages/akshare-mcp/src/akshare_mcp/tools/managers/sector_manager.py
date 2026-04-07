@@ -46,6 +46,31 @@ def _normalize_period(kwargs: dict, default: int = 20) -> int:
     return max(1, period)
 
 
+def _sectors_from_block_rows(blocks: list[dict]) -> list[dict]:
+    sectors: list[dict] = []
+    for block in blocks:
+        try:
+            avg_chg = float(
+                block.get('avgChange')
+                or block.get('avgChangePct')
+                or block.get('avg_change_pct')
+                or 0
+            )
+        except Exception:
+            avg_chg = 0.0
+        sectors.append({
+            'blockCode': block.get('blockCode') or block.get('code') or block.get('block_code', ''),
+            'blockName': block.get('blockName') or block.get('name') or block.get('block_name', ''),
+            'return': avg_chg / 100.0,
+            'returnPct': f"{avg_chg:.2f}%",
+            'stocksCount': block.get('stockCount') or block.get('stock_count') or 0,
+            'strength': 'strong' if avg_chg > 2 else ('weak' if avg_chg < -1 else 'medium'),
+            'source': 'market_blocks',
+        })
+    sectors.sort(key=lambda x: x['return'], reverse=True)
+    return sectors
+
+
 def _normalize_sector_key(text: str) -> str:
     value = str(text or "").strip().lower()
     for token in ("行业", "概念", "板块", "ⅰ", "ⅱ", "ⅲ", "ⅳ", "i", "ii", "iii", "iv"):
@@ -414,43 +439,32 @@ def register_sector_manager(mcp):
             elif action == 'sector_rotation':
                 source_chain = ['sector_manager']
                 period = _normalize_period(kwargs, 20)
-                
-                performance_result = await sector_manager(
-                    action='sector_performance',
-                    params={'period': period}
-                )
-                source_chain.extend(performance_result.get('meta', {}).get('source_chain') or [])
-                
+
                 sectors = []
-                if performance_result.get('success') and performance_result.get('data'):
-                    sectors = performance_result['data'].get('sectors', [])
-                
-                # 如果 sector_performance 返回空，直接用 get_market_blocks 的涨跌幅数据
+                source = 'market_blocks'
+                fallback_reason = None
+
+                try:
+                    from ..market_blocks import get_market_blocks
+                    blocks_res = await get_market_blocks(block_type='industry', limit=20)
+                    source_chain.append('market_blocks.get_market_blocks')
+                    block_rows = list(((blocks_res.get('data') or {}).get('blocks') or [])) if blocks_res.get('success') else []
+                    if block_rows:
+                        sectors = _sectors_from_block_rows(block_rows)
+                except Exception as exc:
+                    fallback_reason = f'market_blocks failed: {exc}'
+
                 if not sectors:
-                    try:
-                        from ..market_blocks import get_market_blocks
-                        blocks_res = await get_market_blocks(block_type='industry', limit=20)
-                        source_chain.append('market_blocks.get_market_blocks')
-                        if blocks_res.get('success') and blocks_res.get('data', {}).get('blocks'):
-                            for b in blocks_res['data']['blocks']:
-                                avg_chg = float(
-                                    b.get('avgChange')
-                                    or b.get('avgChangePct')
-                                    or b.get('avg_change_pct')
-                                    or 0
-                                )
-                                sectors.append({
-                                    'blockCode': b.get('blockCode') or b.get('code') or b.get('block_code', ''),
-                                    'blockName': b.get('blockName') or b.get('name') or b.get('block_name', ''),
-                                    'return': avg_chg / 100.0,
-                                    'returnPct': f"{avg_chg:.2f}%",
-                                    'stocksCount': b.get('stockCount') or b.get('stock_count') or 0,
-                                    'strength': 'strong' if avg_chg > 2 else ('weak' if avg_chg < -1 else 'medium')
-                                })
-                            sectors.sort(key=lambda x: x['return'], reverse=True)
-                    except Exception:
-                        pass
-                
+                    performance_result = await sector_manager(
+                        action='sector_performance',
+                        params={'period': period}
+                    )
+                    source_chain.extend(performance_result.get('meta', {}).get('source_chain') or [])
+                    if performance_result.get('success') and performance_result.get('data'):
+                        sectors = performance_result['data'].get('sectors', [])
+                        if sectors:
+                            source = 'sector_performance'
+
                 if not sectors:
                     return _ok({
                         'period': period,
@@ -490,6 +504,8 @@ def register_sector_manager(mcp):
                     'strong_sectors': strong_sectors,
                     'weak_sectors': weak_sectors,
                     'rotation_advice': rotation_advice,
+                    'source': source,
+                    'fallback_reason': fallback_reason,
                     'market_style': 'growth' if top_return > 0.15 else (
                         'value' if top_return < 0.05 else 'balanced'
                     )
