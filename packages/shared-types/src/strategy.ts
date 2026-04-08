@@ -124,6 +124,33 @@ export type FactoryAutonomyTaskBrief = {
 
 export type FactoryRunSummary = {
     trace_id?: string;
+    lifecycle_feedback_input_contract_version?: string;
+    lifecycle_feedback_input_available?: boolean;
+    budget_feedback_available?: boolean;
+    budget_feedback_family_count?: number;
+    budget_feedback_strategy_count?: number;
+    budget_feedback_target_pool_scope_count?: number;
+    budget_feedback_generator_mode_scope_count?: number;
+    budget_feedback_runtime_alert_count?: number;
+    budget_feedback_runtime_risk_event_count?: number;
+    budget_feedback_promotion_review_count?: number;
+    budget_feedback_promotion_review_status_counts?: Record<string, number>;
+    blocked_feedback_task_count?: number;
+    planned_feedback_cooldown_task_count?: number;
+    planned_feedback_control_mode_counts?: Record<string, number>;
+    planned_feedback_target_pool_control_mode_counts?: Record<string, number>;
+    planned_feedback_generator_mode_control_mode_counts?: Record<string, number>;
+    selected_feedback_control_mode_counts?: Record<string, number>;
+    selected_feedback_target_pool_control_mode_counts?: Record<string, number>;
+    selected_feedback_generator_mode_control_mode_counts?: Record<string, number>;
+    feedback_control_mode_counts?: Record<string, number>;
+    feedback_target_pool_control_mode_counts?: Record<string, number>;
+    feedback_generator_mode_control_mode_counts?: Record<string, number>;
+    suppressed_families?: string[];
+    suppressed_target_pools?: string[];
+    suppressed_generator_modes?: string[];
+    external_llm_provider_control_mode?: string;
+    generator_mode_controls?: Record<string, unknown>;
     stage_status_counts?: Record<string, number>;
     failed_stage_count?: number;
     partial_stage_count?: number;
@@ -264,6 +291,245 @@ export type FactoryRunsResponse = {
     count?: number;
 };
 
+export type FactoryGovernanceReasonTopEntry = {
+    reason?: string;
+    count?: number;
+};
+
+export type FactoryGovernanceCountMap = Record<string, number>;
+
+export type FactoryGovernanceSupportMap = Record<string, boolean>;
+
+export type FactoryGovernanceValidationProfile = {
+    profile?: string | null;
+    validation_focus?: string | null;
+    primary_validation_layer?: string | null;
+};
+
+export type FactoryGovernanceConstraintCheck = {
+    constraint_violation?: string | null;
+    intersection_ratio?: number;
+    expansion_applied?: boolean;
+    expansion_reason?: string | null;
+    expansion_source?: string | null;
+    alignment_contract_violation?: string | null;
+};
+
+export type FactoryGovernanceAttemptAdjustment = {
+    attempt_count?: number;
+    selected_count?: number;
+    selection_ratio?: number;
+    penalty?: number;
+    applied?: boolean;
+};
+
+export type FactoryGovernanceCommitteeReview = {
+    decision?: string;
+    review_mode?: string;
+    final_score?: number;
+    rank?: number;
+    is_champion?: boolean;
+    execution_score?: number;
+    capacity_score?: number;
+    task_alignment_score?: number;
+    novelty_score?: number;
+    alignment_issues?: string[];
+    execution_issues?: string[];
+    capacity_issues?: string[];
+    accept_blockers?: string[];
+};
+
+export type FactoryGovernanceDedupBrief = {
+    strategy_type?: string | null;
+    generator_type?: string | null;
+    candidate_family_id?: string | null;
+    target_symbols?: string[];
+    duplicate?: boolean;
+    duplicate_level?: string | null;
+    refresh_existing?: boolean;
+    refresh_mode?: string | null;
+    matched_strategy_id?: string | null;
+    refresh_decision_basis?: string | null;
+    revision_trigger_reason?: string | null;
+    target_overlap?: number;
+};
+
+export type FactoryGovernanceStrategyBrief = {
+    strategy_id?: string | null;
+    name?: string | null;
+    status?: string | null;
+    submission_lane?: string | null;
+    submission_action_type?: string | null;
+    primary_validation_layer?: string | null;
+    refresh_mode?: string | null;
+    position_assumption?: string | null;
+    task_signature?: string | null;
+    candidate_family?: string | null;
+    generator_mode?: string | null;
+    source_candidate_artifact_id?: string | null;
+    target_pool_id?: string | null;
+    vector_profile_id?: string | null;
+    multiple_testing_registry_record_id?: string | null;
+    constraint_check?: FactoryGovernanceConstraintCheck;
+    validation_profile?: FactoryGovernanceValidationProfile;
+    event_window_config?: Record<string, unknown>;
+    cost_assumptions?: Record<string, unknown>;
+    explicit_cost_breakdown?: Record<string, unknown>;
+    implicit_cost_breakdown?: Record<string, unknown>;
+    attempt_adjustment?: FactoryGovernanceAttemptAdjustment;
+    committee_review?: FactoryGovernanceCommitteeReview;
+    has_constraint_check?: boolean;
+    has_validation_profile?: boolean;
+    has_event_window_config?: boolean;
+    has_cost_assumptions?: boolean;
+    has_explicit_cost_breakdown?: boolean;
+    has_implicit_cost_breakdown?: boolean;
+    has_attempt_adjustment?: boolean;
+    has_committee_review?: boolean;
+    created_strategy_pool?: boolean;
+    created_audit_only?: boolean;
+    refreshed_existing?: boolean;
+    live_candidate_ready?: boolean;
+    live_review_ready?: boolean;
+    direct_trade_candidate?: boolean;
+};
+
+export type FactoryGovernanceEvidenceStrategyBrief = FactoryGovernanceStrategyBrief & {
+    lineage_id?: string | null;
+    vector_backend?: string | null;
+    has_cost_assumptions?: boolean;
+    has_execution_reality?: boolean;
+    has_multiple_testing_registry?: boolean;
+};
+
+export type FactoryGovernanceGateArtifact = {
+    contract_version?: string;
+    available?: boolean;
+    gate_0_passed?: number;
+    gate_0_failed?: number;
+    pre_gate_passed?: number;
+    pre_gate_failed?: number;
+    gate_1_passed?: number;
+    gate_1_failed?: number;
+    gate_2_input?: number;
+    gate_2_passed?: number;
+    gate_2_failed?: number;
+    gate_3_input?: number;
+    gate_3_pending_count?: number;
+    gate_3_passed?: number;
+    gate_3_failed?: number;
+    gate_3_provisional_passed?: number;
+    backtest_failed_reason_counts?: FactoryGovernanceCountMap;
+    backtest_thresholds_by_type?: Record<string, Record<string, unknown>>;
+    gate_3_failure_reason_topn?: FactoryGovernanceReasonTopEntry[];
+};
+
+export type FactoryGovernanceDedupArtifact = {
+    contract_version?: string;
+    available?: boolean;
+    input_count?: number;
+    existing_count?: number;
+    existing_scan_count?: number;
+    kept_count?: number;
+    dropped_count?: number;
+    refreshed_existing_count?: number;
+    vector_checks?: number;
+    coarse_hit_ratio?: number;
+    refresh_mode_counts?: FactoryGovernanceCountMap;
+    duplicate_level_counts?: FactoryGovernanceCountMap;
+    refresh_decision_basis_counts?: FactoryGovernanceCountMap;
+    revision_trigger_reason_counts?: FactoryGovernanceCountMap;
+    tested_object_hash_changed_count?: number;
+    existing_identity_available_count?: number;
+    existing_tested_object_available_count?: number;
+    kept_briefs?: FactoryGovernanceDedupBrief[];
+    dropped_briefs?: FactoryGovernanceDedupBrief[];
+};
+
+export type FactoryGovernanceIncubationBudgetSummary = Record<string, unknown> & {
+    family_counts?: FactoryGovernanceCountMap;
+};
+
+export type FactoryGovernanceSubmissionArtifact = {
+    contract_version?: string;
+    available?: boolean;
+    strategy_count?: number;
+    created_count?: number;
+    created_total_count?: number;
+    created_strategy_pool_count?: number;
+    created_audit_only_count?: number;
+    refreshed_count?: number;
+    gate_3_input?: number;
+    submitted_count?: number;
+    passed_quality_gate_count?: number;
+    gate_3_passed?: number;
+    gate_3_failed?: number;
+    gate_3_provisional_passed?: number;
+    incubation_budget_summary?: FactoryGovernanceIncubationBudgetSummary;
+    gate_3_failure_reason_topn?: FactoryGovernanceReasonTopEntry[];
+    submission_lane_counts?: FactoryGovernanceCountMap;
+    submission_action_type_counts?: FactoryGovernanceCountMap;
+    strategy_status_counts?: FactoryGovernanceCountMap;
+    committee_decision_counts?: FactoryGovernanceCountMap;
+    refresh_mode_counts?: FactoryGovernanceCountMap;
+    committee_review_count?: number;
+    primary_validation_layer_counts?: FactoryGovernanceCountMap;
+    validation_profile_counts?: FactoryGovernanceCountMap;
+    constraint_violation_counts?: FactoryGovernanceCountMap;
+    constraint_check_count?: number;
+    validation_profile_count?: number;
+    event_window_config_count?: number;
+    position_assumption_count?: number;
+    cost_assumptions_count?: number;
+    explicit_cost_breakdown_count?: number;
+    implicit_cost_breakdown_count?: number;
+    attempt_adjustment_count?: number;
+    task_signature_count?: number;
+    strategy_briefs?: FactoryGovernanceStrategyBrief[];
+};
+
+export type FactoryGovernanceEvidenceArtifact = {
+    contract_version?: string;
+    available?: boolean;
+    quality_report_count?: number;
+    multiple_testing_registry_count?: number;
+    multiple_testing_registry_record_count?: number;
+    lineage_contract_count?: number;
+    lineage_id_count?: number;
+    committee_review_count?: number;
+    constraint_check_count?: number;
+    validation_profile_count?: number;
+    event_window_config_count?: number;
+    position_assumption_count?: number;
+    vector_profile_count?: number;
+    vector_backend_counts?: FactoryGovernanceCountMap;
+    cost_assumptions_count?: number;
+    explicit_cost_breakdown_count?: number;
+    implicit_cost_breakdown_count?: number;
+    execution_reality_count?: number;
+    attempt_adjustment_count?: number;
+    task_signature_count?: number;
+    refresh_mode_count?: number;
+    primary_validation_layer_count?: number;
+    slippage_assumption_count?: number;
+    market_impact_assumption_count?: number;
+    capacity_assumption_count?: number;
+    tradability_filter_count?: number;
+    extension_interface_support?: FactoryGovernanceSupportMap;
+    strategy_evidence_briefs?: FactoryGovernanceEvidenceStrategyBrief[];
+};
+
+export type FactoryGovernancePlaneArtifact = {
+    contract_version?: string;
+    available?: boolean;
+    plane?: string;
+    gate_artifact?: FactoryGovernanceGateArtifact;
+    dedup_artifact?: FactoryGovernanceDedupArtifact;
+    submission_artifact?: FactoryGovernanceSubmissionArtifact;
+    evidence_artifact?: FactoryGovernanceEvidenceArtifact;
+    source_chain?: string[];
+};
+
 export type FactoryRunDetailResponse = {
     dto_version?: string;
     run_id?: string;
@@ -275,6 +541,21 @@ export type FactoryRunDetailResponse = {
     error?: string | null;
     summary?: FactoryRunSummary;
     snapshot_summary?: Record<string, string | number | null | undefined>;
+    quality_gate?: Record<string, unknown>;
+    research_summary?: Record<string, unknown>;
+    research_plane?: Record<string, unknown>;
+    research_artifact?: Record<string, unknown>;
+    task_artifact?: Record<string, unknown>;
+    candidate_artifact?: Record<string, unknown>;
+    evidence_artifact?: Record<string, unknown>;
+    governance_plane?: FactoryGovernancePlaneArtifact;
+    gate_artifact?: FactoryGovernanceGateArtifact;
+    dedup_artifact?: FactoryGovernanceDedupArtifact;
+    submission_artifact?: FactoryGovernanceSubmissionArtifact;
+    governance_evidence_artifact?: FactoryGovernanceEvidenceArtifact;
+    feedback_summary?: Record<string, unknown>;
+    incubation_summary?: Record<string, unknown>;
+    live_ready_summary?: Record<string, unknown>;
     stages?: Record<string, Record<string, string | number | boolean | null | undefined>>;
     pipeline?: {
         trace_id?: string | null;
@@ -361,6 +642,8 @@ export type ReviewReportResponse = {
         review_source?: string;
         primary_validation_layer?: string;
         refresh_mode?: string;
+        committee_decision?: string;
+        committee_final_score?: number;
     };
     quality_gate?: {
         wf_ic_ir?: number;
@@ -428,6 +711,26 @@ export type ReviewReportResponse = {
         factory_selected_count?: number;
         task_selected_count?: number;
         external_llm_selected_count?: number;
+    };
+    committee_review?: {
+        decision?: string;
+        final_score?: number;
+        rank?: number;
+        is_champion?: boolean;
+        planner_score?: number;
+        risk_score?: number;
+        feasibility_score?: number;
+        execution_score?: number;
+        capacity_score?: number;
+        task_alignment_score?: number;
+        novelty_score?: number;
+        planner_context?: Record<string, unknown>;
+        task_alignment_context?: Record<string, unknown>;
+        alignment_issues?: string[];
+        execution_issues?: string[];
+        capacity_issues?: string[];
+        suggestions?: string[];
+        accept_blockers?: string[];
     };
     task_signature?: string | null;
     refresh_mode?: string | null;
@@ -764,6 +1067,7 @@ export type AiExperiment = {
         committee_review?: {
             final_score?: number;
             decision?: string;
+            review_mode?: string;
             rank?: number;
             is_champion?: boolean;
             planner_score?: number;
@@ -779,6 +1083,7 @@ export type AiExperiment = {
             execution_issues?: string[];
             capacity_issues?: string[];
             suggestions?: string[];
+            accept_blockers?: string[];
         };
     };
     result?: Record<string, unknown>;

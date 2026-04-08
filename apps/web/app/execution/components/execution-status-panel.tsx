@@ -199,6 +199,7 @@ export default function ExecutionStatusPanel({
               <button
                 type="button"
                 onClick={() => onOpenArtifactDetail(artifactDetailId)}
+                aria-label="打开 artifact 详情页面板"
                 className={executionChipButtonCls}
               >
                 打开 artifact 详情页

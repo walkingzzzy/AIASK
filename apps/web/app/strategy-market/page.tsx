@@ -38,6 +38,8 @@ import {
   type StrategySortKey,
 } from './components/strategy-market-support';
 
+const RANKING_PAGE_LIMIT = 20;
+
 export default function StrategyMarketPage() {
   const searchParams = useSearchParams();
   const [category, setCategory] = useState<string>('all');
@@ -46,7 +48,8 @@ export default function StrategyMarketPage() {
   const task = searchParams.get('task');
   const from = searchParams.get('from');
   const rankQ = useApiQuery<RankingResponse>(
-    '/strategy-market/ranking?limit=50' + (category === 'all' ? '' : `&strategy_type=${category}`),
+    `/strategy-market/ranking?limit=${RANKING_PAGE_LIMIT}` +
+      (category === 'all' ? '' : `&strategy_type=${category}`),
     {
       parse: (raw) => ensureRecordOrArray(raw, '策略榜单') as RankingResponse,
     },
@@ -64,7 +67,7 @@ export default function StrategyMarketPage() {
   );
   const runFactoryApi = useApiMutation({
     invalidates: [apiKeys.strategy()],
-    successToast: '策略工厂已完成一次运行',
+    successToast: '策略工厂请求已受理，结果会稍后同步到运行态面板',
   });
   const addToCart = useCartStore((state) => state.addStrategy);
   const cartItems = useCartStore((state) => state.items);

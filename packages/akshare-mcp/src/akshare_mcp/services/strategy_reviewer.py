@@ -104,14 +104,14 @@ class MultiAgentStrategyReviewer:
     def _novelty_score(spec: StrategySpec) -> float:
         tags = set(spec.tags or [])
         if 'external_llm' in tags:
-            return 0.66
-        if 'rl_evolved' in tags:
-            return 0.7
-        if 'llm_proxy' in tags or 'llm_proxy_fallback' in tags or 'local_rule_v1' in tags:
             return 0.62
-        if 'rule' in tags:
+        if 'rl_evolved' in tags:
+            return 0.66
+        if 'llm_proxy' in tags or 'llm_proxy_fallback' in tags or 'local_rule_v1' in tags:
             return 0.58
-        return 0.55
+        if 'rule' in tags:
+            return 0.56
+        return 0.54
 
     @staticmethod
     def _target_symbols(spec: StrategySpec) -> list[str]:
@@ -280,7 +280,23 @@ class MultiAgentStrategyReviewer:
             + novelty * 0.04,
             4,
         )
-        decision = 'accept' if final_score >= 0.62 and feasibility > 0 else ('revise' if final_score >= 0.45 and feasibility > 0 else 'reject')
+        execution_floor_failed = execution < 0.5
+        capacity_floor_failed = capacity < 0.5
+        alignment_floor_failed = task_alignment < 0.45
+        accept_blockers: list[str] = []
+        if execution_floor_failed:
+            accept_blockers.append('execution_floor_failed')
+        if capacity_floor_failed:
+            accept_blockers.append('capacity_floor_failed')
+        if alignment_floor_failed:
+            accept_blockers.append('task_alignment_floor_failed')
+
+        if final_score >= 0.62 and feasibility > 0 and not accept_blockers:
+            decision = 'accept'
+        elif final_score >= 0.45 and feasibility > 0:
+            decision = 'revise'
+        else:
+            decision = 'reject'
         suggestions: list[str] = []
         if feasibility <= 0:
             suggestions.append('策略类型未注册，拒绝进入自治工厂。')
@@ -296,6 +312,8 @@ class MultiAgentStrategyReviewer:
             suggestions.append('执行假设仍不完整，建议补齐 holding horizon / risk rules / execution assumptions。')
         if capacity_issues:
             suggestions.append('容量与仓位语义不足，建议补齐 position sizing / capacity 假设。')
+        if accept_blockers:
+            suggestions.append('评审护栏已阻止直接通过，需先补齐执行、容量或任务对齐基础约束。')
 
         reviewed = spec
         if decision == 'revise':
@@ -323,6 +341,7 @@ class MultiAgentStrategyReviewer:
             'alignment_issues': alignment_issues,
             'execution_issues': execution_issues,
             'capacity_issues': capacity_issues,
+            'accept_blockers': accept_blockers,
         }
         if decision == 'reject':
             return None, review

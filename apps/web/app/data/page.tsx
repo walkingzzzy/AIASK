@@ -663,7 +663,25 @@ export default function DataPage() {
               这一页负责补齐交易链路中最常被临时查找的数据块。先决定是查期权、日历、IPO、可转债还是股本结构，再在结果区完成对比和导出。
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
-              <button type="button" onClick={submit} disabled={isPending} className={HERO_PRIMARY_BUTTON_CLS}>
+              <button
+                type="button"
+                onClick={submit}
+                disabled={isPending}
+                aria-label={
+                  tab === 'option'
+                    ? '页头查询期权链'
+                    : tab === 'calendar'
+                      ? '页头加载交易日历'
+                      : tab === 'ipo'
+                        ? '页头查询IPO信息'
+                        : tab === 'cb'
+                          ? '页头查询可转债'
+                          : tab === 'resource'
+                            ? '页头读取资源对象'
+                            : '页头查询股本'
+                }
+                className={HERO_PRIMARY_BUTTON_CLS}
+              >
                 {isPending ? '加载中...' : `查询${activeTabLabel}`}
               </button>
               <button
@@ -800,7 +818,13 @@ export default function DataPage() {
                 />
               </label>
               <div className="flex flex-wrap items-center gap-2">
-                <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
+                <button
+                  type="button"
+                  disabled={isPending}
+                  onClick={submit}
+                  aria-label="查询期权链工作台"
+                  className={HERO_PRIMARY_BUTTON_CLS}
+                >
                   查询期权链
                 </button>
                 {['510050', '510300'].map((item) => (
@@ -814,7 +838,13 @@ export default function DataPage() {
 
           {tab === 'calendar' ? (
             <div className="flex flex-wrap items-center gap-2">
-              <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
+              <button
+                type="button"
+                disabled={isPending}
+                onClick={submit}
+                aria-label="加载交易日历工作台"
+                className={HERO_PRIMARY_BUTTON_CLS}
+              >
                 加载交易日历
               </button>
               <div className="text-sm text-text-secondary">默认返回最近 30 个交易日，用来确认节假日与开市节奏。</div>
@@ -823,7 +853,13 @@ export default function DataPage() {
 
           {tab === 'ipo' ? (
             <div className="flex flex-wrap items-center gap-2">
-              <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
+              <button
+                type="button"
+                disabled={isPending}
+                onClick={submit}
+                aria-label="查询IPO信息工作台"
+                className={HERO_PRIMARY_BUTTON_CLS}
+              >
                 查询 IPO 信息
               </button>
               <div className="text-sm text-text-secondary">适合快速查看最近新股与新债申购窗口。</div>
@@ -841,7 +877,13 @@ export default function DataPage() {
                 placeholder="如 123039"
               />
               <div className="flex flex-wrap items-center gap-2">
-                <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
+                <button
+                  type="button"
+                  disabled={isPending}
+                  onClick={submit}
+                  aria-label="查询可转债工作台"
+                  className={HERO_PRIMARY_BUTTON_CLS}
+                >
                   查询可转债
                 </button>
                 <button type="button" onClick={() => setCode('123039')} className={CHIP_BUTTON_CLS}>
@@ -926,7 +968,13 @@ export default function DataPage() {
                 placeholder="如 600519"
               />
               <div className="flex flex-wrap items-center gap-2">
-                <button type="button" disabled={isPending} onClick={submit} className={HERO_PRIMARY_BUTTON_CLS}>
+                <button
+                  type="button"
+                  disabled={isPending}
+                  onClick={submit}
+                  aria-label="查询股本工作台"
+                  className={HERO_PRIMARY_BUTTON_CLS}
+                >
                   查询股本
                 </button>
                 <button type="button" onClick={() => setCode('600519')} className={CHIP_BUTTON_CLS}>

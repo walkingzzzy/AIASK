@@ -9,6 +9,7 @@ from ._budget_feedback import (
     extract_feedback_root,
     extract_generator_mode,
     extract_target_pool_id,
+    normalize_feedback_input_contract,
     resolve_feedback_metrics,
 )
 from ..domain.constants import (
@@ -47,11 +48,14 @@ class IncubationBudgeter:
     def _resolve_budget_feedback_root(snapshot: dict[str, Any]) -> dict[str, Any]:
         factor_research = dict(snapshot.get("factor_research") or {})
         for payload in (
+            factor_research.get("lifecycle_feedback_input"),
             factor_research.get("budget_feedback"),
             snapshot.get("family_gate_feedback"),
         ):
             if isinstance(payload, dict):
-                feedback_root = extract_feedback_root(payload)
+                feedback_root = dict(
+                    normalize_feedback_input_contract(payload).get("feedback") or {}
+                )
                 if feedback_root:
                     return feedback_root
         return {}
@@ -83,6 +87,12 @@ class IncubationBudgeter:
             "family_feedback_available": bool(feedback_metrics.get("family_feedback_available")),
             "target_pool_feedback_available": bool(feedback_metrics.get("target_pool_feedback_available")),
             "generator_mode_feedback_available": bool(feedback_metrics.get("generator_mode_feedback_available")),
+            "control_mode": feedback_metrics.get("control_mode"),
+            "cooldown_active": bool(feedback_metrics.get("cooldown_active")),
+            "suppressed": bool(feedback_metrics.get("suppressed")),
+            "family_freeze_active": bool(feedback_metrics.get("family_freeze_active")),
+            "target_pool_freeze_active": bool(feedback_metrics.get("target_pool_freeze_active")),
+            "generator_mode_freeze_active": bool(feedback_metrics.get("generator_mode_freeze_active")),
         }
         feedback_scope["feedback_available"] = any(
             bool(feedback_scope.get(key))
@@ -236,6 +246,13 @@ class IncubationBudgeter:
         feedback_budget_multiplier = cls._safe_float(feedback_metrics.get("budget_multiplier"), 1.0)
         score += feedback_priority_adjustment
         score *= max(0.7, min(1.3, 0.7 + feedback_budget_multiplier * 0.3))
+        control_mode = str(feedback_metrics.get("control_mode") or "").strip().lower()
+        if control_mode == "cooldown":
+            score -= 9.0
+        elif control_mode == "suppress":
+            score -= 24.0
+        elif control_mode == "freeze":
+            score -= 36.0
 
         # P2-D 反馈回路：对纯 family EMA 的轻量兼容，避免没有 P3 feedback 时退化。
         if not bool(feedback_scope.get("feedback_available")):
@@ -311,6 +328,12 @@ class IncubationBudgeter:
         feedback_priority_adjustment_values: list[float] = []
         feedback_budget_promoted_count = 0
         feedback_budget_constrained_count = 0
+        feedback_controlled_count = 0
+        feedback_cooldown_count = 0
+        feedback_suppressed_count = 0
+        feedback_freeze_count = 0
+        feedback_target_pool_freeze_count = 0
+        feedback_generator_mode_freeze_count = 0
         active_family_names = {
             str(item or "").strip().lower()
             for item in list(((snapshot.get("factor_research") or {}).get("summary") or {}).get("active_family_names") or [])
@@ -350,6 +373,19 @@ class IncubationBudgeter:
                     feedback_budget_promoted_count += 1
                 if feedback_budget_multiplier < 0.98 or feedback_priority_adjustment < -0.5:
                     feedback_budget_constrained_count += 1
+            control_mode = str(feedback_metrics.get("control_mode") or "").strip().lower()
+            if control_mode and control_mode != "normal":
+                feedback_controlled_count += 1
+            if control_mode == "cooldown":
+                feedback_cooldown_count += 1
+            elif control_mode == "suppress":
+                feedback_suppressed_count += 1
+            elif control_mode == "freeze":
+                feedback_freeze_count += 1
+            if bool(feedback_metrics.get("target_pool_freeze_active")):
+                feedback_target_pool_freeze_count += 1
+            if bool(feedback_metrics.get("generator_mode_freeze_active")):
+                feedback_generator_mode_freeze_count += 1
             entries.append(
                 {
                     "marker": id(candidate),
@@ -368,6 +404,13 @@ class IncubationBudgeter:
                     "feedback_failure_penalty_adjustment": cls._safe_float(
                         feedback_metrics.get("failure_penalty_adjustment")
                     ),
+                    "feedback_control_mode": control_mode or "normal",
+                    "feedback_control_reasons": list(feedback_metrics.get("control_reasons") or []),
+                    "feedback_cooldown_active": bool(feedback_metrics.get("cooldown_active")),
+                    "feedback_suppressed": bool(feedback_metrics.get("suppressed")),
+                    "feedback_family_freeze_active": bool(feedback_metrics.get("family_freeze_active")),
+                    "feedback_target_pool_freeze_active": bool(feedback_metrics.get("target_pool_freeze_active")),
+                    "feedback_generator_mode_freeze_active": bool(feedback_metrics.get("generator_mode_freeze_active")),
                 }
             )
 
@@ -380,6 +423,11 @@ class IncubationBudgeter:
             entries,
             key=lambda item: (-float(item["priority_score"]), item["family"], item["marker"]),
         )
+        selectable_entries = [
+            entry
+            for entry in sorted_entries
+            if str(entry.get("feedback_control_mode") or "normal").strip().lower() == "normal"
+        ]
         exploration_reserved_slots = (
             min(total_budget, max(1, int(math.ceil(total_budget * FACTORY_INCUBATION_EXPLORATION_RATIO))))
             if total_budget > 0 and FACTORY_INCUBATION_EXPLORATION_RATIO > 0.0
@@ -399,7 +447,7 @@ class IncubationBudgeter:
             limit: int,
             family_cap: int,
         ) -> None:
-            for entry in sorted_entries:
+            for entry in selectable_entries:
                 if len(target) >= limit:
                     break
                 marker = int(entry["marker"])
@@ -412,7 +460,7 @@ class IncubationBudgeter:
                 target.append(entry)
                 selected_markers.add(marker)
                 track_family_counts["selected"] = int(track_family_counts.get("selected") or 0) + 1
-            for entry in sorted_entries:
+            for entry in selectable_entries:
                 if len(target) >= limit:
                     break
                 marker = int(entry["marker"])
@@ -440,7 +488,7 @@ class IncubationBudgeter:
         if exploration_reserved_slots > selected_exploration_count and observe_slots > 0:
             exploration_pool = [
                 entry
-                for entry in sorted_entries
+                for entry in selectable_entries
                 if int(entry["marker"]) not in selected_markers
                 and cls._is_exploration_candidate(
                     dict(entry.get("candidate") or {}),
@@ -500,6 +548,13 @@ class IncubationBudgeter:
                     "feedback_failure_penalty_adjustment": float(
                         entry.get("feedback_failure_penalty_adjustment") or 0.0
                     ),
+                    "feedback_control_mode": str(entry.get("feedback_control_mode") or "normal"),
+                    "feedback_control_reasons": list(entry.get("feedback_control_reasons") or []),
+                    "feedback_cooldown_active": bool(entry.get("feedback_cooldown_active")),
+                    "feedback_suppressed": bool(entry.get("feedback_suppressed")),
+                    "feedback_family_freeze_active": bool(entry.get("feedback_family_freeze_active")),
+                    "feedback_target_pool_freeze_active": bool(entry.get("feedback_target_pool_freeze_active")),
+                    "feedback_generator_mode_freeze_active": bool(entry.get("feedback_generator_mode_freeze_active")),
                     "exploration_candidate": cls._is_exploration_candidate(
                         candidate,
                         dominant_families=dominant_families,
@@ -526,6 +581,13 @@ class IncubationBudgeter:
                 "feedback_failure_penalty_adjustment": float(
                     entry.get("feedback_failure_penalty_adjustment") or 0.0
                 ),
+                "feedback_control_mode": str(entry.get("feedback_control_mode") or "normal"),
+                "feedback_control_reasons": list(entry.get("feedback_control_reasons") or []),
+                "feedback_cooldown_active": bool(entry.get("feedback_cooldown_active")),
+                "feedback_suppressed": bool(entry.get("feedback_suppressed")),
+                "feedback_family_freeze_active": bool(entry.get("feedback_family_freeze_active")),
+                "feedback_target_pool_freeze_active": bool(entry.get("feedback_target_pool_freeze_active")),
+                "feedback_generator_mode_freeze_active": bool(entry.get("feedback_generator_mode_freeze_active")),
                 "exploration_candidate": cls._is_exploration_candidate(
                     dict(entry.get("candidate") or {}),
                     dominant_families=dominant_families,
@@ -565,6 +627,12 @@ class IncubationBudgeter:
                 else 0.0,
                 "feedback_budget_promoted_count": feedback_budget_promoted_count,
                 "feedback_budget_constrained_count": feedback_budget_constrained_count,
+                "feedback_controlled_count": feedback_controlled_count,
+                "feedback_cooldown_count": feedback_cooldown_count,
+                "feedback_suppressed_count": feedback_suppressed_count,
+                "feedback_freeze_count": feedback_freeze_count,
+                "feedback_target_pool_freeze_count": feedback_target_pool_freeze_count,
+                "feedback_generator_mode_freeze_count": feedback_generator_mode_freeze_count,
                 "priority_score_avg": round(
                     sum(float(item.get("priority_score") or 0.0) for item in sorted_entries) / len(sorted_entries),
                     4,

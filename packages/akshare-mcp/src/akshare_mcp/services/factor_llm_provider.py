@@ -26,6 +26,14 @@ class FactorLLMRequestError(RuntimeError):
         self.metrics = dict(metrics or {})
 
 
+class FactorLLMProviderCompatibilityError(ValueError):
+    """Provider 返回 200 但结构不兼容时的显式异常。"""
+
+    def __init__(self, message: str, *, metrics: Optional[dict[str, Any]] = None):
+        super().__init__(message)
+        self.metrics = dict(metrics or {})
+
+
 @dataclass
 class FactorLLMConfig:
     enabled: bool = False
@@ -41,6 +49,9 @@ class FactorLLMConfig:
     max_tokens: int = 1800
     retry_count: int = 2
     retry_backoff_sec: float = 1.0
+    compatibility_cooldown_sec: float = 300.0
+    smoke_check_enabled: bool = True
+    smoke_check_ttl_sec: float = 300.0
     max_concurrency: int = 3
     strict: bool = False
 
@@ -118,6 +129,27 @@ class FactorLLMConfig:
             retry_backoff_sec=max(
                 0.0,
                 _env_float("FACTOR_LLM_RETRY_BACKOFF_SEC", fallback="STRATEGY_LLM_RETRY_BACKOFF_SEC", default=1.0),
+            ),
+            compatibility_cooldown_sec=max(
+                0.0,
+                _env_float(
+                    "FACTOR_LLM_COMPATIBILITY_COOLDOWN_SEC",
+                    fallback="STRATEGY_LLM_COMPATIBILITY_COOLDOWN_SEC",
+                    default=300.0,
+                ),
+            ),
+            smoke_check_enabled=_env_bool(
+                "FACTOR_LLM_SMOKE_CHECK_ENABLED",
+                fallback="STRATEGY_LLM_SMOKE_CHECK_ENABLED",
+                default=True,
+            ),
+            smoke_check_ttl_sec=max(
+                0.0,
+                _env_float(
+                    "FACTOR_LLM_SMOKE_CHECK_TTL_SEC",
+                    fallback="STRATEGY_LLM_SMOKE_CHECK_TTL_SEC",
+                    default=300.0,
+                ),
             ),
             max_concurrency=max(
                 1,
@@ -283,6 +315,11 @@ class FactorLLMProvider:
         self._consecutive_failures = 0
         self._rebuild_count = 0
         self._last_rebuild_at: Optional[datetime] = None
+        self._compatibility_cooldown_until = 0.0
+        self._last_compatibility_failure_metrics: dict[str, Any] = {}
+        self._last_smoke_check_at: Optional[datetime] = None
+        self._last_smoke_check_ok_at: Optional[datetime] = None
+        self._last_smoke_check_error: Optional[str] = None
 
     def _build_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(follow_redirects=True, http2=False)
@@ -341,24 +378,43 @@ class FactorLLMProvider:
             return "misconfigured"
         if self.is_closed:
             return "closed"
+        if self._active_compatibility_failure() is not None:
+            return "blocked"
         if self._consecutive_failures > 0:
             return "degraded"
         return "ready"
 
     def _rebuild_recommended(self) -> bool:
+        last_error_type = str(self._last_error_type or "").lower()
+        timeout_like_error = last_error_type in {
+            "connecterror",
+            "readtimeout",
+            "writetimeout",
+            "pooltimeout",
+            "timeouterror",
+            "factorllmprovidercompatibilityerror",
+            "jsondecodeerror",
+        }
         return bool(
-            self.is_closed
+            self._active_compatibility_failure() is not None
+            or self.is_closed
             or self._consecutive_failures > 0
-            or str(self._last_error_type or "").lower() in {"connecterror", "readtimeout", "writetimeout", "pooltimeout", "timeouterror"}
+            or timeout_like_error
         )
 
     def status(self) -> dict[str, Any]:
+        compatibility_metrics = self._active_compatibility_failure()
         return {
             "provider": str(self.config.provider or "openai_compatible"),
             "model": str(self.config.model or ""),
             "enabled": bool(self.config.enabled),
             "configured": self._configured(),
-            "ready": bool(self.is_enabled() and not self.is_closed and self._consecutive_failures == 0),
+            "ready": bool(
+                self.is_enabled()
+                and not self.is_closed
+                and self._consecutive_failures == 0
+                and compatibility_metrics is None
+            ),
             "client_closed": bool(self.is_closed),
             "health_status": self._health_status(),
             "rebuild_recommended": self._rebuild_recommended(),
@@ -374,6 +430,15 @@ class FactorLLMProvider:
             "last_error": self._last_error,
             "last_latency_ms": self._last_latency_ms,
             "last_rebuild_at": self._isoformat(self._last_rebuild_at),
+            "compatibility_cooldown_active": compatibility_metrics is not None,
+            "compatibility_cooldown_sec": (
+                compatibility_metrics.get("compatibility_cooldown_sec") if compatibility_metrics else 0.0
+            ),
+            "last_compatibility_failure": compatibility_metrics,
+            "smoke_check_enabled": bool(self.config.smoke_check_enabled),
+            "last_smoke_check_at": self._isoformat(self._last_smoke_check_at),
+            "last_smoke_check_ok_at": self._isoformat(self._last_smoke_check_ok_at),
+            "last_smoke_check_error": self._last_smoke_check_error,
         }
 
     async def rebuild_client(self, *, reason: str = "manual") -> dict[str, Any]:
@@ -383,6 +448,8 @@ class FactorLLMProvider:
         self._consecutive_failures = 0
         self._rebuild_count += 1
         self._last_rebuild_at = datetime.now().astimezone()
+        self._compatibility_cooldown_until = 0.0
+        self._last_compatibility_failure_metrics = {}
         current = self.status()
         current["rebuild_reason"] = reason
         return {
@@ -400,6 +467,10 @@ class FactorLLMProvider:
         self._last_request_at = now
         self._last_success_at = now
         self._last_latency_ms = round(float(latency_ms), 2)
+        self._last_error = None
+        self._last_error_type = None
+        self._compatibility_cooldown_until = 0.0
+        self._last_compatibility_failure_metrics = {}
 
     def _mark_failure(self, exc: Exception, *, latency_ms: float) -> None:
         now = datetime.now().astimezone()
@@ -428,6 +499,96 @@ class FactorLLMProvider:
     def _error_text(exc: Exception) -> str:
         text = str(exc or "").strip()
         return text or exc.__class__.__name__
+
+    def _active_compatibility_failure(self) -> Optional[dict[str, Any]]:
+        now = time.monotonic()
+        cooldown_until = float(self._compatibility_cooldown_until or 0.0)
+        metrics = dict(self._last_compatibility_failure_metrics or {})
+        if not metrics:
+            return None
+        if cooldown_until > 0 and cooldown_until <= now:
+            self._compatibility_cooldown_until = 0.0
+            self._last_compatibility_failure_metrics = {}
+            return None
+        if cooldown_until > 0:
+            metrics["compatibility_cooldown_sec"] = round(max(cooldown_until - now, 0.0), 4)
+        return metrics
+
+    @staticmethod
+    def _has_direct_generation_payload(payload: Any) -> bool:
+        if isinstance(payload, list):
+            return True
+        if not isinstance(payload, dict):
+            return False
+        return bool(
+            "candidates" in payload
+            or "items" in payload
+            or (payload.get("name") and payload.get("expression_dsl"))
+        )
+
+    def _response_structure_metrics(
+        self,
+        payload: Any,
+        *,
+        response: Optional[httpx.Response],
+        raw_text_preview: str = "",
+        content_preview: str = "",
+    ) -> dict[str, Any]:
+        body = dict(payload or {}) if isinstance(payload, dict) else {}
+        choices = list(body.get("choices") or [])
+        first_choice = dict(choices[0] or {}) if choices else {}
+        message = dict((first_choice or {}).get("message") or {})
+        usage = dict(body.get("usage") or {})
+        try:
+            raw_response_preview = (
+                json.dumps(payload, ensure_ascii=False, default=str)[:400]
+                if payload is not None
+                else raw_text_preview[:400]
+            )
+        except Exception:
+            raw_response_preview = str(payload if payload is not None else raw_text_preview)[:400]
+        return {
+            "response_status_code": getattr(response, "status_code", None),
+            "response_content_type": str((getattr(response, "headers", {}) or {}).get("content-type") or ""),
+            "response_keys": sorted(str(key) for key in list(body.keys())[:20]),
+            "choice_keys": sorted(str(key) for key in list(first_choice.keys())[:20]),
+            "message_keys": sorted(str(key) for key in list(message.keys())[:20]),
+            "completion_tokens": usage.get("completion_tokens"),
+            "raw_response_preview": raw_response_preview,
+            "raw_text_preview": str(raw_text_preview or "")[:400],
+            "content_preview": str(content_preview or "")[:400],
+        }
+
+    @staticmethod
+    def _response_content_type(response: Optional[httpx.Response]) -> str:
+        return str((getattr(response, "headers", {}) or {}).get("content-type") or "").strip().lower()
+
+    def _raise_compatibility_error(
+        self,
+        message: str,
+        *,
+        response: Optional[httpx.Response],
+        payload: Any = None,
+        raw_text_preview: str = "",
+        content_preview: str = "",
+        empty_200_response: bool = False,
+    ) -> None:
+        metrics = self._response_structure_metrics(
+            payload,
+            response=response,
+            raw_text_preview=raw_text_preview,
+            content_preview=content_preview,
+        )
+        raise FactorLLMProviderCompatibilityError(
+            message,
+            metrics={
+                "status": "compatibility_failed",
+                "last_error_type": "FactorLLMProviderCompatibilityError",
+                "last_error_status_code": getattr(response, "status_code", None),
+                "empty_200_response": bool(empty_200_response),
+                **metrics,
+            },
+        )
 
     @staticmethod
     def _extract_json_text(text: str) -> str:
@@ -467,6 +628,379 @@ class FactorLLMProvider:
                     parts.append(str(text))
         return "\n".join(parts)
 
+    @classmethod
+    def _append_text_fragments(cls, fragments: list[str], value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, str):
+            fragments.append(value)
+            return
+        if isinstance(value, list):
+            for item in value:
+                cls._append_text_fragments(fragments, item)
+            return
+        if isinstance(value, dict):
+            if isinstance(value.get("text"), str):
+                fragments.append(str(value.get("text") or ""))
+            elif "text" in value:
+                cls._append_text_fragments(fragments, value.get("text"))
+            if isinstance(value.get("delta"), str):
+                fragments.append(str(value.get("delta") or ""))
+            elif "delta" in value:
+                cls._append_text_fragments(fragments, value.get("delta"))
+            if "content" in value:
+                cls._append_text_fragments(fragments, value.get("content"))
+            if "output_text" in value:
+                cls._append_text_fragments(fragments, value.get("output_text"))
+
+    @classmethod
+    def _extract_stream_event_text(cls, payload: Any, *, event_name: str = "") -> str:
+        fragments: list[str] = []
+        if not isinstance(payload, dict):
+            return ""
+
+        for choice in list(payload.get("choices") or []):
+            if not isinstance(choice, dict):
+                continue
+            cls._append_text_fragments(fragments, choice.get("delta"))
+            cls._append_text_fragments(fragments, choice.get("message"))
+
+        payload_type = str(payload.get("type") or event_name or "").strip().lower()
+        if payload_type.endswith("output_text.delta"):
+            cls._append_text_fragments(fragments, payload.get("delta"))
+        if payload_type.endswith("output_text.done"):
+            cls._append_text_fragments(fragments, payload.get("text"))
+
+        cls._append_text_fragments(fragments, payload.get("item"))
+        cls._append_text_fragments(fragments, payload.get("response"))
+        return "".join(fragments)
+
+    @staticmethod
+    def _parse_sse_events(raw_text: str) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        current_event: Optional[str] = None
+        current_data_lines: list[str] = []
+
+        def _flush() -> None:
+            nonlocal current_event, current_data_lines
+            if current_event is None and not current_data_lines:
+                return
+            data_raw = "\n".join(current_data_lines).strip()
+            record: dict[str, Any] = {
+                "event": current_event,
+                "data_raw": data_raw,
+            }
+            if data_raw == "[DONE]":
+                record["done"] = True
+            elif data_raw:
+                try:
+                    record["payload"] = json.loads(data_raw)
+                except Exception:
+                    record["payload"] = None
+            events.append(record)
+            current_event = None
+            current_data_lines = []
+
+        for raw_line in str(raw_text or "").splitlines():
+            line = raw_line.rstrip("\r")
+            if not line.strip():
+                _flush()
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                current_event = line[len("event:") :].strip() or None
+                continue
+            if line.startswith("data:"):
+                current_data_lines.append(line[len("data:") :].strip())
+                continue
+        _flush()
+        return events
+
+    def _should_retry_with_stream(self, exc: FactorLLMProviderCompatibilityError) -> bool:
+        metrics = dict(getattr(exc, "metrics", {}) or {})
+        content_type = str(metrics.get("response_content_type") or "").strip().lower()
+        if "text/event-stream" not in content_type:
+            return False
+        return "missing extractable content" in self._error_text(exc).lower()
+
+    async def _stream_parse_response_payload(
+        self,
+        *,
+        headers: dict[str, Any],
+        request_payload: dict[str, Any],
+        request_kind: str,
+    ) -> tuple[Any, Any, str]:
+        stream_method = getattr(self._client, "stream", None)
+        if not callable(stream_method):
+            raise FactorLLMProviderCompatibilityError(
+                f"{request_kind}: stream fallback unavailable for event-stream compatibility replay",
+                metrics={
+                    "status": "compatibility_failed",
+                    "response_content_type": "text/event-stream",
+                    "stream_fallback_unavailable": True,
+                },
+            )
+
+        stream_payload = dict(request_payload or {})
+        stream_payload["stream"] = True
+        raw_chunks: list[str] = []
+        async with self._client.stream(
+            "POST",
+            self._endpoint(),
+            headers={**headers, "Accept": "text/event-stream, application/json"},
+            json=stream_payload,
+            timeout=self._timeout(),
+        ) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_text():
+                if chunk:
+                    raw_chunks.append(str(chunk))
+        raw_text = "".join(raw_chunks)
+        events = self._parse_sse_events(raw_text)
+        content_parts: list[str] = []
+        last_payload: dict[str, Any] = {}
+        for event in events:
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                last_payload = payload
+                text = self._extract_stream_event_text(payload, event_name=str(event.get("event") or ""))
+                if text:
+                    content_parts.append(text)
+        content = "".join(content_parts)
+        if not str(content or "").strip():
+            self._raise_compatibility_error(
+                f"{request_kind}: stream replay still missing extractable content",
+                response=response,
+                payload=last_payload or None,
+                raw_text_preview=raw_text,
+                content_preview=content,
+            )
+        parsed_text = self._extract_json_text(content)
+        if not str(parsed_text or "").strip():
+            self._raise_compatibility_error(
+                f"{request_kind}: stream replay content missing JSON payload",
+                response=response,
+                payload=last_payload or None,
+                raw_text_preview=raw_text,
+                content_preview=content,
+            )
+        try:
+            parsed = json.loads(parsed_text)
+        except Exception as exc:
+            self._raise_compatibility_error(
+                f"{request_kind}: stream replay content is not valid JSON ({self._error_text(exc)})",
+                response=response,
+                payload=last_payload or None,
+                raw_text_preview=raw_text,
+                content_preview=content,
+            )
+        synthetic_body = {
+            "id": last_payload.get("id") if isinstance(last_payload, dict) else None,
+            "object": last_payload.get("object") if isinstance(last_payload, dict) else None,
+            "model": last_payload.get("model") if isinstance(last_payload, dict) else None,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": last_payload.get("usage") if isinstance(last_payload, dict) else None,
+            "compatibility_mode": "chat_stream_replay",
+        }
+        return parsed, synthetic_body, content
+
+    async def _request_and_parse_payload(
+        self,
+        *,
+        headers: dict[str, Any],
+        request_payload: dict[str, Any],
+        request_kind: str,
+    ) -> tuple[Any, Any, str, str]:
+        response = await self._client.post(
+            self._endpoint(),
+            headers=headers,
+            json=request_payload,
+            timeout=self._timeout(),
+        )
+        response.raise_for_status()
+        try:
+            parsed, body, content = self._parse_response_payload(
+                response,
+                request_kind=request_kind,
+            )
+            return parsed, body, content, "direct"
+        except FactorLLMProviderCompatibilityError as exc:
+            if not self._should_retry_with_stream(exc):
+                raise
+            parsed, body, content = await self._stream_parse_response_payload(
+                headers=headers,
+                request_payload=request_payload,
+                request_kind=request_kind,
+            )
+            return parsed, body, content, "chat_stream_replay"
+
+    def _parse_response_payload(
+        self,
+        response: httpx.Response,
+        *,
+        request_kind: str,
+    ) -> tuple[Any, Any, str]:
+        try:
+            raw_text = str(getattr(response, "text", "") or "")
+        except Exception:
+            raw_text = ""
+        try:
+            body = response.json()
+        except Exception as exc:
+            empty_200_response = int(getattr(response, "status_code", 0) or 0) == 200 and not raw_text.strip()
+            self._raise_compatibility_error(
+                f"{request_kind}: response body is not valid JSON ({self._error_text(exc)})",
+                response=response,
+                raw_text_preview=raw_text,
+                empty_200_response=empty_200_response,
+            )
+        if self._has_direct_generation_payload(body):
+            return body, body, ""
+        content = self._extract_content(body if isinstance(body, dict) else {})
+        if not str(content or "").strip():
+            self._raise_compatibility_error(
+                f"{request_kind}: response missing extractable content",
+                response=response,
+                payload=body,
+                raw_text_preview=raw_text,
+                empty_200_response=int(getattr(response, "status_code", 0) or 0) == 200 and not raw_text.strip(),
+            )
+        parsed_text = self._extract_json_text(content)
+        if not str(parsed_text or "").strip():
+            self._raise_compatibility_error(
+                f"{request_kind}: response content missing JSON payload",
+                response=response,
+                payload=body,
+                raw_text_preview=raw_text,
+                content_preview=content,
+            )
+        try:
+            parsed = json.loads(parsed_text)
+        except Exception as exc:
+            self._raise_compatibility_error(
+                f"{request_kind}: response content is not valid JSON ({self._error_text(exc)})",
+                response=response,
+                payload=body,
+                raw_text_preview=raw_text,
+                content_preview=content,
+            )
+        return parsed, body, content
+
+    def _record_compatibility_failure(self, exc: Exception, *, latency_ms: float) -> None:
+        self._mark_failure(exc, latency_ms=latency_ms)
+        metrics = dict(getattr(exc, "metrics", {}) or {})
+        self._last_compatibility_failure_metrics = {
+            "status": "compatibility_failed",
+            "last_error_type": self._last_error_type,
+            "last_error": self._last_error,
+            **metrics,
+        }
+        cooldown_sec = max(0.0, float(getattr(self.config, "compatibility_cooldown_sec", 300.0) or 300.0))
+        self._compatibility_cooldown_until = time.monotonic() + cooldown_sec if cooldown_sec > 0 else 0.0
+
+    async def smoke_check(self, *, force: bool = False) -> dict[str, Any]:
+        if not self.is_enabled():
+            return {"status": "disabled"}
+        if not bool(self.config.smoke_check_enabled) and not force:
+            return {"status": "disabled"}
+        compatibility_metrics = self._active_compatibility_failure()
+        if compatibility_metrics is not None and not force:
+            return {
+                "status": "compatibility_skip",
+                **compatibility_metrics,
+            }
+        now = datetime.now().astimezone()
+        ttl_sec = max(0.0, float(self.config.smoke_check_ttl_sec or 0.0))
+        if (
+            not force
+            and self._last_smoke_check_ok_at is not None
+            and ttl_sec > 0
+            and (now - self._last_smoke_check_ok_at).total_seconds() <= ttl_sec
+        ):
+            self._last_smoke_check_at = now
+            return {
+                "status": "cached_success",
+                "last_smoke_check_ok_at": self._isoformat(self._last_smoke_check_ok_at),
+                "smoke_check_ttl_sec": ttl_sec,
+            }
+
+        await self._ensure_client()
+        headers = {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        payload = {
+            "model": str(self.config.model or "").strip(),
+            "temperature": 0,
+            "max_tokens": min(64, max(16, int(self.config.max_tokens or 64))),
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": "Return a compact JSON object with an ok field."},
+                {"role": "user", "content": '{"ok": true}'},
+            ],
+        }
+        started = time.perf_counter()
+        try:
+            parsed, body, _content, compatibility_mode = await self._request_and_parse_payload(
+                headers=headers,
+                request_payload=payload,
+                request_kind="smoke_check",
+            )
+            if not isinstance(parsed, dict):
+                self._raise_compatibility_error(
+                    "smoke_check: parsed payload is not a JSON object",
+                    response=None,
+                    payload=body,
+                    content_preview="",
+                )
+            self._mark_success(latency_ms=(time.perf_counter() - started) * 1000)
+            self._last_smoke_check_at = now
+            self._last_smoke_check_ok_at = now
+            self._last_smoke_check_error = None
+            return {
+                "status": "passed",
+                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                "compatibility_mode": compatibility_mode,
+            }
+        except FactorLLMProviderCompatibilityError as exc:
+            self._record_compatibility_failure(exc, latency_ms=(time.perf_counter() - started) * 1000)
+            self._last_smoke_check_at = now
+            self._last_smoke_check_error = self._error_text(exc)
+            raise FactorLLMRequestError(
+                "factor llm smoke check failed",
+                metrics={
+                    "status": "smoke_check_failed",
+                    "provider": str(self.config.provider or "openai_compatible"),
+                    "model": str(self.config.model or ""),
+                    **dict(getattr(exc, "metrics", {}) or {}),
+                },
+            )
+        except Exception as exc:
+            self._mark_failure(exc, latency_ms=(time.perf_counter() - started) * 1000)
+            self._last_smoke_check_at = now
+            self._last_smoke_check_error = self._error_text(exc)
+            raise FactorLLMRequestError(
+                "factor llm smoke check failed",
+                metrics={
+                    "status": "smoke_check_failed",
+                    "provider": str(self.config.provider or "openai_compatible"),
+                    "model": str(self.config.model or ""),
+                    "last_error_type": exc.__class__.__name__,
+                    "last_error": self._error_text(exc),
+                },
+            )
+
     async def generate_candidates(
         self,
         prompt: Any,
@@ -489,7 +1023,7 @@ class FactorLLMProvider:
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "application/json, text/event-stream",
         }
         request_payload = {
             "model": resolved_model,
@@ -503,21 +1037,26 @@ class FactorLLMProvider:
         }
 
         last_error: Optional[FactorLLMRequestError] = None
+        compatibility_metrics = self._active_compatibility_failure()
+        if compatibility_metrics is not None:
+            raise FactorLLMRequestError(
+                "factor llm request skipped during compatibility cooldown",
+                metrics={
+                    "status": "compatibility_skip",
+                    "provider": str(self.config.provider or "openai_compatible"),
+                    "model": resolved_model,
+                    **compatibility_metrics,
+                },
+            )
         async with self._request_semaphore:
             for attempt in range(max(1, int(self.config.retry_count or 0) + 1)):
                 started = time.perf_counter()
                 try:
-                    response = await self._client.post(
-                        self._endpoint(),
+                    parsed, body, _content, compatibility_mode = await self._request_and_parse_payload(
                         headers=headers,
-                        json=request_payload,
-                        timeout=self._timeout(),
+                        request_payload=request_payload,
+                        request_kind="generate_candidates",
                     )
-                    response.raise_for_status()
-                    body = response.json()
-                    content = self._extract_content(body)
-                    parsed_text = self._extract_json_text(content)
-                    parsed = json.loads(parsed_text)
                     validated = validate_factor_generation_payload(
                         parsed,
                         model=resolved_model,
@@ -532,7 +1071,21 @@ class FactorLLMProvider:
                         "requested_candidate_count": max(1, int(candidate_count)),
                         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
                         "raw_usage": body.get("usage") if isinstance(body, dict) else None,
+                        "compatibility_mode": compatibility_mode,
                     }
+                except FactorLLMProviderCompatibilityError as exc:
+                    self._record_compatibility_failure(exc, latency_ms=(time.perf_counter() - started) * 1000)
+                    last_error = FactorLLMRequestError(
+                        self._error_text(exc),
+                        metrics={
+                            "attempt": attempt + 1,
+                            "provider": str(self.config.provider or "openai_compatible"),
+                            "model": resolved_model,
+                            "candidate_count": max(1, int(candidate_count)),
+                            **dict(getattr(exc, "metrics", {}) or {}),
+                        },
+                    )
+                    break
                 except Exception as exc:
                     last_error = FactorLLMRequestError(
                         self._error_text(exc),

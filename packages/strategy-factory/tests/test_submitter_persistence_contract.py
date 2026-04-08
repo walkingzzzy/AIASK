@@ -86,6 +86,7 @@ def test_build_strategy_data_persists_extended_strategy_contract():
     assert params["expected_holding_period"] == 10
     assert params["candidate_latest_validation_age_days"] == 1
     assert params["candidate_contract_hash"]
+    assert params["tested_object_hash"]
     assert params["candidate_identity_signature"]
     assert params["candidate_contract_snapshot"]["targeting"]["target_pool_id"] == "ai"
     assert params["candidate_contract_snapshot"]["targeting"]["target_symbols"] == ["600519"]
@@ -116,6 +117,30 @@ def test_candidate_report_params_merges_target_universe_contract():
     assert report_params["research_task"]["task_id"] == "task_chip"
     assert report_params["event_context"]["event_id"] == "evt_chip"
     assert report_params["validation_profile"]["profile"] == "event_trade_validation"
+
+
+def test_candidate_report_params_backfills_governance_contract_fields_from_research_task():
+    submitter = StrategySubmitter()
+
+    report_params = submitter._candidate_report_params(
+        {
+            "strategy_type": "ma_cross",
+            "target_symbols": ["600519"],
+            "research_task": {
+                "task_source": "event_driven",
+                "target_symbols": ["600519"],
+            },
+            "constraint_check": {
+                "coverage_ratio": 1.0,
+                "intersection_ratio": 1.0,
+            },
+        }
+    )
+
+    assert report_params["validation_profile"]["profile"] == "event_trade_validation"
+    assert report_params["validation_profile"]["validation_focus"] == "event_target_only"
+    assert report_params["targeting_policy"]["target_symbol_policy"] == "strict_intersection"
+    assert report_params["targeting_policy"]["universe_expansion_policy"] == "allow_same_theme_only"
 
 
 def test_submitter_resolves_live_ready_candidates_to_live_review_lane():

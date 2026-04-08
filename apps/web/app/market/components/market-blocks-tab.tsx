@@ -35,7 +35,13 @@ export default function MarketBlocksTab({
 }: MarketBlocksTabProps) {
   return (
     <SectionCard tabAttached>
-      <button type="button" disabled={tabPending} onClick={onLoadBlocks} className={marketPrimaryButtonCls}>
+      <button
+        type="button"
+        disabled={tabPending}
+        onClick={onLoadBlocks}
+        aria-label="加载行业板块顶部操作"
+        className={marketPrimaryButtonCls}
+      >
         {tabPending ? '加载中...' : '加载行业板块'}
       </button>
       {blocksRows.length ? (
@@ -69,7 +75,12 @@ export default function MarketBlocksTab({
           hint="板块页更适合作为行情入口：先找到强弱板块，再点进成分股或回个股页继续看。"
           action={
             <>
-              <button type="button" onClick={onLoadBlocks} className={marketPrimaryButtonCls}>
+              <button
+                type="button"
+                onClick={onLoadBlocks}
+                aria-label="加载行业板块空状态操作"
+                className={marketPrimaryButtonCls}
+              >
                 加载行业板块
               </button>
               <Link href="/fund-flow" className={marketLinkChipCls}>

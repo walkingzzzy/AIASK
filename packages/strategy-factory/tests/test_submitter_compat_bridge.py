@@ -460,6 +460,7 @@ async def test_submitter_persists_candidate_provenance_into_summary_and_quality_
     assert result["strategies"][0]["target_symbol_count"] == 1
     assert result["strategies"][0]["strategy_profile"]["candidate_family_id"] == "sentiment_short_sentiment_1"
     assert result["strategies"][0]["candidate_contract_hash"]
+    assert result["strategies"][0]["tested_object_hash"]
     assert result["strategies"][0]["candidate_identity_signature"]
 
     saved_payload = db.save_strategy.await_args.args[0]
@@ -477,6 +478,7 @@ async def test_submitter_persists_candidate_provenance_into_summary_and_quality_
     assert saved_payload["params"]["direction_bias"] == "long_only"
     assert saved_payload["params"]["target_symbol_count"] == 1
     assert saved_payload["params"]["candidate_contract_hash"] == result["strategies"][0]["candidate_contract_hash"]
+    assert saved_payload["params"]["tested_object_hash"] == result["strategies"][0]["tested_object_hash"]
     assert saved_payload["params"]["candidate_identity_signature"] == result["strategies"][0]["candidate_identity_signature"]
     assert saved_payload["params"]["candidate_contract_snapshot"]["targeting"]["target_pool_id"] == "explicit:600519"
 
@@ -491,12 +493,14 @@ async def test_submitter_persists_candidate_provenance_into_summary_and_quality_
     assert quality_report["summary"]["regime_fit"] == "event_sensitive"
     assert quality_report["summary"]["generator_mode"] == "external_llm"
     assert quality_report["candidate_contract_hash"] == result["strategies"][0]["candidate_contract_hash"]
+    assert quality_report["tested_object_hash"] == result["strategies"][0]["tested_object_hash"]
     assert quality_report["candidate_identity_signature"] == result["strategies"][0]["candidate_identity_signature"]
     assert quality_report["summary"]["target_pool_id"] == "explicit:600519"
     assert quality_report["summary"]["multiple_testing_registry"]["task_key"] == "task|snapshot"
 
     lineage_metadata = db.save_strategy_lineage.await_args.kwargs["metadata"]
     assert lineage_metadata["candidate_contract_hash"] == result["strategies"][0]["candidate_contract_hash"]
+    assert lineage_metadata["tested_object_hash"] == result["strategies"][0]["tested_object_hash"]
     assert lineage_metadata["candidate_identity_signature"] == result["strategies"][0]["candidate_identity_signature"]
     assert lineage_metadata["target_pool_id"] == "explicit:600519"
     assert lineage_metadata["multiple_testing_registry"]["family_key"] == "family|sentiment|dsl_rule"
@@ -577,9 +581,81 @@ async def test_submitter_records_candidate_provenance_into_generation_experiment
     assert experiment_payload["result"]["generator_mode"] == "external_llm"
     assert experiment_payload["result"]["target_symbol_count"] == 2
     assert experiment_payload["strategy_spec"]["candidate_contract_hash"]
+    assert experiment_payload["strategy_spec"]["tested_object_hash"]
     assert experiment_payload["strategy_spec"]["candidate_identity_signature"]
     assert experiment_payload["evaluation"]["candidate_contract_hash"] == experiment_payload["strategy_spec"]["candidate_contract_hash"]
+    assert experiment_payload["evaluation"]["tested_object_hash"] == experiment_payload["strategy_spec"]["tested_object_hash"]
+    assert experiment_payload["result"]["tested_object_hash"] == experiment_payload["strategy_spec"]["tested_object_hash"]
     assert experiment_payload["result"]["candidate_identity_signature"] == experiment_payload["strategy_spec"]["candidate_identity_signature"]
+
+
+@pytest.mark.asyncio
+async def test_submitter_compacts_large_research_task_metadata_before_experiment_persistence(monkeypatch):
+    submitter = StrategySubmitter()
+    db = MagicMock()
+    db.save_strategy = AsyncMock()
+    db.save_strategy_metrics = AsyncMock()
+    db.save_strategy_quality_report = AsyncMock()
+    db.update_strategy_status = AsyncMock()
+    db.save_strategy_lineage = AsyncMock()
+    db.get_strategy_generation_experiment = AsyncMock(return_value={})
+    db.save_strategy_generation_experiment = AsyncMock()
+
+    monkeypatch.setattr(
+        legacy_submission_gate,
+        "run_submission_quality_gate",
+        AsyncMock(return_value={"passed": False, "reasons": ["bridge"], "reason_codes": ["bridge"]}),
+    )
+    monkeypatch.setattr(legacy_factory_package, "_run_validation_report", AsyncMock(return_value=None))
+    monkeypatch.setattr(legacy_factory_package, "_run_risk_report", AsyncMock(return_value=None))
+
+    candidate = apply_candidate_strategy_profile(
+        {
+            "name": "candidate_compact_task",
+            "experiment_id": "exp_candidate_compact_001",
+            "strategy_type": "dsl_rule",
+            "target_symbols": ["600519", "000858"],
+            "stock_pool": {"selection_mode": "explicit", "symbols": ["600519", "000858"]},
+            "params": {"dsl": {"entry": {"all": []}, "exit": {"any": []}, "metadata": {}}},
+            "spawn_reason": "compact-task-test",
+            "backtest_metrics": {"sharpe_ratio": 0.5, "total_return": 0.1, "max_drawdown": 0.12, "trades_count": 4},
+            "research_task": {
+                "task_id": "task_compact_001",
+                "task_source": "snapshot",
+                "target_symbols": ["600519", "000858"],
+                "metadata": {
+                    "factor_research": {
+                        "active_factors": ["rsi_14", "turnover_ratio"],
+                        "preferred_strategy_types": ["rsi", "momentum"],
+                        "summary": {
+                            "top_factor_names": ["rsi_14"],
+                            "candidate_pool_size": 64,
+                            "active_candidate_count": 128,
+                        },
+                        "governed_candidates": [{"id": f"cand_{idx}"} for idx in range(200)],
+                    }
+                },
+            },
+        }
+    )
+
+    await submitter.submit(
+        [candidate],
+        {"date": "2026-03-19", "fg_level": "neutral", "fear_greed_index": 50},
+        db,
+    )
+
+    experiment_payload = db.save_strategy_generation_experiment.await_args.args[0]
+    parameters_factor_research = experiment_payload["parameters"]["research_task"]["metadata"]["factor_research"]
+    spec_factor_research = experiment_payload["strategy_spec"]["research_task"]["metadata"]["factor_research"]
+    contract_factor_research = (
+        experiment_payload["strategy_spec"]["candidate_contract_snapshot"]["research_task"]["metadata"]["factor_research"]
+    )
+
+    assert parameters_factor_research["preferred_strategy_types"] == ["rsi", "momentum"]
+    assert "governed_candidates" not in parameters_factor_research
+    assert "governed_candidates" not in spec_factor_research
+    assert "governed_candidates" not in contract_factor_research
 
 
 @pytest.mark.asyncio

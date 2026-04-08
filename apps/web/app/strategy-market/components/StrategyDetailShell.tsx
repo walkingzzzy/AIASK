@@ -87,6 +87,15 @@ export function StrategyDetailHeroSection({
             <button
               onClick={onSubscribe}
               disabled={subscribePending || !userId}
+              aria-label={
+                subscribePending
+                  ? '策略头图订阅操作处理中'
+                  : !userId
+                    ? '策略头图登录后订阅'
+                    : isSubscribed
+                      ? '策略头图取消订阅'
+                      : '策略头图订阅策略'
+              }
               className={`${heroSecondaryButtonCls} ${isSubscribed ? 'border-primary/35 bg-primary/12 text-primary' : ''}`}
             >
               {subscribePending ? '处理中...' : !userId ? '登录后订阅' : isSubscribed ? '取消订阅' : '订阅策略'}
@@ -186,6 +195,15 @@ export function StrategyDetailHeroSection({
                 type="button"
                 onClick={onSubscribe}
                 disabled={subscribePending || !userId}
+                aria-label={
+                  subscribePending
+                    ? '策略建议区订阅操作处理中'
+                    : !userId
+                      ? '策略建议区登录后订阅'
+                      : isSubscribed
+                        ? '策略建议区取消订阅'
+                        : '策略建议区立即订阅'
+                }
                 className={chipButtonCls}
               >
                 {isSubscribed ? '取消订阅' : '立即订阅'}

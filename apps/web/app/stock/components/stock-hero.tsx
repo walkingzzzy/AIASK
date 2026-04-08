@@ -62,7 +62,13 @@ export default function StockHero({
             AI 诊断，不再让加载态把主区打散。
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
-            <button type="submit" form="stock-query-form" disabled={loading} className={stockPrimaryButtonCls}>
+            <button
+              type="submit"
+              form="stock-query-form"
+              disabled={loading}
+              aria-label="刷新当前股票"
+              className={stockPrimaryButtonCls}
+            >
               {loading ? '加载中...' : '查询当前股票'}
             </button>
             <AskAiButton

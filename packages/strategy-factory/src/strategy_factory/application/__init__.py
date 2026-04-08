@@ -46,6 +46,7 @@ _EXPORT_MAP: dict[str, tuple[str, str]] = {
     "maybe_grant_provisional_incubation": (".quality_reporting", "maybe_grant_provisional_incubation"),
     "build_quality_report": (".quality_reporting", "build_quality_report"),
     "run_submission_quality_gate": (".submission_gate", "run_submission_quality_gate"),
+    "validate_precompile_candidate_contract": (".precompile_contract", "validate_precompile_candidate_contract"),
 }
 
 __all__ = list(_EXPORT_MAP)

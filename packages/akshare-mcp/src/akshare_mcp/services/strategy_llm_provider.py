@@ -45,6 +45,7 @@ class StrategyLLMConfig:
     recent_timeout_cooldown_sec: float = 600.0
     recent_overload_minimal_streak: int = 1
     recent_overload_cooldown_sec: float = 90.0
+    compatibility_cooldown_sec: float = 300.0
     max_concurrency: int = 3
     strict: bool = False
 
@@ -88,6 +89,7 @@ class StrategyLLMConfig:
             recent_timeout_cooldown_sec=recent_timeout_cooldown_sec,
             recent_overload_minimal_streak=recent_overload_minimal_streak,
             recent_overload_cooldown_sec=recent_overload_cooldown_sec,
+            compatibility_cooldown_sec=max(0.0, float(os.getenv("STRATEGY_LLM_COMPATIBILITY_COOLDOWN_SEC", "300") or 300)),
             max_concurrency=max(1, min(16, int(os.getenv("STRATEGY_LLM_MAX_CONCURRENCY", "3") or 3))),
             strict=str(os.getenv("STRATEGY_LLM_STRICT_MODE", "")).strip().lower() in {"1", "true", "yes", "on"},
         )
@@ -106,6 +108,8 @@ class StrategyLLMProvider(_StrategyLLMProviderNormalizeMixin, _StrategyLLMProvid
             self._recent_overload_cooldown_until = 0.0
             self._last_failure_type: Optional[str] = None
             self._last_failure_status_code: Optional[int] = None
+            self._compatibility_cooldown_until = 0.0
+            self._last_compatibility_failure_metrics: dict[str, Any] = {}
             self._client = httpx.AsyncClient(follow_redirects=True, http2=False)
             self._request_semaphore = asyncio.Semaphore(max(1, int(self.config.max_concurrency or 1)))
 

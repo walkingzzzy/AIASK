@@ -20,8 +20,18 @@ except ImportError:
 import pandas as pd
 import requests
 
-from ...utils import normalize_code, safe_float, safe_int, pick_value, parse_numeric, parse_date_input
-from ...utils import safe_stderr_print
+from ...utils import (
+    enrich_response_meta,
+    normalize_code,
+    safe_float,
+    safe_int,
+    pick_value,
+    parse_numeric,
+    parse_date_input,
+    safe_stderr_print,
+    ok as _base_ok,
+    fail as _base_fail,
+)
 
 # 配置常量
 _SPOT_TTL_SECONDS = float(os.getenv("AKSHARE_SPOT_TTL_SECONDS", "2"))
@@ -479,11 +489,33 @@ def calc_change(price: Optional[float], prev_close: Optional[float]) -> tuple[Op
     return change, (change / prev_close) * 100
 
 
+def _infer_response_source(data) -> str:
+    if isinstance(data, dict):
+        source = str(data.get("source") or "").strip()
+        if source:
+            return source
+    elif isinstance(data, list):
+        sources = [
+            str(item.get("source") or "").strip()
+            for item in data
+            if isinstance(item, dict) and str(item.get("source") or "").strip()
+        ]
+        unique_sources = list(dict.fromkeys(sources))
+        if len(unique_sources) == 1:
+            return unique_sources[0]
+        if unique_sources:
+            return "multiple"
+    return "akshare"
+
+
 def ok(data, cached=False):
     """返回成功结果"""
-    return {"success": True, "data": data, "cached": cached}
+    result = _base_ok(data, cached=cached)
+    source = _infer_response_source(data)
+    return enrich_response_meta(result, source=source, source_chain=[source])
 
 
 def fail(error):
     """返回失败结果"""
-    return {"success": False, "error": str(error)}
+    result = _base_fail(error)
+    return enrich_response_meta(result, source="none", source_chain=["market.helpers"], degraded=True)

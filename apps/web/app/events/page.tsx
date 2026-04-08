@@ -464,8 +464,8 @@ export default function EventsPage() {
                 <div className="rounded-xl border border-glass-border bg-surface-alt/40 p-4">
                   <div className="text-sm font-medium text-text-primary">当前重点</div>
                   <ul className="mb-0 mt-2 space-y-2 pl-4 text-xs leading-5 text-text-secondary">
-                    {(importantQ.data?.highlights ?? ['当前窗口内暂无重点事件。']).map((item) => (
-                      <li key={item}>{item}</li>
+                    {(importantQ.data?.highlights ?? ['当前窗口内暂无重点事件。']).map((item, index) => (
+                      <li key={`${index}:${item}`}>{item}</li>
                     ))}
                   </ul>
                 </div>

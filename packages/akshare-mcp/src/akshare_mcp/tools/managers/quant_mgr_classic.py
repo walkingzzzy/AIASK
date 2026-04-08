@@ -11,6 +11,7 @@ import numpy as np
 from ...data_source import data_source
 from ...storage import get_db
 from ..quant import SUPPORTED_FACTORS, run_factor_group_backtest, run_factor_ic_analysis
+from ..quant_definitions import _normalize_factor_name
 from .quant_mgr_helpers import (
     _as_code_list,
     _compute_alternative_factors_for_code,
@@ -36,6 +37,18 @@ _CALCULATE_FACTORS_SUPPORTED = {
     "alternative_composite",
 }
 _BATCH_FACTORS_SUPPORTED = {"momentum", "value", "quality", "growth", "volatility", "reversal"}
+_FACTOR_CATEGORY_ALIAS_MAP = {
+    "mom_1d": "momentum",
+    "mom_5d": "momentum",
+    "mom_10d": "momentum",
+    "mom_60d": "momentum",
+    "momentum": "momentum",
+    "atr_14": "volatility",
+    "atr_20": "volatility",
+    "volatility": "volatility",
+    "rsi_14": "momentum",
+    "macd": "momentum",
+}
 
 
 async def _load_klines_with_fallback(
@@ -82,8 +95,29 @@ async def handle_calculate_factors(
     if not code:
         return fail("需要提供股票代码（code）")
 
-    factors = kw.get("factors", ["momentum", "value", "quality", "growth"])
-    unknown_factors = [factor for factor in factors if factor not in _CALCULATE_FACTORS_SUPPORTED]
+    raw_factors = kw.get("factors", ["momentum", "value", "quality", "growth"])
+    if isinstance(raw_factors, str):
+        raw_factors = [item.strip() for item in raw_factors.split(",") if item.strip()]
+
+    factors: list[str] = []
+    unknown_factors: list[str] = []
+    for factor in list(raw_factors or []):
+        normalized_factor = _normalize_factor_name(str(factor))
+        alias_category = _FACTOR_CATEGORY_ALIAS_MAP.get(normalized_factor)
+        if alias_category in _CALCULATE_FACTORS_SUPPORTED:
+            factors.append(alias_category)
+            continue
+        if normalized_factor in _CALCULATE_FACTORS_SUPPORTED:
+            factors.append(normalized_factor)
+            continue
+        meta = SUPPORTED_FACTORS.get(normalized_factor) or {}
+        category = str(meta.get("category") or "").strip().lower()
+        if category in _CALCULATE_FACTORS_SUPPORTED:
+            factors.append(category)
+            continue
+        unknown_factors.append(str(factor))
+
+    factors = list(dict.fromkeys(factors)) or ["momentum", "value", "quality", "growth"]
     if unknown_factors:
         return fail(
             f"Unsupported factors: {unknown_factors}. "

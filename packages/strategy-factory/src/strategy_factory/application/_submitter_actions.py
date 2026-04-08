@@ -12,9 +12,13 @@ from typing import TYPE_CHECKING, Any, List, Optional
 from uuid import uuid4
 
 from .candidate_contract import (
+    apply_resolved_candidate_envelope,
     build_candidate_contract_hash,
     build_candidate_identity_signature,
+    build_execution_contract_hash,
     build_portfolio_candidate_contract,
+    build_resolved_candidate_envelope,
+    build_tested_object_hash,
 )
 from .legacy_bridge import call_compat_async, get_compat_symbol, get_compat_value
 from .incubation_budgeter import IncubationBudgeter
@@ -204,6 +208,7 @@ class _StrategySubmitterActionsMixin:
 
         async def _submit_one(self, candidate: dict, snapshot: dict, db) -> dict:
             """处理单个候选策略的完整提交流程。"""
+            candidate = apply_resolved_candidate_envelope(candidate)
             run_submission_quality_gate = get_compat_symbol(
                 _LEGACY_SUBMISSION_GATE_MODULE,
                 "run_submission_quality_gate",
@@ -217,16 +222,42 @@ class _StrategySubmitterActionsMixin:
             name = self._candidate_name(candidate, existing_strategy)
             metrics = candidate.get("backtest_metrics", {})
             data = self._build_strategy_data(strategy_id, name, candidate, metrics, existing=existing_strategy)
-            candidate = {
-                **dict(candidate or {}),
-                "id": strategy_id,
-                "name": name,
-                "params": dict(data.get("params") or {}),
-                "candidate_contract_snapshot": dict((data.get("params") or {}).get("candidate_contract_snapshot") or {}),
-                "candidate_contract_hash": str((data.get("params") or {}).get("candidate_contract_hash") or ""),
-                "candidate_identity_signature": str((data.get("params") or {}).get("candidate_identity_signature") or ""),
-                "candidate_lineage_contract": dict((data.get("params") or {}).get("candidate_lineage_contract") or {}),
-            }
+            candidate = apply_resolved_candidate_envelope(
+                {
+                    **dict(candidate or {}),
+                    "id": strategy_id,
+                    "name": name,
+                    "params": dict(data.get("params") or {}),
+                    "target_symbols": list((data.get("params") or {}).get("target_symbols") or candidate.get("target_symbols") or []),
+                    "stock_pool": dict((data.get("params") or {}).get("stock_pool") or candidate.get("stock_pool") or {}),
+                    "research_task": dict((data.get("params") or {}).get("research_task") or candidate.get("research_task") or {}),
+                    "validation_profile": dict(
+                        (data.get("params") or {}).get("validation_profile")
+                        or candidate.get("validation_profile")
+                        or {}
+                    ),
+                    "targeting_policy": dict(
+                        (data.get("params") or {}).get("targeting_policy")
+                        or candidate.get("targeting_policy")
+                        or {}
+                    ),
+                    "constraint_check": dict(
+                        (data.get("params") or {}).get("constraint_check")
+                        or candidate.get("constraint_check")
+                        or {}
+                    ),
+                    "candidate_contract_snapshot": dict((data.get("params") or {}).get("candidate_contract_snapshot") or {}),
+                    "candidate_contract_hash": str((data.get("params") or {}).get("candidate_contract_hash") or ""),
+                    "execution_contract_hash": str((data.get("params") or {}).get("execution_contract_hash") or ""),
+                    "tested_object_hash": str((data.get("params") or {}).get("tested_object_hash") or ""),
+                    "candidate_identity_signature": str((data.get("params") or {}).get("candidate_identity_signature") or ""),
+                    "candidate_lineage_contract": dict((data.get("params") or {}).get("candidate_lineage_contract") or {}),
+                    "logic_signature": str((data.get("params") or {}).get("logic_signature") or ""),
+                    "dsl_signature": str((data.get("params") or {}).get("dsl_signature") or ""),
+                    "factor_signature": str((data.get("params") or {}).get("factor_signature") or ""),
+                    "entry_exit_signature": str((data.get("params") or {}).get("entry_exit_signature") or ""),
+                }
+            )
             validation_report, risk_report = await self._evaluate_reports(candidate, db)
             gate = await run_submission_quality_gate(
                 db,
@@ -238,6 +269,7 @@ class _StrategySubmitterActionsMixin:
                     "trade_count": metrics.get("trade_count"),
                     "trades_count": metrics.get("trades_count"),
                 },
+                incubation_budget_track=str(candidate.get("incubation_budget", {}).get("track") or "formal_incubation"),
             )
             gate = self._apply_factory_submission_policy(
                 candidate,
@@ -289,6 +321,8 @@ class _StrategySubmitterActionsMixin:
             )
             quality_summary = dict(quality_report.get("summary") or {})
             quality_summary["candidate_contract_hash"] = candidate.get("candidate_contract_hash")
+            quality_summary["execution_contract_hash"] = candidate.get("execution_contract_hash")
+            quality_summary["tested_object_hash"] = candidate.get("tested_object_hash")
             quality_summary["candidate_identity_signature"] = candidate.get("candidate_identity_signature")
             quality_summary["target_pool_id"] = (
                 dict((candidate.get("candidate_contract_snapshot") or {}).get("targeting") or {}).get("target_pool_id")
@@ -299,9 +333,15 @@ class _StrategySubmitterActionsMixin:
             quality_summary["multiple_testing_registry"] = dict(gate.get("multiple_testing_registry") or {})
             quality_report["summary"] = quality_summary
             quality_report["candidate_contract_hash"] = candidate.get("candidate_contract_hash")
+            quality_report["execution_contract_hash"] = candidate.get("execution_contract_hash")
+            quality_report["tested_object_hash"] = candidate.get("tested_object_hash")
             quality_report["candidate_identity_signature"] = candidate.get("candidate_identity_signature")
             quality_report["candidate_contract_snapshot"] = dict(candidate.get("candidate_contract_snapshot") or {})
             quality_report["candidate_lineage_contract"] = dict(candidate.get("candidate_lineage_contract") or {})
+            quality_report["logic_signature"] = candidate.get("logic_signature")
+            quality_report["dsl_signature"] = candidate.get("dsl_signature")
+            quality_report["factor_signature"] = candidate.get("factor_signature")
+            quality_report["entry_exit_signature"] = candidate.get("entry_exit_signature")
 
             multiple_testing_registry = dict(gate.get("multiple_testing_registry") or {})
             multiple_testing_registry_record_id = None
@@ -412,6 +452,39 @@ class _StrategySubmitterActionsMixin:
                 "submission_action_next_step",
                 submission_action.get("submission_action_next_step"),
             )
+            dedup_result = dict(candidate.get("dedup_result") or {})
+            constraint_check = dict(candidate.get("constraint_check") or {})
+            validation_profile = dict(candidate.get("validation_profile") or {})
+            precompile_validation = dict(candidate.get("_generator_precompile_validation") or {})
+            precompile_constraint_check = dict(precompile_validation.get("constraint_check") or {})
+            feedback_metrics = dict(incubation_budget.get("feedback_metrics") or {})
+            target_alignment_violation = (
+                str(
+                    constraint_check.get("alignment_contract_violation")
+                    or precompile_constraint_check.get("alignment_contract_violation")
+                    or ""
+                ).strip().lower()
+                or None
+            )
+            generator_precompile_reject_reason = (
+                str(precompile_validation.get("generator_precompile_reject_reason") or "").strip() or None
+            )
+            contract_reject_reasons = [
+                str(reason).strip()
+                for reason in list(precompile_validation.get("contract_reject_reasons") or [])
+                if str(reason).strip()
+            ]
+            feedback_control_mode = str(
+                feedback_metrics.get("control_mode")
+                or incubation_budget.get("feedback_control_mode")
+                or "normal"
+            ).strip().lower() or "normal"
+            feedback_target_pool_control_mode = str(
+                feedback_metrics.get("target_pool_control_mode") or "normal"
+            ).strip().lower() or "normal"
+            feedback_generator_mode_control_mode = str(
+                feedback_metrics.get("generator_mode_control_mode") or "normal"
+            ).strip().lower() or "normal"
 
             summary = {
                 "strategy_id": strategy_id,
@@ -446,10 +519,24 @@ class _StrategySubmitterActionsMixin:
                 "reason_codes": gate.get("reason_codes") or [],
                 "warning_codes": gate.get("warning_codes") or [],
                 "gate_3": dict(gate or {}),
-                "dedup_result": candidate.get("dedup_result") or {},
-                "refresh_mode": (candidate.get("dedup_result") or {}).get("refresh_mode"),
-                "constraint_check": dict(candidate.get("constraint_check") or {}),
-                "validation_profile": dict(candidate.get("validation_profile") or {}),
+                "dedup_result": dedup_result,
+                "refresh_mode": dedup_result.get("refresh_mode"),
+                "refresh_decision_basis": dedup_result.get("refresh_decision_basis"),
+                "revision_trigger_reason": dedup_result.get("revision_trigger_reason"),
+                "tested_object_hash_changed": dedup_result.get(
+                    "tested_object_hash_changed",
+                    dedup_result.get("tested_object_changed"),
+                ),
+                "existing_identity_available": bool(dedup_result.get("existing_identity_available")),
+                "existing_tested_object_available": bool(dedup_result.get("existing_tested_object_available")),
+                "constraint_check": constraint_check,
+                "validation_profile": validation_profile,
+                "target_alignment_violation": target_alignment_violation,
+                "generator_precompile_reject_reason": generator_precompile_reject_reason,
+                "contract_reject_reasons": contract_reject_reasons,
+                "feedback_control_mode": feedback_control_mode,
+                "feedback_target_pool_control_mode": feedback_target_pool_control_mode,
+                "feedback_generator_mode_control_mode": feedback_generator_mode_control_mode,
                 "primary_validation_layer": gate.get("primary_validation_layer"),
                 "event_window_config": dict(metrics.get("event_window_config") or {}),
                 "event_window_metrics": dict(metrics.get("event_window_metrics") or {}),
@@ -460,6 +547,7 @@ class _StrategySubmitterActionsMixin:
                 "backtest_assumptions": dict(metrics.get("backtest_assumptions") or {}),
                 "execution_reality": dict(quality_report.get("execution_reality") or {}),
                 "attempt_adjustment": dict(gate.get("attempt_adjustment") or {}),
+                "committee_review": dict(candidate.get("committee_review") or {}),
                 "run_correction": {
                     "mode": gate.get("run_correction_mode"),
                     "deflated_sharpe_proxy": gate.get("deflated_sharpe_proxy"),
@@ -480,9 +568,15 @@ class _StrategySubmitterActionsMixin:
                 "task_preference": dict(gate.get("task_preference") or {}),
                 "task_signature": _build_task_signature(candidate.get("research_task") or {}),
                 "candidate_contract_hash": candidate.get("candidate_contract_hash"),
+                "execution_contract_hash": candidate.get("execution_contract_hash"),
+                "tested_object_hash": candidate.get("tested_object_hash"),
                 "candidate_identity_signature": candidate.get("candidate_identity_signature"),
                 "candidate_contract_snapshot": dict(candidate.get("candidate_contract_snapshot") or {}),
                 "candidate_lineage_contract": dict(candidate.get("candidate_lineage_contract") or {}),
+                "logic_signature": candidate.get("logic_signature"),
+                "dsl_signature": candidate.get("dsl_signature"),
+                "factor_signature": candidate.get("factor_signature"),
+                "entry_exit_signature": candidate.get("entry_exit_signature"),
                 "target_pool_id": (
                     dict((candidate.get("candidate_contract_snapshot") or {}).get("targeting") or {}).get("target_pool_id")
                 ),
@@ -572,9 +666,15 @@ class _StrategySubmitterActionsMixin:
             targeting = dict(contract_snapshot.get("targeting") or {})
             lineage_metadata = {
                 "candidate_contract_hash": (candidate or {}).get("candidate_contract_hash"),
+                "execution_contract_hash": (candidate or {}).get("execution_contract_hash"),
+                "tested_object_hash": (candidate or {}).get("tested_object_hash"),
                 "candidate_identity_signature": (candidate or {}).get("candidate_identity_signature"),
                 "candidate_contract_snapshot": contract_snapshot,
                 "candidate_lineage_contract": dict((candidate or {}).get("candidate_lineage_contract") or contract_snapshot.get("lineage") or {}),
+                "logic_signature": (candidate or {}).get("logic_signature"),
+                "dsl_signature": (candidate or {}).get("dsl_signature"),
+                "factor_signature": (candidate or {}).get("factor_signature"),
+                "entry_exit_signature": (candidate or {}).get("entry_exit_signature"),
                 "target_pool_id": targeting.get("target_pool_id"),
                 "task_signature": dict(contract_snapshot.get("lineage") or {}).get("task_signature"),
                 "validation_profile": dict(contract_snapshot.get("validation_profile") or {}),
@@ -609,6 +709,7 @@ class _StrategySubmitterActionsMixin:
             existing: Optional[dict] = None,
         ) -> dict:
             """构建策略记录数据。"""
+            candidate = apply_resolved_candidate_envelope(candidate)
             existing = dict(existing or {})
             description = f"{name}\n生成原因: {candidate.get('spawn_reason', '')}"
             if metrics:
@@ -704,10 +805,24 @@ class _StrategySubmitterActionsMixin:
                 "research_task": dict(stored_params.get("research_task") or {}),
             }
             contract_snapshot = build_portfolio_candidate_contract(contract_source)
+            resolved_candidate_envelope = build_resolved_candidate_envelope(contract_source)
             stored_params["candidate_contract_snapshot"] = contract_snapshot
             stored_params["candidate_contract_hash"] = build_candidate_contract_hash(contract=contract_snapshot)
+            stored_params["execution_contract_hash"] = (
+                str(resolved_candidate_envelope.get("execution_contract_hash") or "").strip()
+                or build_execution_contract_hash(contract=contract_snapshot)
+            )
+            stored_params["tested_object_hash"] = (
+                str(resolved_candidate_envelope.get("tested_object_hash") or "").strip()
+                or build_tested_object_hash(contract_source)
+            )
             stored_params["candidate_identity_signature"] = build_candidate_identity_signature(contract_source)
             stored_params["candidate_lineage_contract"] = dict(contract_snapshot.get("lineage") or {})
+            stored_params["logic_signature"] = str(resolved_candidate_envelope.get("logic_signature") or "")
+            stored_params["dsl_signature"] = str(resolved_candidate_envelope.get("dsl_signature") or "")
+            stored_params["factor_signature"] = str(resolved_candidate_envelope.get("factor_signature") or "")
+            stored_params["entry_exit_signature"] = str(resolved_candidate_envelope.get("entry_exit_signature") or "")
+            stored_params["resolved_candidate_envelope"] = resolved_candidate_envelope
             return {
                 "id": strategy_id,
                 "name": name,
@@ -803,6 +918,15 @@ class _StrategySubmitterActionsMixin:
             incubation_budget_track: str,
         ) -> dict[str, Any]:
             normalized_gate = dict(gate or {})
+            readiness_fields = (
+                "research_candidate_ready",
+                "incubation_candidate_ready",
+                "live_candidate_ready",
+                "research_only_due_to_trade_audit_gap",
+            )
+            if bool(normalized_gate.get("passed")) and not any(field in normalized_gate for field in readiness_fields):
+                normalized_gate["research_candidate_ready"] = True
+                normalized_gate["incubation_candidate_ready"] = True
             admission_block_reasons = list(normalized_gate.get("admission_block_reasons") or normalized_gate.get("reasons") or [])
             if refresh_existing:
                 action_type = "refresh_existing"
@@ -834,6 +958,19 @@ class _StrategySubmitterActionsMixin:
                 ]
                 next_step = "pool_admission"
                 completed = False
+            elif bool(normalized_gate.get("research_only_due_to_trade_audit_gap")) or not bool(normalized_gate.get("incubation_candidate_ready")):
+                action_type = "research_only"
+                submission_lane = "deferred_submission"
+                final_status = "submitted" if bool(normalized_gate.get("research_candidate_ready")) else "rejected"
+                trigger = (
+                    "research_only_due_to_trade_audit_gap"
+                    if bool(normalized_gate.get("research_only_due_to_trade_audit_gap"))
+                    else "incubation_admission_not_ready"
+                )
+                gaps = admission_block_reasons
+                fallback_conditions = ["promote_after_trade_audit_completed"]
+                next_step = "research"
+                completed = True
             elif str(incubation_budget_track or "").strip().lower() == "formal_incubation":
                 action_type = "incubation"
                 submission_lane = "formal_incubation"
@@ -1418,10 +1555,34 @@ class _StrategySubmitterActionsMixin:
                 execution_reality = dict(quality_payload.get("execution_reality") or {})
                 quality_summary = dict(quality_payload.get("summary") or {})
 
-                research_task = (
+                research_task = _normalize_research_task_contract(
                     dict(candidate.get("research_task") or {})
                     or dict(existing_spec.get("research_task") or {})
                     or dict(existing_evaluation.get("research_task") or {})
+                )
+                contract_snapshot = dict(candidate.get("candidate_contract_snapshot") or {})
+                try:
+                    contract_snapshot = build_portfolio_candidate_contract(
+                        {
+                            **dict(candidate or {}),
+                            "research_task": research_task,
+                        }
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "StrategySubmitter: rebuild candidate contract snapshot failed for %s: %s",
+                        strategy_id,
+                        exc,
+                    )
+                    if research_task:
+                        contract_snapshot = {
+                            **contract_snapshot,
+                            "research_task": research_task,
+                        }
+                candidate_lineage_contract = dict(
+                    candidate.get("candidate_lineage_contract")
+                    or contract_snapshot.get("lineage")
+                    or {}
                 )
                 event_context = (
                     dict(candidate.get("event_context") or {})
@@ -1429,6 +1590,37 @@ class _StrategySubmitterActionsMixin:
                     or dict(existing_spec.get("event_context") or {})
                     or dict(existing_evaluation.get("event_context") or {})
                 )
+                parameters = {
+                    **dict(existing.get("parameters") or {}),
+                    **dict(candidate.get("params") or {}),
+                }
+                _assign_if_present(parameters, "target_symbols", list(candidate.get("target_symbols") or parameters.get("target_symbols") or []))
+                _assign_if_present(parameters, "stock_pool", dict(candidate.get("stock_pool") or parameters.get("stock_pool") or {}))
+                _assign_if_present(parameters, "research_task", research_task)
+                _assign_if_present(parameters, "event_context", event_context)
+                _assign_if_present(parameters, "candidate_contract_snapshot", contract_snapshot)
+                _assign_if_present(parameters, "candidate_lineage_contract", candidate_lineage_contract)
+                _assign_if_present(parameters, "candidate_provenance", candidate_provenance)
+                _assign_if_present(parameters, "source_candidate_artifact_id", candidate_provenance.get("source_candidate_artifact_id"))
+                _assign_if_present(parameters, "candidate_family", candidate_provenance.get("candidate_family"))
+                _assign_if_present(parameters, "strategy_profile", candidate_provenance.get("strategy_profile"))
+                _assign_if_present(parameters, "candidate_family_id", candidate_provenance.get("candidate_family_id"))
+                _assign_if_present(parameters, "holding_period_bucket", candidate_provenance.get("holding_period_bucket"))
+                _assign_if_present(parameters, "alpha_source", candidate_provenance.get("alpha_source"))
+                _assign_if_present(parameters, "risk_level", candidate_provenance.get("risk_level"))
+                _assign_if_present(parameters, "regime_fit", candidate_provenance.get("regime_fit"))
+                _assign_if_present(parameters, "generator_mode", candidate_provenance.get("generator_mode"))
+                _assign_if_present(parameters, "direction_bias", candidate_provenance.get("direction_bias"))
+                _assign_if_present(parameters, "validation_profile_name", candidate_provenance.get("validation_profile"))
+                _assign_if_present(parameters, "target_symbol_count", candidate_provenance.get("target_symbol_count"))
+                _assign_if_present(parameters, "candidate_contract_hash", candidate.get("candidate_contract_hash"))
+                _assign_if_present(parameters, "execution_contract_hash", candidate.get("execution_contract_hash"))
+                _assign_if_present(parameters, "tested_object_hash", candidate.get("tested_object_hash"))
+                _assign_if_present(parameters, "candidate_identity_signature", candidate.get("candidate_identity_signature"))
+                _assign_if_present(parameters, "logic_signature", candidate.get("logic_signature"))
+                _assign_if_present(parameters, "dsl_signature", candidate.get("dsl_signature"))
+                _assign_if_present(parameters, "factor_signature", candidate.get("factor_signature"))
+                _assign_if_present(parameters, "entry_exit_signature", candidate.get("entry_exit_signature"))
 
                 strategy_spec = dict(existing_spec)
                 _assign_if_present(strategy_spec, "strategy_type", candidate.get("strategy_type"))
@@ -1454,9 +1646,15 @@ class _StrategySubmitterActionsMixin:
                 _assign_if_present(strategy_spec, "validation_profile_name", candidate_provenance.get("validation_profile"))
                 _assign_if_present(strategy_spec, "target_symbol_count", candidate_provenance.get("target_symbol_count"))
                 _assign_if_present(strategy_spec, "candidate_contract_hash", candidate.get("candidate_contract_hash"))
+                _assign_if_present(strategy_spec, "execution_contract_hash", candidate.get("execution_contract_hash"))
+                _assign_if_present(strategy_spec, "tested_object_hash", candidate.get("tested_object_hash"))
                 _assign_if_present(strategy_spec, "candidate_identity_signature", candidate.get("candidate_identity_signature"))
-                _assign_if_present(strategy_spec, "candidate_contract_snapshot", dict(candidate.get("candidate_contract_snapshot") or {}))
-                _assign_if_present(strategy_spec, "candidate_lineage_contract", dict(candidate.get("candidate_lineage_contract") or {}))
+                _assign_if_present(strategy_spec, "candidate_contract_snapshot", contract_snapshot)
+                _assign_if_present(strategy_spec, "candidate_lineage_contract", candidate_lineage_contract)
+                _assign_if_present(strategy_spec, "logic_signature", candidate.get("logic_signature"))
+                _assign_if_present(strategy_spec, "dsl_signature", candidate.get("dsl_signature"))
+                _assign_if_present(strategy_spec, "factor_signature", candidate.get("factor_signature"))
+                _assign_if_present(strategy_spec, "entry_exit_signature", candidate.get("entry_exit_signature"))
 
                 evaluation = dict(existing_evaluation)
                 _assign_if_present(evaluation, "generation_reason", candidate.get("generation_reason") or existing_evaluation.get("generation_reason"))
@@ -1482,9 +1680,15 @@ class _StrategySubmitterActionsMixin:
                 _assign_if_present(evaluation, "validation_profile_name", candidate_provenance.get("validation_profile"))
                 _assign_if_present(evaluation, "target_symbol_count", candidate_provenance.get("target_symbol_count"))
                 _assign_if_present(evaluation, "candidate_contract_hash", candidate.get("candidate_contract_hash"))
+                _assign_if_present(evaluation, "execution_contract_hash", candidate.get("execution_contract_hash"))
+                _assign_if_present(evaluation, "tested_object_hash", candidate.get("tested_object_hash"))
                 _assign_if_present(evaluation, "candidate_identity_signature", candidate.get("candidate_identity_signature"))
-                _assign_if_present(evaluation, "candidate_contract_snapshot", dict(candidate.get("candidate_contract_snapshot") or {}))
-                _assign_if_present(evaluation, "candidate_lineage_contract", dict(candidate.get("candidate_lineage_contract") or {}))
+                _assign_if_present(evaluation, "candidate_contract_snapshot", contract_snapshot)
+                _assign_if_present(evaluation, "candidate_lineage_contract", candidate_lineage_contract)
+                _assign_if_present(evaluation, "logic_signature", candidate.get("logic_signature"))
+                _assign_if_present(evaluation, "dsl_signature", candidate.get("dsl_signature"))
+                _assign_if_present(evaluation, "factor_signature", candidate.get("factor_signature"))
+                _assign_if_present(evaluation, "entry_exit_signature", candidate.get("entry_exit_signature"))
                 evaluation["quality_gate"] = gate
                 if validation_report is not None or "validation_report" not in evaluation:
                     evaluation["validation_report"] = validation_report or {}
@@ -1531,9 +1735,15 @@ class _StrategySubmitterActionsMixin:
                 _assign_if_present(result, "validation_profile_name", candidate_provenance.get("validation_profile"))
                 _assign_if_present(result, "target_symbol_count", candidate_provenance.get("target_symbol_count"))
                 _assign_if_present(result, "candidate_contract_hash", candidate.get("candidate_contract_hash"))
+                _assign_if_present(result, "execution_contract_hash", candidate.get("execution_contract_hash"))
+                _assign_if_present(result, "tested_object_hash", candidate.get("tested_object_hash"))
                 _assign_if_present(result, "candidate_identity_signature", candidate.get("candidate_identity_signature"))
-                _assign_if_present(result, "candidate_contract_snapshot", dict(candidate.get("candidate_contract_snapshot") or {}))
-                _assign_if_present(result, "candidate_lineage_contract", dict(candidate.get("candidate_lineage_contract") or {}))
+                _assign_if_present(result, "candidate_contract_snapshot", contract_snapshot)
+                _assign_if_present(result, "candidate_lineage_contract", candidate_lineage_contract)
+                _assign_if_present(result, "logic_signature", candidate.get("logic_signature"))
+                _assign_if_present(result, "dsl_signature", candidate.get("dsl_signature"))
+                _assign_if_present(result, "factor_signature", candidate.get("factor_signature"))
+                _assign_if_present(result, "entry_exit_signature", candidate.get("entry_exit_signature"))
                 _assign_if_present(result, "quality_summary", quality_summary)
                 _assign_if_present(result, "backtest_metrics", backtest_payload)
                 _assign_if_present(result, "event_window_config", event_window_config)
@@ -1580,7 +1790,7 @@ class _StrategySubmitterActionsMixin:
                         "status": status,
                         "hypothesis": candidate.get("spawn_reason") or existing.get("hypothesis"),
                         "prompt": prompt_payload,
-                        "parameters": candidate.get("params") or existing.get("parameters") or {},
+                        "parameters": parameters,
                         "strategy_spec": strategy_spec,
                         "evaluation": evaluation,
                         "result": result,

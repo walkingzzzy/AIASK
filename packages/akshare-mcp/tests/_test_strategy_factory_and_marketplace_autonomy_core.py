@@ -37,7 +37,7 @@ class _TestAutonomyEnhancementsCoreMixin:
 
 
     @pytest.mark.asyncio
-    async def test_run_cycle_exposes_factor_research_across_result_and_event_payload(self):
+    async def test_run_cycle_exposes_factor_research_across_result_and_event_payload(self, tmp_path):
         from akshare_mcp.services.strategy_autonomy import StrategyAutonomyService, StrategySpec
 
         service = StrategyAutonomyService()
@@ -74,8 +74,12 @@ class _TestAutonomyEnhancementsCoreMixin:
         assert result['research_task']['metadata']['factor_research'] == factor_research
 
         task_runs = await db.list_strategy_task_runs(limit=10)
-        assert task_runs[0]['result']['factor_research'] == factor_research
-        assert task_runs[0]['result']['research_task']['metadata']['factor_research'] == factor_research
+        task_run_result = task_runs[0]['result']
+        assert task_run_result['storage_mode'] == 'summary_only'
+        assert task_run_result['factor_research']['top_factor_names'] == ['value', 'quality']
+        assert task_run_result['research_task']['metadata']['factor_research']['preferred_strategy_types'] == ['value_factor', 'quality_factor']
+        assert 'full_result_artifact' not in task_run_result
+        assert list(tmp_path.rglob('*.json')) == []
 
         domain_events = await db.list_strategy_domain_events(event_type='strategy_ai_cycle.completed', limit=10)
         assert domain_events[0]['payload']['factor_research'] == factor_research

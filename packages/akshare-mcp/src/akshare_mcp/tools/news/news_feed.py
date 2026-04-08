@@ -15,7 +15,7 @@ from .helpers import (
     _try_tushare_anns,
     _try_tushare_news,
 )
-from .notices import get_stock_notices
+from .notices import fetch_market_notice_head, get_stock_notices
 from .research import get_research_reports, get_stock_research
 
 
@@ -113,6 +113,18 @@ def get_market_news(limit: int = 20) -> dict:
         limit = int(limit) if int(limit or 0) > 0 else 20
         end_date = date.today()
         start_date = end_date - timedelta(days=7)
+
+        # Fast path: market notices head is consistently faster than cold-starting
+        # upstream news providers and still provides fresh market-moving events.
+        fast_events = fetch_market_notice_head(
+            start_iso=start_date.isoformat(),
+            end_iso=end_date.isoformat(),
+            max_items=limit,
+        )
+        mapped = _map_news_rows(fast_events)
+        if mapped:
+            return ok(mapped[:limit])
+
         items = _try_tushare_news(start_date.isoformat(), end_date.isoformat(), limit)
         if items:
             return ok(items[:limit])

@@ -30,6 +30,16 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def _is_truthy(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _pct_obj(value: float, window: str, basis: str) -> dict:
     return {
         "value": round(value * 100.0, 2),
@@ -581,7 +591,14 @@ def _build_payload(report_type: str, kwargs: dict) -> dict:
     return {**generic, **payload_raw}
 
 
-def _write_report_artifacts(report_type: str, markdown: str, payload: dict, output_dir: str) -> dict:
+def _write_report_artifacts(
+    report_type: str,
+    markdown: str,
+    payload: dict,
+    output_dir: str,
+    *,
+    include_json: bool = False,
+) -> dict:
     base_dir = Path(output_dir)
     if not base_dir.is_absolute():
         base_dir = _repo_root() / output_dir
@@ -590,15 +607,16 @@ def _write_report_artifacts(report_type: str, markdown: str, payload: dict, outp
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     stem = f"{report_type}_report_{stamp}"
     md_path = base_dir / f"{stem}.md"
-    json_path = base_dir / f"{stem}.json"
 
     md_path.write_text(markdown, encoding="utf-8")
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-    return {
+    artifacts = {
         "markdown": str(md_path.as_posix()),
-        "json": str(json_path.as_posix()),
     }
+    if include_json:
+        json_path = base_dir / f"{stem}.json"
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        artifacts["json"] = str(json_path.as_posix())
+    return artifacts
 
 
 def register_insight_manager(mcp):
@@ -645,7 +663,7 @@ def register_insight_manager(mcp):
                             "list": "list available operations",
                             "generate": "generate insight by topic or symbol",
                             "daily_brief": "generate daily market brief",
-                            "generate_report": "auto-fill daily/weekly/monthly template and persist markdown+json",
+                            "generate_report": "auto-fill daily/weekly/monthly template and persist markdown (json optional)",
                             "help": "show help information",
                         }
                     },
@@ -668,8 +686,8 @@ def register_insight_manager(mcp):
                             },
                             {
                                 "action": "generate_report",
-                                "description": "produce markdown + json artifacts from templates",
-                                "kwargs": "report_type(daily|weekly|monthly), payload(optional), output_dir(optional)",
+                                "description": "produce markdown artifacts from templates; json export is optional",
+                                "kwargs": "report_type(daily|weekly|monthly), payload(optional), output_dir(optional), include_json(optional)",
                             },
                         ],
                         "count": 3,
@@ -749,7 +767,17 @@ def register_insight_manager(mcp):
                 markdown = _render_template(template_text, payload)
 
                 output_dir = str(kwargs.get("output_dir", "reports") or "reports")
-                artifacts = _write_report_artifacts(report_type, markdown, payload, output_dir)
+                include_json = _is_truthy(
+                    kwargs.get("include_json", kwargs.get("write_json")),
+                    default=False,
+                )
+                artifacts = _write_report_artifacts(
+                    report_type,
+                    markdown,
+                    payload,
+                    output_dir,
+                    include_json=include_json,
+                )
                 source_chain.append("filesystem.write_report_artifacts")
 
                 return _ok(

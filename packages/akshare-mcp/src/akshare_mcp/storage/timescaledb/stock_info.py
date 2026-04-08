@@ -10,6 +10,42 @@ from typing import Optional, List, Dict, Any
 class StockInfoMixin:
     """股票基本信息查询"""
 
+    async def _stocks_market_cap_multiplier(self, conn) -> float:
+        cached = getattr(self, "_stocks_market_cap_multiplier_cache", None)
+        if cached is not None:
+            return float(cached)
+        try:
+            row = await conn.fetchrow("SELECT MAX(market_cap) AS max_market_cap FROM stocks")
+            max_market_cap = float((dict(row or {})).get("max_market_cap") or 0.0)
+        except Exception:
+            max_market_cap = 0.0
+        # Historical stock snapshots may persist market cap in 万元; normalize to 元 on read.
+        multiplier = 10_000.0 if 0 < max_market_cap < 10_000_000_000 else 1.0
+        setattr(self, "_stocks_market_cap_multiplier_cache", multiplier)
+        return multiplier
+
+    @staticmethod
+    def _normalize_market_cap(value: Any, multiplier: float) -> Optional[float]:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value) * float(multiplier or 1.0)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _market_cap_filter_to_storage(value: Optional[float], multiplier: float) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            numeric = float(value)
+        except Exception:
+            return None
+        if numeric <= 0:
+            return numeric
+        scale = float(multiplier or 1.0)
+        return numeric / scale if scale > 0 else numeric
+
     async def _stocks_columns(self, conn) -> set[str]:
         try:
             rows = await conn.fetch(
@@ -48,6 +84,7 @@ class StockInfoMixin:
             code_col = await self._stocks_code_column(conn)
             market_col = await self._stocks_market_column(conn)
             sector_col = await self._stocks_sector_column(conn)
+            market_cap_multiplier = await self._stocks_market_cap_multiplier(conn)
             select_fields = [
                 f"{code_col} AS code",
                 'stock_name',
@@ -80,7 +117,7 @@ class StockInfoMixin:
                 'industry': payload.get('industry'),
                 'sector': payload.get('sector') or payload.get('industry'),
                 'market': payload.get('market'),
-                'market_cap': float(payload.get('market_cap')) if payload.get('market_cap') else None,
+                'market_cap': self._normalize_market_cap(payload.get('market_cap'), market_cap_multiplier),
                 'pe_ratio': float(payload.get('pe_ratio')) if payload.get('pe_ratio') else None,
                 'pb_ratio': float(payload.get('pb_ratio')) if payload.get('pb_ratio') else None,
                 'list_date': payload.get('list_date').strftime('%Y-%m-%d') if payload.get('list_date') else None,
@@ -91,6 +128,7 @@ class StockInfoMixin:
         async with self.acquire() as conn:
             code_col = await self._stocks_code_column(conn)
             sector_col = await self._stocks_sector_column(conn)
+            market_cap_multiplier = await self._stocks_market_cap_multiplier(conn)
             sector_clause = f" OR ({sector_col} IS NOT NULL AND {sector_col} LIKE $2)" if sector_col else ''
             rows = await conn.fetch(
                 f"""
@@ -108,7 +146,7 @@ class StockInfoMixin:
                     'code': payload.get('code'),
                     'name': payload.get('stock_name'),
                     'industry': payload.get('industry'),
-                    'market_cap': float(payload.get('market_cap')) if payload.get('market_cap') else None,
+                    'market_cap': self._normalize_market_cap(payload.get('market_cap'), market_cap_multiplier),
                 }
                 for payload in (dict(row) for row in rows)
             ]
@@ -127,6 +165,7 @@ class StockInfoMixin:
             code_col = await self._stocks_code_column(conn)
             market_col = await self._stocks_market_column(conn)
             sector_col = await self._stocks_sector_column(conn)
+            market_cap_multiplier = await self._stocks_market_cap_multiplier(conn)
             select_fields = [
                 f"{code_col} AS code",
                 'stock_name',
@@ -143,7 +182,7 @@ class StockInfoMixin:
             conditions = []
             params: list[Any] = []
             if min_market_cap is not None:
-                params.append(float(min_market_cap))
+                params.append(self._market_cap_filter_to_storage(min_market_cap, market_cap_multiplier))
                 conditions.append(f"market_cap >= ${len(params)}")
             if industry:
                 params.append(f"%{industry}%")
@@ -171,7 +210,7 @@ class StockInfoMixin:
                     'industry': payload.get('industry'),
                     'sector': payload.get('sector') or payload.get('industry'),
                     'market': payload.get('market'),
-                    'market_cap': float(payload.get('market_cap')) if payload.get('market_cap') else None,
+                    'market_cap': self._normalize_market_cap(payload.get('market_cap'), market_cap_multiplier),
                     'pe_ratio': float(payload.get('pe_ratio')) if payload.get('pe_ratio') else None,
                     'pb_ratio': float(payload.get('pb_ratio')) if payload.get('pb_ratio') else None,
                     'list_date': payload.get('list_date').strftime('%Y-%m-%d') if payload.get('list_date') else None,
@@ -189,10 +228,11 @@ class StockInfoMixin:
         """统计股票池数量。"""
         async with self.acquire() as conn:
             market_col = await self._stocks_market_column(conn)
+            market_cap_multiplier = await self._stocks_market_cap_multiplier(conn)
             conditions = []
             params: list[Any] = []
             if min_market_cap is not None:
-                params.append(float(min_market_cap))
+                params.append(self._market_cap_filter_to_storage(min_market_cap, market_cap_multiplier))
                 conditions.append(f"market_cap >= ${len(params)}")
             if industry:
                 params.append(f"%{industry}%")

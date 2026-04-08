@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -12,14 +13,37 @@ class _DummyMCP:
 
 
 class _FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, *, headers=None, text=None, status_code=200):
         self._payload = payload
+        self.headers = dict(headers or {"content-type": "application/json"})
+        self.status_code = status_code
+        self.text = str(text) if text is not None else json.dumps(payload, ensure_ascii=False)
 
     def raise_for_status(self):
         return None
 
     def json(self):
         return dict(self._payload)
+
+
+class _FakeStreamResponse:
+    def __init__(self, chunks, *, headers=None, status_code=200):
+        self._chunks = list(chunks)
+        self.headers = dict(headers or {"content-type": "text/event-stream"})
+        self.status_code = status_code
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_text(self):
+        for chunk in self._chunks:
+            yield chunk
 
 
 class _PromptDB:
@@ -231,6 +255,244 @@ async def test_factor_llm_provider_parses_json_payload():
     assert result["model"] == "test-factor-model"
     assert result["candidates"][0]["source_model"] == "test-factor-model"
     assert result["candidates"][0]["generation_trace"]["provider"] == "openai_compatible"
+
+
+@pytest.mark.asyncio
+async def test_factor_llm_provider_accepts_direct_generation_payload():
+    from akshare_mcp.services.factor_llm_provider import FactorLLMConfig, FactorLLMProvider
+    from akshare_mcp.services.factor_prompt_builder import FactorMiningPrompt
+
+    async def _fake_post(*args, **kwargs):
+        return _FakeResponse(
+            {
+                "candidates": [
+                    {
+                        "name": "direct_payload_factor",
+                        "hypothesis": "兼容顶层直接返回 candidates 的 provider。",
+                        "family": "momentum",
+                        "inputs": ["close", "volume"],
+                        "expression_dsl": "zscore(close,20) + zscore(volume,20)",
+                        "expected_holding_period": 8,
+                        "expected_regime": ["trend"],
+                        "complexity_hint": "low",
+                        "novelty_rationale": "验证 direct payload compatibility。",
+                    }
+                ],
+                "analysis": {"provider_mode": "direct_payload"},
+                "warnings": [],
+            }
+        )
+
+    provider = FactorLLMProvider(
+        FactorLLMConfig(
+            enabled=True,
+            provider="openai_compatible",
+            base_url="http://llm.local/v1",
+            api_key="test-key",
+            model="test-factor-model",
+            retry_count=0,
+        )
+    )
+    provider._client = SimpleNamespace(post=_fake_post, aclose=lambda: None)
+    prompt = FactorMiningPrompt(
+        system_prompt="system",
+        user_prompt="user",
+        context_summary={},
+        request_payload={},
+        source_chain=[],
+        schema_path="/tmp/factor_candidate.schema.json",
+    )
+
+    result = await provider.generate_candidates(prompt, candidate_count=1)
+
+    assert result["candidate_count"] == 1
+    assert result["analysis"]["provider_mode"] == "direct_payload"
+    assert result["candidates"][0]["name"] == "direct_payload_factor"
+
+
+@pytest.mark.asyncio
+async def test_factor_llm_provider_recovers_via_chat_stream_replay_when_nonstream_content_is_empty():
+    from akshare_mcp.services.factor_llm_provider import FactorLLMConfig, FactorLLMProvider
+    from akshare_mcp.services.factor_prompt_builder import FactorMiningPrompt
+
+    nonstream_payload = {
+        "id": "resp_fake_nonstream",
+        "object": "chat.completion",
+        "created": 1775544050,
+        "model": "test-factor-model",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 42, "total_tokens": 52},
+    }
+    stream_chunks = [
+        'data: {"id":"resp_fake_stream","object":"chat.completion.chunk","created":1775544050,"model":"test-factor-model","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
+        'data: {"id":"resp_fake_stream","object":"chat.completion.chunk","created":1775544050,"model":"test-factor-model","choices":[{"index":0,"delta":{"content":"{\\"candidates\\":[{\\"name\\":\\"stream_factor\\",\\"hypothesis\\":\\"stream replay recovers content\\",\\"family\\":\\"momentum\\",\\"inputs\\":[\\"close\\"],\\"expression_dsl\\":\\"zscore(close,20)\\",\\"expected_holding_period\\":5,\\"expected_regime\\":[\\"trend\\"],\\"complexity_hint\\":\\"low\\",\\"novelty_rationale\\":\\"验证 chat stream replay。\\"}],\\"analysis\\":{},\\"warnings\\":[]}"},"finish_reason":null}]}\n\n',
+        'data: {"id":"resp_fake_stream","object":"chat.completion.chunk","created":1775544050,"model":"test-factor-model","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}\n\n',
+        'data: [DONE]\n\n',
+    ]
+
+    class _ReplayClient:
+        is_closed = False
+
+        async def post(self, *args, **kwargs):
+            return _FakeResponse(
+                nonstream_payload,
+                headers={"content-type": "text/event-stream"},
+            )
+
+        def stream(self, *args, **kwargs):
+            return _FakeStreamResponse(stream_chunks)
+
+        async def aclose(self):
+            self.is_closed = True
+
+    provider = FactorLLMProvider(
+        FactorLLMConfig(
+            enabled=True,
+            provider="openai_compatible",
+            base_url="http://llm.local/v1",
+            api_key="test-key",
+            model="test-factor-model",
+            retry_count=0,
+        )
+    )
+    provider._client = _ReplayClient()
+    prompt = FactorMiningPrompt(
+        system_prompt="system",
+        user_prompt="user",
+        context_summary={},
+        request_payload={},
+        source_chain=[],
+        schema_path="/tmp/factor_candidate.schema.json",
+    )
+
+    result = await provider.generate_candidates(prompt, candidate_count=1)
+
+    assert result["candidate_count"] == 1
+    assert result["candidates"][0]["name"] == "stream_factor"
+    assert result["compatibility_mode"] == "chat_stream_replay"
+    assert provider.status()["health_status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_factor_llm_provider_smoke_check_recovers_via_chat_stream_replay():
+    from akshare_mcp.services.factor_llm_provider import FactorLLMConfig, FactorLLMProvider
+
+    nonstream_payload = {
+        "id": "resp_fake_nonstream",
+        "object": "chat.completion",
+        "created": 1775544050,
+        "model": "test-factor-model",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 8, "total_tokens": 13},
+    }
+    stream_chunks = [
+        'data: {"id":"resp_fake_stream","object":"chat.completion.chunk","created":1775544050,"model":"test-factor-model","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
+        'data: {"id":"resp_fake_stream","object":"chat.completion.chunk","created":1775544050,"model":"test-factor-model","choices":[{"index":0,"delta":{"content":"{\\"ok\\": true}"},"finish_reason":null}]}\n\n',
+        'data: {"id":"resp_fake_stream","object":"chat.completion.chunk","created":1775544050,"model":"test-factor-model","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}\n\n',
+        'data: [DONE]\n\n',
+    ]
+
+    class _ReplayClient:
+        is_closed = False
+
+        async def post(self, *args, **kwargs):
+            return _FakeResponse(
+                nonstream_payload,
+                headers={"content-type": "text/event-stream"},
+            )
+
+        def stream(self, *args, **kwargs):
+            return _FakeStreamResponse(stream_chunks)
+
+        async def aclose(self):
+            self.is_closed = True
+
+    provider = FactorLLMProvider(
+        FactorLLMConfig(
+            enabled=True,
+            provider="openai_compatible",
+            base_url="http://llm.local/v1",
+            api_key="test-key",
+            model="test-factor-model",
+            retry_count=0,
+        )
+    )
+    provider._client = _ReplayClient()
+
+    result = await provider.smoke_check(force=True)
+
+    assert result["status"] == "passed"
+    assert result["compatibility_mode"] == "chat_stream_replay"
+    assert provider.status()["health_status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_factor_llm_provider_blocks_empty_200_false_success():
+    from akshare_mcp.services.factor_llm_provider import (
+        FactorLLMConfig,
+        FactorLLMProvider,
+        FactorLLMRequestError,
+    )
+    from akshare_mcp.services.factor_prompt_builder import FactorMiningPrompt
+
+    class _EmptyBodyResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = ""
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            raise json.JSONDecodeError("Expecting value", "", 0)
+
+    async def _fake_post(*args, **kwargs):
+        return _EmptyBodyResponse()
+
+    provider = FactorLLMProvider(
+        FactorLLMConfig(
+            enabled=True,
+            provider="openai_compatible",
+            base_url="http://llm.local/v1",
+            api_key="test-key",
+            model="test-factor-model",
+            retry_count=0,
+            compatibility_cooldown_sec=120.0,
+        )
+    )
+    provider._client = SimpleNamespace(post=_fake_post, aclose=lambda: None)
+    prompt = FactorMiningPrompt(
+        system_prompt="system",
+        user_prompt="user",
+        context_summary={},
+        request_payload={},
+        source_chain=[],
+        schema_path="/tmp/factor_candidate.schema.json",
+    )
+
+    with pytest.raises(FactorLLMRequestError):
+        await provider.generate_candidates(prompt, candidate_count=1)
+
+    status = provider.status()
+
+    assert status["ready"] is False
+    assert status["health_status"] == "blocked"
+    assert status["compatibility_cooldown_active"] is True
+    assert status["last_error_type"] == "FactorLLMProviderCompatibilityError"
+    assert status["request_count"] == 1
+    assert status["last_compatibility_failure"]["empty_200_response"] is True
 
 
 @pytest.mark.asyncio

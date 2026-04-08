@@ -122,7 +122,7 @@ def _build_target_alignment_contract(
         limit=12,
     )
     target_count = len(target_symbols)
-    targeted_snapshot = task_source == "snapshot" and target_count > 1
+    targeted_snapshot = task_source == "snapshot" and target_count > 0
     event_targeted = task_source == "event_driven" and target_count > 0
 
     family_hints = set(
@@ -308,9 +308,84 @@ def _normalize_event_window_config(task: Optional[dict]) -> dict[str, Any]:
     }
 
 
+def _compact_task_metadata_value(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        preview = [
+            item
+            for item in value[:8]
+            if isinstance(item, (str, int, float, bool)) or item is None
+        ]
+        return preview or None
+    if isinstance(value, dict):
+        compact = {
+            str(key): item
+            for key, item in list(value.items())[:12]
+            if isinstance(item, (str, int, float, bool)) or item is None
+        }
+        if compact:
+            return compact
+    return None
+
+
+def _summarize_factor_research_metadata(factor_research: Optional[dict]) -> dict[str, Any]:
+    payload = dict(factor_research or {})
+    summary = dict(payload.get("summary") or {})
+    freshness_repair = dict(payload.get("freshness_repair") or {})
+    compact = {
+        "top_factor_names": list(summary.get("top_factor_names") or payload.get("active_factors") or [])[:6],
+        "preferred_strategy_types": _normalize_string_list(payload.get("preferred_strategy_types"), limit=6),
+        "degraded": bool(payload.get("degraded")),
+    }
+    for key in (
+        "active_candidate_count",
+        "candidate_pool_size",
+        "registry_size",
+        "freshness_days",
+        "refresh_status",
+    ):
+        value = summary.get(key)
+        if value not in (None, "", [], {}):
+            compact[key] = value
+    if freshness_repair:
+        compact["freshness_repair"] = {
+            key: freshness_repair.get(key)
+            for key in (
+                "refresh_attempted",
+                "refresh_status",
+                "refresh_trigger",
+                "fallback_reason",
+                "stale_days",
+            )
+            if freshness_repair.get(key) not in (None, "", [], {})
+        }
+    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
+
+
+def _compact_research_task_metadata(metadata: Optional[dict]) -> dict[str, Any]:
+    payload = dict(metadata or {})
+    compact: dict[str, Any] = {}
+    factor_research = _summarize_factor_research_metadata(payload.get("factor_research"))
+    if factor_research:
+        compact["factor_research"] = factor_research
+    for key, value in payload.items():
+        if key == "factor_research":
+            continue
+        compact_value = _compact_task_metadata_value(value)
+        if compact_value not in (None, "", [], {}):
+            compact[str(key)] = compact_value
+    return compact
+
+
 def _normalize_research_task_contract(task: Optional[dict]) -> dict[str, Any]:
     payload = dict(task or {})
     task_source = str(payload.get("task_source") or "snapshot").strip().lower() or "snapshot"
+    compact_metadata = _compact_research_task_metadata(payload.get("metadata") or {})
+    if compact_metadata:
+        payload = {**payload, "metadata": compact_metadata}
+    elif "metadata" in payload:
+        payload = {key: value for key, value in payload.items() if key != "metadata"}
 
     preferred_strategy_types = _normalize_string_list(
         payload.get("preferred_strategy_types") or payload.get("strategy_preferences"),
@@ -328,6 +403,8 @@ def _normalize_research_task_contract(task: Optional[dict]) -> dict[str, Any]:
     stock_pool = dict(payload.get("stock_pool") or {})
     if target_symbols and not stock_pool:
         stock_pool = {"selection_mode": "explicit", "symbols": list(target_symbols)}
+    targeted_snapshot = task_source == "snapshot" and len(target_symbols) > 0
+    event_targeted = task_source == "event_driven" and len(target_symbols) > 0
 
     target_symbol_policy_explicit = payload.get("target_symbol_policy") is not None
     universe_expansion_policy_explicit = payload.get("universe_expansion_policy") is not None
@@ -339,6 +416,12 @@ def _normalize_research_task_contract(task: Optional[dict]) -> dict[str, Any]:
         payload.get("universe_expansion_policy")
         or _task_default_universe_expansion_policy(task_source)
     ).strip().lower() or _task_default_universe_expansion_policy(task_source)
+    if targeted_snapshot and not target_symbol_policy_explicit:
+        target_symbol_policy = "strict_intersection"
+    if targeted_snapshot and not universe_expansion_policy_explicit:
+        universe_expansion_policy = "forbid"
+    if event_targeted and not universe_expansion_policy_explicit:
+        universe_expansion_policy = "allow_same_theme_only"
     preference_strength = str(
         payload.get("preference_strength")
         or _task_default_preference_strength(task_source)
@@ -600,15 +683,14 @@ def _apply_target_symbol_policy(
     }
 
 
-def _extract_target_codes_from_payload(payload: Optional[dict], limit: int = 12) -> List[str]:
+def _extract_candidate_origin_target_codes(payload: Optional[dict], limit: int = 12) -> List[str]:
     item = dict(payload or {})
     params = dict(item.get("params") or {})
     dsl = dict(params.get("dsl") or {})
     dsl_metadata = dict(dsl.get("metadata") or {})
     generation_reason = dict(item.get("generation_reason") or {})
-    research_task = dict(item.get("research_task") or {})
+    candidate_provenance = dict(item.get("candidate_provenance") or {})
     item_event_context = dict(item.get("event_context") or {})
-    task_event_context = dict(research_task.get("event_context") or {})
     return _normalize_target_codes([
         item.get("target_symbols"),
         item.get("stock_pool"),
@@ -616,16 +698,35 @@ def _extract_target_codes_from_payload(payload: Optional[dict], limit: int = 12)
         item_event_context.get("stock_pool"),
         params.get("target_symbols"),
         params.get("stock_pool"),
-        params.get("research_task"),
         params.get("event_context"),
         dsl_metadata.get("target_symbols"),
         dsl_metadata.get("stock_pool"),
         generation_reason.get("target_symbols"),
         generation_reason.get("stock_pool"),
+        candidate_provenance.get("target_symbols"),
+        candidate_provenance.get("stock_pool"),
+    ], limit=limit)
+
+
+def _extract_target_codes_from_payload(payload: Optional[dict], limit: int = 12) -> List[str]:
+    item = dict(payload or {})
+    candidate_codes = _extract_candidate_origin_target_codes(item, limit=limit)
+    if candidate_codes:
+        return list(candidate_codes)
+    params = dict(item.get("params") or {})
+    research_task = dict(item.get("research_task") or {})
+    task_event_context = dict(research_task.get("event_context") or {})
+    params_research_task = dict(params.get("research_task") or {})
+    params_task_event_context = dict(params_research_task.get("event_context") or {})
+    return _normalize_target_codes([
         research_task.get("target_symbols"),
         research_task.get("stock_pool"),
         task_event_context.get("target_symbols"),
         task_event_context.get("stock_pool"),
+        params_research_task.get("target_symbols"),
+        params_research_task.get("stock_pool"),
+        params_task_event_context.get("target_symbols"),
+        params_task_event_context.get("stock_pool"),
     ], limit=limit)
 
 
@@ -647,6 +748,7 @@ __all__ = [
     "_build_target_alignment_contract",
     "_apply_target_symbol_policy",
     "_build_task_signature",
+    "_extract_candidate_origin_target_codes",
     "_extract_target_codes_from_payload",
     "_resolve_strategy_sample_codes",
 ]

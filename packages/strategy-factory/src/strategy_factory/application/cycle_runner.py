@@ -9,16 +9,19 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from .governance_plane_contract import build_governance_plane_artifact
+from .research_plane_contract import build_research_plane_artifact
+from .services.candidate_pipeline import CandidatePipeline
 from .run_models import FactoryRunStatus, StageStatus
 from .services.readiness_service import (
+    READINESS_CONTRACT_VERSION,
+    ReadinessService,
+    build_readiness_authority,
     resolve_factor_refresh_trigger,
-    resolve_governed_pool_runtime_state,
     resolve_governed_pool_state,
 )
 from ..domain.constants import (
     FACTORY_FACTOR_REFRESH_TIMEOUT_SEC,
-    FACTORY_READINESS_MIN_COMPLETION_RATIO,
-    FACTORY_READINESS_MIN_SCORE,
     is_factory_factor_auto_refresh_enabled,
     is_factory_readiness_hard_block_enabled,
     is_factory_runtime_enabled,
@@ -53,6 +56,7 @@ class FactoryCycleRunner:
     def __init__(self, scheduler: "StrategyFactoryScheduler", context: FactoryRunContext):
         self._scheduler = scheduler
         self._context = context
+        self._readiness_service = getattr(self._scheduler, "_readiness_service", ReadinessService())
 
     async def _build_factor_research_artifact(self, factor_gateway, db, snapshot: dict[str, Any]) -> dict[str, Any]:
         scheduler = self._scheduler
@@ -108,160 +112,7 @@ class FactoryCycleRunner:
         snapshot: dict[str, Any],
         factor_research: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        scheduler = self._scheduler
-        factor_artifact = dict(factor_research or {})
-        factor_summary = dict(factor_artifact.get("summary") or {})
-        factor_refresh = dict(factor_artifact.get("freshness_repair") or {})
-        factor_source_mode = str(factor_summary.get("factor_source_mode") or "").strip().lower()
-        active_candidate_count = int(factor_summary.get("active_candidate_count") or 0)
-        governed_source_candidate_count = int(factor_summary.get("governed_source_candidate_count") or 0)
-        governed_pool_state = resolve_governed_pool_state(factor_summary)
-        governed_candidate_pool_mode = governed_pool_state.get("mode")
-        governed_candidate_pool_provisional = bool(governed_pool_state.get("provisional"))
-        governed_blocked_candidate_count = int(factor_summary.get("governed_blocked_candidate_count") or 0)
-        governed_blocked_ratio = scheduler._safe_float(factor_summary.get("governed_blocked_ratio"), default=0.0)
-        governed_freshness_days = factor_summary.get("governed_freshness_days")
-        scheduler_recent_success = bool(factor_summary.get("scheduler_recent_success"))
-        scheduler_llm_validation_status = factor_summary.get("scheduler_llm_validation_status")
-        governed_exclusion_reason_counts = dict(factor_summary.get("governed_exclusion_reason_counts") or {})
-        governed_risk_counts = dict(factor_summary.get("governed_risk_counts") or {})
-        governed_candidate_pool_active = bool(governed_pool_state.get("active"))
-        governed_pool_missing_after_scheduler_success = bool(
-            factor_source_mode == "governed_pool_missing_after_scheduler_success"
-            or bool(factor_summary.get("governed_pool_missing_after_scheduler_success"))
-            or (scheduler_recent_success and not governed_candidate_pool_active)
-        )
-        governed_pool_runtime_state = resolve_governed_pool_runtime_state(
-            factor_summary,
-            factor_refresh=factor_refresh,
-            factor_refresh_recommendation_reason=resolve_factor_refresh_trigger(
-                factor_artifact,
-                factor_summary=factor_summary,
-            ),
-        )
-        sources = dict(snapshot.get("sources") or {})
-        event_source = dict(sources.get("event_driven") or {})
-        event_state = dict(snapshot.get("event_driven") or {})
-        completion = dict(snapshot.get("completeness") or {})
-        completion_ratio = scheduler._safe_float(completion.get("completion_ratio"), default=1.0)
-        warnings: list[str] = []
-        blockers: list[str] = []
-        critical_blockers: list[str] = []
-        score = 1.0
-
-        if bool(snapshot.get("degraded")):
-            warnings.append("snapshot_degraded")
-            score -= 0.12
-        if completion_ratio < FACTORY_READINESS_MIN_COMPLETION_RATIO:
-            blockers.append("snapshot_completion_too_low")
-            score -= 0.28
-        elif completion_ratio < 0.9:
-            warnings.append("snapshot_completion_low")
-            score -= 0.08
-
-        event_status = str(event_source.get("status") or "unknown").strip().lower() or "unknown"
-        if event_status != "success":
-            warnings.append(f"event_driven_{event_status}")
-            score -= 0.08 if event_status == "partial" else 0.14
-        if event_status == "success" and int(event_state.get("tasks_ready_count") or 0) <= 0:
-            warnings.append("event_driven_no_ready_tasks")
-            score -= 0.03
-
-        if bool(factor_summary.get("degraded")):
-            warnings.append("factor_research_degraded")
-            score -= 0.14
-        if governed_candidate_pool_provisional:
-            warnings.append("governed_candidate_pool_provisional")
-            score -= 0.04
-        if governed_blocked_candidate_count > 0:
-            warnings.append("governed_candidate_pool_blocked_candidates")
-        if governed_blocked_ratio >= 0.75:
-            warnings.append("governed_candidate_pool_blocked_ratio_high")
-            score -= 0.12
-        elif governed_blocked_ratio >= 0.40:
-            warnings.append("governed_candidate_pool_blocked_ratio_elevated")
-            score -= 0.06
-        if governed_pool_missing_after_scheduler_success:
-            warnings.append("factor_scheduler_recent_success_without_governed_pool")
-            blockers.append("governed_candidate_pool_missing_after_scheduler_success")
-            critical_blockers.append("governed_candidate_pool_missing_after_scheduler_success")
-            score -= 0.18
-        if governed_pool_runtime_state == "refreshing_pool":
-            warnings.append("governed_candidate_pool_refreshing")
-            score -= 0.05
-        elif (
-            governed_pool_runtime_state == "blocked_by_governed_pool"
-            and not governed_pool_missing_after_scheduler_success
-        ):
-            warnings.append("governed_candidate_pool_refresh_blocked")
-            blockers.append("governed_candidate_pool_unavailable_after_refresh")
-            critical_blockers.append("governed_candidate_pool_unavailable_after_refresh")
-            score -= 0.18
-        if bool(factor_summary.get("stale")):
-            if governed_candidate_pool_active:
-                warnings.append("factor_research_history_stale_governed_pool_active")
-                score -= 0.06
-            else:
-                blockers.append("factor_research_stale")
-                score -= 0.32
-        if governed_candidate_pool_active:
-            if governed_freshness_days is None:
-                warnings.append("governed_candidate_pool_freshness_unknown")
-                score -= 0.05
-            elif scheduler._safe_float(governed_freshness_days, default=0.0) > 2:
-                warnings.append("governed_candidate_pool_stale")
-                score -= 0.08
-        refresh_status = str(factor_refresh.get("refresh_status") or "").strip().lower()
-        if bool(factor_refresh.get("refresh_attempted")) and refresh_status not in {"success", "not_needed"}:
-            warnings.append(f"factor_refresh_{refresh_status or 'unknown'}")
-            score -= 0.08
-
-        score = max(min(round(score, 4), 1.0), 0.0)
-        hard_block = is_factory_readiness_hard_block_enabled()
-        can_proceed = not critical_blockers and (
-            not hard_block or (score >= FACTORY_READINESS_MIN_SCORE and not blockers)
-        )
-        return {
-            "runtime_enabled": is_factory_runtime_enabled(),
-            "event_runtime_mode": resolve_event_runtime_mode(),
-            "auto_refresh_enabled": bool(factor_refresh.get("auto_refresh_enabled")),
-            "hard_block_enabled": hard_block,
-            "min_score": FACTORY_READINESS_MIN_SCORE,
-            "min_completion_ratio": FACTORY_READINESS_MIN_COMPLETION_RATIO,
-            "readiness_score": score,
-            "can_proceed": can_proceed,
-            "warnings": warnings,
-            "warning_count": len(warnings),
-            "blockers": blockers,
-            "blocker_count": len(blockers),
-            "critical_blockers": critical_blockers,
-            "critical_blocker_count": len(critical_blockers),
-            "snapshot_completion_ratio": completion_ratio,
-            "snapshot_degraded": bool(snapshot.get("degraded")),
-            "event_status": event_status,
-            "event_task_ready_count": int(event_state.get("tasks_ready_count") or 0),
-            "factor_research_stale": bool(factor_summary.get("stale")),
-            "factor_research_degraded": bool(factor_summary.get("degraded")),
-            "factor_source_mode": factor_summary.get("factor_source_mode"),
-            "governed_candidate_pool_active": governed_candidate_pool_active,
-            "governed_candidate_pool_runtime_state": governed_pool_runtime_state,
-            "governed_candidate_pool_mode": governed_candidate_pool_mode,
-            "governed_candidate_pool_provisional": governed_candidate_pool_provisional,
-            "governed_pool_missing_after_scheduler_success": governed_pool_missing_after_scheduler_success,
-            "active_candidate_count": active_candidate_count,
-            "governed_source_candidate_count": governed_source_candidate_count,
-            "governed_blocked_candidate_count": governed_blocked_candidate_count,
-            "governed_blocked_ratio": governed_blocked_ratio,
-            "governed_freshness_days": governed_freshness_days,
-            "governed_exclusion_reason_counts": governed_exclusion_reason_counts,
-            "governed_risk_counts": governed_risk_counts,
-            "active_family_count": len(list(factor_summary.get("active_family_names") or [])),
-            "active_regime_count": len(list(factor_summary.get("active_regime_names") or [])),
-            "scheduler_recent_success": scheduler_recent_success,
-            "scheduler_llm_validation_status": scheduler_llm_validation_status,
-            "factor_refresh_attempted": bool(factor_refresh.get("refresh_attempted")),
-            "factor_refresh_status": factor_refresh.get("refresh_status"),
-        }
+        return self._readiness_service.evaluate(snapshot, factor_research)
 
     async def _persist_enriched_snapshot(self, db, snapshot: dict[str, Any]) -> dict[str, Any] | None:
         method = getattr(db, "save_daily_snapshot", None)
@@ -284,6 +135,143 @@ class FactoryCycleRunner:
                 "error": str(exc),
             }
 
+    def _build_research_plane(
+        self,
+        *,
+        snapshot: dict[str, Any],
+        readiness: dict[str, Any] | None = None,
+        autonomy_stage: dict[str, Any] | None = None,
+        candidates: list[dict[str, Any]] | None = None,
+        experiments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return build_research_plane_artifact(
+            factor_research=snapshot.get("factor_research"),
+            readiness=readiness,
+            autonomy_stage=autonomy_stage,
+            candidates=candidates,
+            experiments=experiments,
+        )
+
+    @staticmethod
+    def _build_governance_plane(
+        *,
+        quality_gate_report: dict[str, Any] | None = None,
+        backtest_report: dict[str, Any] | None = None,
+        dedup_report: dict[str, Any] | None = None,
+        submit_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return build_governance_plane_artifact(
+            quality_gate_report=quality_gate_report,
+            backtest_report=backtest_report,
+            dedup_report=dedup_report,
+            submit_result=submit_result,
+        )
+
+    @staticmethod
+    def _apply_research_plane_summary(
+        summary: dict[str, Any],
+        research_plane: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        payload = dict(summary or {})
+        plane = dict(research_plane or {})
+        research_artifact = dict(plane.get("research_artifact") or {})
+        task_artifact = dict(plane.get("task_artifact") or {})
+        candidate_artifact = dict(plane.get("candidate_artifact") or {})
+        evidence_artifact = dict(plane.get("evidence_artifact") or {})
+        payload.update(
+            {
+                "research_plane_contract_version": plane.get("contract_version"),
+                "research_plane_available": bool(plane.get("available")),
+                "research_artifact_contract_version": research_artifact.get("contract_version"),
+                "research_task_artifact_contract_version": task_artifact.get("contract_version"),
+                "research_candidate_artifact_contract_version": candidate_artifact.get("contract_version"),
+                "research_evidence_artifact_contract_version": evidence_artifact.get("contract_version"),
+                "research_task_artifact_available": bool(task_artifact.get("available")),
+                "research_candidate_artifact_available": bool(candidate_artifact.get("available")),
+                "research_evidence_artifact_available": bool(evidence_artifact.get("available")),
+                "research_task_count": int(task_artifact.get("planned_task_count") or 0),
+                "research_candidate_count": int(candidate_artifact.get("candidate_count") or 0),
+                "research_experiment_count": int(evidence_artifact.get("experiment_count") or 0),
+                "research_task_evidence_count": int(evidence_artifact.get("task_evidence_count") or 0),
+                "lifecycle_feedback_input_contract_version": research_artifact.get(
+                    "lifecycle_feedback_input_contract_version"
+                ),
+                "lifecycle_feedback_input_available": bool(
+                    research_artifact.get("lifecycle_feedback_input_available")
+                ),
+                "lifecycle_feedback_family_count": int(
+                    research_artifact.get("lifecycle_feedback_family_count") or 0
+                ),
+                "lifecycle_feedback_strategy_count": int(
+                    research_artifact.get("lifecycle_feedback_strategy_count") or 0
+                ),
+                "lifecycle_feedback_target_pool_scope_count": int(
+                    research_artifact.get("lifecycle_feedback_target_pool_scope_count") or 0
+                ),
+                "lifecycle_feedback_generator_mode_scope_count": int(
+                    research_artifact.get("lifecycle_feedback_generator_mode_scope_count") or 0
+                ),
+                "lifecycle_feedback_runtime_alert_count": int(
+                    research_artifact.get("lifecycle_feedback_runtime_alert_count") or 0
+                ),
+                "lifecycle_feedback_runtime_risk_event_count": int(
+                    research_artifact.get("lifecycle_feedback_runtime_risk_event_count") or 0
+                ),
+                "lifecycle_feedback_promotion_review_count": int(
+                    research_artifact.get("lifecycle_feedback_promotion_review_count") or 0
+                ),
+                "lifecycle_feedback_promotion_review_status_counts": dict(
+                    research_artifact.get("lifecycle_feedback_promotion_review_status_counts") or {}
+                ),
+            }
+        )
+        return payload
+
+    @staticmethod
+    def _apply_governance_plane_summary(
+        summary: dict[str, Any],
+        governance_plane: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        payload = dict(summary or {})
+        plane = dict(governance_plane or {})
+        gate_artifact = dict(plane.get("gate_artifact") or {})
+        dedup_artifact = dict(plane.get("dedup_artifact") or {})
+        submission_artifact = dict(plane.get("submission_artifact") or {})
+        evidence_artifact = dict(plane.get("evidence_artifact") or {})
+        payload.update(
+            {
+                "governance_plane_contract_version": plane.get("contract_version"),
+                "governance_plane_available": bool(plane.get("available")),
+                "governance_gate_artifact_contract_version": gate_artifact.get("contract_version"),
+                "governance_dedup_artifact_contract_version": dedup_artifact.get("contract_version"),
+                "governance_submission_artifact_contract_version": submission_artifact.get(
+                    "contract_version"
+                ),
+                "governance_evidence_artifact_contract_version": evidence_artifact.get(
+                    "contract_version"
+                ),
+                "governance_gate_artifact_available": bool(gate_artifact.get("available")),
+                "governance_dedup_artifact_available": bool(dedup_artifact.get("available")),
+                "governance_submission_artifact_available": bool(
+                    submission_artifact.get("available")
+                ),
+                "governance_evidence_artifact_available": bool(evidence_artifact.get("available")),
+                "governance_gate_2_passed": int(gate_artifact.get("gate_2_passed") or 0),
+                "governance_after_dedup": int(dedup_artifact.get("kept_count") or 0),
+                "governance_gate_3_passed": int(submission_artifact.get("gate_3_passed") or 0),
+                "governance_refresh_existing_count": int(
+                    dedup_artifact.get("refreshed_existing_count") or 0
+                ),
+                "governance_multiple_testing_registry_count": int(
+                    evidence_artifact.get("multiple_testing_registry_count") or 0
+                ),
+                "governance_vector_profile_count": int(
+                    evidence_artifact.get("vector_profile_count") or 0
+                ),
+            }
+        )
+        return payload
+
     async def run(self) -> FactoryCycleOutcome:
         scheduler = self._scheduler
         db = self._context.db
@@ -303,6 +291,13 @@ class FactoryCycleRunner:
         logger.info("StrategyFactory: starting daily cycle")
 
         if not is_factory_runtime_enabled():
+            readiness_authority = build_readiness_authority(
+                can_proceed=False,
+                hard_gate_enabled=is_factory_readiness_hard_block_enabled(),
+                blocking_reason_codes=["runtime_disabled"],
+                critical_blocking_reason_codes=["runtime_disabled"],
+                skip_reason="runtime_disabled",
+            )
             results["status"] = FactoryRunStatus.SKIPPED.value
             results["completed_at"] = scheduler._now().isoformat()
             results["elapsed_seconds"] = 0.0
@@ -310,6 +305,7 @@ class FactoryCycleRunner:
                 "readiness",
                 trace_id,
                 {
+                    "readiness_contract_version": READINESS_CONTRACT_VERSION,
                     "runtime_enabled": False,
                     "event_runtime_mode": resolve_event_runtime_mode(),
                     "hard_block_enabled": is_factory_readiness_hard_block_enabled(),
@@ -319,6 +315,22 @@ class FactoryCycleRunner:
                     "warning_count": 0,
                     "blockers": ["runtime_disabled"],
                     "blocker_count": 1,
+                    "critical_blockers": ["runtime_disabled"],
+                    "critical_blocker_count": 1,
+                    "authority": readiness_authority,
+                    "authority_contract_version": readiness_authority.get("authority_contract_version"),
+                    "decision": readiness_authority.get("decision"),
+                    "blocked": readiness_authority.get("blocked"),
+                    "hard_gate": readiness_authority.get("hard_gate"),
+                    "gate_mode": readiness_authority.get("gate_mode"),
+                    "blocking_stage": readiness_authority.get("blocking_stage"),
+                    "blocking_reason_codes": list(
+                        readiness_authority.get("blocking_reason_codes") or []
+                    ),
+                    "critical_blocking_reason_codes": list(
+                        readiness_authority.get("critical_blocking_reason_codes") or []
+                    ),
+                    "skip_reason": readiness_authority.get("skip_reason"),
                 },
                 status=StageStatus.SKIPPED,
                 ok=True,
@@ -328,13 +340,32 @@ class FactoryCycleRunner:
                 "trace_id": trace_id,
                 "runtime_enabled": False,
                 "event_runtime_mode": resolve_event_runtime_mode(),
+                "factory_readiness_contract_version": READINESS_CONTRACT_VERSION,
+                "factory_readiness_authority_version": readiness_authority.get(
+                    "authority_contract_version"
+                ),
+                "factory_readiness_decision": readiness_authority.get("decision"),
+                "factory_readiness_hard_gate": readiness_authority.get("hard_gate"),
+                "factory_readiness_blocking_stage": readiness_authority.get("blocking_stage"),
+                "factory_readiness_blocking_reason_codes": list(
+                    readiness_authority.get("blocking_reason_codes") or []
+                ),
+                "factory_readiness_critical_blocking_reason_codes": list(
+                    readiness_authority.get("critical_blocking_reason_codes") or []
+                ),
                 "factory_readiness_score": 0.0,
                 "factory_readiness_can_proceed": False,
                 "factory_readiness_blocker_count": 1,
                 "factory_readiness_warning_count": 0,
-                "skip_reason": "runtime_disabled",
+                "skip_reason": readiness_authority.get("skip_reason"),
                 "elapsed_seconds": 0.0,
             }
+            governance_plane = self._build_governance_plane()
+            results["governance_plane"] = governance_plane
+            results["summary"] = self._apply_governance_plane_summary(
+                results["summary"],
+                governance_plane,
+            )
             results["summary"].update(scheduler._build_layered_run_summary(results["summary"], None))
             scheduler._apply_run_audit(results, persistence_failures=persistence_failures)
             return FactoryCycleOutcome(results, persistence_failures)
@@ -543,6 +574,20 @@ class FactoryCycleRunner:
                 hard_failure=False,
                 degraded=readiness_status == StageStatus.PARTIAL,
             )
+            research_plane = self._build_research_plane(
+                snapshot=snapshot,
+                readiness=readiness,
+            )
+            results["research_plane"] = research_plane
+            governance_plane = self._build_governance_plane()
+            results["governance_plane"] = governance_plane
+            if "factor_research" in results.get("stages", {}):
+                results["stages"]["factor_research"]["research_plane_contract_version"] = (
+                    research_plane.get("contract_version")
+                )
+                results["stages"]["factor_research"]["research_artifact"] = dict(
+                    research_plane.get("research_artifact") or {}
+                )
             snapshot_persist_failure = await self._persist_enriched_snapshot(db, snapshot)
             if snapshot_persist_failure is not None:
                 persistence_failures.append(snapshot_persist_failure)
@@ -558,6 +603,19 @@ class FactoryCycleRunner:
                     "trace_id": trace_id,
                     "runtime_enabled": bool(readiness.get("runtime_enabled")),
                     "event_runtime_mode": readiness.get("event_runtime_mode"),
+                    "factory_readiness_contract_version": readiness.get("readiness_contract_version"),
+                    "factory_readiness_authority_version": readiness.get(
+                        "authority_contract_version"
+                    ),
+                    "factory_readiness_decision": readiness.get("decision"),
+                    "factory_readiness_hard_gate": readiness.get("hard_gate"),
+                    "factory_readiness_blocking_stage": readiness.get("blocking_stage"),
+                    "factory_readiness_blocking_reason_codes": list(
+                        readiness.get("blocking_reason_codes") or []
+                    ),
+                    "factory_readiness_critical_blocking_reason_codes": list(
+                        readiness.get("critical_blocking_reason_codes") or []
+                    ),
                     "factory_readiness_score": readiness.get("readiness_score"),
                     "factory_readiness_can_proceed": False,
                     "factory_readiness_blocker_count": readiness.get("blocker_count", 0),
@@ -584,9 +642,17 @@ class FactoryCycleRunner:
                     "factor_research_refresh_trigger": factor_refresh_summary.get("refresh_trigger"),
                     "governed_exclusion_reason_counts": dict(readiness.get("governed_exclusion_reason_counts") or {}),
                     "governed_risk_counts": dict(readiness.get("governed_risk_counts") or {}),
-                    "skip_reason": "readiness_blocked",
+                    "skip_reason": readiness.get("skip_reason") or "readiness_blocked",
                     "elapsed_seconds": round(elapsed, 1),
                 }
+                results["summary"] = self._apply_research_plane_summary(
+                    results["summary"],
+                    research_plane,
+                )
+                results["summary"] = self._apply_governance_plane_summary(
+                    results["summary"],
+                    governance_plane,
+                )
                 results["summary"].update(scheduler._build_layered_run_summary(results["summary"], None))
                 logger.warning(
                     "StrategyFactory: run %s blocked by readiness controls: %s",
@@ -611,15 +677,35 @@ class FactoryCycleRunner:
             )
 
             autonomy_batch = {"stage": {"generated_count": 0}, "candidates": [], "experiments": []}
+            autonomy_stage = {"generated_count": 0}
+            autonomy_experiments: list[dict[str, Any]] = []
             try:
                 autonomy_batch = await scheduler._run_autonomy_batches(db, snapshot)
                 ai_candidates = autonomy_batch.get("candidates") or []
                 autonomy_stage = autonomy_batch.get("stage") or {}
+                autonomy_experiments = list(autonomy_batch.get("experiments") or [])
                 factory_attempt_count = int(autonomy_stage.get("external_llm_attempt_count") or 0)
+                factory_stage_attempt_count = int(
+                    autonomy_stage.get("external_llm_stage_attempt_count")
+                    or factory_attempt_count
+                )
+                factory_network_request_count = int(
+                    autonomy_stage.get("external_llm_network_request_count") or 0
+                )
+                factory_compatibility_skip_count = int(
+                    autonomy_stage.get("external_llm_compatibility_skip_count") or 0
+                )
+                factory_cooldown_skip_count = int(
+                    autonomy_stage.get("external_llm_cooldown_skip_count") or 0
+                )
                 factory_selected_count = int(autonomy_stage.get("external_llm_selected_count") or 0)
                 for ai_candidate in ai_candidates:
                     params = dict(ai_candidate.get("params") or {})
                     params["factory_attempt_count"] = factory_attempt_count
+                    params["factory_stage_attempt_count"] = factory_stage_attempt_count
+                    params["factory_network_request_count"] = factory_network_request_count
+                    params["factory_compatibility_skip_count"] = factory_compatibility_skip_count
+                    params["factory_cooldown_skip_count"] = factory_cooldown_skip_count
                     params["factory_selected_count"] = factory_selected_count
                     ai_candidate["params"] = params
                 candidates = [*candidates, *ai_candidates]
@@ -651,14 +737,44 @@ class FactoryCycleRunner:
                     apply_candidate_strategy_profile(candidate, snapshot=snapshot)
                     for candidate in candidates
                 ]
+                autonomy_stage = {"error": str(exc), "generated_count": 0}
                 results["stages"]["autonomy"] = scheduler._with_stage_meta(
                     "autonomy",
                     trace_id,
-                    {"error": str(exc), "generated_count": 0},
+                    autonomy_stage,
                     status=StageStatus.FAILED,
                     ok=False,
                     hard_failure=True,
                     degraded=True,
+                )
+
+            research_plane = self._build_research_plane(
+                snapshot=snapshot,
+                readiness=readiness,
+                autonomy_stage=autonomy_stage,
+                candidates=candidates,
+                experiments=autonomy_experiments,
+            )
+            results["research_plane"] = research_plane
+            if "factor_research" in results.get("stages", {}):
+                results["stages"]["factor_research"]["research_plane_contract_version"] = (
+                    research_plane.get("contract_version")
+                )
+                results["stages"]["factor_research"]["research_artifact"] = dict(
+                    research_plane.get("research_artifact") or {}
+                )
+            if "autonomy" in results.get("stages", {}):
+                results["stages"]["autonomy"]["research_plane_contract_version"] = (
+                    research_plane.get("contract_version")
+                )
+                results["stages"]["autonomy"]["task_artifact"] = dict(
+                    research_plane.get("task_artifact") or {}
+                )
+                results["stages"]["autonomy"]["candidate_artifact"] = dict(
+                    research_plane.get("candidate_artifact") or {}
+                )
+                results["stages"]["autonomy"]["evidence_artifact"] = dict(
+                    research_plane.get("evidence_artifact") or {}
                 )
 
             backtest_filter = factory_pkg.BacktestFilter()
@@ -821,6 +937,21 @@ class FactoryCycleRunner:
                 "trace_id": trace_id,
                 "runtime_enabled": bool(readiness_summary.get("runtime_enabled", True)),
                 "event_runtime_mode": readiness_summary.get("event_runtime_mode"),
+                "factory_readiness_contract_version": readiness_summary.get(
+                    "readiness_contract_version"
+                ),
+                "factory_readiness_authority_version": readiness_summary.get(
+                    "authority_contract_version"
+                ),
+                "factory_readiness_decision": readiness_summary.get("decision"),
+                "factory_readiness_hard_gate": readiness_summary.get("hard_gate"),
+                "factory_readiness_blocking_stage": readiness_summary.get("blocking_stage"),
+                "factory_readiness_blocking_reason_codes": list(
+                    readiness_summary.get("blocking_reason_codes") or []
+                ),
+                "factory_readiness_critical_blocking_reason_codes": list(
+                    readiness_summary.get("critical_blocking_reason_codes") or []
+                ),
                 "factory_readiness_score": readiness_summary.get("readiness_score"),
                 "factory_readiness_can_proceed": readiness_summary.get("can_proceed"),
                 "factory_readiness_blocker_count": readiness_summary.get("blocker_count", 0),
@@ -903,6 +1034,31 @@ class FactoryCycleRunner:
                 "selected_bulk_task_count": int(autonomy_summary.get("selected_bulk_task_count") or 0),
                 "planned_bulk_task_count": int(autonomy_summary.get("planned_bulk_task_count") or 0),
                 "clipped_bulk_task_count": int(autonomy_summary.get("clipped_bulk_task_count") or 0),
+                "blocked_feedback_task_count": int(autonomy_summary.get("blocked_feedback_task_count") or 0),
+                "planned_feedback_cooldown_task_count": int(
+                    autonomy_summary.get("planned_feedback_cooldown_task_count") or 0
+                ),
+                "planned_feedback_control_mode_counts": dict(
+                    autonomy_summary.get("planned_feedback_control_mode_counts") or {}
+                ),
+                "planned_feedback_target_pool_control_mode_counts": dict(
+                    autonomy_summary.get("planned_feedback_target_pool_control_mode_counts") or {}
+                ),
+                "planned_feedback_generator_mode_control_mode_counts": dict(
+                    autonomy_summary.get("planned_feedback_generator_mode_control_mode_counts") or {}
+                ),
+                "selected_feedback_control_mode_counts": dict(
+                    autonomy_summary.get("selected_feedback_control_mode_counts") or {}
+                ),
+                "selected_feedback_target_pool_control_mode_counts": dict(
+                    autonomy_summary.get("selected_feedback_target_pool_control_mode_counts") or {}
+                ),
+                "selected_feedback_generator_mode_control_mode_counts": dict(
+                    autonomy_summary.get("selected_feedback_generator_mode_control_mode_counts") or {}
+                ),
+                "suppressed_families": list(autonomy_summary.get("suppressed_families") or []),
+                "suppressed_target_pools": list(autonomy_summary.get("suppressed_target_pools") or []),
+                "suppressed_generator_modes": list(autonomy_summary.get("suppressed_generator_modes") or []),
                 "factor_research_used": bool(snapshot.get("factor_research")),
                 "active_factor_count": int(factor_research_summary.get("active_factor_count") or 0),
                 "active_candidate_count": int(factor_research_summary.get("active_candidate_count") or 0),
@@ -951,6 +1107,38 @@ class FactoryCycleRunner:
                 "factor_llm_provider_health_status": factor_research_summary.get("factor_llm_provider_health_status"),
                 "factor_llm_provider_rebuild_count": int(factor_research_summary.get("factor_llm_provider_rebuild_count") or 0),
                 "factor_llm_provider_last_error_type": factor_research_summary.get("factor_llm_provider_last_error_type"),
+                "lifecycle_feedback_input_contract_version": factor_research_summary.get(
+                    "lifecycle_feedback_input_contract_version"
+                ),
+                "lifecycle_feedback_input_available": bool(
+                    factor_research_summary.get("lifecycle_feedback_input_available")
+                ),
+                "budget_feedback_available": bool(factor_research_summary.get("budget_feedback_available")),
+                "budget_feedback_family_count": int(
+                    factor_research_summary.get("budget_feedback_family_count") or 0
+                ),
+                "budget_feedback_strategy_count": int(
+                    factor_research_summary.get("budget_feedback_strategy_count") or 0
+                ),
+                "budget_feedback_target_pool_scope_count": int(
+                    factor_research_summary.get("budget_feedback_target_pool_scope_count") or 0
+                ),
+                "budget_feedback_generator_mode_scope_count": int(
+                    factor_research_summary.get("budget_feedback_generator_mode_scope_count") or 0
+                ),
+                "budget_feedback_runtime_alert_count": int(
+                    factor_research_summary.get("budget_feedback_runtime_alert_count") or 0
+                ),
+                "budget_feedback_runtime_risk_event_count": int(
+                    factor_research_summary.get("budget_feedback_runtime_risk_event_count") or 0
+                ),
+                "budget_feedback_promotion_review_count": int(
+                    factor_research_summary.get("budget_feedback_promotion_review_count") or 0
+                ),
+                "budget_feedback_promotion_review_status_counts": dict(
+                    factor_research_summary.get("budget_feedback_promotion_review_status_counts")
+                    or {}
+                ),
                 "factor_research_refresh_attempted": bool(factor_refresh_summary.get("refresh_attempted")),
                 "factor_research_refresh_status": factor_refresh_summary.get("refresh_status"),
                 "factor_research_refresh_trigger": factor_refresh_summary.get("refresh_trigger"),
@@ -1009,12 +1197,59 @@ class FactoryCycleRunner:
                 "eliminated": len(eliminated),
                 "external_llm_status": autonomy_summary.get("external_llm_status"),
                 "external_llm_attempt_count": autonomy_summary.get("external_llm_attempt_count", 0),
+                "external_llm_stage_attempt_count": autonomy_summary.get(
+                    "external_llm_stage_attempt_count",
+                    autonomy_summary.get("external_llm_attempt_count", 0),
+                ),
+                "external_llm_network_request_count": autonomy_summary.get("external_llm_network_request_count", 0),
+                "external_llm_real_request_count": autonomy_summary.get("external_llm_real_request_count", 0),
+                "external_llm_compatibility_skip_count": autonomy_summary.get("external_llm_compatibility_skip_count", 0),
+                "external_llm_cooldown_skip_count": autonomy_summary.get("external_llm_cooldown_skip_count", 0),
+                "external_llm_compatibility_failure_count": autonomy_summary.get(
+                    "external_llm_compatibility_failure_count",
+                    0,
+                ),
+                "external_llm_compatibility_failure_ratio": autonomy_summary.get(
+                    "external_llm_compatibility_failure_ratio",
+                    0.0,
+                ),
+                "external_llm_effective_response_count": autonomy_summary.get(
+                    "external_llm_effective_response_count",
+                    0,
+                ),
+                "external_llm_effective_response_ratio": autonomy_summary.get(
+                    "external_llm_effective_response_ratio",
+                    0.0,
+                ),
+                "external_llm_empty_200_response_count": autonomy_summary.get(
+                    "external_llm_empty_200_response_count",
+                    0,
+                ),
+                "external_llm_request_status_counts": dict(
+                    autonomy_summary.get("external_llm_request_status_counts") or {}
+                ),
                 "external_llm_selected_count": autonomy_summary.get("external_llm_selected_count", 0),
                 "external_llm_last_error_type": autonomy_summary.get("external_llm_last_error_type"),
                 "external_llm_last_error": autonomy_summary.get("external_llm_last_error"),
+                "external_llm_provider_health_status": autonomy_summary.get("external_llm_provider_health_status"),
+                "external_llm_provider_scheduler_should_disable": bool(
+                    autonomy_summary.get("external_llm_provider_scheduler_should_disable")
+                ),
+                "external_llm_provider_scheduler_skip_reason": autonomy_summary.get(
+                    "external_llm_provider_scheduler_skip_reason"
+                ),
+                "external_llm_provider_control_mode": autonomy_summary.get("external_llm_provider_control_mode"),
+                "external_llm_provider_control_reasons": list(
+                    autonomy_summary.get("external_llm_provider_control_reasons") or []
+                ),
+                "generator_mode_controls": dict(autonomy_summary.get("generator_mode_controls") or {}),
                 "external_llm_elapsed_seconds": autonomy_summary.get("external_llm_elapsed_seconds"),
                 "elapsed_seconds": round(elapsed, 1),
             }
+            results["summary"] = self._apply_research_plane_summary(
+                results["summary"],
+                research_plane,
+            )
             results["summary"].update(scheduler._build_layered_run_summary(results["summary"], submit_result))
             scheduler._apply_run_audit(results, persistence_failures=persistence_failures)
 

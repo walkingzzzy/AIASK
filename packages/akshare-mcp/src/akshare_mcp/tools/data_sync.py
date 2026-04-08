@@ -16,7 +16,24 @@ from typing import Optional, List
 
 from ..services.data_sync import data_sync_service, CACHE_TTL
 from ..cache import cache
-from ..utils import ok
+from ..utils import enrich_response_meta, fail, now_iso, ok
+
+
+def _sync_envelope(result: dict, *, source: str) -> dict:
+    payload = dict(result or {})
+    payload.setdefault("source", source)
+    payload.setdefault("cached", False)
+    payload.setdefault("timestamp", now_iso())
+    if payload.get("success", False):
+        payload.setdefault("error", None)
+    else:
+        payload.setdefault("data", None)
+    return enrich_response_meta(
+        payload,
+        source=str(payload.get("source") or source),
+        source_chain=[str(payload.get("source") or source)],
+        degraded=bool(not payload.get("success", False)),
+    )
 
 
 def register(mcp):
@@ -55,7 +72,7 @@ def register(mcp):
             sync_kline_data("600519")
             sync_kline_data("000001", period="weekly", limit=50)
         """
-        return await data_sync_service.get_kline_with_cache(
+        result = await data_sync_service.get_kline_with_cache(
             stock_code=stock_code,
             period=period,
             start_date=start_date,
@@ -63,6 +80,7 @@ def register(mcp):
             limit=limit,
             use_cache=use_cache
         )
+        return _sync_envelope(result, source=str(result.get("source") or "data_sync.kline"))
 
     @mcp.tool()
     async def sync_trading_calendar(year: int = None) -> dict:
@@ -80,7 +98,8 @@ def register(mcp):
             sync_trading_calendar()
             sync_trading_calendar(year=2025)
         """
-        return await data_sync_service.sync_trading_dates(year)
+        result = await data_sync_service.sync_trading_dates(year)
+        return _sync_envelope(result, source=str(result.get("source") or "data_sync.trading_calendar"))
 
     @mcp.tool()
     async def batch_sync_klines(
@@ -105,12 +124,20 @@ def register(mcp):
             batch_sync_klines(["600519", "000001"])
             batch_sync_klines(["600519", "000858"], start_date="20250101")
         """
-        return await data_sync_service.sync_stock_klines(
-            codes=codes,
+        normalized_codes = [str(code or "").strip() for code in list(codes or []) if str(code or "").strip()]
+        if not normalized_codes:
+            return _sync_envelope(
+                fail("codes 不能为空"),
+                source="data_sync.batch_sync_klines",
+            )
+
+        result = await data_sync_service.sync_stock_klines(
+            codes=normalized_codes,
             start_date=start_date,
             end_date=end_date,
             period=period
         )
+        return _sync_envelope(result, source="data_sync.batch_sync_klines")
 
     @mcp.tool()
     def get_sync_status() -> dict:
@@ -129,14 +156,14 @@ def register(mcp):
         """
         metrics = data_sync_service.get_sync_metrics()
         dlq = data_sync_service.get_dead_letters(limit=1)
-        return {
+        return _sync_envelope({
             "success": True,
             "metrics": metrics,
             "dead_letters": {
                 "count": dlq.get("count", 0),
                 "path": dlq.get("path", ""),
             },
-        }
+        }, source="data_sync.status")
 
     @mcp.tool()
     def get_dead_letters(limit: int = 20) -> dict:
@@ -153,7 +180,15 @@ def register(mcp):
             get_dead_letters()
             get_dead_letters(limit=50)
         """
-        return data_sync_service.get_dead_letters(limit=limit)
+        if int(limit or 0) <= 0:
+            return _sync_envelope(
+                fail("limit 必须为正整数"),
+                source="data_sync.dead_letters",
+            )
+        return _sync_envelope(
+            data_sync_service.get_dead_letters(limit=limit),
+            source="data_sync.dead_letters",
+        )
 
     @mcp.tool()
     def clear_dead_letters() -> dict:
@@ -166,7 +201,10 @@ def register(mcp):
         Examples:
             clear_dead_letters()
         """
-        return data_sync_service.clear_dead_letters()
+        return _sync_envelope(
+            data_sync_service.clear_dead_letters(),
+            source="data_sync.dead_letters",
+        )
 
 
     @mcp.tool()
@@ -199,8 +237,8 @@ def register(mcp):
             clear_cache()
         """
         count = cache.clear()
-        return {
+        return _sync_envelope({
             "success": True,
             "cleared_count": count,
             "message": f"已清除 {count} 个缓存文件"
-        }
+        }, source="data_sync.cache")

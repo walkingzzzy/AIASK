@@ -11,6 +11,7 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any, List, Optional
 from uuid import uuid4
 
+from .candidate_contract import apply_resolved_candidate_envelope
 from .legacy_bridge import call_compat_async, get_compat_symbol, get_compat_value
 from .quality_gates import build_completed_gate_3_report
 from .quality_reporting import build_quality_report, normalize_quality_gate_result
@@ -247,7 +248,7 @@ class _StrategySubmitterHelpersMixin:
 
         @classmethod
         def _candidate_report_params(cls, candidate: Optional[dict]) -> dict[str, Any]:
-            payload = dict(candidate or {})
+            payload = apply_resolved_candidate_envelope(candidate)
             params = dict(payload.get("params") or {})
 
             def _assign_list(key: str, *values: Any) -> None:

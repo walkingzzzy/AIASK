@@ -96,6 +96,14 @@ def _build_metrics_from_latest(latest: dict) -> dict:
     }
 
 
+def _has_intrinsic_value_inputs(latest: dict) -> bool:
+    metrics = _build_metrics_from_latest(latest or {})
+    revenue = _safe_float(metrics.get("revenue"), 0.0)
+    net_income = _safe_float(metrics.get("net_income"), 0.0)
+    free_cash_flow = _safe_float(_latest_value(latest or {}, "free_cash_flow", "fcf"), 0.0)
+    return any(value > 0 for value in (revenue, net_income, free_cash_flow))
+
+
 def _dedupe_chain(items: list[str]) -> list[str]:
     deduped = []
     seen = set()
@@ -531,10 +539,15 @@ def register_fundamental_analysis_manager(mcp):
                     if stock_info:
                         financials = [dict(stock_info)]
                         source_chain = ['fundamental_analysis_manager', 'db.get_stock_info']
-                if not financials:
+                if not financials or not _has_intrinsic_value_inputs(financials[0]):
                     fin_data, tool_chain = await _get_financial_tool_payload(code)
                     if fin_data:
-                        financials = [fin_data]
+                        if financials:
+                            merged = dict(fin_data)
+                            merged.update({k: v for k, v in dict(financials[0]).items() if v not in (None, "", [], {})})
+                            financials = [merged]
+                        else:
+                            financials = [fin_data]
                         source_chain = ['fundamental_analysis_manager'] + list(tool_chain or ['finance.get_financials'])
 
                 if not financials:

@@ -3,12 +3,27 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_rules_dict(value) -> dict:
+    """将 risk_rules 字段安全地转换为 dict，防止反复 json.dumps 造成多层嵌套。"""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return {}
 
 DEFAULT_INCUBATION_CAPITAL = 100000.0
 DEFAULT_INCUBATION_RULES = {
@@ -97,7 +112,7 @@ class StrategyIncubationService:
                 float(account.get('initial_capital') or DEFAULT_INCUBATION_CAPITAL),
                 float(account.get('current_capital') or DEFAULT_INCUBATION_CAPITAL),
                 float(account.get('total_value') or DEFAULT_INCUBATION_CAPITAL),
-                __import__('json').dumps(account.get('risk_rules') or DEFAULT_INCUBATION_RULES),
+                json.dumps(_safe_rules_dict(account.get('risk_rules')) or DEFAULT_INCUBATION_RULES),
                 account.get('strategy_id'),
                 account.get('account_type') or 'incubation',
                 account.get('incubation_stage') or 'warmup',

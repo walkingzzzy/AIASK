@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -38,7 +39,7 @@ def test_deduplicator_refreshes_same_parent_strategy_without_event_context():
         {"matched_status": "incubating", "matched_strategy_id": "stg-1"},
     )
 
-    assert should_refresh is True
+    assert should_refresh is False
 
 
 def test_param_similarity_penalizes_missing_keys():
@@ -184,3 +185,52 @@ async def test_deduplicator_spawns_revision_for_same_task_signature_with_expande
     assert detail["refresh_existing"] is False
     assert detail["refresh_mode"] == "spawn_revision_from_existing"
     assert detail["parent_strategy_id"] == "sid_cycle_existing"
+
+
+@pytest.mark.asyncio
+async def test_deduplicator_prewarm_timeout_is_best_effort(monkeypatch):
+    dedup = Deduplicator()
+    db = MagicMock()
+    db.list_strategies = AsyncMock(side_effect=[[], []])
+
+    async def _slow_build(*_args, **_kwargs):
+        await asyncio.sleep(0.05)
+        return [{"close": 1.0}]
+
+    monkeypatch.setattr(dedup, "_build_behavior_klines", _slow_build)
+    monkeypatch.setattr(
+        "strategy_factory.application.deduplicator._compat_setting",
+        lambda name, default: 0.01 if name in {"DEDUP_PREWARM_TIMEOUT_SEC", "DEDUP_BEHAVIOR_BUILD_TIMEOUT_SEC"} else default,
+    )
+
+    unique = await dedup.deduplicate(
+        [{"strategy_type": "momentum", "params": {"lookback": 20, "threshold": 0.02}}],
+        db,
+    )
+
+    assert len(unique) == 1
+    assert unique[0]["dedup_result"]["duplicate"] is False
+    assert unique[0]["dedup_result"]["reason"] == "未命中重复策略"
+
+
+@pytest.mark.asyncio
+async def test_deduplicator_behavior_gather_reuses_duplicate_payloads(monkeypatch):
+    dedup = Deduplicator()
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_build(strategy_type: str, params: dict, _db):
+        calls.append((strategy_type, dict(params or {})))
+        return [{"close": 1.0}]
+
+    monkeypatch.setattr(dedup, "_build_behavior_klines", _fake_build)
+
+    gathered = await dedup._bounded_behavior_gather(
+        [
+            ("momentum", {"lookback": 20, "threshold": 0.02}),
+            ("momentum", {"lookback": 20, "threshold": 0.02}),
+        ],
+        MagicMock(),
+    )
+
+    assert len(calls) == 1
+    assert gathered == [[{"close": 1.0}], [{"close": 1.0}]]

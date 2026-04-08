@@ -39,8 +39,8 @@ def test_normalize_research_task_contract_for_snapshot_task():
     )
 
     assert task["task_source"] == "snapshot"
-    assert task["target_symbol_policy"] == "prefer_intersection"
-    assert task["universe_expansion_policy"] == "allow_market_fallback"
+    assert task["target_symbol_policy"] == "strict_intersection"
+    assert task["universe_expansion_policy"] == "forbid"
     assert task["preference_strength"] == "soft"
     assert task["validation_focus"] == "target_plus_representative"
     assert task["preferred_strategy_types"] == ["quality_factor"]
@@ -51,6 +51,58 @@ def test_normalize_research_task_contract_for_snapshot_task():
     assert task["target_alignment_contract"]["profile"] == "snapshot_targeted"
     assert task["target_alignment_contract"]["market_fallback_allowed"] is False
     assert task["target_alignment_contract"]["max_candidate_target_symbols"] == 2
+
+
+def test_normalize_research_task_contract_for_single_target_snapshot_task():
+    task = _normalize_research_task_contract(
+        {
+            "task_source": "snapshot",
+            "target_symbols": ["600519"],
+            "allowed_strategy_types": ["ma_cross"],
+        }
+    )
+
+    assert task["task_source"] == "snapshot"
+    assert task["target_symbols"] == ["600519"]
+    assert task["target_symbol_policy"] == "strict_intersection"
+    assert task["universe_expansion_policy"] == "forbid"
+    assert task["target_alignment_contract"]["profile"] in {"snapshot_targeted", "pipeline_staged_ma_cross"}
+    assert task["target_alignment_contract"]["market_fallback_allowed"] is False
+    assert task["target_alignment_contract"]["min_required_overlap_count"] == 1
+    assert task["target_alignment_contract"]["min_target_sample_count"] == 1
+
+
+def test_normalize_research_task_contract_compacts_factor_research_metadata():
+    task = _normalize_research_task_contract(
+        {
+            "task_source": "snapshot",
+            "target_symbols": ["600519", "000858"],
+            "metadata": {
+                "factor_research": {
+                    "active_factors": ["momentum_20d", "rsi_14", "turnover_ratio"],
+                    "preferred_strategy_types": ["momentum", "rsi"],
+                    "degraded": True,
+                    "summary": {
+                        "top_factor_names": ["momentum_20d", "rsi_14"],
+                        "active_candidate_count": 128,
+                        "candidate_pool_size": 32,
+                        "registry_size": 512,
+                        "freshness_days": 2,
+                        "refresh_status": "fresh",
+                    },
+                    "active_candidate_pool": {"items": [{"id": "candidate_001"} for _ in range(100)]},
+                },
+                "raw_blob": {"too": "large", "nested": {"ignored": True}},
+            },
+        }
+    )
+
+    factor_research = task["metadata"]["factor_research"]
+    assert factor_research["top_factor_names"] == ["momentum_20d", "rsi_14"]
+    assert factor_research["preferred_strategy_types"] == ["momentum", "rsi"]
+    assert factor_research["active_candidate_count"] == 128
+    assert "active_candidate_pool" not in factor_research
+    assert task["metadata"]["raw_blob"] == {"too": "large"}
 
 
 def test_apply_target_symbol_policy_strict_intersection_trims_to_task_targets():
@@ -75,6 +127,7 @@ def test_apply_target_symbol_policy_prefer_intersection_retains_candidate_when_n
             "task_source": "snapshot",
             "target_symbols": ["600519", "000858"],
             "target_symbol_policy": "prefer_intersection",
+            "universe_expansion_policy": "allow_market_fallback",
         },
     )
 
@@ -115,7 +168,7 @@ def test_apply_target_symbol_policy_blocks_default_snapshot_market_fallback_when
     )
 
     assert result["target_symbols"] == []
-    assert result["constraint_check"]["constraint_violation"] == "expansion_forbidden"
+    assert result["constraint_check"]["constraint_violation"] == "strict_intersection_empty"
     assert result["constraint_check"]["alignment_contract_violation"] == "empty_target_symbols_after_alignment"
 
 

@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import weakref
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -15,6 +16,8 @@ def test_get_db_registers_shutdown_hook_once(monkeypatch):
     monkeypatch.setattr(db_mod, 'TimescaleDBAdapter', _FakeAdapter)
     monkeypatch.setattr(db_mod.atexit, 'register', lambda fn: registered.append(fn))
     monkeypatch.setattr(db_mod, '_db_instance', None)
+    monkeypatch.setattr(db_mod, '_db_instances_by_loop', weakref.WeakKeyDictionary())
+    monkeypatch.setattr(db_mod, '_db_instances_by_thread', {})
     monkeypatch.setattr(db_mod, '_shutdown_registered', False)
 
     db1 = db_mod.get_db()
@@ -23,6 +26,160 @@ def test_get_db_registers_shutdown_hook_once(monkeypatch):
     assert isinstance(db1, _FakeAdapter)
     assert db1 is db2
     assert registered == [db_mod._safe_shutdown_db_atexit]
+
+
+def test_get_db_isolates_instances_by_event_loop(monkeypatch):
+    import akshare_mcp.storage.timescaledb as db_mod
+
+    class _FakeAdapter:
+        pass
+
+    class _Loop:
+        pass
+
+    loop_a = _Loop()
+    loop_b = _Loop()
+
+    monkeypatch.setattr(db_mod, 'TimescaleDBAdapter', _FakeAdapter)
+    monkeypatch.setattr(db_mod.atexit, 'register', lambda fn: None)
+    monkeypatch.setattr(db_mod, '_db_instance', None)
+    monkeypatch.setattr(db_mod, '_db_instances_by_loop', weakref.WeakKeyDictionary())
+    monkeypatch.setattr(db_mod, '_db_instances_by_thread', {})
+    monkeypatch.setattr(db_mod, '_shutdown_registered', False)
+
+    monkeypatch.setattr(db_mod.asyncio, 'get_running_loop', lambda: loop_a)
+    db_a1 = db_mod.get_db()
+    db_a2 = db_mod.get_db()
+
+    monkeypatch.setattr(db_mod.asyncio, 'get_running_loop', lambda: loop_b)
+    db_b = db_mod.get_db()
+
+    assert db_a1 is db_a2
+    assert db_a1 is not db_b
+
+
+def test_get_db_promotes_thread_scoped_instance_into_current_loop_cache(monkeypatch):
+    import akshare_mcp.storage.timescaledb as db_mod
+
+    class _FakeAdapter:
+        def __init__(self):
+            self._bound_loop = None
+
+    class _Loop:
+        pass
+
+    loop = _Loop()
+
+    def _raise_runtime_error():
+        raise RuntimeError("no running loop")
+
+    monkeypatch.setattr(db_mod, 'TimescaleDBAdapter', _FakeAdapter)
+    monkeypatch.setattr(db_mod.atexit, 'register', lambda fn: None)
+    monkeypatch.setattr(db_mod, '_db_instance', None)
+    monkeypatch.setattr(db_mod, '_db_instances_by_loop', weakref.WeakKeyDictionary())
+    monkeypatch.setattr(db_mod, '_db_instances_by_thread', {})
+    monkeypatch.setattr(db_mod, '_shutdown_registered', False)
+    monkeypatch.setattr(db_mod.asyncio, 'get_running_loop', _raise_runtime_error)
+
+    thread_scoped = db_mod.get_db()
+
+    monkeypatch.setattr(db_mod.asyncio, 'get_running_loop', lambda: loop)
+    loop_scoped = db_mod.get_db()
+
+    assert loop_scoped is thread_scoped
+    assert db_mod._db_instances_by_loop.get(loop) is thread_scoped
+    assert not db_mod._db_instances_by_thread
+
+
+@pytest.mark.asyncio
+async def test_close_db_only_closes_current_loop_instance(monkeypatch):
+    import akshare_mcp.storage.timescaledb as db_mod
+
+    class _Loop:
+        pass
+
+    current_loop = _Loop()
+    foreign_loop = _Loop()
+    current_instance = MagicMock()
+    current_instance.close = AsyncMock()
+    current_instance._bound_loop = current_loop
+    foreign_instance = MagicMock()
+    foreign_instance._bound_loop = foreign_loop
+
+    monkeypatch.setattr(
+        db_mod,
+        '_db_instances_by_loop',
+        weakref.WeakKeyDictionary({current_loop: current_instance, foreign_loop: foreign_instance}),
+    )
+    monkeypatch.setattr(db_mod, '_db_instances_by_thread', {})
+    monkeypatch.setattr(db_mod, '_db_instance', current_instance)
+    monkeypatch.setattr(db_mod.asyncio, 'get_running_loop', lambda: current_loop)
+
+    await db_mod.close_db()
+
+    current_instance.close.assert_awaited_once()
+    foreign_instance.close.assert_not_called()
+    assert db_mod._db_instances_by_loop.get(foreign_loop) is foreign_instance
+
+
+@pytest.mark.asyncio
+async def test_close_all_db_instances_terminates_foreign_loop_instance(monkeypatch):
+    import akshare_mcp.storage.timescaledb as db_mod
+
+    class _Loop:
+        pass
+
+    current_loop = _Loop()
+    foreign_loop = _Loop()
+    current_instance = MagicMock()
+    current_instance.close = AsyncMock()
+    current_instance._bound_loop = current_loop
+    foreign_instance = MagicMock()
+    foreign_instance._bound_loop = foreign_loop
+    terminated: list[object] = []
+
+    monkeypatch.setattr(
+        db_mod,
+        '_db_instances_by_loop',
+        weakref.WeakKeyDictionary({current_loop: current_instance, foreign_loop: foreign_instance}),
+    )
+    monkeypatch.setattr(db_mod, '_db_instances_by_thread', {})
+    monkeypatch.setattr(db_mod, '_db_instance', current_instance)
+    monkeypatch.setattr(db_mod.asyncio, 'get_running_loop', lambda: current_loop)
+    monkeypatch.setattr(
+        db_mod,
+        '_force_terminate_instance',
+        lambda instance, *, reason: terminated.append((instance, reason)),
+    )
+
+    await db_mod._close_all_db_instances()
+
+    current_instance.close.assert_awaited_once()
+    assert terminated and terminated[0][0] is foreign_instance
+
+
+@pytest.mark.asyncio
+async def test_close_db_closes_thread_scoped_instance_bound_to_current_loop(monkeypatch):
+    import akshare_mcp.storage.timescaledb as db_mod
+
+    class _Loop:
+        pass
+
+    current_loop = _Loop()
+    current_instance = MagicMock()
+    current_instance.close = AsyncMock()
+    current_instance._bound_loop = current_loop
+
+    monkeypatch.setattr(db_mod, '_db_instances_by_loop', weakref.WeakKeyDictionary())
+    monkeypatch.setattr(db_mod, '_db_instances_by_thread', {1: current_instance})
+    monkeypatch.setattr(db_mod, '_db_instance', current_instance)
+    monkeypatch.setattr(db_mod.threading, 'get_ident', lambda: 1)
+    monkeypatch.setattr(db_mod.asyncio, 'get_running_loop', lambda: current_loop)
+
+    await db_mod.close_db()
+
+    current_instance.close.assert_awaited_once()
+    assert not db_mod._db_instances_by_thread
 
 
 @pytest.mark.asyncio

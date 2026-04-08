@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from ..utils import now_iso, resolve_security_code
@@ -32,6 +33,20 @@ def _provenance_entry(source: str, dataset: str, timestamp: str | None = None) -
 
 def _merge_warnings(*sections: dict[str, Any]) -> list[str]:
     return unique_texts(*(section.get("warnings", []) for section in sections))
+
+
+async def _build_contexts(
+    *,
+    code: str,
+    user_id: str | None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    stock_context, quant_context, event_context, user_context = await asyncio.gather(
+        build_stock_context(code),
+        build_quant_context(code),
+        build_event_context(code),
+        build_user_context(user_id),
+    )
+    return stock_context, quant_context, event_context, user_context
 
 
 def _build_summary_payload(
@@ -103,10 +118,10 @@ async def _build_pipeline_payload(
         raise ValueError("需要提供股票代码（支持 code / stock_code / symbol / ticker）")
 
     style = _normalize_style(investment_style)
-    stock_context = await build_stock_context(normalized_code)
-    quant_context = await build_quant_context(normalized_code)
-    event_context = await build_event_context(normalized_code)
-    user_context = await build_user_context(user_id)
+    stock_context, quant_context, event_context, user_context = await _build_contexts(
+        code=normalized_code,
+        user_id=user_id,
+    )
     gate = build_rule_gates(
         code=normalized_code,
         investment_style=style,

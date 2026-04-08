@@ -18,6 +18,7 @@ from ._budget_feedback import (
     extract_feedback_root,
     extract_generator_mode,
     extract_target_pool_id,
+    normalize_feedback_input_contract,
     normalize_text,
     resolve_feedback_metrics,
 )
@@ -417,17 +418,23 @@ class FactorResearchBuilder:
                 budget_feedback_root,
                 family=family,
             )
+            control_mode = str(feedback_metrics.get("control_mode") or "").strip().lower()
+            if control_mode and control_mode != "normal":
+                raw_weights.append(0.0)
+                continue
             budget_multiplier = max(
-                0.35,
+                0.0,
                 min(
                     cls._safe_float(feedback_metrics.get("budget_multiplier")),
                     1.85,
                 ),
             )
             raw_weights.append(
-                max(0.05, float(priority or 0.0) * rank_multiplier * risk_multiplier * budget_multiplier)
+                max(0.0, float(priority or 0.0) * rank_multiplier * risk_multiplier * budget_multiplier)
             )
-        total = sum(raw_weights) or float(len(selected))
+        total = sum(raw_weights)
+        if total <= 0.0:
+            return [0.0 for _ in selected]
         normalized_weights: List[float] = []
         accumulated = 0.0
         for index, raw_weight in enumerate(raw_weights, 1):
@@ -495,6 +502,11 @@ class FactorResearchBuilder:
                         feedback_metrics.get("priority_adjustment")
                     ),
                     "feedback_failure_penalty_adjustment": feedback_penalty_adjustment,
+                    "feedback_control_mode": str(feedback_metrics.get("control_mode") or "normal"),
+                    "feedback_control_reasons": list(feedback_metrics.get("control_reasons") or []),
+                    "feedback_cooldown_active": bool(feedback_metrics.get("cooldown_active")),
+                    "feedback_suppressed": bool(feedback_metrics.get("suppressed")),
+                    "feedback_family_freeze_active": bool(feedback_metrics.get("family_freeze_active")),
                 }
             )
         plans.sort(
@@ -604,6 +616,57 @@ class FactorResearchBuilder:
                     return items
         return items
 
+    @staticmethod
+    def _resolve_promotion_review_outcome(
+        status_counts: dict[str, Any] | None,
+        recommendation_counts: dict[str, Any] | None,
+    ) -> tuple[str | None, str | None]:
+        normalized_status_counts = {
+            normalize_text(key): int(value or 0)
+            for key, value in dict(status_counts or {}).items()
+            if normalize_text(key)
+        }
+        normalized_recommendation_counts = {
+            normalize_text(key): int(value or 0)
+            for key, value in dict(recommendation_counts or {}).items()
+            if normalize_text(key)
+        }
+        status = next(
+            (
+                item
+                for item in ("rejected", "watch", "approved")
+                if int(normalized_status_counts.get(item) or 0) > 0
+            ),
+            None,
+        )
+        if status is None:
+            status = next(
+                (
+                    key
+                    for key, value in normalized_status_counts.items()
+                    if int(value or 0) > 0
+                ),
+                None,
+            )
+        recommendation = next(
+            (
+                item
+                for item in ("deprecate", "observe", "promote")
+                if int(normalized_recommendation_counts.get(item) or 0) > 0
+            ),
+            None,
+        )
+        if recommendation is None:
+            recommendation = next(
+                (
+                    key
+                    for key, value in normalized_recommendation_counts.items()
+                    if int(value or 0) > 0
+                ),
+                None,
+            )
+        return status, recommendation
+
     @classmethod
     def _accumulate_feedback_bucket(
         cls,
@@ -613,6 +676,7 @@ class FactorResearchBuilder:
         metrics: dict[str, Any],
         runtime_alert_count: int,
         runtime_risk_event_count: int,
+        promotion_review: dict[str, Any] | None = None,
     ) -> None:
         accumulator["strategy_count"] = int(accumulator.get("strategy_count") or 0) + 1
         if strategy_id:
@@ -634,11 +698,49 @@ class FactorResearchBuilder:
         accumulator["capacity_crowding_total"] = cls._safe_float(
             accumulator.get("capacity_crowding_total")
         ) + cls._safe_float(metrics.get("capacity_crowding"))
+        review = dict(promotion_review or {})
+        if review:
+            accumulator["promotion_review_count"] = int(
+                accumulator.get("promotion_review_count") or 0
+            ) + 1
+            review_status = normalize_text(review.get("status"))
+            if review_status:
+                status_counts = dict(accumulator.get("promotion_review_status_counts") or {})
+                status_counts[review_status] = int(status_counts.get(review_status) or 0) + 1
+                accumulator["promotion_review_status_counts"] = status_counts
+            review_recommendation = normalize_text(review.get("recommendation"))
+            if review_recommendation:
+                recommendation_counts = dict(
+                    accumulator.get("promotion_review_recommendation_counts") or {}
+                )
+                recommendation_counts[review_recommendation] = int(
+                    recommendation_counts.get(review_recommendation) or 0
+                ) + 1
+                accumulator["promotion_review_recommendation_counts"] = recommendation_counts
+            if review.get("score") is not None:
+                accumulator["promotion_review_score_total"] = cls._safe_float(
+                    accumulator.get("promotion_review_score_total")
+                ) + min(max(cls._safe_float(review.get("score")), 0.0), 1.0)
 
     @classmethod
     def _finalize_feedback_bucket(cls, accumulator: dict[str, Any]) -> dict[str, Any]:
         payload = dict(accumulator or {})
         strategy_count = max(0, int(payload.get("strategy_count") or 0))
+        promotion_review_count = max(0, int(payload.get("promotion_review_count") or 0))
+        promotion_review_status_counts = {
+            normalize_text(key): int(value or 0)
+            for key, value in dict(payload.get("promotion_review_status_counts") or {}).items()
+            if normalize_text(key)
+        }
+        promotion_review_recommendation_counts = {
+            normalize_text(key): int(value or 0)
+            for key, value in dict(payload.get("promotion_review_recommendation_counts") or {}).items()
+            if normalize_text(key)
+        }
+        promotion_review_status, promotion_review_recommendation = cls._resolve_promotion_review_outcome(
+            promotion_review_status_counts,
+            promotion_review_recommendation_counts,
+        )
         target_pool_feedback = {
             str(key): cls._finalize_feedback_bucket(value)
             for key, value in dict(payload.get("target_pool_feedback") or {}).items()
@@ -681,6 +783,24 @@ class FactorResearchBuilder:
         }
         if payload.get("ema_submit_count") is not None:
             result["ema_submit_count"] = round(cls._safe_float(payload.get("ema_submit_count")), 4)
+        if promotion_review_count > 0:
+            result["promotion_review_count"] = promotion_review_count
+            if promotion_review_status_counts:
+                result["promotion_review_status_counts"] = promotion_review_status_counts
+            if promotion_review_recommendation_counts:
+                result["promotion_review_recommendation_counts"] = (
+                    promotion_review_recommendation_counts
+                )
+            if payload.get("promotion_review_score_total") is not None:
+                result["promotion_review_score"] = round(
+                    cls._safe_float(payload.get("promotion_review_score_total"))
+                    / max(promotion_review_count, 1),
+                    4,
+                )
+            if promotion_review_status:
+                result["promotion_review_status"] = promotion_review_status
+            if promotion_review_recommendation:
+                result["promotion_review_recommendation"] = promotion_review_recommendation
         if target_pool_feedback:
             result["target_pool_feedback"] = target_pool_feedback
         if generator_mode_feedback:
@@ -711,6 +831,62 @@ class FactorResearchBuilder:
                     fresh_scope.get(scope_key),
                 )
             merged[scope_name] = merged_scope
+        base_review_count = int(base_payload.get("promotion_review_count") or 0)
+        fresh_review_count = int(fresh_payload.get("promotion_review_count") or 0)
+        merged_review_count = base_review_count + fresh_review_count
+        if merged_review_count > 0:
+            merged["promotion_review_count"] = merged_review_count
+            merged_status_counts: dict[str, int] = {}
+            for mapping in (
+                base_payload.get("promotion_review_status_counts"),
+                fresh_payload.get("promotion_review_status_counts"),
+            ):
+                for key, value in dict(mapping or {}).items():
+                    token = normalize_text(key)
+                    if not token:
+                        continue
+                    merged_status_counts[token] = int(merged_status_counts.get(token) or 0) + int(
+                        value or 0
+                    )
+            if merged_status_counts:
+                merged["promotion_review_status_counts"] = merged_status_counts
+            merged_recommendation_counts: dict[str, int] = {}
+            for mapping in (
+                base_payload.get("promotion_review_recommendation_counts"),
+                fresh_payload.get("promotion_review_recommendation_counts"),
+            ):
+                for key, value in dict(mapping or {}).items():
+                    token = normalize_text(key)
+                    if not token:
+                        continue
+                    merged_recommendation_counts[token] = int(
+                        merged_recommendation_counts.get(token) or 0
+                    ) + int(value or 0)
+            if merged_recommendation_counts:
+                merged["promotion_review_recommendation_counts"] = merged_recommendation_counts
+            weighted_score_total = 0.0
+            weighted_score_count = 0
+            for payload_item, review_count in (
+                (base_payload, base_review_count),
+                (fresh_payload, fresh_review_count),
+            ):
+                if review_count <= 0 or payload_item.get("promotion_review_score") is None:
+                    continue
+                weighted_score_total += cls._safe_float(payload_item.get("promotion_review_score")) * review_count
+                weighted_score_count += review_count
+            if weighted_score_count > 0:
+                merged["promotion_review_score"] = round(
+                    weighted_score_total / weighted_score_count,
+                    4,
+                )
+            review_status, review_recommendation = cls._resolve_promotion_review_outcome(
+                merged_status_counts,
+                merged_recommendation_counts,
+            )
+            if review_status:
+                merged["promotion_review_status"] = review_status
+            if review_recommendation:
+                merged["promotion_review_recommendation"] = review_recommendation
         return merged
 
     @classmethod
@@ -724,6 +900,9 @@ class FactorResearchBuilder:
         aggregate_root: dict[str, dict[str, Any]] = {}
         runtime_alert_total = 0
         runtime_risk_total = 0
+        promotion_review_total = 0
+        promotion_review_status_counts: dict[str, int] = {}
+        promotion_review_recommendation_counts: dict[str, int] = {}
         for strategy in strategy_rows:
             strategy_id = str(strategy.get("id") or "").strip()
             if not strategy_id:
@@ -763,8 +942,27 @@ class FactorResearchBuilder:
                 for item in list(risk_events or [])
                 if normalize_text((item or {}).get("status") or "open") not in {"resolved", "closed"}
             ]
+            latest_promotion_review = await _call_optional_async(
+                db,
+                "get_latest_strategy_promotion_review",
+                strategy_id,
+                default=None,
+            )
             runtime_alert_total += len(open_runtime_alerts)
             runtime_risk_total += len(open_risk_events)
+            review_payload = dict(latest_promotion_review or {})
+            if review_payload:
+                promotion_review_total += 1
+                review_status = normalize_text(review_payload.get("status"))
+                if review_status:
+                    promotion_review_status_counts[review_status] = int(
+                        promotion_review_status_counts.get(review_status) or 0
+                    ) + 1
+                review_recommendation = normalize_text(review_payload.get("recommendation"))
+                if review_recommendation:
+                    promotion_review_recommendation_counts[review_recommendation] = int(
+                        promotion_review_recommendation_counts.get(review_recommendation) or 0
+                    ) + 1
             paper_hit_ratio = cls._safe_float(latest_metric.get("hit_rate_5d"))
             if latest_metric.get("hit_rate_5d") is None:
                 paper_hit_ratio = 0.5
@@ -792,6 +990,7 @@ class FactorResearchBuilder:
                 metrics=feedback_metrics,
                 runtime_alert_count=len(open_runtime_alerts),
                 runtime_risk_event_count=len(open_risk_events),
+                promotion_review=review_payload,
             )
             target_pool_id = extract_target_pool_id(strategy)
             if target_pool_id:
@@ -803,6 +1002,7 @@ class FactorResearchBuilder:
                     metrics=feedback_metrics,
                     runtime_alert_count=len(open_runtime_alerts),
                     runtime_risk_event_count=len(open_risk_events),
+                    promotion_review=review_payload,
                 )
                 target_scope[target_pool_id] = scoped_bucket
                 family_bucket["target_pool_feedback"] = target_scope
@@ -816,6 +1016,7 @@ class FactorResearchBuilder:
                     metrics=feedback_metrics,
                     runtime_alert_count=len(open_runtime_alerts),
                     runtime_risk_event_count=len(open_risk_events),
+                    promotion_review=review_payload,
                 )
                 generator_scope[generator_mode] = scoped_bucket
                 family_bucket["generator_mode_feedback"] = generator_scope
@@ -840,20 +1041,27 @@ class FactorResearchBuilder:
             for bucket in merged_root.values()
             if isinstance(bucket, dict)
         )
-        return {
-            "available": bool(merged_root),
-            "reason": None if merged_root else "feedback_unavailable",
-            "feedback": merged_root,
-            "summary": {
-                "family_count": len(merged_root),
-                "seeded_family_count": len(seed_feedback_root),
-                "strategy_count": len(strategy_rows),
-                "runtime_alert_count": runtime_alert_total,
-                "runtime_risk_event_count": runtime_risk_total,
-                "target_pool_scope_count": target_pool_scope_count,
-                "generator_mode_scope_count": generator_mode_scope_count,
-            },
-        }
+        return normalize_feedback_input_contract(
+            {
+                "available": bool(merged_root),
+                "reason": None if merged_root else "feedback_unavailable",
+                "feedback": merged_root,
+                "summary": {
+                    "family_count": len(merged_root),
+                    "seeded_family_count": len(seed_feedback_root),
+                    "strategy_count": len(strategy_rows),
+                    "runtime_alert_count": runtime_alert_total,
+                    "runtime_risk_event_count": runtime_risk_total,
+                    "promotion_review_count": promotion_review_total,
+                    "promotion_review_status_counts": promotion_review_status_counts,
+                    "promotion_review_recommendation_counts": (
+                        promotion_review_recommendation_counts
+                    ),
+                    "target_pool_scope_count": target_pool_scope_count,
+                    "generator_mode_scope_count": generator_mode_scope_count,
+                },
+            }
+        )
 
     @staticmethod
     def _family_allocation_entropy(family_counts: dict[str, int]) -> float:
@@ -898,6 +1106,24 @@ class FactorResearchBuilder:
                 priority=bounded_priority,
                 budget_feedback_root=budget_feedback_root,
             )
+            active_family_plans = [
+                plan
+                for plan in family_plans
+                if str(plan.get("feedback_control_mode") or "normal").strip().lower() == "normal"
+                and cls._safe_float(plan.get("budget_weight")) > 0.0
+            ]
+            if not active_family_plans:
+                return
+            selected_families = [
+                str(plan.get("family") or "").strip().lower()
+                for plan in active_family_plans[:families_per_stock]
+                if str(plan.get("family") or "").strip()
+            ]
+            family_plans = [
+                plan
+                for plan in family_plans
+                if str(plan.get("family") or "").strip().lower() in set(selected_families)
+            ]
             allocation[normalized_code] = {
                 "families": selected_families,
                 "family_plans": family_plans,
@@ -1083,24 +1309,26 @@ class FactorResearchBuilder:
         model_lineage_summary = dict(model_registry_lineage.get("summary") or {})
         model_lineage_by_validation_id = dict(model_registry_lineage.get("by_validation_artifact_id") or {})
         if lightweight_mock_fallback:
-            budget_feedback_payload = {
-                "available": False,
-                "reason": "lightweight_mock_fallback",
-                "feedback": dict(snapshot.get("family_gate_feedback") or {}),
-                "summary": {
-                    "family_count": len(dict(snapshot.get("family_gate_feedback") or {})),
-                    "seeded_family_count": len(dict(snapshot.get("family_gate_feedback") or {})),
+            seed_feedback_root = extract_feedback_root(snapshot.get("family_gate_feedback") or {})
+            budget_feedback_payload = normalize_feedback_input_contract(
+                {"feedback": seed_feedback_root},
+                available=bool(seed_feedback_root),
+                reason="lightweight_mock_fallback" if not seed_feedback_root else None,
+                summary={
+                    "family_count": len(seed_feedback_root),
+                    "seeded_family_count": len(seed_feedback_root),
                     "strategy_count": 0,
                     "runtime_alert_count": 0,
                     "runtime_risk_event_count": 0,
                     "target_pool_scope_count": 0,
                     "generator_mode_scope_count": 0,
                 },
-            }
+            )
         else:
             budget_feedback_payload = await cls._load_budget_feedback(db, snapshot)
-        budget_feedback_root = dict(budget_feedback_payload.get("feedback") or {})
-        budget_feedback_summary = dict(budget_feedback_payload.get("summary") or {})
+        lifecycle_feedback_input = normalize_feedback_input_contract(budget_feedback_payload)
+        budget_feedback_root = dict(lifecycle_feedback_input.get("feedback") or {})
+        budget_feedback_summary = dict(lifecycle_feedback_input.get("summary") or {})
         governed_source_candidate_count = int(
             active_candidate_pool.get("source_count")
             or governed_registry_summary.get("active_count")
@@ -1416,6 +1644,12 @@ class FactorResearchBuilder:
                 f"families={int(budget_feedback_summary.get('family_count') or 0)} "
                 f"strategies={int(budget_feedback_summary.get('strategy_count') or 0)}"
             )
+        if int(budget_feedback_summary.get("promotion_review_count") or 0) > 0:
+            rationale.append(
+                "生命周期反馈已纳入 promotion review: "
+                f"count={int(budget_feedback_summary.get('promotion_review_count') or 0)} "
+                f"status={dict(budget_feedback_summary.get('promotion_review_status_counts') or {})}"
+            )
         if governed_blocked_ratio >= 0.40:
             rationale.append(f"治理候选池 blocked 比例偏高: {round(governed_blocked_ratio * 100, 1)}%")
         governed_pool_observable = bool(
@@ -1506,6 +1740,7 @@ class FactorResearchBuilder:
             "top_candidate_lineage": top_candidate_lineage,
             "blocked_candidate_lineage": blocked_candidate_lineage,
             "model_registry_lineage": model_registry_lineage,
+            "lifecycle_feedback_input": lifecycle_feedback_input,
             "budget_feedback": budget_feedback_root,
             "active_candidate_pool": active_candidate_pool,
             "stock_family_allocation": stock_family_allocation,
@@ -1587,7 +1822,13 @@ class FactorResearchBuilder:
                 "stock_family_allocation_entropy": stock_family_allocation_summary.get("allocation_entropy"),
                 "stock_family_allocation_avg_priority": stock_family_allocation_summary.get("avg_priority"),
                 "stock_family_allocation_source_mode": stock_family_allocation_summary.get("source_mode"),
-                "budget_feedback_available": bool(budget_feedback_payload.get("available")),
+                "lifecycle_feedback_input_contract_version": lifecycle_feedback_input.get(
+                    "contract_version"
+                ),
+                "lifecycle_feedback_input_available": bool(
+                    lifecycle_feedback_input.get("available")
+                ),
+                "budget_feedback_available": bool(lifecycle_feedback_input.get("available")),
                 "budget_feedback_family_count": int(budget_feedback_summary.get("family_count") or 0),
                 "budget_feedback_strategy_count": int(budget_feedback_summary.get("strategy_count") or 0),
                 "budget_feedback_target_pool_scope_count": int(
@@ -1601,6 +1842,12 @@ class FactorResearchBuilder:
                 ),
                 "budget_feedback_runtime_risk_event_count": int(
                     budget_feedback_summary.get("runtime_risk_event_count") or 0
+                ),
+                "budget_feedback_promotion_review_count": int(
+                    budget_feedback_summary.get("promotion_review_count") or 0
+                ),
+                "budget_feedback_promotion_review_status_counts": dict(
+                    budget_feedback_summary.get("promotion_review_status_counts") or {}
                 ),
                 "degraded": degraded,
                 "freshness_days": freshness_days,

@@ -197,6 +197,8 @@ export default function HomePage() {
 
   const watchlistItems = useWatchlistStore((s) => s.groups.flatMap((g) => g.items));
   const recentStocks = useStockContext((s) => s.recent);
+  const hydratedWatchlistItems = mounted ? watchlistItems : [];
+  const hydratedRecentStocks = mounted ? recentStocks : [];
 
   /* ── WS real-time quotes ─────────────────────────────────────── */
   const wsQuotesRef = useRef<Map<string, DashboardQuoteSnapshot>>(new Map());
@@ -312,6 +314,10 @@ export default function HomePage() {
     () => extractArray(strategySubsQ.data, 'strategies', 'items', 'data'),
     [strategySubsQ.data],
   );
+  const activeAlertCount = mounted ? activeAlerts.length : 0;
+  const watchlistCount = hydratedWatchlistItems.length;
+  const primaryStockCode = hydratedRecentStocks[0]?.code || hydratedWatchlistItems[0]?.code || undefined;
+  const displayDateStr = mounted ? dateStr : '';
 
   /* ── Module statuses ──────────────────────────────────────────── */
   const moduleStatuses = useMemo(() => {
@@ -347,7 +353,7 @@ export default function HomePage() {
 
   /* ── Quick actions & anomalies ────────────────────────────────── */
   const quickActions = useMemo<DashboardQuickAction[]>(() => {
-    const dc = mounted ? recentStocks[0]?.code || watchlistItems[0]?.code || '600519' : '600519';
+    const dc = mounted ? primaryStockCode || '600519' : '600519';
     return [
       {
         href: '/market?task=watchlist-scan&from=home',
@@ -375,14 +381,14 @@ export default function HomePage() {
         description: '带代码进入回测分析',
       },
     ];
-  }, [mounted, recentStocks, watchlistItems]);
+  }, [mounted, primaryStockCode]);
   const latestNorthValue = Number(latestNorth?.total ?? latestNorth?.netInflow ?? latestNorth?.net_inflow ?? 0);
   const latestNorthLabel = latestNorth ? fmtAmount(latestNorthValue) : '暂无数据';
   const priorityActions = quickActions.slice(0, 4);
   const heroNotes = [
     `优先先看 ${fgLabel}、指数和北向流向，再决定是去行情、风险还是策略页继续深入。`,
-    activeAlerts.length > 0
-      ? `当前有 ${activeAlerts.length} 条活跃告警，首页不建议停留过久，最好尽快回到对应工作流处理。`
+    activeAlertCount > 0
+      ? `当前有 ${activeAlertCount} 条活跃告警，首页不建议停留过久，最好尽快回到对应工作流处理。`
       : '当前没有活跃告警，适合把时间留给市场轮动、板块热力和自选复盘。',
     `最近更新 ${lastUpdated ? lastUpdated.toLocaleTimeString('zh-CN') : '暂无刷新记录'}，如果你要做即时判断，建议先手动刷新一次首页数据。`,
   ];
@@ -562,12 +568,12 @@ export default function HomePage() {
   usePageContext({
     pageKey: 'home',
     title: '首页总览',
-    summary: `当前监控 ${validIndices.length} 个指数，${marketAnomalies.length} 条市场异常，活跃告警 ${activeAlerts.length} 条，自选股 ${watchlistItems.length} 只。`,
-    stockCode: recentStocks[0]?.code || watchlistItems[0]?.code || undefined,
+    summary: `当前监控 ${validIndices.length} 个指数，${marketAnomalies.length} 条市场异常，活跃告警 ${activeAlertCount} 条，自选股 ${watchlistCount} 只。`,
+    stockCode: primaryStockCode,
     tags: [
       `${validIndices.length} 个指数`,
-      `${activeAlerts.length} 条告警`,
-      `${watchlistItems.length} 只自选`,
+      `${activeAlertCount} 条告警`,
+      `${watchlistCount} 只自选`,
       fgLabel,
     ],
     suggestions: [
@@ -578,8 +584,8 @@ export default function HomePage() {
     raw: {
       indices: validIndices.length,
       marketAnomalies: marketAnomalies.length,
-      alerts: activeAlerts.length,
-      watchlist: watchlistItems.length,
+      alerts: activeAlertCount,
+      watchlist: watchlistCount,
       fearGreed: fgValue,
       northFund: Number(latestNorth?.total ?? latestNorth?.netInflow ?? latestNorth?.net_inflow ?? 0),
     },
@@ -651,7 +657,7 @@ export default function HomePage() {
                 {fgLabel}
               </span>
               <span className="rounded-full border border-white/55 bg-white/34 px-3 py-1 text-xs text-text-primary">
-                {activeAlerts.length > 0 ? `${activeAlerts.length} 条活跃告警` : '当前无活跃告警'}
+                {activeAlertCount > 0 ? `${activeAlertCount} 条活跃告警` : '当前无活跃告警'}
               </span>
             </div>
             <h1 className="mb-0 mt-4 text-[2rem] font-semibold tracking-[-0.03em] text-text-primary sm:text-[2.4rem]">
@@ -662,7 +668,7 @@ export default function HomePage() {
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               <AskAiButton
-                stockCode={recentStocks[0]?.code || watchlistItems[0]?.code}
+                stockCode={primaryStockCode}
                 prompt="请总结今日市场状态、主要指数和需要关注的信号"
                 label="AI 市场晨会"
               />
@@ -680,7 +686,7 @@ export default function HomePage() {
             <div className="mt-5 grid gap-3 sm:grid-cols-4">
               <div className="rounded-[24px] border border-white/45 bg-white/38 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">当前时间</div>
-                <div className="mt-3 text-base font-semibold text-text-primary">{dateStr || '等待同步'}</div>
+                <div className="mt-3 text-base font-semibold text-text-primary">{displayDateStr || '等待同步'}</div>
                 <div className="mt-1 text-xs text-text-secondary">用于判断行情节奏与刷新时点</div>
               </div>
               <div className="rounded-[24px] border border-white/45 bg-white/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.48)]">
@@ -697,7 +703,7 @@ export default function HomePage() {
               </div>
               <div className="rounded-[24px] border border-white/45 bg-white/24 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted">自选池</div>
-                <div className="mt-3 text-2xl font-semibold text-text-primary">{watchlistItems.length}</div>
+                <div className="mt-3 text-2xl font-semibold text-text-primary">{watchlistCount}</div>
                 <div className="mt-1 text-xs text-text-secondary">和首页行情联动的重点标的数量</div>
               </div>
             </div>
@@ -766,7 +772,7 @@ export default function HomePage() {
         </div>
         <MarketOverview
           mounted={mounted}
-          dateStr={dateStr}
+          dateStr={displayDateStr}
           lastUpdated={lastUpdated}
           fgValue={fgValue}
           luStats={luStats}
@@ -788,8 +794,8 @@ export default function HomePage() {
         paperAccount={paperAccount}
         paperPositions={paperPositions}
         activeAlerts={activeAlerts}
-        watchlistItems={watchlistItems}
-        recentStocks={recentStocks}
+        watchlistItems={hydratedWatchlistItems}
+        recentStocks={hydratedRecentStocks}
         quoteMap={quoteMap}
         batchQIsFetching={batchQ.isFetching}
         mounted={mounted}
@@ -827,8 +833,8 @@ export default function HomePage() {
           />
           <WatchlistRecent
             mounted={mounted}
-            watchlistItems={watchlistItems}
-            recentStocks={recentStocks}
+            watchlistItems={hydratedWatchlistItems}
+            recentStocks={hydratedRecentStocks}
             quoteMap={quoteMap}
             batchQIsFetching={batchQ.isFetching}
           />

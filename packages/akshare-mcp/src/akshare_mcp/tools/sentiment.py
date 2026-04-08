@@ -611,6 +611,9 @@ def register(mcp):
         try:
             db = get_db()
             stock_code = resolve_security_code(code, stock_code=stock_code)
+            normalized_action = str(action or '').strip().lower()
+            if normalized_action and normalized_action not in {'buy', 'sell', 'hold'}:
+                return fail("action 仅支持 buy/sell/hold")
             if isinstance(cognitive_biases, (list, tuple, set)):
                 biases_list = [str(b).strip() for b in cognitive_biases if str(b).strip()]
             else:
@@ -624,7 +627,7 @@ def register(mcp):
                         emotion_polarity, emotion_intensity, cognitive_biases,
                         risk_aversion, kyc_level, reasoning_chain)
                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
-                    user_id, strategy_id or None, stock_code or None, action,
+                    user_id, strategy_id or None, stock_code or None, normalized_action or None,
                     emotion_polarity, emotion_intensity, biases_list,
                     risk_aversion, kyc_level or None, reasoning_chain,
                 )

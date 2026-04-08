@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 import requests
 
+from ..cache import cache
 from ..utils import parse_numeric
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ _SECTOR_FLOW_CACHE_PATH = os.getenv(
     "AKSHARE_SECTOR_FLOW_CACHE_PATH",
     os.path.join(os.getcwd(), ".mcp_cache", "sector_fund_flow.json"),
 )
+_SECTOR_FLOW_CACHE_KEY = "fund_flow:sector:v2"
 
 # In-memory sector-flow cache (shared mutable state)
 _sector_flow_cache: dict[str, Any] = {"data": None, "ts": 0.0}
@@ -157,10 +159,10 @@ def _fetch_eastmoney_datacenter(params: dict[str, Any]) -> list[dict]:
 
 
 # =====================
-# Sector-flow file cache helpers
+# Sector-flow cache helpers
 # =====================
 
-def _load_sector_flow_cache_file() -> Optional[list[dict]]:
+def _load_sector_flow_legacy_cache_file() -> Optional[list[dict]]:
     try:
         if not _SECTOR_FLOW_CACHE_PATH:
             return None
@@ -181,15 +183,28 @@ def _load_sector_flow_cache_file() -> Optional[list[dict]]:
         return None
 
 
-def _save_sector_flow_cache_file(data: list[dict]) -> None:
+def _load_sector_flow_cache() -> Optional[list[dict]]:
     try:
-        if not _SECTOR_FLOW_CACHE_PATH:
+        cached_data = cache.get(_SECTOR_FLOW_CACHE_KEY, _SECTOR_FLOW_CACHE_MAX_AGE)
+        if isinstance(cached_data, list) and cached_data:
+            return cached_data
+    except Exception:
+        pass
+
+    legacy_cached = _load_sector_flow_legacy_cache_file()
+    if legacy_cached:
+        try:
+            cache.set(_SECTOR_FLOW_CACHE_KEY, legacy_cached)
+        except Exception:
+            pass
+        return legacy_cached
+    return None
+
+
+def _save_sector_flow_cache(data: list[dict]) -> None:
+    try:
+        if not isinstance(data, list) or not data:
             return
-        folder = os.path.dirname(_SECTOR_FLOW_CACHE_PATH)
-        if folder:
-            os.makedirs(folder, exist_ok=True)
-        payload = {"ts": time.time(), "data": data}
-        with open(_SECTOR_FLOW_CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
+        cache.set(_SECTOR_FLOW_CACHE_KEY, data)
     except Exception:
         return

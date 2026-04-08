@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 
@@ -200,3 +202,116 @@ async def test_decision_registers_unified_decision_tools(monkeypatch):
     assert "details" in details_result["data"]
     assert wrapper_result["success"] is True
     assert wrapper_result["data"]["details"]["requested"]["code"] == "600519"
+
+
+@pytest.mark.asyncio
+async def test_unified_decision_summary_payload_builds_contexts_concurrently(monkeypatch):
+    from akshare_mcp.services import decision_contracts
+
+    started: set[str] = set()
+    ready = asyncio.Event()
+
+    def _make_builder(name, payload):
+        async def _builder(*_args, **_kwargs):
+            started.add(name)
+            if len(started) == 4:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), timeout=0.2)
+            return payload
+
+        return _builder
+
+    monkeypatch.setattr(
+        decision_contracts,
+        "build_stock_context",
+        _make_builder("stock", {"code": "600519", "name": "测试股份", "warnings": []}),
+    )
+    monkeypatch.setattr(
+        decision_contracts,
+        "build_quant_context",
+        _make_builder("quant", {"code": "600519", "score": 68.0, "warnings": []}),
+    )
+    monkeypatch.setattr(
+        decision_contracts,
+        "build_event_context",
+        _make_builder("event", {"code": "600519", "score": 52.0, "warnings": []}),
+    )
+    monkeypatch.setattr(
+        decision_contracts,
+        "build_user_context",
+        _make_builder("user", {"user_id": "u_demo", "risk_level": "moderate", "warnings": []}),
+    )
+    monkeypatch.setattr(
+        decision_contracts,
+        "build_rule_gates",
+        lambda **kwargs: {
+            "blocked": False,
+            "veto_reason": None,
+            "flags": [],
+            "gate_adjustment": 0.0,
+            "position_cap_pct": 0.2,
+            "requested_style": kwargs["investment_style"],
+            "user_risk_level": "moderate",
+        },
+    )
+    monkeypatch.setattr(
+        decision_contracts,
+        "fuse_unified_decision",
+        lambda **kwargs: {
+            "action": "hold",
+            "confidence": 0.6,
+            "final_score": 60.0,
+            "summary": "并发构建上下文成功。",
+            "reasons": [],
+            "risks": [],
+            "veto_reason": None,
+            "position_signal": {"label": "观察", "suggested_position_pct": 0.0, "position_cap_pct": 0.2},
+            "score_breakdown": {},
+            "weights": {},
+        },
+    )
+
+    payload = await asyncio.wait_for(
+        decision_contracts.get_unified_decision_summary_payload(code="600519", investment_style="balanced", user_id="u_demo"),
+        timeout=0.3,
+    )
+
+    assert payload["action"] == "hold"
+    assert started == {"stock", "quant", "event", "user"}
+
+
+@pytest.mark.asyncio
+async def test_run_decision_gate_builds_missing_contexts_concurrently(monkeypatch):
+    from akshare_mcp.tools import _decision_unified as unified
+
+    started: set[str] = set()
+    ready = asyncio.Event()
+
+    def _make_builder(name, payload):
+        async def _builder(*_args, **_kwargs):
+            started.add(name)
+            if len(started) == 4:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), timeout=0.2)
+            return payload
+
+        return _builder
+
+    monkeypatch.setattr(unified, "_build_stock_context", _make_builder("stock", {"code": "600519"}))
+    monkeypatch.setattr(unified, "_build_quant_context", _make_builder("quant", {"code": "600519"}))
+    monkeypatch.setattr(unified, "_build_event_context", _make_builder("event", {"code": "600519"}))
+    monkeypatch.setattr(unified, "_build_user_context", _make_builder("user", {"risk_level": "moderate"}))
+    monkeypatch.setattr(
+        unified,
+        "_build_rule_gates",
+        lambda **kwargs: {"blocked": False, "flags": [], "requested_style": kwargs["investment_style"]},
+    )
+
+    result = await asyncio.wait_for(
+        unified.run_decision_gate(code="600519", investment_style="balanced", user_id="u_demo"),
+        timeout=0.3,
+    )
+
+    assert result["success"] is True
+    assert result["data"]["blocked"] is False
+    assert started == {"stock", "quant", "event", "user"}

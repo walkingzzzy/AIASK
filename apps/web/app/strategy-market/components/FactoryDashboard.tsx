@@ -20,6 +20,14 @@ import {
 import type {
   CapabilityBadge,
   DailySnapshotResponse,
+  FactoryGovernanceDedupArtifact,
+  FactoryGovernanceDedupBrief,
+  FactoryGovernanceEvidenceArtifact,
+  FactoryGovernanceEvidenceStrategyBrief,
+  FactoryGovernanceGateArtifact,
+  FactoryGovernancePlaneArtifact,
+  FactoryGovernanceSubmissionArtifact,
+  FactoryGovernanceStrategyBrief,
   FactoryRunDetailResponse,
   FactoryRunItem,
   FactoryRunSummary,
@@ -219,6 +227,1722 @@ function FactoryQualityAuditPanel({ summary }: { summary: FactoryRunSummary }) {
         <div>尝试惩罚均值：{summary.attempt_adjusted_score_avg == null ? '-' : Number(summary.attempt_adjusted_score_avg).toFixed(2)}</div>
         <div>目标池交集均值：{formatRatioPercent(summary.target_symbol_intersection_ratio_avg)}</div>
       </div>
+    </div>
+  );
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function asTypedObject<T extends Record<string, unknown>>(value: unknown): Partial<T> {
+  return isObjectRecord(value) ? (value as Partial<T>) : {};
+}
+
+function toDisplayCountEntries(value: unknown) {
+  if (!isObjectRecord(value)) return [] as Array<[string, number]>;
+  return Object.entries(value)
+    .map(([key, raw]) => [key, Number(raw)] as [string, number])
+    .filter(([, count]) => Number.isFinite(count) && count > 0);
+}
+
+function toObjectArray(value: unknown) {
+  if (!Array.isArray(value)) return [] as Array<Record<string, unknown>>;
+  return value.filter((item): item is Record<string, unknown> => isObjectRecord(item));
+}
+
+function toDisplayTextList(value: unknown, limit = 4) {
+  if (!Array.isArray(value)) return [] as string[];
+  return value
+    .map((item) => String(item ?? '').trim())
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function toDisplayText(value: unknown) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function toDisplayNumber(value: unknown) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function firstDefinedValue<T>(...values: Array<T | null | undefined>) {
+  for (const value of values) {
+    if (value != null) return value;
+  }
+  return null;
+}
+
+function formatArtifactValue(value: unknown) {
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '-';
+  if (value == null || value === '') return '-';
+  return String(value);
+}
+
+function formatArtifactScore(value: unknown, digits = 2) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(digits) : '-';
+}
+
+function shortArtifactText(value: unknown, length = 48) {
+  const text = toDisplayText(value);
+  if (!text) return '-';
+  return text.length > length ? `${text.slice(0, length)}…` : text;
+}
+
+function formatArtifactObjectSummary(value: unknown, limit = 4) {
+  if (!isObjectRecord(value)) return '-';
+  const entries = Object.entries(value)
+    .filter(([, raw]) => {
+      if (raw == null || raw === '') return false;
+      if (Array.isArray(raw)) return raw.length > 0;
+      if (isObjectRecord(raw)) return Object.keys(raw).length > 0;
+      return true;
+    })
+    .slice(0, limit)
+    .map(([key, raw]) => `${key}:${Array.isArray(raw) ? raw.join(',') : String(raw)}`);
+  return entries.length > 0 ? entries.join(' / ') : '-';
+}
+
+function formatConstraintAuditSummary(value: unknown) {
+  if (!isObjectRecord(value)) return '-';
+  const parts: string[] = [];
+  const violation = toDisplayText(value.constraint_violation);
+  const expansionReason = toDisplayText(value.expansion_reason);
+  const alignmentViolation = toDisplayText(value.alignment_contract_violation);
+  const intersectionRatio = Number(value.intersection_ratio);
+  if (violation) parts.push(`violation:${violation}`);
+  if (Number.isFinite(intersectionRatio)) {
+    parts.push(`intersection:${formatRatioPercent(intersectionRatio)}`);
+  }
+  if (Boolean(value.expansion_applied)) {
+    parts.push(`expansion:${expansionReason ?? 'applied'}`);
+  }
+  if (alignmentViolation) {
+    parts.push(`alignment:${alignmentViolation}`);
+  }
+  return parts.length > 0 ? parts.join(' / ') : '-';
+}
+
+function formatAttemptAdjustmentSummary(value: unknown) {
+  if (!isObjectRecord(value)) return '-';
+  const parts: string[] = [];
+  const penalty = Number(value.penalty);
+  const selectionRatio = Number(value.selection_ratio);
+  const attemptCount = Number(value.attempt_count);
+  if (Number.isFinite(penalty) && penalty > 0) {
+    parts.push(`penalty:${penalty.toFixed(4)}`);
+  }
+  if (Number.isFinite(selectionRatio)) {
+    parts.push(`selection:${formatRatioPercent(selectionRatio)}`);
+  }
+  if (Number.isFinite(attemptCount) && attemptCount > 0) {
+    parts.push(`attempts:${attemptCount}`);
+  }
+  return parts.length > 0 ? parts.join(' / ') : '-';
+}
+
+function previewBadgeVariant(status: unknown): 'success' | 'danger' | 'warning' | 'info' | 'neutral' {
+  const normalized = String(status ?? '').trim().toLowerCase();
+  if (!normalized) return 'neutral';
+  if (['success', 'succeeded', 'completed', 'recorded', 'ready', 'proceed', 'healthy'].includes(normalized)) {
+    return 'success';
+  }
+  if (['failed', 'error', 'blocked', 'rejected', 'halted'].includes(normalized)) {
+    return 'danger';
+  }
+  if (['partial', 'running', 'pending', 'degraded', 'warning'].includes(normalized)) {
+    return 'warning';
+  }
+  return 'info';
+}
+
+function FactoryPreviewSection({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count?: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded border border-border bg-surface-alt px-3 py-3 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs font-medium text-text-primary">{title}</div>
+        {typeof count === 'number' && (
+          <Badge variant="neutral">{count} 条</Badge>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function toReasonTopEntries(value: unknown) {
+  return toObjectArray(value)
+    .map((item) => ({
+      reason: toDisplayText(item.reason) ?? toDisplayText(item.reason_code) ?? '-',
+      count: Number(item.count ?? 0),
+    }))
+    .filter((item) => item.reason && Number.isFinite(item.count) && item.count > 0);
+}
+
+function toBooleanSupportEntries(value: unknown) {
+  if (!isObjectRecord(value)) return [] as Array<{ key: string; enabled: boolean }>;
+  return Object.entries(value)
+    .filter(([, raw]) => typeof raw === 'boolean')
+    .map(([key, raw]) => ({ key, enabled: Boolean(raw) }));
+}
+
+function FactoryArtifactCard({
+  title,
+  artifact,
+  fields,
+}: {
+  title: string;
+  artifact: Record<string, unknown>;
+  fields: Array<{ key: string; label: string }>;
+}) {
+  if (!isObjectRecord(artifact) || !artifact.available) return null;
+  return (
+    <div className="rounded border border-border bg-surface px-3 py-3 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs font-medium text-text-primary">{title}</div>
+        <Badge variant="success">已观测</Badge>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs text-text-secondary">
+        <div>契约版本：{formatArtifactValue(artifact.contract_version)}</div>
+        {fields.map((field) => (
+          <div key={field.key}>
+            {field.label}：{formatArtifactValue(artifact[field.key])}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FactoryFeedbackLoopPanel({
+  title,
+  summary,
+  feedbackSummary,
+  compact = false,
+}: {
+  title: string;
+  summary?: Partial<FactoryRunSummary> | null;
+  feedbackSummary?: Record<string, unknown> | null;
+  compact?: boolean;
+}) {
+  const feedbackContractVersion = toDisplayText(
+    firstDefinedValue(
+      feedbackSummary?.lifecycle_feedback_input_contract_version,
+      summary?.lifecycle_feedback_input_contract_version,
+    ),
+  );
+  const lifecycleInputObserved = firstDefinedValue(
+    typeof feedbackSummary?.lifecycle_feedback_input_observed === 'boolean'
+      ? Boolean(feedbackSummary.lifecycle_feedback_input_observed)
+      : undefined,
+    summary?.lifecycle_feedback_input_available,
+  );
+  const feedbackAvailable = firstDefinedValue(
+    typeof feedbackSummary?.feedback_available === 'boolean'
+      ? Boolean(feedbackSummary.feedback_available)
+      : undefined,
+    summary?.budget_feedback_available,
+  );
+  const familyCount = toDisplayNumber(
+    firstDefinedValue(feedbackSummary?.family_count, summary?.budget_feedback_family_count),
+  );
+  const strategyCount = toDisplayNumber(
+    firstDefinedValue(feedbackSummary?.strategy_count, summary?.budget_feedback_strategy_count),
+  );
+  const targetPoolScopeCount = toDisplayNumber(
+    firstDefinedValue(
+      feedbackSummary?.target_pool_scope_count,
+      summary?.budget_feedback_target_pool_scope_count,
+    ),
+  );
+  const generatorModeScopeCount = toDisplayNumber(
+    firstDefinedValue(
+      feedbackSummary?.generator_mode_scope_count,
+      summary?.budget_feedback_generator_mode_scope_count,
+    ),
+  );
+  const runtimeAlertCount = toDisplayNumber(
+    firstDefinedValue(
+      feedbackSummary?.runtime_alert_count,
+      summary?.budget_feedback_runtime_alert_count,
+    ),
+  );
+  const runtimeRiskEventCount = toDisplayNumber(
+    firstDefinedValue(
+      feedbackSummary?.runtime_risk_event_count,
+      summary?.budget_feedback_runtime_risk_event_count,
+    ),
+  );
+  const promotionReviewCount = toDisplayNumber(
+    firstDefinedValue(
+      feedbackSummary?.promotion_review_count,
+      summary?.budget_feedback_promotion_review_count,
+    ),
+  );
+  const blockedTaskCount = toDisplayNumber(
+    firstDefinedValue(feedbackSummary?.blocked_task_count, summary?.blocked_feedback_task_count),
+  );
+  const cooldownTaskCount = toDisplayNumber(
+    firstDefinedValue(
+      feedbackSummary?.planned_cooldown_task_count,
+      summary?.planned_feedback_cooldown_task_count,
+    ),
+  );
+  const promotionReviewStatusCounts = toDisplayCountEntries(
+    firstDefinedValue(
+      feedbackSummary?.promotion_review_status_counts,
+      summary?.budget_feedback_promotion_review_status_counts,
+    ),
+  );
+  const plannedControlModeCounts = toDisplayCountEntries(
+    firstDefinedValue(
+      feedbackSummary?.planned_control_mode_counts,
+      summary?.planned_feedback_control_mode_counts,
+    ),
+  );
+  const plannedTargetPoolControlModeCounts = toDisplayCountEntries(
+    firstDefinedValue(
+      feedbackSummary?.planned_target_pool_control_mode_counts,
+      summary?.planned_feedback_target_pool_control_mode_counts,
+    ),
+  );
+  const plannedGeneratorModeControlModeCounts = toDisplayCountEntries(
+    firstDefinedValue(
+      feedbackSummary?.planned_generator_mode_control_mode_counts,
+      summary?.planned_feedback_generator_mode_control_mode_counts,
+    ),
+  );
+  const selectedControlModeCounts = toDisplayCountEntries(
+    firstDefinedValue(
+      feedbackSummary?.selected_control_mode_counts,
+      summary?.selected_feedback_control_mode_counts,
+    ),
+  );
+  const selectedTargetPoolControlModeCounts = toDisplayCountEntries(
+    firstDefinedValue(
+      feedbackSummary?.selected_target_pool_control_mode_counts,
+      summary?.selected_feedback_target_pool_control_mode_counts,
+    ),
+  );
+  const selectedGeneratorModeControlModeCounts = toDisplayCountEntries(
+    firstDefinedValue(
+      feedbackSummary?.selected_generator_mode_control_mode_counts,
+      summary?.selected_feedback_generator_mode_control_mode_counts,
+    ),
+  );
+  const submissionControlModeCounts = toDisplayCountEntries(
+    firstDefinedValue(
+      feedbackSummary?.submission_control_mode_counts,
+      summary?.feedback_control_mode_counts,
+    ),
+  );
+  const submissionTargetPoolControlModeCounts = toDisplayCountEntries(
+    firstDefinedValue(
+      feedbackSummary?.submission_target_pool_control_mode_counts,
+      summary?.feedback_target_pool_control_mode_counts,
+    ),
+  );
+  const submissionGeneratorModeControlModeCounts = toDisplayCountEntries(
+    firstDefinedValue(
+      feedbackSummary?.submission_generator_mode_control_mode_counts,
+      summary?.feedback_generator_mode_control_mode_counts,
+    ),
+  );
+  const suppressedFamilies = toDisplayTextList(
+    firstDefinedValue(feedbackSummary?.suppressed_families, summary?.suppressed_families),
+    6,
+  );
+  const suppressedTargetPools = toDisplayTextList(
+    firstDefinedValue(feedbackSummary?.suppressed_target_pools, summary?.suppressed_target_pools),
+    6,
+  );
+  const suppressedGeneratorModes = toDisplayTextList(
+    firstDefinedValue(
+      feedbackSummary?.suppressed_generator_modes,
+      summary?.suppressed_generator_modes,
+    ),
+    6,
+  );
+  const externalLlmProviderControlMode = toDisplayText(summary?.external_llm_provider_control_mode);
+  const generatorModeControls = isObjectRecord(summary?.generator_mode_controls)
+    ? Object.entries(summary.generator_mode_controls).filter(([, payload]) => isObjectRecord(payload))
+    : [];
+  const controlModeSections = [
+    {
+      key: 'planned',
+      title: '规划控制',
+      variant: 'warning' as const,
+      entries: plannedControlModeCounts,
+      poolEntries: plannedTargetPoolControlModeCounts,
+      modeEntries: plannedGeneratorModeControlModeCounts,
+    },
+    {
+      key: 'selected',
+      title: '候选选择控制',
+      variant: 'info' as const,
+      entries: selectedControlModeCounts,
+      poolEntries: selectedTargetPoolControlModeCounts,
+      modeEntries: selectedGeneratorModeControlModeCounts,
+    },
+    {
+      key: 'submission',
+      title: '提交控制',
+      variant: 'success' as const,
+      entries: submissionControlModeCounts,
+      poolEntries: submissionTargetPoolControlModeCounts,
+      modeEntries: submissionGeneratorModeControlModeCounts,
+    },
+  ].filter(
+    (section) => section.entries.length > 0 || section.poolEntries.length > 0 || section.modeEntries.length > 0,
+  );
+  const hasFeedbackData = [
+    feedbackContractVersion,
+    lifecycleInputObserved != null,
+    feedbackAvailable != null,
+    familyCount != null,
+    strategyCount != null,
+    targetPoolScopeCount != null,
+    generatorModeScopeCount != null,
+    runtimeAlertCount != null,
+    runtimeRiskEventCount != null,
+    promotionReviewCount != null,
+    blockedTaskCount != null,
+    cooldownTaskCount != null,
+    promotionReviewStatusCounts.length > 0,
+    controlModeSections.length > 0,
+    suppressedFamilies.length > 0,
+    suppressedTargetPools.length > 0,
+    suppressedGeneratorModes.length > 0,
+    externalLlmProviderControlMode,
+    generatorModeControls.length > 0,
+  ].some(Boolean);
+
+  if (!hasFeedbackData) return null;
+
+  return (
+    <div className="mt-3 rounded border border-border bg-surface-alt px-3 py-3 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="text-xs font-medium text-text-primary">{title}</div>
+        <div className="flex flex-wrap gap-2">
+          {feedbackContractVersion && (
+            <Badge variant="neutral">契约 {feedbackContractVersion}</Badge>
+          )}
+          {lifecycleInputObserved != null && (
+            <Badge variant={lifecycleInputObserved ? 'success' : 'neutral'}>
+              生命周期输入{lifecycleInputObserved ? '已接入' : '未接入'}
+            </Badge>
+          )}
+          {feedbackAvailable != null && (
+            <Badge variant={feedbackAvailable ? 'success' : 'warning'}>
+              反馈摘要{feedbackAvailable ? '可用' : '待补'}
+            </Badge>
+          )}
+          {externalLlmProviderControlMode && (
+            <Badge variant="info">
+              外部 LLM {formatTaskLabel(externalLlmProviderControlMode)}
+            </Badge>
+          )}
+        </div>
+      </div>
+
+      <div className={`grid grid-cols-2 ${compact ? 'md:grid-cols-3 xl:grid-cols-6' : 'md:grid-cols-4 xl:grid-cols-8'} gap-3`}>
+        <FactoryMetric title="反馈家族" value={familyCount ?? '-'} />
+        <FactoryMetric title="策略样本" value={strategyCount ?? '-'} />
+        <FactoryMetric title="目标池范围" value={targetPoolScopeCount ?? '-'} />
+        <FactoryMetric title="生成模式范围" value={generatorModeScopeCount ?? '-'} />
+        <FactoryMetric title="运行告警" value={runtimeAlertCount ?? '-'} />
+        <FactoryMetric title="晋级评审" value={promotionReviewCount ?? '-'} />
+        {!compact && (
+          <>
+            <FactoryMetric title="运行风险事件" value={runtimeRiskEventCount ?? '-'} />
+            <FactoryMetric title="阻断任务" value={blockedTaskCount ?? '-'} />
+            <FactoryMetric title="冷却任务" value={cooldownTaskCount ?? '-'} />
+          </>
+        )}
+      </div>
+
+      {promotionReviewStatusCounts.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-text-primary">晋级评审状态</div>
+          <div className="flex flex-wrap gap-2">
+            {promotionReviewStatusCounts.map(([key, count]) => (
+              <Badge key={key} variant={previewBadgeVariant(key)}>
+                {formatTaskLabel(key)} {count}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {controlModeSections.length > 0 && (
+        <div className={`grid grid-cols-1 ${compact ? 'xl:grid-cols-3' : 'xl:grid-cols-3'} gap-3`}>
+          {controlModeSections.map((section) => (
+            <div key={section.key} className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+              <div className="text-xs font-medium text-text-primary">{section.title}</div>
+              {section.entries.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {section.entries.map(([key, count]) => (
+                    <Badge key={key} variant={section.variant}>
+                      {formatTaskLabel(key)} {count}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+              {!compact && section.poolEntries.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs text-text-secondary">目标池约束</div>
+                  <div className="flex flex-wrap gap-2">
+                    {section.poolEntries.map(([key, count]) => (
+                      <Badge key={key} variant="neutral">
+                        {formatTaskLabel(key)} {count}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {!compact && section.modeEntries.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs text-text-secondary">生成模式约束</div>
+                  <div className="flex flex-wrap gap-2">
+                    {section.modeEntries.map(([key, count]) => (
+                      <Badge key={key} variant="neutral">
+                        {formatTaskLabel(key)} {count}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!compact && (suppressedFamilies.length > 0 || suppressedTargetPools.length > 0 || suppressedGeneratorModes.length > 0) && (
+        <div className="rounded border border-border bg-surface px-3 py-3 space-y-3">
+          <div className="text-xs font-medium text-text-primary">受抑制范围</div>
+          {suppressedFamilies.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">家族</div>
+              <div className="flex flex-wrap gap-2">
+                {suppressedFamilies.map((item) => (
+                  <Badge key={item} variant="warning">
+                    {formatTaskLabel(item)}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {suppressedTargetPools.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">目标池</div>
+              <div className="flex flex-wrap gap-2">
+                {suppressedTargetPools.map((item) => (
+                  <Badge key={item} variant="warning">
+                    {formatTaskLabel(item)}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {suppressedGeneratorModes.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">生成模式</div>
+              <div className="flex flex-wrap gap-2">
+                {suppressedGeneratorModes.map((item) => (
+                  <Badge key={item} variant="warning">
+                    {formatTaskLabel(item)}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!compact && generatorModeControls.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-text-primary">生成模式控制明细</div>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {generatorModeControls.slice(0, 6).map(([mode, payload]) => {
+              const record = payload as Record<string, unknown>;
+              const controlMode = toDisplayText(record.control_mode);
+              const source = toDisplayText(record.source);
+              const families = toDisplayTextList(record.families, 4);
+              const controlReasons = toDisplayTextList(record.control_reasons, 4);
+
+              return (
+                <div
+                  key={mode}
+                  className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="font-medium text-text-primary">{formatTaskLabel(mode)}</div>
+                    <div className="flex flex-wrap gap-2">
+                      {controlMode && (
+                        <Badge variant={previewBadgeVariant(controlMode)}>
+                          {formatTaskLabel(controlMode)}
+                        </Badge>
+                      )}
+                      {source && (
+                        <Badge variant="neutral">{formatTaskLabel(source)}</Badge>
+                      )}
+                    </div>
+                  </div>
+                  <div>家族：{families.join(' / ') || '-'}</div>
+                  <div>原因：{controlReasons.join(' / ') || '-'}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FactoryResearchPlanePanel({ detail }: { detail: FactoryRunDetailResponse }) {
+  const researchPlane = isObjectRecord(detail.research_plane) ? detail.research_plane : {};
+  const researchSummary = isObjectRecord(detail.research_summary) ? detail.research_summary : {};
+  const researchArtifact = isObjectRecord(detail.research_artifact) ? detail.research_artifact : {};
+  const taskArtifact = isObjectRecord(detail.task_artifact) ? detail.task_artifact : {};
+  const candidateArtifact = isObjectRecord(detail.candidate_artifact) ? detail.candidate_artifact : {};
+  const evidenceArtifact = isObjectRecord(detail.evidence_artifact) ? detail.evidence_artifact : {};
+  const readinessReference = isObjectRecord(researchArtifact.readiness_reference)
+    ? researchArtifact.readiness_reference
+    : {};
+  const lineagePreview = toObjectArray(researchArtifact.top_candidate_lineage_preview);
+  const plannedTaskBriefs = toObjectArray(taskArtifact.planned_task_briefs);
+  const taskResultBriefs = toObjectArray(taskArtifact.task_result_briefs);
+  const candidateBriefs = toObjectArray(candidateArtifact.candidate_briefs);
+  const experimentBriefs = toObjectArray(evidenceArtifact.experiment_briefs);
+  const blockingReasonCodes = toDisplayTextList(readinessReference.blocking_reason_codes, 6);
+  const readinessDecision = toDisplayText(readinessReference.decision);
+  const sourceChain = Array.isArray(researchPlane.source_chain)
+    ? researchPlane.source_chain.map((item) => String(item)).filter(Boolean)
+    : [];
+  const candidateFamilyCounts = toDisplayCountEntries(candidateArtifact.family_counts);
+  const candidateSourceCounts = toDisplayCountEntries(candidateArtifact.task_source_counts);
+  const llmStatusCounts = toDisplayCountEntries(evidenceArtifact.external_llm_status_counts);
+  const lifecycleFeedbackFamilyCount = toDisplayNumber(researchArtifact.lifecycle_feedback_family_count);
+  const lifecycleFeedbackStrategyCount = toDisplayNumber(researchArtifact.lifecycle_feedback_strategy_count);
+  const lifecycleFeedbackTargetPoolScopeCount = toDisplayNumber(
+    researchArtifact.lifecycle_feedback_target_pool_scope_count,
+  );
+  const lifecycleFeedbackGeneratorModeScopeCount = toDisplayNumber(
+    researchArtifact.lifecycle_feedback_generator_mode_scope_count,
+  );
+  const lifecycleFeedbackRuntimeAlertCount = toDisplayNumber(
+    researchArtifact.lifecycle_feedback_runtime_alert_count,
+  );
+  const lifecycleFeedbackPromotionReviewCount = toDisplayNumber(
+    researchArtifact.lifecycle_feedback_promotion_review_count,
+  );
+  const lifecycleFeedbackPromotionStatuses = toDisplayCountEntries(
+    researchArtifact.lifecycle_feedback_promotion_review_status_counts,
+  );
+  const hasLifecycleFeedbackInput =
+    Boolean(researchArtifact.lifecycle_feedback_input_available)
+    || lifecycleFeedbackFamilyCount != null
+    || lifecycleFeedbackStrategyCount != null
+    || lifecycleFeedbackTargetPoolScopeCount != null
+    || lifecycleFeedbackGeneratorModeScopeCount != null
+    || lifecycleFeedbackRuntimeAlertCount != null
+    || lifecycleFeedbackPromotionReviewCount != null
+    || lifecycleFeedbackPromotionStatuses.length > 0;
+
+  const hasResearchPlane =
+    Boolean(researchPlane.available)
+    || Boolean(researchArtifact.available)
+    || Boolean(taskArtifact.available)
+    || Boolean(candidateArtifact.available)
+    || Boolean(evidenceArtifact.available);
+
+  if (!hasResearchPlane) return null;
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <div className="text-xs font-medium">研究平面</div>
+        <div className="mt-1 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-text-secondary">
+          <div>总契约：{formatArtifactValue(researchPlane.contract_version)}</div>
+          <div>平面可用：{formatArtifactValue(researchPlane.available)}</div>
+          <div>平面类型：{formatArtifactValue(researchPlane.plane)}</div>
+          <div>Research Summary：{formatArtifactValue(researchSummary.research_plane_contract_version)}</div>
+        </div>
+      </div>
+
+      {sourceChain.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-text-primary">证据来源链</div>
+          <div className="flex flex-wrap gap-2">
+            {sourceChain.slice(0, 8).map((item) => (
+              <Badge key={item} variant="neutral">
+                {item}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        <FactoryArtifactCard
+          title="Research Artifact"
+          artifact={researchArtifact}
+          fields={[
+            { key: 'active_factor_count', label: '活跃因子' },
+            { key: 'active_candidate_count', label: '活跃候选' },
+            { key: 'factor_source_mode', label: '因子来源' },
+            { key: 'governed_candidate_pool_active', label: '治理池激活' },
+            { key: 'lifecycle_feedback_input_available', label: '反馈输入' },
+            { key: 'lifecycle_feedback_family_count', label: '反馈家族' },
+            { key: 'lifecycle_feedback_promotion_review_count', label: '晋级评审' },
+          ]}
+        />
+        <FactoryArtifactCard
+          title="Task Artifact"
+          artifact={taskArtifact}
+          fields={[
+            { key: 'planned_task_count', label: '规划任务' },
+            { key: 'executed_task_count', label: '执行任务' },
+            { key: 'generated_candidate_count', label: '生成候选' },
+            { key: 'event_task_count', label: '事件任务' },
+            { key: 'snapshot_task_count', label: '快照任务' },
+          ]}
+        />
+        <FactoryArtifactCard
+          title="Candidate Artifact"
+          artifact={candidateArtifact}
+          fields={[
+            { key: 'candidate_count', label: '候选总数' },
+            { key: 'targeted_candidate_count', label: '定向候选' },
+            { key: 'experiment_linked_count', label: '实验关联' },
+            { key: 'candidate_contract_ready_count', label: '合同就绪' },
+            { key: 'candidate_evidence_ready_count', label: '证据就绪' },
+          ]}
+        />
+        <FactoryArtifactCard
+          title="Evidence Artifact"
+          artifact={evidenceArtifact}
+          fields={[
+            { key: 'experiment_count', label: '实验记录' },
+            { key: 'task_evidence_count', label: '任务证据' },
+            { key: 'task_run_count', label: '任务运行' },
+            { key: 'external_llm_status', label: '外部 LLM' },
+            { key: 'external_llm_network_request_count', label: '网络请求' },
+          ]}
+        />
+      </div>
+
+      {hasLifecycleFeedbackInput && (
+        <div className="rounded border border-border bg-surface-alt px-3 py-3 space-y-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="text-xs font-medium text-text-primary">生命周期反馈输入</div>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant={researchArtifact.lifecycle_feedback_input_available ? 'success' : 'warning'}>
+                {researchArtifact.lifecycle_feedback_input_available ? '输入可用' : '输入待补'}
+              </Badge>
+              {toDisplayText(researchArtifact.lifecycle_feedback_input_contract_version) && (
+                <Badge variant="neutral">
+                  契约 {formatArtifactValue(researchArtifact.lifecycle_feedback_input_contract_version)}
+                </Badge>
+              )}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+            <FactoryMetric title="反馈家族" value={lifecycleFeedbackFamilyCount ?? '-'} />
+            <FactoryMetric title="策略样本" value={lifecycleFeedbackStrategyCount ?? '-'} />
+            <FactoryMetric title="目标池范围" value={lifecycleFeedbackTargetPoolScopeCount ?? '-'} />
+            <FactoryMetric title="生成模式范围" value={lifecycleFeedbackGeneratorModeScopeCount ?? '-'} />
+            <FactoryMetric title="运行告警" value={lifecycleFeedbackRuntimeAlertCount ?? '-'} />
+            <FactoryMetric title="晋级评审" value={lifecycleFeedbackPromotionReviewCount ?? '-'} />
+          </div>
+          {lifecycleFeedbackPromotionStatuses.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">晋级评审状态</div>
+              <div className="flex flex-wrap gap-2">
+                {lifecycleFeedbackPromotionStatuses.map(([key, count]) => (
+                  <Badge key={key} variant={previewBadgeVariant(key)}>
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(Object.keys(readinessReference).length > 0 || lineagePreview.length > 0) && (
+        <FactoryPreviewSection title="Readiness / Lineage" count={lineagePreview.length}>
+          {Object.keys(readinessReference).length > 0 && (
+            <div className="rounded border border-border bg-surface px-3 py-3 space-y-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="text-xs font-medium text-text-primary">准备度引用</div>
+                {readinessDecision && (
+                  <Badge variant={previewBadgeVariant(readinessDecision)}>
+                    {readinessDecision}
+                  </Badge>
+                )}
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs text-text-secondary">
+                <div>准备度：{formatArtifactScore(readinessReference.readiness_score)}</div>
+                <div>是否可推进：{formatArtifactValue(readinessReference.can_proceed)}</div>
+                <div>阻断项：{blockingReasonCodes.length}</div>
+              </div>
+              {blockingReasonCodes.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs text-text-secondary">阻断原因</div>
+                  <div className="flex flex-wrap gap-2">
+                    {blockingReasonCodes.map((code) => (
+                      <Badge key={code} variant="warning">
+                        {formatTaskLabel(code)}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {lineagePreview.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {lineagePreview.slice(0, 3).map((item, idx) => {
+                const family = toDisplayText(item.family);
+                const registryStage = toDisplayText(item.registry_stage);
+                const latestValidationAt = toDisplayText(item.latest_validation_at);
+
+                return (
+                  <div
+                    key={String(item.artifact_id ?? item.name ?? idx)}
+                    className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="font-medium text-text-primary break-all">
+                          {formatArtifactValue(item.name ?? item.artifact_id)}
+                        </div>
+                        <div className="mt-1 break-all">artifact_id: {formatArtifactValue(item.artifact_id)}</div>
+                      </div>
+                      {family && (
+                        <Badge variant="info">{formatTaskLabel(family)}</Badge>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {registryStage && (
+                        <Badge variant="neutral">阶段 {formatTaskLabel(registryStage)}</Badge>
+                      )}
+                      {latestValidationAt && (
+                        <Badge variant="neutral">
+                          验证 {shortFactoryRunTime(latestValidationAt)}
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </FactoryPreviewSection>
+      )}
+
+      {(plannedTaskBriefs.length > 0 || taskResultBriefs.length > 0) && (
+        <FactoryPreviewSection title="Task Briefs" count={plannedTaskBriefs.length + taskResultBriefs.length}>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {plannedTaskBriefs.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-text-primary">规划任务</div>
+                <div className="space-y-2">
+                  {plannedTaskBriefs.slice(0, 4).map((item, idx) => {
+                    const taskSource = toDisplayText(item.task_source);
+                    const opportunityType = toDisplayText(item.opportunity_type);
+
+                    return (
+                      <div
+                        key={String(item.task_id ?? item.event_id ?? idx)}
+                        className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="font-medium text-text-primary break-all">
+                            {formatArtifactValue(item.task_id ?? item.event_id ?? item.theme_code)}
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {taskSource && (
+                              <Badge variant="neutral">{formatTaskLabel(taskSource)}</Badge>
+                            )}
+                            {opportunityType && (
+                              <Badge variant="info">{formatTaskLabel(opportunityType)}</Badge>
+                            )}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>家族：{formatArtifactValue(item.candidate_family)}</div>
+                          <div>因子：{formatArtifactValue(item.factor_name)}</div>
+                          <div>预算上限：{formatArtifactValue(item.generation_limit)}</div>
+                          <div>目标池：{formatArtifactValue(item.theme_code)}</div>
+                        </div>
+                        <div className="break-all">
+                          标的：{toDisplayTextList(item.target_symbols, 4).join(' / ') || '-'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {taskResultBriefs.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-text-primary">执行结果</div>
+                <div className="space-y-2">
+                  {taskResultBriefs.slice(0, 4).map((item, idx) => {
+                    const status = toDisplayText(item.status);
+                    const externalLlmStatus = toDisplayText(item.external_llm_status);
+
+                    return (
+                      <div
+                        key={String(item.task_run_id ?? item.task_id ?? idx)}
+                        className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="font-medium text-text-primary break-all">
+                            {formatArtifactValue(item.task_run_id ?? item.task_id)}
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {status && (
+                              <Badge variant={previewBadgeVariant(status)}>
+                                {formatTaskLabel(status)}
+                              </Badge>
+                            )}
+                            {externalLlmStatus && (
+                              <Badge variant={previewBadgeVariant(externalLlmStatus)}>
+                                LLM {formatTaskLabel(externalLlmStatus)}
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>任务：{formatArtifactValue(item.task_id)}</div>
+                          <div>来源：{formatArtifactValue(item.task_source)}</div>
+                          <div>生成：{formatArtifactValue(item.generated_count)}</div>
+                          <div>复核：{formatArtifactValue(item.reviewed_count)}</div>
+                          <div>证据：{formatArtifactValue(item.evidence_count)}</div>
+                          <div>机会：{formatArtifactValue(item.opportunity_type)}</div>
+                        </div>
+                        <div className="break-all">
+                          标的：{toDisplayTextList(item.target_symbols, 4).join(' / ') || '-'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </FactoryPreviewSection>
+      )}
+
+      {candidateBriefs.length > 0 && (
+        <FactoryPreviewSection title="Candidate Briefs" count={candidateBriefs.length}>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {candidateBriefs.slice(0, 6).map((item, idx) => {
+              const contractReady = item.candidate_contract_ready == null ? null : Boolean(item.candidate_contract_ready);
+              const evidenceReady = item.evidence_ready == null ? null : Boolean(item.evidence_ready);
+              const candidateFamily = toDisplayText(item.candidate_family);
+              const taskSource = toDisplayText(item.task_source);
+              const generatorMode = toDisplayText(item.generator_mode);
+
+              return (
+                <div
+                  key={String(item.name ?? item.experiment_id ?? idx)}
+                  className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-medium text-text-primary break-all">
+                        {formatArtifactValue(item.name)}
+                      </div>
+                      <div className="mt-1 break-all">策略类型：{formatArtifactValue(item.strategy_type)}</div>
+                    </div>
+                    <div className="flex flex-wrap gap-2 justify-end">
+                      {contractReady != null && (
+                        <Badge variant={contractReady ? 'success' : 'neutral'}>
+                          契约{contractReady ? '就绪' : '缺失'}
+                        </Badge>
+                      )}
+                      {evidenceReady != null && (
+                        <Badge variant={evidenceReady ? 'success' : 'warning'}>
+                          证据{evidenceReady ? '就绪' : '待补'}
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {candidateFamily && (
+                      <Badge variant="info">{formatTaskLabel(candidateFamily)}</Badge>
+                    )}
+                    {taskSource && (
+                      <Badge variant="neutral">{formatTaskLabel(taskSource)}</Badge>
+                    )}
+                    {generatorMode && (
+                      <Badge variant={previewBadgeVariant(generatorMode)}>
+                        {formatTaskLabel(generatorMode)}
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>目标池：{formatArtifactValue(item.target_pool_id)}</div>
+                    <div>实验：{formatArtifactValue(item.experiment_id)}</div>
+                  </div>
+                  <div className="break-all">
+                    标的：{toDisplayTextList(item.target_symbols, 4).join(' / ') || '-'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </FactoryPreviewSection>
+      )}
+
+      {experimentBriefs.length > 0 && (
+        <FactoryPreviewSection title="Experiment Briefs" count={experimentBriefs.length}>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {experimentBriefs.slice(0, 6).map((item, idx) => {
+              const status = toDisplayText(item.status);
+
+              return (
+                <div
+                  key={String(item.experiment_id ?? item.task_id ?? idx)}
+                  className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="font-medium text-text-primary break-all">
+                      {formatArtifactValue(item.experiment_id)}
+                    </div>
+                    {status && (
+                      <Badge variant={previewBadgeVariant(status)}>
+                        {formatTaskLabel(status)}
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>task_id：{formatArtifactValue(item.task_id)}</div>
+                    <div>strategy_id：{formatArtifactValue(item.strategy_id)}</div>
+                    <div>模式：{formatArtifactValue(item.generator_mode)}</div>
+                    <div>状态：{formatArtifactValue(item.status)}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </FactoryPreviewSection>
+      )}
+
+      {(candidateFamilyCounts.length > 0 || candidateSourceCounts.length > 0 || llmStatusCounts.length > 0) && (
+        <div className="rounded border border-border bg-surface-alt px-3 py-3 space-y-3">
+          <div className="text-xs font-medium text-text-primary">研究平面分布</div>
+          {candidateFamilyCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">候选家族</div>
+              <div className="flex flex-wrap gap-2">
+                {candidateFamilyCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant="info">
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {candidateSourceCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">候选来源</div>
+              <div className="flex flex-wrap gap-2">
+                {candidateSourceCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant="neutral">
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {llmStatusCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">LLM 状态</div>
+              <div className="flex flex-wrap gap-2">
+                {llmStatusCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant="neutral">
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FactoryGovernancePlanePanel({ detail }: { detail: FactoryRunDetailResponse }) {
+  const governancePlane = asTypedObject<FactoryGovernancePlaneArtifact>(detail.governance_plane);
+  const gateArtifact = asTypedObject<FactoryGovernanceGateArtifact>(detail.gate_artifact);
+  const dedupArtifact = asTypedObject<FactoryGovernanceDedupArtifact>(detail.dedup_artifact);
+  const submissionArtifact = asTypedObject<FactoryGovernanceSubmissionArtifact>(detail.submission_artifact);
+  const governanceEvidenceArtifact = asTypedObject<FactoryGovernanceEvidenceArtifact>(detail.governance_evidence_artifact);
+  const sourceChain = Array.isArray(governancePlane.source_chain)
+    ? governancePlane.source_chain.map((item) => String(item)).filter(Boolean)
+    : [];
+  const gateFailureReasons = toReasonTopEntries(gateArtifact.gate_3_failure_reason_topn);
+  const submissionFailureReasons = toReasonTopEntries(submissionArtifact.gate_3_failure_reason_topn);
+  const refreshModeCounts = toDisplayCountEntries(dedupArtifact.refresh_mode_counts);
+  const duplicateLevelCounts = toDisplayCountEntries(dedupArtifact.duplicate_level_counts);
+  const submissionLaneCounts = toDisplayCountEntries(submissionArtifact.submission_lane_counts);
+  const submissionActionTypeCounts = toDisplayCountEntries(submissionArtifact.submission_action_type_counts);
+  const strategyStatusCounts = toDisplayCountEntries(submissionArtifact.strategy_status_counts);
+  const committeeDecisionCounts = toDisplayCountEntries(submissionArtifact.committee_decision_counts);
+  const primaryValidationLayerCounts = toDisplayCountEntries(submissionArtifact.primary_validation_layer_counts);
+  const validationProfileCounts = toDisplayCountEntries(submissionArtifact.validation_profile_counts);
+  const constraintViolationCounts = toDisplayCountEntries(submissionArtifact.constraint_violation_counts);
+  const vectorBackendCounts = toDisplayCountEntries(governanceEvidenceArtifact.vector_backend_counts);
+  const extensionSupport = toBooleanSupportEntries(governanceEvidenceArtifact.extension_interface_support);
+  const keptBriefs = Array.isArray(dedupArtifact.kept_briefs)
+    ? dedupArtifact.kept_briefs as FactoryGovernanceDedupBrief[]
+    : [];
+  const droppedBriefs = Array.isArray(dedupArtifact.dropped_briefs)
+    ? dedupArtifact.dropped_briefs as FactoryGovernanceDedupBrief[]
+    : [];
+  const strategyBriefs = Array.isArray(submissionArtifact.strategy_briefs)
+    ? submissionArtifact.strategy_briefs as FactoryGovernanceStrategyBrief[]
+    : [];
+  const strategyEvidenceBriefs = Array.isArray(governanceEvidenceArtifact.strategy_evidence_briefs)
+    ? governanceEvidenceArtifact.strategy_evidence_briefs as FactoryGovernanceEvidenceStrategyBrief[]
+    : [];
+  const incubationBudgetSummary = asTypedObject<Record<string, unknown>>(submissionArtifact.incubation_budget_summary);
+  const incubationFamilyCounts = toDisplayCountEntries(incubationBudgetSummary.family_counts);
+  const backtestThresholdsByType = asTypedObject<Record<string, Record<string, unknown>>>(gateArtifact.backtest_thresholds_by_type);
+  const hasAuditSliceCoverage = [
+    submissionArtifact.constraint_check_count,
+    submissionArtifact.validation_profile_count,
+    submissionArtifact.event_window_config_count,
+    submissionArtifact.position_assumption_count,
+    submissionArtifact.cost_assumptions_count,
+    submissionArtifact.attempt_adjustment_count,
+    submissionArtifact.committee_review_count,
+    submissionArtifact.task_signature_count,
+    governanceEvidenceArtifact.constraint_check_count,
+    governanceEvidenceArtifact.validation_profile_count,
+  ].some((value) => Number(value ?? 0) > 0);
+
+  const hasGovernancePlane =
+    Boolean(governancePlane.available)
+    || Boolean(gateArtifact.available)
+    || Boolean(dedupArtifact.available)
+    || Boolean(submissionArtifact.available)
+    || Boolean(governanceEvidenceArtifact.available);
+
+  if (!hasGovernancePlane) return null;
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <div className="text-xs font-medium">治理平面</div>
+        <div className="mt-1 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-text-secondary">
+          <div>总契约：{formatArtifactValue(governancePlane.contract_version)}</div>
+          <div>平面可用：{formatArtifactValue(governancePlane.available)}</div>
+          <div>平面类型：{formatArtifactValue(governancePlane.plane)}</div>
+          <div>Gate-3 通过：{formatArtifactValue(submissionArtifact.gate_3_passed)}</div>
+        </div>
+      </div>
+
+      {sourceChain.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-text-primary">治理证据来源链</div>
+          <div className="flex flex-wrap gap-2">
+            {sourceChain.slice(0, 8).map((item) => (
+              <Badge key={item} variant="neutral">
+                {item}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        <FactoryArtifactCard
+          title="Gate Artifact"
+          artifact={gateArtifact}
+          fields={[
+            { key: 'gate_0_passed', label: 'Gate-0 通过' },
+            { key: 'gate_2_passed', label: 'Gate-2 通过' },
+            { key: 'gate_3_passed', label: 'Gate-3 通过' },
+            { key: 'gate_3_failed', label: 'Gate-3 失败' },
+            { key: 'gate_3_provisional_passed', label: '临时通过' },
+          ]}
+        />
+        <FactoryArtifactCard
+          title="Dedup Artifact"
+          artifact={dedupArtifact}
+          fields={[
+            { key: 'input_count', label: '输入候选' },
+            { key: 'kept_count', label: '保留候选' },
+            { key: 'dropped_count', label: '淘汰候选' },
+            { key: 'refreshed_existing_count', label: '刷新已有' },
+            { key: 'vector_checks', label: '向量检查' },
+          ]}
+        />
+        <FactoryArtifactCard
+          title="Submission Artifact"
+          artifact={submissionArtifact}
+          fields={[
+            { key: 'strategy_count', label: '策略记录' },
+            { key: 'submitted_count', label: '已提交' },
+            { key: 'created_strategy_pool_count', label: '入池创建' },
+            { key: 'refreshed_count', label: '刷新数' },
+            { key: 'gate_3_passed', label: 'Gate-3 通过' },
+          ]}
+        />
+        <FactoryArtifactCard
+          title="Governance Evidence"
+          artifact={governanceEvidenceArtifact}
+          fields={[
+            { key: 'quality_report_count', label: '质检报告' },
+            { key: 'multiple_testing_registry_record_count', label: '多重检验记录' },
+            { key: 'lineage_id_count', label: 'Lineage ID' },
+            { key: 'vector_profile_count', label: '向量画像' },
+            { key: 'cost_assumptions_count', label: '成本假设' },
+          ]}
+        />
+      </div>
+
+      {hasAuditSliceCoverage && (
+        <div className="rounded border border-border bg-surface-alt px-3 py-3 space-y-3">
+          <div className="text-xs font-medium text-text-primary">候选审计切片覆盖</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
+            <FactoryMetric title="约束审计" value={Number(submissionArtifact.constraint_check_count ?? governanceEvidenceArtifact.constraint_check_count ?? 0)} />
+            <FactoryMetric title="验证画像" value={Number(submissionArtifact.validation_profile_count ?? governanceEvidenceArtifact.validation_profile_count ?? 0)} />
+            <FactoryMetric title="事件窗配置" value={Number(submissionArtifact.event_window_config_count ?? governanceEvidenceArtifact.event_window_config_count ?? 0)} />
+            <FactoryMetric title="仓位假设" value={Number(submissionArtifact.position_assumption_count ?? governanceEvidenceArtifact.position_assumption_count ?? 0)} />
+            <FactoryMetric title="成本假设" value={Number(submissionArtifact.cost_assumptions_count ?? governanceEvidenceArtifact.cost_assumptions_count ?? 0)} />
+            <FactoryMetric title="尝试惩罚" value={Number(submissionArtifact.attempt_adjustment_count ?? governanceEvidenceArtifact.attempt_adjustment_count ?? 0)} />
+            <FactoryMetric title="评审结果" value={Number(submissionArtifact.committee_review_count ?? governanceEvidenceArtifact.committee_review_count ?? 0)} />
+            <FactoryMetric title="任务签名" value={Number(submissionArtifact.task_signature_count ?? governanceEvidenceArtifact.task_signature_count ?? 0)} />
+          </div>
+        </div>
+      )}
+
+      {(refreshModeCounts.length > 0
+        || duplicateLevelCounts.length > 0
+        || submissionLaneCounts.length > 0
+        || submissionActionTypeCounts.length > 0
+        || strategyStatusCounts.length > 0
+        || committeeDecisionCounts.length > 0
+        || primaryValidationLayerCounts.length > 0
+        || validationProfileCounts.length > 0
+        || constraintViolationCounts.length > 0
+        || vectorBackendCounts.length > 0
+        || extensionSupport.length > 0
+        || incubationFamilyCounts.length > 0
+        || Object.keys(backtestThresholdsByType).length > 0) && (
+        <div className="rounded border border-border bg-surface-alt px-3 py-3 space-y-3">
+          <div className="text-xs font-medium text-text-primary">治理分布</div>
+          {refreshModeCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">Refresh 模式</div>
+              <div className="flex flex-wrap gap-2">
+                {refreshModeCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant="info">
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {duplicateLevelCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">重复级别</div>
+              <div className="flex flex-wrap gap-2">
+                {duplicateLevelCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant="warning">
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {submissionLaneCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">提交通道</div>
+              <div className="flex flex-wrap gap-2">
+                {submissionLaneCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant="neutral">
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {submissionActionTypeCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">提交动作</div>
+              <div className="flex flex-wrap gap-2">
+                {submissionActionTypeCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant="info">
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {strategyStatusCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">策略状态</div>
+              <div className="flex flex-wrap gap-2">
+                {strategyStatusCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant={previewBadgeVariant(key)}>
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {committeeDecisionCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">评审结论</div>
+              <div className="flex flex-wrap gap-2">
+                {committeeDecisionCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant={previewBadgeVariant(key)}>
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {primaryValidationLayerCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">主验证层</div>
+              <div className="flex flex-wrap gap-2">
+                {primaryValidationLayerCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant="info">
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {validationProfileCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">验证画像</div>
+              <div className="flex flex-wrap gap-2">
+                {validationProfileCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant="neutral">
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {constraintViolationCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">约束违例</div>
+              <div className="flex flex-wrap gap-2">
+                {constraintViolationCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant="warning">
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {vectorBackendCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">向量后端</div>
+              <div className="flex flex-wrap gap-2">
+                {vectorBackendCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant="neutral">
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {incubationFamilyCounts.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">孵化预算分布</div>
+              <div className="flex flex-wrap gap-2">
+                {incubationFamilyCounts.slice(0, 6).map(([key, count]) => (
+                  <Badge key={key} variant="info">
+                    {formatTaskLabel(key)} {count}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {Object.keys(backtestThresholdsByType).length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">Backtest 阈值类型</div>
+              <div className="flex flex-wrap gap-2">
+                {Object.keys(backtestThresholdsByType).slice(0, 6).map((key) => (
+                  <Badge key={key} variant="neutral">
+                    {formatTaskLabel(key)}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {extensionSupport.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs text-text-secondary">扩展接口支持</div>
+              <div className="flex flex-wrap gap-2">
+                {extensionSupport.map((item) => (
+                  <Badge key={item.key} variant={item.enabled ? 'success' : 'neutral'}>
+                    {formatTaskLabel(item.key)} {item.enabled ? '已接入' : '未接入'}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(gateFailureReasons.length > 0 || submissionFailureReasons.length > 0) && (
+        <FactoryPreviewSection title="治理原因预览" count={gateFailureReasons.length + submissionFailureReasons.length}>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {gateFailureReasons.length > 0 && (
+              <div className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+                <div className="text-xs font-medium text-text-primary">Gate-3 失败原因</div>
+                <div className="space-y-2 text-xs text-text-secondary">
+                  {gateFailureReasons.slice(0, 4).map((item) => (
+                    <div key={`gate-${item.reason}`} className="flex items-center justify-between gap-3">
+                      <span className="break-all">{formatTaskLabel(item.reason)}</span>
+                      <span>{item.count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {submissionFailureReasons.length > 0 && (
+              <div className="rounded border border-border bg-surface px-3 py-3 space-y-2">
+                <div className="text-xs font-medium text-text-primary">提交阶段失败原因</div>
+                <div className="space-y-2 text-xs text-text-secondary">
+                  {submissionFailureReasons.slice(0, 4).map((item) => (
+                    <div key={`submission-${item.reason}`} className="flex items-center justify-between gap-3">
+                      <span className="break-all">{formatTaskLabel(item.reason)}</span>
+                      <span>{item.count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </FactoryPreviewSection>
+      )}
+
+      {(keptBriefs.length > 0 || droppedBriefs.length > 0) && (
+        <FactoryPreviewSection title="Dedup Decisions" count={keptBriefs.length + droppedBriefs.length}>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {keptBriefs.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-text-primary">保留候选</div>
+                <div className="space-y-2">
+                  {keptBriefs.slice(0, 4).map((item, idx) => {
+                    const refreshMode = toDisplayText(item.refresh_mode);
+                    const refreshDecisionBasis = toDisplayText(item.refresh_decision_basis);
+
+                    return (
+                      <div
+                        key={String(item.matched_strategy_id ?? item.strategy_type ?? idx)}
+                        className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="font-medium text-text-primary break-all">
+                            {formatArtifactValue(item.strategy_type)}
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Badge variant={Boolean(item.refresh_existing) ? 'success' : 'neutral'}>
+                              {Boolean(item.refresh_existing) ? '刷新已有' : '保留新候选'}
+                            </Badge>
+                            {refreshMode && (
+                              <Badge variant="info">{formatTaskLabel(refreshMode)}</Badge>
+                            )}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>生成器：{formatArtifactValue(item.generator_type)}</div>
+                          <div>家族：{formatArtifactValue(item.candidate_family_id)}</div>
+                          <div>目标重合：{formatArtifactScore(item.target_overlap, 4)}</div>
+                          <div>命中策略：{formatArtifactValue(item.matched_strategy_id)}</div>
+                        </div>
+                        <div>决策依据：{refreshDecisionBasis ?? '-'}</div>
+                        <div className="break-all">
+                          标的：{toDisplayTextList(item.target_symbols, 4).join(' / ') || '-'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {droppedBriefs.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-text-primary">淘汰候选</div>
+                <div className="space-y-2">
+                  {droppedBriefs.slice(0, 4).map((item, idx) => {
+                    const duplicateLevel = toDisplayText(item.duplicate_level);
+                    const revisionTriggerReason = toDisplayText(item.revision_trigger_reason);
+
+                    return (
+                      <div
+                        key={String(item.matched_strategy_id ?? item.strategy_type ?? idx)}
+                        className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="font-medium text-text-primary break-all">
+                            {formatArtifactValue(item.strategy_type)}
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Badge variant={Boolean(item.duplicate) ? 'warning' : 'neutral'}>
+                              {Boolean(item.duplicate) ? '重复候选' : '未保留'}
+                            </Badge>
+                            {duplicateLevel && (
+                              <Badge variant="warning">{formatTaskLabel(duplicateLevel)}</Badge>
+                            )}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>生成器：{formatArtifactValue(item.generator_type)}</div>
+                          <div>家族：{formatArtifactValue(item.candidate_family_id)}</div>
+                          <div>目标重合：{formatArtifactScore(item.target_overlap, 4)}</div>
+                          <div>命中策略：{formatArtifactValue(item.matched_strategy_id)}</div>
+                        </div>
+                        <div>修订触发：{revisionTriggerReason ?? '-'}</div>
+                        <div className="break-all">
+                          标的：{toDisplayTextList(item.target_symbols, 4).join(' / ') || '-'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </FactoryPreviewSection>
+      )}
+
+      {(strategyBriefs.length > 0 || strategyEvidenceBriefs.length > 0) && (
+        <FactoryPreviewSection title="Submission / Evidence" count={strategyBriefs.length + strategyEvidenceBriefs.length}>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {strategyBriefs.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-text-primary">提交策略</div>
+                <div className="space-y-2">
+                  {strategyBriefs.slice(0, 4).map((item, idx) => {
+                    const submissionLane = toDisplayText(item.submission_lane);
+                    const actionType = toDisplayText(item.submission_action_type);
+                    const candidateFamily = toDisplayText(item.candidate_family);
+                    const generatorMode = toDisplayText(item.generator_mode);
+                    const strategyStatus = toDisplayText(item.status);
+                    const committeeReview = asTypedObject<Record<string, unknown>>(item.committee_review);
+                    const validationProfile = asTypedObject<Record<string, unknown>>(item.validation_profile);
+                    const constraintCheck = asTypedObject<Record<string, unknown>>(item.constraint_check);
+                    const committeeDecision = toDisplayText(committeeReview.decision);
+                    const committeeFinalScore = Number(committeeReview.final_score);
+                    const committeeExecutionScore = Number(committeeReview.execution_score);
+                    const committeeCapacityScore = Number(committeeReview.capacity_score);
+                    const committeeAlignmentScore = Number(committeeReview.task_alignment_score);
+                    const validationProfileName = toDisplayText(validationProfile.profile);
+                    const validationFocus = toDisplayText(validationProfile.validation_focus);
+                    const primaryValidationLayer = toDisplayText(item.primary_validation_layer)
+                      ?? toDisplayText(validationProfile.primary_validation_layer);
+                    const refreshMode = toDisplayText(item.refresh_mode);
+                    const positionAssumption = toDisplayText(item.position_assumption);
+                    const taskSignature = toDisplayText(item.task_signature);
+                    const constraintSummary = formatConstraintAuditSummary(constraintCheck);
+                    const eventWindowSummary = formatArtifactObjectSummary(item.event_window_config, 4);
+                    const costSummary = formatArtifactObjectSummary(item.cost_assumptions, 4);
+                    const explicitCostSummary = formatArtifactObjectSummary(item.explicit_cost_breakdown, 3);
+                    const implicitCostSummary = formatArtifactObjectSummary(item.implicit_cost_breakdown, 3);
+                    const attemptAdjustmentSummary = formatAttemptAdjustmentSummary(item.attempt_adjustment);
+                    const committeeIssueSummary = shortArtifactText(
+                      [
+                        ...toDisplayTextList(committeeReview.alignment_issues, 3),
+                        ...toDisplayTextList(committeeReview.execution_issues, 3),
+                        ...toDisplayTextList(committeeReview.capacity_issues, 3),
+                        ...toDisplayTextList(committeeReview.accept_blockers, 3),
+                      ].join(' / ') || '-',
+                      80,
+                    );
+
+                    return (
+                      <div
+                        key={String(item.strategy_id ?? item.name ?? idx)}
+                        className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-medium text-text-primary break-all">
+                              {formatArtifactValue(item.name ?? item.strategy_id)}
+                            </div>
+                            <div className="mt-1 break-all">strategy_id: {formatArtifactValue(item.strategy_id)}</div>
+                          </div>
+                          {strategyStatus && (
+                            <Badge variant={previewBadgeVariant(strategyStatus)}>
+                              {formatTaskLabel(strategyStatus)}
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {submissionLane && (
+                            <Badge variant="neutral">{formatTaskLabel(submissionLane)}</Badge>
+                          )}
+                          {actionType && (
+                            <Badge variant="info">{formatTaskLabel(actionType)}</Badge>
+                          )}
+                          {candidateFamily && (
+                            <Badge variant="info">{formatTaskLabel(candidateFamily)}</Badge>
+                          )}
+                          {generatorMode && (
+                            <Badge variant={previewBadgeVariant(generatorMode)}>
+                              {formatTaskLabel(generatorMode)}
+                            </Badge>
+                          )}
+                          {validationProfileName && (
+                            <Badge variant="info">{formatTaskLabel(validationProfileName)}</Badge>
+                          )}
+                          {committeeDecision && (
+                            <Badge variant={previewBadgeVariant(committeeDecision)}>
+                              {formatTaskLabel(committeeDecision)}
+                              {Number.isFinite(committeeFinalScore) ? ` ${committeeFinalScore.toFixed(4)}` : ''}
+                            </Badge>
+                          )}
+                          {primaryValidationLayer && (
+                            <Badge variant="neutral">主验证 {formatTaskLabel(primaryValidationLayer)}</Badge>
+                          )}
+                          {refreshMode && (
+                            <Badge variant="neutral">{formatTaskLabel(refreshMode)}</Badge>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>向量画像：{formatArtifactValue(item.vector_profile_id)}</div>
+                          <div>多重检验：{formatArtifactValue(item.multiple_testing_registry_record_id)}</div>
+                          <div>源候选：{formatArtifactValue(item.source_candidate_artifact_id)}</div>
+                          <div>目标池：{formatArtifactValue(item.target_pool_id)}</div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant={Boolean(item.has_constraint_check) ? 'success' : 'warning'}>
+                            约束审计{Boolean(item.has_constraint_check) ? '已挂载' : '缺失'}
+                          </Badge>
+                          <Badge variant={Boolean(item.has_validation_profile) ? 'success' : 'warning'}>
+                            验证画像{Boolean(item.has_validation_profile) ? '已挂载' : '缺失'}
+                          </Badge>
+                          <Badge variant={Boolean(item.has_event_window_config) ? 'success' : 'warning'}>
+                            事件窗{Boolean(item.has_event_window_config) ? '已挂载' : '缺失'}
+                          </Badge>
+                          <Badge variant={Boolean(item.has_attempt_adjustment) ? 'success' : 'neutral'}>
+                            尝试惩罚{Boolean(item.has_attempt_adjustment) ? '已挂载' : '未触发'}
+                          </Badge>
+                          <Badge variant={Boolean(item.has_committee_review) ? 'success' : 'warning'}>
+                            评审结果{Boolean(item.has_committee_review) ? '已挂载' : '缺失'}
+                          </Badge>
+                          {item.created_strategy_pool ? (
+                            <Badge variant="success">已创建入池</Badge>
+                          ) : null}
+                          {item.created_audit_only ? (
+                            <Badge variant="warning">仅审计落档</Badge>
+                          ) : null}
+                          {item.refreshed_existing ? (
+                            <Badge variant="info">刷新已有</Badge>
+                          ) : null}
+                          {item.live_candidate_ready ? (
+                            <Badge variant="success">Live 候选</Badge>
+                          ) : null}
+                          {item.live_review_ready ? (
+                            <Badge variant="info">待运行审查</Badge>
+                          ) : null}
+                          {item.direct_trade_candidate ? (
+                            <Badge variant="warning">直达交易候选</Badge>
+                          ) : null}
+                        </div>
+                        <div>
+                          评审拆解：
+                          {[
+                            Number.isFinite(committeeExecutionScore) ? `执行:${committeeExecutionScore.toFixed(2)}` : '',
+                            Number.isFinite(committeeCapacityScore) ? `容量:${committeeCapacityScore.toFixed(2)}` : '',
+                            Number.isFinite(committeeAlignmentScore) ? `对齐:${committeeAlignmentScore.toFixed(2)}` : '',
+                          ].filter(Boolean).join(' / ') || '-'}
+                        </div>
+                        <div>约束审计：{constraintSummary}</div>
+                        <div>评审问题：{committeeIssueSummary}</div>
+                        <div>验证焦点：{validationFocus ?? '-'}</div>
+                        <div>事件窗：{eventWindowSummary}</div>
+                        <div>仓位 / 惩罚：{positionAssumption ?? '-'} / {attemptAdjustmentSummary}</div>
+                        <div>成本假设：{costSummary}</div>
+                        <div>显式 / 隐式成本：{explicitCostSummary} / {implicitCostSummary}</div>
+                        <div>任务签名：{shortArtifactText(taskSignature, 56)}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {strategyEvidenceBriefs.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-text-primary">治理证据</div>
+                <div className="space-y-2">
+                  {strategyEvidenceBriefs.slice(0, 4).map((item, idx) => (
+                    <div
+                      key={String(item.strategy_id ?? item.name ?? idx)}
+                      className="rounded border border-border bg-surface px-3 py-3 text-xs text-text-secondary space-y-2"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-medium text-text-primary break-all">
+                            {formatArtifactValue(item.name ?? item.strategy_id)}
+                          </div>
+                          <div className="mt-1 break-all">lineage: {formatArtifactValue(item.lineage_id)}</div>
+                        </div>
+                        {toDisplayText(item.vector_backend) && (
+                          <Badge variant="neutral">{formatTaskLabel(String(item.vector_backend))}</Badge>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant={Boolean(item.has_multiple_testing_registry) ? 'success' : 'warning'}>
+                          多重检验{Boolean(item.has_multiple_testing_registry) ? '已登记' : '缺失'}
+                        </Badge>
+                        <Badge variant={Boolean(item.has_cost_assumptions) ? 'success' : 'warning'}>
+                          成本假设{Boolean(item.has_cost_assumptions) ? '已接入' : '缺失'}
+                        </Badge>
+                        <Badge variant={Boolean(item.has_execution_reality) ? 'success' : 'warning'}>
+                          执行现实{Boolean(item.has_execution_reality) ? '已接入' : '缺失'}
+                        </Badge>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>状态：{formatArtifactValue(item.status)}</div>
+                        <div>通道：{formatArtifactValue(item.submission_lane)}</div>
+                        <div>动作：{formatArtifactValue(item.submission_action_type)}</div>
+                        <div>向量画像：{formatArtifactValue(item.vector_profile_id)}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </FactoryPreviewSection>
+      )}
     </div>
   );
 }
@@ -564,6 +2288,13 @@ function FactoryRunDetailPanel({
 
       <FactoryTaskStructurePanel summary={summary} />
       <FactoryQualityAuditPanel summary={summary} />
+      <FactoryFeedbackLoopPanel
+        title="生命周期反馈闭环"
+        summary={summary}
+        feedbackSummary={isObjectRecord(detail.feedback_summary) ? detail.feedback_summary : null}
+      />
+      <FactoryResearchPlanePanel detail={detail} />
+      <FactoryGovernancePlanePanel detail={detail} />
 
       {snapshotRows.length > 0 && (
         <div>
@@ -699,6 +2430,7 @@ export function FactoryDashboard({
       </div>
       <FactoryTaskStructurePanel summary={factorySummary} />
       <FactoryQualityAuditPanel summary={factorySummary} />
+      <FactoryFeedbackLoopPanel title="P3 反馈闭环" summary={factorySummary} compact />
       <div className="mt-3 flex flex-wrap gap-2">
         {capabilityBadges.map((item) => (
           <Badge key={item.key} variant={item.enabled ? 'success' : 'neutral'}>
@@ -798,6 +2530,26 @@ export function FactoryDashboard({
                 {(item.summary?.skipped_stage_count ?? 0) > 0 ? (
                   <Badge variant="neutral">
                     跳过阶段 {item.summary?.skipped_stage_count}
+                  </Badge>
+                ) : null}
+                {(item.summary?.budget_feedback_family_count ?? 0) > 0 ? (
+                  <Badge variant="info">
+                    反馈家族 {item.summary?.budget_feedback_family_count}
+                  </Badge>
+                ) : null}
+                {(item.summary?.budget_feedback_promotion_review_count ?? 0) > 0 ? (
+                  <Badge variant="success">
+                    晋级评审 {item.summary?.budget_feedback_promotion_review_count}
+                  </Badge>
+                ) : null}
+                {(item.summary?.blocked_feedback_task_count ?? 0) > 0 ? (
+                  <Badge variant="warning">
+                    阻断任务 {item.summary?.blocked_feedback_task_count}
+                  </Badge>
+                ) : null}
+                {(item.summary?.planned_feedback_cooldown_task_count ?? 0) > 0 ? (
+                  <Badge variant="warning">
+                    冷却任务 {item.summary?.planned_feedback_cooldown_task_count}
                   </Badge>
                 ) : null}
                 {(() => {

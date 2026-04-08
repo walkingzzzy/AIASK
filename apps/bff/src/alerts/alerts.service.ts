@@ -46,7 +46,7 @@ export class AlertsService {
 
     const args = {
       action: 'create',
-      kwargs: JSON.stringify(normalized),
+      params: normalized,
     };
 
     const payload = await this.callTool('alerts_manager', args);
@@ -68,7 +68,7 @@ export class AlertsService {
   async checkAndPush(userId = 'default') {
     const payload = await this.callTool('alerts_manager', {
       action: 'check',
-      kwargs: JSON.stringify({ user_id: userId }),
+      params: { user_id: userId },
     });
     const triggered = this.pickArray(payload, ['data.triggered', 'data.items', 'triggered', 'items']);
 
@@ -107,7 +107,7 @@ export class AlertsService {
 
     const args = {
       action: 'list',
-      kwargs: JSON.stringify({ status: normalizedStatus, user_id: userId }),
+      params: { status: normalizedStatus, user_id: userId },
     };
 
     const payload = await this.callTool('alerts_manager', args);
@@ -130,7 +130,7 @@ export class AlertsService {
     const normalized = alertId.trim();
     const args = {
       action: 'delete',
-      kwargs: JSON.stringify({ alert_id: normalized, user_id: userId }),
+      params: { alert_id: normalized, user_id: userId },
     };
 
     const payload = await this.callTool('alerts_manager', args);

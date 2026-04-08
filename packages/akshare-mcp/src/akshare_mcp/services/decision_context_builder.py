@@ -17,7 +17,7 @@ from ..tools.market.quote import get_realtime_quote
 from ..tools.semantic.diagnosis import _build_evidence
 from ..tools.semantic.industry_chain import get_industry_chain
 from ..utils import resolve_security_code
-from .decision_pipeline_shared import build_context_meta, clamp, safe_float, safe_int, unique_texts
+from .decision_pipeline_shared import build_context_meta, clamp, latest_timestamp, safe_float, safe_int, unique_texts
 
 
 def _normalize_preferences(raw: Any) -> dict[str, Any]:
@@ -50,6 +50,16 @@ def _resp_data(resp: Any) -> dict[str, Any]:
     if not _is_successful_response(resp) or not isinstance(resp.get("data"), dict):
         return {}
     return dict(resp.get("data") or {})
+
+
+def _response_timestamp_candidates(resp: Any, data: dict[str, Any], *data_fields: str) -> list[Any]:
+    candidates: list[Any] = []
+    if isinstance(resp, dict):
+        candidates.extend([resp.get("asof_time"), resp.get("timestamp")])
+    if isinstance(data, dict):
+        for field in data_fields:
+            candidates.append(data.get(field))
+    return candidates
 
 
 _TECHNICAL_NOISE_PATTERNS = (
@@ -86,9 +96,36 @@ def _append_issue(
         warnings.append(label)
 
 
-async def _call_sync_tool(tool, *args) -> dict[str, Any]:
+async def _call_sync_tool(tool, *args, timeout_sec: float | None = None) -> dict[str, Any]:
     try:
-        return await asyncio.to_thread(tool, *args)
+        runner = asyncio.to_thread(tool, *args)
+        if timeout_sec and timeout_sec > 0:
+            return await asyncio.wait_for(runner, timeout=timeout_sec)
+        return await runner
+    except asyncio.TimeoutError:
+        return {
+            "success": False,
+            "error": f"timeout>{float(timeout_sec):.1f}s" if timeout_sec else "timeout",
+            "data": None,
+            "cached": False,
+        }
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "data": None, "cached": False}
+
+
+async def _call_async_tool(tool, *args, timeout_sec: float | None = None) -> dict[str, Any]:
+    try:
+        runner = tool(*args)
+        if timeout_sec and timeout_sec > 0:
+            return await asyncio.wait_for(runner, timeout=timeout_sec)
+        return await runner
+    except asyncio.TimeoutError:
+        return {
+            "success": False,
+            "error": f"timeout>{float(timeout_sec):.1f}s" if timeout_sec else "timeout",
+            "data": None,
+            "cached": False,
+        }
     except Exception as exc:
         return {"success": False, "error": str(exc), "data": None, "cached": False}
 
@@ -270,36 +307,26 @@ async def build_stock_context(code: str) -> dict[str, Any]:
     warnings: list[str] = []
     fallback_reasons: list[str] = []
     source_chain = ["decision_context_builder"]
-    analysis_result: dict[str, Any] | None = None
     analysis_context: dict[str, Any] = {}
+    analysis_result, info_resp, quote_resp, fund_flow_resp, north_resp, order_book_resp = await asyncio.gather(
+        _call_async_tool(get_investment_analysis, normalized_code, timeout_sec=20.0),
+        _call_sync_tool(get_stock_info, normalized_code, timeout_sec=10.0),
+        _call_sync_tool(get_realtime_quote, normalized_code, timeout_sec=10.0),
+        _call_sync_tool(get_stock_fund_flow, normalized_code, timeout_sec=10.0),
+        _call_sync_tool(get_north_fund_holding, normalized_code, timeout_sec=10.0),
+        _call_sync_tool(get_order_book, normalized_code, timeout_sec=10.0),
+    )
 
-    try:
-        analysis_result = await get_investment_analysis(normalized_code)
-        if _is_successful_response(analysis_result):
-            analysis_context = dict(analysis_result.get("data") or {})
-            source_chain.append("tools.investment_analysis")
-        else:
-            _append_issue(
-                warnings=warnings,
-                fallback_reasons=fallback_reasons,
-                label="investment_analysis",
-                response=analysis_result,
-            )
-    except Exception as exc:
+    if _is_successful_response(analysis_result):
+        analysis_context = dict(analysis_result.get("data") or {})
+        source_chain.append("tools.investment_analysis")
+    else:
         _append_issue(
             warnings=warnings,
             fallback_reasons=fallback_reasons,
             label="investment_analysis",
-            error=str(exc),
+            response=analysis_result,
         )
-
-    info_resp, quote_resp, fund_flow_resp, north_resp, order_book_resp = await asyncio.gather(
-        _call_sync_tool(get_stock_info, normalized_code),
-        _call_sync_tool(get_realtime_quote, normalized_code),
-        _call_sync_tool(get_stock_fund_flow, normalized_code),
-        _call_sync_tool(get_north_fund_holding, normalized_code),
-        _call_sync_tool(get_order_book, normalized_code),
-    )
 
     for label, resp in (
         ("stock_info", info_resp),
@@ -327,7 +354,7 @@ async def build_stock_context(code: str) -> dict[str, Any]:
     industry = str(basic_info.get("industry") or info_data.get("industry") or "")
     industry_resp = {"success": False, "error": "industry_keyword_missing", "data": None}
     if industry:
-        industry_resp = await _call_sync_tool(get_industry_chain, industry, "")
+        industry_resp = await _call_sync_tool(get_industry_chain, industry, "", timeout_sec=8.0)
         if _is_successful_response(industry_resp):
             source_chain.append("tools.industry_chain")
         else:
@@ -386,10 +413,21 @@ async def build_stock_context(code: str) -> dict[str, Any]:
         warnings.append("risk_context_missing")
         missing_fields.append("risk")
 
+    stock_asof_value = latest_timestamp(
+        price_context.get("analysis_date"),
+        *( _response_timestamp_candidates(info_resp, info_data, "reportDate") ),
+        *( _response_timestamp_candidates(quote_resp, quote_data, "data_timestamp", "time", "trade_time") ),
+        *( _response_timestamp_candidates(fund_flow_resp, fund_flow_data, "tradeDate", "date") ),
+        *( _response_timestamp_candidates(north_resp, north_data, "date") ),
+        *( _response_timestamp_candidates(order_book_resp, order_book_data, "timestamp") ),
+        *( _response_timestamp_candidates(industry_resp, {}, "timestamp") ),
+        (analysis_result or {}).get("timestamp"),
+    )
+
     meta = build_context_meta(
         source="stock_context",
         source_chain=source_chain,
-        asof_value=price_context.get("analysis_date") or quote_data.get("data_timestamp") or (analysis_result or {}).get("timestamp"),
+        asof_value=stock_asof_value,
         warnings=warnings,
         fallback_reason=fallback_reasons,
         missing_fields=missing_fields,
@@ -400,7 +438,7 @@ async def build_stock_context(code: str) -> dict[str, Any]:
     return {
         "code": normalized_code,
         "name": name,
-        "analysis_date": str(price_context.get("analysis_date") or meta["updated_at"]),
+        "analysis_date": str(meta["updated_at"]),
         "analysis_context": analysis_context,
         "recommendation": recommendation,
         "recommendation_text": recommendation_text,

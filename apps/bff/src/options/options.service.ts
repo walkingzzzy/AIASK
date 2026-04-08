@@ -81,8 +81,8 @@ export class OptionsService {
 
     try {
       const payload = await this.callManager('calculate_greeks', {
-        code: symbol,
-        option_type: normalizedInput.optionType,
+        underlying: symbol,
+        ...(input.optionType ? { option_type: normalizedInput.optionType } : {}),
         ...(normalizedInput.strike ? { strike: Number(normalizedInput.strike) } : {}),
         ...(normalizedInput.spot ? { spot: Number(normalizedInput.spot) } : {}),
         ...(normalizedInput.volatility ? { volatility: Number(normalizedInput.volatility) } : {}),
@@ -153,7 +153,7 @@ export class OptionsService {
   private async callManager(action: string, payload: Record<string, unknown>) {
     return this.mcp.callTool('options_manager', {
       action,
-      kwargs: JSON.stringify(payload),
+      params: payload,
     });
   }
 

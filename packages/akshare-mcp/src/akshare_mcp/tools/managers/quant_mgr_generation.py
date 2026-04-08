@@ -535,6 +535,7 @@ async def handle_llm_factor_mining(
     alternative_lookback_days = max(7, min(int(kw.get("alternative_lookback_days", 30) or 30), 90))
     allow_fallback = bool(kw.get("allow_fallback", True))
     persist_artifact = bool(kw.get("persist_artifact", True))
+    workflow_fast_mode = coerce_bool_fn(kw.get("workflow_fast_mode"), False)
     dedup_mode = str(kw.get("dedup_mode", "penalty") or "penalty").strip().lower()
     dedup_high_similarity_threshold = float(kw.get("dedup_high_similarity_threshold", 0.98) or 0.98)
     dedup_failure_similarity_threshold = float(kw.get("dedup_failure_similarity_threshold", 0.93) or 0.93)
@@ -595,6 +596,9 @@ async def handle_llm_factor_mining(
         "blocked_count": 0,
         "blocked_ratio": 0.0,
     }
+
+    if workflow_fast_mode:
+        startup_warmup_enabled = False
 
     if startup_warmup_enabled:
         try:
@@ -658,7 +662,10 @@ async def handle_llm_factor_mining(
 
     fallback_used = False
     fallback_reason = None
-    if prompt is not None and provider.is_enabled():
+    if workflow_fast_mode and allow_fallback:
+        fallback_reason = "workflow_fast_mode_prefer_local_fallback"
+        warnings.append(fallback_reason)
+    elif prompt is not None and provider.is_enabled():
         try:
             generation = await provider.generate_candidates(prompt, candidate_count=candidate_count)
             source_chain.append("services.factor_llm_provider")
@@ -846,6 +853,7 @@ async def handle_llm_factor_mining(
             "lookback_bars": lookback_bars,
             "alternative_lookback_days": alternative_lookback_days,
             "allow_fallback": allow_fallback,
+            "workflow_fast_mode": workflow_fast_mode,
             "dedup_mode": dedup_mode,
             "dedup_high_similarity_threshold": dedup_high_similarity_threshold,
             "dedup_failure_similarity_threshold": dedup_failure_similarity_threshold,

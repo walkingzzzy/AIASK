@@ -195,8 +195,8 @@ def register_execution_manager(mcp):
             if action in {"twap", "vwap"}:
                 code = kwargs.get("code")
                 total_shares = kwargs.get("total_shares")
-                duration = kwargs.get("duration", 60)
-                direction = str(kwargs.get("direction", "buy")).strip().lower()
+                duration = kwargs.get("duration", 60) or 60
+                direction = str(kwargs.get("direction") or kwargs.get("side") or "buy").strip().lower()
 
                 if not code:
                     return fail("code is required")

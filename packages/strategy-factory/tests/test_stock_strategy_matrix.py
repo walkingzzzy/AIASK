@@ -1,6 +1,7 @@
 import pytest
 
 import strategy_factory.application.stock_strategy_matrix as matrix_mod
+from strategy_factory.application.research_plane_contract import TASK_ARTIFACT_CONTRACT_VERSION
 from strategy_factory.application.stock_strategy_matrix import StockStrategyMatrixPlanner
 from strategy_factory.domain.strategy_profile import apply_candidate_strategy_profile
 
@@ -64,6 +65,12 @@ async def test_stock_strategy_matrix_planner_emits_single_stock_family_tasks(mon
     assert report["summary"]["effective_task_budget"] == 4
     assert report["summary"]["estimated_candidate_count"] == 4
     assert report["summary"]["shard_count"] == 2
+    assert report["summary"]["task_artifact_contract_version"] == TASK_ARTIFACT_CONTRACT_VERSION
+    assert report["summary"]["task_artifact_available"] is True
+    assert report["task_artifact"]["contract_version"] == TASK_ARTIFACT_CONTRACT_VERSION
+    assert report["task_artifact"]["planned_task_count"] == len(tasks)
+    assert report["task_artifact"]["bulk_stock_task_count"] == len(tasks)
+    assert report["task_artifact"]["task_source_counts"] == {"bulk_stock_matrix": len(tasks)}
     assert [task["matrix_shard_id"] for task in tasks] == [1, 1, 2, 2]
     assert all(task["matrix_budget_slot"] >= 1 for task in tasks)
 
@@ -479,6 +486,44 @@ async def test_stock_strategy_matrix_planner_prefilters_paginated_universe_befor
     assert report["summary"]["task_count"] == 3
     assert report["summary"]["overflow_task_count"] == 1197
     assert report["tasks"][0]["target_symbols"][0].startswith("200")
+
+
+@pytest.mark.asyncio
+async def test_stock_strategy_matrix_planner_filters_rows_with_insufficient_history(monkeypatch):
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_ENABLED", True)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK", 1)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN", 2)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN", 2)
+    monkeypatch.setattr(matrix_mod, "STOCK_STRATEGY_MATRIX_GENERATION_LIMIT_PER_TASK", 1)
+
+    class _DB:
+        async def list_stock_universe(self, limit=500, offset=0):
+            del limit, offset
+            return [
+                {"code": "688795", "name": "摩尔线程", "industry": "电子", "sector": "电子", "market_cap": 260_000_000_000, "pb_ratio": 22.9},
+                {"code": "002142", "name": "宁波银行", "industry": "非银金融", "sector": "非银金融", "market_cap": 210_000_000_000, "pe_ratio": 7.7, "pb_ratio": 0.95},
+            ]
+
+        async def get_klines(self, code, limit=100):
+            return [{"close": float(idx + 1)} for idx in range(55 if code == "688795" else limit)]
+
+    report = await StockStrategyMatrixPlanner().plan(
+        _DB(),
+        {
+            "date": "2026-04-07",
+            "fear_greed_index": 50,
+            "fg_level": "neutral",
+            "hot_sectors": [],
+            "cold_sectors": [],
+            "factor_research": {"active_factors": ["quality"]},
+        },
+    )
+
+    assert report["summary"]["history_prefilter_applied"] is True
+    assert report["summary"]["min_history_bars"] == 100
+    assert report["summary"]["insufficient_history_filtered_count"] == 1
+    assert report["summary"]["eligible_stock_count"] == 1
+    assert [task["target_symbols"][0] for task in report["tasks"]] == ["002142"]
 
 
 @pytest.mark.asyncio

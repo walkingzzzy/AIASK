@@ -24,6 +24,8 @@ from datetime import datetime, time, timedelta
 from typing import Any, List, Optional
 from uuid import uuid4
 
+from ..env_loader import load_mcp_env
+
 logger = logging.getLogger(__name__)
 
 # Default stock universe for daily factor computation
@@ -326,12 +328,14 @@ class FactorScheduler:
                 "status": "skipped",
                 "action": None,
                 "error": None,
+                "smoke_check": {},
                 "before": {},
                 "after": {},
             }
         before = self._provider_status()
         action = None
         error = None
+        smoke_check: dict[str, Any] = {}
         after = dict(before)
         if bool(before.get("rebuild_recommended")):
             try:
@@ -347,10 +351,30 @@ class FactorScheduler:
                 error = str(exc)
                 action = "rebuild_failed"
                 after = self._provider_status()
+        if error is None:
+            try:
+                provider = self._provider_runtime()
+                smoke_check_fn = getattr(provider, "smoke_check", None)
+                if callable(smoke_check_fn) and bool(after.get("ready")):
+                    result = smoke_check_fn()
+                    if asyncio.iscoroutine(result):
+                        result = await result
+                    smoke_check = dict(result or {})
+                    smoke_status = str(smoke_check.get("status") or "").strip().lower()
+                    if smoke_status and smoke_status not in {"disabled", "cached_success", "passed"}:
+                        error = str(smoke_check.get("last_error") or smoke_check.get("error") or "factor llm smoke check failed")
+                    action = "smoke_check" if action is None else f"{action}+smoke_check"
+                    after = self._provider_status()
+            except Exception as exc:
+                error = str(exc)
+                smoke_check = {"status": "failed", "error": str(exc)}
+                action = "smoke_check_failed" if action is None else f"{action}+smoke_check_failed"
+                after = self._provider_status()
         return {
             "status": "completed" if error is None else "failed",
             "action": action,
             "error": error,
+            "smoke_check": smoke_check,
             "before": before,
             "after": after,
         }
@@ -436,6 +460,38 @@ class FactorScheduler:
             return []
         return [item.strip() for item in text.split(",") if item.strip()]
 
+    @classmethod
+    def _select_validation_code_sample(cls, codes: list[str], *, limit: int) -> list[str]:
+        normalized = list(dict.fromkeys(cls._normalize_codes(codes)))
+        if len(normalized) <= limit:
+            return normalized
+        if limit <= 1:
+            return normalized[:1]
+
+        max_index = len(normalized) - 1
+        selected_indices: list[int] = []
+        used_indices: set[int] = set()
+        for position in range(limit):
+            target_index = int(round(position * max_index / max(limit - 1, 1)))
+            if target_index not in used_indices:
+                used_indices.add(target_index)
+                selected_indices.append(target_index)
+                continue
+            for offset in range(1, len(normalized)):
+                right = target_index + offset
+                if right <= max_index and right not in used_indices:
+                    used_indices.add(right)
+                    selected_indices.append(right)
+                    break
+                left = target_index - offset
+                if left >= 0 and left not in used_indices:
+                    used_indices.add(left)
+                    selected_indices.append(left)
+                    break
+
+        selected_indices.sort()
+        return [normalized[index] for index in selected_indices[:limit]]
+
     def _resolve_validation_codes(self, llm_payload: dict) -> list[str]:
         codes = self._normalize_codes(llm_payload.get("codes")) or list(self.universe)
         if len(codes) < 4:
@@ -443,11 +499,11 @@ class FactorScheduler:
         limit = max(
             4,
             min(
-                self._safe_int(os.getenv("FACTOR_SCHEDULER_VALIDATION_MAX_CODES"), 12),
+                self._safe_int(os.getenv("FACTOR_SCHEDULER_VALIDATION_MAX_CODES"), 24),
                 len(codes),
             ),
         )
-        return list(dict.fromkeys(codes))[:limit]
+        return self._select_validation_code_sample(codes, limit=limit)
 
     async def _refresh_registry_summary(self, quant_manager, *, codes: list[str]) -> dict:
         kwargs = {
@@ -636,6 +692,11 @@ class FactorScheduler:
     async def run_once(self):
         """Execute a single batch factor computation run."""
         from ..storage import get_db
+
+        load_mcp_env(
+            override=False,
+            only_prefixes=("FACTOR_LLM_", "FACTOR_SCHEDULER_", "STRATEGY_LLM_"),
+        )
 
         logger.info("FactorScheduler: starting batch compute for %d stocks", len(self.universe))
         start = datetime.now().astimezone()

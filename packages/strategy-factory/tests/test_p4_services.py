@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from strategy_factory.application.services.readiness_service import ReadinessService
+from strategy_factory.application.services.readiness_service import (
+    READINESS_AUTHORITY_CONTRACT_VERSION,
+    READINESS_CONTRACT_VERSION,
+    ReadinessService,
+)
 from strategy_factory.application.services.task_orchestrator import TaskOrchestrator
 from strategy_factory.application.services.candidate_pipeline import CandidatePipeline
 from strategy_factory.domain.candidates import CandidatePipelineReport
@@ -42,8 +46,10 @@ class TestReadinessService:
             "summary": {
                 "stale": False,
                 "degraded": False,
-                "factor_source_mode": "live",
+                "factor_source_mode": "governed_candidate_pool",
                 "active_candidate_count": 2,
+                "governed_source_candidate_count": 2,
+                "governed_freshness_days": 0,
                 "active_family_names": ["momentum"],
                 "active_regime_names": ["bull"],
             },
@@ -57,6 +63,15 @@ class TestReadinessService:
         assert result["readiness_score"] == pytest.approx(1.0)
         assert result["warnings"] == []
         assert result["blockers"] == []
+        assert result["readiness_contract_version"] == READINESS_CONTRACT_VERSION
+        assert result["authority_contract_version"] == READINESS_AUTHORITY_CONTRACT_VERSION
+        assert result["decision"] == "proceed"
+        assert result["blocked"] is False
+        assert result["hard_gate"] == result["hard_block_enabled"]
+        assert result["blocking_stage"] is None
+        assert result["blocking_reason_codes"] == []
+        assert result["critical_blocking_reason_codes"] == []
+        assert result["skip_reason"] is None
 
     def test_snapshot_degraded_adds_warning(self):
         svc = self._svc()
@@ -142,7 +157,16 @@ class TestReadinessService:
 
         assert result["can_proceed"] is False
         assert "governed_candidate_pool_missing_after_scheduler_success" in result["blockers"]
-        assert result["critical_blocker_count"] == 1
+        assert "governed_candidate_pool_required" in result["critical_blockers"]
+        assert result["critical_blocker_count"] == 2
+        assert result["decision"] == "blocked"
+        assert result["blocked"] is True
+        assert result["blocking_stage"] == "readiness"
+        assert result["skip_reason"] == "readiness_blocked"
+        assert "governed_candidate_pool_required" in result["blocking_reason_codes"]
+        assert "governed_candidate_pool_missing_after_scheduler_success" in result[
+            "critical_blocking_reason_codes"
+        ]
 
     def test_governed_pool_refreshing_sets_runtime_state(self):
         svc = self._svc()
@@ -159,6 +183,9 @@ class TestReadinessService:
         result = svc.evaluate(self._good_snapshot(), factor)
 
         assert result["governed_candidate_pool_runtime_state"] == "refreshing_pool"
+        assert result["can_proceed"] is False
+        assert "governed_candidate_pool_required" in result["blockers"]
+        assert "governed_candidate_pool_inactive" in result["warnings"]
         assert "governed_candidate_pool_refreshing" in result["warnings"]
         assert result["factor_refresh_recommended"] is True
         assert result["factor_refresh_recommendation_reason"] == "seed_fallback_without_governed_pool"
@@ -178,9 +205,10 @@ class TestReadinessService:
         result = svc.evaluate(self._good_snapshot(), factor)
 
         assert result["governed_candidate_pool_runtime_state"] == "blocked_by_governed_pool"
+        assert "governed_candidate_pool_required" in result["blockers"]
         assert "governed_candidate_pool_refresh_blocked" in result["warnings"]
         assert "governed_candidate_pool_unavailable_after_refresh" in result["blockers"]
-        assert result["critical_blocker_count"] == 1
+        assert result["critical_blocker_count"] == 2
 
 
 # ---------------------------------------------------------------------------

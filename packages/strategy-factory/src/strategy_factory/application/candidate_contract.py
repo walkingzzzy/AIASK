@@ -9,7 +9,9 @@ from typing import Any, Mapping, Optional
 from ..api.contracts import FactoryBacktestAssumptions
 from ..domain.strategy_profile import infer_candidate_strategy_profile
 from ..domain.targets import (
+    _apply_target_symbol_policy,
     _build_task_signature,
+    _extract_candidate_origin_target_codes,
     _extract_target_codes_from_payload,
     _normalize_target_codes,
     _normalize_research_task_contract,
@@ -30,6 +32,111 @@ _DYNAMIC_TARGETING_KEYS = frozenset({
     "intersection_ratio",
     "target_overlap_count",
     "constraint_check",
+})
+_LOGIC_PARAM_SKIP_KEYS = frozenset({
+    "candidate_contract_hash",
+    "candidate_contract_snapshot",
+    "candidate_identity_signature",
+    "candidate_lineage_contract",
+    "candidate_provenance",
+    "constraint_check",
+    "event_context",
+    "execution_contract_hash",
+    "execution_assumptions",
+    "factor_signature",
+    "factory_attempt_count",
+    "factory_selected_count",
+    "had_explicit_research_task",
+    "holding_horizon",
+    "logic_signature",
+    "lineage",
+    "lineage_id",
+    "parent_candidate_id",
+    "parent_candidate_ids",
+    "parent_strategy_id",
+    "parent_strategy_ids",
+    "portfolio_spec",
+    "rebalance_rule",
+    "request_target_symbols",
+    "requested_target_symbols",
+    "research_task",
+    "resolved_candidate_envelope",
+    "risk_rules",
+    "stock_pool",
+    "strategy_profile",
+    "target_pool_id",
+    "target_symbols",
+    "targeting_policy",
+    "task_signature",
+    "tested_object_hash",
+    "trade_plan",
+    "validation_profile",
+    "dsl_signature",
+    "entry_exit_signature",
+    "legacy_identity_partial",
+    "tested_object_backfill_incomplete",
+})
+_LOGIC_METADATA_SKIP_KEYS = frozenset({
+    "candidate_contract_hash",
+    "candidate_contract_snapshot",
+    "candidate_family",
+    "candidate_family_id",
+    "candidate_identity_signature",
+    "candidate_lineage_contract",
+    "candidate_provenance",
+    "codes",
+    "dsl_signature",
+    "entry_exit_signature",
+    "event_context",
+    "execution_contract_hash",
+    "factor_signature",
+    "lineage",
+    "lineage_id",
+    "logic_signature",
+    "parent_candidate_id",
+    "parent_candidate_ids",
+    "parent_strategy_id",
+    "parent_strategy_ids",
+    "pool_id",
+    "research_task",
+    "run_id",
+    "same_theme_symbols",
+    "stock_codes",
+    "strategy_profile",
+    "strategy_tags",
+    "symbols",
+    "target_pool_id",
+    "target_symbols",
+    "task_signature",
+    "tested_object_hash",
+    "tested_object_backfill_incomplete",
+    "theme_code",
+    "theme_id",
+    "theme_members",
+    "legacy_identity_partial",
+})
+_TOP_LEVEL_LOGIC_KEYS = (
+    "alpha_formula",
+    "entry_logic",
+    "exit_logic",
+    "factor_weights",
+    "formula",
+    "ranking_logic",
+    "selection_logic",
+    "signal_formula",
+)
+_FACTOR_SIGNATURE_LOGIC_KEYS = frozenset({
+    "alpha_formula",
+    "factor_weights",
+    "formula",
+    "ranking_logic",
+    "selection_logic",
+    "signal_formula",
+})
+_FACTOR_SIGNATURE_PARAM_TOKENS = ("alpha", "factor", "formula", "rank", "score", "select", "signal", "weight")
+_ENTRY_EXIT_LOGIC_KEYS = frozenset({
+    "entry_logic",
+    "exit_logic",
 })
 
 
@@ -131,6 +238,194 @@ def _canonicalize_contract_value(value: Any, *, key: Optional[str] = None) -> An
     return value
 
 
+def _compact_payload(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        compact: dict[str, Any] = {}
+        for key, child in value.items():
+            compact_child = _compact_payload(child)
+            if compact_child in _EMPTY_VALUES:
+                continue
+            compact[str(key)] = compact_child
+        return compact
+    if isinstance(value, (list, tuple, set)):
+        compact_items = [_compact_payload(item) for item in value]
+        return [item for item in compact_items if item not in _EMPTY_VALUES]
+    return value
+
+
+def _canonicalize_logic_value(value: Any, *, key: Optional[str] = None) -> Any:
+    if isinstance(value, Mapping):
+        canonical: dict[str, Any] = {}
+        for child_key, child_value in value.items():
+            normalized_key = str(child_key)
+            if normalized_key in _LOGIC_METADATA_SKIP_KEYS:
+                continue
+            canonical_value = _canonicalize_logic_value(child_value, key=normalized_key)
+            if canonical_value in _EMPTY_VALUES:
+                continue
+            canonical[normalized_key] = canonical_value
+        return canonical
+    if key in _TARGET_SYMBOL_KEYS:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [_canonicalize_logic_value(item) for item in value]
+    return value
+
+
+def _build_candidate_logic_payload(candidate: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    payload = dict(candidate or {})
+    params = _as_dict(payload.get("params"))
+    dsl = _as_dict(params.get("dsl") or payload.get("dsl"))
+    if dsl:
+        dsl = {
+            str(key): _canonicalize_logic_value(value, key=str(key))
+            for key, value in dsl.items()
+            if str(key) != "metadata"
+        }
+    alpha_params = {
+        str(key): _canonicalize_logic_value(value, key=str(key))
+        for key, value in params.items()
+        if str(key) not in _LOGIC_PARAM_SKIP_KEYS and str(key) not in {"dsl", "factor_weights", "selection_logic"}
+    }
+    top_level_logic = {
+        key: _canonicalize_logic_value(payload.get(key), key=key)
+        for key in _TOP_LEVEL_LOGIC_KEYS
+        if payload.get(key) not in _EMPTY_VALUES
+    }
+    if "factor_weights" not in top_level_logic:
+        factor_weights = _canonicalize_logic_value(params.get("factor_weights"), key="factor_weights")
+        if factor_weights not in _EMPTY_VALUES:
+            top_level_logic["factor_weights"] = factor_weights
+    if "selection_logic" not in top_level_logic:
+        selection_logic = _canonicalize_logic_value(params.get("selection_logic"), key="selection_logic")
+        if selection_logic not in _EMPTY_VALUES:
+            top_level_logic["selection_logic"] = selection_logic
+    return _compact_payload({
+        "strategy_type": _string(payload.get("strategy_type")).lower() or "unknown",
+        "dsl": dsl,
+        "logic_fields": top_level_logic,
+        "alpha_params": alpha_params,
+    })
+
+
+def _hash_payload(payload: Any) -> str:
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha1(serialized.encode("utf-8")).hexdigest()
+
+
+def _has_material_logic_payload(payload: Optional[Mapping[str, Any]]) -> bool:
+    item = dict(payload or {})
+    return bool(
+        item.get("dsl")
+        or item.get("logic_fields")
+        or item.get("alpha_params")
+    )
+
+
+def _should_include_factor_param(strategy_type: str, key: str) -> bool:
+    normalized_key = _string(key).lower()
+    if not normalized_key:
+        return False
+    if strategy_type in _FACTOR_VALIDATION_TYPES:
+        return True
+    return any(token in normalized_key for token in _FACTOR_SIGNATURE_PARAM_TOKENS)
+
+
+def _build_dsl_signature_payload(logic_payload: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(logic_payload or {})
+    return _compact_payload({
+        "strategy_type": payload.get("strategy_type"),
+        "dsl": dict(payload.get("dsl") or {}),
+    })
+
+
+def _build_factor_signature_payload(logic_payload: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(logic_payload or {})
+    strategy_type = _string(payload.get("strategy_type")).lower() or "unknown"
+    logic_fields = {
+        str(key): value
+        for key, value in dict(payload.get("logic_fields") or {}).items()
+        if str(key) in _FACTOR_SIGNATURE_LOGIC_KEYS
+    }
+    alpha_params = {
+        str(key): value
+        for key, value in dict(payload.get("alpha_params") or {}).items()
+        if _should_include_factor_param(strategy_type, str(key))
+    }
+    return _compact_payload({
+        "strategy_type": strategy_type,
+        "logic_fields": logic_fields,
+        "alpha_params": alpha_params,
+    })
+
+
+def _build_entry_exit_signature_payload(logic_payload: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(logic_payload or {})
+    dsl = {
+        str(key): value
+        for key, value in dict(payload.get("dsl") or {}).items()
+        if "entry" in str(key).lower() or "exit" in str(key).lower()
+    }
+    logic_fields = {
+        str(key): value
+        for key, value in dict(payload.get("logic_fields") or {}).items()
+        if str(key) in _ENTRY_EXIT_LOGIC_KEYS
+    }
+    return _compact_payload({
+        "strategy_type": payload.get("strategy_type"),
+        "dsl": dsl,
+        "logic_fields": logic_fields,
+    })
+
+
+def build_logic_signature(candidate: Optional[Mapping[str, Any]]) -> str:
+    return _hash_payload(_build_candidate_logic_payload(candidate))
+
+
+def build_dsl_signature(candidate: Optional[Mapping[str, Any]]) -> Optional[str]:
+    payload = _build_dsl_signature_payload(_build_candidate_logic_payload(candidate))
+    if not dict(payload).get("dsl"):
+        return None
+    return _hash_payload(payload)
+
+
+def build_factor_signature(candidate: Optional[Mapping[str, Any]]) -> Optional[str]:
+    payload = _build_factor_signature_payload(_build_candidate_logic_payload(candidate))
+    if not dict(payload).get("logic_fields") and not dict(payload).get("alpha_params"):
+        return None
+    return _hash_payload(payload)
+
+
+def build_entry_exit_signature(candidate: Optional[Mapping[str, Any]]) -> Optional[str]:
+    payload = _build_entry_exit_signature_payload(_build_candidate_logic_payload(candidate))
+    if not dict(payload).get("dsl") and not dict(payload).get("logic_fields"):
+        return None
+    return _hash_payload(payload)
+
+
+def build_alpha_identity_components(candidate: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    logic_payload = _build_candidate_logic_payload(candidate)
+    dsl_payload = _build_dsl_signature_payload(logic_payload)
+    factor_payload = _build_factor_signature_payload(logic_payload)
+    entry_exit_payload = _build_entry_exit_signature_payload(logic_payload)
+    return {
+        "strategy_type": logic_payload.get("strategy_type"),
+        "has_material_logic": _has_material_logic_payload(logic_payload),
+        "logic_signature": _hash_payload(logic_payload),
+        "dsl_signature": _hash_payload(dsl_payload) if dict(dsl_payload).get("dsl") else None,
+        "factor_signature": (
+            _hash_payload(factor_payload)
+            if dict(factor_payload).get("logic_fields") or dict(factor_payload).get("alpha_params")
+            else None
+        ),
+        "entry_exit_signature": (
+            _hash_payload(entry_exit_payload)
+            if dict(entry_exit_payload).get("dsl") or dict(entry_exit_payload).get("logic_fields")
+            else None
+        ),
+    }
+
+
 def _semantic_contract_payload(contract: Mapping[str, Any]) -> dict[str, Any]:
     canonical = _canonicalize_contract_value(contract)
     if not isinstance(canonical, dict):
@@ -156,7 +451,7 @@ def candidate_contract_value(candidate: Optional[Mapping[str, Any]], key: str, d
     return default
 
 
-def _resolve_validation_profile(
+def resolve_candidate_validation_profile(
     candidate: Optional[Mapping[str, Any]],
     *,
     research_task: Optional[Mapping[str, Any]] = None,
@@ -192,6 +487,73 @@ def _resolve_validation_profile(
         "profile": profile_name,
         "validation_focus": validation_focus,
         "primary_validation_layer": primary_validation_layer,
+    }
+
+
+def resolve_candidate_targeting_policy(
+    candidate: Optional[Mapping[str, Any]],
+    *,
+    research_task: Optional[Mapping[str, Any]] = None,
+    validation_profile: Optional[Mapping[str, Any]] = None,
+    constraint_check: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    payload = dict(candidate or {})
+    normalized_task = _normalize_research_task_contract(research_task or payload.get("research_task") or {})
+    resolved_validation_profile = dict(
+        validation_profile
+        or resolve_candidate_validation_profile(payload, research_task=normalized_task)
+    )
+    explicit_policy = _as_dict(candidate_contract_value(payload, "targeting_policy", {}))
+    resolved_constraint_check = _as_dict(
+        constraint_check
+        if constraint_check is not None
+        else candidate_contract_value(payload, "constraint_check", {})
+    )
+    coverage_ratio_raw = explicit_policy.get("coverage_ratio")
+    if coverage_ratio_raw is None:
+        coverage_ratio_raw = resolved_constraint_check.get("coverage_ratio")
+    intersection_ratio_raw = explicit_policy.get("intersection_ratio")
+    if intersection_ratio_raw is None:
+        intersection_ratio_raw = resolved_constraint_check.get("intersection_ratio")
+    constraint_violation = explicit_policy.get("constraint_violation")
+    if constraint_violation is None:
+        constraint_violation = (
+            resolved_constraint_check.get("constraint_violation")
+            or resolved_constraint_check.get("alignment_contract_violation")
+        )
+    return {
+        **explicit_policy,
+        "target_symbol_policy": _string(
+            explicit_policy.get("target_symbol_policy")
+            or normalized_task.get("target_symbol_policy")
+            or "prefer_intersection"
+        ) or "prefer_intersection",
+        "universe_expansion_policy": _string(
+            explicit_policy.get("universe_expansion_policy")
+            or normalized_task.get("universe_expansion_policy")
+            or "allow_market_fallback"
+        ) or "allow_market_fallback",
+        "validation_focus": _string(
+            explicit_policy.get("validation_focus")
+            or resolved_validation_profile.get("validation_focus")
+            or normalized_task.get("validation_focus")
+            or "target_plus_representative"
+        ) or "target_plus_representative",
+        "constraint_violation": bool(constraint_violation),
+        "expansion_applied": bool(
+            explicit_policy.get("expansion_applied")
+            or resolved_constraint_check.get("expansion_applied")
+        ),
+        "expansion_reason": (
+            explicit_policy.get("expansion_reason")
+            or resolved_constraint_check.get("expansion_reason")
+        ),
+        "expansion_source": (
+            explicit_policy.get("expansion_source")
+            or resolved_constraint_check.get("expansion_source")
+        ),
+        "coverage_ratio": round(_safe_float(coverage_ratio_raw, 0.0), 4),
+        "intersection_ratio": round(_safe_float(intersection_ratio_raw, 0.0), 4),
     }
 
 
@@ -263,6 +625,185 @@ def _resolve_lineage(
     }
 
 
+def _repair_allowed_strategy_types_for_candidate(
+    candidate: Optional[Mapping[str, Any]],
+    normalized_task: Optional[Mapping[str, Any]],
+) -> dict[str, Any]:
+    payload = dict(candidate or {})
+    task = dict(normalized_task or {})
+    strategy_type = _string(payload.get("strategy_type")).lower()
+    allowed_strategy_types = _normalize_string_list(task.get("allowed_strategy_types"))
+    if not allowed_strategy_types or not strategy_type:
+        return task
+
+    allowed_strategy_type_set = {
+        _string(item).lower()
+        for item in allowed_strategy_types
+        if _string(item)
+    }
+    if strategy_type in allowed_strategy_type_set:
+        return task
+
+    strategy_profile = infer_candidate_strategy_profile(payload, research_task=task)
+    preferred_strategy_types = {
+        _string(item).lower()
+        for item in _normalize_string_list(
+            task.get("preferred_strategy_types"),
+            task.get("strategy_preferences"),
+        )
+        if _string(item)
+    }
+    if (
+        _string(task.get("task_source")).lower() == "snapshot"
+        and strategy_type == "momentum"
+        and _string(strategy_profile.get("generator_mode")).lower() == "rl_bandit"
+        and strategy_type in preferred_strategy_types
+    ):
+        return {
+            **task,
+            "allowed_strategy_types": _normalize_string_list(
+                task.get("allowed_strategy_types"),
+                strategy_type,
+            ),
+        }
+    return task
+
+
+def _alignment_violation_from_metrics(
+    target_symbols: list[str],
+    research_symbols: list[str],
+    target_alignment_contract: dict[str, Any],
+) -> Optional[str]:
+    overlap_count = len(set(target_symbols).intersection(research_symbols))
+    coverage_ratio = round(overlap_count / max(1, len(target_symbols)), 4) if target_symbols else 0.0
+    intersection_ratio = (
+        round(overlap_count / max(1, len(research_symbols)), 4)
+        if research_symbols
+        else None
+    )
+    min_coverage_ratio = _safe_float(target_alignment_contract.get("min_coverage_ratio"), 0.0)
+    min_intersection_ratio = (
+        None
+        if target_alignment_contract.get("min_intersection_ratio") is None
+        else _safe_float(target_alignment_contract.get("min_intersection_ratio"), 0.0)
+    )
+    min_required_overlap_count = _safe_int(target_alignment_contract.get("min_required_overlap_count"), 0)
+    if not target_symbols and research_symbols:
+        return "empty_target_symbols_after_alignment"
+    if coverage_ratio < min_coverage_ratio:
+        return "coverage_ratio_below_contract"
+    if intersection_ratio is not None and min_intersection_ratio is not None and intersection_ratio < min_intersection_ratio:
+        return "intersection_ratio_below_contract"
+    if min_required_overlap_count > 0 and overlap_count < min_required_overlap_count:
+        return "target_overlap_count_below_contract"
+    return None
+
+
+def _refresh_constraint_check_from_targets(
+    target_symbols: list[str],
+    normalized_task: Optional[Mapping[str, Any]],
+    existing_constraint_check: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    task = dict(normalized_task or {})
+    existing = _as_dict(existing_constraint_check)
+    research_symbols = list(task.get("target_symbols") or [])
+    target_alignment_contract = dict(task.get("target_alignment_contract") or {})
+    overlap_count = len(set(target_symbols).intersection(research_symbols))
+    coverage_ratio = round(overlap_count / max(1, len(target_symbols)), 4) if target_symbols else 0.0
+    intersection_ratio = (
+        round(overlap_count / max(1, len(research_symbols)), 4)
+        if research_symbols
+        else None
+    )
+    alignment_violation = None
+    alignment_ok = True
+    if target_alignment_contract.get("quality_gate_enabled"):
+        alignment_violation = _alignment_violation_from_metrics(
+            target_symbols,
+            research_symbols,
+            target_alignment_contract,
+        )
+        alignment_ok = alignment_violation is None
+    return {
+        **existing,
+        "target_symbols_before_normalize": list(existing.get("target_symbols_before_normalize") or target_symbols),
+        "target_symbols_after_normalize": list(target_symbols),
+        "research_target_symbols": list(research_symbols),
+        "target_symbol_policy": _string(existing.get("target_symbol_policy") or task.get("target_symbol_policy")) or None,
+        "universe_expansion_policy": _string(
+            existing.get("universe_expansion_policy") or task.get("universe_expansion_policy")
+        ) or None,
+        "expansion_applied": bool(existing.get("expansion_applied")),
+        "expansion_reason": existing.get("expansion_reason"),
+        "expansion_source": existing.get("expansion_source"),
+        "constraint_violation": existing.get("constraint_violation"),
+        "expansion_blocked_reason": existing.get("expansion_blocked_reason"),
+        "coverage_ratio": coverage_ratio,
+        "intersection_ratio": intersection_ratio,
+        "target_overlap_count": int(overlap_count),
+        "alignment_contract_ok": alignment_ok,
+        "alignment_contract_violation": alignment_violation,
+        "target_alignment_contract": dict(target_alignment_contract),
+    }
+
+
+def _constraint_check_refresh_required(
+    target_symbols: list[str],
+    normalized_task: Optional[Mapping[str, Any]],
+    existing_constraint_check: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    task = dict(normalized_task or {})
+    target_alignment_contract = dict(task.get("target_alignment_contract") or {})
+    if not target_alignment_contract.get("quality_gate_enabled"):
+        return False
+
+    existing = _as_dict(existing_constraint_check)
+    if not existing:
+        return True
+
+    refreshed = _refresh_constraint_check_from_targets(
+        target_symbols,
+        task,
+        existing_constraint_check=existing,
+    )
+    for key in ("coverage_ratio", "intersection_ratio"):
+        lhs = existing.get(key)
+        rhs = refreshed.get(key)
+        if lhs is None and rhs is None:
+            continue
+        if lhs is None or rhs is None:
+            return True
+        if abs(_safe_float(lhs) - _safe_float(rhs)) > 1e-4:
+            return True
+    if _safe_int(existing.get("target_overlap_count"), -1) != _safe_int(refreshed.get("target_overlap_count"), -1):
+        return True
+    if _string(existing.get("alignment_contract_violation")) != _string(refreshed.get("alignment_contract_violation")):
+        return True
+    return False
+
+
+def _should_trim_candidate_targets_by_alignment_policy(
+    candidate: Optional[Mapping[str, Any]],
+    normalized_task: Optional[Mapping[str, Any]],
+    requested_target_symbols: list[str],
+) -> bool:
+    payload = dict(candidate or {})
+    task = dict(normalized_task or {})
+    research_symbols = set(task.get("target_symbols") or [])
+    if not requested_target_symbols or not research_symbols:
+        return False
+    requested_set = set(requested_target_symbols)
+    if requested_set.issubset(research_symbols):
+        return False
+    strategy_type = _string(payload.get("strategy_type")).lower()
+    strategy_profile = infer_candidate_strategy_profile(payload, research_task=task)
+    return (
+        _string(task.get("task_source")).lower() == "snapshot"
+        and strategy_type == "momentum"
+        and _string(strategy_profile.get("generator_mode")).lower() == "rl_bandit"
+    )
+
+
 def build_portfolio_candidate_contract(candidate: Optional[Mapping[str, Any]]) -> dict[str, Any]:
     payload = dict(candidate or {})
     normalized_task = _normalize_research_task_contract(candidate_contract_value(payload, "research_task", {}) or {})
@@ -270,7 +811,7 @@ def build_portfolio_candidate_contract(candidate: Optional[Mapping[str, Any]]) -
     provenance = _as_dict(candidate_contract_value(payload, "candidate_provenance", {}))
     target_symbols = _extract_target_codes_from_payload(payload, limit=12)
     constraint_check = _as_dict(candidate_contract_value(payload, "constraint_check", {}))
-    validation_profile = _resolve_validation_profile(payload, research_task=normalized_task)
+    validation_profile = resolve_candidate_validation_profile(payload, research_task=normalized_task)
     candidate_family = _string(
         candidate_contract_value(payload, "candidate_family")
         or provenance.get("candidate_family")
@@ -323,24 +864,229 @@ def build_portfolio_candidate_contract(candidate: Optional[Mapping[str, Any]]) -
     }
 
 
-def build_candidate_contract_hash(
+def build_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    payload = dict(candidate or {})
+    existing_envelope = _as_dict(payload.get("resolved_candidate_envelope"))
+    params = _as_dict(payload.get("params"))
+    if "had_explicit_research_task" in existing_envelope:
+        had_explicit_research_task = bool(existing_envelope.get("had_explicit_research_task"))
+    else:
+        had_explicit_research_task = bool(payload.get("research_task") or params.get("research_task"))
+    normalized_task = _normalize_research_task_contract(
+        existing_envelope.get("normalized_research_task")
+        or candidate_contract_value(payload, "research_task", {})
+        or {}
+    )
+    normalized_task = _repair_allowed_strategy_types_for_candidate(payload, normalized_task)
+    requested_target_symbols = _normalize_target_codes(
+        candidate_contract_value(payload, "requested_target_symbols")
+        or existing_envelope.get("requested_target_symbols")
+        or _extract_candidate_origin_target_codes(payload, limit=12)
+        or _extract_target_codes_from_payload(payload, limit=12),
+        limit=12,
+    )
+    raw_constraint_check = _as_dict(candidate_contract_value(payload, "constraint_check", {}))
+    should_trim_targets = _should_trim_candidate_targets_by_alignment_policy(
+        payload,
+        normalized_task,
+        requested_target_symbols,
+    )
+    if should_trim_targets:
+        aligned_targeting = _apply_target_symbol_policy(
+            requested_target_symbols,
+            normalized_task,
+            fallback_symbols=[
+                normalized_task.get("target_symbols"),
+                normalized_task.get("stock_pool"),
+            ],
+            limit=12,
+        )
+        resolved_target_symbols = _canonical_target_symbols(
+            aligned_targeting.get("target_symbols"),
+            limit=12,
+        )
+        resolved_constraint_check = {
+            **raw_constraint_check,
+            **_as_dict(aligned_targeting.get("constraint_check")),
+        }
+    else:
+        resolved_target_symbols = _canonical_target_symbols(
+            requested_target_symbols,
+            limit=12,
+        )
+        resolved_constraint_check = dict(raw_constraint_check)
+    if _constraint_check_refresh_required(
+        resolved_target_symbols,
+        normalized_task,
+        resolved_constraint_check,
+    ):
+        resolved_constraint_check = _refresh_constraint_check_from_targets(
+            resolved_target_symbols,
+            normalized_task,
+            existing_constraint_check=resolved_constraint_check,
+        )
+    resolved_stock_pool = _as_dict(
+        existing_envelope.get("resolved_stock_pool")
+        or candidate_contract_value(payload, "stock_pool", {})
+        or normalized_task.get("stock_pool")
+        or {}
+    )
+    if resolved_target_symbols:
+        resolved_stock_pool = {
+            **resolved_stock_pool,
+            "selection_mode": _string(resolved_stock_pool.get("selection_mode") or "explicit") or "explicit",
+            "symbols": list(resolved_target_symbols),
+        }
+
+    resolved_payload = {
+        **payload,
+        "research_task": normalized_task,
+        "target_symbols": list(resolved_target_symbols),
+        "stock_pool": dict(resolved_stock_pool),
+        "constraint_check": dict(resolved_constraint_check),
+        "params": {
+            **params,
+            "research_task": dict(normalized_task),
+            "requested_target_symbols": list(requested_target_symbols),
+            "target_symbols": list(resolved_target_symbols),
+            "stock_pool": dict(resolved_stock_pool),
+            "constraint_check": dict(resolved_constraint_check),
+        },
+    }
+    contract_snapshot = build_portfolio_candidate_contract(resolved_payload)
+    resolved_target_symbols = list((contract_snapshot.get("targeting") or {}).get("target_symbols") or resolved_target_symbols)
+    resolved_stock_pool = _as_dict((contract_snapshot.get("targeting") or {}).get("stock_pool") or resolved_stock_pool)
+    resolved_constraint_check = _as_dict((contract_snapshot.get("targeting") or {}).get("constraint_check") or resolved_constraint_check)
+    resolved_validation_profile = dict(
+        contract_snapshot.get("validation_profile")
+        or resolve_candidate_validation_profile(resolved_payload, research_task=normalized_task)
+    )
+    resolved_targeting_policy = resolve_candidate_targeting_policy(
+        resolved_payload,
+        research_task=normalized_task,
+        validation_profile=resolved_validation_profile,
+        constraint_check=resolved_constraint_check,
+    )
+    alpha_identity_components = build_alpha_identity_components(resolved_payload)
+    execution_contract_hash = build_execution_contract_hash(contract=contract_snapshot)
+    candidate_contract_hash = execution_contract_hash
+    tested_object_hash = build_tested_object_hash(resolved_payload)
+    candidate_identity_signature = build_candidate_identity_signature(resolved_payload)
+    candidate_lineage_contract = dict(contract_snapshot.get("lineage") or {})
+    return {
+        "had_explicit_research_task": bool(had_explicit_research_task),
+        "normalized_research_task": normalized_task,
+        "requested_target_symbols": list(requested_target_symbols),
+        "resolved_target_symbols": list(resolved_target_symbols),
+        "resolved_stock_pool": dict(resolved_stock_pool),
+        "resolved_constraint_check": dict(resolved_constraint_check),
+        "resolved_validation_profile": dict(resolved_validation_profile),
+        "resolved_targeting_policy": dict(resolved_targeting_policy),
+        "candidate_contract_snapshot": contract_snapshot,
+        "candidate_contract_hash": candidate_contract_hash,
+        "execution_contract_hash": execution_contract_hash,
+        "tested_object_hash": tested_object_hash,
+        "candidate_identity_signature": candidate_identity_signature,
+        "candidate_lineage_contract": candidate_lineage_contract,
+        "logic_signature": alpha_identity_components.get("logic_signature"),
+        "dsl_signature": alpha_identity_components.get("dsl_signature"),
+        "factor_signature": alpha_identity_components.get("factor_signature"),
+        "entry_exit_signature": alpha_identity_components.get("entry_exit_signature"),
+    }
+
+
+def apply_resolved_candidate_envelope(candidate: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    payload = dict(candidate or {})
+    envelope = build_resolved_candidate_envelope(payload)
+    resolved_validation_profile = dict(envelope.get("resolved_validation_profile") or {})
+    resolved_targeting_policy = dict(envelope.get("resolved_targeting_policy") or {})
+    params = {
+        **_as_dict(payload.get("params")),
+        "had_explicit_research_task": bool(envelope.get("had_explicit_research_task")),
+        "research_task": dict(envelope.get("normalized_research_task") or {}),
+        "requested_target_symbols": list(envelope.get("requested_target_symbols") or []),
+        "target_symbols": list(envelope.get("resolved_target_symbols") or []),
+        "stock_pool": dict(envelope.get("resolved_stock_pool") or {}),
+        "constraint_check": dict(envelope.get("resolved_constraint_check") or {}),
+        "validation_profile": resolved_validation_profile,
+        "targeting_policy": resolved_targeting_policy,
+        "candidate_contract_snapshot": dict(envelope.get("candidate_contract_snapshot") or {}),
+        "candidate_contract_hash": envelope.get("candidate_contract_hash"),
+        "execution_contract_hash": envelope.get("execution_contract_hash"),
+        "tested_object_hash": envelope.get("tested_object_hash"),
+        "candidate_identity_signature": envelope.get("candidate_identity_signature"),
+        "candidate_lineage_contract": dict(envelope.get("candidate_lineage_contract") or {}),
+        "logic_signature": envelope.get("logic_signature"),
+        "dsl_signature": envelope.get("dsl_signature"),
+        "factor_signature": envelope.get("factor_signature"),
+        "entry_exit_signature": envelope.get("entry_exit_signature"),
+        "resolved_candidate_envelope": envelope,
+    }
+    return {
+        **payload,
+        "params": params,
+        "had_explicit_research_task": bool(envelope.get("had_explicit_research_task")),
+        "research_task": dict(envelope.get("normalized_research_task") or {}),
+        "requested_target_symbols": list(envelope.get("requested_target_symbols") or []),
+        "target_symbols": list(envelope.get("resolved_target_symbols") or []),
+        "stock_pool": dict(envelope.get("resolved_stock_pool") or {}),
+        "constraint_check": dict(envelope.get("resolved_constraint_check") or {}),
+        "validation_profile": resolved_validation_profile,
+        "targeting_policy": resolved_targeting_policy,
+        "candidate_contract_snapshot": dict(envelope.get("candidate_contract_snapshot") or {}),
+        "candidate_contract_hash": str(envelope.get("candidate_contract_hash") or ""),
+        "execution_contract_hash": str(envelope.get("execution_contract_hash") or ""),
+        "tested_object_hash": str(envelope.get("tested_object_hash") or ""),
+        "candidate_identity_signature": str(envelope.get("candidate_identity_signature") or ""),
+        "candidate_lineage_contract": dict(envelope.get("candidate_lineage_contract") or {}),
+        "logic_signature": str(envelope.get("logic_signature") or ""),
+        "dsl_signature": str(envelope.get("dsl_signature") or ""),
+        "factor_signature": str(envelope.get("factor_signature") or ""),
+        "entry_exit_signature": str(envelope.get("entry_exit_signature") or ""),
+        "resolved_candidate_envelope": envelope,
+    }
+
+
+def build_execution_contract_hash(
     candidate: Optional[Mapping[str, Any]] = None,
     *,
     contract: Optional[Mapping[str, Any]] = None,
 ) -> str:
     payload = dict(contract or build_portfolio_candidate_contract(candidate))
     semantic_payload = _semantic_contract_payload(payload)
-    serialized = json.dumps(semantic_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha1(serialized.encode("utf-8")).hexdigest()
+    return _hash_payload(semantic_payload)
+
+
+def build_candidate_contract_hash(
+    candidate: Optional[Mapping[str, Any]] = None,
+    *,
+    contract: Optional[Mapping[str, Any]] = None,
+) -> str:
+    return build_execution_contract_hash(candidate, contract=contract)
+
+
+def build_tested_object_hash(candidate: Optional[Mapping[str, Any]]) -> str:
+    alpha_identity = build_alpha_identity_components(candidate)
+    tested_object_payload = {
+        "strategy_type": alpha_identity.get("strategy_type"),
+        "logic_signature": alpha_identity.get("logic_signature"),
+        "dsl_signature": alpha_identity.get("dsl_signature"),
+        "factor_signature": alpha_identity.get("factor_signature"),
+        "entry_exit_signature": alpha_identity.get("entry_exit_signature"),
+    }
+    return _hash_payload(tested_object_payload)
 
 
 def build_candidate_identity_signature(candidate: Optional[Mapping[str, Any]]) -> str:
     contract = _semantic_contract_payload(build_portfolio_candidate_contract(candidate))
     targeting = dict(contract.get("targeting") or {})
     lineage = dict(contract.get("lineage") or {})
+    execution_contract_hash = build_execution_contract_hash(contract=contract)
     identity_payload = {
         "strategy_type": contract.get("strategy_type"),
         "candidate_family_id": contract.get("candidate_family_id"),
+        "execution_contract_hash": execution_contract_hash,
+        "tested_object_hash": build_tested_object_hash(candidate),
         "validation_profile": dict(contract.get("validation_profile") or {}),
         "targeting": {
             "target_pool_id": targeting.get("target_pool_id"),
@@ -355,8 +1101,37 @@ def build_candidate_identity_signature(candidate: Optional[Mapping[str, Any]]) -
         "lineage_id": lineage.get("lineage_id"),
         "task_signature": lineage.get("task_signature"),
     }
-    serialized = json.dumps(identity_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha1(serialized.encode("utf-8")).hexdigest()
+    return _hash_payload(identity_payload)
+
+
+def build_candidate_contract_backfill(candidate: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    resolved = apply_resolved_candidate_envelope(candidate)
+    contract_snapshot = dict(resolved.get("candidate_contract_snapshot") or build_portfolio_candidate_contract(resolved))
+    targeting = dict(contract_snapshot.get("targeting") or {})
+    params = _as_dict(resolved.get("params"))
+    alpha_identity = build_alpha_identity_components(resolved)
+    has_material_logic = bool(alpha_identity.get("has_material_logic"))
+    legacy_identity_partial = not has_material_logic
+    tested_object_backfill_incomplete = not has_material_logic
+    return {
+        "candidate_contract_snapshot": contract_snapshot,
+        "candidate_contract_hash": str(resolved.get("candidate_contract_hash") or build_candidate_contract_hash(contract=contract_snapshot)),
+        "execution_contract_hash": str(resolved.get("execution_contract_hash") or build_execution_contract_hash(contract=contract_snapshot)),
+        "candidate_identity_signature": str(
+            resolved.get("candidate_identity_signature") or build_candidate_identity_signature(resolved)
+        ),
+        "tested_object_hash": str(resolved.get("tested_object_hash") or build_tested_object_hash(resolved)),
+        "candidate_lineage_contract": dict(
+            resolved.get("candidate_lineage_contract") or contract_snapshot.get("lineage") or {}
+        ),
+        "target_pool_id": targeting.get("target_pool_id"),
+        "logic_signature": str(alpha_identity.get("logic_signature") or params.get("logic_signature") or ""),
+        "dsl_signature": str(alpha_identity.get("dsl_signature") or params.get("dsl_signature") or ""),
+        "factor_signature": str(alpha_identity.get("factor_signature") or params.get("factor_signature") or ""),
+        "entry_exit_signature": str(alpha_identity.get("entry_exit_signature") or params.get("entry_exit_signature") or ""),
+        "legacy_identity_partial": legacy_identity_partial,
+        "tested_object_backfill_incomplete": tested_object_backfill_incomplete,
+    }
 
 
 def build_factory_backtest_assumptions(candidate: Optional[Mapping[str, Any]]) -> FactoryBacktestAssumptions:
@@ -406,9 +1181,21 @@ def build_factory_backtest_assumptions(candidate: Optional[Mapping[str, Any]]) -
 
 
 __all__ = [
+    "apply_resolved_candidate_envelope",
+    "build_alpha_identity_components",
     "build_candidate_contract_hash",
+    "build_candidate_contract_backfill",
     "build_candidate_identity_signature",
+    "build_dsl_signature",
+    "build_entry_exit_signature",
+    "build_execution_contract_hash",
+    "build_factor_signature",
     "build_factory_backtest_assumptions",
+    "build_logic_signature",
     "build_portfolio_candidate_contract",
+    "build_resolved_candidate_envelope",
+    "build_tested_object_hash",
     "candidate_contract_value",
+    "resolve_candidate_targeting_policy",
+    "resolve_candidate_validation_profile",
 ]

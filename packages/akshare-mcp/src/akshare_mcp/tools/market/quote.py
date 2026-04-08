@@ -157,6 +157,43 @@ def get_realtime_quote(stock_code: str) -> dict:
         )
 
 
+def _build_batch_quote_response(
+    *,
+    codes: list[str],
+    quotes: list[dict],
+    missing: list[str],
+    cached: bool,
+) -> dict:
+    result = ok(quotes, cached=cached)
+    result["requested"] = codes
+    result["found"] = len(quotes)
+    result["missing"] = missing
+    result["quotes"] = quotes
+
+    unique_sources = list(dict.fromkeys(str(item.get("source") or "").strip() for item in quotes if str(item.get("source") or "").strip()))
+    source_chain = list(dict.fromkeys(["data_source", *unique_sources])) if unique_sources else ["data_source"]
+    fallback_reasons: list[str] = []
+    if any(source != "data_source" for source in unique_sources):
+        fallback_reasons.append("batch_quote_used_fallback_source")
+    if missing:
+        fallback_reasons.append(f"missing_codes:{','.join(missing)}")
+
+    result.update(
+        build_quality_meta(
+            source=unique_sources[0] if len(unique_sources) == 1 else "multiple_adapters",
+            source_chain=source_chain,
+            fallback_reason=fallback_reasons or None,
+            asof_value=datetime.now().astimezone().isoformat(timespec="seconds"),
+            missing_fields=[],
+            degraded=bool(fallback_reasons),
+            success=True,
+            accepted_count=len(quotes),
+            rejected_count=len(missing),
+        )
+    )
+    return result
+
+
 
 def get_batch_quotes(stock_codes: list[str]) -> dict:
     """批量获取股票实时行情
@@ -296,14 +333,12 @@ def get_batch_quotes(stock_codes: list[str]) -> dict:
 
             missing.append(code)
 
-        # 兼容历史调用：data 直接返回 quotes 列表
-        # 同时在顶层补充 requested/found/missing 便于新调用读取统计信息
-        result = ok(quotes, cached=spot_cached)
-        result["requested"] = codes
-        result["found"] = len(quotes)
-        result["missing"] = missing
-        result["quotes"] = quotes
-        return result
+        return _build_batch_quote_response(
+            codes=codes,
+            quotes=quotes,
+            missing=missing,
+            cached=spot_cached,
+        )
     except Exception as e:
         return fail(e)
 
@@ -340,12 +375,12 @@ def get_batch_quotes_compat(codes: list[str]) -> dict:
     else:
         quotes = []
 
-    return {
-        'success': True,
-        'data': quotes,
-        'source': result.get('source', 'multiple_adapters'),
-        'cached': result.get('cached', False)
-    }
+    response = ok(quotes, cached=result.get('cached', False))
+    response['source'] = result.get('source', 'multiple_adapters')
+    for key in ("source_chain", "quality_flags", "fallback_used", "fallback_reason", "degraded"):
+        if key in result:
+            response[key] = result.get(key)
+    return response
 
 def get_index_quote(index_code: str) -> dict:
     """获取指数实时行情
@@ -379,11 +414,69 @@ def get_index_quote(index_code: str) -> dict:
         get_index_quote("000001")
         get_index_quote("399006")
     """
+    code = normalize_code(index_code)
+    attempted_sources = ["eastmoney_index"]
+    fallback_reason_parts: list[str] = []
+
+    def _tushare_index_daily_response(reason: str) -> dict | None:
+        extended_attempts = list(dict.fromkeys([*attempted_sources, "tushare_index_daily"]))
+        try:
+            ts_pro = data_source.get_tushare_pro()
+            if ts_pro is None:
+                raise RuntimeError("tushare_pro unavailable")
+            ts_code = f"{code}.SZ" if code.startswith("39") else f"{code}.SH"
+            from datetime import datetime as _dt, timedelta as _td
+
+            end_d = _dt.now().strftime("%Y%m%d")
+            start_d = (_dt.now() - _td(days=10)).strftime("%Y%m%d")
+            df_ts = ts_pro.index_daily(ts_code=ts_code, start_date=start_d, end_date=end_d)
+            if df_ts is None or df_ts.empty:
+                raise RuntimeError("index_daily returned empty")
+
+            row_ts = df_ts.iloc[0]
+            ts_price = safe_float(row_ts.get("close"))
+            if ts_price is None:
+                raise RuntimeError("index_daily missing close")
+
+            ts_pre = safe_float(row_ts.get("pre_close"))
+            ts_change, ts_pct = _calc_change(ts_price, ts_pre)
+            return _ok_quote_response(
+                {
+                    "code": code,
+                    "name": "",
+                    "price": ts_price,
+                    "change": ts_change,
+                    "changePercent": ts_pct,
+                    "open": safe_float(row_ts.get("open")),
+                    "high": safe_float(row_ts.get("high")),
+                    "low": safe_float(row_ts.get("low")),
+                    "preClose": ts_pre,
+                    "volume": safe_float(row_ts.get("vol")),
+                    "amount": safe_float(row_ts.get("amount")),
+                    "source": "tushare_index_daily_fallback",
+                    "data_timestamp": str(row_ts.get("trade_date") or ""),
+                },
+                attempted_sources=extended_attempts,
+                source_chain=["eastmoney_index", "sina_index", "tushare_index_daily"],
+                fallback_reason=reason,
+            )
+        except Exception as exc:
+            fallback_reason_parts.append(f"tushare_index_daily失败: {exc}")
+            safe_stderr_print(f"[quote] tushare index daily fallback failed for {index_code}: {exc}")
+            return None
+
     try:
-        code = normalize_code(index_code)
-        df, cached = _get_index_spot_indexed()
+        cached = False
+        used_source = "eastmoney_index"
+        try:
+            df, cached = _get_index_spot_indexed()
+        except Exception as exc:
+            df = pd.DataFrame()
+            fallback_reason_parts.append(f"eastmoney_index失败: {exc}")
+            safe_stderr_print(f"[quote] eastmoney index failed for {code}: {exc}")
+
         if code not in df.index:
-            # 东财 push2 没找到，尝试 AkShare Sina 接口
+            attempted_sources.append("sina_index")
             try:
                 if ak is not None:
                     df_sina = ak.stock_zh_index_spot_sina()
@@ -393,79 +486,67 @@ def get_index_quote(index_code: str) -> dict:
                         if code in df_sina.index:
                             df = df_sina
                             cached = False
-            except Exception as e:
-                safe_stderr_print(f"[quote] index sina fallback failed for {code}: {e}")
-            if code not in df.index:
-                return fail(f"未找到指数 {code}")
+                            used_source = "sina_index"
+            except Exception as exc:
+                fallback_reason_parts.append(f"sina_index失败: {exc}")
+                safe_stderr_print(f"[quote] index sina fallback failed for {code}: {exc}")
 
-        r = df.loc[code]
-        price = safe_float(pick_value(r, ["最新价", "最新", "现价"]))
-        if price is None:
-            return fail(f"指数 {code} 缺少价格数据")
-
-        return ok(
-            {
-                "code": code,
-                "name": str(pick_value(r, ["名称", "指数名称"]) or ""),
-                "price": price,
-                "change": safe_float(pick_value(r, ["涨跌额", "涨跌"])),
-                "changePercent": safe_float(pick_value(r, ["涨跌幅", "涨幅"])),
-                "open": safe_float(pick_value(r, ["今开", "开盘"])),
-                "high": safe_float(pick_value(r, ["最高", "最高价"])),
-                "low": safe_float(pick_value(r, ["最低", "最低价"])),
-                "preClose": safe_float(pick_value(r, ["昨收", "昨收价"])),
-                "volume": safe_int(pick_value(r, ["成交量"])),
-                "amount": safe_float(pick_value(r, ["成交额"])),
-            },
-            cached=cached,
-        )
-    except Exception as e:
-        err = str(e)
-        if "decode" in err.lower() or "starting with" in err or "'<'" in err:
-            # Fallback: try Tushare index_daily for the latest data point
-            try:
-                ts_pro = data_source.get_tushare_pro()
-                if ts_pro is not None:
-                    code_fb = normalize_code(index_code)
-                    ts_code = f"{code_fb}.SZ" if code_fb.startswith("39") else f"{code_fb}.SH"
-                    from datetime import datetime as _dt, timedelta as _td
-                    end_d = _dt.now().strftime("%Y%m%d")
-                    start_d = (_dt.now() - _td(days=10)).strftime("%Y%m%d")
-                    df_ts = ts_pro.index_daily(ts_code=ts_code, start_date=start_d, end_date=end_d)
-                    if df_ts is not None and not df_ts.empty:
-                        row_ts = df_ts.iloc[0]  # latest date first
-                        ts_price = safe_float(row_ts.get("close"))
-                        ts_pre = safe_float(row_ts.get("pre_close"))
-                        ts_change, ts_pct = _calc_change(ts_price, ts_pre)
-                        if ts_price is not None:
-                            return ok(
-                                {
-                                    "code": code_fb,
-                                    "name": "",
-                                    "price": ts_price,
-                                    "change": ts_change,
-                                    "changePercent": ts_pct,
-                                    "open": safe_float(row_ts.get("open")),
-                                    "high": safe_float(row_ts.get("high")),
-                                    "low": safe_float(row_ts.get("low")),
-                                    "preClose": ts_pre,
-                                    "volume": safe_float(row_ts.get("vol")),
-                                    "amount": safe_float(row_ts.get("amount")),
-                                    "source": "tushare_index_daily_fallback",
-                                },
-                                cached=False,
-                            )
-            except Exception as e:
-                safe_stderr_print(f"[quote] tushare index daily fallback failed for {index_code}: {e}")
-            return ok(
-                {
-                    "code": index_code,
-                    "name": "",
-                    "price": None,
-                    "change": None,
-                    "changePercent": None,
-                    "message": f"指数数据暂时不可用（数据源返回异常）: {err[:200]}",
-                },
-                cached=False,
+        if code not in df.index:
+            fallback_response = _tushare_index_daily_response(f"未找到指数 {code}")
+            if fallback_response is not None:
+                return fallback_response
+            return _fail_quote_response(
+                f"未找到指数 {code}",
+                attempted_sources=attempted_sources,
+                source_chain=["eastmoney_index", "sina_index", "tushare_index_daily"],
+                fallback_reason=fallback_reason_parts or f"未找到指数 {code}",
             )
-        return fail(e)
+
+        row = df.loc[code]
+        price = safe_float(pick_value(row, ["最新价", "最新", "现价"]))
+        if price is None:
+            fallback_response = _tushare_index_daily_response(f"指数 {code} 缺少价格数据")
+            if fallback_response is not None:
+                return fallback_response
+            return _fail_quote_response(
+                f"指数 {code} 缺少价格数据",
+                attempted_sources=attempted_sources,
+                source_chain=["eastmoney_index", "sina_index", "tushare_index_daily"],
+                fallback_reason=fallback_reason_parts or f"指数 {code} 缺少价格数据",
+            )
+
+        payload = {
+            "code": code,
+            "name": str(pick_value(row, ["名称", "指数名称"]) or ""),
+            "price": price,
+            "change": safe_float(pick_value(row, ["涨跌额", "涨跌"])),
+            "changePercent": safe_float(pick_value(row, ["涨跌幅", "涨幅"])),
+            "open": safe_float(pick_value(row, ["今开", "开盘"])),
+            "high": safe_float(pick_value(row, ["最高", "最高价"])),
+            "low": safe_float(pick_value(row, ["最低", "最低价"])),
+            "preClose": safe_float(pick_value(row, ["昨收", "昨收价"])),
+            "volume": safe_int(pick_value(row, ["成交量"])),
+            "amount": safe_float(pick_value(row, ["成交额"])),
+            "source": used_source,
+        }
+        active_chain = ["eastmoney_index"] if used_source == "eastmoney_index" else ["eastmoney_index", "sina_index"]
+        active_attempts = ["eastmoney_index"] if used_source == "eastmoney_index" else attempted_sources
+        return _ok_quote_response(
+            payload,
+            attempted_sources=active_attempts,
+            source_chain=active_chain,
+            fallback_reason=fallback_reason_parts or None,
+        )
+    except Exception as exc:
+        err = str(exc)
+        fallback_response = None
+        if "decode" in err.lower() or "starting with" in err or "'<'" in err:
+            fallback_response = _tushare_index_daily_response(err[:200])
+        if fallback_response is not None:
+            return fallback_response
+        return _fail_quote_response(
+            err,
+            attempted_sources=attempted_sources,
+            source_chain=["eastmoney_index", "sina_index", "tushare_index_daily"],
+            fallback_reason=fallback_reason_parts or err,
+        )

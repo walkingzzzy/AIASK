@@ -288,6 +288,9 @@ class _InjectedFactorResearchGateway:
                 "active_factor_count": 1,
                 "top_factor_names": ["value"],
                 "preferred_strategy_types": ["value_factor"],
+                "factor_source_mode": "governed_candidate_pool",
+                "active_candidate_count": 1,
+                "governed_source_candidate_count": 1,
             },
         }
 

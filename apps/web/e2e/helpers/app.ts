@@ -20,6 +20,7 @@ type IssuePatterns = RegExp[];
 
 type PageIssueCollector = {
   api5xx: string[];
+  httpErrors: string[];
   consoleErrors: string[];
   pageErrors: string[];
   requestFailures: string[];
@@ -40,7 +41,10 @@ function matchesAny(value: string, patterns: IssuePatterns | undefined) {
 }
 
 function isIgnorableConsoleError(entry: string) {
-  return /Failed to fetch RSC payload .* Falling back to browser navigation/i.test(entry);
+  return (
+    /Failed to fetch RSC payload .* Falling back to browser navigation/i.test(entry)
+    || /favicon\.ico/i.test(entry)
+  );
 }
 
 function isIgnorablePageError(entry: string) {
@@ -49,6 +53,18 @@ function isIgnorablePageError(entry: string) {
 
 function currentPathname(page: Page) {
   return new URL(page.url()).pathname;
+}
+
+async function gotoStable(page: Page, path: string) {
+  try {
+    await page.goto(path);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (!/interrupted by another navigation/i.test(detail)) {
+      throw error;
+    }
+  }
+  await page.waitForLoadState('domcontentloaded');
 }
 
 async function performLogin(page: Page) {
@@ -83,11 +99,9 @@ async function performLogin(page: Page) {
 }
 
 export async function loginAsConfigured(page: Page, redirectPath = '/') {
-  await page.goto(`/login?redirect=${encodeURIComponent(redirectPath)}`);
-  await page.waitForLoadState('domcontentloaded');
+  await gotoStable(page, `/login?redirect=${encodeURIComponent(redirectPath)}`);
   await performLogin(page);
-  await page.goto(redirectPath);
-  await page.waitForLoadState('domcontentloaded');
+  await gotoStable(page, redirectPath);
   await dismissOnboarding(page);
   await page.waitForTimeout(800);
 }
@@ -117,16 +131,13 @@ export async function openProtectedPage(page: Page, path: string) {
   const loginPath = `/login?redirect=${encodeURIComponent(path)}`;
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    await page.goto(loginPath);
-    await page.waitForLoadState('domcontentloaded');
+    await gotoStable(page, loginPath);
 
     if (currentPathname(page) === '/login') {
       await performLogin(page);
-      await page.goto(path);
-      await page.waitForLoadState('domcontentloaded');
+      await gotoStable(page, path);
     } else if (currentPathname(page) !== expected.pathname) {
-      await page.goto(path);
-      await page.waitForLoadState('domcontentloaded');
+      await gotoStable(page, path);
     }
 
     await page.waitForURL((url) => {
@@ -156,16 +167,34 @@ export async function expectRouteMatch(page: Page, targetPath: string) {
 }
 
 export async function assertProtectedShell(page: Page) {
+  const brand = page.getByText('AIASK', { exact: true }).first();
+  const navToggle = page.getByRole('button', { name: /打开导航|收起导航/ }).first();
+  const aiToggle = page.getByRole('button', { name: /打开 Copilot|收起 Copilot|打开 AI|收起 AI/ }).first();
+  const notification = page.getByRole('button', { name: '通知' }).first();
+
   await expect
     .poll(async () => {
-      if (await page.getByText('AIASK', { exact: true }).first().isVisible().catch(() => false)) {
-        return true;
-      }
-      return page.getByRole('button', { name: '打开导航' }).isVisible().catch(() => false);
+      const probes = [
+        await brand.isVisible().catch(() => false),
+        await navToggle.isVisible().catch(() => false),
+        await aiToggle.isVisible().catch(() => false),
+        await notification.isVisible().catch(() => false),
+      ];
+      return probes.some(Boolean);
     }, { timeout: 5_000, intervals: [200, 500, 1_000] })
     .toBe(true);
-  await expect(page.getByRole('button', { name: /打开 Copilot|收起 Copilot|打开 AI|收起 AI/ }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: '通知' }).first()).toBeVisible();
+
+  if (await aiToggle.isVisible().catch(() => false)) {
+    await expect(aiToggle).toBeVisible();
+    return;
+  }
+
+  if (await notification.isVisible().catch(() => false)) {
+    await expect(notification).toBeVisible();
+    return;
+  }
+
+  await expect(navToggle).toBeVisible();
 }
 
 export async function assertNoHorizontalOverflow(page: Page, maxOverflowPx = 24) {
@@ -191,11 +220,16 @@ export function createPageIssueCollector(page: Page): PageIssueCollector {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   const api5xx: string[] = [];
+  const httpErrors: string[] = [];
   const requestFailures: string[] = [];
 
   const onConsole = (message: ConsoleMessage) => {
     if (message.type() === 'error') {
-      consoleErrors.push(message.text());
+      const location = message.location();
+      const locationSuffix = location.url
+        ? ` @ ${formatUrl(location.url)}:${location.lineNumber + 1}:${location.columnNumber + 1}`
+        : '';
+      consoleErrors.push(`${message.text()}${locationSuffix}`);
     }
   };
   const onPageError = (error: Error) => {
@@ -205,6 +239,18 @@ export function createPageIssueCollector(page: Page): PageIssueCollector {
     const url = response.url();
     if (response.status() >= 500 && url.includes('/api/')) {
       api5xx.push(`${response.status()} ${formatUrl(url)}`);
+      return;
+    }
+
+    const resourceType = response.request().resourceType();
+    if (
+      response.status() >= 400
+      && !url.includes('/api/')
+      && resourceType !== 'fetch'
+      && resourceType !== 'xhr'
+      && !/favicon\.ico(?:\?|$)/i.test(url)
+    ) {
+      httpErrors.push(`${response.status()} ${resourceType} ${formatUrl(url)}`);
     }
   };
   const onRequestFailed = (request: Request) => {
@@ -219,6 +265,7 @@ export function createPageIssueCollector(page: Page): PageIssueCollector {
 
   return {
     api5xx,
+    httpErrors,
     consoleErrors,
     pageErrors,
     requestFailures,
@@ -235,12 +282,14 @@ export function assertNoCriticalPageIssues(
   collector: PageIssueCollector,
   options?: {
     allowApi5xx?: IssuePatterns;
+    allowHttpErrors?: IssuePatterns;
     allowConsoleErrors?: IssuePatterns;
     allowPageErrors?: IssuePatterns;
     allowRequestFailures?: IssuePatterns;
   },
 ) {
   const api5xx = collector.api5xx.filter((entry) => !matchesAny(entry, options?.allowApi5xx));
+  const httpErrors = collector.httpErrors.filter((entry) => !matchesAny(entry, options?.allowHttpErrors));
   const consoleErrors = collector.consoleErrors.filter((entry) => {
     if (isIgnorableConsoleError(entry)) {
       return false;
@@ -262,6 +311,7 @@ export function assertNoCriticalPageIssues(
 
   expect(pageErrors, 'page errors').toEqual([]);
   expect(api5xx, 'api 5xx responses').toEqual([]);
+  expect(httpErrors, 'http 4xx/5xx resources').toEqual([]);
   expect(requestFailures, 'request failures').toEqual([]);
   expect(consoleErrors, 'console errors').toEqual([]);
 }

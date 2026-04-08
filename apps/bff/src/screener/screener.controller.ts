@@ -15,7 +15,8 @@ export class ScreenerController {
         @Query('limit') limit?: string
     ) {
         const lim = limit ? parseInt(limit, 10) : 20;
-        return this.screenerService.semanticSearch(query, lim);
+        const data = await this.screenerService.semanticSearch(query, lim);
+        return { success: true, data };
     }
 
     @Get('condition')
@@ -25,7 +26,8 @@ export class ScreenerController {
     ) {
         const lim = limit ? parseInt(limit, 10) : 50;
         const conditions = conditionsStr ? conditionsStr.split('|') : [];
-        return this.screenerService.conditionScreen(conditions, lim);
+        const data = await this.screenerService.conditionScreen(conditions, lim);
+        return { success: true, data };
     }
 
     @Get('similar')
@@ -34,6 +36,7 @@ export class ScreenerController {
         @Query('limit') limit?: string
     ) {
         const lim = limit ? parseInt(limit, 10) : 10;
-        return this.screenerService.similarStocks(symbol, lim);
+        const data = await this.screenerService.similarStocks(symbol, lim);
+        return { success: true, data };
     }
 }

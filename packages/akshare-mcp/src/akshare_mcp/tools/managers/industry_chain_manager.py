@@ -129,6 +129,7 @@ def register_industry_chain_manager(mcp):
         """
         start_time = time.perf_counter()
         try:
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             kwargs = normalize_manager_kwargs(kwargs)
             db = get_db()
 

@@ -122,7 +122,12 @@ export default function MarketQueryShell({
                 <div className="flex flex-col gap-2">
                   <span className="metric-label">执行动作</span>
                   <div className="flex flex-wrap gap-2">
-                    <button type="submit" disabled={showPrimaryLoading} className={marketPrimaryButtonCls}>
+                    <button
+                      type="submit"
+                      disabled={showPrimaryLoading}
+                      aria-label="查询主行情工作台"
+                      className={marketPrimaryButtonCls}
+                    >
                       {showPrimaryLoading ? '加载中' : '查询主行情'}
                     </button>
                     <button type="button" onClick={onSaveCurrentView} className={marketSecondaryButtonCls}>

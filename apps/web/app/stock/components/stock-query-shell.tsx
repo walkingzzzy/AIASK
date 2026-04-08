@@ -79,7 +79,12 @@ export default function StockQueryShell({
                 <option value="monthly">月线</option>
               </select>
             </label>
-            <button type="submit" disabled={loading} className={stockPrimaryButtonCls}>
+            <button
+              type="submit"
+              disabled={loading}
+              aria-label="立即查询股票"
+              className={stockPrimaryButtonCls}
+            >
               {loading ? '加载中...' : '立即查询'}
             </button>
           </div>

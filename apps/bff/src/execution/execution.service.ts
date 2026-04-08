@@ -566,7 +566,7 @@ export class ExecutionService {
     try {
       const result = await this.mcpGatewayService.callTool('execution_manager', {
         action,
-        kwargs: JSON.stringify(params),
+        params,
       });
       const toolError = this.extractToolError(result);
       if (toolError) {
@@ -586,7 +586,7 @@ export class ExecutionService {
     try {
       const result = await this.mcpGatewayService.callTool('live_trading_manager', {
         action,
-        kwargs: JSON.stringify(params),
+        params,
       });
       const toolError = this.extractToolError(result);
       if (toolError) {

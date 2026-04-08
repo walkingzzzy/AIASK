@@ -782,4 +782,5 @@ async def test_insight_manager_should_attach_meta_for_generate_report(tmp_path):
     _assert_manager_meta(result, "insight_manager:generate_report:")
     assert result["data"]["report_type"] == "weekly"
     assert "markdown" in result["data"]["artifacts"]
+    assert "json" not in result["data"]["artifacts"]
     assert "filesystem.write_report_artifacts" in result["meta"]["source_chain"]

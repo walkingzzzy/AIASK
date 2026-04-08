@@ -12,6 +12,7 @@ from .strategy_mgr_helpers import (
     compute_nav_series,
     get_latest_quality_report,
     list_quality_reports,
+    normalize_quality_report_contract,
     normalize_status_alias,
     normalize_time_filter,
     update_status,
@@ -54,23 +55,57 @@ async def _load_similar_vector_profiles(db, strategy_id: str) -> list:
         return []
 
 
+def _extract_strategy_market_summary_value(strategy: dict, key: str):
+    value = strategy.get(key)
+    if value not in (None, ""):
+        return value
+    params = strategy.get("params")
+    if isinstance(params, dict):
+        return params.get(key)
+    return None
+
+
+def _build_strategy_market_summary(strategy: dict, *, metrics: dict | None = None) -> dict:
+    summary = {
+        "id": strategy.get("id"),
+        "name": strategy.get("name"),
+        "strategy_type": strategy.get("strategy_type"),
+        "description": strategy.get("description"),
+        "status": strategy.get("status"),
+        "subscriber_count": strategy.get("subscriber_count"),
+        "avg_rating": strategy.get("avg_rating"),
+        "review_count": strategy.get("review_count"),
+        "sample_start_date": _extract_strategy_market_summary_value(strategy, "sample_start_date"),
+        "sample_end_date": _extract_strategy_market_summary_value(strategy, "sample_end_date"),
+        "turnover_rate": _extract_strategy_market_summary_value(strategy, "turnover_rate"),
+        "capacity": _extract_strategy_market_summary_value(strategy, "capacity"),
+        "capacity_label": _extract_strategy_market_summary_value(strategy, "capacity_label"),
+    }
+
+    if metrics:
+        metric_summary = {
+            "total_return": metrics.get("total_return"),
+            "annual_return": metrics.get("annual_return"),
+            "sharpe_ratio": metrics.get("sharpe_ratio"),
+            "max_drawdown": metrics.get("max_drawdown"),
+            "win_rate": metrics.get("win_rate"),
+        }
+        summary["metrics"] = metric_summary
+        summary["total_return"] = metric_summary["total_return"]
+        summary["annual_return"] = metric_summary["annual_return"]
+        summary["sharpe_ratio"] = metric_summary["sharpe_ratio"]
+        summary["max_drawdown"] = metric_summary["max_drawdown"]
+        summary["win_rate"] = metric_summary["win_rate"]
+
+    return {key: value for key, value in summary.items() if value is not None or key in {"id", "name"}}
+
+
 async def _enrich_rank_strategy(db, strategy: dict, semaphore: asyncio.Semaphore) -> dict:
     async with semaphore:
-        metrics_list, nav = await asyncio.gather(
-            db.get_strategy_metrics(strategy["id"]),
-            compute_nav_series(db, strategy["id"]),
-        )
+        metrics_list = await db.get_strategy_metrics(strategy["id"])
 
     all_period = next((m for m in metrics_list if m.get("period") == "all"), {})
-    return {
-        **strategy,
-        "sharpe_ratio": all_period.get("sharpe_ratio"),
-        "total_return": all_period.get("total_return"),
-        "max_drawdown": all_period.get("max_drawdown"),
-        "win_rate": all_period.get("win_rate"),
-        "calmar_ratio": all_period.get("calmar_ratio"),
-        "nav_series": nav,
-    }
+    return _build_strategy_market_summary(strategy, metrics=all_period)
 
 
 async def handle_help(db, params: dict) -> dict:
@@ -135,7 +170,7 @@ async def handle_list(db, params: dict) -> dict:
     limit = min(max(int(params.get("limit", 20)), 1), 100)
     offset = max(int(params.get("offset", 0)), 0)
     rows = await db.list_strategies(status, strategy_type, limit, offset)
-    return ok({"strategies": rows, "count": len(rows)})
+    return ok({"strategies": [_build_strategy_market_summary(row) for row in rows], "count": len(rows)})
 
 
 async def handle_detail(db, params: dict) -> dict:
@@ -176,6 +211,12 @@ async def handle_detail(db, params: dict) -> dict:
                 if m.get(key) is not None:
                     m[key] = round(float(m[key]) * noise, 6)
             m["approximate"] = True
+    latest_quality_report = normalize_quality_report_contract(
+        latest_quality_report,
+        strategy_id=sid,
+        strategy_type=strategy.get("strategy_type"),
+        default_review_source="strategy_manager.detail",
+    )
 
     return ok({
         "strategy": strategy, "metrics": metrics, "reviews": reviews,
@@ -203,7 +244,17 @@ async def handle_review_report(db, params: dict) -> dict:
     if not sid:
         return fail("strategy_id is required")
     limit = min(max(int(params.get("limit", 10)), 1), 50)
-    reports = await list_quality_reports(db, sid, limit=limit)
+    strategy = await db.get_strategy(sid) if hasattr(db, "get_strategy") else None
+    strategy_type = str((strategy or {}).get("strategy_type") or "").strip() or None
+    reports = [
+        normalize_quality_report_contract(
+            report,
+            strategy_id=sid,
+            strategy_type=strategy_type,
+            default_review_source="strategy_manager.review_report",
+        )
+        for report in await list_quality_reports(db, sid, limit=limit)
+    ]
     latest = reports[0] if reports else None
     return ok({**(latest or {}), "reports": reports})
 

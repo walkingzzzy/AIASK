@@ -47,6 +47,107 @@ def quality_gate_reason_code(reason: str) -> str:
     return normalized or "unknown"
 
 
+def _normalize_attempt_adjustment(value: Optional[dict]) -> dict:
+    raw = dict(value or {})
+
+    def _safe_int(value: object, default: int = 0) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
+    def _safe_float(value: object, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+
+    if not raw:
+        return {}
+    attempt_count = max(1, _safe_int(raw.get("attempt_count"), 1))
+    selected_count = max(0, _safe_int(raw.get("selected_count"), 0))
+    selection_ratio = raw.get("selection_ratio")
+    if selection_ratio is None:
+        selection_ratio = selected_count / max(attempt_count, 1)
+    penalty = _safe_float(raw.get("penalty"), 0.0)
+    applied = raw.get("applied")
+    if applied is None:
+        applied = penalty > 0.0
+    return {
+        **raw,
+        "attempt_count": attempt_count,
+        "selected_count": selected_count,
+        "selection_ratio": round(_safe_float(selection_ratio, 0.0), 4),
+        "penalty": round(penalty, 4),
+        "applied": bool(applied),
+    }
+
+
+def _normalize_committee_review(value: Optional[dict]) -> dict:
+    raw = dict(value or {})
+    if not raw:
+        return {}
+
+    def _unique_strings(values: object) -> list[str]:
+        items: list[str] = []
+        for item in list(values or []):
+            text = str(item or "").strip()
+            if text and text not in items:
+                items.append(text)
+        return items
+
+    normalized: dict[str, object] = {}
+    for key in (
+        "decision",
+        "review_mode",
+    ):
+        text = str(raw.get(key) or "").strip()
+        if text:
+            normalized[key] = text
+    for key in (
+        "final_score",
+        "planner_score",
+        "risk_score",
+        "feasibility_score",
+        "execution_score",
+        "capacity_score",
+        "task_alignment_score",
+        "novelty_score",
+    ):
+        if raw.get(key) is None:
+            continue
+        try:
+            normalized[key] = round(float(raw.get(key) or 0.0), 4)
+        except Exception:
+            continue
+    for key in ("rank",):
+        if raw.get(key) is None:
+            continue
+        try:
+            normalized[key] = int(raw.get(key) or 0)
+        except Exception:
+            continue
+    for key in ("is_champion",):
+        if raw.get(key) is None:
+            continue
+        normalized[key] = bool(raw.get(key))
+    for key in (
+        "alignment_issues",
+        "execution_issues",
+        "capacity_issues",
+        "suggestions",
+        "accept_blockers",
+    ):
+        values = _unique_strings(raw.get(key))
+        if values:
+            normalized[key] = values
+    for key in ("planner_context", "task_alignment_context"):
+        mapping = dict(raw.get(key) or {})
+        if mapping:
+            normalized[key] = mapping
+    return normalized
+
+
 def normalize_quality_gate_result(result: Optional[dict]) -> dict:
     raw = dict(result or {})
     reasons: list[str] = []
@@ -69,6 +170,7 @@ def normalize_quality_gate_result(result: Optional[dict]) -> dict:
         "reason_codes": [quality_gate_reason_code(item) for item in reasons],
         "warnings": warnings,
         "warning_codes": [quality_gate_reason_code(item) for item in warnings],
+        "attempt_adjustment": _normalize_attempt_adjustment(raw.get("attempt_adjustment")),
     }
 
 
@@ -390,6 +492,9 @@ def build_quality_report(
     submission_action_fallback_conditions = list(audit.get("submission_action_fallback_conditions") or [])
     submission_action_next_step = audit.get("submission_action_next_step")
     submission_action_completed = bool(audit.get("submission_action_completed"))
+    committee_review = _normalize_committee_review(
+        audit.get("committee_review") or snapshot.get("committee_review")
+    )
     summary = {
         "strategy_id": strategy_id,
         "strategy_type": strategy_type,
@@ -432,6 +537,8 @@ def build_quality_report(
         "market_ruleset": execution_reality.get("market_ruleset"),
         "target_weight_scheme": execution_reality.get("target_weight_scheme"),
         "position_assumption": execution_reality.get("position_assumption"),
+        "committee_decision": committee_review.get("decision"),
+        "committee_final_score": committee_review.get("final_score"),
     }
     if spawn_reason:
         summary["spawn_reason"] = spawn_reason
@@ -507,6 +614,7 @@ def build_quality_report(
             "multiple_testing": dict(normalized_gate.get("multiple_testing") or {}),
         },
         "multiple_testing_registry": dict(normalized_gate.get("multiple_testing_registry") or {}),
+        "committee_review": committee_review,
         "task_signature": audit.get("task_signature"),
         "refresh_mode": audit.get("refresh_mode") or dedup.get("refresh_mode"),
         "task_preference": dict(audit.get("task_preference") or {}),

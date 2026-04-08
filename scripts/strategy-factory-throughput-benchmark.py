@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Run strategy-factory throughput verification and emit JSON/Markdown reports."""
+"""Run strategy-factory throughput verification and emit a Markdown report."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import sys
 import time
@@ -180,7 +179,7 @@ async def _run_benchmark(args) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify strategy factory throughput and save reports.")
+    parser = argparse.ArgumentParser(description="Verify strategy factory throughput and save a Markdown report.")
     parser.add_argument("--cycles", type=int, default=3, help="Number of consecutive factory runs.")
     parser.add_argument("--label", default="manual", help="Benchmark label stored in report filenames.")
     parser.add_argument(
@@ -201,12 +200,13 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     stem = f"strategy-factory-throughput-{args.label}-{timestamp}"
-    json_path = output_dir / f"{stem}.json"
     md_path = output_dir / f"{stem}.md"
-    _write_report(json_path, json.dumps(report, ensure_ascii=False, indent=2, default=str))
     _write_report(md_path, _render_markdown(report))
 
-    print(json.dumps({"json_report": str(json_path), "markdown_report": str(md_path), "metrics": report["metrics"]}, ensure_ascii=False, indent=2))
+    print(f"markdown_report: {md_path}")
+    print(f"total_candidates: {report['metrics'].get('total_candidates')}")
+    print(f"total_gate3_passed: {report['metrics'].get('total_gate3_passed')}")
+    print(f"market_schedule_target_met: {report['metrics'].get('market_schedule_target_met')}")
     return 0
 
 

@@ -137,6 +137,41 @@ def _fetch_code_notice_range(
     return events, partial
 
 
+def fetch_market_notice_head(start_iso: str, end_iso: str, max_items: int = 20) -> list[dict[str, Any]]:
+    """快速获取市场公告头部结果，避免全市场逐日分页扫描。"""
+    params = {
+        "sr": "-1",
+        "page_size": str(max(1, min(int(max_items or 20), 50))),
+        "page_index": "1",
+        "ann_type": "A",
+        "client_source": "web",
+        "f_node": "0",
+        "s_node": "0",
+        "begin_time": start_iso,
+        "end_time": end_iso,
+    }
+    try:
+        resp = requests.get(_NOTICE_API_URL, params=params, headers=_NOTICE_HEADERS, timeout=10)
+        payload = resp.json() if resp.status_code == 200 else {}
+        items = (payload.get("data") or {}).get("list") or []
+        results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in items:
+            mapped = _map_notice_item(item, "全部")
+            if not mapped:
+                continue
+            key = mapped.get("url") or f"{mapped.get('code')}|{mapped.get('title')}|{mapped.get('date')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(mapped)
+            if len(results) >= max_items:
+                break
+        return results
+    except Exception:
+        return []
+
+
 @cached(ttl=1800.0)
 def get_stock_notices(
     start_date: str,
@@ -201,11 +236,14 @@ def get_stock_notices(
 
         code_filter = normalize_code(stock_code) if stock_code else ""
         events: list[dict[str, Any]] = []
-        max_seconds = int(os.getenv("AKSHARE_NOTICE_MAX_SECONDS", "20"))
-        max_retry = int(os.getenv("AKSHARE_NOTICE_RETRY", "2"))
+        max_seconds = int(os.getenv("AKSHARE_NOTICE_MAX_SECONDS", "8"))
+        max_retry = int(os.getenv("AKSHARE_NOTICE_RETRY", "1"))
         max_items = int(os.getenv("AKSHARE_NOTICE_MAX_ITEMS", "500"))
         start_ts = time.monotonic()
         partial = False
+
+        if not code_filter:
+            max_items = min(max_items, 200)
 
         if prefer_db and code_filter and normalized_types == ["全部"]:
             try:

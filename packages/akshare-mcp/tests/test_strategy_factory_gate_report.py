@@ -178,6 +178,7 @@ async def test_scheduler_persists_full_gate_report_when_gate_3_fails(monkeypatch
     db = MagicMock()
     db.get_klines = AsyncMock(return_value=[])
     db.save_strategy_factory_run = AsyncMock()
+    db.save_daily_snapshot = AsyncMock()
 
     class _DummyCollector:
         async def collect(self, _db):
@@ -253,7 +254,27 @@ async def test_scheduler_persists_full_gate_report_when_gate_3_fails(monkeypatch
         }
 
     async def _fake_factor_research_build(_db, _snapshot):
-        return {"summary": {"active_factor_count": 0, "top_factor_names": []}, "degraded": False}
+        return {
+            "summary": {
+                "active_factor_count": 1,
+                "active_candidate_count": 2,
+                "governed_source_candidate_count": 2,
+                "governed_blocked_candidate_count": 0,
+                "top_factor_names": ["momentum"],
+                "preferred_strategy_types": ["momentum"],
+                "factor_source_mode": "governed_candidate_pool",
+                "governed_candidate_pool_mode": "strict_governed",
+                "governed_candidate_pool_provisional": False,
+                "governed_candidate_pool_strict_count": 2,
+                "governed_candidate_pool_provisional_count": 0,
+                "governed_freshness_days": 0,
+                "degraded": False,
+                "stale": False,
+                "freshness_days": 0,
+            },
+            "quality_flags": ["governed_candidate_pool_active"],
+            "degraded": False,
+        }
 
     async def _fake_run_autonomy_batches(self, _db, _snapshot):
         return {"stage": {"generated_count": 0}, "candidates": [], "experiments": []}

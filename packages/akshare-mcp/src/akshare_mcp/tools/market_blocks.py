@@ -7,7 +7,7 @@ import json
 import urllib.request
 from typing import Dict, Any, Optional, List
 from ..storage.timescaledb import get_db
-from ..utils import safe_stderr_print, safe_float, parse_numeric, suppress_stdout
+from ..utils import fail, ok, safe_stderr_print, safe_float, parse_numeric, suppress_stdout
 from ..core.normalize import normalize_block_list, normalize_block_stock_list
 
 try:
@@ -409,7 +409,13 @@ async def get_market_blocks(
     数据源优先级: DB缓存(30min) → 东方财富直接HTTP → AKShare
     """
     if block_type not in ('industry', 'concept', 'region'):
-        return {'success': False, 'error': f'Invalid block_type: {block_type}. Use: industry, concept, region'}
+        response = fail(f'Invalid block_type: {block_type}. Use: industry, concept, region')
+        response["source"] = "none"
+        return response
+    if limit is not None and int(limit) <= 0:
+        response = fail("limit 必须为正整数")
+        response["source"] = "none"
+        return response
 
     source = 'none'
     blocks = []
@@ -451,7 +457,9 @@ async def get_market_blocks(
 
     if not blocks:
         tried = ",".join(attempted_sources) or "none"
-        return {'success': False, 'error': f'所有数据源均失败 (block_type={block_type}, tried={tried})'}
+        response = fail(f'所有数据源均失败 (block_type={block_type}, tried={tried})')
+        response["source"] = "none"
+        return response
 
     if limit:
         blocks = blocks[:limit]
@@ -471,15 +479,16 @@ async def get_market_blocks(
 
     safe_stderr_print(f"[MarketBlocks] 成功获取 {len(blocks)} 个{block_type}板块 (source={source})")
 
-    result = {
-        'success': True,
-        'data': {
+    result = ok(
+        {
             'blocks': normalize_block_list(blocks),
             'count': len(blocks),
             'block_type': block_type,
             'source': source,
-        }
-    }
+        },
+        cached=source == "db",
+    )
+    result["source"] = source
     degraded = any(bool(item.get('degraded')) for item in blocks)
     fallback_reason = next((str(item.get('fallback_reason')) for item in blocks if item.get('fallback_reason')), None)
     if degraded or fallback_reason:
@@ -500,13 +509,14 @@ async def get_block_stocks(block_code: str) -> Dict[str, Any]:
         成分股列表
     """
     if ak is None:
-        return {'success': False, 'error': 'akshare not available'}
+        response = fail('akshare not available')
+        response["source"] = "none"
+        return response
 
     if block_code.startswith("region::"):
-        return {
-            'success': False,
-            'error': f'Block {block_code} 来自地区成交汇总降级源，当前不提供成分股列表'
-        }
+        response = fail(f'Block {block_code} 来自地区成交汇总降级源，当前不提供成分股列表')
+        response["source"] = "none"
+        return response
 
     async def _resolve_block_meta(code: str) -> tuple[str | None, str | None]:
         guessed_type = None
@@ -734,17 +744,16 @@ async def get_block_stocks(block_code: str) -> Dict[str, Any]:
         hint = ""
         if block_code.upper().startswith('BK') or (not block_code.startswith('new_') and block_type in ('concept', None)):
             hint = "。提示: 东财概念板块 API 可能因代理拦截不可用，请尝试使用 new_xxx 格式的新浪行业代码（如 new_dlhy=电力行业），或直接传入中文板块名称"
-        return {
-            'success': False,
-            'error': f'板块 {block_code} 未找到成分股{resolved}{tried}{hint}',
-            'data': {
+        response = fail(f'板块 {block_code} 未找到成分股{resolved}{tried}{hint}')
+        response["source"] = "none"
+        response["data"] = {
                 'block_code': block_code,
                 'block_name': block_name,
                 'block_type': block_type,
                 'tried': attempted,
                 'fallback_reason': 'upstream_api_unavailable' if eastmoney_down else 'upstream_unavailable_or_code_system_mismatch',
             }
-        }
+        return response
 
     source = stocks[0].get('_source') if stocks else None
     for item in stocks:
@@ -774,9 +783,8 @@ async def get_block_stocks(block_code: str) -> Dict[str, Any]:
     except Exception as e:
         safe_stderr_print(f"[BlockStocks] 写 block_stocks 缓存失败: {e}")
 
-    return {
-        'success': True,
-        'data': {
+    result = ok(
+        {
             'block_code': block_code,
             'block_name': block_name,
             'block_type': block_type,
@@ -784,7 +792,9 @@ async def get_block_stocks(block_code: str) -> Dict[str, Any]:
             'count': len(stocks),
             'source': source,
         }
-    }
+    )
+    result["source"] = str(source or "market_blocks")
+    return result
 
 
 async def _save_blocks_to_db(db, blocks: List[Dict[str, Any]]) -> None:

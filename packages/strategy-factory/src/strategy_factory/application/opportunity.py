@@ -9,6 +9,7 @@ from ._stock_universe_loader import load_stock_universe_rows
 from ._opportunity_event import _MarketOpportunityScannerEventMixin
 from ._opportunity_snapshot import _MarketOpportunityScannerSnapshotMixin
 from ._opportunity_utils import _MarketOpportunityScannerUtilityMixin
+from .research_plane_contract import build_task_artifact
 
 
 class MarketOpportunityScanner(
@@ -67,7 +68,7 @@ class MarketOpportunityScanner(
             opportunity_type = str(task.get("opportunity_type") or "unknown")
             type_counts[opportunity_type] = type_counts.get(opportunity_type, 0) + 1
 
-        self.last_report = {
+        report = {
             "summary": {
                 "task_count": len(tasks),
                 "task_types": type_counts,
@@ -84,6 +85,22 @@ class MarketOpportunityScanner(
             },
             "tasks": tasks,
         }
+        task_artifact = build_task_artifact(
+            {
+                "task_scan": report,
+                "task_source_counts": dict(task_sources),
+                "event_task_count": int(report["summary"].get("event_task_count") or 0),
+                "snapshot_task_count": int(task_sources.get("snapshot") or 0),
+                "bulk_stock_task_count": 0,
+            }
+        )
+        report["task_artifact"] = task_artifact
+        report["summary"] = {
+            **dict(report.get("summary") or {}),
+            "task_artifact_contract_version": task_artifact.get("contract_version"),
+            "task_artifact_available": bool(task_artifact.get("available")),
+        }
+        self.last_report = report
         return self.get_last_report()
 
 

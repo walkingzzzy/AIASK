@@ -7,6 +7,7 @@ from .timescaledb import (
     TimescaleDBAdapter,
     await_with_db_cleanup,
     close_db,
+    drain_cleanup_callbacks,
     get_db,
     run_with_db_cleanup,
 )
@@ -15,6 +16,7 @@ __all__ = [
     'TimescaleDBAdapter',
     'get_db',
     'close_db',
+    'drain_cleanup_callbacks',
     'await_with_db_cleanup',
     'run_with_db_cleanup',
 ]

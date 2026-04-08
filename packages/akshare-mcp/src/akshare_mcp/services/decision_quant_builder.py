@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import Any
 
@@ -453,19 +454,22 @@ async def build_quant_context(
         candidate_codes = [normalized_code, *peer_codes[:8], *market_codes[:4]]
         candidate_codes = list(dict.fromkeys(code for code in candidate_codes if code))
         if len(candidate_codes) >= 3:
-            validation_resp = await run_factor_oos_validation(
-                candidate_codes[:12],
-                "momentum",
-                factor_lookback=20,
-                forward_period=10,
-                panel_periods=120,
-                wf_train_window=50,
-                wf_test_window=20,
-                bootstrap_n=300,
-                bootstrap_confidence=0.9,
-                validation_parallel=False,
-                bootstrap_mode="fast",
-                include_perf_breakdown=False,
+            validation_resp = await asyncio.wait_for(
+                run_factor_oos_validation(
+                    candidate_codes[:12],
+                    "momentum",
+                    factor_lookback=20,
+                    forward_period=10,
+                    panel_periods=120,
+                    wf_train_window=50,
+                    wf_test_window=20,
+                    bootstrap_n=300,
+                    bootstrap_confidence=0.9,
+                    validation_parallel=False,
+                    bootstrap_mode="fast",
+                    include_perf_breakdown=False,
+                ),
+                timeout=20.0,
             )
             if validation_resp.get("success"):
                 oos_validation = dict(validation_resp.get("data") or {})

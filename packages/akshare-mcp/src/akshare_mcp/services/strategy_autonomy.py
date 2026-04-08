@@ -26,6 +26,7 @@ from .strategy_spec import (  # noqa: F401
     RESEARCH_UNIVERSE_PAGE_SIZE,
     RESEARCH_UNIVERSE_SCAN_LIMIT,
     StrategySpec,
+    _safe_normalize_research_task,
 )
 from .strategy_generators import RuleStrategyGenerator, LLMProxyStrategyGenerator  # noqa: F401
 from .strategy_optimizer import BanditParameterOptimizer  # noqa: F401
@@ -35,6 +36,460 @@ logger = logging.getLogger(__name__)
 
 
 class AutonomyCycleOrchestrator:
+    _TASK_RUN_PREVIEW_LIMIT = 3
+
+    @classmethod
+    def _preview_items(
+        cls,
+        items: list[dict] | tuple[dict, ...] | None,
+        *,
+        fields: tuple[str, ...],
+        limit: Optional[int] = None,
+    ) -> list[dict]:
+        preview: list[dict] = []
+        for item in list(items or [])[: limit or cls._TASK_RUN_PREVIEW_LIMIT]:
+            if not isinstance(item, dict):
+                preview.append({'value': str(item)})
+                continue
+            compact = {
+                key: item.get(key)
+                for key in fields
+                if item.get(key) not in (None, "", [], {})
+            }
+            if not compact:
+                compact = {'keys': sorted(str(key) for key in item.keys())[:8]}
+            preview.append(compact)
+        return preview
+
+    @staticmethod
+    def _compact_dict(
+        payload: Optional[dict[str, Any]],
+        *,
+        keys: tuple[str, ...],
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        source = dict(payload or {})
+        for key in keys:
+            value = source.get(key)
+            if value in (None, "", [], {}):
+                continue
+            result[key] = value
+        return result
+
+    @staticmethod
+    def _normalize_external_request_status(status: Any) -> str:
+        return str(status or "").strip().lower() or "unknown"
+
+    @classmethod
+    def _summarize_external_request_status_counts(
+        cls,
+        requests: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
+    ) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for item in list(requests or []):
+            status = cls._normalize_external_request_status(dict(item or {}).get("status"))
+            counts[status] = counts.get(status, 0) + 1
+        return counts
+
+    @classmethod
+    def _count_external_network_requests(
+        cls,
+        requests: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
+    ) -> int:
+        total = 0
+        for item in list(requests or []):
+            payload = dict(item or {})
+            status = cls._normalize_external_request_status(payload.get("status"))
+            if status in {"compatibility_skip", "cooldown_skip"}:
+                continue
+            metrics = dict(payload.get("request_metrics") or {})
+            try:
+                attempt_count = int(metrics.get("attempt_count") or 0)
+            except Exception:
+                attempt_count = 0
+            total += max(attempt_count, 1)
+        return total
+
+    @classmethod
+    def _count_external_real_requests(
+        cls,
+        requests: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
+    ) -> int:
+        total = 0
+        for item in list(requests or []):
+            status = cls._normalize_external_request_status(dict(item or {}).get("status"))
+            if status in {"compatibility_skip", "cooldown_skip"}:
+                continue
+            total += 1
+        return total
+
+    @classmethod
+    def _request_is_compatibility_failure(cls, request: Optional[dict[str, Any]]) -> bool:
+        payload = dict(request or {})
+        status = cls._normalize_external_request_status(payload.get("status"))
+        if status in {"compatibility_skip", "cooldown_skip"}:
+            return False
+        metrics = dict(payload.get("request_metrics") or {})
+        metric_status = cls._normalize_external_request_status(metrics.get("status"))
+        error_type = str(payload.get("error_type") or metrics.get("last_error_type") or "").strip().lower()
+        error_text = str(payload.get("error") or metrics.get("last_error") or "").strip().lower()
+        return (
+            metric_status == "compatibility_failed"
+            or error_type == "providercompatibilityerror"
+            or "missing extractable content" in error_text
+        )
+
+    @classmethod
+    def _request_is_empty_200_response(cls, request: Optional[dict[str, Any]]) -> bool:
+        payload = dict(request or {})
+        metrics = dict(payload.get("request_metrics") or {})
+        if bool(metrics.get("empty_200_response")):
+            return True
+        if not cls._request_is_compatibility_failure(payload):
+            return False
+        error_text = str(payload.get("error") or metrics.get("last_error") or "").strip().lower()
+        return "missing extractable content" in error_text
+
+    @classmethod
+    def _summarize_factor_research(cls, factor_research: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(factor_research or {})
+        summary = dict(payload.get('summary') or {})
+        freshness_repair = dict(payload.get('freshness_repair') or {})
+        compact = {
+            'top_factor_names': list(
+                summary.get('top_factor_names')
+                or payload.get('active_factors')
+                or []
+            )[:6],
+            'preferred_strategy_types': [
+                str(item).strip()
+                for item in list(payload.get('preferred_strategy_types') or [])
+                if str(item).strip()
+            ][:6],
+            'degraded': bool(payload.get('degraded')),
+        }
+        compact.update(
+            cls._compact_dict(
+                summary,
+                keys=(
+                    'active_candidate_count',
+                    'candidate_pool_size',
+                    'registry_size',
+                    'freshness_days',
+                    'refresh_status',
+                ),
+            )
+        )
+        if freshness_repair:
+            compact['freshness_repair'] = cls._compact_dict(
+                freshness_repair,
+                keys=(
+                    'refresh_attempted',
+                    'refresh_status',
+                    'refresh_trigger',
+                    'fallback_reason',
+                    'stale_days',
+                ),
+            )
+        return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
+
+    @classmethod
+    def _summarize_research_task(
+        cls,
+        research_task: Optional[dict[str, Any]],
+        *,
+        factor_research: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        task = _safe_normalize_research_task(research_task) or dict(research_task or {})
+        metadata = dict(task.get('metadata') or {})
+        summary = cls._compact_dict(
+            task,
+            keys=(
+                'task_id',
+                'task_key',
+                'task_source',
+                'opportunity_type',
+                'theme_code',
+                'event_id',
+                'candidate_family',
+                'factor_name',
+                'generation_limit',
+                'source_candidate_artifact_id',
+                'evidence_count',
+                'preference_strength',
+                'validation_focus',
+            ),
+        )
+        target_symbols = list(task.get('target_symbols') or [])
+        if target_symbols:
+            summary['target_symbols'] = target_symbols[:12]
+        preferred_strategy_types = [
+            str(item).strip()
+            for item in list(
+                task.get('preferred_strategy_types')
+                or task.get('strategy_preferences')
+                or []
+            )
+            if str(item).strip()
+        ]
+        if preferred_strategy_types:
+            summary['preferred_strategy_types'] = preferred_strategy_types[:6]
+            summary['strategy_preferences'] = preferred_strategy_types[:6]
+        allowed_strategy_types = [
+            str(item).strip()
+            for item in list(task.get('allowed_strategy_types') or [])
+            if str(item).strip()
+        ]
+        if allowed_strategy_types:
+            summary['allowed_strategy_types'] = allowed_strategy_types[:6]
+        factor_summary = cls._summarize_factor_research(
+            metadata.get('factor_research') if isinstance(metadata.get('factor_research'), dict) else factor_research
+        )
+        if factor_summary:
+            summary['metadata'] = {'factor_research': factor_summary}
+        return summary
+
+    @classmethod
+    def _summarize_event_context(cls, event_context: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(event_context or {})
+        summary = cls._compact_dict(
+            payload,
+            keys=(
+                'task_source',
+                'event_id',
+                'theme_code',
+                'event_type',
+                'opportunity_type',
+                'candidate_family',
+                'factor_name',
+            ),
+        )
+        target_symbols = list(payload.get('target_symbols') or payload.get('symbols') or [])
+        if target_symbols:
+            summary['target_symbols'] = target_symbols[:12]
+        score_summary = dict(payload.get('score_summary') or {})
+        if score_summary:
+            summary['score_summary'] = cls._compact_dict(
+                score_summary,
+                keys=(
+                    'score',
+                    'confidence',
+                    'impact_score',
+                    'urgency_score',
+                    'priority',
+                ),
+            )
+        return summary
+
+    @classmethod
+    def _summarize_llm_report(cls, llm_report: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(llm_report or {})
+        external = dict(payload.get('external_provider') or {})
+        requests = list(external.get('requests') or [])
+        external_summary = cls._compact_dict(
+            external,
+            keys=(
+                'enabled',
+                'provider',
+                'model',
+                'status',
+                'selected_count',
+                'viable_selected_count',
+                'fallback_count',
+                'elapsed_seconds',
+                'last_error_type',
+                'last_error',
+                'stage_attempt_count',
+                'network_request_count',
+                'real_request_count',
+                'compatibility_skip_count',
+                'cooldown_skip_count',
+                'compatibility_failure_count',
+                'compatibility_failure_ratio',
+                'effective_response_count',
+                'effective_response_ratio',
+                'empty_200_response_count',
+            ),
+        )
+        request_status_counts = dict(external.get('request_status_counts') or {}) or cls._summarize_external_request_status_counts(requests)
+        if requests:
+            real_request_count = int(external.get('real_request_count') or cls._count_external_real_requests(requests))
+            compatibility_failure_count = int(
+                external.get('compatibility_failure_count')
+                or sum(1 for item in requests if cls._request_is_compatibility_failure(item))
+            )
+            effective_response_count = int(
+                external.get('effective_response_count')
+                or sum(
+                    1
+                    for item in requests
+                    if cls._normalize_external_request_status(dict(item or {}).get('status')) == 'succeeded'
+                )
+            )
+            empty_200_response_count = int(
+                external.get('empty_200_response_count')
+                or sum(1 for item in requests if cls._request_is_empty_200_response(item))
+            )
+            external_summary['request_count'] = len(requests)
+            external_summary['stage_attempt_count'] = int(external.get('stage_attempt_count') or len(requests))
+            external_summary['network_request_count'] = int(
+                external.get('network_request_count') or cls._count_external_network_requests(requests)
+            )
+            external_summary['real_request_count'] = real_request_count
+            external_summary['compatibility_skip_count'] = int(
+                external.get('compatibility_skip_count')
+                or request_status_counts.get('compatibility_skip', 0)
+            )
+            external_summary['cooldown_skip_count'] = int(
+                external.get('cooldown_skip_count')
+                or request_status_counts.get('cooldown_skip', 0)
+            )
+            external_summary['compatibility_failure_count'] = compatibility_failure_count
+            external_summary['effective_response_count'] = effective_response_count
+            external_summary['empty_200_response_count'] = empty_200_response_count
+            external_summary['compatibility_failure_ratio'] = (
+                external.get('compatibility_failure_ratio')
+                if external.get('compatibility_failure_ratio') is not None
+                else (round(compatibility_failure_count / real_request_count, 4) if real_request_count else 0.0)
+            )
+            external_summary['effective_response_ratio'] = (
+                external.get('effective_response_ratio')
+                if external.get('effective_response_ratio') is not None
+                else (round(effective_response_count / real_request_count, 4) if real_request_count else 0.0)
+            )
+        elif request_status_counts:
+            external_summary['request_count'] = int(external.get('stage_attempt_count') or 0)
+        if external.get('request_limits'):
+            external_summary['request_limits'] = list(external.get('request_limits') or [])[:4]
+        if request_status_counts:
+            external_summary['request_status_counts'] = request_status_counts
+        if requests:
+            external_summary['requests_preview'] = [
+                {
+                    **cls._compact_dict(
+                        dict(item or {}),
+                        keys=(
+                            'request_index',
+                            'request_limit',
+                            'status',
+                            'returned_candidate_count',
+                            'compiled_candidate_count',
+                            'non_executable_candidate_count',
+                            'viable_candidate_count',
+                            'error_type',
+                            'error',
+                        ),
+                    ),
+                    'request_metrics': cls._compact_dict(
+                        dict((item or {}).get('request_metrics') or {}),
+                        keys=(
+                            'attempt_count',
+                            'prompt_chars',
+                            'response_chars',
+                            'elapsed_seconds',
+                            'last_error_type',
+                            'last_error',
+                        ),
+                    ),
+                }
+                for item in requests[: cls._TASK_RUN_PREVIEW_LIMIT]
+            ]
+        analysis = dict(external.get('analysis') or {})
+        if analysis:
+            external_summary['analysis'] = cls._compact_dict(
+                analysis,
+                keys=(
+                    'style_bias',
+                    'market_regime',
+                    'theme',
+                    'direction',
+                    'risk_hint',
+                    'confidence',
+                ),
+            )
+        summary = cls._compact_dict(
+            payload,
+            keys=(
+                'requested_limit',
+                'market_frame_ready',
+                'market_frame_rows',
+                'market_frame_source',
+                'selected_count',
+                'pipeline_run_timeout_sec',
+            ),
+        )
+        if payload.get('selected_generators'):
+            summary['selected_generators'] = dict(payload.get('selected_generators') or {})
+        if payload.get('research_context_summary'):
+            summary['research_context_summary'] = dict(payload.get('research_context_summary') or {})
+        if external_summary:
+            summary['external_provider'] = external_summary
+        return summary
+
+    @classmethod
+    def _summarize_generation_result(cls, generation_result: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(generation_result or {})
+        stats = dict(payload.get('stats') or {})
+        return {
+            'count': int(payload.get('count') or len(payload.get('candidates') or [])),
+            'stats': cls._compact_dict(
+                stats,
+                keys=('rule_count', 'llm_count', 'evolved_count', 'merged_count'),
+            ),
+            'llm_generation': cls._summarize_llm_report(payload.get('llm_generation')),
+            'candidate_preview': cls._preview_items(
+                payload.get('candidates') or [],
+                fields=('experiment_id', 'strategy_type', 'name', 'generated_strategy_id', 'status'),
+            ),
+        }
+
+    @classmethod
+    def _summarize_review_result(cls, review_result: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(review_result or {})
+        return {
+            'reviewed_count': int(payload.get('reviewed_count') or 0),
+            'rejected_count': int(payload.get('rejected_count') or 0),
+            'committee_review_count': len(payload.get('committee_reviews') or []),
+            'committee_review_preview': cls._preview_items(
+                payload.get('committee_reviews') or [],
+                fields=('experiment_id', 'decision', 'final_score', 'review_rank', 'strategy_type', 'name'),
+            ),
+            'champion': cls._compact_dict(
+                dict(payload.get('champion') or {}),
+                keys=('experiment_id', 'generated_strategy_id', 'status', 'review_rank', 'final_score'),
+            ),
+        }
+
+    @classmethod
+    def _summarize_experiments_result(cls, experiments_result: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(experiments_result or {})
+        return {
+            'count': int(payload.get('count') or len(payload.get('items') or [])),
+            'status_counts': dict(payload.get('status_counts') or {}),
+            'preview': cls._preview_items(
+                payload.get('items') or [],
+                fields=('experiment_id', 'status', 'strategy_id', 'generated_strategy_id', 'generator_type', 'optimizer_type'),
+            ),
+        }
+
+    @classmethod
+    def _summarize_submission_result(cls, submission_result: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(submission_result or {})
+        items = list(payload.get('items') or [])
+        return {
+            'auto_submit': bool(payload.get('auto_submit')),
+            'attempted': bool(payload.get('attempted')),
+            'submitted_count': int(payload.get('submitted_count') or 0),
+            'passed_count': int(payload.get('passed_count') or 0),
+            'failed_count': int(payload.get('failed_count') or 0),
+            'provisional_passed_count': int(payload.get('provisional_passed_count') or 0),
+            'failure_reason_topn': list(payload.get('failure_reason_topn') or [])[: cls._TASK_RUN_PREVIEW_LIMIT],
+            'items_preview': cls._preview_items(
+                items,
+                fields=('experiment_id', 'strategy_id', 'passed', 'duplicate', 'reason_code'),
+            ),
+        }
+
     @staticmethod
     def _submission_metrics(submit_result: Optional[dict]) -> dict:
         payload = dict(submit_result or {})
@@ -155,6 +610,70 @@ class AutonomyCycleOrchestrator:
             'event_context': event_context,
         }
 
+    @classmethod
+    def _build_task_run_result_summary(
+        cls,
+        *,
+        task_run: dict,
+        status: str,
+        source: str,
+        snapshot_date: Any,
+        research_task: Optional[dict[str, Any]],
+        event_context: Optional[dict[str, Any]],
+        factor_research: Optional[dict[str, Any]],
+        full_result: dict[str, Any],
+        artifact_info: Optional[dict[str, Any]],
+        error: Optional[str] = None,
+    ) -> dict[str, Any]:
+        generation_result = dict(full_result.get('generation') or {})
+        review_result = dict(full_result.get('review') or {})
+        experiments_result = dict(full_result.get('experiments') or {})
+        submission_result = dict(full_result.get('submission') or {})
+        summary = {
+            'storage_mode': 'summary_with_external_payload' if artifact_info else 'summary_only',
+            'task_run_id': task_run.get('id'),
+            'trace_id': task_run.get('trace_id'),
+            'status': status,
+            'source': source,
+            'snapshot_date': snapshot_date,
+            'task_source': dict(research_task or {}).get('task_source'),
+            'research_task': cls._summarize_research_task(
+                research_task,
+                factor_research=factor_research,
+            ),
+            'event_context': cls._summarize_event_context(event_context),
+            'factor_research': cls._summarize_factor_research(factor_research),
+            'generated_count': int(
+                full_result.get('generated_count')
+                or generation_result.get('count')
+                or 0
+            ),
+            'reviewed_count': int(
+                full_result.get('reviewed_count')
+                or review_result.get('reviewed_count')
+                or 0
+            ),
+            'rejected_count': int(
+                full_result.get('rejected_count')
+                or review_result.get('rejected_count')
+                or 0
+            ),
+            'generation': cls._summarize_generation_result(generation_result),
+            'review': cls._summarize_review_result(review_result),
+            'experiments': cls._summarize_experiments_result(experiments_result),
+            'submission': cls._summarize_submission_result(submission_result),
+            'champion': cls._compact_dict(
+                dict(full_result.get('champion') or review_result.get('champion') or {}),
+                keys=('experiment_id', 'generated_strategy_id', 'status', 'review_rank', 'final_score'),
+            ),
+            'lifecycle': dict(full_result.get('lifecycle') or {}),
+        }
+        if artifact_info:
+            summary['full_result_artifact'] = dict(artifact_info)
+        if error:
+            summary['error'] = error
+        return summary
+
     @staticmethod
     def _build_cycle_result(
         *,
@@ -211,8 +730,16 @@ class AutonomyCycleOrchestrator:
         resolved_task = dict(research_task or {})
         factor_research = dict(resolved_snapshot.get('factor_research') or {})
         task_metadata = dict(resolved_task.get('metadata') or {})
-        if factor_research and not task_metadata.get('factor_research'):
-            task_metadata['factor_research'] = factor_research
+        task_factor_research = (
+            task_metadata.get('factor_research')
+            if isinstance(task_metadata.get('factor_research'), dict)
+            else factor_research
+        )
+        factor_summary = self._summarize_factor_research(task_factor_research)
+        if factor_summary:
+            task_metadata['factor_research'] = factor_summary
+        elif task_metadata.get('factor_research') not in (None, '', [], {}):
+            task_metadata.pop('factor_research', None)
         if task_metadata:
             resolved_task = {**resolved_task, 'metadata': task_metadata}
         event_context = _extract_event_context(resolved_task)
@@ -581,24 +1108,53 @@ class AutonomyCycleOrchestrator:
                 lifecycle=lifecycle_result,
             )
             if task_run.get('id') is not None:
-                await db.update_strategy_task_run(task_run['id'], status='completed', result=result)
+                task_run_summary = self._build_task_run_result_summary(
+                    task_run=task_run,
+                    status='completed',
+                    source=source,
+                    snapshot_date=snapshot.get('date'),
+                    research_task=research_task,
+                    event_context=event_context,
+                    factor_research=factor_research,
+                    full_result=result,
+                    artifact_info=None,
+                )
+                await db.update_strategy_task_run(
+                    task_run['id'],
+                    status='completed',
+                    result=task_run_summary,
+                )
             return result
         except Exception as exc:
             lifecycle.fail_phase(error=exc)
             lifecycle_result = lifecycle.snapshot()
             logger.error('StrategyAutonomyService.run_cycle failed: %s', exc, exc_info=True)
             if task_run.get('id') is not None:
+                failure_result = {
+                    'status': 'failed',
+                    'snapshot_date': snapshot.get('date'),
+                    'research_task': research_task,
+                    'event_context': event_context,
+                    'factor_research': factor_research,
+                    'lifecycle': lifecycle_result,
+                    'error': str(exc),
+                }
                 await db.update_strategy_task_run(
                     task_run['id'],
                     status='failed',
                     error=str(exc),
-                    result={
-                        'snapshot_date': snapshot.get('date'),
-                        'research_task': research_task,
-                        'event_context': event_context,
-                        'factor_research': factor_research,
-                        'lifecycle': lifecycle_result,
-                    },
+                    result=self._build_task_run_result_summary(
+                        task_run=task_run,
+                        status='failed',
+                        source=source,
+                        snapshot_date=snapshot.get('date'),
+                        research_task=research_task,
+                        event_context=event_context,
+                        factor_research=factor_research,
+                        full_result=failure_result,
+                        artifact_info=None,
+                        error=str(exc),
+                    ),
                 )
             await self._save_cycle_failed_event(
                 db,

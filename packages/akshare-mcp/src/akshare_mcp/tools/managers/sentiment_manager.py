@@ -96,6 +96,7 @@ def register_sentiment_manager(mcp):
         start_time = time.perf_counter()
         try:
             db = get_db()
+            kwargs = normalize_manager_payload(params=params, kwargs=kwargs)
             kwargs = normalize_manager_kwargs(
                 kwargs,
                 field_aliases={

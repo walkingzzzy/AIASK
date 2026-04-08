@@ -266,7 +266,7 @@ async def _shutdown_services_async() -> None:
     logger = logging.getLogger(__name__)
     from .services import close_shared_runtime_clients
     from .services.data_sync import data_sync_service
-    from .storage import close_db
+    from .storage import close_db, drain_cleanup_callbacks
 
     await _stop_started_background_services()
     # 给取消后的任务一次排空连接释放/close 回调的机会，避免残留 transport 警告。
@@ -289,6 +289,12 @@ async def _shutdown_services_async() -> None:
     except Exception as e:
         logger.warning(
             "[Server] db shutdown failed", extra={"error": str(e)}
+        )
+    try:
+        await drain_cleanup_callbacks()
+    except Exception as e:
+        logger.warning(
+            "[Server] transport cleanup drain failed", extra={"error": str(e)}
         )
     _release_background_services_leader()
 

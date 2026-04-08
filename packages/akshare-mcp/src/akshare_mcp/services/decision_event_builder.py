@@ -68,6 +68,20 @@ def _pick_text(item: dict[str, Any]) -> str:
     return ""
 
 
+async def _call_text_source(tool, *args, timeout_sec: float = 12.0) -> dict[str, Any]:
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(tool, *args), timeout=timeout_sec)
+    except asyncio.TimeoutError:
+        return {
+            "success": False,
+            "error": f"timeout>{float(timeout_sec):.1f}s",
+            "data": None,
+            "cached": False,
+        }
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "data": None, "cached": False}
+
+
 def _classify_event_candidates(documents: list[dict[str, Any]]) -> dict[str, Any]:
     veto_candidates: list[dict[str, Any]] = []
     evidence_links: list[dict[str, Any]] = []
@@ -177,7 +191,22 @@ async def build_event_context(
     notice_items: list[dict[str, Any]] = []
     report_items: list[dict[str, Any]] = []
 
-    news_resp = await asyncio.to_thread(get_stock_news, normalized_code, max(1, int(news_limit)))
+    end_date = date.today()
+    start_date = end_date - timedelta(days=max(1, int(notice_days)))
+
+    news_resp, notice_resp, report_resp = await asyncio.gather(
+        _call_text_source(get_stock_news, normalized_code, max(1, int(news_limit)), timeout_sec=12.0),
+        _call_text_source(
+            get_stock_notices,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            ["全部"],
+            normalized_code,
+            timeout_sec=12.0,
+        ),
+        _call_text_source(get_research_reports, normalized_code, "", max(1, int(report_limit)), timeout_sec=12.0),
+    )
+
     if news_resp.get("success") and isinstance(news_resp.get("data"), list):
         news_items = [dict(item) for item in (news_resp.get("data") or []) if isinstance(item, dict)]
     else:
@@ -185,15 +214,6 @@ async def build_event_context(
         warnings.append(f"stock_news:{message}")
         fallback_reasons.append(f"stock_news:{message}")
 
-    end_date = date.today()
-    start_date = end_date - timedelta(days=max(1, int(notice_days)))
-    notice_resp = await asyncio.to_thread(
-        get_stock_notices,
-        start_date.isoformat(),
-        end_date.isoformat(),
-        ["全部"],
-        normalized_code,
-    )
     if notice_resp.get("success") and isinstance(notice_resp.get("data"), dict):
         notice_items = [
             dict(item) for item in (notice_resp.get("data", {}).get("events") or []) if isinstance(item, dict)
@@ -203,7 +223,6 @@ async def build_event_context(
         warnings.append(f"stock_notices:{message}")
         fallback_reasons.append(f"stock_notices:{message}")
 
-    report_resp = await asyncio.to_thread(get_research_reports, normalized_code, "", max(1, int(report_limit)))
     if report_resp.get("success"):
         report_data = report_resp.get("data")
         if isinstance(report_data, dict):

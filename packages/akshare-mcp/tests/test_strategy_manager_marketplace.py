@@ -185,6 +185,44 @@ class TestStrategyManager:
         assert archived["data"]["strategy_id"] in all_ids
 
     @pytest.mark.asyncio
+    async def test_list_and_rank_strip_heavy_marketplace_payloads(self, setup):
+        mcp, db = setup
+        created = await mcp.strategy_manager(action="create", kwargs=json.dumps({
+            "name": "lean-payload-test",
+            "strategy_type": "multi_factor",
+            "description": "用于验证榜单返回摘要数据",
+            "params": {
+                "sample_start_date": "2024-01-01",
+                "sample_end_date": "2024-12-31",
+                "capacity": 2_500_000,
+            },
+            "factor_weights": {"mom_20": 0.6, "quality": 0.4},
+        }))
+        sid = created["data"]["strategy_id"]
+        await db.update_strategy_status(sid, "listed")
+        await db.save_strategy_metrics(sid, "all", {
+            "total_return": 0.15,
+            "annual_return": 0.12,
+            "sharpe_ratio": 1.35,
+            "max_drawdown": 0.07,
+            "win_rate": 0.62,
+        })
+
+        listed_resp = await mcp.strategy_manager(action="list", kwargs=json.dumps({"status": "all"}))
+        rank_resp = await mcp.strategy_manager(action="rank", kwargs=json.dumps({"status": "all"}))
+
+        listed = next(item for item in listed_resp["data"]["strategies"] if item["id"] == sid)
+        ranked = next(item for item in rank_resp["data"]["strategies"] if item["id"] == sid)
+
+        assert "params" not in listed
+        assert "factor_weights" not in listed
+        assert listed["sample_start_date"] == "2024-01-01"
+        assert listed["capacity"] == 2_500_000
+        assert "nav_series" not in ranked
+        assert ranked["metrics"]["annual_return"] == 0.12
+        assert ranked["sharpe_ratio"] == 1.35
+
+    @pytest.mark.asyncio
     async def test_review_rating_validation(self, setup):
         mcp, db = setup
         cr = await mcp.strategy_manager(action="create", kwargs=json.dumps({"name": "test"}))
@@ -237,12 +275,28 @@ class TestStrategyManager:
         sid = cr["data"]["strategy_id"]
         await db.save_strategy_quality_report(sid, "submission", {
             "passed": True,
-            "summary": {"validation_grade": "B", "status_after_review": "incubating"},
+            "summary": {
+                "validation_grade": "B",
+                "status_after_review": "incubating",
+                "committee_decision": "revise",
+                "committee_final_score": 0.6842,
+            },
             "quality_gate": {"passed": True, "wf_ic_ir": 0.41, "reasons": []},
             "validation_report": {},
             "risk_report": {},
             "dedup_report": {"match_type": None},
             "backtest_metrics": {},
+            "committee_review": {
+                "decision": "revise",
+                "final_score": 0.6842,
+                "execution_score": 0.48,
+                "capacity_score": 0.55,
+                "task_alignment_score": 0.44,
+                "accept_blockers": [
+                    "execution_floor_failed",
+                    "task_alignment_floor_failed",
+                ],
+            },
             "snapshot": {},
         })
         await db.update_strategy_status(
@@ -287,6 +341,18 @@ class TestStrategyManager:
         assert review["success"] is True
         assert review["data"]["passed"] is True
         assert review["data"]["reports"][0]["report_type"] == "submission"
+        assert review["data"]["summary"]["committee_decision"] == "revise"
+        assert review["data"]["summary"]["committee_final_score"] == pytest.approx(0.6842)
+        assert review["data"]["committee_review"]["execution_score"] == pytest.approx(0.48)
+        assert review["data"]["committee_review"]["capacity_score"] == pytest.approx(0.55)
+        assert review["data"]["committee_review"]["task_alignment_score"] == pytest.approx(0.44)
+        assert review["data"]["committee_review"]["accept_blockers"] == [
+            "execution_floor_failed",
+            "task_alignment_floor_failed",
+        ]
+        assert review["data"]["constraint_check"] == {}
+        assert review["data"]["attempt_adjustment"] == {}
+        assert review["data"]["validation_profile"]["primary_validation_layer"] is None
         assert events["data"]["count"] == 2
         assert events["data"]["events"][0]["event_type"] == "status_change"
         assert events["data"]["events"][0]["metadata"]["source"] == "review"
@@ -393,12 +459,31 @@ class TestStrategyManager:
             "risk_report": {},
             "dedup_report": {},
             "backtest_metrics": {"sharpe_ratio": 1.1},
+            "committee_review": {
+                "decision": "revise",
+                "final_score": 0.6123,
+                "execution_score": 0.42,
+                "capacity_score": 0.58,
+                "task_alignment_score": 0.43,
+                "accept_blockers": [
+                    "execution_floor_failed",
+                    "task_alignment_floor_failed",
+                ],
+            },
             "snapshot": {"date": "2026-03-06"},
         })
 
         monkeypatch.setattr(
             "akshare_mcp.tools.managers.strategy_mgr_lifecycle.run_quality_gate",
-            AsyncMock(return_value={"passed": False, "reason": "Insufficient kline data for quality gate"}),
+            AsyncMock(return_value={
+                "passed": False,
+                "reason": "Insufficient kline data for quality gate",
+                "attempt_adjustment": {
+                    "attempt_count": "12",
+                    "selected_count": "2",
+                    "penalty": "0.03",
+                },
+            }),
         )
 
         recheck = await mcp.strategy_manager(action="review_report_recheck", kwargs=json.dumps({"strategy_id": sid}))
@@ -407,9 +492,24 @@ class TestStrategyManager:
         assert recheck["success"] is True
         assert recheck["data"]["summary"]["review_source"] == "review_report_recheck"
         assert recheck["data"]["quality_gate"]["reason_codes"] == ["insufficient_kline_data"]
+        assert recheck["data"]["attempt_adjustment"]["attempt_count"] == 12
+        assert recheck["data"]["attempt_adjustment"]["selection_ratio"] == pytest.approx(0.1667, abs=1e-4)
+        assert recheck["data"]["summary"]["committee_decision"] == "revise"
+        assert recheck["data"]["summary"]["committee_final_score"] == pytest.approx(0.6123)
+        assert recheck["data"]["committee_review"]["accept_blockers"] == [
+            "execution_floor_failed",
+            "task_alignment_floor_failed",
+        ]
+        assert recheck["data"]["constraint_check"] == {}
+        assert recheck["data"]["validation_profile"]["primary_validation_layer"] is None
         assert review["data"]["summary"]["review_source"] == "review_report_recheck"
         assert review["data"]["reports"][0]["report_type"].startswith("recheck:")
         assert review["data"]["reports"][1]["report_type"] == "submission"
+        assert review["data"]["committee_review"]["decision"] == "revise"
+        assert review["data"]["committee_review"]["accept_blockers"] == [
+            "execution_floor_failed",
+            "task_alignment_floor_failed",
+        ]
 
     @pytest.mark.asyncio
     async def test_factory_status_and_run_once_actions(self, setup, monkeypatch):
@@ -436,6 +536,10 @@ class TestStrategyManager:
                 "task_source_counts": {"event_driven": 1, "snapshot": 1},
                 "scanner_task_types": {"sector_breakout": 1, "rotation_balanced": 1},
                 "event_snapshot_mixed": True,
+                "research_summary": {"research_plane_contract_version": "strategy_factory.research_plane.v1"},
+                "feedback_summary": {"family_count": 2, "feedback_available": True},
+                "incubation_summary": {"gate_3_passed": 1},
+                "live_ready_summary": {"live_review_ready_count": 1},
                 "autonomy_task_briefs": [
                     {
                         "task_id": "event_demo_1",
@@ -446,7 +550,128 @@ class TestStrategyManager:
                     }
                 ],
             },
-            "stages": {},
+            "quality_gate": {
+                "gate_0": {"passed_count": 2, "failed_count": 0},
+                "pre_gate": {"passed_count": 2, "failed_count": 0},
+                "gate_1": {"passed_count": 2, "failed_count": 0},
+                "gate_2": {"input_count": 2, "passed_count": 2, "failed_count": 0},
+                "gate_3": {
+                    "input_count": 1,
+                    "passed_count": 1,
+                    "failed_count": 0,
+                    "failure_reason_topn": [],
+                },
+            },
+            "stages": {
+                "factor_research": {
+                    "status": "completed",
+                    "ok": True,
+                    "research_artifact": {
+                        "contract_version": "strategy_factory.research_artifact.v1",
+                        "available": True,
+                        "active_factor_count": 2,
+                    },
+                },
+                "autonomy": {
+                    "status": "completed",
+                    "ok": True,
+                    "task_artifact": {
+                        "contract_version": "strategy_factory.task_artifact.v1",
+                        "available": True,
+                        "planned_task_count": 2,
+                    },
+                    "candidate_artifact": {
+                        "contract_version": "strategy_factory.candidate_artifact.v1",
+                        "available": True,
+                        "candidate_count": 2,
+                    },
+                    "evidence_artifact": {
+                        "contract_version": "strategy_factory.research_evidence_artifact.v1",
+                        "available": True,
+                        "experiment_count": 1,
+                    },
+                },
+                "backtest": {
+                    "status": "completed",
+                    "ok": True,
+                    "summary": {
+                        "input_count": 2,
+                        "passed_count": 2,
+                        "failed_count": 0,
+                        "failed_reason_counts": {},
+                    },
+                },
+                "deduplicate": {
+                    "status": "completed",
+                    "ok": True,
+                    "summary": {
+                        "input_count": 2,
+                        "kept_count": 1,
+                        "dropped_count": 1,
+                        "refreshed_existing_count": 1,
+                    },
+                    "kept": [
+                        {
+                            "strategy_type": "momentum",
+                            "target_symbols": ["600519"],
+                            "dedup_result": {
+                                "duplicate": False,
+                                "refresh_existing": True,
+                                "refresh_mode": "refresh_metrics_only",
+                            },
+                        }
+                    ],
+                },
+                "submit": {
+                    "status": "completed",
+                    "ok": True,
+                    "submitted": 1,
+                    "gate_3_passed": 1,
+                    "strategies": [
+                        {
+                            "strategy_id": "sid_factory_1",
+                            "name": "工厂治理策略",
+                            "status": "submitted",
+                            "submission_lane": "paper",
+                            "submission_action_type": "create",
+                            "primary_validation_layer": "target",
+                            "refresh_mode": "refresh_metrics_only",
+                            "task_signature": "event_driven|event_demo_1|ai||event_target_only|600519",
+                            "validation_profile": {
+                                "profile": "event_trade_validation",
+                                "validation_focus": "event_target_only",
+                                "primary_validation_layer": "target",
+                            },
+                            "constraint_check": {
+                                "constraint_violation": "strict_intersection_trimmed",
+                                "intersection_ratio": 0.5,
+                            },
+                            "committee_review": {
+                                "decision": "revise",
+                                "final_score": 0.6842,
+                                "execution_score": 0.48,
+                                "capacity_score": 0.55,
+                                "task_alignment_score": 0.44,
+                                "accept_blockers": [
+                                    "execution_floor_failed",
+                                    "task_alignment_floor_failed",
+                                ],
+                            },
+                            "event_window_config": {"lookback_days": 3, "forward_days": 5},
+                            "position_assumption": "single_name_full_notional",
+                            "attempt_adjustment": {"attempt_count": 4, "selection_ratio": 0.25, "penalty": 0.03},
+                            "vector_profile_id": "vp_factory_1",
+                            "multiple_testing_registry": {"available": True},
+                            "multiple_testing_registry_record_id": "mt_factory_1",
+                            "candidate_lineage_contract": {"lineage_id": "lineage_factory_1"},
+                            "cost_assumptions": {"commission_bps": 8},
+                            "explicit_cost_breakdown": {"commission_cost": 120.0},
+                            "implicit_cost_breakdown": {"slippage_cost": 36.0},
+                            "execution_reality": {"tradability_filter": True},
+                        }
+                    ],
+                },
+            },
             "snapshot_summary": {},
             "error": None,
         })
@@ -513,11 +738,50 @@ class TestStrategyManager:
         assert capabilities_resp["data"]["factory_pre_gate_enabled"] is True
         assert runs_resp["data"]["count"] == 1
         assert runs_resp["data"]["items"][0]["run_id"] == "run_hist_1"
+        assert runs_resp["data"]["items"][0]["candidates_spawned"] == 2
         assert runs_resp["data"]["items"][0]["summary"]["event_task_count"] == 1
         assert runs_resp["data"]["items"][0]["summary"]["event_snapshot_mixed"] is True
         assert detail_resp["data"]["run_id"] == "run_hist_1"
         assert detail_resp["data"]["summary"]["snapshot_task_count"] == 1
         assert detail_resp["data"]["summary"]["autonomy_task_briefs"][0]["task_source"] == "event_driven"
+        assert detail_resp["data"]["research_summary"]["research_plane_contract_version"] == "strategy_factory.research_plane.v1"
+        assert detail_resp["data"]["research_plane"]["contract_version"] == "strategy_factory.research_plane.v1"
+        assert detail_resp["data"]["research_artifact"]["contract_version"] == "strategy_factory.research_artifact.v1"
+        assert detail_resp["data"]["task_artifact"]["planned_task_count"] == 2
+        assert detail_resp["data"]["candidate_artifact"]["candidate_count"] == 2
+        assert detail_resp["data"]["evidence_artifact"]["experiment_count"] == 1
+        assert detail_resp["data"]["governance_plane"]["contract_version"] == "strategy_factory.governance_plane.v1"
+        assert detail_resp["data"]["gate_artifact"]["contract_version"] == "strategy_factory.gate_artifact.v1"
+        assert detail_resp["data"]["gate_artifact"]["gate_3_passed"] == 1
+        assert detail_resp["data"]["dedup_artifact"]["kept_count"] == 1
+        assert detail_resp["data"]["submission_artifact"]["strategy_count"] == 1
+        assert detail_resp["data"]["submission_artifact"]["committee_review_count"] == 1
+        assert detail_resp["data"]["submission_artifact"]["committee_decision_counts"]["revise"] == 1
+        assert detail_resp["data"]["submission_artifact"]["constraint_check_count"] == 1
+        assert detail_resp["data"]["submission_artifact"]["primary_validation_layer_counts"]["target"] == 1
+        assert (
+            detail_resp["data"]["submission_artifact"]["strategy_briefs"][0]["validation_profile"]["profile"]
+            == "event_trade_validation"
+        )
+        assert (
+            detail_resp["data"]["submission_artifact"]["strategy_briefs"][0]["committee_review"]["decision"]
+            == "revise"
+        )
+        assert (
+            detail_resp["data"]["submission_artifact"]["strategy_briefs"][0]["committee_review"]["accept_blockers"]
+            == ["execution_floor_failed", "task_alignment_floor_failed"]
+        )
+        assert detail_resp["data"]["submission_artifact"]["strategy_briefs"][0]["has_committee_review"] is True
+        assert (
+            detail_resp["data"]["submission_artifact"]["strategy_briefs"][0]["constraint_check"]["constraint_violation"]
+            == "strict_intersection_trimmed"
+        )
+        assert detail_resp["data"]["governance_evidence_artifact"]["multiple_testing_registry_record_count"] == 1
+        assert detail_resp["data"]["governance_evidence_artifact"]["committee_review_count"] == 1
+        assert detail_resp["data"]["governance_evidence_artifact"]["constraint_check_count"] == 1
+        assert detail_resp["data"]["feedback_summary"]["family_count"] == 2
+        assert detail_resp["data"]["incubation_summary"]["gate_3_passed"] == 1
+        assert detail_resp["data"]["live_ready_summary"]["live_review_ready_count"] == 1
         assert snapshots_resp["data"]["count"] == 1
         assert snapshots_resp["data"]["items"][0]["snapshot_date"] == "2026-03-06"
         assert snapshot_resp["data"]["degraded"] is True

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from typing import Any, Iterable, Optional
 
 STALE_AFTER_SEC = 24 * 60 * 60
@@ -39,6 +39,39 @@ def _parse_quarter_string(value: str) -> Optional[datetime]:
     return datetime(year, month_day[0], month_day[1]).astimezone()
 
 
+def _parse_epoch_value(value: Any) -> Optional[datetime]:
+    if isinstance(value, bool):
+        return None
+
+    raw: float | None = None
+    if isinstance(value, (int, float)):
+        raw = float(value)
+    else:
+        text = str(value or "").strip()
+        if not text or not re.fullmatch(r"\d+(?:\.\d+)?", text):
+            return None
+        try:
+            raw = float(text)
+        except ValueError:
+            return None
+
+    if raw is None:
+        return None
+
+    raw = abs(raw)
+    if raw >= 1_000_000_000_000:
+        seconds = raw / 1000.0
+    elif raw >= 1_000_000_000:
+        seconds = raw
+    else:
+        return None
+
+    try:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).astimezone()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def parse_asof_time(value: Any) -> Optional[datetime]:
     if value is None:
         return None
@@ -54,6 +87,10 @@ def parse_asof_time(value: Any) -> Optional[datetime]:
     quarter_dt = _parse_quarter_string(text)
     if quarter_dt is not None:
         return quarter_dt
+
+    epoch_dt = _parse_epoch_value(value)
+    if epoch_dt is not None:
+        return epoch_dt
 
     if text.isdigit() and len(text) == 8:
         try:

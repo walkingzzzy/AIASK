@@ -36,6 +36,10 @@ type SkillTriggerPayload = {
 
 @Injectable()
 export class SkillsService {
+  private static readonly SKILL_RUN_TIMEOUT_MS = Math.max(
+    30_000,
+    Number(process.env.SKILL_RUN_TIMEOUT_MS ?? '120000'),
+  );
   private readonly logger = new Logger(SkillsService.name);
 
   constructor(private readonly mcp: McpGatewayService) {}
@@ -83,13 +87,19 @@ export class SkillsService {
         });
       }
 
-      const raw = await this.mcp.callTool('run_skill', {
-        skill_id: skillName,
-        params: {
-          ...(payload ?? {}),
-          _triggered_by_user_id: userId,
+      const raw = await this.mcp.callTool(
+        'run_skill',
+        {
+          skill_id: skillName,
+          params: {
+            ...(payload ?? {}),
+            _triggered_by_user_id: userId,
+          },
         },
-      });
+        {
+          timeoutMs: SkillsService.SKILL_RUN_TIMEOUT_MS,
+        },
+      );
       const execution = this.extractSkillTriggerPayload(raw, skill);
 
       return {

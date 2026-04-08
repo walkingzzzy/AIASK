@@ -31,6 +31,12 @@ else:
     StrategyLLMRequestError = _PublicStrategyLLMRequestError
 
 
+class StrategyLLMProviderCompatibilityError(ValueError):
+    def __init__(self, message: str, *, metrics: Optional[dict[str, Any]] = None):
+        super().__init__(message)
+        self.metrics = dict(metrics or {})
+
+
 @dataclass
 class StrategyLLMConfig:
     enabled: bool = False
@@ -184,6 +190,452 @@ class _StrategyLLMProviderRuntimeMixin:
         def _should_retry_request_error(self, exc: Exception) -> bool:
             return self._is_timeout_like_error(exc) or self._is_overload_like_error(exc)
 
+        def _active_compatibility_failure(self) -> Optional[dict[str, Any]]:
+            now = time.monotonic()
+            cooldown_until = float(getattr(self, "_compatibility_cooldown_until", 0.0) or 0.0)
+            metrics = dict(getattr(self, "_last_compatibility_failure_metrics", {}) or {})
+            if not metrics:
+                return None
+            if cooldown_until > 0 and cooldown_until <= now:
+                self._compatibility_cooldown_until = 0.0
+                self._last_compatibility_failure_metrics = {}
+                return None
+            if cooldown_until > 0:
+                metrics["compatibility_cooldown_sec"] = round(max(cooldown_until - now, 0.0), 4)
+            return metrics
+
+        def _response_structure_metrics(
+            self,
+            payload: Any,
+            *,
+            response: Optional[httpx.Response],
+        ) -> dict[str, Any]:
+            body = dict(payload or {}) if isinstance(payload, dict) else {}
+            choices = list(body.get("choices") or [])
+            first_choice = dict(choices[0] or {}) if choices else {}
+            message = dict(first_choice.get("message") or {})
+            usage = dict(body.get("usage") or {})
+            try:
+                raw_preview = json.dumps(body, ensure_ascii=False, default=str)[:400]
+            except Exception:
+                raw_preview = str(body)[:400]
+            return {
+                "response_content_type": str((getattr(response, "headers", {}) or {}).get("content-type") or ""),
+                "response_keys": sorted(str(key) for key in list(body.keys())[:20]),
+                "choice_keys": sorted(str(key) for key in list(first_choice.keys())[:20]),
+                "message_keys": sorted(str(key) for key in list(message.keys())[:20]),
+                "finish_reason": first_choice.get("finish_reason"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "raw_response_preview": raw_preview,
+            }
+
+        @staticmethod
+        def _is_empty_200_compatibility_metrics(metrics: Optional[dict[str, Any]]) -> bool:
+            payload = dict(metrics or {})
+            error_text = str(payload.get("last_error") or "").strip().lower()
+            return bool(payload.get("empty_200_response")) or "missing extractable content" in error_text
+
+        @staticmethod
+        def _has_direct_json_payload(payload: Any) -> bool:
+            if isinstance(payload, list):
+                return True
+            if not isinstance(payload, dict):
+                return False
+            return "choices" not in payload and "output" not in payload
+
+        @classmethod
+        def _append_text_fragments(cls, fragments: list[str], value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, str):
+                fragments.append(value)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    cls._append_text_fragments(fragments, item)
+                return
+            if isinstance(value, dict):
+                if isinstance(value.get("text"), str):
+                    fragments.append(str(value.get("text") or ""))
+                elif "text" in value:
+                    cls._append_text_fragments(fragments, value.get("text"))
+                if isinstance(value.get("delta"), str):
+                    fragments.append(str(value.get("delta") or ""))
+                elif "delta" in value:
+                    cls._append_text_fragments(fragments, value.get("delta"))
+                if "content" in value:
+                    cls._append_text_fragments(fragments, value.get("content"))
+                if "output_text" in value:
+                    cls._append_text_fragments(fragments, value.get("output_text"))
+
+        @classmethod
+        def _extract_stream_event_text(cls, payload: Any, *, event_name: str = "") -> str:
+            fragments: list[str] = []
+            if not isinstance(payload, dict):
+                return ""
+
+            for choice in list(payload.get("choices") or []):
+                if not isinstance(choice, dict):
+                    continue
+                cls._append_text_fragments(fragments, choice.get("delta"))
+                cls._append_text_fragments(fragments, choice.get("message"))
+
+            payload_type = str(payload.get("type") or event_name or "").strip().lower()
+            if payload_type.endswith("output_text.delta"):
+                cls._append_text_fragments(fragments, payload.get("delta"))
+            if payload_type.endswith("output_text.done"):
+                cls._append_text_fragments(fragments, payload.get("text"))
+
+            cls._append_text_fragments(fragments, payload.get("item"))
+            cls._append_text_fragments(fragments, payload.get("response"))
+            return "".join(fragments)
+
+        @staticmethod
+        def _parse_sse_events(raw_text: str) -> list[dict[str, Any]]:
+            events: list[dict[str, Any]] = []
+            current_event: Optional[str] = None
+            current_data_lines: list[str] = []
+
+            def _flush() -> None:
+                nonlocal current_event, current_data_lines
+                if current_event is None and not current_data_lines:
+                    return
+                data_raw = "\n".join(current_data_lines).strip()
+                record: dict[str, Any] = {
+                    "event": current_event,
+                    "data_raw": data_raw,
+                }
+                if data_raw == "[DONE]":
+                    record["done"] = True
+                elif data_raw:
+                    try:
+                        record["payload"] = json.loads(data_raw)
+                    except Exception:
+                        record["payload"] = None
+                events.append(record)
+                current_event = None
+                current_data_lines = []
+
+            for raw_line in str(raw_text or "").splitlines():
+                line = raw_line.rstrip("\r")
+                if not line.strip():
+                    _flush()
+                    continue
+                if line.startswith(":"):
+                    continue
+                if line.startswith("event:"):
+                    current_event = line[len("event:") :].strip() or None
+                    continue
+                if line.startswith("data:"):
+                    current_data_lines.append(line[len("data:") :].strip())
+                    continue
+            _flush()
+            return events
+
+        def _should_retry_with_stream(self, exc: StrategyLLMProviderCompatibilityError) -> bool:
+            metrics = dict(getattr(exc, "metrics", {}) or {})
+            content_type = str(metrics.get("response_content_type") or "").strip().lower()
+            if "text/event-stream" not in content_type:
+                return False
+            return "missing extractable content" in self._error_text(exc).lower()
+
+        async def _stream_parse_response_payload(
+            self,
+            *,
+            headers: dict[str, Any],
+            request_payload: dict[str, Any],
+            request_kind: str,
+            timeout: httpx.Timeout,
+        ) -> tuple[Any, Any, str]:
+            stream_method = getattr(self._client, "stream", None)
+            if not callable(stream_method):
+                self._raise_compatibility_error(
+                    f"{request_kind}: stream fallback unavailable for event-stream compatibility replay",
+                    response=None,
+                    payload=None,
+                    empty_200_response=True,
+                    extra_metrics={
+                        "response_content_type": "text/event-stream",
+                        "stream_fallback_unavailable": True,
+                    },
+                )
+
+            stream_payload = dict(request_payload or {})
+            stream_payload["stream"] = True
+            raw_chunks: list[str] = []
+            async with self._client.stream(
+                "POST",
+                self._endpoint(),
+                headers={**headers, "Accept": "text/event-stream, application/json"},
+                json=stream_payload,
+                timeout=timeout,
+            ) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_text():
+                    if chunk:
+                        raw_chunks.append(str(chunk))
+            raw_text = "".join(raw_chunks)
+            events = self._parse_sse_events(raw_text)
+            content_parts: list[str] = []
+            last_payload: dict[str, Any] = {}
+            for event in events:
+                payload = event.get("payload")
+                if isinstance(payload, dict):
+                    last_payload = payload
+                    text = self._extract_stream_event_text(payload, event_name=str(event.get("event") or ""))
+                    if text:
+                        content_parts.append(text)
+            content = "".join(content_parts)
+            if not str(content or "").strip():
+                self._raise_missing_content_error(
+                    request_kind=f"{request_kind}: stream replay",
+                    payload=last_payload or None,
+                    response=response,
+                )
+            parsed_text = self._extract_json_text(content)
+            if not str(parsed_text or "").strip():
+                self._raise_compatibility_error(
+                    f"{request_kind}: stream replay content missing JSON payload",
+                    response=response,
+                    payload=last_payload or None,
+                    raw_text_preview=raw_text,
+                    content_preview=content,
+                )
+            try:
+                parsed = json.loads(parsed_text)
+            except Exception as exc:
+                self._raise_compatibility_error(
+                    f"{request_kind}: stream replay content is not valid JSON ({self._error_text(exc)})",
+                    response=response,
+                    payload=last_payload or None,
+                    raw_text_preview=raw_text,
+                    content_preview=content,
+                )
+
+            synthetic_body = {
+                "id": last_payload.get("id") if isinstance(last_payload, dict) else None,
+                "object": last_payload.get("object") if isinstance(last_payload, dict) else None,
+                "model": last_payload.get("model") if isinstance(last_payload, dict) else None,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": content,
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": last_payload.get("usage") if isinstance(last_payload, dict) else None,
+                "compatibility_mode": "chat_stream_replay",
+            }
+            return parsed, synthetic_body, content
+
+        def _parse_response_payload(
+            self,
+            response: httpx.Response,
+            *,
+            request_kind: str,
+        ) -> tuple[Any, Any, str]:
+            try:
+                raw_text = str(getattr(response, "text", "") or "")
+            except Exception:
+                raw_text = ""
+            try:
+                body = response.json()
+            except Exception as exc:
+                empty_200_response = int(getattr(response, "status_code", 0) or 0) == 200 and not raw_text.strip()
+                self._raise_compatibility_error(
+                    f"{request_kind}: response body is not valid JSON ({self._error_text(exc)})",
+                    response=response,
+                    payload={},
+                    raw_text_preview=raw_text,
+                    empty_200_response=empty_200_response,
+                )
+            if self._has_direct_json_payload(body):
+                return body, body, ""
+            content = self._extract_content(body if isinstance(body, dict) else {})
+            if not str(content or "").strip():
+                self._raise_missing_content_error(
+                    request_kind=request_kind,
+                    payload=body,
+                    response=response,
+                )
+            parsed_text = self._extract_json_text(content)
+            if not str(parsed_text or "").strip():
+                self._raise_compatibility_error(
+                    f"{request_kind}: response content missing JSON payload",
+                    response=response,
+                    payload=body,
+                    raw_text_preview=raw_text,
+                    content_preview=content,
+                )
+            try:
+                parsed = json.loads(parsed_text)
+            except Exception as exc:
+                self._raise_compatibility_error(
+                    f"{request_kind}: response content is not valid JSON ({self._error_text(exc)})",
+                    response=response,
+                    payload=body,
+                    raw_text_preview=raw_text,
+                    content_preview=content,
+                )
+            return parsed, body, content
+
+        async def _request_and_parse_payload(
+            self,
+            *,
+            headers: dict[str, Any],
+            request_payload: dict[str, Any],
+            request_kind: str,
+            timeout: httpx.Timeout,
+        ) -> tuple[Any, Any, str, str]:
+            response = await self._client.post(
+                self._endpoint(),
+                headers=headers,
+                json=request_payload,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            try:
+                parsed, body, content = self._parse_response_payload(
+                    response,
+                    request_kind=request_kind,
+                )
+                return parsed, body, content, "direct"
+            except StrategyLLMProviderCompatibilityError as exc:
+                if not self._should_retry_with_stream(exc):
+                    raise
+                parsed, body, content = await self._stream_parse_response_payload(
+                    headers=headers,
+                    request_payload=request_payload,
+                    request_kind=request_kind,
+                    timeout=timeout,
+                )
+                return parsed, body, content, "chat_stream_replay"
+
+        def _append_recent_request_outcome(
+            self,
+            *,
+            status: str,
+            compatibility_failed: bool = False,
+            empty_200_response: bool = False,
+        ) -> None:
+            from collections import deque
+
+            outcomes = getattr(self, "_recent_request_outcomes", None)
+            if not isinstance(outcomes, deque):
+                outcomes = deque(maxlen=12)
+                self._recent_request_outcomes = outcomes
+            outcomes.append(
+                {
+                    "status": str(status or "").strip().lower() or "unknown",
+                    "compatibility_failed": bool(compatibility_failed),
+                    "empty_200_response": bool(empty_200_response),
+                }
+            )
+
+        def get_health_snapshot(self) -> dict[str, Any]:
+            active_compatibility = self._active_compatibility_failure()
+            outcomes = list(getattr(self, "_recent_request_outcomes", []) or [])
+            recent_request_count = len(outcomes)
+            compatibility_failure_count = sum(
+                1 for item in outcomes if bool(dict(item or {}).get("compatibility_failed"))
+            )
+            effective_response_count = sum(
+                1 for item in outcomes if str(dict(item or {}).get("status") or "").strip().lower() == "succeeded"
+            )
+            empty_200_response_count = sum(
+                1 for item in outcomes if bool(dict(item or {}).get("empty_200_response"))
+            )
+            compatibility_failure_ratio = (
+                round(compatibility_failure_count / recent_request_count, 4) if recent_request_count else 0.0
+            )
+            effective_response_ratio = (
+                round(effective_response_count / recent_request_count, 4) if recent_request_count else 0.0
+            )
+            scheduler_should_disable = False
+            scheduler_skip_reason = None
+            if active_compatibility is not None:
+                scheduler_should_disable = True
+                scheduler_skip_reason = "compatibility_cooldown_active"
+            elif recent_request_count >= 2 and compatibility_failure_ratio >= 0.5:
+                scheduler_should_disable = True
+                scheduler_skip_reason = "compatibility_failure_ratio_high"
+            elif empty_200_response_count > 0 and effective_response_ratio < 0.34:
+                scheduler_should_disable = True
+                scheduler_skip_reason = "empty_200_false_success_detected"
+            health_status = (
+                "blocked"
+                if scheduler_should_disable
+                else ("degraded" if compatibility_failure_count > 0 or effective_response_ratio < 1.0 else "healthy")
+            )
+            return {
+                "health_status": health_status,
+                "recent_request_count": recent_request_count,
+                "compatibility_failure_count": compatibility_failure_count,
+                "effective_response_count": effective_response_count,
+                "empty_200_response_count": empty_200_response_count,
+                "compatibility_failure_ratio": compatibility_failure_ratio,
+                "effective_response_ratio": effective_response_ratio,
+                "compatibility_cooldown_active": active_compatibility is not None,
+                "compatibility_cooldown_sec": (
+                    active_compatibility.get("compatibility_cooldown_sec") if active_compatibility else 0.0
+                ),
+                "scheduler_should_disable": scheduler_should_disable,
+                "scheduler_skip_reason": scheduler_skip_reason,
+                "last_error_type": self._last_failure_type,
+                "last_error_status_code": self._last_failure_status_code,
+            }
+
+        def _raise_compatibility_error(
+            self,
+            message: str,
+            *,
+            response: Optional[httpx.Response],
+            payload: Any = None,
+            raw_text_preview: str = "",
+            content_preview: str = "",
+            empty_200_response: bool = False,
+            extra_metrics: Optional[dict[str, Any]] = None,
+        ) -> None:
+            metrics = self._response_structure_metrics(payload, response=response)
+            if raw_text_preview:
+                metrics["raw_text_preview"] = str(raw_text_preview)[:400]
+            if content_preview:
+                metrics["content_preview"] = str(content_preview)[:400]
+            if extra_metrics:
+                metrics.update(dict(extra_metrics or {}))
+            raise StrategyLLMProviderCompatibilityError(
+                message,
+                metrics={
+                    "status": "compatibility_failed",
+                    "last_error_type": "ProviderCompatibilityError",
+                    "last_error_status_code": getattr(response, "status_code", None),
+                    "empty_200_response": bool(empty_200_response),
+                    **metrics,
+                },
+            )
+
+        def _raise_missing_content_error(
+            self,
+            *,
+            request_kind: str,
+            payload: Any,
+            response: Optional[httpx.Response],
+        ) -> None:
+            metrics = self._response_structure_metrics(payload, response=response)
+            content_type = str(metrics.get("response_content_type") or "unknown")
+            choice_keys = metrics.get("choice_keys") or []
+            message_keys = metrics.get("message_keys") or []
+            self._raise_compatibility_error(
+                f"{request_kind}: response missing extractable content "
+                f"(content-type={content_type}, choice_keys={choice_keys}, message_keys={message_keys})",
+                response=response,
+                payload=payload,
+                empty_200_response=True,
+            )
+
         def _recent_failure_degrade_state(self) -> tuple[int, Optional[str]]:
             initial_level = max(0, min(int(self.config.initial_compact_level or 0), 2))
             now = time.monotonic()
@@ -202,6 +654,7 @@ class _StrategyLLMProviderRuntimeMixin:
         def _record_request_failure(self, exc: Exception) -> None:
             self._last_failure_type = self._failure_type(exc)
             self._last_failure_status_code = self._status_code_from_error(exc)
+            self._append_recent_request_outcome(status="failed")
             if self._is_timeout_like_error(exc):
                 self._recent_timeout_streak += 1
                 self._recent_timeout_cooldown_until = time.monotonic() + max(0.0, float(self.config.recent_timeout_cooldown_sec or 0.0))
@@ -214,6 +667,32 @@ class _StrategyLLMProviderRuntimeMixin:
                 )
                 self._recent_overload_cooldown_until = time.monotonic() + max(0.0, cooldown_sec)
 
+        def _record_compatibility_failure(self, exc: Exception) -> None:
+            metrics = dict(getattr(exc, "metrics", {}) or {})
+            self._last_failure_type = str(metrics.get("last_error_type") or exc.__class__.__name__)
+            self._last_failure_status_code = self._status_code_from_error(exc)
+            empty_200_response = self._is_empty_200_compatibility_metrics(
+                {
+                    **metrics,
+                    "last_error": metrics.get("last_error") or self._error_text(exc),
+                    "empty_200_response": metrics.get("empty_200_response"),
+                }
+            )
+            self._last_compatibility_failure_metrics = {
+                "status": "compatibility_failed",
+                "last_error_type": self._last_failure_type,
+                "last_error": self._error_text(exc),
+                "empty_200_response": empty_200_response,
+                **metrics,
+            }
+            self._append_recent_request_outcome(
+                status="compatibility_failed",
+                compatibility_failed=True,
+                empty_200_response=empty_200_response,
+            )
+            cooldown_sec = max(0.0, float(getattr(self.config, "compatibility_cooldown_sec", 300.0) or 300.0))
+            self._compatibility_cooldown_until = time.monotonic() + cooldown_sec if cooldown_sec > 0 else 0.0
+
         def _record_request_success(self) -> None:
             self._recent_timeout_streak = 0
             self._recent_timeout_cooldown_until = 0.0
@@ -221,6 +700,9 @@ class _StrategyLLMProviderRuntimeMixin:
             self._recent_overload_cooldown_until = 0.0
             self._last_failure_type = None
             self._last_failure_status_code = None
+            self._compatibility_cooldown_until = 0.0
+            self._last_compatibility_failure_metrics = {}
+            self._append_recent_request_outcome(status="succeeded")
 
         async def generate_candidates(
             self,
@@ -237,12 +719,25 @@ class _StrategyLLMProviderRuntimeMixin:
                 return None
 
             started_at = time.perf_counter()
+            compatibility_metrics = self._active_compatibility_failure()
+            if compatibility_metrics is not None:
+                raise StrategyLLMRequestError(
+                    "external llm request skipped during compatibility cooldown",
+                    metrics={
+                        "endpoint": self._endpoint(),
+                        "provider": self.config.provider,
+                        "model": self.config.model,
+                        "elapsed_seconds": round(time.perf_counter() - started_at, 4),
+                        **compatibility_metrics,
+                        "status": "compatibility_skip",
+                    },
+                )
             requested_limit = self._normalize_limit(limit)
             market_summary = self._summarize_market_frame(market_frame)
             headers = {
                 "Authorization": f"Bearer {self.config.api_key}",
                 "Content-Type": "application/json",
-                "Accept": "application/json",
+                "Accept": "application/json, text/event-stream",
             }
             last_exc: Optional[Exception] = None
             attempts = max(1, int(self.config.retry_count or 0) + 1)
@@ -284,17 +779,12 @@ class _StrategyLLMProviderRuntimeMixin:
                 request_started_at = time.perf_counter()
                 try:
                     async with self._request_semaphore:
-                        response = await client.post(
-                            self._endpoint(),
+                        data, body, content, compatibility_mode = await self._request_and_parse_payload(
                             headers=headers,
-                            json=payload,
+                            request_payload=payload,
+                            request_kind="generate_candidates",
                             timeout=self._request_timeout(request_timeout_sec),
                         )
-                    response.raise_for_status()
-                    body = response.json()
-                    content = self._extract_content(body)
-                    json_text = self._extract_json_text(content)
-                    data = json.loads(json_text)
                     raw_candidates = data.get("candidates") if isinstance(data, dict) else None
                     if not isinstance(raw_candidates, list):
                         raise ValueError("external llm response missing candidates")
@@ -327,6 +817,7 @@ class _StrategyLLMProviderRuntimeMixin:
                         "selected_candidate_count": len(selected_candidates),
                         "analysis_present": bool(analysis),
                         "analysis_keys": sorted(list(analysis.keys())),
+                        "compatibility_mode": compatibility_mode,
                         "elapsed_seconds": round(time.perf_counter() - started_at, 4),
                         "attempts": [*attempt_reports, {
                             "attempt": attempt,
@@ -340,6 +831,7 @@ class _StrategyLLMProviderRuntimeMixin:
                             "raw_candidate_count": len(raw_candidates),
                             "returned_candidate_count": len(candidates),
                             "analysis_present": bool(analysis),
+                            "compatibility_mode": compatibility_mode,
                         }],
                     }
                     return {
@@ -356,8 +848,28 @@ class _StrategyLLMProviderRuntimeMixin:
                         "research_context": compact_research_context,
                         "research_task": dict(research_task or {}),
                         "candidates": selected_candidates,
+                        "compatibility_mode": compatibility_mode,
                         "request_metrics": request_metrics,
                     }
+                except StrategyLLMProviderCompatibilityError as exc:
+                    last_exc = exc
+                    attempt_reports.append({
+                        "attempt": attempt,
+                        "status": "compatibility_failed",
+                        "request_limit": request_limit,
+                        "timeout_sec": request_timeout_sec,
+                        "prompt_profile": prompt_profile,
+                        "prompt_chars": len(system_prompt) + len(user_prompt),
+                        "max_tokens": max_tokens,
+                        "degrade_reason": degrade_reason,
+                        "initial_prompt_profile": initial_prompt_profile,
+                        "elapsed_seconds": round(time.perf_counter() - request_started_at, 4),
+                        "error_type": str(dict(getattr(exc, "metrics", {}) or {}).get("last_error_type") or "ProviderCompatibilityError"),
+                        "error": self._error_text(exc),
+                        "status_code": self._status_code_from_error(exc),
+                        **dict(getattr(exc, "metrics", {}) or {}),
+                    })
+                    break
                 except (
                     httpx.TimeoutException,
                     httpx.ConnectError,
@@ -395,7 +907,10 @@ class _StrategyLLMProviderRuntimeMixin:
                     )
 
             if last_exc is not None:
-                self._record_request_failure(last_exc)
+                if isinstance(last_exc, StrategyLLMProviderCompatibilityError):
+                    self._record_compatibility_failure(last_exc)
+                else:
+                    self._record_request_failure(last_exc)
             metrics = {
                 "status": "failed",
                 "endpoint": self._endpoint(),
@@ -415,6 +930,8 @@ class _StrategyLLMProviderRuntimeMixin:
                 "last_error_status_code": self._status_code_from_error(last_exc) if last_exc else None,
                 "last_error": self._error_text(last_exc or RuntimeError("external llm request failed")),
             }
+            if isinstance(last_exc, StrategyLLMProviderCompatibilityError):
+                metrics.update(dict(getattr(last_exc, "metrics", {}) or {}))
             raise StrategyLLMRequestError(
                 f"external llm request failed after {len(attempt_reports)} attempts: {metrics['last_error_type']}",
                 metrics=metrics,
@@ -447,6 +964,17 @@ class _StrategyLLMProviderRuntimeMixin:
 
             started_at = time.perf_counter()
             stage_timeout = float(timeout_sec or 10.0)
+            compatibility_metrics = self._active_compatibility_failure()
+            if compatibility_metrics is not None:
+                raise StrategyLLMRequestError(
+                    f"call_stage({stage_id}) skipped during compatibility cooldown",
+                    metrics={
+                        "stage_id": stage_id,
+                        "elapsed_seconds": round(time.perf_counter() - started_at, 4),
+                        **compatibility_metrics,
+                        "status": "compatibility_skip",
+                    },
+                )
             _compact_level, degrade_reason = self._recent_failure_degrade_state()
             if degrade_reason in {'recent_timeout', 'recent_overload'}:
                 is_overload = degrade_reason == 'recent_overload'
@@ -473,7 +1001,7 @@ class _StrategyLLMProviderRuntimeMixin:
             headers = {
                 "Authorization": f"Bearer {self.config.api_key}",
                 "Content-Type": "application/json",
-                "Accept": "application/json",
+                "Accept": "application/json, text/event-stream",
             }
 
             user_prompt = json.dumps(input_data, ensure_ascii=False, default=str, separators=(",", ":"))
@@ -498,17 +1026,12 @@ class _StrategyLLMProviderRuntimeMixin:
                 request_started_at = time.perf_counter()
                 try:
                     async with self._request_semaphore:
-                        response = await client.post(
-                            self._endpoint(),
+                        data, _body, _content, _compatibility_mode = await self._request_and_parse_payload(
                             headers=headers,
-                            json=payload,
+                            request_payload=payload,
+                            request_kind=f"call_stage({stage_id})",
                             timeout=self._request_timeout(stage_timeout),
                         )
-                    response.raise_for_status()
-                    body = response.json()
-                    content = self._extract_content(body)
-                    json_text = self._extract_json_text(content)
-                    data = json.loads(json_text)
                     if isinstance(data, list):
                         # LLM 返回了裸数组 — 根据 stage_id 包装成 dict
                         _STAGE_LIST_KEY = {
@@ -524,6 +1047,18 @@ class _StrategyLLMProviderRuntimeMixin:
                         raise ValueError(f"call_stage({stage_id}): expected JSON object, got {type(data).__name__}")
                     self._record_request_success()
                     return data
+                except StrategyLLMProviderCompatibilityError as exc:
+                    last_exc = exc
+                    attempt_reports.append({
+                        "attempt": attempt,
+                        "status": "compatibility_failed",
+                        "elapsed_seconds": round(time.perf_counter() - request_started_at, 4),
+                        "error_type": str(dict(getattr(exc, "metrics", {}) or {}).get("last_error_type") or "ProviderCompatibilityError"),
+                        "error": self._error_text(exc),
+                        "status_code": self._status_code_from_error(exc),
+                        **dict(getattr(exc, "metrics", {}) or {}),
+                    })
+                    break
                 except (
                     httpx.TimeoutException,
                     httpx.ConnectError,
@@ -554,7 +1089,10 @@ class _StrategyLLMProviderRuntimeMixin:
                     )
 
             if last_exc is not None:
-                self._record_request_failure(last_exc)
+                if isinstance(last_exc, StrategyLLMProviderCompatibilityError):
+                    self._record_compatibility_failure(last_exc)
+                else:
+                    self._record_request_failure(last_exc)
             raise StrategyLLMRequestError(
                 f"call_stage({stage_id}) failed after {len(attempt_reports)} attempts: {self._error_text(last_exc or RuntimeError('unknown'))}",
                 metrics={
@@ -570,5 +1108,6 @@ class _StrategyLLMProviderRuntimeMixin:
                     "recent_timeout_cooldown_sec": round(max(self._recent_timeout_cooldown_until - time.monotonic(), 0.0), 4),
                     "recent_overload_streak": int(getattr(self, "_recent_overload_streak", 0) or 0),
                     "recent_overload_cooldown_sec": round(max(getattr(self, "_recent_overload_cooldown_until", 0.0) - time.monotonic(), 0.0), 4),
+                    **(dict(getattr(last_exc, "metrics", {}) or {}) if isinstance(last_exc, StrategyLLMProviderCompatibilityError) else {}),
                 },
             ) from last_exc

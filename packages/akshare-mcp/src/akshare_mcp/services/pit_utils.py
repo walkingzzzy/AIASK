@@ -45,6 +45,7 @@ def _parse_datetime(value: str | datetime.datetime | None) -> datetime.datetime 
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d",
+        "%Y%m%d",
     ):
         try:
             dt = datetime.datetime.strptime(text, fmt)

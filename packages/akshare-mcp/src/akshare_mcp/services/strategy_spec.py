@@ -466,6 +466,7 @@ class StrategySpec:
             'targeting_policy': dict(targeting_policy),
             'constraint_check': dict(constraint_check),
             'generation_reason': _dict_value(metadata.get('generation_reason'), source_candidate.get('generation_reason')),
+            'committee_review': _dict_value(metadata.get('committee_review'), source_candidate.get('committee_review')),
             'generator_type': _scalar_value(metadata.get('generator_type'), source_candidate.get('generator_type'), source) or source,
             'optimizer_type': _scalar_value(metadata.get('optimizer_type'), source_candidate.get('optimizer_type')),
             'llm_prompt': _dict_value(metadata.get('llm_prompt'), source_candidate.get('llm_prompt')),

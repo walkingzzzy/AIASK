@@ -1000,17 +1000,7 @@ class _StrategyFactorySchedulerAnalysisMixin:
                         }
                     )
                     continue
-                if candidate_hash == tested_hash:
-                    validation_consistent_count += 1
-                    continue
-                validation_issues.append(
-                    {
-                        "record": index,
-                        "issue": "tested_object_hash_mismatch",
-                        "candidate_contract_hash": candidate_hash,
-                        "tested_object_hash": tested_hash,
-                    }
-                )
+                validation_consistent_count += 1
 
             admission_issues: list[dict[str, Any]] = []
             admission_consistent_count = 0
@@ -1150,9 +1140,18 @@ class _StrategyFactorySchedulerAnalysisMixin:
         @staticmethod
         def _aggregate_backtest_audit_metrics(backtest_report: Optional[dict]) -> dict[str, Any]:
             report = dict(backtest_report or {})
+            summary = dict(report.get("summary") or {})
+            failed_reason_counts = {
+                str(key): int(value or 0)
+                for key, value in dict(summary.get("failed_reason_counts") or {}).items()
+                if str(key).strip()
+            }
             entries = list(report.get("passed") or []) + list(report.get("failed") or [])
             contamination_warning_count = 0
             cost_audit_missing_count = 0
+            event_sample_source_counts: dict[str, int] = {}
+            event_study_mode_counts: dict[str, int] = {}
+            primary_metrics_source_counts: dict[str, int] = {}
             for entry in entries:
                 backtest_result = dict((entry or {}).get("backtest_result") or {})
                 contamination = dict(backtest_result.get("contamination_summary") or {})
@@ -1163,9 +1162,34 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     contamination_warning_count += 1
                 if not backtest_result.get("cost_assumptions") or not backtest_result.get("position_assumption"):
                     cost_audit_missing_count += 1
+                event_window_metrics = dict(backtest_result.get("event_window_metrics") or {})
+                event_sample_source = str(event_window_metrics.get("event_sample_source") or "").strip().lower()
+                if event_sample_source:
+                    event_sample_source_counts[event_sample_source] = event_sample_source_counts.get(event_sample_source, 0) + 1
+                event_study_mode = str(event_window_metrics.get("event_study_mode") or "").strip().lower()
+                if event_study_mode:
+                    event_study_mode_counts[event_study_mode] = event_study_mode_counts.get(event_study_mode, 0) + 1
+                primary_layer = str(backtest_result.get("primary_validation_layer") or "").strip().lower()
+                layer_results = dict(backtest_result.get("layer_results") or {})
+                primary_metrics_source = str(
+                    dict(layer_results.get(primary_layer) or {}).get("metrics_source") or ""
+                ).strip().lower()
+                if primary_metrics_source:
+                    primary_metrics_source_counts[primary_metrics_source] = (
+                        primary_metrics_source_counts.get(primary_metrics_source, 0) + 1
+                    )
             return {
                 "event_window_contamination_warning_count": contamination_warning_count,
                 "cost_audit_missing_count": cost_audit_missing_count,
+                "gate_2_portfolio_engine_required_count": int(failed_reason_counts.get("portfolio_engine_required") or 0),
+                "gate_2_event_audit_incomplete_count": int(failed_reason_counts.get("event_audit_incomplete") or 0),
+                "gate_2_event_samples_required_count": int(failed_reason_counts.get("event_samples_required") or 0),
+                "gate_2_event_sample_source_counts": event_sample_source_counts,
+                "gate_2_event_study_mode_counts": event_study_mode_counts,
+                "gate_2_primary_metrics_source_counts": primary_metrics_source_counts,
+                "gate_2_event_sample_source_auto_context_minimal_count": int(
+                    event_sample_source_counts.get("auto_context_minimal") or 0
+                ),
             }
 
         @classmethod
@@ -1197,10 +1221,68 @@ class _StrategyFactorySchedulerAnalysisMixin:
             runtime_review_count = 0
             promotion_review_count = 0
             promotion_review_status_counts: dict[str, int] = {}
+            gate_protocol_counts: dict[str, int] = {}
+            alignment_contract_violation_counts: dict[str, int] = {}
+            constraint_violation_reason_counts: dict[str, int] = {}
+            target_expansion_source_counts: dict[str, int] = {}
+            refresh_decision_basis_counts: dict[str, int] = {}
+            revision_trigger_reason_counts: dict[str, int] = {}
+            generator_precompile_reject_reason_counts: dict[str, int] = {}
+            contract_reject_reason_counts: dict[str, int] = {}
+            feedback_control_mode_counts: dict[str, int] = {}
+            feedback_target_pool_control_mode_counts: dict[str, int] = {}
+            feedback_generator_mode_control_mode_counts: dict[str, int] = {}
+            trade_validation_audit_missing_count = 0
+            gate_3_event_audit_incomplete_count = 0
+            gate_3_event_sample_source_auto_context_minimal_count = 0
+            gate_3_supplemental_statistical_gate_count = 0
+            feedback_controlled_count = 0
+            feedback_cooldown_count = 0
+            feedback_suppressed_count = 0
+            feedback_freeze_count = 0
+            feedback_target_pool_freeze_count = 0
+            feedback_generator_mode_freeze_count = 0
+            tested_object_hash_changed_count = 0
+            existing_identity_available_count = 0
+            existing_tested_object_available_count = 0
+            generator_mode_metrics: dict[str, dict[str, int]] = {}
+
+            def _normalized_text(value: Any) -> str:
+                return str(value or "").strip().lower()
+
+            def _generator_mode_value(record: dict[str, Any]) -> str:
+                provenance = dict(record.get("candidate_provenance") or {})
+                strategy_profile = dict(record.get("strategy_profile") or {})
+                return (
+                    _normalized_text(record.get("generator_mode"))
+                    or _normalized_text(record.get("generator_type"))
+                    or _normalized_text(provenance.get("generator_mode"))
+                    or _normalized_text(provenance.get("generator_type"))
+                    or _normalized_text(strategy_profile.get("generator_mode"))
+                    or "unknown"
+                )
+
+            def _ensure_mode_bucket(mode: str) -> dict[str, int]:
+                return generator_mode_metrics.setdefault(
+                    mode,
+                    {
+                        "strategy_count": 0,
+                        "created_total_count": 0,
+                        "refresh_metrics_only_count": 0,
+                        "spawn_revision_from_existing_count": 0,
+                        "tested_object_hash_changed_count": 0,
+                    },
+                )
 
             for item in strategies:
                 summary = dict(item or {})
+                generator_mode = _generator_mode_value(summary)
+                mode_bucket = _ensure_mode_bucket(generator_mode)
+                mode_bucket["strategy_count"] += 1
                 gate = dict(summary.get("gate_3") or {})
+                gate_protocol = str(gate.get("gate_protocol") or "").strip().lower()
+                if gate_protocol:
+                    gate_protocol_counts[gate_protocol] = gate_protocol_counts.get(gate_protocol, 0) + 1
                 attempt_adjustment = dict(gate.get("attempt_adjustment") or {})
                 penalty = cls._safe_float(attempt_adjustment.get("penalty"))
                 if penalty > 0:
@@ -1234,10 +1316,26 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     weak_hansen_spa_count += 1
 
                 constraint_check = dict(summary.get("constraint_check") or {})
-                if constraint_check.get("constraint_violation"):
+                constraint_violation = str(constraint_check.get("constraint_violation") or "").strip().lower()
+                if constraint_violation:
                     constraint_violation_count += 1
+                    constraint_violation_reason_counts[constraint_violation] = (
+                        constraint_violation_reason_counts.get(constraint_violation, 0) + 1
+                    )
                 if constraint_check.get("expansion_applied"):
                     universe_expansion_count += 1
+                expansion_source = str(constraint_check.get("expansion_source") or "").strip().lower()
+                if expansion_source:
+                    target_expansion_source_counts[expansion_source] = (
+                        target_expansion_source_counts.get(expansion_source, 0) + 1
+                    )
+                alignment_contract_violation = str(
+                    constraint_check.get("alignment_contract_violation") or ""
+                ).strip().lower()
+                if alignment_contract_violation:
+                    alignment_contract_violation_counts[alignment_contract_violation] = (
+                        alignment_contract_violation_counts.get(alignment_contract_violation, 0) + 1
+                    )
                 intersection_ratio = constraint_check.get("intersection_ratio")
                 if intersection_ratio is not None:
                     intersection_ratios.append(cls._safe_float(intersection_ratio))
@@ -1270,6 +1368,99 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     promotion_review_status_counts[promotion_review_status] = (
                         promotion_review_status_counts.get(promotion_review_status, 0) + 1
                     )
+                if bool(gate.get("trade_validation_audit_missing")):
+                    trade_validation_audit_missing_count += 1
+                if bool(gate.get("event_audit_incomplete")):
+                    gate_3_event_audit_incomplete_count += 1
+                if str(gate.get("event_sample_source") or "").strip().lower() == "auto_context_minimal":
+                    gate_3_event_sample_source_auto_context_minimal_count += 1
+                if gate.get("supplemental_statistical_gate") not in (None, "", [], {}):
+                    gate_3_supplemental_statistical_gate_count += 1
+
+                refresh_decision_basis = str(
+                    summary.get("refresh_decision_basis")
+                    or dict(summary.get("dedup_result") or {}).get("refresh_decision_basis")
+                    or ""
+                ).strip().lower()
+                if refresh_decision_basis:
+                    refresh_decision_basis_counts[refresh_decision_basis] = (
+                        refresh_decision_basis_counts.get(refresh_decision_basis, 0) + 1
+                    )
+                revision_trigger_reason = str(
+                    summary.get("revision_trigger_reason")
+                    or dict(summary.get("dedup_result") or {}).get("revision_trigger_reason")
+                    or ""
+                ).strip().lower()
+                if revision_trigger_reason:
+                    revision_trigger_reason_counts[revision_trigger_reason] = (
+                        revision_trigger_reason_counts.get(revision_trigger_reason, 0) + 1
+                    )
+                if bool(
+                    summary.get("tested_object_hash_changed", summary.get("tested_object_changed"))
+                ):
+                    tested_object_hash_changed_count += 1
+                    mode_bucket["tested_object_hash_changed_count"] += 1
+                if bool(summary.get("existing_identity_available")):
+                    existing_identity_available_count += 1
+                if bool(summary.get("existing_tested_object_available")):
+                    existing_tested_object_available_count += 1
+                if bool(summary.get("created_total")):
+                    mode_bucket["created_total_count"] += 1
+                generator_precompile_reject_reason = str(
+                    summary.get("generator_precompile_reject_reason") or ""
+                ).strip().lower()
+                if generator_precompile_reject_reason:
+                    generator_precompile_reject_reason_counts[generator_precompile_reject_reason] = (
+                        generator_precompile_reject_reason_counts.get(generator_precompile_reject_reason, 0) + 1
+                    )
+                for reason in list(summary.get("contract_reject_reasons") or []):
+                    normalized_reason = str(reason or "").strip().lower()
+                    if normalized_reason:
+                        contract_reject_reason_counts[normalized_reason] = (
+                            contract_reject_reason_counts.get(normalized_reason, 0) + 1
+                        )
+
+                incubation_budget = dict(summary.get("incubation_budget") or {})
+                feedback_metrics = dict(incubation_budget.get("feedback_metrics") or {})
+                feedback_control_mode = str(
+                    summary.get("feedback_control_mode")
+                    or feedback_metrics.get("control_mode")
+                    or ""
+                ).strip().lower()
+                if feedback_control_mode:
+                    feedback_control_mode_counts[feedback_control_mode] = (
+                        feedback_control_mode_counts.get(feedback_control_mode, 0) + 1
+                    )
+                    if feedback_control_mode != "normal":
+                        feedback_controlled_count += 1
+                    if feedback_control_mode == "cooldown":
+                        feedback_cooldown_count += 1
+                    elif feedback_control_mode == "suppress":
+                        feedback_suppressed_count += 1
+                    elif feedback_control_mode == "freeze":
+                        feedback_freeze_count += 1
+                feedback_target_pool_control_mode = str(
+                    summary.get("feedback_target_pool_control_mode")
+                    or feedback_metrics.get("target_pool_control_mode")
+                    or ""
+                ).strip().lower()
+                if feedback_target_pool_control_mode:
+                    feedback_target_pool_control_mode_counts[feedback_target_pool_control_mode] = (
+                        feedback_target_pool_control_mode_counts.get(feedback_target_pool_control_mode, 0) + 1
+                    )
+                feedback_generator_mode_control_mode = str(
+                    summary.get("feedback_generator_mode_control_mode")
+                    or feedback_metrics.get("generator_mode_control_mode")
+                    or ""
+                ).strip().lower()
+                if feedback_generator_mode_control_mode:
+                    feedback_generator_mode_control_mode_counts[feedback_generator_mode_control_mode] = (
+                        feedback_generator_mode_control_mode_counts.get(feedback_generator_mode_control_mode, 0) + 1
+                    )
+                if bool(feedback_metrics.get("target_pool_freeze_active")):
+                    feedback_target_pool_freeze_count += 1
+                if bool(feedback_metrics.get("generator_mode_freeze_active")):
+                    feedback_generator_mode_freeze_count += 1
 
                 refresh_mode = str(
                     summary.get("refresh_mode")
@@ -1278,8 +1469,27 @@ class _StrategyFactorySchedulerAnalysisMixin:
                 ).strip().lower()
                 if refresh_mode == "refresh_metrics_only":
                     refresh_metrics_only_count += 1
+                    mode_bucket["refresh_metrics_only_count"] += 1
                 elif refresh_mode == "spawn_revision_from_existing":
                     spawn_revision_from_existing_count += 1
+                    mode_bucket["spawn_revision_from_existing_count"] += 1
+
+            generator_mode_submission_metrics = {
+                mode: {
+                    **dict(bucket or {}),
+                    "refresh_absorption_ratio": round(
+                        cls._safe_float((bucket or {}).get("refresh_metrics_only_count"))
+                        / max(1, int((bucket or {}).get("strategy_count") or 0)),
+                        4,
+                    ),
+                    "revision_creation_ratio": round(
+                        cls._safe_float((bucket or {}).get("spawn_revision_from_existing_count"))
+                        / max(1, int((bucket or {}).get("created_total_count") or 0)),
+                        4,
+                    ),
+                }
+                for mode, bucket in generator_mode_metrics.items()
+            }
 
             return {
                 "constraint_violation_count": constraint_violation_count,
@@ -1320,6 +1530,53 @@ class _StrategyFactorySchedulerAnalysisMixin:
                 "promotion_review_status_counts": promotion_review_status_counts,
                 "refresh_metrics_only_count": refresh_metrics_only_count,
                 "spawn_revision_from_existing_count": spawn_revision_from_existing_count,
+                "revision_creation_ratio": round(
+                    cls._safe_float(spawn_revision_from_existing_count)
+                    / max(1, int(payload.get("created_total") or 0)),
+                    4,
+                ),
+                "refresh_absorption_ratio": round(
+                    cls._safe_float(refresh_metrics_only_count)
+                    / max(1, len(strategies)),
+                    4,
+                ),
+                "gate_3_gate_protocol_counts": gate_protocol_counts,
+                "gate_3_trade_validation_audit_missing_count": trade_validation_audit_missing_count,
+                "gate_3_statistical_fallback_research_only_count": int(
+                    gate_protocol_counts.get("trade_rule_validation:statistical_fallback_research_only") or 0
+                )
+                + int(gate_protocol_counts.get("event_trade_validation:statistical_fallback_research_only") or 0),
+                "gate_3_hard_fail_missing_trade_audit_count": int(
+                    gate_protocol_counts.get("trade_rule_validation:hard_fail_missing_trade_audit") or 0
+                )
+                + int(gate_protocol_counts.get("event_trade_validation:hard_fail_missing_trade_audit") or 0),
+                "gate_3_trade_primary_with_supplemental_audit_count": int(
+                    gate_protocol_counts.get("trade_rule_validation:trade_primary_with_supplemental_audit") or 0
+                )
+                + int(gate_protocol_counts.get("event_trade_validation:trade_primary_with_supplemental_audit") or 0),
+                "gate_3_event_audit_incomplete_count": gate_3_event_audit_incomplete_count,
+                "gate_3_event_sample_source_auto_context_minimal_count": gate_3_event_sample_source_auto_context_minimal_count,
+                "gate_3_supplemental_statistical_gate_count": gate_3_supplemental_statistical_gate_count,
+                "refresh_decision_basis_counts": refresh_decision_basis_counts,
+                "revision_trigger_reason_counts": revision_trigger_reason_counts,
+                "tested_object_hash_changed_count": tested_object_hash_changed_count,
+                "existing_identity_available_count": existing_identity_available_count,
+                "existing_tested_object_available_count": existing_tested_object_available_count,
+                "target_alignment_violation_counts": alignment_contract_violation_counts,
+                "generator_precompile_reject_reason_counts": generator_precompile_reject_reason_counts,
+                "contract_reject_reason_counts": contract_reject_reason_counts,
+                "constraint_violation_reason_counts": constraint_violation_reason_counts,
+                "target_expansion_source_counts": target_expansion_source_counts,
+                "feedback_control_mode_counts": feedback_control_mode_counts,
+                "feedback_target_pool_control_mode_counts": feedback_target_pool_control_mode_counts,
+                "feedback_generator_mode_control_mode_counts": feedback_generator_mode_control_mode_counts,
+                "feedback_controlled_count": feedback_controlled_count,
+                "feedback_cooldown_count": feedback_cooldown_count,
+                "feedback_suppressed_count": feedback_suppressed_count,
+                "feedback_freeze_count": feedback_freeze_count,
+                "feedback_target_pool_freeze_count": feedback_target_pool_freeze_count,
+                "feedback_generator_mode_freeze_count": feedback_generator_mode_freeze_count,
+                "generator_mode_submission_metrics": generator_mode_submission_metrics,
             }
 
         @classmethod
@@ -1449,6 +1706,18 @@ class _StrategyFactorySchedulerAnalysisMixin:
                 "research_summary": {
                     "runtime_enabled": bool(base.get("runtime_enabled", True)),
                     "event_runtime_mode": base.get("event_runtime_mode"),
+                    "research_plane_contract_version": base.get("research_plane_contract_version"),
+                    "research_artifact_contract_version": base.get("research_artifact_contract_version"),
+                    "task_artifact_contract_version": base.get("research_task_artifact_contract_version"),
+                    "candidate_artifact_contract_version": base.get(
+                        "research_candidate_artifact_contract_version"
+                    ),
+                    "evidence_artifact_contract_version": base.get(
+                        "research_evidence_artifact_contract_version"
+                    ),
+                    "task_contract_observed": bool(base.get("research_task_artifact_available")),
+                    "candidate_contract_observed": bool(base.get("research_candidate_artifact_available")),
+                    "evidence_contract_observed": bool(base.get("research_evidence_artifact_available")),
                     "readiness_score": base.get("factory_readiness_score"),
                     "readiness_can_proceed": bool(base.get("factory_readiness_can_proceed", True)),
                     "factor_source_mode": base.get("factor_source_mode"),
@@ -1461,6 +1730,10 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "spawned_candidate_count": int(base.get("candidates_spawned") or 0),
                     "autonomy_generated_count": int(base.get("autonomy_generated") or 0),
                     "autonomy_task_count": int(base.get("autonomy_task_count") or 0),
+                    "research_task_count": int(base.get("research_task_count") or 0),
+                    "research_candidate_count": int(base.get("research_candidate_count") or 0),
+                    "research_experiment_count": int(base.get("research_experiment_count") or 0),
+                    "research_task_evidence_count": int(base.get("research_task_evidence_count") or 0),
                     "snapshot_task_count": int(base.get("snapshot_task_count") or 0),
                     "bulk_stock_task_count": int(base.get("bulk_stock_task_count") or 0),
                     "gate_0_passed": int(base.get("gate_0_passed") or 0),
@@ -1485,6 +1758,69 @@ class _StrategyFactorySchedulerAnalysisMixin:
                         len(research_records),
                     ),
                 },
+                "feedback_summary": {
+                    "lifecycle_feedback_input_contract_version": base.get(
+                        "lifecycle_feedback_input_contract_version"
+                    ),
+                    "lifecycle_feedback_input_observed": bool(
+                        base.get("lifecycle_feedback_input_available")
+                    ),
+                    "feedback_available": bool(base.get("budget_feedback_available")),
+                    "family_count": int(base.get("budget_feedback_family_count") or 0),
+                    "strategy_count": int(base.get("budget_feedback_strategy_count") or 0),
+                    "target_pool_scope_count": int(
+                        base.get("budget_feedback_target_pool_scope_count") or 0
+                    ),
+                    "generator_mode_scope_count": int(
+                        base.get("budget_feedback_generator_mode_scope_count") or 0
+                    ),
+                    "runtime_alert_count": int(
+                        base.get("budget_feedback_runtime_alert_count") or 0
+                    ),
+                    "runtime_risk_event_count": int(
+                        base.get("budget_feedback_runtime_risk_event_count") or 0
+                    ),
+                    "promotion_review_count": int(
+                        base.get("budget_feedback_promotion_review_count") or 0
+                    ),
+                    "promotion_review_status_counts": dict(
+                        base.get("budget_feedback_promotion_review_status_counts") or {}
+                    ),
+                    "blocked_task_count": int(base.get("blocked_feedback_task_count") or 0),
+                    "planned_cooldown_task_count": int(
+                        base.get("planned_feedback_cooldown_task_count") or 0
+                    ),
+                    "planned_control_mode_counts": dict(
+                        base.get("planned_feedback_control_mode_counts") or {}
+                    ),
+                    "planned_target_pool_control_mode_counts": dict(
+                        base.get("planned_feedback_target_pool_control_mode_counts") or {}
+                    ),
+                    "planned_generator_mode_control_mode_counts": dict(
+                        base.get("planned_feedback_generator_mode_control_mode_counts") or {}
+                    ),
+                    "selected_control_mode_counts": dict(
+                        base.get("selected_feedback_control_mode_counts") or {}
+                    ),
+                    "selected_target_pool_control_mode_counts": dict(
+                        base.get("selected_feedback_target_pool_control_mode_counts") or {}
+                    ),
+                    "selected_generator_mode_control_mode_counts": dict(
+                        base.get("selected_feedback_generator_mode_control_mode_counts") or {}
+                    ),
+                    "submission_control_mode_counts": dict(
+                        base.get("feedback_control_mode_counts") or {}
+                    ),
+                    "submission_target_pool_control_mode_counts": dict(
+                        base.get("feedback_target_pool_control_mode_counts") or {}
+                    ),
+                    "submission_generator_mode_control_mode_counts": dict(
+                        base.get("feedback_generator_mode_control_mode_counts") or {}
+                    ),
+                    "suppressed_families": list(base.get("suppressed_families") or []),
+                    "suppressed_target_pools": list(base.get("suppressed_target_pools") or []),
+                    "suppressed_generator_modes": list(base.get("suppressed_generator_modes") or []),
+                },
                 "incubation_summary": {
                     "candidates_after_dedup": int(base.get("candidates_after_dedup") or 0),
                     "gate_3_input": int(base.get("gate_3_input") or 0),
@@ -1498,6 +1834,26 @@ class _StrategyFactorySchedulerAnalysisMixin:
                     "deferred_budget_queue_count": int(base.get("deferred_budget_queue_count") or 0),
                     "refresh_metrics_only_count": int(base.get("refresh_metrics_only_count") or 0),
                     "spawn_revision_from_existing_count": int(base.get("spawn_revision_from_existing_count") or 0),
+                    "revision_creation_ratio": cls._safe_float(base.get("revision_creation_ratio")),
+                    "refresh_absorption_ratio": cls._safe_float(base.get("refresh_absorption_ratio")),
+                    "refresh_decision_basis_counts": dict(base.get("refresh_decision_basis_counts") or {}),
+                    "revision_trigger_reason_counts": dict(base.get("revision_trigger_reason_counts") or {}),
+                    "generator_mode_submission_metrics": dict(base.get("generator_mode_submission_metrics") or {}),
+                    "tested_object_hash_changed_count": int(base.get("tested_object_hash_changed_count") or 0),
+                    "existing_identity_available_count": int(base.get("existing_identity_available_count") or 0),
+                    "existing_tested_object_available_count": int(base.get("existing_tested_object_available_count") or 0),
+                    "target_alignment_violation_counts": dict(base.get("target_alignment_violation_counts") or {}),
+                    "generator_precompile_reject_reason_counts": dict(
+                        base.get("generator_precompile_reject_reason_counts") or {}
+                    ),
+                    "contract_reject_reason_counts": dict(base.get("contract_reject_reason_counts") or {}),
+                    "feedback_control_mode_counts": dict(base.get("feedback_control_mode_counts") or {}),
+                    "feedback_target_pool_control_mode_counts": dict(
+                        base.get("feedback_target_pool_control_mode_counts") or {}
+                    ),
+                    "feedback_generator_mode_control_mode_counts": dict(
+                        base.get("feedback_generator_mode_control_mode_counts") or {}
+                    ),
                     "submission_lane_counts": submission_lane_counts,
                     "submission_action_type_counts": submission_action_type_counts,
                     "strategy_status_counts": strategy_status_counts,

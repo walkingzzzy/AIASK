@@ -226,10 +226,8 @@ def register_vector_search_manager(mcp):
                 )
 
             elif action == 'market_docs':
-                if not code:
-                    return _fail('需要提供股票代码')
-
-                code = normalize_code(code)
+                if code:
+                    code = normalize_code(code)
                 query_text = str(kwargs.get('query') or kwargs.get('query_text') or '').strip()
                 raw_doc_types = kwargs.get('doc_types') or kwargs.get('doc_type') or []
                 if isinstance(raw_doc_types, str):
@@ -237,11 +235,13 @@ def register_vector_search_manager(mcp):
                 else:
                     doc_types = [str(item).strip().lower() for item in list(raw_doc_types or []) if str(item).strip()]
                 limit = int(kwargs.get('limit', 10) or 10)
+                if not code and not query_text:
+                    return _fail('需要提供股票代码或查询词')
 
                 try:
                     rows = await db.search_market_doc_chunks(
                         query_text=query_text or None,
-                        stock_code=code,
+                        stock_code=code or None,
                         doc_types=doc_types or None,
                         start_date=kwargs.get('start_date'),
                         end_date=kwargs.get('end_date'),

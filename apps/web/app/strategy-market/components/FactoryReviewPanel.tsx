@@ -248,6 +248,7 @@ export function FactoryReviewPanel({
               review?.run_correction?.multiple_testing_mode
               || review?.validation_profile?.profile
               || review?.position_assumption
+              || review?.committee_review?.decision
               || review?.task_preference?.preference_strength
               || Number(review?.attempt_adjustment?.penalty ?? 0) > 0
               || review?.constraint_check?.constraint_violation
@@ -271,6 +272,27 @@ export function FactoryReviewPanel({
                 {review?.validation_profile?.profile ? (
                   <Badge variant="neutral">
                     验证画像: {review.validation_profile.profile}
+                  </Badge>
+                ) : null}
+                {review?.committee_review?.decision ? (
+                  <Badge variant={review.committee_review.decision === 'accept' ? 'success' : review.committee_review.decision === 'reject' ? 'danger' : 'warning'}>
+                    评审: {review.committee_review.decision}
+                    {review.committee_review.final_score != null ? ` ${fmtNum(review.committee_review.final_score, 4)}` : ''}
+                  </Badge>
+                ) : null}
+                {review?.committee_review?.execution_score != null ? (
+                  <Badge variant={Number(review.committee_review.execution_score) >= 0.5 ? 'success' : 'warning'}>
+                    执行 {fmtNum(review.committee_review.execution_score, 2)}
+                  </Badge>
+                ) : null}
+                {review?.committee_review?.capacity_score != null ? (
+                  <Badge variant={Number(review.committee_review.capacity_score) >= 0.5 ? 'success' : 'warning'}>
+                    容量 {fmtNum(review.committee_review.capacity_score, 2)}
+                  </Badge>
+                ) : null}
+                {review?.committee_review?.task_alignment_score != null ? (
+                  <Badge variant={Number(review.committee_review.task_alignment_score) >= 0.45 ? 'success' : 'warning'}>
+                    对齐 {fmtNum(review.committee_review.task_alignment_score, 2)}
                   </Badge>
                 ) : null}
                 {review?.position_assumption ? (

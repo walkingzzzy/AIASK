@@ -105,3 +105,28 @@ def test_local_fallback_expands_breakout_and_reversal_into_new_families():
     assert breakout_candidate["generation_reason"]["rule_template_contract"]["portfolio_weight_method"] == "sector_score_tilt"
     assert volatility_candidate["generation_reason"]["template_generation_profile"] == "conservative_breakout"
     assert volatility_candidate["generation_reason"]["rule_template_contract"]["target_layer"] == "target"
+
+
+def test_local_fallback_precompile_rejects_outside_allowed_strategy_types():
+    generator = LLMProxyStrategyGenerator()
+    candidate = {
+        "name": "超跌修复候选",
+        "description": "冷门板块超跌回补。",
+        "category": "reversal",
+        "rationale": "超跌后常出现缺口回补与短期均值回归。",
+        "engine": "local_rule_v1",
+        "target_symbols": ["600036"],
+    }
+
+    spec = generator._local_candidate_to_spec(
+        candidate,
+        research_task={
+            "task_id": "task_single_target_guard",
+            "task_source": "snapshot",
+            "target_symbols": ["600036"],
+            "allowed_strategy_types": ["momentum"],
+        },
+    )
+
+    assert spec is None
+    assert candidate["_generator_precompile_reject_reasons"] == ["outside_allowed_strategy_types"]

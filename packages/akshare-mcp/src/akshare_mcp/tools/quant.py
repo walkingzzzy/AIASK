@@ -13,7 +13,7 @@ import numpy as np
 from ..services.conditional_returns import calculate_conditional_returns
 from ..services.data_pipeline import compute_signal_hit_rate, normalize_klines
 from ..storage import get_db
-from ..utils import fail, ok
+from ..utils import fail, ok, parse_date_input
 
 from .quant_definitions import (
     DEFAULT_FACTOR_LOOKBACK,
@@ -182,6 +182,13 @@ def register(mcp):
             dict: 标准 ``ok(...)`` 响应，包含因子值、样本量和是否依赖财务数据。
         """
         try:
+            normalized_start_date = parse_date_input(start_date).isoformat() if start_date else None
+            normalized_end_date = parse_date_input(end_date).isoformat() if end_date else None
+            if start_date and normalized_start_date is None:
+                return fail(f"Invalid start_date: {start_date}")
+            if end_date and normalized_end_date is None:
+                return fail(f"Invalid end_date: {end_date}")
+
             factor_name = _normalize_factor_name(factor)
             if factor_name not in SUPPORTED_FACTORS:
                 return fail(f"Unsupported factor: {factor_name}. Supported: {', '.join(sorted(SUPPORTED_FACTORS.keys()))}")
@@ -190,8 +197,8 @@ def register(mcp):
             klines = await _load_factor_klines(
                 db,
                 code,
-                start_date=start_date,
-                end_date=end_date,
+                start_date=normalized_start_date,
+                end_date=normalized_end_date,
                 limit=100,
             )
             if not klines:
@@ -265,8 +272,8 @@ def register(mcp):
                     "value": float(value),
                     "requires_financials": SUPPORTED_FACTORS[factor_name]["requires_financials"],
                     "sample_size": len(closes),
-                    "start_date": start_date,
-                    "end_date": end_date,
+                    "start_date": normalized_start_date or start_date,
+                    "end_date": normalized_end_date or end_date,
                 }
             )
         except Exception as e:

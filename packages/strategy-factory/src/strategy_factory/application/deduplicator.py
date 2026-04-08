@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from .legacy_bridge import get_compat_symbol, get_compat_value
-from .candidate_contract import build_candidate_identity_signature
+from .candidate_contract import build_candidate_identity_signature, build_tested_object_hash
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
 from .utils import _extract_event_context as _local_extract_event_context
 from ..domain.constants import DEDUP_CONCURRENCY
@@ -56,6 +56,8 @@ class Deduplicator:
     VECTOR_TRIGGER_THRESHOLD = 0.65
     VECTOR_THRESHOLD = 0.93
     MAX_VECTOR_CANDIDATES = 8
+    DEFAULT_BEHAVIOR_BUILD_TIMEOUT_SEC = 8.0
+    DEFAULT_PREWARM_TIMEOUT_SEC = 15.0
 
     def __init__(self, *, vector_gateway: Optional["VectorSearchGateway"] = None):
         self.last_report: dict = {
@@ -154,9 +156,6 @@ class Deduplicator:
             return False
         if not cls._has_explicit_universe(candidate) or not cls._has_explicit_universe(existing_item):
             return False
-        existing_id = str((existing_item or {}).get("id") or "").strip()
-        if existing_id and existing_id in cls._extract_parent_strategy_ids(candidate):
-            return False
         return True
 
     def _select_vector_candidates(self, suspicious: List[dict]) -> List[Tuple[dict, float]]:
@@ -183,16 +182,17 @@ class Deduplicator:
         metadata = dict(item.get("metadata") or {})
         generation_reason = dict(item.get("generation_reason") or {})
         research_task = dict(item.get("research_task") or {})
-        parent_ids = {
-            str(value or "").strip()
-            for value in (
-                item.get("parent_strategy_id"),
-                metadata.get("parent_strategy_id"),
-                generation_reason.get("parent_strategy_id"),
-                research_task.get("parent_strategy_id"),
-            )
-            if str(value or "").strip()
-        }
+        lineage = dict(item.get("lineage") or {})
+        parent_ids: set[str] = set()
+        for source in (item, metadata, generation_reason, research_task, lineage):
+            for key in ("parent_strategy_id", "parent_candidate_id"):
+                value = str(source.get(key) or "").strip()
+                if value:
+                    parent_ids.add(value)
+            for key in ("parent_strategy_ids", "parent_candidate_ids"):
+                values = source.get(key)
+                if isinstance(values, (list, tuple, set)):
+                    parent_ids.update(str(value or "").strip() for value in values if str(value or "").strip())
         return parent_ids
 
     @staticmethod
@@ -402,6 +402,29 @@ class Deduplicator:
         refreshed_existing = len([item for item in unique if dict(item.get("dedup_result") or {}).get("refresh_existing")])
         coarse_filtered_count = max(existing_scan_count - coarse_candidate_count, 0)
         coarse_hit_ratio = round(coarse_candidate_count / existing_scan_count, 4) if existing_scan_count else 0.0
+        refresh_decision_basis_counts: dict[str, int] = {}
+        revision_trigger_reason_counts: dict[str, int] = {}
+        tested_object_hash_changed_count = 0
+        existing_identity_available_count = 0
+        existing_tested_object_available_count = 0
+        for item in [*unique, *dropped]:
+            dedup_result = dict(item.get("dedup_result") or {})
+            refresh_decision_basis = str(dedup_result.get("refresh_decision_basis") or "").strip().lower()
+            if refresh_decision_basis:
+                refresh_decision_basis_counts[refresh_decision_basis] = (
+                    refresh_decision_basis_counts.get(refresh_decision_basis, 0) + 1
+                )
+            revision_trigger_reason = str(dedup_result.get("revision_trigger_reason") or "").strip().lower()
+            if revision_trigger_reason:
+                revision_trigger_reason_counts[revision_trigger_reason] = (
+                    revision_trigger_reason_counts.get(revision_trigger_reason, 0) + 1
+                )
+            if bool(dedup_result.get("tested_object_hash_changed", dedup_result.get("tested_object_changed"))):
+                tested_object_hash_changed_count += 1
+            if bool(dedup_result.get("existing_identity_available")):
+                existing_identity_available_count += 1
+            if bool(dedup_result.get("existing_tested_object_available")):
+                existing_tested_object_available_count += 1
         self.last_report = {
             "summary": {
                 "input_count": len(candidates),
@@ -423,6 +446,11 @@ class Deduplicator:
                 "intra_batch_check_count": intra_batch_checks,
                 "param_threshold": self.THRESHOLD,
                 "vector_threshold": self.VECTOR_THRESHOLD,
+                "refresh_decision_basis_counts": refresh_decision_basis_counts,
+                "revision_trigger_reason_counts": revision_trigger_reason_counts,
+                "tested_object_hash_changed_count": tested_object_hash_changed_count,
+                "existing_identity_available_count": existing_identity_available_count,
+                "existing_tested_object_available_count": existing_tested_object_available_count,
             },
             "kept": [self._report_item(item) for item in unique],
             "dropped": [self._report_item(item) for item in dropped],
@@ -470,6 +498,15 @@ class Deduplicator:
         return build_candidate_identity_signature(candidate)
 
     @staticmethod
+    def _candidate_tested_object_hash(candidate: Optional[dict]) -> str:
+        payload = dict(candidate or {})
+        params = dict(payload.get("params") or {})
+        explicit_hash = str(payload.get("tested_object_hash") or params.get("tested_object_hash") or "").strip()
+        if explicit_hash:
+            return explicit_hash
+        return build_tested_object_hash(candidate)
+
+    @staticmethod
     def _has_explicit_identity_contract(item: Optional[dict]) -> bool:
         payload = dict(item or {})
         params = dict(payload.get("params") or {})
@@ -491,11 +528,265 @@ class Deduplicator:
                     return True
         return False
 
+    @staticmethod
+    def _has_explicit_tested_object_hash(item: Optional[dict]) -> bool:
+        payload = dict(item or {})
+        params = dict(payload.get("params") or {})
+        return bool(str(payload.get("tested_object_hash") or params.get("tested_object_hash") or "").strip())
+
     @classmethod
     def _existing_identity_signature(cls, existing_item: Optional[dict]) -> str:
         if not cls._has_explicit_identity_contract(existing_item):
             return ""
         return build_candidate_identity_signature(existing_item)
+
+    @classmethod
+    def _existing_tested_object_hash(cls, existing_item: Optional[dict]) -> str:
+        return cls._candidate_tested_object_hash(existing_item)
+
+    @staticmethod
+    def _decision_detail(decision: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(decision or {})
+        return {
+            "refresh_decision_basis": payload.get("refresh_decision_basis"),
+            "revision_trigger_reason": payload.get("revision_trigger_reason"),
+            "identity_changed": payload.get("identity_changed"),
+            "tested_object_changed": payload.get("tested_object_changed"),
+            "tested_object_hash_changed": payload.get("tested_object_hash_changed"),
+            "task_signature_changed": payload.get("task_signature_changed"),
+            "legacy_identity_partial": payload.get("legacy_identity_partial"),
+            "tested_object_backfill_incomplete": payload.get("tested_object_backfill_incomplete"),
+            "parent_lineage_matched": payload.get("parent_lineage_matched"),
+            "existing_identity_available": payload.get("existing_identity_available"),
+            "existing_tested_object_available": payload.get("existing_tested_object_available"),
+            "candidate_tested_object_hash": payload.get("candidate_tested_object_hash"),
+            "existing_tested_object_hash": payload.get("existing_tested_object_hash"),
+        }
+
+    @classmethod
+    def _semantic_result_priority(
+        cls,
+        decision: Optional[dict[str, Any]],
+        match: Optional[dict[str, Any]],
+    ) -> tuple[int, int, int, int, float, float]:
+        payload = dict(decision or {})
+        basis = str(payload.get("refresh_decision_basis") or "").strip().lower()
+        basis_rank = {
+            "same_tested_object_and_identity": 6,
+            "same_tested_object_but_legacy_identity_partial": 5,
+            "same_tested_object_with_legacy_identity_backfill": 5,
+            "tested_object_changed": 4,
+            "identity_changed": 3,
+            "task_signature_changed": 2,
+            "target_universe_changed": 1,
+        }
+        return (
+            2 if payload.get("refresh_existing") else 1,
+            basis_rank.get(basis, 0),
+            1 if payload.get("parent_lineage_matched") else 0,
+            1 if payload.get("exact_target_universe_match") else 0,
+            float((match or {}).get("target_overlap") or -1.0),
+            float((match or {}).get("effective_similarity") or 0.0),
+        )
+
+    @classmethod
+    def _semantic_result_from_decision(
+        cls,
+        candidate: Optional[dict],
+        match: Optional[dict[str, Any]],
+        existing_item: Optional[dict],
+        decision: Optional[dict[str, Any]],
+    ) -> Optional[tuple[tuple[int, int, int, int, float, float], dict[str, Any]]]:
+        payload = dict(decision or {})
+        match_payload = dict(match or {})
+        decision_detail = cls._decision_detail(payload)
+        basis = str(payload.get("refresh_decision_basis") or "").strip().lower()
+        effective_similarity = float(match_payload.get("effective_similarity") or 0.0)
+        if payload.get("refresh_existing"):
+            if basis not in {"same_tested_object_and_identity", "same_tested_object_with_legacy_identity_backfill"}:
+                return None
+            return cls._semantic_result_priority(payload, match_payload), {
+                "duplicate": False,
+                "refresh_existing": True,
+                "duplicate_level": "refresh_existing",
+                "match_type": "semantic",
+                "refresh_mode": "refresh_metrics_only",
+                "reason": (
+                    f"命中同一 tested object（{basis}），即使综合相似度 {effective_similarity:.4f} < "
+                    f"阈值 {cls.THRESHOLD:.2f} 仍转为刷新复用"
+                ),
+                "threshold": cls.THRESHOLD,
+                "vector_threshold": cls.VECTOR_THRESHOLD,
+                "vector_checked": False,
+                "task_signature": cls._candidate_task_signature(candidate),
+                **decision_detail,
+                **match_payload,
+            }
+        if payload.get("spawn_revision_from_existing"):
+            return cls._semantic_result_priority(payload, match_payload), {
+                "duplicate": False,
+                "refresh_existing": False,
+                "duplicate_level": "spawn_revision_from_existing",
+                "match_type": "semantic",
+                "refresh_mode": "spawn_revision_from_existing",
+                "parent_strategy_id": (existing_item or {}).get("id"),
+                "reason": (
+                    f"命中语义级修订条件（{basis or 'revision'}），即使综合相似度 {effective_similarity:.4f} < "
+                    f"阈值 {cls.THRESHOLD:.2f} 仍保留为基于已有策略派生的新实验"
+                ),
+                "threshold": cls.THRESHOLD,
+                "vector_threshold": cls.VECTOR_THRESHOLD,
+                "vector_checked": False,
+                "task_signature": cls._candidate_task_signature(candidate),
+                **decision_detail,
+                **match_payload,
+            }
+        return None
+
+    @classmethod
+    def _evaluate_existing_match_decision(
+        cls,
+        candidate: Optional[dict],
+        match: Optional[dict],
+        existing_item: Optional[dict] = None,
+    ) -> dict[str, Any]:
+        candidate = dict(candidate or {})
+        match = dict(match or {})
+        existing_payload = dict(existing_item or {})
+        matched_status = str(match.get("matched_status") or "").strip().lower()
+        matched_strategy_id = str(match.get("matched_strategy_id") or "").strip()
+        parent_strategy_ids = cls._extract_parent_strategy_ids(candidate)
+        parent_lineage_matched = bool(matched_strategy_id and matched_strategy_id in parent_strategy_ids)
+        explicit_candidate_universe = cls._has_explicit_universe(candidate)
+        explicit_existing_universe = cls._has_explicit_universe(existing_payload)
+        exact_target_universe_match = (
+            cls._has_exact_target_universe_match(candidate, existing_payload)
+            if existing_payload and explicit_candidate_universe and explicit_existing_universe
+            else False
+        )
+        target_overlap = float(match.get("target_overlap") or 0.0)
+        candidate_signature = cls._candidate_task_signature(candidate)
+        existing_signature = cls._existing_task_signature(existing_payload) if existing_payload else ""
+        candidate_identity = cls._candidate_identity_signature(candidate)
+        existing_identity = cls._existing_identity_signature(existing_payload) if existing_payload else ""
+        candidate_tested_object_hash = cls._candidate_tested_object_hash(candidate)
+        existing_tested_object_hash = cls._existing_tested_object_hash(existing_payload) if existing_payload else ""
+        tested_object_changed = None
+        if existing_payload and candidate_tested_object_hash and existing_tested_object_hash:
+            tested_object_changed = candidate_tested_object_hash != existing_tested_object_hash
+        identity_changed = None
+        if existing_payload and candidate_identity and existing_identity:
+            identity_changed = candidate_identity != existing_identity
+        task_signature_changed = None
+        if existing_payload and candidate_signature and existing_signature:
+            task_signature_changed = candidate_signature != existing_signature
+        legacy_identity_partial = bool(
+            existing_payload
+            and (
+                not cls._has_explicit_identity_contract(existing_payload)
+                or not cls._has_explicit_tested_object_hash(existing_payload)
+            )
+        )
+        tested_object_backfill_incomplete = bool(
+            existing_payload
+            and not cls._has_explicit_tested_object_hash(existing_payload)
+            and legacy_identity_partial
+        )
+        decision = {
+            "refresh_existing": False,
+            "spawn_revision_from_existing": False,
+            "refresh_decision_basis": None,
+            "revision_trigger_reason": None,
+            "parent_lineage_matched": parent_lineage_matched,
+            "candidate_task_signature": candidate_signature or None,
+            "existing_task_signature": existing_signature or None,
+            "task_signature_changed": task_signature_changed,
+            "candidate_identity_signature": candidate_identity or None,
+            "existing_identity_signature": existing_identity or None,
+            "existing_identity_available": bool(existing_payload and existing_identity),
+            "identity_changed": identity_changed,
+            "candidate_tested_object_hash": candidate_tested_object_hash or None,
+            "existing_tested_object_hash": existing_tested_object_hash or None,
+            "tested_object_changed": tested_object_changed,
+            "tested_object_hash_changed": tested_object_changed,
+            "existing_tested_object_available": bool(existing_payload and existing_tested_object_hash),
+            "legacy_identity_partial": legacy_identity_partial,
+            "tested_object_backfill_incomplete": tested_object_backfill_incomplete,
+            "exact_target_universe_match": exact_target_universe_match,
+        }
+        if matched_status not in {"incubating", "listed", "published"} or not matched_strategy_id:
+            decision["refresh_decision_basis"] = "matched_strategy_not_refreshable"
+            return decision
+        if not existing_payload:
+            research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
+            event_context = dict(candidate.get("event_context") or {}) or _extract_event_context(research_task)
+            has_event_context = bool(
+                event_context.get("event_id")
+                or event_context.get("theme_code")
+                or research_task.get("task_source") == "event_driven"
+                or str(candidate.get("source") or "").startswith("strategy_factory:")
+            )
+            decision["refresh_existing"] = bool(has_event_context and explicit_candidate_universe)
+            decision["refresh_decision_basis"] = (
+                "event_context_fallback"
+                if decision["refresh_existing"]
+                else ("parent_lineage_without_existing_context" if parent_lineage_matched else "insufficient_existing_context")
+            )
+            return decision
+        if tested_object_changed is True:
+            decision["refresh_decision_basis"] = "tested_object_changed"
+            decision["spawn_revision_from_existing"] = bool(
+                parent_lineage_matched
+                or target_overlap >= 0.8
+                or exact_target_universe_match
+                or task_signature_changed is False
+            )
+            if decision["spawn_revision_from_existing"]:
+                decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
+            return decision
+        if identity_changed is True:
+            decision["refresh_decision_basis"] = "identity_changed"
+            decision["spawn_revision_from_existing"] = bool(
+                parent_lineage_matched
+                or target_overlap >= 0.8
+                or exact_target_universe_match
+            )
+            if decision["spawn_revision_from_existing"]:
+                decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
+            return decision
+        if task_signature_changed is True:
+            decision["refresh_decision_basis"] = "task_signature_changed"
+            decision["spawn_revision_from_existing"] = bool(parent_lineage_matched or target_overlap >= 0.8)
+            if decision["spawn_revision_from_existing"]:
+                decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
+            return decision
+        if explicit_candidate_universe and explicit_existing_universe and not exact_target_universe_match:
+            decision["refresh_decision_basis"] = "target_universe_changed"
+            decision["spawn_revision_from_existing"] = bool(parent_lineage_matched or target_overlap >= 0.8)
+            if decision["spawn_revision_from_existing"]:
+                decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
+            return decision
+        if candidate_tested_object_hash and existing_tested_object_hash and candidate_tested_object_hash == existing_tested_object_hash:
+            if legacy_identity_partial:
+                if task_signature_changed is False and (exact_target_universe_match or target_overlap >= 0.8):
+                    decision["refresh_existing"] = True
+                    decision["refresh_decision_basis"] = "same_tested_object_with_legacy_identity_backfill"
+                    return decision
+                decision["refresh_decision_basis"] = "same_tested_object_but_legacy_identity_partial"
+                decision["spawn_revision_from_existing"] = bool(
+                    parent_lineage_matched
+                    or target_overlap >= 0.8
+                    or exact_target_universe_match
+                    or task_signature_changed is False
+                )
+                if decision["spawn_revision_from_existing"]:
+                    decision["revision_trigger_reason"] = decision["refresh_decision_basis"]
+                return decision
+            decision["refresh_existing"] = True
+            decision["refresh_decision_basis"] = "same_tested_object_and_identity"
+            return decision
+        decision["refresh_decision_basis"] = "no_refresh_basis"
+        return decision
 
     @classmethod
     def _should_refresh_existing(
@@ -504,43 +795,9 @@ class Deduplicator:
         match: Optional[dict],
         existing_item: Optional[dict] = None,
     ) -> bool:
-        candidate = dict(candidate or {})
-        match = dict(match or {})
-        matched_status = str(match.get("matched_status") or "").strip().lower()
-        if matched_status not in {"incubating", "listed", "published"}:
-            return False
-        matched_strategy_id = str(match.get("matched_strategy_id") or "").strip()
-        if not matched_strategy_id:
-            return False
-        if matched_strategy_id in cls._extract_parent_strategy_ids(candidate):
-            return True
-        research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
-        event_context = dict(candidate.get("event_context") or {}) or _extract_event_context(research_task)
-        candidate_signature = cls._candidate_task_signature(candidate)
-        existing_signature = cls._existing_task_signature(existing_item) if existing_item is not None else ""
-        candidate_identity = cls._candidate_identity_signature(candidate)
-        existing_identity = cls._existing_identity_signature(existing_item) if existing_item is not None else ""
-        explicit_candidate_universe = cls._has_explicit_universe(candidate)
-        explicit_existing_universe = cls._has_explicit_universe(existing_item)
-        target_overlap = float(match.get("target_overlap") or 0.0)
-        if existing_item is not None and candidate_identity and existing_identity and candidate_identity != existing_identity:
-            return False
-        if existing_item is not None and candidate_signature and existing_signature:
-            if candidate_signature != existing_signature:
-                return False
-            if explicit_candidate_universe and explicit_existing_universe:
-                return cls._has_exact_target_universe_match(candidate, existing_item)
-            return True
-        has_event_context = bool(
-            event_context.get("event_id")
-            or event_context.get("theme_code")
-            or research_task.get("task_source") == "event_driven"
-            or str(candidate.get("source") or "").startswith("strategy_factory:")
+        return bool(
+            cls._evaluate_existing_match_decision(candidate, match, existing_item).get("refresh_existing")
         )
-        has_explicit_universe = explicit_candidate_universe
-        if existing_item is None:
-            return bool(has_event_context and has_explicit_universe)
-        return bool(has_event_context and has_explicit_universe and target_overlap >= 0.95)
 
     @classmethod
     def _should_spawn_revision_from_existing(
@@ -549,36 +806,14 @@ class Deduplicator:
         match: Optional[dict],
         existing_item: Optional[dict],
     ) -> bool:
-        candidate_signature = cls._candidate_task_signature(candidate)
-        existing_signature = cls._existing_task_signature(existing_item)
-        candidate_identity = cls._candidate_identity_signature(candidate)
-        existing_identity = cls._existing_identity_signature(existing_item)
-        matched_strategy_id = str((match or {}).get("matched_strategy_id") or "").strip()
-        if not matched_strategy_id:
-            return False
-        if matched_strategy_id in cls._extract_parent_strategy_ids(candidate):
-            return False
-        target_overlap = float((match or {}).get("target_overlap") or 0.0)
-        explicit_candidate_universe = cls._has_explicit_universe(candidate)
-        explicit_existing_universe = cls._has_explicit_universe(existing_item)
-        identity_changed = bool(candidate_identity and existing_identity and candidate_identity != existing_identity)
-        if (
-            explicit_candidate_universe
-            and explicit_existing_universe
-            and candidate_signature
-            and existing_signature
-            and candidate_signature == existing_signature
-            and (0.8 <= target_overlap < 0.999 or identity_changed)
-        ):
-            return True
-        if identity_changed and target_overlap >= 0.8:
-            return True
-        if not candidate_signature or not existing_signature or candidate_signature == existing_signature:
-            return False
-        return target_overlap >= 0.8
+        return bool(
+            cls._evaluate_existing_match_decision(candidate, match, existing_item).get("spawn_revision_from_existing")
+        )
 
     async def _find_duplicate(self, candidate: dict, existing: list, db) -> tuple[dict, dict]:
         best_match: Optional[dict] = None
+        semantic_match: Optional[dict[str, Any]] = None
+        semantic_match_priority: Optional[tuple[int, int, int, int, float, float]] = None
         suspicious: List[dict] = []
         candidate_params = self._normalize_params(candidate.get("params"))
         metrics = {
@@ -611,9 +846,23 @@ class Deduplicator:
             }
             if best_match is None or effective_similarity > best_match.get("effective_similarity", 0):
                 best_match = match
+            decision: Optional[dict[str, Any]] = None
+            decision_detail: dict[str, Any] = {}
+            if not material_target_divergence:
+                decision = self._evaluate_existing_match_decision(candidate, match, existing_item)
+                decision_detail = self._decision_detail(decision)
+                semantic_result = self._semantic_result_from_decision(candidate, match, existing_item, decision)
+                if semantic_result is not None:
+                    semantic_priority, semantic_detail = semantic_result
+                    if semantic_match_priority is None or semantic_priority > semantic_match_priority:
+                        semantic_match_priority = semantic_priority
+                        semantic_match = semantic_detail
             if effective_similarity >= self.THRESHOLD and not material_target_divergence:
                 overlap_text = f", 目标池重合度 {target_overlap:.4f}" if target_overlap is not None else ""
-                if self._should_refresh_existing(candidate, match, existing_item):
+                if decision is None:
+                    decision = self._evaluate_existing_match_decision(candidate, match, existing_item)
+                    decision_detail = self._decision_detail(decision)
+                if decision.get("refresh_existing"):
                     return {
                         "duplicate": False,
                         "refresh_existing": True,
@@ -625,9 +874,10 @@ class Deduplicator:
                         "vector_threshold": self.VECTOR_THRESHOLD,
                         "vector_checked": False,
                         "task_signature": self._candidate_task_signature(candidate),
+                        **decision_detail,
                         **match,
                     }, metrics
-                if self._should_spawn_revision_from_existing(candidate, match, existing_item):
+                if decision.get("spawn_revision_from_existing"):
                     return {
                         "duplicate": False,
                         "refresh_existing": False,
@@ -635,11 +885,15 @@ class Deduplicator:
                         "match_type": "parameter",
                         "refresh_mode": "spawn_revision_from_existing",
                         "parent_strategy_id": existing_item.get("id"),
-                        "reason": f"综合相似度 {effective_similarity:.4f} ≥ 阈值 {self.THRESHOLD:.2f}，但任务签名变化，转为基于已有策略派生新实验",
+                        "reason": (
+                            f"综合相似度 {effective_similarity:.4f} ≥ 阈值 {self.THRESHOLD:.2f}，"
+                            f"但已识别为策略对象变更（{decision.get('refresh_decision_basis') or 'revision'}），转为基于已有策略派生新实验"
+                        ),
                         "threshold": self.THRESHOLD,
                         "vector_threshold": self.VECTOR_THRESHOLD,
                         "vector_checked": False,
                         "task_signature": self._candidate_task_signature(candidate),
+                        **decision_detail,
                         **match,
                     }, metrics
                 return {
@@ -652,6 +906,7 @@ class Deduplicator:
                     "vector_threshold": self.VECTOR_THRESHOLD,
                     "vector_checked": False,
                     "task_signature": self._candidate_task_signature(candidate),
+                    **decision_detail,
                     **match,
                 }, metrics
             if effective_similarity >= self.VECTOR_TRIGGER_THRESHOLD:
@@ -664,6 +919,8 @@ class Deduplicator:
                 })
 
         metrics["coarse_candidate_count"] = len(suspicious)
+        if semantic_match is not None:
+            return semantic_match, metrics
         vector_candidates = self._select_vector_candidates(suspicious)
         metrics["vector_candidate_count"] = len(vector_candidates)
         metrics["vector_candidate_trimmed_count"] = max(0, len(suspicious) - len(vector_candidates))
@@ -763,7 +1020,26 @@ class Deduplicator:
             if str(item.get("strategy_type") or "").strip()
         ]
         if payloads:
-            await self._bounded_behavior_gather(payloads, db)
+            unique_payloads: List[Tuple[str, dict]] = []
+            seen_keys: set[str] = set()
+            for strategy_type, params in payloads:
+                cache_key = self._behavior_cache_key(strategy_type, params)
+                if cache_key in seen_keys:
+                    continue
+                seen_keys.add(cache_key)
+                unique_payloads.append((strategy_type, params))
+            timeout_sec = self._resolve_prewarm_timeout_sec()
+            try:
+                await asyncio.wait_for(
+                    self._bounded_behavior_gather(unique_payloads, db),
+                    timeout=timeout_sec,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "deduplicator: prewarm timed out for %s payloads after %.2fs; continuing without full behavior cache",
+                    len(unique_payloads),
+                    timeout_sec,
+                )
 
     @staticmethod
     def _normalize_params(value: object) -> dict:
@@ -777,18 +1053,76 @@ class Deduplicator:
             return dict(parsed) if isinstance(parsed, dict) else {}
         return {}
 
+    @staticmethod
+    def _behavior_cache_key(strategy_type: str, params: Optional[dict]) -> str:
+        return f"{strategy_type}:{json.dumps(params or {}, sort_keys=True, ensure_ascii=False, default=str)}"
+
+    @classmethod
+    def _resolve_timeout_sec(cls, setting_name: str, default: float) -> float:
+        try:
+            resolved = float(_compat_setting(setting_name, default) or default)
+        except (TypeError, ValueError):
+            return float(default)
+        return float(default) if resolved <= 0 else resolved
+
+    @classmethod
+    def _resolve_behavior_build_timeout_sec(cls) -> float:
+        return cls._resolve_timeout_sec(
+            "DEDUP_BEHAVIOR_BUILD_TIMEOUT_SEC",
+            cls.DEFAULT_BEHAVIOR_BUILD_TIMEOUT_SEC,
+        )
+
+    @classmethod
+    def _resolve_prewarm_timeout_sec(cls) -> float:
+        return cls._resolve_timeout_sec(
+            "DEDUP_PREWARM_TIMEOUT_SEC",
+            cls.DEFAULT_PREWARM_TIMEOUT_SEC,
+        )
+
     async def _bounded_behavior_gather(self, payloads: List[Tuple[str, dict]], db) -> List[Optional[List[dict]]]:
+        if not payloads:
+            return []
         concurrency = max(1, int(_compat_setting("DEDUP_CONCURRENCY", DEDUP_CONCURRENCY) or 1))
         sem = asyncio.Semaphore(concurrency)
+        timeout_sec = self._resolve_behavior_build_timeout_sec()
+        ordered_keys: List[str] = []
+        unique_payloads: Dict[str, Tuple[str, dict]] = {}
 
-        async def _run(strategy_type: str, params: dict) -> Optional[List[dict]]:
+        for strategy_type, params in list(payloads or []):
+            normalized_params = self._normalize_params(params)
+            cache_key = self._behavior_cache_key(strategy_type, normalized_params)
+            ordered_keys.append(cache_key)
+            unique_payloads.setdefault(cache_key, (strategy_type, normalized_params))
+
+        async def _run(cache_key: str, strategy_type: str, params: dict) -> Optional[List[dict]]:
             async with sem:
-                return await self._build_behavior_klines(strategy_type, params, db)
+                try:
+                    return await asyncio.wait_for(
+                        self._build_behavior_klines(strategy_type, params, db),
+                        timeout=timeout_sec,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "deduplicator: behavior build timed out for %s after %.2fs",
+                        cache_key,
+                        timeout_sec,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning("deduplicator: behavior build failed for %s: %s", cache_key, exc)
+                return None
 
-        return await asyncio.gather(*[
-            _run(strategy_type, params)
-            for strategy_type, params in payloads
+        unique_items = list(unique_payloads.items())
+        gathered = await asyncio.gather(*[
+            _run(cache_key, strategy_type, params)
+            for cache_key, (strategy_type, params) in unique_items
         ])
+        results_by_key = {
+            cache_key: result
+            for (cache_key, _payload), result in zip(unique_items, gathered)
+        }
+        return [results_by_key.get(cache_key) for cache_key in ordered_keys]
 
     async def _vector_check(self, candidate: dict, suspicious: List[Tuple[dict, float]], db) -> Optional[dict]:
         query_strategy_type = str(candidate.get("strategy_type") or "").strip()
@@ -845,7 +1179,7 @@ class Deduplicator:
 
     async def _build_behavior_klines(self, strategy_type: str, params: dict, db) -> Optional[List[dict]]:
         factory_pkg = _get_strategy_factory_package()
-        cache_key = f"{strategy_type}:{json.dumps(params or {}, sort_keys=True, ensure_ascii=False, default=str)}"
+        cache_key = self._behavior_cache_key(strategy_type, params)
         if cache_key in self._behavior_cache:
             return self._behavior_cache[cache_key]
         build_strategy_panels = get_compat_symbol(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Any, Dict, List
 
 from ..domain.constants import (
@@ -18,10 +19,14 @@ from ..domain.constants import (
 )
 from ._opportunity_utils import _MarketOpportunityScannerUtilityMixin
 from ._stock_universe_loader import load_stock_universe_rows
+from .research_plane_contract import build_task_artifact
 
 
 class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
     """Plan per-stock strategy-family tasks for bulk autonomy generation."""
+
+    _MIN_HISTORY_BARS = 100
+    _HISTORY_COUNT_CHUNK_SIZE = 400
 
     def __init__(self) -> None:
         self.last_report: dict[str, Any] = {
@@ -71,6 +76,9 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
                 "stock_family_allocation_count": 0,
                 "stock_family_allocation_applied_count": 0,
                 "stock_family_allocation_coverage_ratio": 0.0,
+                "min_history_bars": self._MIN_HISTORY_BARS,
+                "history_prefilter_applied": False,
+                "insufficient_history_filtered_count": 0,
             },
             "tasks": [],
         }
@@ -542,6 +550,64 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
         candidate_limited_budget = max(1, candidate_budget // generation_limit)
         return max(1, min(int(STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN), candidate_limited_budget))
 
+    @classmethod
+    async def _fetch_history_bar_counts(
+        cls,
+        db,
+        codes: Sequence[str],
+        *,
+        min_history_bars: int,
+    ) -> tuple[dict[str, int], bool]:
+        normalized_codes = [
+            str(code or "").strip()
+            for code in list(codes or [])
+            if str(code or "").strip()
+        ]
+        if not normalized_codes:
+            return {}, False
+
+        deduped_codes = list(dict.fromkeys(normalized_codes))
+        acquire = getattr(db, "acquire", None)
+        if callable(acquire):
+            history_counts: dict[str, int] = {}
+            try:
+                async with db.acquire() as conn:
+                    for start in range(0, len(deduped_codes), cls._HISTORY_COUNT_CHUNK_SIZE):
+                        chunk = deduped_codes[start : start + cls._HISTORY_COUNT_CHUNK_SIZE]
+                        rows = await conn.fetch(
+                            """
+                            SELECT code, COUNT(*) AS bar_count
+                            FROM kline_1d
+                            WHERE code = ANY($1::text[])
+                            GROUP BY code
+                            """,
+                            chunk,
+                        )
+                        for row in rows or []:
+                            payload = dict(row or {})
+                            code = str(payload.get("code") or "").strip()
+                            if not code:
+                                continue
+                            history_counts[code] = max(0, int(payload.get("bar_count") or 0))
+                return history_counts, True
+            except Exception:
+                pass
+
+        get_klines = getattr(db, "get_klines", None)
+        if not callable(get_klines) or len(deduped_codes) > 256:
+            return {}, False
+
+        history_counts = {}
+        query_limit = max(int(min_history_bars or 0), cls._MIN_HISTORY_BARS)
+        for code in deduped_codes:
+            try:
+                klines = await get_klines(code, limit=query_limit)
+            except Exception:
+                history_counts[code] = 0
+                continue
+            history_counts[code] = len(list(klines or []))
+        return history_counts, True
+
     @staticmethod
     def _resolve_task_cursor(
         *,
@@ -724,6 +790,7 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
 
     async def plan(self, db, snapshot: dict[str, Any]) -> dict[str, Any]:
         if not STOCK_STRATEGY_MATRIX_ENABLED:
+            task_artifact = build_task_artifact()
             self.last_report = {
                 "summary": {
                     "enabled": False,
@@ -771,8 +838,14 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
                     "stock_family_allocation_count": 0,
                     "stock_family_allocation_applied_count": 0,
                     "stock_family_allocation_coverage_ratio": 0.0,
+                    "min_history_bars": self._MIN_HISTORY_BARS,
+                    "history_prefilter_applied": False,
+                    "insufficient_history_filtered_count": 0,
+                    "task_artifact_contract_version": task_artifact.get("contract_version"),
+                    "task_artifact_available": bool(task_artifact.get("available")),
                 },
                 "tasks": [],
+                "task_artifact": task_artifact,
             }
             return self.last_report
 
@@ -805,9 +878,25 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
         }
         active_factors = self._normalize_factor_names(snapshot)
         stock_family_allocation = self._normalize_stock_family_allocation(snapshot)
+        candidate_rows = [row for row in rows if str(row.get("code") or "").strip()]
+        min_history_bars = self._MIN_HISTORY_BARS
+        history_counts, history_prefilter_applied = await self._fetch_history_bar_counts(
+            db,
+            [str(row.get("code") or "").strip() for row in candidate_rows],
+            min_history_bars=min_history_bars,
+        )
+        filtered_rows = candidate_rows
+        insufficient_history_filtered_count = 0
+        if history_prefilter_applied:
+            filtered_rows = [
+                row
+                for row in candidate_rows
+                if int(history_counts.get(str(row.get("code") or "").strip()) or 0) >= min_history_bars
+            ]
+            insufficient_history_filtered_count = max(0, len(candidate_rows) - len(filtered_rows))
 
         ranked_rows = sorted(
-            [row for row in rows if str(row.get("code") or "").strip()],
+            filtered_rows,
             key=lambda row: self._row_priority_score(
                 row,
                 snapshot=snapshot,
@@ -1006,7 +1095,7 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
             else 0.0
         )
 
-        self.last_report = {
+        report = {
             "summary": {
                 "enabled": True,
                 "task_count": len(tasks),
@@ -1058,9 +1147,28 @@ class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):
                 "stock_family_allocation_count": len(stock_family_allocation),
                 "stock_family_allocation_applied_count": allocation_applied_count,
                 "stock_family_allocation_coverage_ratio": stock_family_allocation_coverage_ratio,
+                "min_history_bars": min_history_bars,
+                "history_prefilter_applied": history_prefilter_applied,
+                "insufficient_history_filtered_count": insufficient_history_filtered_count,
             },
             "tasks": tasks,
         }
+        task_artifact = build_task_artifact(
+            {
+                "task_scan": report,
+                "task_source_counts": {"bulk_stock_matrix": len(tasks)},
+                "event_task_count": 0,
+                "snapshot_task_count": 0,
+                "bulk_stock_task_count": len(tasks),
+            }
+        )
+        report["task_artifact"] = task_artifact
+        report["summary"] = {
+            **dict(report.get("summary") or {}),
+            "task_artifact_contract_version": task_artifact.get("contract_version"),
+            "task_artifact_available": bool(task_artifact.get("available")),
+        }
+        self.last_report = report
         return self.last_report
 
     def get_last_report(self) -> dict[str, Any]:

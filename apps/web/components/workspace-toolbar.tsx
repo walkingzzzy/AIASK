@@ -317,6 +317,7 @@ export default function WorkspaceToolbar({
                   value={viewName}
                   onChange={(event) => setViewName(event.target.value)}
                   placeholder={`${pageKey} 视图`}
+                  aria-label="工作区视图名称"
                   className="min-w-[180px] rounded border border-glass-border px-2 py-1.5 text-sm"
                 />
                 <button

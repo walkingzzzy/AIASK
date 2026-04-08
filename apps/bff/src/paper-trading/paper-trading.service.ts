@@ -18,7 +18,7 @@ export class PaperTradingService {
     try {
       const result = await this.mcp.callTool('paper_trading_manager', {
         action,
-        kwargs: JSON.stringify(params),
+        params,
       });
       return this.unwrapManagerResult(action, result);
     } catch (error) {
@@ -218,7 +218,7 @@ export class PaperTradingService {
     try {
       const payload = this.unwrapToolEnvelope('compliance_manager.check_order', await this.mcp.callTool('compliance_manager', {
         action: 'check_order',
-        kwargs: JSON.stringify({ user_id: userId, ...params }),
+        params: { user_id: userId, ...params },
       }));
       const blocked = payload.blocked === true || payload.passed === false;
       const violations = this.toStringArray(payload.violations);
@@ -259,7 +259,7 @@ export class PaperTradingService {
         try {
           const execution = this.unwrapToolEnvelope('execution_manager.vwap', await this.mcp.callTool('execution_manager', {
             action: params.urgency === 'high' ? 'vwap' : 'twap',
-            kwargs: JSON.stringify({
+            params: {
               user_id: userId,
               code: params.code,
               direction: params.direction,
@@ -268,7 +268,7 @@ export class PaperTradingService {
               slices: params.urgency === 'high' ? 1 : 3,
               reference_price: params.price ?? params.stop_price,
               artifact_id: params.artifact_id ?? params.output_artifact_id,
-            }),
+            },
           }));
           const order = await this.call('place_order', {
             user_id: userId,
@@ -298,7 +298,7 @@ export class PaperTradingService {
     try {
       return this.unwrapToolEnvelope('execution_manager.summary', await this.mcp.callTool('execution_manager', {
         action: 'summary',
-        kwargs: JSON.stringify({ user_id: userId, task_id: executionId }),
+        params: { user_id: userId, task_id: executionId },
       }));
     } catch (error) {
       if (error instanceof HttpException) throw error;

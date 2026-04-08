@@ -21,6 +21,7 @@ def _get_strategy_factory_imports():
         extract_event_context as _extract_event_context,
         preferred_strategy_types_for_factor,
     )
+    from strategy_factory.application.precompile_contract import validate_precompile_candidate_contract
     from strategy_factory.domain.targets import _apply_target_symbol_policy, _normalize_research_task_contract
     return {
         "CATEGORY_MINIMUMS": CATEGORY_MINIMUMS,
@@ -32,6 +33,7 @@ def _get_strategy_factory_imports():
         "preferred_strategy_types_for_factor": preferred_strategy_types_for_factor,
         "apply_target_symbol_policy": _apply_target_symbol_policy,
         "normalize_research_task_contract": _normalize_research_task_contract,
+        "validate_precompile_candidate_contract": validate_precompile_candidate_contract,
     }
 
 
@@ -60,6 +62,7 @@ def __getattr__(name):
         "preferred_strategy_types_for_factor": "preferred_strategy_types_for_factor",
         "_apply_target_symbol_policy": "apply_target_symbol_policy",
         "_normalize_research_task_contract": "normalize_research_task_contract",
+        "validate_precompile_candidate_contract": "validate_precompile_candidate_contract",
     }
     if name in _map:
         return _sf()[_map[name]]
@@ -73,6 +76,7 @@ _extract_event_context = _sf()["extract_event_context"]
 preferred_strategy_types_for_factor = _sf()["preferred_strategy_types_for_factor"]
 _apply_target_symbol_policy = _sf()["apply_target_symbol_policy"]
 _normalize_research_task_contract = _sf()["normalize_research_task_contract"]
+validate_precompile_candidate_contract = _sf()["validate_precompile_candidate_contract"]
 
 from .llm_alpha import LLMAlphaMiner
 from .data_pipeline import normalize_klines
@@ -817,6 +821,35 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
             tags = ['local_rule_v1', 'llm_proxy_fallback', category]
             if target_symbols:
                 tags.append('targeted_universe')
+            portfolio_spec = {
+                'position_assumption': 'equal_weight_proxy' if len(target_symbols) > 1 else 'single_name_full_notional',
+                'target_weight_scheme': 'equal_weight' if len(target_symbols) > 1 else 'single_name',
+            }
+            execution_assumptions = {
+                'commission_rate': 0.00025,
+                'slippage_bps': 8 if task_source == 'event_driven' else 5,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+            }
+            precompile_validation = validate_precompile_candidate_contract(
+                {
+                    **candidate,
+                    'strategy_type': strategy_type,
+                    'research_task': dict(task),
+                    'target_symbols': list(target_symbols),
+                    'stock_pool': dict(stock_pool),
+                    'portfolio_spec': dict(portfolio_spec),
+                    'execution_assumptions': dict(execution_assumptions),
+                    'validation_profile': dict(validation_profile),
+                    'constraint_check': dict(target_resolution.get('constraint_check') or {}),
+                },
+                research_task=task,
+                source='local_rule_v1',
+            )
+            if not precompile_validation.accepted:
+                candidate["_generator_precompile_reject_reasons"] = list(precompile_validation.reject_reasons)
+                candidate["_generator_precompile_validation"] = precompile_validation.to_dict()
+                return None
             return StrategySpec(
                 strategy_type=strategy_type,
                 params=params,
@@ -860,23 +893,15 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                     },
                     'execution_notes': 'use liquid names and respect tradability filter',
                     'rebalance_rule': {'mode': 'event_driven_hold' if task_source == 'event_driven' else 'signal_rebalance'},
-                    'portfolio_spec': {
-                        'position_assumption': 'equal_weight_proxy' if len(target_symbols) > 1 else 'single_name_full_notional',
-                        'target_weight_scheme': 'equal_weight' if len(target_symbols) > 1 else 'single_name',
-                    },
-                    'execution_assumptions': {
-                        'commission_rate': 0.00025,
-                        'slippage_bps': 8 if task_source == 'event_driven' else 5,
-                        'tradability_filter': True,
-                        'slippage_model': 'fixed',
-                    },
-                    'validation_profile': validation_profile,
+                    'portfolio_spec': dict(precompile_validation.portfolio_spec),
+                    'execution_assumptions': dict(precompile_validation.execution_assumptions),
+                    'validation_profile': dict(precompile_validation.validation_profile),
                     'targeting_policy': {
                         'target_symbol_policy': task.get('target_symbol_policy'),
                         'universe_expansion_policy': task.get('universe_expansion_policy'),
                         'validation_focus': task.get('validation_focus'),
                     },
-                    'constraint_check': dict(target_resolution.get('constraint_check') or {}),
+                    'constraint_check': dict(precompile_validation.constraint_check),
                     'fallback_profile': fallback_profile,
                     'rule_template_contract': dict(template_contract.get('rule_template_contract') or {}),
                     'source_candidate': candidate,
@@ -906,12 +931,13 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
                 candidate,
                 research_task=provider_payload.get('research_task') or {},
             )
-            if normalized_candidate:
-                candidate = {
-                    **candidate,
-                    **normalized_candidate,
-                    'dsl': normalized_candidate.get('dsl') or candidate.get('dsl'),
-                }
+            if not normalized_candidate:
+                return None
+            candidate = {
+                **candidate,
+                **normalized_candidate,
+                'dsl': normalized_candidate.get('dsl') or candidate.get('dsl'),
+            }
             try:
                 compiled = compile_strategy_blueprint(candidate, market_frame=market_frame, tune_for_factory=True)
             except Exception:
@@ -921,15 +947,27 @@ class _LLMProxyStrategyGeneratorSpecsMixin:
             analysis = dict(provider_payload.get('analysis') or {})
             research_context = dict(provider_payload.get('research_context') or {})
             research_task = _normalize_research_task_contract(provider_payload.get('research_task') or {})
+            if bool(research_context.get('blocked_by_target_universe')):
+                return None
+            targeted_task = bool(list(research_task.get('target_symbols') or []))
+            targeted_fallback_symbols = [
+                research_task.get('same_theme_symbols'),
+                research_task.get('theme_members'),
+                (research_task.get('event_context') or {}).get('same_theme_symbols'),
+                (research_task.get('event_context') or {}).get('theme_members'),
+                research_task.get('target_symbols'),
+            ]
+            broad_fallback_symbols = [
+                research_context.get('candidate_universe_symbols'),
+                dict(research_context.get('task_target_context') or {}).get('candidate_universe_symbols'),
+                research_task.get('target_symbols'),
+            ]
             target_resolution = _apply_target_symbol_policy([
                 candidate.get('target_symbols'),
                 candidate.get('stock_pool'),
                 ((candidate.get('dsl') or {}).get('metadata') or {}).get('target_symbols'),
                 ((candidate.get('dsl') or {}).get('metadata') or {}).get('stock_pool'),
-            ], research_task, fallback_symbols=[
-                ((provider_payload.get('research_context') or {}).get('candidate_universe_symbols') if isinstance(provider_payload.get('research_context'), dict) else None),
-                research_task.get('target_symbols'),
-            ], limit=8)
+            ], research_task, fallback_symbols=(targeted_fallback_symbols if targeted_task else broad_fallback_symbols), limit=8)
             target_symbols = list(target_resolution.get('target_symbols') or [])
             stock_pool = cls._normalize_stock_pool(candidate.get('stock_pool'), target_symbols)
             selection_logic = candidate.get('selection_logic') or analysis.get('selection_notes') or []

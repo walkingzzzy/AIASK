@@ -21,6 +21,7 @@ def _get_strategy_factory_imports():
         extract_event_context as _extract_event_context,
         preferred_strategy_types_for_factor,
     )
+    from strategy_factory.application.precompile_contract import validate_precompile_candidate_contract
     from strategy_factory.domain.targets import _apply_target_symbol_policy, _normalize_research_task_contract
     return {
         "CATEGORY_MINIMUMS": CATEGORY_MINIMUMS,
@@ -32,6 +33,7 @@ def _get_strategy_factory_imports():
         "preferred_strategy_types_for_factor": preferred_strategy_types_for_factor,
         "apply_target_symbol_policy": _apply_target_symbol_policy,
         "normalize_research_task_contract": _normalize_research_task_contract,
+        "validate_precompile_candidate_contract": validate_precompile_candidate_contract,
     }
 
 
@@ -60,6 +62,7 @@ def __getattr__(name):
         "preferred_strategy_types_for_factor": "preferred_strategy_types_for_factor",
         "_apply_target_symbol_policy": "apply_target_symbol_policy",
         "_normalize_research_task_contract": "normalize_research_task_contract",
+        "validate_precompile_candidate_contract": "validate_precompile_candidate_contract",
     }
     if name in _map:
         return _sf()[_map[name]]
@@ -73,6 +76,7 @@ _extract_event_context = _sf()["extract_event_context"]
 preferred_strategy_types_for_factor = _sf()["preferred_strategy_types_for_factor"]
 _apply_target_symbol_policy = _sf()["apply_target_symbol_policy"]
 _normalize_research_task_contract = _sf()["normalize_research_task_contract"]
+validate_precompile_candidate_contract = _sf()["validate_precompile_candidate_contract"]
 
 from .llm_alpha import LLMAlphaMiner
 from .data_pipeline import normalize_klines
@@ -91,6 +95,135 @@ from .strategy_spec import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_NON_REQUEST_SKIP_STATUSES = {"compatibility_skip", "cooldown_skip"}
+
+
+def _normalize_external_request_status(status: Any) -> str:
+    return str(status or "").strip().lower() or "unknown"
+
+
+def _count_external_request_statuses(requests: Optional[list[dict[str, Any]]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in list(requests or []):
+        status = _normalize_external_request_status(dict(item or {}).get("status"))
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _count_external_network_requests(requests: Optional[list[dict[str, Any]]]) -> int:
+    total = 0
+    for item in list(requests or []):
+        payload = dict(item or {})
+        status = _normalize_external_request_status(payload.get("status"))
+        if status in _NON_REQUEST_SKIP_STATUSES:
+            continue
+        metrics = dict(payload.get("request_metrics") or {})
+        try:
+            attempt_count = int(metrics.get("attempt_count") or 0)
+        except Exception:
+            attempt_count = 0
+        total += max(attempt_count, 1)
+    return total
+
+
+def _count_external_real_requests(requests: Optional[list[dict[str, Any]]]) -> int:
+    total = 0
+    for item in list(requests or []):
+        status = _normalize_external_request_status(dict(item or {}).get("status"))
+        if status in _NON_REQUEST_SKIP_STATUSES:
+            continue
+        total += 1
+    return total
+
+
+def _request_is_compatibility_failure(request: Optional[dict[str, Any]]) -> bool:
+    payload = dict(request or {})
+    status = _normalize_external_request_status(payload.get("status"))
+    if status in _NON_REQUEST_SKIP_STATUSES:
+        return False
+    metrics = dict(payload.get("request_metrics") or {})
+    metric_status = _normalize_external_request_status(metrics.get("status"))
+    error_type = str(payload.get("error_type") or metrics.get("last_error_type") or "").strip().lower()
+    error_text = str(payload.get("error") or metrics.get("last_error") or "").strip().lower()
+    return (
+        metric_status == "compatibility_failed"
+        or error_type == "providercompatibilityerror"
+        or "missing extractable content" in error_text
+    )
+
+
+def _request_is_empty_200_response(request: Optional[dict[str, Any]]) -> bool:
+    payload = dict(request or {})
+    status = _normalize_external_request_status(payload.get("status"))
+    if status in _NON_REQUEST_SKIP_STATUSES:
+        return False
+    metrics = dict(payload.get("request_metrics") or {})
+    if bool(metrics.get("empty_200_response")):
+        return True
+    if not _request_is_compatibility_failure(payload):
+        return False
+    error_text = str(payload.get("error") or metrics.get("last_error") or "").strip().lower()
+    return "missing extractable content" in error_text
+
+
+def _count_external_compatibility_failures(requests: Optional[list[dict[str, Any]]]) -> int:
+    return sum(1 for item in list(requests or []) if _request_is_compatibility_failure(item))
+
+
+def _count_external_effective_responses(requests: Optional[list[dict[str, Any]]]) -> int:
+    total = 0
+    for item in list(requests or []):
+        if _normalize_external_request_status(dict(item or {}).get("status")) == "succeeded":
+            total += 1
+    return total
+
+
+def _count_external_empty_200_responses(requests: Optional[list[dict[str, Any]]]) -> int:
+    return sum(1 for item in list(requests or []) if _request_is_empty_200_response(item))
+
+
+def _finalize_external_provider_report(external_provider: Optional[dict[str, Any]]) -> dict[str, Any]:
+    summary = dict(external_provider or {})
+    requests = list(summary.get("requests") or [])
+    status_counts = dict(summary.get("request_status_counts") or {}) or _count_external_request_statuses(requests)
+    stage_attempt_count = int(summary.get("stage_attempt_count") or len(requests))
+    network_request_count = int(summary.get("network_request_count") or _count_external_network_requests(requests))
+    real_request_count = int(summary.get("real_request_count") or _count_external_real_requests(requests))
+    compatibility_failure_count = int(
+        summary.get("compatibility_failure_count") or _count_external_compatibility_failures(requests)
+    )
+    effective_response_count = int(
+        summary.get("effective_response_count") or _count_external_effective_responses(requests)
+    )
+    empty_200_response_count = int(
+        summary.get("empty_200_response_count") or _count_external_empty_200_responses(requests)
+    )
+
+    summary["stage_attempt_count"] = stage_attempt_count
+    summary["network_request_count"] = network_request_count
+    summary["real_request_count"] = real_request_count
+    summary["compatibility_skip_count"] = int(
+        summary.get("compatibility_skip_count")
+        or status_counts.get("compatibility_skip", 0)
+    )
+    summary["cooldown_skip_count"] = int(
+        summary.get("cooldown_skip_count")
+        or status_counts.get("cooldown_skip", 0)
+    )
+    summary["compatibility_failure_count"] = compatibility_failure_count
+    summary["effective_response_count"] = effective_response_count
+    summary["empty_200_response_count"] = empty_200_response_count
+    summary["compatibility_failure_ratio"] = (
+        round(compatibility_failure_count / real_request_count, 4) if real_request_count else 0.0
+    )
+    summary["effective_response_ratio"] = (
+        round(effective_response_count / real_request_count, 4) if real_request_count else 0.0
+    )
+    if status_counts:
+        summary["request_status_counts"] = status_counts
+    return summary
 
 
 def _rule_template_contract(strategy_type: str) -> dict[str, Any]:
@@ -564,6 +697,7 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
             )
 
             specs: list[StrategySpec] = []
+            pipeline_precompile_rejections: list[dict[str, Any]] = []
             normalized_research_task = (
                 _normalize_research_task_contract(research_task)
                 if isinstance(research_task, dict) and research_task
@@ -576,6 +710,14 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                 spec = self._pipeline_candidate_to_spec(candidate_payload, pipeline_result.provenance)
                 if spec is not None:
                     specs.append(spec)
+                elif candidate_payload.get("_generator_precompile_reject_reasons"):
+                    pipeline_precompile_rejections.append(
+                        {
+                            "name": str(candidate_payload.get("name") or ""),
+                            "strategy_type": str(candidate_payload.get("strategy_type") or ""),
+                            "reject_reasons": list(candidate_payload.get("_generator_precompile_reject_reasons") or []),
+                        }
+                    )
 
             stage_requests: list[dict[str, Any]] = []
             llm_attempt_count = 0
@@ -586,6 +728,7 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
             for stage_id, stage_result in pipeline_result.stages.items():
                 stage_error = getattr(stage_result, "llm_error", None) or stage_result.error
                 stage_error_type = getattr(stage_result, "llm_error_type", None)
+                stage_error_metrics = dict(getattr(stage_result, "llm_error_metrics", {}) or {})
                 if stage_error and last_error is None:
                     last_error = stage_error
                     last_error_type = stage_error_type or (
@@ -597,16 +740,41 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                 llm_elapsed_seconds += float(stage_result.elapsed_sec or 0.0)
                 if not stage_result.used_fallback:
                     llm_success_count += 1
+                request_status = "succeeded"
+                if stage_result.used_fallback:
+                    metric_status = _normalize_external_request_status(stage_error_metrics.get("status"))
+                    request_status = metric_status if metric_status in _NON_REQUEST_SKIP_STATUSES else "fallback"
+                request_attempt_count = 0
+                if request_status not in _NON_REQUEST_SKIP_STATUSES:
+                    try:
+                        request_attempt_count = int(stage_error_metrics.get("attempt_count") or 0)
+                    except Exception:
+                        request_attempt_count = 0
+                    request_attempt_count = max(request_attempt_count, 1)
                 stage_requests.append(
                     {
                         "stage_id": stage_id,
-                        "status": "succeeded" if not stage_result.used_fallback else "fallback",
+                        "status": request_status,
                         "used_fallback": bool(stage_result.used_fallback),
                         "elapsed_seconds": round(float(stage_result.elapsed_sec or 0.0), 4),
                         "prompt_chars": int(stage_result.prompt_chars or 0),
                         "response_chars": int(stage_result.response_chars or 0),
                         "error": stage_error,
                         "error_type": stage_error_type,
+                        "request_metrics": {
+                            "status": stage_error_metrics.get("status"),
+                            "attempt_count": request_attempt_count,
+                            "prompt_chars": int(stage_result.prompt_chars or 0),
+                            "response_chars": int(stage_result.response_chars or 0),
+                            "elapsed_seconds": round(float(stage_result.elapsed_sec or 0.0), 4),
+                            "last_error_type": stage_error_type,
+                            "last_error": stage_error,
+                            "last_error_status_code": (
+                                stage_error_metrics.get("last_error_status_code")
+                                or stage_error_metrics.get("status_code")
+                            ),
+                            "empty_200_response": bool(stage_error_metrics.get("empty_200_response")),
+                        },
                     }
                 )
 
@@ -625,6 +793,8 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                 'pipeline_error': pipeline_result.error,
                 'selected_count': len(specs),
                 'selected_generators': {'pipeline_staged': len(specs)},
+                'pipeline_precompile_rejected_count': len(pipeline_precompile_rejections),
+                'pipeline_precompile_rejections': pipeline_precompile_rejections[:8],
                 'external_provider': {
                     'enabled': True,
                     'provider': getattr(self.external_provider.config, 'provider', None),
@@ -639,6 +809,9 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                     'last_error': last_error,
                 },
             }
+            self.last_report['external_provider'] = _finalize_external_provider_report(
+                self.last_report.get('external_provider')
+            )
             return specs
 
         @classmethod
@@ -650,9 +823,60 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
             """将 pipeline 产出的 candidate dict 转为 StrategySpec。"""
             if not candidate or not isinstance(candidate, dict):
                 return None
+            original_candidate = candidate
             candidate = _normalize_snapshot_pipeline_candidate(candidate)
             if candidate is None:
                 return None
+            research_task = _normalize_research_task_contract(candidate.get('research_task') or {})
+            target_symbols = cls._normalize_code_list(candidate.get('target_symbols'))
+            validation_focus = str((research_task.get('validation_focus') or 'target_plus_representative')).strip().lower()
+            portfolio_spec = dict(candidate.get('portfolio_spec') or {
+                'position_assumption': 'equal_weight_proxy' if len(target_symbols) > 1 else 'single_name_full_notional',
+                'target_weight_scheme': 'equal_weight' if len(target_symbols) > 1 else 'single_name',
+            })
+            execution_assumptions = dict(candidate.get('execution_assumptions') or {
+                'commission_rate': 0.00025,
+                'slippage_bps': 5,
+                'tradability_filter': True,
+                'slippage_model': 'fixed',
+            })
+            validation_profile = dict(candidate.get('validation_profile') or {
+                'profile': 'event_trade_validation' if validation_focus == 'event_target_only' else 'trade_rule_validation',
+                'validation_focus': validation_focus,
+                'primary_validation_layer': 'target' if validation_focus == 'event_target_only' else 'combined',
+            })
+            precompile_validation = validate_precompile_candidate_contract(
+                {
+                    **candidate,
+                    'research_task': dict(research_task),
+                    'strategy_type': str(candidate.get('strategy_type') or 'dsl_rule').strip() or 'dsl_rule',
+                    'target_symbols': list(target_symbols),
+                    'stock_pool': dict(
+                        candidate.get('stock_pool')
+                        or ({'selection_mode': 'explicit', 'symbols': list(target_symbols)} if target_symbols else {})
+                    ),
+                    'portfolio_spec': dict(portfolio_spec),
+                    'execution_assumptions': dict(execution_assumptions),
+                    'validation_profile': dict(validation_profile),
+                    'constraint_check': dict(candidate.get('constraint_check') or {}),
+                },
+                research_task=research_task,
+                source='pipeline_staged',
+            )
+            if not precompile_validation.accepted:
+                original_candidate["_generator_precompile_reject_reasons"] = list(precompile_validation.reject_reasons)
+                original_candidate["_generator_precompile_validation"] = precompile_validation.to_dict()
+                candidate["_generator_precompile_reject_reasons"] = list(precompile_validation.reject_reasons)
+                candidate["_generator_precompile_validation"] = precompile_validation.to_dict()
+                return None
+            target_symbols = list(precompile_validation.target_symbols)
+            candidate = {
+                **candidate,
+                'research_task': dict(research_task),
+                'target_symbols': list(target_symbols),
+                'stock_pool': dict(precompile_validation.stock_pool),
+                'constraint_check': dict(precompile_validation.constraint_check),
+            }
 
             # 尝试通过 DSL 编译获得可执行策略
             compiled: Optional[dict] = None
@@ -679,9 +903,6 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                 description = str(candidate.get('description') or '')
                 compiled_meta = {}
 
-            target_symbols = cls._normalize_code_list(candidate.get('target_symbols'))
-            validation_focus = str(((candidate.get('research_task') or {}).get('validation_focus') or 'target_plus_representative')).strip().lower()
-
             if target_symbols and strategy_type == 'dsl_rule':
                 dsl_params = dict(params.get('dsl') or {})
                 dsl_metadata = dict(dsl_params.get('metadata') or {})
@@ -703,23 +924,11 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                 'position_sizing': dict(candidate.get('position_sizing') or {}),
                 'execution_notes': candidate.get('execution_notes'),
                 'rebalance_rule': dict(candidate.get('rebalance_rule') or {'mode': 'signal_rebalance'}),
-                'portfolio_spec': dict(candidate.get('portfolio_spec') or {
-                    'position_assumption': 'equal_weight_proxy' if len(target_symbols) > 1 else 'single_name_full_notional',
-                    'target_weight_scheme': 'equal_weight' if len(target_symbols) > 1 else 'single_name',
-                }),
-                'execution_assumptions': dict(candidate.get('execution_assumptions') or {
-                    'commission_rate': 0.00025,
-                    'slippage_bps': 5,
-                    'tradability_filter': True,
-                    'slippage_model': 'fixed',
-                }),
-                'validation_profile': dict(candidate.get('validation_profile') or {
-                    'profile': 'event_trade_validation' if validation_focus == 'event_target_only' else 'trade_rule_validation',
-                    'validation_focus': validation_focus,
-                    'primary_validation_layer': 'target' if validation_focus == 'event_target_only' else 'combined',
-                }),
+                'portfolio_spec': dict(precompile_validation.portfolio_spec),
+                'execution_assumptions': dict(precompile_validation.execution_assumptions),
+                'validation_profile': dict(precompile_validation.validation_profile),
                 'targeting_policy': dict(candidate.get('targeting_policy') or {}),
-                'constraint_check': dict(candidate.get('constraint_check') or {}),
+                'constraint_check': dict(precompile_validation.constraint_check),
                 'target_symbols': list(target_symbols),
                 'stock_pool': dict(
                     candidate.get('stock_pool')
@@ -748,12 +957,76 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
             shared_generation_context = dict(snapshot.get('_shared_generation_context') or {})
             if parent_strategies is None and shared_generation_context.get('parent_strategies'):
                 parent_strategies = [dict(item or {}) for item in list(shared_generation_context.get('parent_strategies') or [])]
+            requested_limit = max(1, min(int(limit or 3), 10))
+            history_summary = [
+                dict(item or {})
+                for item in list(shared_generation_context.get('history_summary') or [])
+            ]
+            if not history_summary:
+                history_summary = await self._recent_experiments(db, parent_strategies=parent_strategies)
+            research_context = await self._build_research_context(
+                db,
+                snapshot,
+                parent_strategies=parent_strategies,
+                history_summary=history_summary,
+                research_task=research_task,
+            )
+            research_context_summary = self._summarize_research_context(research_context)
+            task_target_context = dict(research_context.get('task_target_context') or {})
+            target_context_blocked = bool(research_context.get('blocked_by_target_universe'))
+            targeted_research = bool(
+                task_target_context.get('targeted_task')
+                or self._normalize_code_list((research_task or {}).get('target_symbols'))
+            )
             # 多阶段 pipeline 路径
             _pipeline_fallback_reason: Optional[str] = None
             skip_monolithic_external_provider = False
             pipeline_run_timeout_sec: Optional[float] = None
             pipeline_mode, _pipeline_factory = _resolve_pipeline_runtime_symbols()
-            if pipeline_mode == 'staged' and self.external_provider.is_enabled():
+            pipeline_disabled_by_scheduler = bool((research_task or {}).get('disable_pipeline_staged'))
+            pipeline_disable_reason = str(
+                (research_task or {}).get('pipeline_staged_skip_reason') or 'generator_mode_cooldown'
+            ).strip()
+            if targeted_research and target_context_blocked:
+                if pipeline_mode == 'staged':
+                    _pipeline_fallback_reason = 'target_context_blocked'
+                report: dict[str, Any] = {
+                    'requested_limit': requested_limit,
+                    'market_frame_ready': False,
+                    'market_frame_rows': 0,
+                    'market_frame_source': 'target_context_blocked',
+                    'research_context': research_context,
+                    'research_context_summary': research_context_summary,
+                    'external_provider': {
+                        'enabled': bool(self.external_provider.is_enabled()),
+                        'provider': getattr(self.external_provider.config, 'provider', None),
+                        'model': getattr(self.external_provider.config, 'model', None),
+                        'status': 'skipped_target_context_blocked',
+                        'request_limits': [],
+                        'requests': [],
+                        'selected_count': 0,
+                        'viable_selected_count': 0,
+                        'fallback_count': 0,
+                        'analysis': {},
+                    },
+                    'local_generator': {
+                        'status': 'skipped_target_context_blocked',
+                        'precompile_rejected_count': 0,
+                        'precompile_rejections': [],
+                    },
+                    'selected_count': 0,
+                    'selected_generators': {},
+                    'research_task': dict(research_task or {}),
+                    'pipeline_run_timeout_sec': None,
+                }
+                if _pipeline_fallback_reason:
+                    report['pipeline_staged_fallback_reason'] = _pipeline_fallback_reason
+                report['external_provider'] = _finalize_external_provider_report(report.get('external_provider'))
+                self.last_report = report
+                return []
+            if pipeline_disabled_by_scheduler and pipeline_mode == 'staged':
+                _pipeline_fallback_reason = pipeline_disable_reason or 'generator_mode_cooldown'
+            elif pipeline_mode == 'staged' and self.external_provider.is_enabled():
                 pipeline_run_timeout_sec = self._pipeline_run_timeout_sec()
                 try:
                     staged_specs = await self._generate_via_pipeline(
@@ -781,20 +1054,6 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
 
             frame = await self._build_market_frame(db, research_task=research_task)
             frame_source = 'primary_market_frame' if frame is not None and not frame.empty else 'none'
-            requested_limit = max(1, min(int(limit or 3), 10))
-            history_summary = [
-                dict(item or {})
-                for item in list(shared_generation_context.get('history_summary') or [])
-            ]
-            if not history_summary:
-                history_summary = await self._recent_experiments(db, parent_strategies=parent_strategies)
-            research_context = await self._build_research_context(
-                db,
-                snapshot,
-                parent_strategies=parent_strategies,
-                history_summary=history_summary,
-                research_task=research_task,
-            )
             frame_cache = await self._build_symbol_frame_cache(db, research_context=research_context, research_task=research_task)
             if (frame is None or frame.empty) and frame_cache:
                 for cached_frame in frame_cache.values():
@@ -813,7 +1072,7 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                 'market_frame_rows': int(len(frame)) if frame is not None and not frame.empty else 0,
                 'market_frame_source': frame_source,
                 'research_context': research_context,
-                'research_context_summary': self._summarize_research_context(research_context),
+                'research_context_summary': research_context_summary,
                 'external_provider': {
                     'enabled': bool(self.external_provider.is_enabled()),
                     'provider': getattr(self.external_provider.config, 'provider', None),
@@ -825,6 +1084,11 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                     'viable_selected_count': 0,
                     'fallback_count': 0,
                     'analysis': {},
+                },
+                'local_generator': {
+                    'status': 'pending',
+                    'precompile_rejected_count': 0,
+                    'precompile_rejections': [],
                 },
                 'selected_count': 0,
                 'selected_generators': {},
@@ -916,12 +1180,14 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                 report['selected_count'] = len(selected)
                 report['selected_generators'] = generator_counts
                 report['external_provider']['selected_count'] = generator_counts.get('external_llm', 0)
+                report['local_generator']['status'] = 'skipped_no_market_frame'
+                report['external_provider'] = _finalize_external_provider_report(report.get('external_provider'))
                 self.last_report = report
                 return selected
             local_specs: list[StrategySpec] = []
-            targeted_research = bool(self._normalize_code_list((research_task or {}).get('target_symbols')))
             allow_local_specs = not targeted_research or (not external_specs and not fallback_external_specs)
             if allow_local_specs:
+                report['local_generator']['status'] = 'running'
                 local_limit = limit
                 if targeted_research and str((research_task or {}).get('task_source') or '').strip().lower() == 'event_driven':
                     local_limit = 1
@@ -934,8 +1200,21 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                     spec = self._local_candidate_to_spec(candidate, research_task=research_task)
                     if spec is not None:
                         local_specs.append(spec)
+                    elif candidate.get("_generator_precompile_reject_reasons"):
+                        report['local_generator']['precompile_rejected_count'] += 1
+                        if len(report['local_generator']['precompile_rejections']) < 8:
+                            report['local_generator']['precompile_rejections'].append(
+                                {
+                                    'name': str(candidate.get('name') or ''),
+                                    'category': str(candidate.get('category') or ''),
+                                    'reject_reasons': list(candidate.get("_generator_precompile_reject_reasons") or []),
+                                }
+                            )
                     if len(local_specs) >= local_limit:
                         break
+                report['local_generator']['status'] = 'succeeded' if local_specs else 'empty'
+            else:
+                report['local_generator']['status'] = 'skipped_external_selected'
             if len(external_specs) >= limit:
                 selected = external_specs[:limit]
                 generator_counts: dict[str, int] = {}
@@ -975,5 +1254,6 @@ class _LLMProxyStrategyGeneratorGenerateMixin:
                 pipeline_report = getattr(self, 'last_report', None) or {}
                 report['pipeline_staged_provenance'] = pipeline_report.get('pipeline_provenance')
                 report['pipeline_staged_error'] = pipeline_report.get('pipeline_error')
+            report['external_provider'] = _finalize_external_provider_report(report.get('external_provider'))
             self.last_report = report
             return merged

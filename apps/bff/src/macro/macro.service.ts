@@ -26,7 +26,7 @@ export class MacroService {
         try {
             const payload = await this.mcp.callTool('get_macro_indicator', { indicator });
             const result = {
-                data: payload,
+                data: this.normalizeToolPayload(payload),
                 meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } }
             };
             await this.cacheService.set(cacheKey, result, ttlSeconds);
@@ -38,5 +38,27 @@ export class MacroService {
                 detail: error instanceof Error ? error.message : String(error),
             });
         }
+    }
+
+    private normalizeToolPayload(payload: unknown): unknown {
+        if (!this.isRecord(payload)) {
+            return payload;
+        }
+
+        if (!Object.prototype.hasOwnProperty.call(payload, 'data')) {
+            return payload;
+        }
+
+        const data = payload.data;
+        const toolMeta = this.isRecord(payload.meta) ? payload.meta : null;
+        if (this.isRecord(data)) {
+            return toolMeta ? { ...data, meta: toolMeta } : data;
+        }
+
+        return data;
+    }
+
+    private isRecord(value: unknown): value is Record<string, unknown> {
+        return !!value && typeof value === 'object' && !Array.isArray(value);
     }
 }

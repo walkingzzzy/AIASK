@@ -28,13 +28,16 @@ from ..domain.constants import (
 from ..domain.strategy_profile import candidate_signature, infer_candidate_strategy_profile
 from ..domain.targets import _build_target_alignment_contract
 from ..domain.targets import _extract_target_codes_from_payload
+from ..domain.targets import _normalize_target_codes
 from ..domain.targets import _normalize_research_task_contract
 from ..infrastructure.mcp_services import get_strategy_dsl_compiler
 from .backtest_filter import build_target_quality_gate_summary
 from .candidate_contract import (
+    apply_resolved_candidate_envelope,
     build_candidate_contract_hash,
     build_factory_backtest_assumptions,
     build_portfolio_candidate_contract,
+    build_tested_object_hash,
     candidate_contract_value,
 )
 from .runtime import get_strategy_factory_package as _runtime_get_strategy_factory_package
@@ -265,6 +268,26 @@ def _resolve_gate_1_representative_count(candidate: dict, default_count: int) ->
 def _resolve_gate_1_codes(
     candidate: dict,
 ) -> tuple[list[str], list[str], str, str, dict[str, Any]]:
+    def _preferred_target_order(payload: dict) -> list[str]:
+        params = dict(payload.get("params") or {})
+        envelope = dict(payload.get("resolved_candidate_envelope") or {})
+        preferred = []
+        for source in (
+            payload.get("requested_target_symbols"),
+            params.get("requested_target_symbols"),
+            envelope.get("requested_target_symbols"),
+        ):
+            preferred.extend(_normalize_target_codes(source, limit=12))
+        return list(dict.fromkeys(preferred))
+
+    def _apply_preferred_order(codes: list[str], preferred: list[str]) -> list[str]:
+        if not codes or not preferred:
+            return list(codes)
+        preferred_set = set(codes)
+        ordered = [code for code in preferred if code in preferred_set]
+        ordered.extend(code for code in codes if code not in ordered)
+        return ordered
+
     representative_stocks = list(_compat_setting("REPRESENTATIVE_STOCKS", REPRESENTATIVE_STOCKS))
     representative_count = _resolve_gate_1_representative_count(
         candidate,
@@ -273,6 +296,7 @@ def _resolve_gate_1_codes(
     research_task = _normalize_research_task_contract(candidate.get("research_task"))
     validation_focus = str(research_task.get("validation_focus") or "target_plus_representative").strip().lower()
     target_codes = _extract_target_codes_from_payload(candidate, limit=max(representative_count, 12))
+    target_codes = _apply_preferred_order(target_codes, _preferred_target_order(dict(candidate or {})))
     prioritized_target_codes = list(target_codes[:representative_count])
     padded_representatives = [code for code in representative_stocks if code not in prioritized_target_codes]
     if validation_focus == "event_target_only" and prioritized_target_codes:
@@ -356,7 +380,9 @@ def _is_targeted_snapshot_candidate(
     payload = dict(candidate or {})
     normalized_task = _normalize_research_task_contract(research_task or payload.get("research_task") or {})
     resolved_tags = tags if tags is not None else _candidate_tags(payload)
-    resolved_target_count = int(target_count if target_count is not None else len(_extract_target_codes_from_payload(payload, limit=12)))
+    candidate_target_count = int(target_count if target_count is not None else len(_extract_target_codes_from_payload(payload, limit=12)))
+    task_target_count = len(list(normalized_task.get("target_symbols") or []))
+    resolved_target_count = max(candidate_target_count, task_target_count)
     resolved_validation_focus = str(
         validation_focus if validation_focus is not None else normalized_task.get("validation_focus") or ""
     ).strip().lower()
@@ -368,7 +394,7 @@ def _is_targeted_snapshot_candidate(
     ).strip().lower()
     return (
         task_source == "snapshot"
-        and resolved_target_count > 1
+        and resolved_target_count > 0
         and (
             "targeted_universe" in resolved_tags
             or resolved_validation_focus in {"candidate_target_only", "event_target_only", "target_plus_representative"}
@@ -1239,9 +1265,11 @@ async def gate_1_fast_screen(
     kline_cache: Optional[Dict[str, list]] = None,
 ) -> GateResult:
     """用少量代表性股票做快速回测，Sharpe ≥ GATE1_SHARPE_MIN 即通过。"""
+    candidate = apply_resolved_candidate_envelope(candidate)
     factory_pkg = get_strategy_factory_package()
     contract_snapshot = build_portfolio_candidate_contract(candidate)
     contract_hash = build_candidate_contract_hash(contract=contract_snapshot)
+    tested_object_hash = str(candidate.get("tested_object_hash") or "").strip() or build_tested_object_hash(candidate)
     strategy_type = str(contract_snapshot.get("strategy_type") or candidate.get("strategy_type") or "momentum")
     assumptions = build_factory_backtest_assumptions(candidate)
     params = {
@@ -1251,45 +1279,85 @@ async def gate_1_fast_screen(
 
     sharpe_min = float(_compat_setting("GATE1_SHARPE_MIN", GATE1_SHARPE_MIN) or GATE1_SHARPE_MIN)
     codes, prioritized_target_codes, code_source, validation_focus, research_task = _resolve_gate_1_codes(candidate)
+    tested_codes = (
+        list(prioritized_target_codes)
+        if validation_focus != "broad_generalization" and prioritized_target_codes
+        else list(codes)
+    )
     sharpe_values: list[float] = []
     total_return_values: list[float] = []
     turnover_values: list[float] = []
     trade_count_values: list[float] = []
     max_drawdown_values: list[float] = []
     errors: list[str] = []
+    market_data: dict[str, list] = {}
 
-    for code in codes:
+    for code in tested_codes:
         try:
             if kline_cache and code in kline_cache:
                 klines = kline_cache[code]
             else:
                 klines = await db.get_klines(code, limit=250)
             if not klines or len(klines) < 30:
+                errors.append(f"{code}:insufficient_klines")
                 continue
-
-            BacktestEngine = factory_pkg.BacktestEngine
-            result = await asyncio.to_thread(
-                BacktestEngine.run_backtest,
-                code,
-                klines,
-                strategy_type,
-                params,
-            )
-            payload = dict(result.get("data") or {}) if isinstance(result, dict) else {}
-            if not result.get("success"):
-                raise ValueError(result.get("error") or "backtest_failed")
-            sharpe = float(payload.get("sharpe_ratio") or payload.get("sharpe") or 0.0)
-            sharpe_values.append(sharpe)
-            if payload.get("total_return") is not None:
-                total_return_values.append(_safe_float(payload.get("total_return"), 0.0))
-            if payload.get("turnover_proxy") is not None:
-                turnover_values.append(_safe_float(payload.get("turnover_proxy"), 0.0))
-            if payload.get("trades_count") is not None:
-                trade_count_values.append(_safe_float(payload.get("trades_count"), 0.0))
-            if payload.get("max_drawdown") is not None:
-                max_drawdown_values.append(abs(_safe_float(payload.get("max_drawdown"), 0.0)))
+            market_data[code] = list(klines)
         except Exception as exc:
             errors.append(f"{code}:{type(exc).__name__}")
+
+    if len(market_data) > 1:
+        portfolio_runner = getattr(factory_pkg.BacktestEngine, "run_portfolio_backtest", None)
+        if not callable(portfolio_runner):
+            errors.append("portfolio_contract_runner_unavailable")
+        else:
+            try:
+                result = await asyncio.to_thread(
+                    portfolio_runner,
+                    market_data,
+                    strategy_type,
+                    params,
+                )
+                payload = dict(result.get("data") or {}) if isinstance(result, dict) else {}
+                if not isinstance(result, dict) or not result.get("success"):
+                    raise ValueError((result or {}).get("error") or "portfolio_backtest_failed")
+                sharpe = float(payload.get("sharpe_ratio") or payload.get("sharpe") or 0.0)
+                sharpe_values.append(sharpe)
+                if payload.get("total_return") is not None:
+                    total_return_values.append(_safe_float(payload.get("total_return"), 0.0))
+                if payload.get("turnover_proxy") is not None:
+                    turnover_values.append(_safe_float(payload.get("turnover_proxy"), 0.0))
+                if payload.get("trades_count") is not None:
+                    trade_count_values.append(_safe_float(payload.get("trades_count"), 0.0))
+                if payload.get("max_drawdown") is not None:
+                    max_drawdown_values.append(abs(_safe_float(payload.get("max_drawdown"), 0.0)))
+            except Exception as exc:
+                errors.append(f"portfolio_contract:{type(exc).__name__}")
+    else:
+        for code, klines in market_data.items():
+            try:
+                BacktestEngine = factory_pkg.BacktestEngine
+                result = await asyncio.to_thread(
+                    BacktestEngine.run_backtest,
+                    code,
+                    klines,
+                    strategy_type,
+                    params,
+                )
+                payload = dict(result.get("data") or {}) if isinstance(result, dict) else {}
+                if not isinstance(result, dict) or not result.get("success"):
+                    raise ValueError((result or {}).get("error") or "backtest_failed")
+                sharpe = float(payload.get("sharpe_ratio") or payload.get("sharpe") or 0.0)
+                sharpe_values.append(sharpe)
+                if payload.get("total_return") is not None:
+                    total_return_values.append(_safe_float(payload.get("total_return"), 0.0))
+                if payload.get("turnover_proxy") is not None:
+                    turnover_values.append(_safe_float(payload.get("turnover_proxy"), 0.0))
+                if payload.get("trades_count") is not None:
+                    trade_count_values.append(_safe_float(payload.get("trades_count"), 0.0))
+                if payload.get("max_drawdown") is not None:
+                    max_drawdown_values.append(abs(_safe_float(payload.get("max_drawdown"), 0.0)))
+            except Exception as exc:
+                errors.append(f"{code}:{type(exc).__name__}")
 
     if not sharpe_values:
         return GateResult(
@@ -1297,10 +1365,20 @@ async def gate_1_fast_screen(
             gate="gate_1",
             reasons=["no_backtest_results", *errors],
             metrics={
-                "tested_codes": codes,
+                "tested_codes": tested_codes,
                 "target_codes": prioritized_target_codes,
                 "code_source": code_source,
                 "validation_focus": validation_focus,
+                "primary_validation_layer": (
+                    "combined"
+                    if validation_focus == "broad_generalization"
+                    else "target"
+                ),
+                "validation_contract_mode": (
+                    "portfolio_contract_fast_screen"
+                    if len(tested_codes) > 1
+                    else "single_code_fast_screen"
+                ),
                 "event_window_config": {
                     "event_window": dict(research_task.get("event_window") or {}),
                     "estimation_window": dict(research_task.get("estimation_window") or {}),
@@ -1308,13 +1386,15 @@ async def gate_1_fast_screen(
                 },
                 "contamination_summary": {
                     "validation_focus": validation_focus,
-                    "representative_included": bool([code for code in codes if code not in prioritized_target_codes]),
-                    "representative_code_count": len([code for code in codes if code not in prioritized_target_codes]),
+                    "representative_included": bool([code for code in tested_codes if code not in prioritized_target_codes]),
+                    "representative_code_count": len([code for code in tested_codes if code not in prioritized_target_codes]),
                 },
                 "candidate_contract_hash": contract_hash,
-                "tested_object_hash": contract_hash,
+                "tested_object_hash": tested_object_hash,
                 "candidate_contract_snapshot": contract_snapshot,
                 "backtest_assumptions": assumptions.to_audit_dict(),
+                "tested_code_count": len(tested_codes),
+                "eligible_code_count": len(market_data),
                 "sharpe_values": [],
             },
         )
@@ -1330,13 +1410,25 @@ async def gate_1_fast_screen(
         gate="gate_1",
         reasons=[] if passed else [f"avg_sharpe_{avg_sharpe:.4f}_below_{sharpe_min}"],
         metrics={
-            "tested_codes": codes,
+            "tested_codes": tested_codes,
             "target_codes": prioritized_target_codes,
             "target_sample_count": target_sample_count,
             "research_target_count": research_target_count,
             "target_sample_ratio": target_sample_ratio,
             "code_source": code_source,
             "validation_focus": validation_focus,
+            "primary_validation_layer": (
+                "combined"
+                if validation_focus == "broad_generalization"
+                else "target"
+            ),
+            "validation_contract_mode": (
+                "portfolio_contract_fast_screen"
+                if len(tested_codes) > 1
+                else "single_code_fast_screen"
+            ),
+            "tested_code_count": len(tested_codes),
+            "eligible_code_count": len(market_data),
             "sharpe_values": [round(v, 4) for v in sharpe_values],
             "avg_sharpe": round(avg_sharpe, 4),
             "avg_total_return": round(sum(total_return_values) / len(total_return_values), 6) if total_return_values else 0.0,
@@ -1347,7 +1439,7 @@ async def gate_1_fast_screen(
             "error_count": len(errors),
             "errors": errors,
             "candidate_contract_hash": contract_hash,
-            "tested_object_hash": contract_hash,
+            "tested_object_hash": tested_object_hash,
             "candidate_contract_snapshot": contract_snapshot,
             "backtest_assumptions": assumptions.to_audit_dict(),
             "event_window_config": {
@@ -1357,8 +1449,8 @@ async def gate_1_fast_screen(
             },
             "contamination_summary": {
                 "validation_focus": validation_focus,
-                "representative_included": bool([code for code in codes if code not in prioritized_target_codes]),
-                "representative_code_count": len([code for code in codes if code not in prioritized_target_codes]),
+                "representative_included": bool([code for code in tested_codes if code not in prioritized_target_codes]),
+                "representative_code_count": len([code for code in tested_codes if code not in prioritized_target_codes]),
             },
         },
     )
@@ -1390,10 +1482,11 @@ async def run_gated_filter(
     for start in range(0, len(candidates), _GATE_0_BATCH_SIZE):
         gate_0_batch_count += 1
         for candidate in candidates[start : start + _GATE_0_BATCH_SIZE]:
-            prepared_candidate = _enrich_legacy_gate_0_candidate(candidate)
-            if prepared_candidate is not candidate:
-                candidate.clear()
-                candidate.update(prepared_candidate)
+            prepared_candidate = apply_resolved_candidate_envelope(
+                _enrich_legacy_gate_0_candidate(candidate)
+            )
+            candidate.clear()
+            candidate.update(prepared_candidate)
             result = gate_0_structural(candidate)
             candidate["gate_0_result"] = {"passed": result.passed, "reasons": result.reasons}
             if result.passed:

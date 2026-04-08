@@ -11,6 +11,7 @@ from strategy_factory.application.quality_gates import (
     pre_gate_screen,
     run_gated_filter,
 )
+from strategy_factory.application.candidate_contract import apply_resolved_candidate_envelope
 
 
 def _complete_candidate(candidate: dict) -> dict:
@@ -20,8 +21,12 @@ def _complete_candidate(candidate: dict) -> dict:
         "risk_rules": {"stop_loss_pct": 0.08, "take_profit_pct": 0.18, "max_holding_days": 10},
         "rebalance_rule": {"mode": "signal_rebalance"},
         "portfolio_spec": {"position_assumption": "single_name_full_notional", "target_weight_scheme": "single_name"},
-        "execution_assumptions": {"slippage_bps": 5, "commission_rate": 0.00025, "tradability_filter": True},
-        "validation_profile": {"profile": "trade_rule_validation", "validation_focus": "target_plus_representative"},
+        "execution_assumptions": {"slippage_bps": 5, "commission_rate": 0.00025, "tradability_filter": True, "slippage_model": "fixed"},
+        "validation_profile": {
+            "profile": "trade_rule_validation",
+            "validation_focus": "target_plus_representative",
+            "primary_validation_layer": "target",
+        },
     }
     enriched = dict(candidate or {})
     params = dict(enriched.get("params") or {})
@@ -73,16 +78,19 @@ def test_gate_0_structural_rejects_incomplete_trade_contract():
 
 
 @pytest.mark.asyncio
-async def test_gate_1_fast_screen_uses_backtest_engine_run_backtest(monkeypatch):
+async def test_gate_1_fast_screen_uses_portfolio_backtest_for_multi_target_contract(monkeypatch):
     calls = []
 
     class _FakeBacktestEngine:
         @staticmethod
         def run_backtest(code, klines, strategy, params):
+            raise AssertionError("multi-target gate_1 should use run_portfolio_backtest")
+
+        @staticmethod
+        def run_portfolio_backtest(market_data, strategy, params):
             calls.append(
                 {
-                    "code": code,
-                    "klines_len": len(klines),
+                    "codes": list(market_data.keys()),
                     "strategy": strategy,
                     "params": dict(params or {}),
                 }
@@ -119,11 +127,14 @@ async def test_gate_1_fast_screen_uses_backtest_engine_run_backtest(monkeypatch)
 
     assert result.passed is True
     assert result.metrics["avg_sharpe"] == 1.25
-    assert [item["code"] for item in calls] == result.metrics["tested_codes"]
-    assert calls[0]["code"] == "600519"
+    assert calls[0]["codes"] == result.metrics["tested_codes"]
+    assert calls[0]["codes"] == ["600519", "000858"]
     assert calls[0]["params"]["commission"] == pytest.approx(0.00025)
     assert calls[0]["params"]["slippage"] == pytest.approx(0.0005)
-    assert result.metrics["candidate_contract_hash"] == result.metrics["tested_object_hash"]
+    assert result.metrics["validation_contract_mode"] == "portfolio_contract_fast_screen"
+    assert result.metrics["candidate_contract_hash"]
+    assert result.metrics["tested_object_hash"]
+    assert result.metrics["candidate_contract_hash"] != result.metrics["tested_object_hash"]
     assert result.metrics["backtest_assumptions"]["commission_rate"] == pytest.approx(0.00025)
 
 
@@ -157,26 +168,44 @@ async def test_gate_1_fast_screen_dispatches_backtest_via_asyncio_to_thread(monk
     )
 
     result = await gate_1_fast_screen(
-        _complete_candidate({"strategy_type": "momentum", "params": {"lookback": 20}}),
+        _complete_candidate(
+            {
+                "strategy_type": "momentum",
+                "params": {"lookback": 20},
+                "target_symbols": ["600519"],
+                "research_task": {
+                    "task_source": "bulk_stock_matrix",
+                    "target_symbols": ["600519"],
+                },
+            }
+        ),
         db,
     )
 
     assert result.passed is True
-    assert len(to_thread_calls) == len(result.metrics["tested_codes"])
+    assert len(to_thread_calls) == 1
     assert all(call[0] is _FakeBacktestEngine.run_backtest for call in to_thread_calls)
 
 
 @pytest.mark.asyncio
 async def test_gate_1_fast_screen_records_turnover_and_return_aggregates(monkeypatch):
-    responses = [
-        {"success": True, "data": {"sharpe_ratio": 0.4, "total_return": 0.02, "turnover_proxy": 1.8, "trades_count": 6, "max_drawdown": 0.08}},
-        {"success": True, "data": {"sharpe_ratio": 0.8, "total_return": 0.04, "turnover_proxy": 1.2, "trades_count": 8, "max_drawdown": 0.12}},
-    ]
-
     class _FakeBacktestEngine:
         @staticmethod
         def run_backtest(_code, _klines, _strategy, _params):
-            return responses.pop(0)
+            raise AssertionError("multi-target gate_1 should use run_portfolio_backtest")
+
+        @staticmethod
+        def run_portfolio_backtest(_market_data, _strategy, _params):
+            return {
+                "success": True,
+                "data": {
+                    "sharpe_ratio": 0.6,
+                    "total_return": 0.03,
+                    "turnover_proxy": 1.5,
+                    "trades_count": 7,
+                    "max_drawdown": 0.10,
+                },
+            }
 
     monkeypatch.setattr(
         legacy_runtime,
@@ -206,9 +235,9 @@ async def test_gate_1_fast_screen_records_turnover_and_return_aggregates(monkeyp
         db,
     )
 
-    assert result.metrics["avg_sharpe"] == 0.6
-    assert result.metrics["avg_total_return"] == 0.03
-    assert result.metrics["avg_turnover_proxy"] == 1.5
+    assert result.metrics["avg_sharpe"] == pytest.approx(0.6)
+    assert result.metrics["avg_total_return"] == pytest.approx(0.03)
+    assert result.metrics["avg_turnover_proxy"] == pytest.approx(1.5)
     assert result.metrics["avg_trades_count"] == 7.0
     assert result.metrics["avg_max_drawdown"] == 0.1
 
@@ -258,7 +287,11 @@ async def test_gate_1_fast_screen_expands_pipeline_staged_ma_cross_snapshot_to_f
     class _FakeBacktestEngine:
         @staticmethod
         def run_backtest(code, klines, strategy, params):
-            calls.append(code)
+            raise AssertionError("multi-target gate_1 should use run_portfolio_backtest")
+
+        @staticmethod
+        def run_portfolio_backtest(market_data, strategy, params):
+            calls.append(list(market_data.keys()))
             return {"success": True, "data": {"sharpe_ratio": 0.8}}
 
     monkeypatch.setattr(
@@ -291,7 +324,7 @@ async def test_gate_1_fast_screen_expands_pipeline_staged_ma_cross_snapshot_to_f
 
     assert result.passed is True
     assert result.metrics["tested_codes"] == target_symbols[:5]
-    assert calls == target_symbols[:5]
+    assert calls == [target_symbols[:5]]
 
 
 @pytest.mark.asyncio
@@ -301,7 +334,11 @@ async def test_gate_1_fast_screen_expands_pipeline_staged_rsi_snapshot_to_four_t
     class _FakeBacktestEngine:
         @staticmethod
         def run_backtest(code, klines, strategy, params):
-            calls.append(code)
+            raise AssertionError("multi-target gate_1 should use run_portfolio_backtest")
+
+        @staticmethod
+        def run_portfolio_backtest(market_data, strategy, params):
+            calls.append(list(market_data.keys()))
             return {"success": True, "data": {"sharpe_ratio": 0.8}}
 
     monkeypatch.setattr(
@@ -334,7 +371,7 @@ async def test_gate_1_fast_screen_expands_pipeline_staged_rsi_snapshot_to_four_t
 
     assert result.passed is True
     assert result.metrics["tested_codes"] == target_symbols[:4]
-    assert calls == target_symbols[:4]
+    assert calls == [target_symbols[:4]]
 
 
 @pytest.mark.asyncio
@@ -630,6 +667,129 @@ def test_pre_gate_rejects_snapshot_candidate_with_zero_target_alignment():
 
     assert result.passed is False
     assert "target_universe_alignment_too_low" in result.reasons
+    assert result.metrics["coverage_ratio"] == 0.0
+    assert result.metrics["intersection_ratio"] == 0.0
+
+
+def test_pre_gate_recovers_snapshot_candidate_when_envelope_refreshes_alignment_metrics():
+    candidate = apply_resolved_candidate_envelope(
+        _complete_candidate(
+            {
+                "strategy_type": "momentum",
+                "params": {"lookback": 20, "threshold": 0.02},
+                "target_symbols": ["600519", "000858", "601398", "601939"],
+                "tags": ["targeted_universe", "pipeline_staged"],
+                "constraint_check": {"coverage_ratio": 0.0, "intersection_ratio": 0.0, "target_overlap_count": 0},
+                "research_task": {
+                    "task_source": "snapshot",
+                    "task_id": "task_alignment_refresh",
+                    "validation_focus": "candidate_target_only",
+                    "allowed_strategy_types": ["momentum"],
+                    "target_symbols": ["600519", "000858", "601398", "601939"],
+                },
+            }
+        )
+    )
+
+    result = pre_gate_screen(
+        candidate,
+        seen_signatures=set(),
+        family_counts={},
+        stock_counts={},
+        family_quota_limit=6,
+        per_stock_quota_limit=5,
+    )
+
+    assert result.passed is True
+    assert result.reasons == []
+    assert candidate["constraint_check"]["coverage_ratio"] == pytest.approx(1.0)
+    assert candidate["constraint_check"]["intersection_ratio"] == pytest.approx(1.0)
+    assert candidate["constraint_check"]["target_overlap_count"] == 4
+
+
+def test_pre_gate_recovers_rl_bandit_snapshot_candidate_with_repaired_allowed_types_and_alignment():
+    candidate = apply_resolved_candidate_envelope(
+        _complete_candidate(
+            {
+                "strategy_type": "momentum",
+                "generator_type": "rl_bandit",
+                "candidate_family": "gap_trend_interaction",
+                "params": {"lookback": 20, "threshold": 0.02},
+                "target_symbols": [
+                    "300750",
+                    "600519",
+                    "600900",
+                    "601398",
+                    "601857",
+                    "601899",
+                    "601988",
+                    "688981",
+                ],
+                "tags": ["targeted_universe", "generator_rl_bandit", "rl_evolved"],
+                "constraint_check": {"coverage_ratio": 0.0, "intersection_ratio": 0.0, "target_overlap_count": 0},
+                "research_task": {
+                    "task_source": "snapshot",
+                    "task_id": "task_rl_bandit_alignment_refresh",
+                    "validation_focus": "candidate_target_only",
+                    "preferred_strategy_types": ["ma_cross", "momentum", "rsi"],
+                    "allowed_strategy_types": ["ma_cross", "rsi", "sector_rotation", "volatility_breakout"],
+                    "target_symbols": [
+                        "300750",
+                        "600519",
+                        "600900",
+                        "601398",
+                        "601857",
+                        "601899",
+                        "601988",
+                        "688981",
+                    ],
+                },
+            }
+        )
+    )
+
+    result = pre_gate_screen(
+        candidate,
+        seen_signatures=set(),
+        family_counts={},
+        stock_counts={},
+        family_quota_limit=6,
+        per_stock_quota_limit=5,
+    )
+
+    assert result.passed is True
+    assert result.reasons == []
+    assert "momentum" in list(candidate["research_task"].get("allowed_strategy_types") or [])
+    assert candidate["constraint_check"]["coverage_ratio"] == pytest.approx(1.0)
+    assert candidate["constraint_check"]["intersection_ratio"] == pytest.approx(1.0)
+
+
+def test_pre_gate_rejects_single_target_snapshot_candidate_with_zero_target_alignment():
+    result = pre_gate_screen(
+        _complete_candidate(
+            {
+                "strategy_type": "momentum",
+                "params": {"lookback": 20, "threshold": 0.02},
+                "target_symbols": ["000001"],
+                "constraint_check": {"coverage_ratio": 0.0, "intersection_ratio": 0.0, "target_overlap_count": 0},
+                "research_task": {
+                    "task_source": "snapshot",
+                    "task_id": "task_single_target_misaligned",
+                    "validation_focus": "target_plus_representative",
+                    "target_symbols": ["600519"],
+                },
+            }
+        ),
+        seen_signatures=set(),
+        family_counts={},
+        stock_counts={},
+        family_quota_limit=6,
+        per_stock_quota_limit=5,
+    )
+
+    assert result.passed is False
+    assert "target_universe_alignment_too_low" in result.reasons
+    assert result.metrics["target_quality_summary"]["targeted_snapshot"] is True
     assert result.metrics["coverage_ratio"] == 0.0
     assert result.metrics["intersection_ratio"] == 0.0
 
@@ -1166,9 +1326,9 @@ async def test_run_gated_filter_penalizes_fragile_snapshot_baskets_before_gate_2
             "candidate_id": "fragile_snapshot",
             "strategy_type": "momentum",
             "params": {"lookback": 10, "threshold": 0.01},
-            "target_symbols": ["601628", "600030", "601211", "000776", "600999", "601901", "601018", "002736"],
+            "target_symbols": ["601628", "600030", "300750", "002594", "600519", "601318", "300760", "000333"],
             "tags": ["targeted_universe", "pipeline_staged"],
-            "constraint_check": {"coverage_ratio": 0.2, "intersection_ratio": 0.15},
+            "constraint_check": {"coverage_ratio": 0.25, "intersection_ratio": 0.25, "target_overlap_count": 2},
             "research_task": {
                 "task_source": "snapshot",
                 "task_id": "task_rotation_fragile",
@@ -1384,11 +1544,15 @@ async def test_run_gated_filter_blocks_low_sample_snapshot_candidate_before_gate
     result = await run_gated_filter(candidates, SimpleNamespace(), _DummyBacktestFilter())
 
     assert captured_gate_2_ids == ["steady_snapshot"]
-    fragile_result = next(
-        item for item in result["gate_report"]["gate_1"]["failed"]
-        if item["strategy_type"] == "rsi"
+    blocked_candidates = [
+        *list((result["gate_report"]["pre_gate"] or {}).get("failed") or []),
+        *list((result["gate_report"]["gate_1"] or {}).get("failed") or []),
+    ]
+    fragile_result = next(item for item in blocked_candidates if item["strategy_type"] == "rsi")
+    assert (
+        "target_sample_sufficiency_too_low" in list(fragile_result.get("reasons") or [])
+        or fragile_result.get("reason") == "target_sample_sufficiency_too_low"
     )
-    assert "target_sample_sufficiency_too_low" in fragile_result["reasons"]
 
 
 @pytest.mark.asyncio

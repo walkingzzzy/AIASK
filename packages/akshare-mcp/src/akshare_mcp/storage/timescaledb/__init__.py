@@ -16,6 +16,8 @@
 import asyncio
 import atexit
 import logging
+import threading
+import weakref
 from typing import Awaitable, Optional, TypeVar
 
 from .schema import SchemaBase
@@ -63,8 +65,11 @@ class TimescaleDBAdapter(
     pass
 
 
-# 全局单例
+# 兼容旧测试/调用方的别名；真实缓存已按 loop/thread 隔离
 _db_instance: Optional[TimescaleDBAdapter] = None
+_db_instances_by_loop: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, TimescaleDBAdapter] = weakref.WeakKeyDictionary()
+_db_instances_by_thread: dict[int, TimescaleDBAdapter] = {}
+_db_instance_lock = threading.Lock()
 _shutdown_registered = False
 
 
@@ -91,22 +96,100 @@ async def _flush_cleanup_callbacks() -> None:
     await asyncio.sleep(0.01)
 
 
-def _safe_shutdown_db_atexit() -> None:
-    """独立脚本退出时尽力关闭数据库连接池。"""
+async def drain_cleanup_callbacks() -> None:
+    """Public wrapper for transport cleanup drains used by shared shutdown paths."""
+    await _flush_cleanup_callbacks()
+
+
+def _snapshot_instances_locked() -> list[TimescaleDBAdapter]:
+    instances: list[TimescaleDBAdapter] = []
+    seen: set[int] = set()
+    for instance in list(_db_instances_by_loop.values()) + list(_db_instances_by_thread.values()) + [_db_instance]:
+        if instance is None:
+            continue
+        marker = id(instance)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        instances.append(instance)
+    return instances
+
+
+def _refresh_legacy_alias_locked() -> None:
     global _db_instance
-    instance = _db_instance
+    remaining = _snapshot_instances_locked()
+    _db_instance = remaining[0] if remaining else None
+
+
+async def _close_instance(
+    instance: Optional[TimescaleDBAdapter],
+    *,
+    current_loop: asyncio.AbstractEventLoop | None,
+    force_foreign_loop: bool,
+) -> None:
     if instance is None:
         return
+    bound_loop = getattr(instance, '_bound_loop', None)
+    if force_foreign_loop and current_loop is not None and bound_loop not in (None, current_loop):
+        _force_terminate_instance(instance, reason="close_db called from different event loop")
+        return
+    await asyncio.shield(instance.close())
+
+
+async def _close_all_db_instances() -> None:
+    global _db_instance, _db_instances_by_loop, _db_instances_by_thread
     try:
-        asyncio.run(close_db())
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    with _db_instance_lock:
+        instances = _snapshot_instances_locked()
+        _db_instance = None
+        _db_instances_by_loop = weakref.WeakKeyDictionary()
+        _db_instances_by_thread = {}
+
+    first_error: Exception | None = None
+    for instance in instances:
+        try:
+            await _close_instance(
+                instance,
+                current_loop=current_loop,
+                force_foreign_loop=True,
+            )
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+
+    if first_error is not None:
+        raise first_error
+
+
+def _safe_shutdown_db_atexit() -> None:
+    """独立脚本退出时尽力关闭数据库连接池。"""
+    global _db_instance, _db_instances_by_loop, _db_instances_by_thread
+    with _db_instance_lock:
+        instances = _snapshot_instances_locked()
+    if not instances:
+        return
+    try:
+        asyncio.run(_close_all_db_instances())
     except RuntimeError:
         logger.warning("[storage] skip db shutdown: event loop unavailable")
-        _force_terminate_instance(instance, reason="atexit runtime loop unavailable")
-        _db_instance = None
+        for instance in instances:
+            _force_terminate_instance(instance, reason="atexit runtime loop unavailable")
+        with _db_instance_lock:
+            _db_instance = None
+            _db_instances_by_loop = weakref.WeakKeyDictionary()
+            _db_instances_by_thread = {}
     except Exception as exc:
         logger.warning("[storage] db shutdown failed: %s", exc)
-        _force_terminate_instance(instance, reason=f"atexit close failure: {exc}")
-        _db_instance = None
+        for instance in instances:
+            _force_terminate_instance(instance, reason=f"atexit close failure: {exc}")
+        with _db_instance_lock:
+            _db_instance = None
+            _db_instances_by_loop = weakref.WeakKeyDictionary()
+            _db_instances_by_thread = {}
 
 
 def _ensure_shutdown_hook_registered() -> None:
@@ -118,29 +201,75 @@ def _ensure_shutdown_hook_registered() -> None:
 
 
 def get_db() -> TimescaleDBAdapter:
-    """获取数据库实例（全局单例）
+    """获取数据库实例。
 
-    TimescaleDBAdapter 内部会自动检测事件循环变更并重建连接池，
-    因此单例模式是安全的。
+    asyncpg 连接池绑定事件循环；重型 MCP 请求若分发到不同 loop/thread，
+    共享同一个 adapter 仍可能出现跨 loop 复用与连接被中途关闭的问题。
+    因此这里改为按“当前事件循环 / 当前线程”隔离实例。
     """
     global _db_instance
     _ensure_shutdown_hook_registered()
-    if _db_instance is None:
-        _db_instance = TimescaleDBAdapter()
-    return _db_instance
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    with _db_instance_lock:
+        thread_id = threading.get_ident()
+        if current_loop is not None:
+            instance = _db_instances_by_loop.get(current_loop)
+            if instance is None:
+                thread_instance = _db_instances_by_thread.get(thread_id)
+                if thread_instance is not None and getattr(thread_instance, '_bound_loop', None) in (None, current_loop):
+                    instance = thread_instance
+                    _db_instances_by_thread.pop(thread_id, None)
+                else:
+                    instance = TimescaleDBAdapter()
+                _db_instances_by_loop[current_loop] = instance
+        else:
+            instance = _db_instances_by_thread.get(thread_id)
+            if instance is None:
+                instance = TimescaleDBAdapter()
+                _db_instances_by_thread[thread_id] = instance
+
+        _db_instance = instance
+        return instance
 
 
 async def close_db() -> None:
-    """关闭全局数据库实例并释放连接池。"""
-    global _db_instance
-    if _db_instance is None:
-        return
-    instance = _db_instance
-    _db_instance = None
+    """关闭当前事件循环/线程作用域下的数据库实例。"""
     try:
-        await asyncio.shield(instance.close())
-    except Exception:
-        raise
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    with _db_instance_lock:
+        thread_id = threading.get_ident()
+        instances: list[TimescaleDBAdapter] = []
+        if current_loop is not None:
+            loop_instance = _db_instances_by_loop.pop(current_loop, None)
+            thread_instance = _db_instances_by_thread.get(thread_id)
+            if thread_instance is not None and getattr(thread_instance, '_bound_loop', None) in (None, current_loop):
+                _db_instances_by_thread.pop(thread_id, None)
+            else:
+                thread_instance = None
+            for instance in (loop_instance, thread_instance):
+                if instance is not None and instance not in instances:
+                    instances.append(instance)
+        else:
+            instance = _db_instances_by_thread.pop(thread_id, None)
+            instances = [instance] if instance is not None else []
+        _refresh_legacy_alias_locked()
+
+    if not instances:
+        return
+
+    for instance in instances:
+        await _close_instance(
+            instance,
+            current_loop=current_loop,
+            force_foreign_loop=False,
+        )
 
 
 async def await_with_db_cleanup(awaitable: Awaitable[T]) -> T:
@@ -176,6 +305,7 @@ __all__ = [
     'TimescaleDBAdapter',
     'get_db',
     'close_db',
+    'drain_cleanup_callbacks',
     'await_with_db_cleanup',
     'run_with_db_cleanup',
 ]

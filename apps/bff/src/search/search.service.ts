@@ -22,12 +22,12 @@ export class SearchService {
   }
 
   async semanticSearch(params: { query: string; limit?: number }) {
-    const payload = await this.callTool('semantic_stock_search', {
-      query: params.query, limit: params.limit ?? 10,
-    });
+    const limit = params.limit ?? 10;
+    const { payload, sourceTool, fallbackReason } = await this.callSemanticToolWithFallback(params.query, limit);
     return {
-      sourceTool: 'semantic_stock_search' as const,
+      sourceTool,
       result: payload,
+      ...(fallbackReason ? { fallback: { used: true, reason: fallbackReason } } : {}),
       items: this.pickArray(payload, [
         'data.results',
         'data.data.results',
@@ -62,6 +62,58 @@ export class SearchService {
         detail: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  private async callSemanticToolWithFallback(query: string, limit: number) {
+    try {
+      const payload = await this.mcpGatewayService.callTool('semantic_stock_search', {
+        query,
+        limit,
+      });
+      const toolError = this.extractToolError(payload);
+      if (!toolError) {
+        return { payload, sourceTool: 'semantic_stock_search' as const, fallbackReason: null };
+      }
+      return this.buildSemanticFallback(query, limit, toolError);
+    } catch (error) {
+      return this.buildSemanticFallback(query, limit, this.describeError(error));
+    }
+  }
+
+  private async buildSemanticFallback(query: string, limit: number, reason: string) {
+    const payload = await this.callTool('search_stocks', {
+      keyword: query.trim(),
+      limit,
+    });
+    return {
+      payload,
+      sourceTool: 'search_stocks' as const,
+      fallbackReason: reason,
+    };
+  }
+
+  private extractToolError(payload: unknown): string | null {
+    if (typeof payload === 'string') {
+      return /error executing tool|validation error|unknown tool/i.test(payload) ? payload : null;
+    }
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+    const record = payload as Record<string, unknown>;
+    if (record.data && typeof record.data === 'string' && /error executing tool|validation error|unknown tool/i.test(record.data)) {
+      return record.data;
+    }
+    if (record.success === false) {
+      return String(record.error ?? record.message ?? 'search semantic tool error');
+    }
+    return null;
+  }
+
+  private describeError(error: unknown) {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return String(error);
   }
 
   private pickArray(payload: unknown, paths: string[]) {

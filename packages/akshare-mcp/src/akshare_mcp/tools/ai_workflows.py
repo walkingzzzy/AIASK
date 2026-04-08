@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 from uuid import uuid4
@@ -61,6 +62,40 @@ def _safe_float(value: Any) -> float | None:
     if parsed != parsed:
         return None
     return parsed
+
+
+_BINARY_LABEL_TRUE = {"1", "true", "t", "yes", "y", "hit", "correct", "success", "positive"}
+_BINARY_LABEL_FALSE = {"0", "false", "f", "no", "n", "miss", "incorrect", "failure", "negative"}
+
+
+def _normalize_binary_outcomes(values: list[Any] | None) -> list[float]:
+    normalized: list[float] = []
+    for index, item in enumerate(list(values or [])):
+        if isinstance(item, bool):
+            normalized.append(1.0 if item else 0.0)
+            continue
+        numeric = _safe_float(item)
+        if numeric is not None:
+            if numeric in {0.0, 1.0}:
+                normalized.append(float(numeric))
+                continue
+            raise ValueError(
+                f"labels/outcomes must contain binary observed outcomes (0/1); "
+                f"received {item!r} at index {index}"
+            )
+        text = str(item or "").strip().lower()
+        if text in _BINARY_LABEL_TRUE:
+            normalized.append(1.0)
+            continue
+        if text in _BINARY_LABEL_FALSE:
+            normalized.append(0.0)
+            continue
+        raise ValueError(
+            "labels/outcomes must be binary observed outcomes aligned 1:1 with probabilities. "
+            f"Unsupported label at index {index}: {item!r}. "
+            "Class-name labels like ['up', 'flat', 'down'] are not supported by this workflow."
+        )
+    return normalized
 
 
 def _normalize_registry_status(registry_stage: Any) -> str:
@@ -253,6 +288,42 @@ def _collect_failed_steps(steps: list[dict[str, Any]]) -> list[str]:
     return [str(item.get("step") or "") for item in steps if not item.get("success")]
 
 
+def _budget_fail_response(
+    *,
+    step: str,
+    message: str,
+    timeout_sec: float | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "success": False,
+        "error": message,
+        "data": {"step": step, "degraded": True},
+    }
+    if timeout_sec is not None:
+        payload["data"]["timeout_sec"] = round(float(timeout_sec), 3)
+    return payload
+
+
+async def _run_workflow_stage(
+    *,
+    step: str,
+    coro: Any,
+    deadline: float,
+    stage_timeout: float,
+) -> dict[str, Any]:
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0.5:
+        return _budget_fail_response(step=step, message="workflow_budget_exhausted", timeout_sec=0.0)
+
+    timeout_sec = max(0.5, min(float(stage_timeout), remaining))
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout_sec)
+    except asyncio.TimeoutError:
+        return _budget_fail_response(step=step, message=f"timeout>{timeout_sec:.1f}s", timeout_sec=timeout_sec)
+    except Exception as exc:
+        return _budget_fail_response(step=step, message=f"{type(exc).__name__}: {exc}", timeout_sec=timeout_sec)
+
+
 def _meta_quality(
     *,
     workflow_name: str,
@@ -425,6 +496,7 @@ def register(mcp) -> None:
         as_of: str | None = None,
     ) -> dict[str, Any]:
         started_at = time.perf_counter()
+        workflow_deadline = started_at + 38.0
         workflow_task = str(task or "pipeline").strip().lower()
         normalized_codes = _normalize_codes(code=code, codes=codes) or ["600519"]
         steps: list[dict[str, Any]] = []
@@ -443,16 +515,24 @@ def register(mcp) -> None:
             memory_item_response: dict[str, Any] | None = None
 
             if workflow_task in {"pipeline", "generate"}:
-                generation_response = await quant_manager(
-                    action="llm_factor_mining",
-                    params={
-                        "codes": normalized_codes,
-                        "artifact_id": artifact_id,
-                        "candidate_count": max(1, min(int(candidate_count or 6), 24)),
-                        "lookback_bars": int(lookback_bars) if lookback_bars is not None else None,
-                        "allow_fallback": bool(allow_fallback),
-                        "persist_artifact": bool(persist_artifact),
-                    },
+                generation_response = await _run_workflow_stage(
+                    step="quant_manager.llm_factor_mining",
+                    deadline=workflow_deadline,
+                    stage_timeout=12.0,
+                    coro=quant_manager(
+                        action="llm_factor_mining",
+                        params={
+                            "codes": normalized_codes,
+                            "artifact_id": artifact_id,
+                            "candidate_count": max(1, min(int(candidate_count or 6), 24)),
+                            "lookback_bars": int(lookback_bars) if lookback_bars is not None else None,
+                            "allow_fallback": bool(allow_fallback),
+                            "workflow_fast_mode": True,
+                            "startup_warmup": False,
+                            "explain": False,
+                            "persist_artifact": bool(persist_artifact),
+                        },
+                    ),
                 )
                 steps.append(_step("quant_manager.llm_factor_mining", generation_response))
                 gen_artifact_id = _response_data(generation_response).get("artifact_id")
@@ -467,18 +547,23 @@ def register(mcp) -> None:
             ).strip() or None
 
             if workflow_task in {"pipeline", "validate"} and resolved_artifact_id:
-                validation_response = await quant_manager(
-                    action="validate_factor_candidate",
-                    params={
-                        "artifact_id": resolved_artifact_id,
-                        "candidate_index": max(0, int(candidate_index or 0)),
-                        "codes": normalized_codes,
-                        "lookback_bars": int(lookback_bars) if lookback_bars is not None else None,
-                        "horizon_days": int(horizon_days) if horizon_days is not None else None,
-                        "max_dates": int(max_dates) if max_dates is not None else None,
-                        "persist_artifact": bool(persist_artifact),
-                        "write_memory": bool(write_memory),
-                    },
+                validation_response = await _run_workflow_stage(
+                    step="quant_manager.validate_factor_candidate",
+                    deadline=workflow_deadline,
+                    stage_timeout=10.0,
+                    coro=quant_manager(
+                        action="validate_factor_candidate",
+                        params={
+                            "artifact_id": resolved_artifact_id,
+                            "candidate_index": max(0, int(candidate_index or 0)),
+                            "codes": normalized_codes,
+                            "lookback_bars": int(lookback_bars) if lookback_bars is not None else None,
+                            "horizon_days": int(horizon_days) if horizon_days is not None else None,
+                            "max_dates": int(max_dates) if max_dates is not None else None,
+                            "persist_artifact": bool(persist_artifact),
+                            "write_memory": bool(write_memory),
+                        },
+                    ),
                 )
                 steps.append(_step("quant_manager.validate_factor_candidate", validation_response))
                 val_artifact_id = _response_data(validation_response).get("artifact_id")
@@ -488,46 +573,66 @@ def register(mcp) -> None:
                     lineage_ctx.extra["validation_artifact_id"] = str(val_artifact_id)
 
             if workflow_task in {"pipeline", "registry_review"}:
-                registry_response = await quant_manager(
-                    action="factor_candidate_registry",
-                    params={
-                        "op": "active_pool",
-                        "artifact_id": resolved_artifact_id,
-                        "codes": normalized_codes,
-                        "limit": 20,
-                    },
+                registry_response = await _run_workflow_stage(
+                    step="quant_manager.factor_candidate_registry",
+                    deadline=workflow_deadline,
+                    stage_timeout=3.0,
+                    coro=quant_manager(
+                        action="factor_candidate_registry",
+                        params={
+                            "op": "active_pool",
+                            "artifact_id": resolved_artifact_id,
+                            "codes": normalized_codes,
+                            "limit": 20,
+                        },
+                    ),
                 )
                 steps.append(_step("quant_manager.factor_candidate_registry", registry_response))
 
-                registry_pool_response = await quant_manager(
-                    action="factor_candidate_registry",
-                    params={
-                        "op": "list",
-                        "codes": normalized_codes,
-                        "limit": 20,
-                        "only_active": True,
-                    },
+                registry_pool_response = await _run_workflow_stage(
+                    step="quant_manager.factor_candidate_registry.list",
+                    deadline=workflow_deadline,
+                    stage_timeout=3.0,
+                    coro=quant_manager(
+                        action="factor_candidate_registry",
+                        params={
+                            "op": "list",
+                            "codes": normalized_codes,
+                            "limit": 20,
+                            "only_active": True,
+                        },
+                    ),
                 )
                 steps.append(_step("quant_manager.factor_candidate_registry.list", registry_pool_response))
 
                 if resolved_artifact_id:
-                    registry_item_response = await quant_manager(
-                        action="factor_candidate_registry",
-                        params={
-                            "op": "get",
-                            "artifact_id": resolved_artifact_id,
-                        },
+                    registry_item_response = await _run_workflow_stage(
+                        step="quant_manager.factor_candidate_registry.get",
+                        deadline=workflow_deadline,
+                        stage_timeout=3.0,
+                        coro=quant_manager(
+                            action="factor_candidate_registry",
+                            params={
+                                "op": "get",
+                                "artifact_id": resolved_artifact_id,
+                            },
+                        ),
                     )
                     steps.append(_step("quant_manager.factor_candidate_registry.get", registry_item_response))
 
-                memory_response = await quant_manager(
-                    action="factor_research_memory",
-                    params={
-                        "op": "stats",
-                        "artifact_id": resolved_artifact_id,
-                        "codes": normalized_codes,
-                        "limit": 20,
-                    },
+                memory_response = await _run_workflow_stage(
+                    step="quant_manager.factor_research_memory",
+                    deadline=workflow_deadline,
+                    stage_timeout=3.0,
+                    coro=quant_manager(
+                        action="factor_research_memory",
+                        params={
+                            "op": "stats",
+                            "artifact_id": resolved_artifact_id,
+                            "codes": normalized_codes,
+                            "limit": 20,
+                        },
+                    ),
                 )
                 steps.append(_step("quant_manager.factor_research_memory", memory_response))
 
@@ -536,19 +641,34 @@ def register(mcp) -> None:
                     registry_item=_nested_dict(_response_data(registry_item_response), "item"),
                 )
                 if memory_record_id:
-                    memory_item_response = await quant_manager(
-                        action="factor_research_memory",
-                        params={
-                            "op": "get",
-                            "artifact_id": memory_record_id,
-                        },
+                    memory_item_response = await _run_workflow_stage(
+                        step="quant_manager.factor_research_memory.get",
+                        deadline=workflow_deadline,
+                        stage_timeout=3.0,
+                        coro=quant_manager(
+                            action="factor_research_memory",
+                            params={
+                                "op": "get",
+                                "artifact_id": memory_record_id,
+                            },
+                        ),
                     )
                     steps.append(_step("quant_manager.factor_research_memory.get", memory_item_response))
 
-            scheduler_response = await quant_manager(action="scheduler_status", params={})
+            scheduler_response = await _run_workflow_stage(
+                step="quant_manager.scheduler_status",
+                deadline=workflow_deadline,
+                stage_timeout=2.0,
+                coro=quant_manager(action="scheduler_status", params={}),
+            )
             steps.append(_step("quant_manager.scheduler_status", scheduler_response))
             if run_scheduler_now:
-                scheduler_run_response = await quant_manager(action="scheduler_run_now", params={})
+                scheduler_run_response = await _run_workflow_stage(
+                    step="quant_manager.scheduler_run_now",
+                    deadline=workflow_deadline,
+                    stage_timeout=2.0,
+                    coro=quant_manager(action="scheduler_run_now", params={}),
+                )
                 steps.append(_step("quant_manager.scheduler_run_now", scheduler_run_response))
 
             failed_steps = _collect_failed_steps(steps)
@@ -815,7 +935,8 @@ def register(mcp) -> None:
     )
     async def prediction_diagnosis_workflow(
         probabilities: list[float],
-        labels: list[float],
+        labels: list[Any] | None = None,
+        outcomes: list[Any] | None = None,
         raw_scores: list[float] | None = None,
         method: str = "raw",
         platt_a: float = 1.0,
@@ -843,10 +964,26 @@ def register(mcp) -> None:
         )
         try:
             probs = [float(item) for item in list(probabilities or [])]
-            ys = [float(item) for item in list(labels or [])]
+            if any((value < 0.0 or value > 1.0) for value in probs):
+                return fail_with_meta(
+                    "probabilities must stay within [0, 1]",
+                    tool_name="prediction_diagnosis_workflow",
+                    action=workflow_method,
+                    started_at=started_at,
+                    source_chain=source_chain,
+                    error_code="PARAM_ERROR",
+                    extra_meta={
+                        "quality": {"status": "failed", "workflow": "prediction_diagnosis_workflow"},
+                        "side_effect": {"level": "read_only", "target": "prediction_inputs", "confirmation_required": False},
+                        "lineage": {"dataset_id": dataset_id, "run_id": run_id},
+                        "degraded": True,
+                    },
+                )
+            label_values = outcomes if outcomes is not None else labels
+            ys = _normalize_binary_outcomes(label_values)
             if not probs or len(probs) != len(ys):
                 return fail_with_meta(
-                    "probabilities and labels must be non-empty and share the same length",
+                    "probabilities and labels/outcomes must be non-empty and share the same length",
                     tool_name="prediction_diagnosis_workflow",
                     action=workflow_method,
                     started_at=started_at,
@@ -910,6 +1047,7 @@ def register(mcp) -> None:
                 "sample_size": len(calibrated),
                 "probabilities": calibrated,
                 "labels": ys,
+                "label_source": "outcomes" if outcomes is not None else "labels",
                 "calibration_report": report.to_dict(),
                 "interval_examples": interval_examples,
                 "recommendations": list(report.notes),

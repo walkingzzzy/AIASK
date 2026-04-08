@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -11,6 +12,679 @@ logger = logging.getLogger(__name__)
 
 class StrategyAIMixin:
     """AI 生成实验 / 任务运行 / 工厂运行"""
+
+    @staticmethod
+    def _generation_experiment_field_max_bytes() -> int:
+        raw = str(os.getenv("STRATEGY_GENERATION_EXPERIMENT_FIELD_MAX_BYTES") or "").strip()
+        try:
+            value = int(raw) if raw else 1024 * 1024
+        except Exception:
+            value = 1024 * 1024
+        return max(4096, value)
+
+    @staticmethod
+    def _task_run_result_max_bytes() -> int:
+        raw = str(os.getenv("STRATEGY_TASK_RUN_RESULT_MAX_BYTES") or "").strip()
+        try:
+            value = int(raw) if raw else 8 * 1024 * 1024
+        except Exception:
+            value = 8 * 1024 * 1024
+        return max(4096, value)
+
+    @staticmethod
+    def _factory_run_field_max_bytes(field_name: str) -> int:
+        normalized = str(field_name or "").strip().lower()
+        env_name = f"STRATEGY_FACTORY_RUN_{normalized.upper()}_MAX_BYTES"
+        raw = str(os.getenv(env_name) or os.getenv("STRATEGY_FACTORY_RUN_FIELD_MAX_BYTES") or "").strip()
+        defaults = {
+            "summary": 2 * 1024 * 1024,
+            "stages": 2 * 1024 * 1024,
+            "snapshot_summary": 1024 * 1024,
+        }
+        try:
+            value = int(raw) if raw else defaults.get(normalized, 1024 * 1024)
+        except Exception:
+            value = defaults.get(normalized, 1024 * 1024)
+        return max(4096, value)
+
+    @staticmethod
+    def _compact_mapping(value: Any, *, keys: tuple[str, ...]) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, Any] = {}
+        for key in keys:
+            item = value.get(key)
+            if item in (None, "", [], {}):
+                continue
+            result[key] = item
+        return result
+
+    @staticmethod
+    def _preview_plain_list(value: Any, *, limit: int = 12) -> list[Any]:
+        if not isinstance(value, list):
+            return []
+        preview: list[Any] = []
+        for item in value[:limit]:
+            if isinstance(item, (str, int, float, bool)) or item is None:
+                preview.append(item)
+            elif isinstance(item, dict):
+                preview.append({key: item.get(key) for key in list(item.keys())[:6]})
+            else:
+                preview.append(str(item))
+        return preview
+
+    @classmethod
+    def _summarize_scalar_mapping(cls, value: Any, *, limit: int = 20) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, Any] = {}
+        keys = list(value.keys())
+        for key in keys[:limit]:
+            item = value.get(key)
+            normalized_key = str(key)
+            if isinstance(item, (str, int, float, bool)) or item is None:
+                result[normalized_key] = item
+                continue
+            if isinstance(item, list):
+                preview = cls._preview_plain_list(item, limit=8)
+                if preview:
+                    result[normalized_key] = preview
+                result[f"{normalized_key}_count"] = len(item)
+                continue
+            if isinstance(item, dict):
+                nested = {
+                    str(nested_key): nested_value
+                    for nested_key, nested_value in list(item.items())[:8]
+                    if isinstance(nested_value, (str, int, float, bool)) or nested_value is None
+                }
+                if nested:
+                    result[normalized_key] = nested
+                else:
+                    result[normalized_key] = {
+                        "count": len(item),
+                        "keys": sorted(str(nested_key) for nested_key in list(item.keys())[:20]),
+                    }
+                continue
+            result[normalized_key] = str(item)
+        if len(keys) > limit:
+            result["truncated_key_count"] = len(keys) - limit
+        return result
+
+    @classmethod
+    def _summarize_factory_task_result_preview(cls, value: Any) -> dict[str, Any]:
+        payload = dict(value) if isinstance(value, dict) else {}
+        summary = cls._compact_mapping(
+            payload,
+            keys=(
+                "task_run_id",
+                "task_source",
+                "event_id",
+                "theme_code",
+                "evidence_count",
+                "status",
+                "generated_count",
+                "reviewed_count",
+                "external_llm_status",
+                "error",
+            ),
+        )
+        task = dict(payload.get("task") or {})
+        if task:
+            summary["task"] = cls._compact_mapping(
+                task,
+                keys=(
+                    "task_id",
+                    "task_key",
+                    "task_source",
+                    "opportunity_type",
+                    "theme_code",
+                    "event_id",
+                    "candidate_family",
+                    "factor_name",
+                    "generation_limit",
+                ),
+            )
+            target_symbols = cls._preview_plain_list(task.get("target_symbols"), limit=8)
+            if target_symbols:
+                summary["task"]["target_symbols"] = target_symbols
+        lifecycle_summary = dict(payload.get("lifecycle_summary") or {})
+        if lifecycle_summary:
+            summary["lifecycle_summary"] = cls._compact_mapping(
+                lifecycle_summary,
+                keys=(
+                    "state",
+                    "current_phase",
+                    "failed_phase",
+                    "terminal_phase",
+                    "completed_phase_count",
+                    "event_count",
+                ),
+            )
+            phase_status_counts = cls._summarize_scalar_mapping(
+                lifecycle_summary.get("phase_status_counts"),
+                limit=12,
+            )
+            if phase_status_counts:
+                summary["lifecycle_summary"]["phase_status_counts"] = phase_status_counts
+        return summary
+
+    @classmethod
+    def _summarize_factory_stage_payload(cls, stage_name: str, value: Any) -> dict[str, Any]:
+        payload = dict(value) if isinstance(value, dict) else {}
+        summary = cls._compact_mapping(
+            payload,
+            keys=(
+                "stage",
+                "trace_id",
+                "status",
+                "ok",
+                "hard_failure",
+                "degraded",
+                "skip_reason",
+                "error",
+            ),
+        )
+        for key in (
+            "task_count",
+            "event_task_count",
+            "snapshot_task_count",
+            "bulk_stock_task_count",
+            "event_evidence_count",
+            "completed_task_count",
+            "failed_task_count",
+            "generated_count",
+            "experiment_count",
+            "input_count",
+            "passed_count",
+            "failed_count",
+            "count",
+            "warning_count",
+            "blocker_count",
+            "critical_blocker_count",
+            "readiness_score",
+            "can_proceed",
+            "external_llm_status",
+            "external_llm_attempt_count",
+            "external_llm_stage_attempt_count",
+            "external_llm_network_request_count",
+            "external_llm_compatibility_skip_count",
+            "external_llm_cooldown_skip_count",
+            "external_llm_selected_count",
+            "external_llm_elapsed_seconds",
+            "research_task_concurrency",
+            "bulk_task_concurrency",
+            "research_task_timeout_sec",
+            "persistence_failure_count",
+            "submitted",
+            "gate_3_input",
+            "gate_3_passed",
+            "gate_3_failed",
+            "created",
+            "created_total",
+            "created_strategy_pool",
+            "created_audit_only",
+            "eliminated",
+        ):
+            item = payload.get(key)
+            if item not in (None, "", [], {}):
+                summary[key] = item
+
+        for key in (
+            "task_source_counts",
+            "external_llm_status_counts",
+            "external_llm_request_status_counts",
+            "lifecycle_state_counts",
+            "phase_status_counts",
+            "failed_phase_counts",
+        ):
+            item = cls._summarize_scalar_mapping(payload.get(key), limit=20)
+            if item:
+                summary[key] = item
+
+        task_run_ids = cls._preview_plain_list(payload.get("task_run_ids"), limit=12)
+        if task_run_ids:
+            summary["task_run_ids"] = task_run_ids
+            summary["task_run_id_count"] = len(list(payload.get("task_run_ids") or []))
+
+        persistence_failures = list(payload.get("persistence_failures") or [])
+        if persistence_failures:
+            summary["persistence_failures"] = [
+                cls._compact_mapping(
+                    dict(item or {}),
+                    keys=("operation", "stage", "error_type", "error"),
+                )
+                for item in persistence_failures[:8]
+            ]
+            summary["persistence_failure_count"] = len(persistence_failures)
+
+        if stage_name == "autonomy":
+            task_scan = dict(payload.get("task_scan") or {})
+            task_scan_summary = dict(task_scan.get("summary") or {})
+            if task_scan_summary:
+                summary["task_scan"] = {"summary": cls._summarize_scalar_mapping(task_scan_summary, limit=80)}
+            task_results = list(payload.get("task_results") or [])
+            if task_results:
+                summary["task_results"] = [
+                    cls._summarize_factory_task_result_preview(item)
+                    for item in task_results[:20]
+                ]
+                summary["task_result_count"] = len(task_results)
+            observable_phases = cls._preview_plain_list(payload.get("observable_phases"), limit=12)
+            if observable_phases:
+                summary["observable_phases"] = observable_phases
+            return summary
+
+        if stage_name == "snapshot_summary":
+            return summary
+
+        if stage_name in {"quality_gate", "backtest", "deduplicate", "submit", "factor_research"}:
+            nested_summary = cls._summarize_scalar_mapping(payload.get("summary"), limit=40)
+            if nested_summary:
+                summary["summary"] = nested_summary
+
+        if stage_name == "submit":
+            for key in ("gate_3_failure_reason_topn", "items", "strategies"):
+                values = list(payload.get(key) or [])
+                if not values:
+                    continue
+                summary[key] = [
+                    cls._compact_mapping(
+                        dict(item or {}),
+                        keys=(
+                            "experiment_id",
+                            "strategy_id",
+                            "passed",
+                            "duplicate",
+                            "reason_code",
+                            "status",
+                        ),
+                    )
+                    for item in values[:10]
+                ]
+                summary[f"{key}_count"] = len(values)
+            incubation_budget_summary = cls._summarize_scalar_mapping(
+                payload.get("incubation_budget_summary"),
+                limit=20,
+            )
+            if incubation_budget_summary:
+                summary["incubation_budget_summary"] = incubation_budget_summary
+            return summary
+
+        if stage_name == "elimination":
+            items = list(payload.get("items") or [])
+            if items:
+                summary["items"] = [
+                    cls._compact_mapping(
+                        dict(item or {}),
+                        keys=("strategy_id", "reason", "red_flags", "status"),
+                    )
+                    for item in items[:10]
+                ]
+                summary["item_count"] = len(items)
+            return summary
+
+        for key, item in list(payload.items())[:40]:
+            if key in summary:
+                continue
+            if isinstance(item, (str, int, float, bool)) or item is None:
+                summary[key] = item
+            elif isinstance(item, dict):
+                nested = cls._summarize_scalar_mapping(item, limit=16)
+                if nested:
+                    summary[key] = nested
+            elif isinstance(item, list):
+                preview = cls._preview_plain_list(item, limit=8)
+                if preview:
+                    summary[key] = preview
+                summary[f"{key}_count"] = len(item)
+        return summary
+
+    @classmethod
+    def _summarize_large_factory_run_field(
+        cls,
+        field_name: str,
+        value: Any,
+        *,
+        size_bytes: int,
+    ) -> dict[str, Any]:
+        payload = dict(value) if isinstance(value, dict) else {}
+        summary: dict[str, Any] = {
+            "storage_mode": "inline_fallback_summary",
+            "field_name": str(field_name or "unknown"),
+            "truncated": True,
+            "original_size_bytes": int(size_bytes),
+        }
+        if not payload:
+            return summary
+        summary["top_level_keys"] = sorted(str(key) for key in payload.keys())[:80]
+
+        if field_name == "stages":
+            summary["stage_count"] = len(payload)
+            summary["stage_names"] = [str(key) for key in list(payload.keys())[:20]]
+            for stage_name, stage_payload in payload.items():
+                summary[str(stage_name)] = cls._summarize_factory_stage_payload(
+                    str(stage_name),
+                    stage_payload,
+                )
+            return summary
+
+        if field_name == "snapshot_summary":
+            summary.update(
+                cls._compact_mapping(
+                    payload,
+                    keys=(
+                        "date",
+                        "fear_greed",
+                        "fear_greed_index",
+                        "fg_level",
+                        "listed_count",
+                        "incubating_count",
+                        "degraded",
+                        "completion_ratio",
+                        "failure_reason_count",
+                    ),
+                )
+            )
+            missing_sources = cls._preview_plain_list(payload.get("missing_sources"), limit=12)
+            if missing_sources:
+                summary["missing_sources"] = missing_sources
+            factor_research = dict(payload.get("factor_research") or {})
+            if factor_research:
+                factor_summary = dict(factor_research.get("summary") or {})
+                active_candidate_pool = dict(factor_research.get("active_candidate_pool") or {})
+                factor_research_summary: dict[str, Any] = {}
+                if factor_summary:
+                    factor_research_summary["summary"] = cls._summarize_scalar_mapping(
+                        factor_summary,
+                        limit=40,
+                    )
+                if active_candidate_pool:
+                    compact_pool = cls._compact_mapping(
+                        active_candidate_pool,
+                        keys=("count", "family_count"),
+                    )
+                    top_candidates = list(active_candidate_pool.get("top_candidates") or [])
+                    if top_candidates:
+                        compact_pool["top_candidates"] = [
+                            cls._compact_mapping(
+                                dict(item or {}),
+                                keys=("name", "family", "priority", "score", "source"),
+                            )
+                            for item in top_candidates[:10]
+                        ]
+                        compact_pool["top_candidate_count"] = len(top_candidates)
+                    if compact_pool:
+                        factor_research_summary["active_candidate_pool"] = compact_pool
+                source_chain = cls._preview_plain_list(factor_research.get("source_chain"), limit=10)
+                if source_chain:
+                    factor_research_summary["source_chain"] = source_chain
+                if factor_research.get("degraded") not in (None, "", [], {}):
+                    factor_research_summary["degraded"] = bool(factor_research.get("degraded"))
+                if factor_research_summary:
+                    summary["factor_research"] = factor_research_summary
+            return summary
+
+        if field_name == "summary":
+            for key, item in payload.items():
+                if isinstance(item, (str, int, float, bool)) or item is None:
+                    summary[key] = item
+                    continue
+                if key == "autonomy_task_briefs":
+                    values = list(item or [])
+                    summary["autonomy_task_briefs"] = [
+                        cls._compact_mapping(
+                            dict(entry or {}),
+                            keys=(
+                                "task_id",
+                                "task_source",
+                                "opportunity_type",
+                                "candidate_family",
+                                "factor_name",
+                                "generation_limit",
+                                "generated_count",
+                            ),
+                        )
+                        for entry in values[:20]
+                    ]
+                    summary["autonomy_task_brief_count"] = len(values)
+                    continue
+                if isinstance(item, dict):
+                    nested = cls._summarize_scalar_mapping(item, limit=40)
+                    if nested:
+                        summary[key] = nested
+                    continue
+                if isinstance(item, list):
+                    preview = cls._preview_plain_list(item, limit=20)
+                    if preview:
+                        summary[key] = preview
+                    summary[f"{key}_count"] = len(item)
+            return summary
+
+        return summary
+
+    @classmethod
+    def _encode_factory_run_json(cls, field_name: str, value: Any) -> str:
+        encoded = json.dumps(value or {}, ensure_ascii=False, default=str)
+        size_bytes = len(encoded.encode("utf-8"))
+        limit = cls._factory_run_field_max_bytes(field_name)
+        if size_bytes <= limit:
+            return encoded
+        logger.warning(
+            "strategy_factory_runs.%s exceeds soft limit (%s bytes > %s bytes); storing fallback summary instead",
+            field_name,
+            size_bytes,
+            limit,
+        )
+        fallback = cls._summarize_large_factory_run_field(
+            field_name,
+            value,
+            size_bytes=size_bytes,
+        )
+        fallback_json = json.dumps(fallback, ensure_ascii=False, default=str)
+        if len(fallback_json.encode("utf-8")) <= limit:
+            return fallback_json
+        minimal = {
+            "storage_mode": "inline_fallback_summary",
+            "field_name": str(field_name or "unknown"),
+            "truncated": True,
+            "original_size_bytes": int(size_bytes),
+            "fallback_truncated": True,
+            "top_level_keys": sorted(str(key) for key in list((value or {}).keys())[:80]),
+        }
+        return json.dumps(minimal, ensure_ascii=False, default=str)
+
+    @classmethod
+    def _summarize_large_generation_experiment_field(
+        cls,
+        field_name: str,
+        value: Any,
+        *,
+        size_bytes: int,
+    ) -> dict[str, Any]:
+        payload = dict(value) if isinstance(value, dict) else {}
+        summary: dict[str, Any] = {
+            "storage_mode": "inline_fallback_summary",
+            "field_name": str(field_name or "unknown"),
+            "truncated": True,
+            "original_size_bytes": int(size_bytes),
+        }
+        if not payload:
+            return summary
+        summary["top_level_keys"] = sorted(str(key) for key in payload.keys())[:50]
+
+        scalar_preview = {
+            key: payload.get(key)
+            for key in list(payload.keys())[:20]
+            if isinstance(payload.get(key), (str, int, float, bool)) or payload.get(key) is None
+        }
+        if scalar_preview:
+            summary["scalar_preview"] = scalar_preview
+
+        if field_name == "parameters":
+            summary["parameter_keys"] = sorted(str(key) for key in payload.keys())[:50]
+            target_symbols = cls._preview_plain_list(payload.get("target_symbols"), limit=12)
+            if target_symbols:
+                summary["target_symbols"] = target_symbols
+            return summary
+
+        if field_name == "strategy_spec":
+            for key in ("strategy_type", "name", "description"):
+                if payload.get(key) not in (None, "", [], {}):
+                    summary[key] = payload.get(key)
+            tags = cls._preview_plain_list(payload.get("tags"), limit=12)
+            if tags:
+                summary["tags"] = tags
+            target_symbols = cls._preview_plain_list(payload.get("target_symbols"), limit=12)
+            if target_symbols:
+                summary["target_symbols"] = target_symbols
+            research_task = dict(payload.get("research_task") or {})
+            if research_task:
+                summary["research_task"] = {
+                    key: research_task.get(key)
+                    for key in (
+                        "task_id",
+                        "task_key",
+                        "task_source",
+                        "theme_code",
+                        "event_id",
+                        "candidate_family",
+                        "factor_name",
+                    )
+                    if research_task.get(key) not in (None, "", [], {})
+                }
+            event_context = dict(payload.get("event_context") or {})
+            if event_context:
+                summary["event_context"] = {
+                    key: event_context.get(key)
+                    for key in (
+                        "task_source",
+                        "event_id",
+                        "theme_code",
+                        "event_type",
+                        "candidate_family",
+                        "factor_name",
+                    )
+                    if event_context.get(key) not in (None, "", [], {})
+                }
+            return summary
+
+        if field_name == "evaluation":
+            for key in ("source", "task_run_id"):
+                if payload.get(key) not in (None, "", [], {}):
+                    summary[key] = payload.get(key)
+            committee_review = dict(payload.get("committee_review") or {})
+            if committee_review:
+                summary["committee_review"] = {
+                    key: committee_review.get(key)
+                    for key in ("decision", "final_score", "rank", "review_rank", "is_champion")
+                    if committee_review.get(key) not in (None, "", [], {})
+                }
+            submission_result = dict(payload.get("submission_result") or {})
+            if submission_result:
+                summary["submission_result"] = {
+                    key: submission_result.get(key)
+                    for key in ("passed", "duplicate", "reason_code", "strategy_id")
+                    if submission_result.get(key) not in (None, "", [], {})
+                }
+            return summary
+
+        if field_name == "result":
+            for key in (
+                "status",
+                "strategy_id",
+                "passed",
+                "duplicate",
+                "reason_code",
+                "admission_stage",
+                "submission_lane",
+                "research_candidate_ready",
+                "incubation_candidate_ready",
+                "live_candidate_ready",
+            ):
+                if payload.get(key) not in (None, "", [], {}):
+                    summary[key] = payload.get(key)
+            return summary
+
+        return summary
+
+    @classmethod
+    def _encode_generation_experiment_json(cls, field_name: str, value: Any) -> str:
+        encoded = json.dumps(value or {}, ensure_ascii=False, default=str)
+        size_bytes = len(encoded.encode("utf-8"))
+        if size_bytes <= cls._generation_experiment_field_max_bytes():
+            return encoded
+        logger.warning(
+            "strategy_generation_experiments.%s exceeds soft limit (%s bytes > %s bytes); storing fallback summary instead",
+            field_name,
+            size_bytes,
+            cls._generation_experiment_field_max_bytes(),
+        )
+        fallback = cls._summarize_large_generation_experiment_field(
+            field_name,
+            value,
+            size_bytes=size_bytes,
+        )
+        return json.dumps(fallback, ensure_ascii=False, default=str)
+
+    @classmethod
+    def _summarize_large_task_run_result(cls, result: Any, *, size_bytes: int) -> dict:
+        payload = dict(result) if isinstance(result, dict) else {}
+        summary = {
+            "storage_mode": "inline_fallback_summary",
+            "truncated": True,
+            "original_size_bytes": int(size_bytes),
+        }
+        if payload:
+            summary["top_level_keys"] = sorted(str(key) for key in payload.keys())[:50]
+            for key in (
+                "task_run_id",
+                "status",
+                "source",
+                "snapshot_date",
+                "generated_count",
+                "reviewed_count",
+                "rejected_count",
+            ):
+                value = payload.get(key)
+                if value not in (None, "", [], {}):
+                    summary[key] = value
+            artifact = payload.get("full_result_artifact")
+            if isinstance(artifact, dict) and artifact:
+                summary["full_result_artifact"] = {
+                    key: artifact.get(key)
+                    for key in ("artifact_id", "path", "format", "size_bytes")
+                    if artifact.get(key) not in (None, "", [], {})
+                }
+            lifecycle = payload.get("lifecycle")
+            if isinstance(lifecycle, dict) and lifecycle:
+                summary["lifecycle"] = {
+                    key: lifecycle.get(key)
+                    for key in (
+                        "state",
+                        "current_phase",
+                        "failed_phase",
+                        "terminal_phase",
+                        "phase_status_counts",
+                    )
+                    if lifecycle.get(key) not in (None, "", [], {})
+                }
+        return summary
+
+    @classmethod
+    def _encode_task_run_result_json(cls, result: Optional[dict]) -> Optional[str]:
+        if result is None:
+            return None
+        result_json = json.dumps(result, ensure_ascii=False, default=str)
+        size_bytes = len(result_json.encode("utf-8"))
+        if size_bytes <= cls._task_run_result_max_bytes():
+            return result_json
+        logger.warning(
+            "strategy_task_runs.result exceeds soft limit (%s bytes > %s bytes); storing fallback summary instead",
+            size_bytes,
+            cls._task_run_result_max_bytes(),
+        )
+        fallback = cls._summarize_large_task_run_result(result, size_bytes=size_bytes)
+        return json.dumps(fallback, ensure_ascii=False, default=str)
 
     # ------------------------------------------------------------------
     # generation experiments
@@ -67,10 +741,10 @@ class StrategyAIMixin:
                 str(payload.get("status") or "draft"),
                 payload.get("hypothesis"),
                 payload.get("prompt"),
-                json.dumps(payload.get("parameters") or {}, ensure_ascii=False, default=str),
-                json.dumps(payload.get("strategy_spec") or {}, ensure_ascii=False, default=str),
-                json.dumps(payload.get("evaluation") or {}, ensure_ascii=False, default=str),
-                json.dumps(payload.get("result") or {}, ensure_ascii=False, default=str),
+                self._encode_generation_experiment_json("parameters", payload.get("parameters") or {}),
+                self._encode_generation_experiment_json("strategy_spec", payload.get("strategy_spec") or {}),
+                self._encode_generation_experiment_json("evaluation", payload.get("evaluation") or {}),
+                self._encode_generation_experiment_json("result", payload.get("result") or {}),
                 payload.get("parent_experiment_id"),
                 payload.get("artifact_id"),
             )
@@ -162,7 +836,7 @@ class StrategyAIMixin:
                 str(payload.get("status") or "running"),
                 payload.get("trace_id"),
                 json.dumps(payload.get("payload") or {}, ensure_ascii=False, default=str),
-                json.dumps(payload.get("result") or {}, ensure_ascii=False, default=str),
+                self._encode_task_run_result_json(payload.get("result") or {}),
                 payload.get("error"),
                 started_at,
                 completed_at,
@@ -178,7 +852,7 @@ class StrategyAIMixin:
         completed_at=None,
     ) -> Optional[dict]:
         completed_at_value = self._coerce_timestamp(completed_at)
-        result_json = None if result is None else json.dumps(result, ensure_ascii=False, default=str)
+        result_json = self._encode_task_run_result_json(result)
         sql = """
             UPDATE strategy_task_runs
             SET status = COALESCE($2, status),
@@ -281,9 +955,9 @@ class StrategyAIMixin:
                 started_at,
                 completed_at,
                 float(run.get("elapsed_seconds") or 0),
-                json.dumps(run.get("summary") or {}, ensure_ascii=False, default=str),
-                json.dumps(run.get("stages") or {}, ensure_ascii=False, default=str),
-                json.dumps(run.get("snapshot_summary") or {}, ensure_ascii=False, default=str),
+                self._encode_factory_run_json("summary", run.get("summary") or {}),
+                self._encode_factory_run_json("stages", run.get("stages") or {}),
+                self._encode_factory_run_json("snapshot_summary", run.get("snapshot_summary") or {}),
                 run.get("error"),
             )
 

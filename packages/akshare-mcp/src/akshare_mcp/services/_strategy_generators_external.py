@@ -404,6 +404,7 @@ class _LLMProxyStrategyGeneratorExternalMixin:
                 returned_candidates = list((provider_payload or {}).get('candidates') or [])
                 all_specs: list[StrategySpec] = []
                 viable_specs: list[StrategySpec] = []
+                precompile_rejections: list[dict[str, Any]] = []
                 for candidate in returned_candidates:
                     spec = self._build_external_candidate_spec(
                         candidate,
@@ -413,6 +414,19 @@ class _LLMProxyStrategyGeneratorExternalMixin:
                         research_task=research_task,
                     )
                     if spec is None:
+                        reject_reasons = list(
+                            candidate.get("_normalize_reject_reasons")
+                            or candidate.get("_generator_precompile_reject_reasons")
+                            or []
+                        )
+                        if reject_reasons and len(precompile_rejections) < 8:
+                            precompile_rejections.append(
+                                {
+                                    'name': str((candidate or {}).get('name') or ''),
+                                    'strategy_type': str((candidate or {}).get('strategy_type') or ''),
+                                    'reject_reasons': reject_reasons,
+                                }
+                            )
                         continue
                     all_specs.append(spec)
                     if self._is_viable_external_spec(spec):
@@ -432,6 +446,8 @@ class _LLMProxyStrategyGeneratorExternalMixin:
                         'compiled_candidate_count': len(all_specs),
                         'non_executable_candidate_count': non_executable_candidate_count,
                         'viable_candidate_count': len(viable_specs),
+                        'precompile_rejected_count': len(precompile_rejections),
+                        'precompile_rejections': precompile_rejections,
                         'candidate_names': [str((item or {}).get('name') or '') for item in returned_candidates[:4]],
                         'candidate_preflight': [
                             {
@@ -454,6 +470,9 @@ class _LLMProxyStrategyGeneratorExternalMixin:
                 }
             except Exception as exc:
                 metrics = dict(getattr(exc, 'metrics', {}) or {})
+                request_status = str(metrics.get('status') or '').strip().lower()
+                if request_status not in {'compatibility_skip', 'cooldown_skip'}:
+                    request_status = 'failed'
                 logger.warning(
                     'LLMProxyStrategyGenerator external provider failed at request_index=%s limit=%s, retrying/fallback: %r',
                     request_index,
@@ -467,7 +486,7 @@ class _LLMProxyStrategyGeneratorExternalMixin:
                     'request_report': {
                         'request_index': request_index,
                         'request_limit': request_limit,
-                        'status': 'failed',
+                        'status': request_status,
                         'error_type': metrics.get('last_error_type') or exc.__class__.__name__,
                         'error': metrics.get('last_error') or str(exc) or exc.__class__.__name__,
                         'request_metrics': metrics,
@@ -491,10 +510,34 @@ class _LLMProxyStrategyGeneratorExternalMixin:
                     return frame.tail(120).copy()
             return None
 
-        @staticmethod
-        def _build_synthetic_market_frame(research_context: Optional[dict[str, Any]] = None) -> Optional[pd.DataFrame]:
+        @classmethod
+        def _build_synthetic_market_frame(cls, research_context: Optional[dict[str, Any]] = None) -> Optional[pd.DataFrame]:
             context = dict(research_context or {})
-            sources = list(context.get('symbol_insights') or []) + list(context.get('candidate_universe') or [])
+            task_target_context = dict(context.get('task_target_context') or {})
+            targeted_task = bool(
+                task_target_context.get('targeted_task')
+                or list((context.get('research_task') or {}).get('target_symbols') or [])
+            )
+            if bool(context.get('blocked_by_target_universe')):
+                return None
+            if targeted_task:
+                target_symbols = set(cls._normalize_code_list([
+                    task_target_context.get('matched_target_symbols'),
+                    task_target_context.get('requested_target_symbols'),
+                    (context.get('research_task') or {}).get('target_symbols'),
+                ], limit=8))
+                sources = [
+                    dict(item or {})
+                    for item in [*list(context.get('symbol_insights') or []), *list(context.get('candidate_universe') or [])]
+                    if (
+                        not target_symbols
+                        or str((item or {}).get('code') or '').strip() in target_symbols
+                    )
+                ]
+                if not sources:
+                    return None
+            else:
+                sources = list(context.get('symbol_insights') or []) + list(context.get('candidate_universe') or [])
             close_values = []
             volume_values = []
             for item in sources:
@@ -532,11 +575,13 @@ class _LLMProxyStrategyGeneratorExternalMixin:
             })
 
         async def _build_market_frame(self, db, research_task: Optional[dict[str, Any]] = None) -> Optional[pd.DataFrame]:
-            research_task = dict(research_task or {})
+            research_task = _normalize_research_task_contract(research_task or {})
             target_codes = self._normalize_code_list(research_task.get('target_symbols'))
             target_frame = await self._frame_from_codes(db, target_codes, limit=180)
             if target_frame is not None:
                 return target_frame
+            if target_codes:
+                return None
 
             primary_codes: list[str] = []
             if hasattr(db, 'list_stock_universe'):
@@ -550,12 +595,22 @@ class _LLMProxyStrategyGeneratorExternalMixin:
         async def _build_symbol_frame_cache(self, db, research_context: Optional[dict[str, Any]] = None, research_task: Optional[dict[str, Any]] = None) -> dict[str, pd.DataFrame]:
             cache: dict[str, pd.DataFrame] = {}
             research_context = dict(research_context or {})
-            research_task = dict(research_task or {})
-            codes = self._normalize_code_list([
-                research_task.get('target_symbols'),
-                [item.get('code') for item in list(research_context.get('candidate_universe') or [])],
-                [item.get('code') for item in list(research_context.get('symbol_insights') or [])],
-            ], limit=10)
+            research_task = _normalize_research_task_contract(research_task or {})
+            task_target_context = dict(research_context.get('task_target_context') or {})
+            targeted_task = bool(task_target_context.get('targeted_task') or list(research_task.get('target_symbols') or []))
+            code_sources: list[Any] = [research_task.get('target_symbols')]
+            if targeted_task:
+                code_sources.extend([
+                    task_target_context.get('matched_target_symbols'),
+                    task_target_context.get('candidate_universe_symbols'),
+                    task_target_context.get('symbol_insight_codes'),
+                ])
+            else:
+                code_sources.extend([
+                    [item.get('code') for item in list(research_context.get('candidate_universe') or [])],
+                    [item.get('code') for item in list(research_context.get('symbol_insights') or [])],
+                ])
+            codes = self._normalize_code_list(code_sources, limit=10)
             for code in codes:
                 frame = await self._frame_from_codes(db, [code], limit=180)
                 if frame is not None:

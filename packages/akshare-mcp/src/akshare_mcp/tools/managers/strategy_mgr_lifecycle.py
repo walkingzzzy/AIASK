@@ -10,6 +10,8 @@ from .strategy_mgr_helpers import (
     build_incubation_overview,
     build_quality_report,
     get_latest_quality_report,
+    normalize_factory_run_detail_contract,
+    normalize_factory_run_summary_contract,
     normalize_quality_gate_result,
     save_quality_report,
     update_status,
@@ -17,6 +19,42 @@ from .strategy_mgr_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _quality_report_submission_audit(report: Optional[dict]) -> dict:
+    payload = dict(report or {})
+    fields = (
+        "committee_review",
+        "task_signature",
+        "refresh_mode",
+        "submission_lane",
+        "direct_trade_candidate",
+        "live_review_ready",
+        "paper_lane_ready",
+        "paper_account_id",
+        "paper_account_status",
+        "runtime_control_mode",
+        "runtime_control_status",
+        "promotion_review_id",
+        "promotion_review_status",
+        "promotion_review_recommendation",
+        "pool_admission_applied",
+        "promotion_applied_transition",
+        "submission_action",
+        "submission_action_type",
+        "submission_action_trigger",
+        "submission_action_gaps",
+        "submission_action_fallback_conditions",
+        "submission_action_next_step",
+        "submission_action_completed",
+        "task_preference",
+        "candidate_provenance",
+    )
+    return {
+        field: payload.get(field)
+        for field in fields
+        if payload.get(field) not in (None, "", [], {})
+    }
 
 
 def _run_once_accepts_db_arg(run_once) -> bool:
@@ -66,6 +104,7 @@ async def handle_review_report_recheck(db, params: dict) -> dict:
         review_source="review_report_recheck",
         report_type=report_type,
         spawn_reason=((latest_report or {}).get("summary") or {}).get("spawn_reason"),
+        submission_audit=_quality_report_submission_audit(latest_report),
     )
     await save_quality_report(db, sid, report, report_type=report_type)
     return ok(report)
@@ -108,6 +147,7 @@ async def handle_submit(db, params: dict) -> dict:
         status_after_review=next_status,
         review_source="manager_submit",
         report_type="submission",
+        submission_audit=_quality_report_submission_audit(latest_report),
     ))
     if gate_result["passed"]:
         incubation_binding = None
@@ -295,7 +335,7 @@ async def handle_factory_run_once(db, params: dict) -> dict:
 async def handle_factory_runs(db, params: dict) -> dict:
     limit = min(max(int(params.get("limit", 10)), 1), 100)
     rows = await db.list_strategy_factory_runs(limit=limit) if hasattr(db, "list_strategy_factory_runs") else []
-    return ok({"items": rows, "count": len(rows)})
+    return ok({"items": [normalize_factory_run_summary_contract(row) for row in rows], "count": len(rows)})
 
 
 async def handle_factory_run_detail(db, params: dict) -> dict:
@@ -305,7 +345,7 @@ async def handle_factory_run_detail(db, params: dict) -> dict:
     row = await db.get_strategy_factory_run(run_id) if hasattr(db, "get_strategy_factory_run") else None
     if not row:
         return fail(f"Factory run not found: {run_id}")
-    return ok(row)
+    return ok(normalize_factory_run_detail_contract(row))
 
 
 # ── Quality gate runner ──────────────────────────────────────────────────────

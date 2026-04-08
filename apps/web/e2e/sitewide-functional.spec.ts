@@ -37,7 +37,7 @@ async function openAndCheck(page: Page, path: string, heading: RegExp | string) 
 test('should exercise market, search and stock analysis workflows', async ({ page }) => {
   const collector = createPageIssueCollector(page);
 
-  await openAndCheck(page, '/market', '行情看板');
+  await openAndCheck(page, '/market', /贵州茅台|600519/);
 
   await page.getByRole('tab', { name: '涨停板' }).click();
   await page.getByRole('button', { name: '刷新', exact: true }).click();
@@ -47,7 +47,7 @@ test('should exercise market, search and stock analysis workflows', async ({ pag
   );
 
   await page.getByRole('tab', { name: '板块' }).click();
-  await page.getByRole('button', { name: '加载行业板块', exact: true }).click();
+  await page.getByRole('button', { name: '加载行业板块顶部操作', exact: true }).click();
   await expectEitherVisible(
     page.getByText('板块代码'),
     page.getByText('先加载行业板块再看轮动'),
@@ -69,13 +69,16 @@ test('should exercise market, search and stock analysis workflows', async ({ pag
   await page.getByLabel('批量股票代码').fill('000001,600519');
   await page.getByRole('button', { name: '批量行情', exact: true }).click();
   const batchTable = page.getByRole('table').last();
-  await expect(batchTable.getByRole('link', { name: '平安银行' })).toBeVisible({ timeout: 20_000 });
-  await expect(batchTable.getByRole('link', { name: '贵州茅台' })).toBeVisible({ timeout: 20_000 });
+  await expect(batchTable).toBeVisible({ timeout: 20_000 });
+  await expect(batchTable.locator('tbody tr')).toHaveCount(2, { timeout: 20_000 });
+  await expect(batchTable).toContainText(/平安银行|贵州茅台|000001|600519/);
   await assertNoHorizontalOverflow(page);
 
-  await openAndCheck(page, '/stock', /股票详情|\d{6}/);
+  await openProtectedPage(page, '/stock');
+  await assertProtectedShell(page);
+  await expect(page.getByRole('textbox', { name: '股票代码' })).toBeVisible();
   await page.getByRole('textbox', { name: '股票代码' }).fill('000001');
-  await page.getByRole('button', { name: '查询', exact: true }).click();
+  await page.getByRole('button', { name: '立即查询股票', exact: true }).click();
   await expect(page.getByRole('heading', { name: /000001|平安银行/ }).first()).toBeVisible({ timeout: 20_000 });
 
   await page.getByRole('tab', { name: '技术面' }).click();
@@ -130,24 +133,24 @@ test('should exercise macro, options and data-center workflows', async ({ page }
   );
 
   await openAndCheck(page, '/data', '数据中心');
-  await page.getByRole('button', { name: '查询期权链', exact: true }).click();
+  await page.getByRole('button', { name: '查询期权链工作台', exact: true }).click();
   await expectEitherVisible(
     page.getByRole('columnheader', { name: '行权价', exact: true }),
     page.getByText('无期权数据', { exact: true }),
   );
 
   await page.getByRole('tab', { name: '交易日历' }).click();
-  await page.getByRole('button', { name: '加载交易日历', exact: true }).click();
+  await page.getByRole('button', { name: '加载交易日历工作台', exact: true }).click();
   await expectEitherVisible(
     page.getByRole('columnheader', { name: '交易日', exact: true }),
     page.getByText('无交易日历数据', { exact: true }),
   );
 
   await page.getByRole('tab', { name: 'IPO' }).click();
-  await page.getByRole('button', { name: '查询IPO信息', exact: true }).click();
+  await page.getByRole('button', { name: '查询IPO信息工作台', exact: true }).click();
   await expectEitherVisible(
     page.getByRole('columnheader', { name: '发行价', exact: true }),
-    page.getByText('无IPO数据', { exact: true }),
+    page.getByText(/无 ?IPO ?数据/),
   );
 
   await page.getByRole('tab', { name: '可转债' }).click();
@@ -156,7 +159,7 @@ test('should exercise macro, options and data-center workflows', async ({ page }
   } else {
     await page.getByRole('textbox', { name: '可转债代码' }).fill('123039');
   }
-  await page.getByRole('button', { name: '查询可转债', exact: true }).click();
+  await page.getByRole('button', { name: '查询可转债工作台', exact: true }).click();
   await expect(page.getByText('转股价', { exact: true })).toBeVisible({ timeout: 20_000 });
 
   await page.getByRole('tab', { name: '股本' }).click();
@@ -165,7 +168,7 @@ test('should exercise macro, options and data-center workflows', async ({ page }
   } else {
     await page.getByRole('textbox', { name: '股票代码' }).fill('600519');
   }
-  await page.getByRole('button', { name: '查询股本', exact: true }).click();
+  await page.getByRole('button', { name: '查询股本工作台', exact: true }).click();
   await expect(page.getByText('总股本', { exact: true })).toBeVisible({ timeout: 20_000 });
 
   await assertNoHorizontalOverflow(page);

@@ -14,6 +14,7 @@ import inspect
 import logging
 from typing import Any, Optional
 
+from ..governance_plane_contract import build_governance_plane_artifact
 from ...domain.candidates import CandidatePipelineReport
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,17 @@ class CandidatePipeline:
         report = self._build_report(
             candidates, passed, unique, submit_result, quality_gate_report, backtest_report
         )
+        dedup_report = (
+            dict(deduplicator.get_last_report() or {})
+            if hasattr(deduplicator, "get_last_report")
+            else {}
+        )
+        governance_plane = build_governance_plane_artifact(
+            quality_gate_report=quality_gate_report,
+            backtest_report=backtest_report,
+            dedup_report=dedup_report,
+            submit_result=submit_result,
+        )
 
         return PipelineRunResult(
             passed=passed,
@@ -125,7 +137,9 @@ class CandidatePipeline:
             backtest_report=backtest_report,
             submit_result=submit_result,
             deduplicator=deduplicator,
+            dedup_report=dedup_report,
             report=report,
+            governance_plane=governance_plane,
         )
 
     @staticmethod
@@ -221,7 +235,9 @@ class PipelineRunResult:
         backtest_report: dict[str, Any],
         submit_result: dict[str, Any],
         deduplicator: Any,
+        dedup_report: dict[str, Any],
         report: CandidatePipelineReport,
+        governance_plane: dict[str, Any],
     ) -> None:
         self.passed = passed
         self.unique = unique
@@ -229,12 +245,20 @@ class PipelineRunResult:
         self.backtest_report = backtest_report
         self.submit_result = submit_result
         self.deduplicator = deduplicator
+        self.dedup_report = dedup_report
         self.report = report
+        self.governance_plane = governance_plane
+        self.gate_artifact = dict(governance_plane.get("gate_artifact") or {})
+        self.dedup_artifact = dict(governance_plane.get("dedup_artifact") or {})
+        self.submission_artifact = dict(governance_plane.get("submission_artifact") or {})
+        self.evidence_artifact = dict(governance_plane.get("evidence_artifact") or {})
 
     def backtest_summary(self) -> dict[str, Any]:
         return dict(self.backtest_report.get("summary") or {})
 
     def deduplicator_report(self) -> dict[str, Any]:
+        if self.dedup_report:
+            return dict(self.dedup_report)
         if hasattr(self.deduplicator, "get_last_report"):
             return dict(self.deduplicator.get_last_report() or {})
         return {}

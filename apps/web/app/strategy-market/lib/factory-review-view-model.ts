@@ -365,6 +365,7 @@ export function buildFactoryReviewViewModel({
       const alignmentIssues = Array.isArray(committeeReview?.alignment_issues) ? committeeReview.alignment_issues : [];
       const executionIssues = Array.isArray(committeeReview?.execution_issues) ? committeeReview.execution_issues : [];
       const capacityIssues = Array.isArray(committeeReview?.capacity_issues) ? committeeReview.capacity_issues : [];
+      const acceptBlockers = Array.isArray(committeeReview?.accept_blockers) ? committeeReview.accept_blockers : [];
       return {
         experiment_id: item.experiment_id ?? '-',
         lineage: `${shortText(item.parent_strategy_id ?? item.strategy_id, 10)} → ${shortText(item.generated_strategy_id, 10)}`,
@@ -379,7 +380,10 @@ export function buildFactoryReviewViewModel({
           `对齐 ${fmtNum(committeeReview?.task_alignment_score, 2)}`,
           `新颖 ${fmtNum(committeeReview?.novelty_score, 2)}`,
         ].join(' / '),
-        review_issues: formatIssueSummary([...alignmentIssues, ...executionIssues, ...capacityIssues], 56),
+        review_issues: formatIssueSummary(
+          [...alignmentIssues, ...executionIssues, ...capacityIssues, ...acceptBlockers],
+          56,
+        ),
         rank: committeeReview?.rank ?? '-',
         champion: committeeReview?.is_champion ? '是' : '否',
         status: item.status ?? '-',
@@ -411,6 +415,11 @@ export function buildFactoryReviewViewModel({
   const constraintCheck = review?.constraint_check ?? {};
   const attemptAdjustment = review?.attempt_adjustment ?? {};
   const taskPreference = review?.task_preference ?? {};
+  const committeeReview = review?.committee_review ?? {};
+  const committeeAlignmentIssues = Array.isArray(committeeReview.alignment_issues) ? committeeReview.alignment_issues : [];
+  const committeeExecutionIssues = Array.isArray(committeeReview.execution_issues) ? committeeReview.execution_issues : [];
+  const committeeCapacityIssues = Array.isArray(committeeReview.capacity_issues) ? committeeReview.capacity_issues : [];
+  const committeeAcceptBlockers = Array.isArray(committeeReview.accept_blockers) ? committeeReview.accept_blockers : [];
   const reviewAuditRows = [
     { item: 'Bootstrap CI 下界', value: fmtNum(review?.quality_gate?.bootstrap_ci_lower, 4) },
     { item: '参数敏感性', value: fmtPct(review?.quality_gate?.param_sensitivity) },
@@ -422,6 +431,24 @@ export function buildFactoryReviewViewModel({
     { item: '验证画像', value: `${validationProfile.profile ?? '-'} / ${validationProfile.validation_focus ?? '-'}` },
     { item: '主验证层', value: review?.summary?.primary_validation_layer ?? validationProfile.primary_validation_layer ?? '-' },
     { item: 'Refresh 模式', value: review?.summary?.refresh_mode ?? review?.refresh_mode ?? '-' },
+    {
+      item: '评审结论',
+      value: formatIssueSummary([
+        review?.summary?.committee_decision ?? committeeReview.decision ?? '',
+        committeeReview.final_score == null ? '' : `score:${fmtNum(committeeReview.final_score, 4)}`,
+        committeeReview.rank == null ? '' : `rank:${committeeReview.rank}`,
+        committeeReview.is_champion ? 'champion' : '',
+      ], 64),
+    },
+    {
+      item: '评审拆解',
+      value: formatIssueSummary([
+        committeeReview.execution_score == null ? '' : `执行:${fmtNum(committeeReview.execution_score, 2)}`,
+        committeeReview.capacity_score == null ? '' : `容量:${fmtNum(committeeReview.capacity_score, 2)}`,
+        committeeReview.task_alignment_score == null ? '' : `对齐:${fmtNum(committeeReview.task_alignment_score, 2)}`,
+        committeeReview.novelty_score == null ? '' : `新颖:${fmtNum(committeeReview.novelty_score, 2)}`,
+      ], 64),
+    },
     {
       item: '约束审计',
       value: formatIssueSummary([
@@ -453,6 +480,15 @@ export function buildFactoryReviewViewModel({
       ], 64),
     },
     { item: '偏好原因', value: taskPreference.preference_reason ?? '-' },
+    {
+      item: '评审问题',
+      value: formatIssueSummary([
+        ...committeeAlignmentIssues,
+        ...committeeExecutionIssues,
+        ...committeeCapacityIssues,
+        ...committeeAcceptBlockers,
+      ], 64),
+    },
     { item: '任务签名', value: shortText(review?.task_signature, 64) },
     { item: '去重匹配类型', value: review?.dedup_report?.match_type ?? '唯一候选' },
     { item: '参数相似度', value: fmtNum(review?.dedup_report?.param_similarity, 4) },

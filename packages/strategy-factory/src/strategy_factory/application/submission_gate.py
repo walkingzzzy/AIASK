@@ -20,9 +20,17 @@ from ..domain.constants import (
 from ..domain.targets import _build_task_signature, _extract_target_codes_from_payload, _normalize_research_task_contract
 from ..infrastructure.mcp_services import get_normalize_klines, get_strategy_registry, get_validation_runtime
 from .candidate_contract import (
+    apply_resolved_candidate_envelope,
     build_candidate_contract_hash,
     build_candidate_identity_signature,
+    build_dsl_signature,
+    build_entry_exit_signature,
+    build_execution_contract_hash,
+    build_factor_signature,
+    build_logic_signature,
     build_portfolio_candidate_contract,
+    build_tested_object_hash,
+    resolve_candidate_validation_profile,
 )
 from .quality_reporting import maybe_grant_provisional_incubation, normalize_quality_gate_result, safe_metric_value
 
@@ -67,38 +75,44 @@ def _strategy_payload_value(strategy: dict, key: str, default: Any = None) -> An
     return default
 
 
-def _resolve_validation_profile(strategy: dict) -> dict[str, Any]:
+def _should_route_single_target_bulk_factor_to_trade_profile(
+    strategy: dict,
+    *,
+    research_task: Optional[dict[str, Any]] = None,
+    validation_focus: Optional[str] = None,
+) -> bool:
     strategy_type = str(strategy.get("strategy_type") or "").strip().lower()
+    if strategy_type not in _FACTOR_VALIDATION_TYPES:
+        return False
+    normalized_task = _normalize_research_task_contract(
+        research_task or _strategy_payload_value(strategy, "research_task") or strategy.get("research_task") or {}
+    )
+    resolved_validation_focus = str(
+        validation_focus if validation_focus is not None else normalized_task.get("validation_focus") or ""
+    ).strip().lower()
+    target_codes = _extract_target_codes_from_payload(strategy)
+    return (
+        str(normalized_task.get("task_source") or "").strip().lower() == "bulk_stock_matrix"
+        and resolved_validation_focus == "candidate_target_only"
+        and len(target_codes) == 1
+    )
+
+
+def _resolve_validation_profile(strategy: dict) -> dict[str, Any]:
     research_task = _normalize_research_task_contract(
         _strategy_payload_value(strategy, "research_task") or strategy.get("research_task") or {}
     )
-    explicit_profile = dict(_strategy_payload_value(strategy, "validation_profile") or strategy.get("validation_profile") or {})
-    profile_name = str(explicit_profile.get("profile") or "").strip().lower()
-    validation_focus = str(
-        explicit_profile.get("validation_focus")
-        or research_task.get("validation_focus")
-        or ("event_target_only" if research_task.get("task_source") == "event_driven" else "target_plus_representative")
-    ).strip().lower()
-    if not profile_name:
-        if strategy_type in _FACTOR_VALIDATION_TYPES:
-            profile_name = "factor_rank_validation"
-        elif strategy_type == "macro_timing":
-            profile_name = "macro_regime_validation"
-        elif research_task.get("task_source") == "event_driven" or validation_focus == "event_target_only":
-            profile_name = "event_trade_validation"
-        else:
-            profile_name = "trade_rule_validation"
-    if explicit_profile.get("primary_validation_layer"):
-        _raw_layer = str(explicit_profile["primary_validation_layer"])
-    elif validation_focus == "event_target_only":
-        _raw_layer = "target"
-    elif validation_focus == "broad_generalization":
-        _raw_layer = "combined"
-    elif profile_name == "factor_rank_validation":
-        _raw_layer = "combined"
-    else:
-        _raw_layer = "target"
-    primary_validation_layer = _raw_layer.strip().lower()
+    resolved_profile = resolve_candidate_validation_profile(strategy, research_task=research_task)
+    profile_name = str(resolved_profile.get("profile") or "").strip().lower()
+    validation_focus = str(resolved_profile.get("validation_focus") or "").strip().lower()
+    primary_validation_layer = str(resolved_profile.get("primary_validation_layer") or "").strip().lower() or "target"
+    if profile_name == "factor_rank_validation" and _should_route_single_target_bulk_factor_to_trade_profile(
+        strategy,
+        research_task=research_task,
+        validation_focus=validation_focus,
+    ):
+        profile_name = "trade_rule_validation"
+        primary_validation_layer = "target"
     return {
         "profile": profile_name,
         "validation_focus": validation_focus,
@@ -135,6 +149,27 @@ def _build_attempt_adjustment(strategy: dict) -> dict[str, Any]:
     }
 
 
+def resolve_attempt_adjustment(
+    strategy: dict,
+    *,
+    gate: Optional[dict[str, Any]] = None,
+    attempt_adjustment: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    if attempt_adjustment not in (None, {}, ""):
+        return dict(
+            normalize_quality_gate_result({"attempt_adjustment": attempt_adjustment}).get("attempt_adjustment") or {}
+        )
+    if gate:
+        normalized_gate = normalize_quality_gate_result(gate)
+        resolved = dict(normalized_gate.get("attempt_adjustment") or {})
+        if resolved:
+            return resolved
+    return dict(
+        normalize_quality_gate_result({"attempt_adjustment": _build_attempt_adjustment(strategy)}).get("attempt_adjustment")
+        or {}
+    )
+
+
 def _build_multiple_testing_registry(
     strategy: dict,
     profile: dict[str, Any],
@@ -158,7 +193,7 @@ def _build_multiple_testing_registry(
         or strategy.get("dedup_result")
         or {}
     )
-    attempt_adjustment = dict(normalized_gate.get("attempt_adjustment") or _build_attempt_adjustment(strategy))
+    attempt_adjustment = resolve_attempt_adjustment(strategy, gate=normalized_gate)
     multiple_testing = dict(normalized_gate.get("multiple_testing") or {})
     contract_snapshot = dict(
         _strategy_payload_value(strategy, "candidate_contract_snapshot")
@@ -210,6 +245,17 @@ def _build_multiple_testing_registry(
             if contract_snapshot
             else build_candidate_contract_hash(strategy)
         )
+    execution_contract_hash = str(
+        _strategy_payload_value(strategy, "execution_contract_hash")
+        or strategy.get("execution_contract_hash")
+        or ""
+    ).strip()
+    if not execution_contract_hash:
+        execution_contract_hash = (
+            build_execution_contract_hash(contract=contract_snapshot)
+            if contract_snapshot
+            else build_execution_contract_hash(strategy)
+        )
     candidate_identity_signature = str(
         _strategy_payload_value(strategy, "candidate_identity_signature")
         or strategy.get("candidate_identity_signature")
@@ -217,6 +263,37 @@ def _build_multiple_testing_registry(
     ).strip()
     if not candidate_identity_signature:
         candidate_identity_signature = build_candidate_identity_signature(strategy)
+    tested_object_hash = str(
+        _strategy_payload_value(strategy, "tested_object_hash")
+        or strategy.get("tested_object_hash")
+        or ""
+    ).strip()
+    if not tested_object_hash:
+        tested_object_hash = build_tested_object_hash(strategy)
+    logic_signature = str(
+        _strategy_payload_value(strategy, "logic_signature")
+        or strategy.get("logic_signature")
+        or build_logic_signature(strategy)
+        or ""
+    ).strip() or None
+    dsl_signature = str(
+        _strategy_payload_value(strategy, "dsl_signature")
+        or strategy.get("dsl_signature")
+        or build_dsl_signature(strategy)
+        or ""
+    ).strip() or None
+    factor_signature = str(
+        _strategy_payload_value(strategy, "factor_signature")
+        or strategy.get("factor_signature")
+        or build_factor_signature(strategy)
+        or ""
+    ).strip() or None
+    entry_exit_signature = str(
+        _strategy_payload_value(strategy, "entry_exit_signature")
+        or strategy.get("entry_exit_signature")
+        or build_entry_exit_signature(strategy)
+        or ""
+    ).strip() or None
     lineage_id = str(
         lineage.get("lineage_id")
         or _strategy_payload_value(strategy, "lineage_id")
@@ -272,7 +349,8 @@ def _build_multiple_testing_registry(
         strategy_type,
     )
     revision_key = _axis_key("revision", lineage_id, revision_mode, refresh_mode)
-    registry_key = "|".join((task_key, family_key, universe_key, template_key, revision_key))
+    tested_object_key = _axis_key("tested", tested_object_hash)
+    registry_key = "|".join((task_key, family_key, universe_key, template_key, revision_key, tested_object_key))
 
     return {
         "registry_key": registry_key,
@@ -294,8 +372,15 @@ def _build_multiple_testing_registry(
         "revision_mode": revision_mode,
         "refresh_mode": refresh_mode,
         "revision_key": revision_key,
+        "tested_object_key": tested_object_key,
         "candidate_contract_hash": candidate_contract_hash or None,
+        "execution_contract_hash": execution_contract_hash or None,
+        "tested_object_hash": tested_object_hash or None,
         "candidate_identity_signature": candidate_identity_signature or None,
+        "logic_signature": logic_signature,
+        "dsl_signature": dsl_signature,
+        "factor_signature": factor_signature,
+        "entry_exit_signature": entry_exit_signature,
         "attempt_count": int(attempt_adjustment.get("attempt_count") or 1),
         "selected_count": int(attempt_adjustment.get("selected_count") or 0),
         "selection_ratio": float(attempt_adjustment.get("selection_ratio") or 0.0),
@@ -312,6 +397,7 @@ def _build_multiple_testing_registry(
             "universe": universe_key,
             "template": template_key,
             "revision": revision_key,
+            "tested_object": tested_object_key,
         },
         "multiple_testing": {
             "deflated_sharpe": dict(multiple_testing.get("deflated_sharpe") or {}),
@@ -672,6 +758,18 @@ def _has_trade_validation_audit(backtest_metrics: Optional[dict]) -> bool:
     return any(key in metrics and metrics.get(key) is not None for key in required_markers)
 
 
+def _trade_validation_audit_mode(
+    *,
+    incubation_budget_track: Optional[str] = None,
+    submission_lane: Optional[str] = None,
+) -> str:
+    track = str(incubation_budget_track or "").strip().lower()
+    lane = str(submission_lane or "").strip().lower()
+    if lane == "live_ready_review" or track in {"formal_incubation", "live_ready_review"}:
+        return "hard_fail"
+    return "research_only_fallback"
+
+
 def _evaluate_trade_profile(
     strategy: dict,
     profile: dict[str, Any],
@@ -682,7 +780,7 @@ def _evaluate_trade_profile(
     attempt_adjustment: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     metrics = dict(backtest_metrics or {})
-    attempt_adjustment = dict(attempt_adjustment or _build_attempt_adjustment(strategy))
+    attempt_adjustment = resolve_attempt_adjustment(strategy, attempt_adjustment=attempt_adjustment)
     thresholds = _trade_gate_thresholds(
         profile,
         attempt_adjustment,
@@ -714,6 +812,7 @@ def _evaluate_trade_profile(
     event_sample_source = metrics.get("event_sample_source")
     event_time_anchors = list(metrics.get("event_time_anchors") or [])
     traceable_to_event_samples = bool(metrics.get("traceable_to_event_samples"))
+    event_audit_incomplete = bool(metrics.get("event_audit_incomplete"))
 
     if post_cost_sharpe < thresholds["post_cost_sharpe_min"]:
         reasons.append(f"post_cost_sharpe {post_cost_sharpe:.3f} < {thresholds['post_cost_sharpe_min']:.3f}")
@@ -749,11 +848,15 @@ def _evaluate_trade_profile(
         )
     if is_event:
         if event_sample_count <= 0:
-            warnings.append("event_sample_count_missing")
+            reasons.append("event_sample_count_missing")
+        if event_audit_incomplete:
+            reasons.append("event_audit_incomplete")
         if event_study_mode and event_study_mode != "sample_driven":
-            warnings.append(f"event_study_mode_{event_study_mode}")
+            reasons.append(f"event_study_mode_{event_study_mode}")
+        if str(event_sample_source or "").strip().lower() == "auto_context_minimal":
+            reasons.append("event_sample_source_auto_context_minimal")
         if event_sample_count > 0 and not traceable_to_event_samples:
-            warnings.append("event_sample_traceability_missing")
+            reasons.append("event_sample_traceability_missing")
 
     risk = dict(risk_report or {})
     stress_loss_percent = safe_metric_value(risk, "stress_loss_percent")
@@ -793,6 +896,7 @@ def _evaluate_trade_profile(
             "event_sample_source": event_sample_source,
             "event_time_anchors": event_time_anchors[:8],
             "traceable_to_event_samples": bool(traceable_to_event_samples),
+            "event_audit_incomplete": bool(event_audit_incomplete),
         }
     )
 
@@ -806,7 +910,7 @@ def _evaluate_statistical_admission(
     attempt_adjustment: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     payload = dict(gate_payload or {})
-    attempt_adjustment = dict(attempt_adjustment or _build_attempt_adjustment(strategy))
+    attempt_adjustment = resolve_attempt_adjustment(strategy, attempt_adjustment=attempt_adjustment)
     thresholds = _statistical_gate_thresholds(
         attempt_adjustment,
         admission_level=admission_level,
@@ -884,17 +988,28 @@ def _merge_trade_primary_gate(
     supplemental_statistical_gate: Optional[dict[str, Any]],
 ) -> dict[str, Any]:
     supplemental = normalize_quality_gate_result(supplemental_statistical_gate)
+    trade_gate_payload = normalize_quality_gate_result(trade_gate)
     warnings = _merge_text_items(trade_gate.get("warnings"), supplemental.get("warnings"))
     if supplemental.get("reasons"):
         warnings = _merge_text_items(warnings, ["supplemental_statistical_gate_failed"])
+    base_protocol = str(trade_gate_payload.get("gate_protocol") or "").strip().lower()
+    profile_name = base_protocol.split(":", 1)[0] if ":" in base_protocol else base_protocol
+    merged_protocol = (
+        f"{profile_name}:trade_primary_with_supplemental_audit"
+        if profile_name
+        else "trade_primary_with_supplemental_audit"
+    )
     merged = {
-        **dict(trade_gate or {}),
+        **dict(trade_gate_payload or {}),
         **{
             key: value
             for key, value in supplemental.items()
             if key in _SUPPLEMENTAL_STATISTICAL_FIELDS
         },
         "warnings": warnings,
+        "primary_gate_protocol": trade_gate_payload.get("gate_protocol"),
+        "supplemental_gate_protocol": "supplemental_statistical_audit",
+        "gate_protocol": merged_protocol,
         "supplemental_statistical_gate": {
             "passed": bool(supplemental.get("passed")),
             "reasons": list(supplemental.get("reasons") or []),
@@ -912,9 +1027,10 @@ def _attach_admission_evaluations(
     risk_report: Optional[dict] = None,
 ) -> dict[str, Any]:
     normalized_gate = normalize_quality_gate_result(gate)
-    attempt_adjustment = dict(normalized_gate.get("attempt_adjustment") or _build_attempt_adjustment(strategy))
+    attempt_adjustment = resolve_attempt_adjustment(strategy, gate=normalized_gate)
     evaluations: dict[str, dict[str, Any]] = {}
     profile_name = str(profile.get("profile") or "").strip().lower()
+    research_only_due_to_trade_audit_gap = bool(normalized_gate.get("research_only_due_to_trade_audit_gap"))
 
     for admission_level in _ADMISSION_LEVEL_ORDER:
         if profile_name in _TRADE_PRIMARY_PROFILES:
@@ -941,27 +1057,60 @@ def _attach_admission_evaluations(
             "thresholds": dict(stage_result.get("thresholds") or {}),
         }
 
-    strict_incubation_ready = bool((evaluations.get("incubation") or {}).get("passed"))
-    incubation_candidate_ready = bool(normalized_gate.get("passed"))
-    live_candidate_ready = bool(
-        incubation_candidate_ready
-        and not normalized_gate.get("provisional_pass")
-        and (evaluations.get("live") or {}).get("passed")
-    )
-    research_candidate_ready = bool((evaluations.get("research") or {}).get("passed"))
-
-    if live_candidate_ready:
-        admission_stage = "live"
-        block_reasons: list[str] = []
-    elif incubation_candidate_ready:
-        admission_stage = "incubation"
-        block_reasons = list((evaluations.get("live") or {}).get("reasons") or [])
-    elif research_candidate_ready:
-        admission_stage = "research"
-        block_reasons = list((evaluations.get("incubation") or {}).get("reasons") or [])
+    if research_only_due_to_trade_audit_gap:
+        research_passed = bool(normalized_gate.get("passed"))
+        base_reasons = list(normalized_gate.get("reasons") or [])
+        base_warnings = list(normalized_gate.get("warnings") or [])
+        evaluations["research"] = {
+            "passed": research_passed,
+            "reasons": [] if research_passed else list(base_reasons),
+            "warnings": list(base_warnings),
+            "thresholds": dict((evaluations.get("research") or {}).get("thresholds") or {}),
+        }
+        evaluations["incubation"] = {
+            "passed": False,
+            "reasons": _merge_text_items(base_reasons, ["trade_validation_audit_missing_for_incubation_admission"]),
+            "warnings": list(base_warnings),
+            "thresholds": dict((evaluations.get("incubation") or {}).get("thresholds") or {}),
+        }
+        evaluations["live"] = {
+            "passed": False,
+            "reasons": _merge_text_items(base_reasons, ["trade_validation_audit_missing_for_live_admission"]),
+            "warnings": list(base_warnings),
+            "thresholds": dict((evaluations.get("live") or {}).get("thresholds") or {}),
+        }
+        strict_incubation_ready = False
+        incubation_candidate_ready = False
+        live_candidate_ready = False
+        research_candidate_ready = research_passed
+        if research_candidate_ready:
+            admission_stage = "research"
+            block_reasons = list((evaluations.get("incubation") or {}).get("reasons") or [])
+        else:
+            admission_stage = "rejected"
+            block_reasons = list(base_reasons or (evaluations.get("incubation") or {}).get("reasons") or [])
     else:
-        admission_stage = "rejected"
-        block_reasons = list(normalized_gate.get("reasons") or (evaluations.get("incubation") or {}).get("reasons") or [])
+        strict_incubation_ready = bool((evaluations.get("incubation") or {}).get("passed"))
+        incubation_candidate_ready = bool(normalized_gate.get("passed"))
+        live_candidate_ready = bool(
+            incubation_candidate_ready
+            and not normalized_gate.get("provisional_pass")
+            and (evaluations.get("live") or {}).get("passed")
+        )
+        research_candidate_ready = bool((evaluations.get("research") or {}).get("passed"))
+
+        if live_candidate_ready:
+            admission_stage = "live"
+            block_reasons = []
+        elif incubation_candidate_ready:
+            admission_stage = "incubation"
+            block_reasons = list((evaluations.get("live") or {}).get("reasons") or [])
+        elif research_candidate_ready:
+            admission_stage = "research"
+            block_reasons = list((evaluations.get("incubation") or {}).get("reasons") or [])
+        else:
+            admission_stage = "rejected"
+            block_reasons = list(normalized_gate.get("reasons") or (evaluations.get("incubation") or {}).get("reasons") or [])
 
     incubation_pass_mode = (
         "provisional"
@@ -978,6 +1127,7 @@ def _attach_admission_evaluations(
             "live_candidate_ready": live_candidate_ready,
             "admission_evaluations": evaluations,
             "admission_block_reasons": block_reasons,
+            "research_only_due_to_trade_audit_gap": research_only_due_to_trade_audit_gap,
         }
     )
 
@@ -1034,7 +1184,7 @@ async def _run_statistical_gate(
     )
 
     reasons = []
-    attempt_adjustment = _build_attempt_adjustment(strategy)
+    attempt_adjustment = resolve_attempt_adjustment(strategy)
 
     statistical_thresholds = _statistical_gate_thresholds(
         attempt_adjustment,
@@ -1170,16 +1320,25 @@ async def run_submission_quality_gate(
     validation_report: dict | None = None,
     risk_report: dict | None = None,
     backtest_metrics: dict | None = None,
+    incubation_budget_track: str | None = None,
+    submission_lane: str | None = None,
 ) -> Dict[str, Any]:
     """Run the submission-stage quality gate and return the final authority result."""
     try:
+        strategy = apply_resolved_candidate_envelope(strategy)
         profile = _resolve_validation_profile(strategy)
         profile_name = str(profile.get("profile") or "").strip().lower()
         strategy_type = str(strategy.get("strategy_type", "") or "").strip().lower()
         strategy_registry = get_strategy_registry()
         klass = strategy_registry.get(strategy_type) if strategy_type else None
         if klass is None:
-            return normalize_quality_gate_result({"passed": False, "reason": f"Strategy type not in registry: {strategy_type}"})
+            return normalize_quality_gate_result(
+                {
+                    "passed": False,
+                    "reason": f"Strategy type not in registry: {strategy_type}",
+                    "attempt_adjustment": resolve_attempt_adjustment(strategy),
+                }
+            )
 
         normalized: dict[str, Any]
         if profile_name == "factor_rank_validation":
@@ -1193,28 +1352,65 @@ async def run_submission_quality_gate(
                 statistical_gate,
                 "factor_rank_validation:statistical_primary",
             )
-        elif profile_name in _TRADE_PRIMARY_PROFILES and _has_trade_validation_audit(backtest_metrics):
-            trade_gate = _with_gate_protocol(
-                _evaluate_trade_profile(strategy, profile, backtest_metrics, risk_report),
-                f"{profile_name}:trade_primary",
-            )
-            supplemental_gate: dict[str, Any]
-            try:
-                supplemental_gate = await _run_statistical_gate(
-                    db,
-                    strategy,
-                    profile=profile,
-                    klass=klass,
+        elif profile_name in _TRADE_PRIMARY_PROFILES:
+            if _has_trade_validation_audit(backtest_metrics):
+                trade_gate = _with_gate_protocol(
+                    _evaluate_trade_profile(strategy, profile, backtest_metrics, risk_report),
+                    f"{profile_name}:trade_primary",
                 )
-            except Exception as exc:
-                supplemental_gate = normalize_quality_gate_result(
-                    {
-                        "passed": False,
-                        "reason": f"Supplemental statistical gate error: {exc}",
-                        "warnings": [f"supplemental_statistical_gate_error:{type(exc).__name__}"],
-                    }
+                supplemental_gate: dict[str, Any]
+                try:
+                    supplemental_gate = await _run_statistical_gate(
+                        db,
+                        strategy,
+                        profile=profile,
+                        klass=klass,
+                    )
+                except Exception as exc:
+                    supplemental_gate = normalize_quality_gate_result(
+                        {
+                            "passed": False,
+                            "reason": f"Supplemental statistical gate error: {exc}",
+                            "warnings": [f"supplemental_statistical_gate_error:{type(exc).__name__}"],
+                        }
+                    )
+                normalized = _merge_trade_primary_gate(trade_gate, supplemental_gate)
+            else:
+                audit_mode = _trade_validation_audit_mode(
+                    incubation_budget_track=incubation_budget_track,
+                    submission_lane=submission_lane,
                 )
-            normalized = _merge_trade_primary_gate(trade_gate, supplemental_gate)
+                if audit_mode == "hard_fail":
+                    normalized = normalize_quality_gate_result(
+                        {
+                            "passed": False,
+                            "gate_protocol": f"{profile_name}:hard_fail_missing_trade_audit",
+                            "reasons": [f"{profile_name}:trade_validation_audit_missing"],
+                            "trade_validation_audit_missing": True,
+                            "trade_validation_audit_mode": audit_mode,
+                        }
+                    )
+                else:
+                    statistical_gate = await _run_statistical_gate(
+                        db,
+                        strategy,
+                        profile=profile,
+                        klass=klass,
+                    )
+                    warnings = _merge_text_items(
+                        statistical_gate.get("warnings"),
+                        [f"{profile_name}:trade_validation_audit_missing"],
+                    )
+                    normalized = normalize_quality_gate_result(
+                        {
+                            **statistical_gate,
+                            "gate_protocol": f"{profile_name}:statistical_fallback_research_only",
+                            "warnings": warnings,
+                            "trade_validation_audit_missing": True,
+                            "trade_validation_audit_mode": audit_mode,
+                            "research_only_due_to_trade_audit_gap": True,
+                        }
+                    )
         else:
             statistical_gate = await _run_statistical_gate(
                 db,
@@ -1246,6 +1442,7 @@ async def run_submission_quality_gate(
         normalized = normalize_quality_gate_result(
             {
                 **normalized,
+                "attempt_adjustment": resolve_attempt_adjustment(strategy, gate=normalized),
                 "multiple_testing_registry": _build_multiple_testing_registry(
                     strategy,
                     profile,
@@ -1260,4 +1457,10 @@ async def run_submission_quality_gate(
             risk_report=risk_report,
         )
     except Exception as e:
-        return normalize_quality_gate_result({"passed": False, "reason": str(e)})
+        return normalize_quality_gate_result(
+            {
+                "passed": False,
+                "reason": str(e),
+                "attempt_adjustment": resolve_attempt_adjustment(strategy),
+            }
+        )

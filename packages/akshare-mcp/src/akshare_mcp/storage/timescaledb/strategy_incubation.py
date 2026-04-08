@@ -7,6 +7,20 @@ from typing import Any, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _safe_rules_dict(value) -> dict:
+    """将 risk_rules 字段安全地转换为 dict，防止反复 json.dumps 造成多层嵌套。"""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return {}
+
+
 class StrategyIncubationMixin:
     """孵化账户 + 孵化指标 + 模拟盘(paper) + 孵化流水线快照"""
 
@@ -235,7 +249,7 @@ class StrategyIncubationMixin:
                 float(payload.get('initial_capital') or 0.0),
                 float(payload.get('current_capital') or 0.0),
                 float(payload.get('total_value') or 0.0),
-                json.dumps(payload.get('risk_rules') or {}, ensure_ascii=False, default=str),
+                json.dumps(_safe_rules_dict(payload.get('risk_rules')), ensure_ascii=False, default=str),
                 payload.get('strategy_id'),
                 payload.get('account_type') or 'manual',
                 payload.get('incubation_stage') or 'warmup',

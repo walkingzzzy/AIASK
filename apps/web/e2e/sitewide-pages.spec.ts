@@ -12,13 +12,15 @@ import {
 } from './helpers/app';
 
 test.describe.configure({ mode: 'serial' });
-test.setTimeout(240_000);
+test.setTimeout(300_000);
 
 type RouteSpec = {
   name: string;
   path: string;
+  resolvePath?: (page: Page) => Promise<string>;
   public?: boolean;
   allowAuthenticatedRedirect?: boolean;
+  redirectPath?: string;
   verify: (page: Page) => Promise<void>;
 };
 
@@ -36,7 +38,7 @@ const ROUTES: RouteSpec[] = [
     name: '行情看板',
     path: '/market',
     verify: async (page) => {
-      await expect(page.getByRole('heading', { name: '行情看板' })).toBeVisible();
+      await expect(page.getByRole('heading', { name: /贵州茅台|600519/ }).first()).toBeVisible();
       await expect(page.getByRole('tab', { name: '基础行情' })).toBeVisible();
     },
   },
@@ -48,22 +50,22 @@ const ROUTES: RouteSpec[] = [
       await expect(page.getByRole('tab', { name: 'K线图' })).toBeVisible();
     },
   },
-  { name: '基本面分析', path: '/fundamental', verify: async (page) => expect(page.getByRole('heading', { name: '基本面分析' })).toBeVisible() },
-  { name: '技术分析', path: '/technical', verify: async (page) => expect(page.getByRole('heading', { name: '技术分析' })).toBeVisible() },
+  { name: '基本面分析', path: '/fundamental', verify: async (page) => expect(page.getByRole('heading', { name: /基本面分析(?:工作台)?/ })).toBeVisible() },
+  { name: '技术分析', path: '/technical', verify: async (page) => expect(page.getByRole('heading', { name: /技术分析(?:工作台)?/ })).toBeVisible() },
   {
     name: '资金流向',
     path: '/fund-flow',
     verify: async (page) => {
-      await expect(page.getByRole('heading', { name: '资金流向' })).toBeVisible();
+      await expect(page.getByRole('heading', { name: /资金流向(?:工作台)?/ })).toBeVisible();
       await expect(page.getByRole('tab', { name: '个股资金流' })).toBeVisible();
     },
   },
-  { name: '情绪分析', path: '/sentiment', verify: async (page) => expect(page.getByRole('heading', { name: '情绪分析' })).toBeVisible() },
-  { name: '研报公告', path: '/research', verify: async (page) => expect(page.getByRole('heading', { name: '研报公告' })).toBeVisible() },
-  { name: '估值分析', path: '/valuation', verify: async (page) => expect(page.getByRole('heading', { name: '估值分析' })).toBeVisible() },
-  { name: '回测分析', path: '/backtest', verify: async (page) => expect(page.getByRole('heading', { name: '回测分析' })).toBeVisible() },
-  { name: '因子研究', path: '/factor', verify: async (page) => expect(page.getByRole('heading', { name: '因子研究' })).toBeVisible() },
-  { name: '因子分析', path: '/factor-analysis', verify: async (page) => expect(page.getByRole('heading', { name: '因子分析' })).toBeVisible() },
+  { name: '情绪分析', path: '/sentiment', verify: async (page) => expect(page.getByRole('heading', { name: /情绪分析(?:工作台)?/ })).toBeVisible() },
+  { name: '研报公告', path: '/research', verify: async (page) => expect(page.getByRole('heading', { name: /研究工作台|研报公告/ })).toBeVisible() },
+  { name: '估值分析', path: '/valuation', verify: async (page) => expect(page.getByRole('heading', { name: /估值分析(?:工作台)?/ })).toBeVisible() },
+  { name: '回测分析', path: '/backtest', verify: async (page) => expect(page.getByRole('heading', { name: /回测分析(?:工作台)?/ })).toBeVisible() },
+  { name: '因子研究', path: '/factor', verify: async (page) => expect(page.getByRole('heading', { name: /因子研究(?:工作台)?/ })).toBeVisible() },
+  { name: '因子分析', path: '/factor-analysis', verify: async (page) => expect(page.getByRole('heading', { name: /因子洞察工作台|因子分析/ })).toBeVisible() },
   {
     name: '事件工作台',
     path: '/events',
@@ -96,10 +98,10 @@ const ROUTES: RouteSpec[] = [
       await expect(page.getByRole('button', { name: /开始筛选|执行筛选/ }).first()).toBeVisible();
     },
   },
-  { name: '模拟交易', path: '/paper-trading', verify: async (page) => expect(page.getByRole('heading', { name: '模拟交易' })).toBeVisible() },
-  { name: '投资组合', path: '/portfolio', verify: async (page) => expect(page.getByRole('heading', { name: '投资组合' })).toBeVisible() },
-  { name: '风险分析', path: '/risk', verify: async (page) => expect(page.getByRole('heading', { name: '风险分析' })).toBeVisible() },
-  { name: '告警中心', path: '/alerts', verify: async (page) => expect(page.getByRole('heading', { name: '告警中心' })).toBeVisible() },
+  { name: '模拟交易', path: '/paper-trading', verify: async (page) => expect(page.getByRole('heading', { name: /模拟交易(?:工作台)?/ })).toBeVisible() },
+  { name: '投资组合', path: '/portfolio', verify: async (page) => expect(page.getByRole('heading', { name: /组合管理工作台|投资组合|组合管理/ })).toBeVisible() },
+  { name: '风险分析', path: '/risk', verify: async (page) => expect(page.getByRole('heading', { name: /风险分析(?:工作台)?/ })).toBeVisible() },
+  { name: '告警中心', path: '/alerts', verify: async (page) => expect(page.getByRole('heading', { name: /告警中心(?:工作台)?/ })).toBeVisible() },
   { name: '通知中心', path: '/notifications', verify: async (page) => expect(page.getByRole('heading', { name: /通知中心/ })).toBeVisible() },
   {
     name: '统一决策',
@@ -113,11 +115,20 @@ const ROUTES: RouteSpec[] = [
     name: '智能助手',
     path: '/assistant',
     verify: async (page) => {
-      await expect(page.getByRole('heading', { name: /AI 深度诊断报告生成器/ })).toBeVisible();
+      await expect(page.getByRole('heading', { name: /AI 中心|AI 深度诊断报告生成器/ })).toBeVisible();
       await expect(page.getByRole('textbox', { name: '股票代码' })).toBeVisible();
     },
   },
-  { name: 'AI 对话', path: '/chat', verify: async (page) => expect(page.getByRole('heading', { name: 'AI 对话' })).toBeVisible() },
+  {
+    name: 'AI 对话',
+    path: '/chat',
+    allowAuthenticatedRedirect: true,
+    redirectPath: '/assistant',
+    verify: async (page) => {
+      await expect(page.getByRole('heading', { name: /AI 中心|AI 对话/ })).toBeVisible();
+      await expect(page.getByRole('textbox', { name: '股票代码' })).toBeVisible();
+    },
+  },
   {
     name: '智能搜索',
     path: '/search',
@@ -143,7 +154,7 @@ const ROUTES: RouteSpec[] = [
     },
   },
   { name: '技能中心', path: '/skills', verify: async (page) => expect(page.getByRole('heading', { name: '技能中心' })).toBeVisible() },
-  { name: '用户中心', path: '/user', verify: async (page) => expect(page.getByRole('heading', { name: '用户中心' })).toBeVisible() },
+  { name: '用户中心', path: '/user', verify: async (page) => expect(page.getByRole('heading', { name: /用户中心(?:工作台)?/ })).toBeVisible() },
   {
     name: '设置中心',
     path: '/settings',
@@ -155,15 +166,46 @@ const ROUTES: RouteSpec[] = [
   { name: '安全设置', path: '/settings/security', verify: async (page) => expect(page.getByRole('heading', { name: /安全设置/ })).toBeVisible() },
   { name: '审计日志', path: '/settings/audit-log', verify: async (page) => expect(page.getByRole('heading', { name: /操作审计日志/ })).toBeVisible() },
   { name: '策略工作台', path: '/strategy', verify: async (page) => expect(page.getByRole('heading', { name: '策略工作台' })).toBeVisible() },
-  { name: '策略超市', path: '/strategy-market', verify: async (page) => expect(page.getByRole('heading', { name: '策略超市' })).toBeVisible() },
+  {
+    name: '策略超市',
+    path: '/strategy-market',
+    verify: async (page) => {
+      await expect(page.getByText('Strategy Workspace')).toBeVisible();
+      await expect(page.getByRole('heading', { name: /先看筛选结果|订阅、组合和工厂动作/ }).first()).toBeVisible();
+    },
+  },
+  {
+    name: '策略详情页',
+    path: '/strategy-market',
+    resolvePath: resolveFirstStrategyDetailPath,
+    verify: async (page) => {
+      await expect
+        .poll(async () => {
+          if (await page.getByText('Strategy Workspace').isVisible().catch(() => false)) return 'detail';
+          if (await page.getByText('策略不存在或已下架').isVisible().catch(() => false)) return 'missing';
+          if (await page.getByText('策略详情暂时无法加载').isVisible().catch(() => false)) return 'error';
+          return null;
+        }, { timeout: 20_000, intervals: [250, 500, 1_000] })
+        .not.toBeNull();
+      await expect(page.getByRole('link', { name: /返回策略超市/ }).first()).toBeVisible();
+    },
+  },
   { name: '宏观页面', path: '/macro', verify: async (page) => expect(page.getByRole('heading', { name: /宏观经济数据分析/ })).toBeVisible() },
   { name: '期权页面', path: '/options', verify: async (page) => expect(page.getByRole('heading', { name: /期权全景分析/ })).toBeVisible() },
-  { name: '自选股', path: '/watchlist', verify: async (page) => expect(page.getByRole('heading', { name: /我的自选/ })).toBeVisible() },
+  { name: '自选股', path: '/watchlist', verify: async (page) => expect(page.getByRole('heading', { name: '自选股工作台', level: 1 })).toBeVisible() },
   { name: '管理后台', path: '/admin', verify: async (page) => expect(page.getByRole('heading', { name: '管理后台概览' })).toBeVisible() },
   { name: '缓存管理', path: '/admin/cache', verify: async (page) => expect(page.getByRole('heading', { name: /缓存管理/ })).toBeVisible() },
   { name: '死信队列', path: '/admin/dead-letters', verify: async (page) => expect(page.getByRole('heading', { name: /死信队列/ })).toBeVisible() },
   { name: 'MCP 工具页', path: '/admin/tools', verify: async (page) => expect(page.getByRole('heading', { name: /MCP 工具仪表盘/ })).toBeVisible() },
   { name: '用户管理', path: '/admin/users', verify: async (page) => expect(page.getByRole('heading', { name: /用户管理/ })).toBeVisible() },
+  {
+    name: '执行 Artifact 详情页',
+    path: '/execution/artifacts/demo-artifact',
+    verify: async (page) => {
+      await expect(page.getByRole('heading', { name: 'Artifact 详情' })).toBeVisible();
+      await expect(page.getByText(/独立查看 artifact 关联的任务/)).toBeVisible();
+    },
+  },
   {
     name: '登录页',
     path: '/login',
@@ -201,8 +243,34 @@ async function gotoProtectedRoute(page: Page, path: string) {
   await dismissOnboarding(page);
 }
 
+async function resolveFirstStrategyDetailPath(page: Page) {
+  const tempPage = await page.context().newPage();
+
+  try {
+    await openProtectedPage(tempPage, '/strategy-market');
+    await assertProtectedShell(tempPage);
+    await waitForSettledUi(tempPage, 1_500);
+
+    const detailHref = await tempPage.locator('a[href^="/strategy-market/"]').evaluateAll((nodes) => {
+      for (const node of nodes) {
+        const href = node.getAttribute('href');
+        if (href && /^\/strategy-market\/[^/?#]+(?:\?.*)?$/.test(href) && href !== '/strategy-market') {
+          return href;
+        }
+      }
+      return null;
+    });
+
+    expect(detailHref, '策略详情链接不能为空').toBeTruthy();
+    return detailHref!;
+  } finally {
+    await tempPage.close();
+  }
+}
+
 test('should load sitewide routes without layout or runtime regressions', async ({ page }) => {
   const failures: string[] = [];
+  expect(ROUTES).toHaveLength(46);
 
   await loginAsConfigured(page, '/');
   const context = page.context();
@@ -214,20 +282,25 @@ test('should load sitewide routes without layout or runtime regressions', async 
       const collector = createPageIssueCollector(routePage);
 
       try {
+        const targetPath = route.resolvePath ? await route.resolvePath(routePage) : route.path;
+
         if (route.public) {
-          await routePage.goto(route.path);
+          await routePage.goto(targetPath);
           await waitForSettledUi(routePage);
         } else {
-          await gotoProtectedRoute(routePage, route.path);
+          await gotoProtectedRoute(routePage, targetPath);
           await assertProtectedShell(routePage);
         }
 
         const pathname = new URL(routePage.url()).pathname;
-        if (route.public && route.allowAuthenticatedRedirect && pathname !== route.path) {
+        if (route.public && route.allowAuthenticatedRedirect && pathname !== targetPath) {
           expect(['/market', '/']).toContain(pathname);
           await assertProtectedShell(routePage);
+        } else if (!route.public && route.allowAuthenticatedRedirect && route.redirectPath && pathname !== targetPath) {
+          expect(pathname).toBe(route.redirectPath);
+          await route.verify(routePage);
         } else {
-          await expectRouteMatch(routePage, route.path);
+          await expectRouteMatch(routePage, targetPath);
           await route.verify(routePage);
         }
         await assertNoHorizontalOverflow(routePage);

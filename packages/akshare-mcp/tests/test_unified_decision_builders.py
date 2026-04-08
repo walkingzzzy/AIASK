@@ -91,6 +91,111 @@ async def test_build_stock_context_degrades_to_market_and_flow_snapshots(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_build_stock_context_prefers_latest_realtime_timestamp(monkeypatch):
+    from akshare_mcp.services import decision_context_builder as builder
+    from akshare_mcp.tools.data_quality import parse_asof_time
+
+    order_book_timestamp = 1775439960000
+
+    async def _fake_investment_analysis(code):
+        return {
+            "success": True,
+            "cached": False,
+            "data": {
+                "basic_info": {"code": code, "name": "测试股份", "industry": "白酒"},
+                "price_context": {"current_price": 123.4, "analysis_date": "2022-03-30"},
+                "valuation": {"pe": 18.5},
+                "risk": {"volatility_20d": 0.03},
+            },
+        }
+
+    def _fake_stock_info(code):
+        return {"success": True, "data": {"code": code, "name": "测试股份", "industry": "白酒", "listDate": "20010101"}}
+
+    def _fake_quote(code):
+        return {
+            "success": True,
+            "cached": False,
+            "asof_time": "2026-04-06T09:45:00+08:00",
+            "data": {
+                "code": code,
+                "name": "测试股份",
+                "price": 123.4,
+                "changePercent": 1.2,
+                "amount": 320000000.0,
+                "volume": 560000,
+                "open": 121.0,
+                "high": 124.0,
+                "low": 120.8,
+                "preClose": 121.9,
+                "data_timestamp": "2026-04-06T09:45:00+08:00",
+            },
+        }
+
+    def _fake_fund_flow(code):
+        return {
+            "success": True,
+            "data": {
+                "mainNetInflow": 10000000.0,
+                "superLargeNetInflow": 4000000.0,
+                "largeNetInflow": 3000000.0,
+                "middleNetInflow": -1000000.0,
+                "smallNetInflow": -2000000.0,
+                "tradeDate": "2026-04-05",
+            },
+        }
+
+    def _fake_north(code):
+        return {"success": True, "data": {"shares": 1000.0, "ratio": 2.5, "change": 50.0}}
+
+    def _fake_order_book(code):
+        return {
+            "success": True,
+            "data": {
+                "bids": [{"price": 123.3, "volume": 12000}],
+                "asks": [{"price": 123.5, "volume": 10000}],
+                "timestamp": order_book_timestamp,
+            },
+        }
+
+    def _fake_industry_chain(keyword=None, chain_id=None):
+        return {
+            "success": True,
+            "data": {
+                "chains": [
+                    {
+                        "id": "liquor",
+                        "name": "白酒产业链",
+                        "upstream": ["粮食"],
+                        "midstream": ["酿造"],
+                        "downstream": ["零售"],
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(builder, "get_investment_analysis", _fake_investment_analysis)
+    monkeypatch.setattr(builder, "get_stock_info", _fake_stock_info)
+    monkeypatch.setattr(builder, "get_realtime_quote", _fake_quote)
+    monkeypatch.setattr(builder, "get_stock_fund_flow", _fake_fund_flow)
+    monkeypatch.setattr(builder, "get_north_fund_holding", _fake_north)
+    monkeypatch.setattr(builder, "get_order_book", _fake_order_book)
+    monkeypatch.setattr(builder, "get_industry_chain", _fake_industry_chain)
+    monkeypatch.setattr(
+        builder,
+        "_build_evidence",
+        lambda _context: ([{"signal": "stub"}], ["实时盘口活跃"], [], "buy", "建议继续跟踪"),
+    )
+
+    payload = await builder.build_stock_context("600519")
+    expected = parse_asof_time(order_book_timestamp).isoformat()
+
+    assert payload["updated_at"] == expected
+    assert payload["analysis_date"] == expected
+    assert payload["updated_at"] != "2022-03-30T00:00:00+08:00"
+
+
+@pytest.mark.asyncio
 async def test_build_quant_context_exposes_probability_targets_and_oos(monkeypatch):
     from akshare_mcp.services import decision_quant_builder as builder
 
@@ -138,6 +243,17 @@ async def test_build_quant_context_exposes_probability_targets_and_oos(monkeypat
     assert payload["prediction_quality"]["method"] == "ensemble_empirical_blend"
     assert payload["confidence_meta"]["horizon_quality"]["10d"] == payload["prediction_quality"]["quality"]
     assert payload["confidence_meta"]["quality"] in {"medium", "high"}
+
+
+def test_parse_asof_time_supports_epoch_seconds_and_milliseconds():
+    from akshare_mcp.tools.data_quality import parse_asof_time
+
+    sec_value = 1775439960
+    ms_value = 1775439960000
+
+    assert parse_asof_time(sec_value) is not None
+    assert parse_asof_time(ms_value) is not None
+    assert parse_asof_time(sec_value).isoformat() == parse_asof_time(ms_value).isoformat()
 
 
 @pytest.mark.asyncio

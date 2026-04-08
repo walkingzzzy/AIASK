@@ -211,28 +211,61 @@ KEYWORD_MAP = {
 
 def _parse_technical(q: str, tech_conditions: list):
     """解析技术面条件"""
+    existing_ids = set()
+
+    def _append_condition(condition_id: str, params: dict | None = None):
+        if condition_id in existing_ids:
+            return
+        payload = {'id': condition_id}
+        if isinstance(params, dict) and params:
+            payload['params'] = params
+        tech_conditions.append(payload)
+        existing_ids.add(condition_id)
+
     # 连续上涨/下跌 带天数
     up_match = re.search(r'连(?:续|涨)\s*(\d+)\s*(?:天|日|个交易日)?\s*(?:上涨)?', q)
     if up_match or '连续上涨' in q or '连涨' in q:
         n = int(up_match.group(1)) if up_match else 3
-        tech_conditions.append({'id': 'upn', 'params': {'n': n}})
+        _append_condition('upn', {'n': n})
 
     down_match = re.search(r'连(?:续|跌)\s*(\d+)\s*(?:天|日|个交易日)?\s*(?:下跌)?', q)
     if down_match or '连续下跌' in q or '连跌' in q:
         n = int(down_match.group(1)) if down_match else 3
-        tech_conditions.append({'id': 'downn', 'params': {'n': n}})
+        _append_condition('downn', {'n': n})
 
     # 连板天数
     board_match = re.search(r'(\d+)\s*连板', q)
     if board_match:
-        tech_conditions.append({'id': 'continuous_limit_up', 'params': {'n': int(board_match.group(1))}})
+        _append_condition('continuous_limit_up', {'n': int(board_match.group(1))})
+
+    # 价格与均线关系
+    ma_above_match = re.search(r'(?:站上|突破|上穿)\s*(\d+)\s*日?均线', q)
+    if ma_above_match:
+        _append_condition('price_above_ma', {'n': int(ma_above_match.group(1))})
+
+    ma_below_match = re.search(r'(?:跌破|失守|下穿)\s*(\d+)\s*日?均线', q)
+    if ma_below_match:
+        _append_condition('price_below_ma', {'n': int(ma_below_match.group(1))})
+
+    # 均线交叉
+    ma_golden_match = re.search(r'(\d+)\s*日均线\s*(?:上穿|金叉)\s*(\d+)\s*日均线', q)
+    if ma_golden_match:
+        _append_condition(
+            'golden_cross_ma',
+            {'short': int(ma_golden_match.group(1)), 'long': int(ma_golden_match.group(2))},
+        )
+
+    ma_death_match = re.search(r'(\d+)\s*日均线\s*(?:下穿|死叉)\s*(\d+)\s*日均线', q)
+    if ma_death_match:
+        _append_condition(
+            'death_cross_ma',
+            {'short': int(ma_death_match.group(1)), 'long': int(ma_death_match.group(2))},
+        )
 
     # 关键词匹配
     for keyword, cond_id in KEYWORD_MAP.items():
         if keyword in q:
-            existing_ids = {c['id'] for c in tech_conditions}
-            if cond_id not in existing_ids:
-                tech_conditions.append({'id': cond_id})
+            _append_condition(cond_id)
 
 
 def _build_suggestion(fundamental, technical, logic):
@@ -241,13 +274,13 @@ def _build_suggestion(fundamental, technical, logic):
         return (
             f"建议使用 screener_manager(action='combined_screen', "
             f"fundamental_criteria={{{_fmt_fund(fundamental)}}}, "
-            f"tech_conditions={[c['id'] for c in technical]}, "
+            f"tech_conditions={_fmt_tech(technical)}, "
             f"logic='{logic}')"
         )
     elif technical:
         return (
             f"建议使用 screener_manager(action='technical_screen', "
-            f"conditions={[c['id'] for c in technical]}, "
+            f"conditions={_fmt_tech(technical)}, "
             f"logic='{logic}')"
         )
     elif fundamental:
@@ -277,3 +310,18 @@ def _fmt_fund(conditions):
         if key:
             parts.append(f"'{key}': {c['value']}")
     return ', '.join(parts)
+
+
+def _fmt_tech(conditions):
+    """格式化技术条件，保留参数化条件。"""
+    formatted = []
+    for item in conditions:
+        if not isinstance(item, dict):
+            continue
+        condition_id = item.get('id')
+        params = item.get('params')
+        if params:
+            formatted.append({'id': condition_id, 'params': params})
+        else:
+            formatted.append(condition_id)
+    return repr(formatted)

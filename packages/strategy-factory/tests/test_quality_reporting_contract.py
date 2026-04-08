@@ -26,6 +26,27 @@ def test_normalize_quality_gate_result_deduplicates_reason_and_warning_lists():
     assert normalized["warning_codes"] == ["foo"]
 
 
+def test_normalize_quality_gate_result_normalizes_attempt_adjustment_shape():
+    normalized = normalize_quality_gate_result(
+        {
+            "passed": False,
+            "attempt_adjustment": {
+                "attempt_count": "12",
+                "selected_count": "2",
+                "penalty": "0.03",
+            },
+        }
+    )
+
+    assert normalized["attempt_adjustment"] == {
+        "attempt_count": 12,
+        "selected_count": 2,
+        "selection_ratio": 0.1667,
+        "penalty": 0.03,
+        "applied": True,
+    }
+
+
 def test_build_quality_report_keeps_summary_fields():
     report = build_quality_report(
         strategy_id="s1",
@@ -113,6 +134,18 @@ def test_build_quality_report_keeps_summary_fields():
         report_type="submission",
         spawn_reason="unit-test",
         submission_audit={
+            "committee_review": {
+                "decision": "revise",
+                "final_score": 0.6842,
+                "execution_score": 0.48,
+                "capacity_score": 0.55,
+                "task_alignment_score": 0.44,
+                "novelty_score": 0.62,
+                "alignment_issues": ["target_universe_drift"],
+                "execution_issues": ["missing_execution_assumptions"],
+                "capacity_issues": ["missing_capacity_bucket"],
+                "accept_blockers": ["execution_floor_failed", "task_alignment_floor_failed"],
+            },
             "task_signature": "event_driven|evt_1|ai||event_target_only|600519",
             "refresh_mode": "refresh_metrics_only",
             "submission_lane": "live_ready_review",
@@ -174,6 +207,8 @@ def test_build_quality_report_keeps_summary_fields():
     assert report["summary"]["submission_action_completed"] is True
     assert report["summary"]["market_ruleset"] == "cn_equity"
     assert report["summary"]["target_weight_scheme"] == "equal_weight"
+    assert report["summary"]["committee_decision"] == "revise"
+    assert report["summary"]["committee_final_score"] == 0.6842
     assert report["task_signature"] == "event_driven|evt_1|ai||event_target_only|600519"
     assert report["refresh_mode"] == "refresh_metrics_only"
     assert report["backtest_assumptions"]["slippage_bps"] == 8
@@ -222,6 +257,12 @@ def test_build_quality_report_keeps_summary_fields():
     assert report["run_correction"]["deflated_sharpe_ratio"] == 0.88
     assert report["run_correction"]["pbo"] == 0.21
     assert report["run_correction"]["multiple_testing"]["pbo"]["pbo"] == 0.21
+    assert report["committee_review"]["decision"] == "revise"
+    assert report["committee_review"]["execution_score"] == 0.48
+    assert report["committee_review"]["accept_blockers"] == [
+        "execution_floor_failed",
+        "task_alignment_floor_failed",
+    ]
     assert report["task_preference"]["override_applied"] is True
     assert report["summary"]["source_candidate_artifact_id"] == "candidate_001"
     assert report["summary"]["candidate_family"] == "sentiment"

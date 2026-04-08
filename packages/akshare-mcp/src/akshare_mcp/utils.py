@@ -24,15 +24,78 @@ def now_iso() -> str:
     return datetime.now().isoformat()
 
 
+def _dedupe_text_items(items: list[Any]) -> list[str]:
+    deduped: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if text and text not in deduped:
+            deduped.append(text)
+    return deduped
+
+
+def enrich_response_meta(
+    result: dict[str, Any],
+    *,
+    source: str | None = None,
+    source_chain: list[str] | None = None,
+    quality_flags: list[str] | None = None,
+    degraded: bool | None = None,
+    fallback_used: bool | None = None,
+) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return result
+
+    resolved_source = str(source or result.get("source") or SOURCE_NAME).strip() or SOURCE_NAME
+    chain = _dedupe_text_items(list(source_chain or result.get("source_chain") or [resolved_source]))
+    if not chain:
+        chain = [resolved_source]
+
+    flags = _dedupe_text_items(list(quality_flags or result.get("quality_flags") or []))
+    success = bool(result.get("success"))
+    if not success and "failed" not in flags:
+        flags.append("failed")
+
+    resolved_fallback = bool(fallback_used) if fallback_used is not None else bool(result.get("fallback_used"))
+    resolved_fallback = resolved_fallback or len(chain) > 1
+    resolved_degraded = bool(degraded) if degraded is not None else bool(result.get("degraded"))
+    resolved_degraded = resolved_degraded or (not success)
+
+    result["source"] = resolved_source
+    result["source_chain"] = chain
+    result["quality_flags"] = flags
+    result["fallback_used"] = resolved_fallback
+    result["degraded"] = resolved_degraded
+
+    meta = result.get("meta")
+    if not isinstance(meta, dict):
+        meta = {}
+    quality = meta.get("quality")
+    if not isinstance(quality, dict):
+        quality = {}
+
+    quality.setdefault("status", "available" if success else "failed")
+    quality["source_chain"] = chain
+    quality["quality_flags"] = list(flags)
+    quality["fallback_used"] = resolved_fallback
+    quality.setdefault("backend_requested", chain[0] if chain else resolved_source)
+    quality["backend_used"] = resolved_source
+
+    meta["quality"] = quality
+    meta["source_chain"] = chain
+    meta["degraded"] = resolved_degraded
+    result["meta"] = meta
+    return result
+
+
 def ok(data: Any, *, cached: bool = False) -> dict:
-    return {
+    return enrich_response_meta({
         "success": True,
         "data": data,
         "error": None,
         "source": SOURCE_NAME,
         "cached": cached,
         "timestamp": now_iso(),
-    }
+    })
 
 
 def fail(error: Any, *, error_code: str | None = None) -> dict:
@@ -46,7 +109,7 @@ def fail(error: Any, *, error_code: str | None = None) -> dict:
     }
     if error_code:
         result["error_code"] = error_code
-    return result
+    return enrich_response_meta(result, degraded=True)
 
 
 def safe_stderr_print(*args: Any, sep: str = " ", end: str = "\n") -> None:

@@ -1,5 +1,6 @@
 """每日市场报告 — generate_daily_report"""
 
+import asyncio
 import statistics
 from typing import Optional
 from datetime import datetime
@@ -77,17 +78,14 @@ async def generate_daily_report(date: Optional[str] = None):
         db = get_db()
         report_date = date or datetime.now().strftime('%Y-%m-%d')
 
-        # 1. 市场概况
-        market_summary = _fetch_index_quotes()
-
-        # 2. 涨跌统计
-        stats = await _fetch_stats(db, report_date)
-
-        # 3. 热门板块
-        hot_sectors = await _fetch_hot_sectors(db)
-
-        # 4. 资金流向
-        capital_flow = await _fetch_capital_flow(db, report_date)
+        # 市场概况、涨跌统计、板块与资金流向彼此独立，首轮调用并行执行，
+        # 避免在上游源轻微抖动时把总耗时串行放大。
+        market_summary, stats, hot_sectors, capital_flow = await asyncio.gather(
+            asyncio.to_thread(_fetch_index_quotes),
+            _fetch_stats(db, report_date),
+            _fetch_hot_sectors(db),
+            _fetch_capital_flow(db, report_date),
+        )
 
         # 5. 市场情绪
         sentiment = 'neutral'

@@ -1,5 +1,40 @@
 from ._decision_common import *
 
+
+async def _resolve_decision_contexts(
+    *,
+    code: str,
+    user_id: str | None,
+    stock_context: dict | None,
+    quant_context: dict | None,
+    event_context: dict | None,
+    user_context: dict | None,
+):
+    tasks = {}
+    resolved = {
+        'stock': stock_context if isinstance(stock_context, dict) else None,
+        'quant': quant_context if isinstance(quant_context, dict) else None,
+        'event': event_context if isinstance(event_context, dict) else None,
+        'user': user_context if isinstance(user_context, dict) else None,
+    }
+
+    if resolved['stock'] is None:
+        tasks['stock'] = _build_stock_context(code)
+    if resolved['quant'] is None:
+        tasks['quant'] = _build_quant_context(code)
+    if resolved['event'] is None:
+        tasks['event'] = _build_event_context(code)
+    if resolved['user'] is None:
+        tasks['user'] = _build_user_context(user_id)
+
+    if tasks:
+        results = await asyncio.gather(*tasks.values())
+        for key, value in zip(tasks.keys(), results):
+            resolved[key] = value
+
+    return resolved['stock'], resolved['quant'], resolved['event'], resolved['user']
+
+
 async def run_decision_gate(
     code: str | None = None,
     investment_style: str = 'balanced',
@@ -17,10 +52,14 @@ async def run_decision_gate(
         code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
         if not code:
             return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
-        built_stock = stock_context if isinstance(stock_context, dict) else await _build_stock_context(code)
-        built_quant = quant_context if isinstance(quant_context, dict) else await _build_quant_context(code)
-        built_event = event_context if isinstance(event_context, dict) else await _build_event_context(code)
-        built_user = user_context if isinstance(user_context, dict) else await _build_user_context(user_id)
+        built_stock, built_quant, built_event, built_user = await _resolve_decision_contexts(
+            code=code,
+            user_id=user_id,
+            stock_context=stock_context,
+            quant_context=quant_context,
+            event_context=event_context,
+            user_context=user_context,
+        )
         gate = _build_rule_gates(
             code=code,
             investment_style=investment_style,
@@ -51,10 +90,14 @@ async def fuse_decision_payload(
         code = resolve_security_code(code, stock_code=stock_code, symbol=symbol, ticker=ticker)
         if not code:
             return fail('需要提供股票代码（支持 code / stock_code / symbol / ticker）')
-        built_stock = stock_context if isinstance(stock_context, dict) else await _build_stock_context(code)
-        built_quant = quant_context if isinstance(quant_context, dict) else await _build_quant_context(code)
-        built_event = event_context if isinstance(event_context, dict) else await _build_event_context(code)
-        built_user = user_context if isinstance(user_context, dict) else await _build_user_context(user_id)
+        built_stock, built_quant, built_event, built_user = await _resolve_decision_contexts(
+            code=code,
+            user_id=user_id,
+            stock_context=stock_context,
+            quant_context=quant_context,
+            event_context=event_context,
+            user_context=user_context,
+        )
         built_gate = gate if isinstance(gate, dict) else _build_rule_gates(
             code=code,
             investment_style=investment_style,

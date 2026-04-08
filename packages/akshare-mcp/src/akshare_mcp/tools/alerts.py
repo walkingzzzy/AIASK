@@ -1,9 +1,11 @@
 """告警工具 — P3 增强：RSI/MACD/volume 指标评估 + combo 告警 + DB 持久化"""
 
 import logging
+import time
 from typing import List, Dict, Any
 import numpy as np
-from ..utils import ok, fail, normalize_code
+from ..utils import fail, normalize_code
+from .manager_protocol import fail_with_meta, ok_with_meta
 from .market import get_realtime_quote
 
 logger = logging.getLogger(__name__)
@@ -182,6 +184,7 @@ def register(mcp):
             condition: 条件 ('>', '<', '>=', '<=', '==')
             value: 阈值
         """
+        started_at = time.perf_counter()
         try:
             code = normalize_code(code)
             alert_id = f'alert_{code}_{indicator}_{condition}'
@@ -198,6 +201,7 @@ def register(mcp):
             _alerts_store[alert_id] = alert
 
             # 持久化到 DB
+            persist_error = None
             try:
                 from ..storage import get_db
                 db = get_db()
@@ -209,11 +213,30 @@ def register(mcp):
                         code, indicator, condition, float(value)
                     )
             except Exception as e:
+                persist_error = str(e)
                 logger.warning("[Alerts] DB persist failed: %s", e)
 
-            return ok(alert)
+            if persist_error:
+                alert["note"] = f"DB persist failed: {persist_error}"
+            return ok_with_meta(
+                alert,
+                tool_name="create_indicator_alert",
+                action="create",
+                started_at=started_at,
+                source_chain=["alerts.memory_store"],
+                extra_meta={
+                    "degraded": bool(persist_error),
+                    "quality": {"status": "degraded" if persist_error else "available"},
+                },
+            )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="create_indicator_alert",
+                action="create",
+                started_at=started_at,
+                source_chain=["alerts.memory_store"],
+            )
 
     @mcp.tool()
     async def create_combo_alert(
@@ -228,6 +251,7 @@ def register(mcp):
             conditions: 条件列表 [{"code":"600519","indicator":"rsi","condition":">","value":70}, ...]
             logic: 逻辑关系 ('AND', 'OR')
         """
+        started_at = time.perf_counter()
         try:
             alert_id = f'combo_{name}'
             alert = {
@@ -242,6 +266,7 @@ def register(mcp):
             _alerts_store[alert_id] = alert
 
             # 持久化到 DB combo_alerts 表
+            persist_error = None
             try:
                 import json as _json
                 from ..storage import get_db
@@ -254,11 +279,30 @@ def register(mcp):
                         name, _json.dumps(conditions), logic
                     )
             except Exception as e:
+                persist_error = str(e)
                 logger.warning("[Alerts] combo DB persist failed: %s", e)
 
-            return ok(alert)
+            if persist_error:
+                alert["note"] = f"DB persist failed: {persist_error}"
+            return ok_with_meta(
+                alert,
+                tool_name="create_combo_alert",
+                action="create",
+                started_at=started_at,
+                source_chain=["alerts.memory_store"],
+                extra_meta={
+                    "degraded": bool(persist_error),
+                    "quality": {"status": "degraded" if persist_error else "available"},
+                },
+            )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="create_combo_alert",
+                action="create",
+                started_at=started_at,
+                source_chain=["alerts.memory_store"],
+            )
 
     @mcp.tool()
     async def check_all_alerts(
@@ -271,8 +315,14 @@ def register(mcp):
             status: 状态 ('active', 'inactive', 'all')
             alert_type: 类型 ('indicator', 'combo', 'all')
         """
+        started_at = time.perf_counter()
         try:
+            if status not in {'active', 'inactive', 'all'}:
+                return fail(f"invalid status: {status}. supported: active, inactive, all")
+            if alert_type not in {'indicator', 'combo', 'all'}:
+                return fail(f"invalid alert_type: {alert_type}. supported: indicator, combo, all")
             # 每次从 DB 同步告警（DB 为 source of truth）
+            sync_error = None
             try:
                 import json as _json
                 from ..storage import get_db
@@ -310,6 +360,7 @@ def register(mcp):
                             'triggered': False,
                         }
             except Exception as e:
+                sync_error = str(e)
                 logger.warning("[Alerts] DB sync failed: %s", e)
 
             alerts = list(_alerts_store.values())
@@ -335,13 +386,32 @@ def register(mcp):
                     triggered_count += 1
                 evaluated.append(item)
 
-            return ok({
+            payload = {
                 'alerts': evaluated,
                 'count': len(evaluated),
                 'triggered_count': triggered_count,
                 'status': status,
                 'type': alert_type,
-            })
+            }
+            if sync_error:
+                payload['note'] = f"DB sync failed: {sync_error}"
+            return ok_with_meta(
+                payload,
+                tool_name="check_all_alerts",
+                action="check",
+                started_at=started_at,
+                source_chain=["alerts.memory_store"],
+                extra_meta={
+                    "degraded": bool(sync_error),
+                    "quality": {"status": "degraded" if sync_error else "available"},
+                },
+            )
         except Exception as e:
-            return fail(str(e))
+            return fail_with_meta(
+                str(e),
+                tool_name="check_all_alerts",
+                action="check",
+                started_at=started_at,
+                source_chain=["alerts.memory_store"],
+            )
 

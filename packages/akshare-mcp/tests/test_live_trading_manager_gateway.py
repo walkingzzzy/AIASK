@@ -6,7 +6,7 @@ import pytest
 
 import akshare_mcp.tools.managers.live_trading_manager as live_mod
 from akshare_mcp.services import get_artifact_async
-from akshare_mcp.services.live_broker import build_live_order_events
+from akshare_mcp.services.live_broker import AlpacaBrokerAdapter, build_live_order_events
 
 
 class _DummyMCP:
@@ -138,6 +138,29 @@ class _FakeAdapter:
     async def cancel_order(self, order_id: str) -> dict:
         self.cancelled_ids.append(order_id)
         return {"order_id": order_id, "cancelled": True}
+
+
+def test_live_broker_normalizers_should_expose_private_helper_imports():
+    account = AlpacaBrokerAdapter._normalize_account(
+        {
+            "id": "acct_live_001",
+            "status": "ACTIVE",
+            "buying_power": "100000.5",
+        }
+    )
+    order = AlpacaBrokerAdapter._normalize_order(
+        {
+            "id": "ord_live_001",
+            "symbol": "aapl",
+            "status": "filled",
+            "qty": "2",
+        }
+    )
+
+    assert account["account_id"] == "acct_live_001"
+    assert account["buying_power"] == 100000.5
+    assert order["order_id"] == "ord_live_001"
+    assert order["symbol"] == "AAPL"
 
 
 @pytest.mark.asyncio

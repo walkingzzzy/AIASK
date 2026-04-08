@@ -317,6 +317,7 @@ class _StrategySubmitterPolicyMixin:
                     "refresh_mode": (candidate.get("dedup_result") or {}).get("refresh_mode"),
                     "submission_lane": submission_lane,
                     "direct_trade_candidate": bool((quality_gate or {}).get("live_candidate_ready")),
+                    "committee_review": dict(candidate.get("committee_review") or {}),
                     "task_preference": dict((quality_gate or {}).get("task_preference") or {}),
                     "candidate_provenance": cls._candidate_provenance(candidate),
                 },

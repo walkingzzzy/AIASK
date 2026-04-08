@@ -1,10 +1,11 @@
 """Strategy manager helpers: NAV calculation, state management, quality report, incubation overview."""
 
 import logging
-import re
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from strategy_factory.api import normalize_run_result_to_detail, normalize_run_result_to_summary
 from strategy_factory import (
     BACKTEST_AI_PROTOTYPE_THRESHOLDS,
     DEPRECATION_THRESHOLDS,
@@ -12,6 +13,11 @@ from strategy_factory import (
     PROVISIONAL_PASS_THRESHOLDS,
     QUALITY_GATE_THRESHOLDS,
     RISK_REPORT_THRESHOLDS,
+)
+from strategy_factory.application.quality_reporting import (
+    build_quality_report as _shared_build_quality_report,
+    normalize_quality_gate_result as _shared_normalize_quality_gate_result,
+    quality_gate_reason_code as _shared_quality_gate_reason_code,
 )
 
 from ...services.strategy_lifecycle_shared import (
@@ -126,44 +132,11 @@ def parse_bool(value: Any, default: bool = False) -> bool:
 
 
 def quality_gate_reason_code(reason: str) -> str:
-    text = str(reason or "").strip()
-    if not text:
-        return "unknown"
-    lowered = text.lower()
-    overrides = {
-        "insufficient kline data": "insufficient_kline_data",
-        "validation_grade_d": "validation_grade_d",
-    }
-    for needle, code in overrides.items():
-        if needle in lowered:
-            return code
-    normalized = re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
-    return normalized or "unknown"
+    return _shared_quality_gate_reason_code(reason)
 
 
 def normalize_quality_gate_result(result: Optional[dict]) -> dict:
-    raw = dict(result or {})
-    reasons: list[str] = []
-    for item in raw.get("reasons") or []:
-        text = str(item).strip()
-        if text and text not in reasons:
-            reasons.append(text)
-    reason = str(raw.get("reason") or "").strip()
-    if reason and reason not in reasons:
-        reasons.append(reason)
-    warnings: list[str] = []
-    for item in raw.get("warnings") or []:
-        text = str(item).strip()
-        if text and text not in warnings:
-            warnings.append(text)
-    return {
-        **raw,
-        "passed": bool(raw.get("passed")),
-        "reasons": reasons,
-        "reason_codes": [quality_gate_reason_code(item) for item in reasons],
-        "warnings": warnings,
-        "warning_codes": [quality_gate_reason_code(item) for item in warnings],
-    }
+    return _shared_normalize_quality_gate_result(result)
 
 
 def is_factory_ai_prototype_strategy(strategy: Optional[dict]) -> bool:
@@ -351,29 +324,187 @@ def build_quality_report(
     review_source: str,
     report_type: str,
     spawn_reason: Optional[str] = None,
+    submission_audit: Optional[dict] = None,
 ) -> dict:
-    normalized_gate = normalize_quality_gate_result(quality_gate)
-    validation = dict(validation_report or {})
-    rating = validation.get("rating") or {}
-    summary = {
-        "strategy_id": strategy_id,
-        "strategy_type": strategy_type,
-        "status_after_review": status_after_review,
-        "validation_grade": rating.get("grade"),
-        "review_source": review_source,
+    return _shared_build_quality_report(
+        strategy_id=strategy_id,
+        strategy_type=strategy_type,
+        quality_gate=quality_gate,
+        validation_report=validation_report,
+        risk_report=risk_report,
+        dedup_report=dedup_report,
+        backtest_metrics=backtest_metrics,
+        snapshot=snapshot,
+        status_after_review=status_after_review,
+        review_source=review_source,
+        report_type=report_type,
+        spawn_reason=spawn_reason,
+        submission_audit=submission_audit,
+    )
+
+
+def normalize_quality_report_contract(
+    report: Optional[dict],
+    *,
+    strategy_id: Optional[str] = None,
+    strategy_type: Optional[str] = None,
+    default_review_source: str = "strategy_manager.review_report",
+) -> dict:
+    raw = dict(report or {})
+    if not raw:
+        return {}
+
+    summary = dict(raw.get("summary") or {})
+    quality_gate = dict(raw.get("quality_gate") or {})
+    validation_profile = dict(raw.get("validation_profile") or {})
+    run_correction = dict(raw.get("run_correction") or {})
+    attempt_adjustment = dict(raw.get("attempt_adjustment") or {})
+    backtest_metrics = dict(raw.get("backtest_metrics") or {})
+
+    mirrored_backtest_fields = (
+        "constraint_check",
+        "event_window_config",
+        "event_window_metrics",
+        "position_assumption",
+        "cost_assumptions",
+        "explicit_cost_breakdown",
+        "implicit_cost_breakdown",
+        "tradability_summary",
+        "capacity_summary",
+        "implementation_shortfall_model_source",
+        "implementation_shortfall_components",
+        "backtest_assumptions",
+    )
+    for field_name in mirrored_backtest_fields:
+        if backtest_metrics.get(field_name) in (None, "", [], {}) and raw.get(field_name) not in (None, "", [], {}):
+            backtest_metrics[field_name] = deepcopy(raw.get(field_name))
+
+    if quality_gate.get("attempt_adjustment") in (None, "", [], {}) and attempt_adjustment:
+        quality_gate["attempt_adjustment"] = attempt_adjustment
+    if not quality_gate.get("primary_validation_layer"):
+        quality_gate["primary_validation_layer"] = (
+            summary.get("primary_validation_layer")
+            or validation_profile.get("primary_validation_layer")
+        )
+    if not quality_gate.get("profile"):
+        quality_gate["profile"] = validation_profile.get("profile")
+    if not quality_gate.get("validation_focus"):
+        quality_gate["validation_focus"] = validation_profile.get("validation_focus")
+    run_correction_key_map = {
+        "mode": "run_correction_mode",
+        "raw_sharpe_proxy": "raw_sharpe_proxy",
+        "deflated_sharpe_proxy": "deflated_sharpe_proxy",
+        "pbo_proxy": "pbo_proxy",
+        "reality_check_pvalue_proxy": "reality_check_pvalue_proxy",
+        "spa_pvalue_proxy": "spa_pvalue_proxy",
+        "multiple_testing_mode": "multiple_testing_mode",
+        "deflated_sharpe_ratio": "deflated_sharpe_ratio",
+        "deflated_sharpe_reference_sharpe": "deflated_sharpe_reference_sharpe",
+        "deflated_sharpe_effective_trials": "deflated_sharpe_effective_trials",
+        "pbo": "pbo",
+        "white_reality_check_pvalue": "white_reality_check_pvalue",
+        "hansen_spa_pvalue": "hansen_spa_pvalue",
+        "multiple_testing": "multiple_testing",
     }
-    if spawn_reason:
-        summary["spawn_reason"] = spawn_reason
+    for source_key, target_key in run_correction_key_map.items():
+        if quality_gate.get(target_key) in (None, "", [], {}) and run_correction.get(source_key) not in (None, "", [], {}):
+            quality_gate[target_key] = deepcopy(run_correction.get(source_key))
+
+    submission_audit_fields = (
+        "committee_review",
+        "task_signature",
+        "refresh_mode",
+        "submission_lane",
+        "direct_trade_candidate",
+        "live_review_ready",
+        "paper_lane_ready",
+        "paper_account_id",
+        "paper_account_status",
+        "runtime_control_mode",
+        "runtime_control_status",
+        "promotion_review_id",
+        "promotion_review_status",
+        "promotion_review_recommendation",
+        "pool_admission_applied",
+        "promotion_applied_transition",
+        "submission_action",
+        "submission_action_type",
+        "submission_action_trigger",
+        "submission_action_gaps",
+        "submission_action_fallback_conditions",
+        "submission_action_next_step",
+        "submission_action_completed",
+        "task_preference",
+        "candidate_provenance",
+    )
+    submission_audit = {}
+    for field_name in submission_audit_fields:
+        value = raw.get(field_name)
+        if value in (None, "", [], {}):
+            value = summary.get(field_name)
+        if value not in (None, "", [], {}):
+            submission_audit[field_name] = deepcopy(value)
+
+    raw_strategy = raw.get("strategy")
+    strategy_payload = dict(raw_strategy) if isinstance(raw_strategy, dict) else {}
+
+    normalized = _shared_build_quality_report(
+        strategy_id=str(strategy_id or summary.get("strategy_id") or raw.get("strategy_id") or "").strip(),
+        strategy_type=(
+            strategy_type
+            or summary.get("strategy_type")
+            or raw.get("strategy_type")
+            or strategy_payload.get("strategy_type")
+        ),
+        quality_gate=quality_gate,
+        validation_report=dict(raw.get("validation_report") or {}),
+        risk_report=dict(raw.get("risk_report") or {}),
+        dedup_report=dict(raw.get("dedup_report") or {}),
+        backtest_metrics=backtest_metrics,
+        snapshot=dict(raw.get("snapshot") or {}),
+        status_after_review=summary.get("status_after_review") or raw.get("status_after_review"),
+        review_source=summary.get("review_source") or default_review_source,
+        report_type=str(raw.get("report_type") or "submission"),
+        spawn_reason=summary.get("spawn_reason"),
+        submission_audit=submission_audit or None,
+    )
+    return {**raw, **normalized}
+
+
+def normalize_factory_run_summary_contract(row: Optional[dict]) -> dict:
+    raw = dict(row or {})
+    if not raw:
+        return {}
+    dto = normalize_run_result_to_summary(raw).to_dict()
+    return {**raw, **dto}
+
+
+def normalize_factory_run_detail_contract(row: Optional[dict]) -> dict:
+    raw = dict(row or {})
+    if not raw:
+        return {}
+    dto = normalize_run_result_to_detail(raw).to_dict()
     return {
-        "report_type": report_type,
-        "passed": bool(normalized_gate.get("passed")),
-        "summary": summary,
-        "quality_gate": normalized_gate,
-        "validation_report": validation,
-        "risk_report": dict(risk_report or {}),
-        "dedup_report": dict(dedup_report or {}),
-        "backtest_metrics": dict(backtest_metrics or {}),
-        "snapshot": dict(snapshot or {}),
+        **raw,
+        **dto,
+        "summary": dict(raw.get("summary") or {}),
+        "stages": dict(raw.get("stages") or {}),
+        "snapshot_summary": dict(raw.get("snapshot_summary") or dto.get("snapshot_summary") or {}),
+        "quality_gate": dict(raw.get("quality_gate") or raw.get("gate_report") or dto.get("quality_gate") or {}),
+        "research_summary": dict(dto.get("research_summary") or {}),
+        "research_plane": dict(dto.get("research_plane") or raw.get("research_plane") or {}),
+        "research_artifact": dict(dto.get("research_artifact") or {}),
+        "task_artifact": dict(dto.get("task_artifact") or {}),
+        "candidate_artifact": dict(dto.get("candidate_artifact") or {}),
+        "evidence_artifact": dict(dto.get("evidence_artifact") or {}),
+        "governance_plane": dict(dto.get("governance_plane") or raw.get("governance_plane") or {}),
+        "gate_artifact": dict(dto.get("gate_artifact") or {}),
+        "dedup_artifact": dict(dto.get("dedup_artifact") or {}),
+        "submission_artifact": dict(dto.get("submission_artifact") or {}),
+        "governance_evidence_artifact": dict(dto.get("governance_evidence_artifact") or {}),
+        "feedback_summary": dict(dto.get("feedback_summary") or {}),
+        "incubation_summary": dict(dto.get("incubation_summary") or {}),
+        "live_ready_summary": dict(dto.get("live_ready_summary") or {}),
     }
 
 

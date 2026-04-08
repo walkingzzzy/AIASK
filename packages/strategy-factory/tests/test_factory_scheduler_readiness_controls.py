@@ -13,6 +13,9 @@ from strategy_factory.application.candidate_contract import (
     build_portfolio_candidate_contract,
 )
 from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
+from strategy_factory.application.research_plane_contract import (
+    RESEARCH_PLANE_CONTRACT_VERSION,
+)
 from strategy_factory.domain.targets import _extract_target_codes_from_payload
 
 
@@ -26,6 +29,10 @@ class _RefreshingFactorResearchGateway:
         if self.refresh_calls == 0:
             return {
                 "degraded": True,
+                "lifecycle_feedback_input": {
+                    "contract_version": "strategy_factory.lifecycle_feedback_input.v1",
+                    "available": True,
+                },
                 "summary": {
                     "active_factor_count": 1,
                     "top_factor_names": ["value"],
@@ -33,17 +40,45 @@ class _RefreshingFactorResearchGateway:
                     "degraded": True,
                     "stale": True,
                     "freshness_days": 5,
+                    "lifecycle_feedback_input_contract_version": "strategy_factory.lifecycle_feedback_input.v1",
+                    "lifecycle_feedback_input_available": True,
+                    "budget_feedback_available": True,
+                    "budget_feedback_family_count": 2,
+                    "budget_feedback_strategy_count": 2,
+                    "budget_feedback_target_pool_scope_count": 2,
+                    "budget_feedback_generator_mode_scope_count": 2,
+                    "budget_feedback_runtime_alert_count": 2,
+                    "budget_feedback_runtime_risk_event_count": 2,
                 },
             }
         return {
             "degraded": False,
+            "lifecycle_feedback_input": {
+                "contract_version": "strategy_factory.lifecycle_feedback_input.v1",
+                "available": True,
+            },
             "summary": {
                 "active_factor_count": 1,
+                "active_candidate_count": 2,
+                "governed_source_candidate_count": 2,
                 "top_factor_names": ["value"],
                 "preferred_strategy_types": ["value_factor"],
+                "factor_source_mode": "governed_candidate_pool",
                 "degraded": False,
                 "stale": False,
                 "freshness_days": 0,
+                "governed_freshness_days": 0,
+                "active_family_names": ["value"],
+                "active_regime_names": ["bull"],
+                "lifecycle_feedback_input_contract_version": "strategy_factory.lifecycle_feedback_input.v1",
+                "lifecycle_feedback_input_available": True,
+                "budget_feedback_available": True,
+                "budget_feedback_family_count": 2,
+                "budget_feedback_strategy_count": 2,
+                "budget_feedback_target_pool_scope_count": 2,
+                "budget_feedback_generator_mode_scope_count": 2,
+                "budget_feedback_runtime_alert_count": 2,
+                "budget_feedback_runtime_risk_event_count": 2,
             },
         }
 
@@ -533,11 +568,23 @@ class _AuditSubmitter:
                     "created_strategy_pool": False,
                     "created_audit_only": False,
                     "refresh_mode": "refresh_metrics_only",
+                    "refresh_decision_basis": "same_tested_object_and_identity",
+                    "tested_object_hash_changed": False,
+                    "existing_identity_available": True,
+                    "existing_tested_object_available": True,
+                    "revision_trigger_reason": None,
                     "constraint_check": {
                         "constraint_violation": "strict_intersection_empty",
                         "expansion_applied": True,
                         "intersection_ratio": 0.5,
+                        "alignment_contract_violation": "coverage_ratio_below_contract",
                     },
+                    "target_alignment_violation": "coverage_ratio_below_contract",
+                    "generator_precompile_reject_reason": "missing_validation_profile",
+                    "contract_reject_reasons": ["missing_validation_profile"],
+                    "feedback_control_mode": "cooldown",
+                    "feedback_target_pool_control_mode": "freeze",
+                    "feedback_generator_mode_control_mode": "normal",
                     "warning_codes": ["preference_mismatch_warning"],
                     "gate_3": {
                         "passed": False,
@@ -549,6 +596,15 @@ class _AuditSubmitter:
                         "pbo": 0.68,
                         "white_reality_check_pvalue": 0.24,
                         "hansen_spa_pvalue": 0.31,
+                    },
+                    "incubation_budget": {
+                        "feedback_metrics": {
+                            "control_mode": "cooldown",
+                            "target_pool_control_mode": "freeze",
+                            "generator_mode_control_mode": "normal",
+                            "target_pool_freeze_active": True,
+                            "generator_mode_freeze_active": False,
+                        }
                     },
                     "submission_action_type": "research_only",
                 },
@@ -574,11 +630,19 @@ class _AuditSubmitter:
                     "promotion_review_status": "watch",
                     "promotion_review_recommendation": "observe",
                     "refresh_mode": "spawn_revision_from_existing",
+                    "refresh_decision_basis": "tested_object_changed",
+                    "tested_object_hash_changed": True,
+                    "existing_identity_available": True,
+                    "existing_tested_object_available": True,
+                    "revision_trigger_reason": "tested_object_changed",
                     "constraint_check": {
                         "constraint_violation": None,
                         "expansion_applied": False,
                         "intersection_ratio": 1.0,
                     },
+                    "feedback_control_mode": "normal",
+                    "feedback_target_pool_control_mode": "normal",
+                    "feedback_generator_mode_control_mode": "freeze",
                     "warning_codes": [],
                     "gate_3": {
                         "passed": True,
@@ -590,6 +654,15 @@ class _AuditSubmitter:
                         "pbo": 0.19,
                         "white_reality_check_pvalue": 0.07,
                         "hansen_spa_pvalue": 0.05,
+                    },
+                    "incubation_budget": {
+                        "feedback_metrics": {
+                            "control_mode": "normal",
+                            "target_pool_control_mode": "normal",
+                            "generator_mode_control_mode": "freeze",
+                            "target_pool_freeze_active": False,
+                            "generator_mode_freeze_active": True,
+                        }
                     },
                 },
                 {
@@ -603,14 +676,31 @@ class _AuditSubmitter:
                     "created_audit_only": True,
                     "submission_action_type": "research_only",
                     "refresh_mode": None,
+                    "refresh_decision_basis": "no_refresh_basis",
+                    "tested_object_hash_changed": False,
+                    "existing_identity_available": False,
+                    "existing_tested_object_available": False,
+                    "revision_trigger_reason": None,
                     "constraint_check": {
                         "constraint_violation": None,
                         "expansion_applied": False,
                         "intersection_ratio": None,
                     },
+                    "feedback_control_mode": "normal",
+                    "feedback_target_pool_control_mode": "normal",
+                    "feedback_generator_mode_control_mode": "normal",
                     "warning_codes": [],
                     "gate_3": {
                         "passed": False,
+                    },
+                    "incubation_budget": {
+                        "feedback_metrics": {
+                            "control_mode": "normal",
+                            "target_pool_control_mode": "normal",
+                            "generator_mode_control_mode": "normal",
+                            "target_pool_freeze_active": False,
+                            "generator_mode_freeze_active": False,
+                        }
                     },
                 },
             ],
@@ -1026,7 +1116,17 @@ async def test_scheduler_can_hard_block_on_factory_readiness(monkeypatch):
     assert result["summary"]["skip_reason"] == "readiness_blocked"
     assert result["summary"]["factory_readiness_can_proceed"] is False
     assert result["summary"]["factory_readiness_blocker_count"] >= 1
+    assert result["summary"]["factory_readiness_decision"] == "blocked"
+    assert result["summary"]["factory_readiness_blocking_stage"] == "readiness"
+    assert "snapshot_completion_too_low" in result["summary"]["factory_readiness_blocking_reason_codes"]
     assert "snapshot_completion_too_low" in result["stages"]["readiness"]["blockers"]
+    assert result["stages"]["readiness"]["decision"] == "blocked"
+    assert result["stages"]["readiness"]["skip_reason"] == "readiness_blocked"
+    assert result["research_plane"]["contract_version"] == RESEARCH_PLANE_CONTRACT_VERSION
+    assert result["research_plane"]["research_artifact"]["available"] is True
+    assert result["research_plane"]["task_artifact"]["available"] is False
+    assert result["summary"]["research_plane_contract_version"] == RESEARCH_PLANE_CONTRACT_VERSION
+    assert result["summary"]["research_task_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -1220,6 +1320,42 @@ async def test_scheduler_summary_exposes_run_level_audit_metrics(monkeypatch):
     assert result["summary"]["promotion_review_status_counts"] == {"watch": 1}
     assert result["summary"]["refresh_metrics_only_count"] == 1
     assert result["summary"]["spawn_revision_from_existing_count"] == 1
+    assert result["summary"]["refresh_decision_basis_counts"] == {
+        "same_tested_object_and_identity": 1,
+        "tested_object_changed": 1,
+        "no_refresh_basis": 1,
+    }
+    assert result["summary"]["revision_trigger_reason_counts"] == {"tested_object_changed": 1}
+    assert result["summary"]["tested_object_hash_changed_count"] == 1
+    assert result["summary"]["existing_identity_available_count"] == 2
+    assert result["summary"]["existing_tested_object_available_count"] == 2
+    assert result["summary"]["target_alignment_violation_counts"] == {"coverage_ratio_below_contract": 1}
+    assert result["summary"]["generator_precompile_reject_reason_counts"] == {"missing_validation_profile": 1}
+    assert result["summary"]["contract_reject_reason_counts"] == {"missing_validation_profile": 1}
+    assert result["summary"]["feedback_control_mode_counts"] == {"cooldown": 1, "normal": 2}
+    assert result["summary"]["feedback_target_pool_control_mode_counts"] == {"freeze": 1, "normal": 2}
+    assert result["summary"]["feedback_generator_mode_control_mode_counts"] == {"normal": 2, "freeze": 1}
+    assert result["research_plane"]["contract_version"] == RESEARCH_PLANE_CONTRACT_VERSION
+    assert result["research_plane"]["task_artifact"]["available"] is True
+    assert result["research_plane"]["candidate_artifact"]["available"] is True
+    assert result["summary"]["research_plane_contract_version"] == RESEARCH_PLANE_CONTRACT_VERSION
+    assert (
+        result["summary"]["research_candidate_count"]
+        == result["research_plane"]["candidate_artifact"]["candidate_count"]
+    )
+    assert (
+        result["summary"]["research_experiment_count"]
+        == result["research_plane"]["evidence_artifact"]["experiment_count"]
+    )
+    assert (
+        result["summary"]["research_task_evidence_count"]
+        == result["research_plane"]["evidence_artifact"]["task_evidence_count"]
+    )
+    assert (
+        result["summary"]["research_summary"]["research_plane_contract_version"]
+        == RESEARCH_PLANE_CONTRACT_VERSION
+    )
+    assert result["summary"]["research_summary"]["task_contract_observed"] is True
     assert result["summary"]["research_summary"]["gate_2_passed"] == 3
     assert result["summary"]["research_summary"]["source_mix"]["generator_type_counts"] == {"rule": 2, "external_llm": 1}
     assert result["summary"]["research_summary"]["source_mix"]["task_source_counts"] == {
@@ -1239,6 +1375,27 @@ async def test_scheduler_summary_exposes_run_level_audit_metrics(monkeypatch):
     assert result["summary"]["incubation_summary"]["submission_lane_counts"]["live_ready_review"] == 1
     assert result["summary"]["incubation_summary"]["submission_action_type_counts"]["runtime_review"] == 1
     assert result["summary"]["incubation_summary"]["submission_action_type_counts"]["research_only"] == 2
+    assert result["summary"]["incubation_summary"]["refresh_decision_basis_counts"]["tested_object_changed"] == 1
+    assert result["summary"]["incubation_summary"]["revision_trigger_reason_counts"] == {"tested_object_changed": 1}
+    assert result["summary"]["incubation_summary"]["tested_object_hash_changed_count"] == 1
+    assert result["summary"]["incubation_summary"]["target_alignment_violation_counts"] == {
+        "coverage_ratio_below_contract": 1
+    }
+    assert result["summary"]["incubation_summary"]["generator_precompile_reject_reason_counts"] == {
+        "missing_validation_profile": 1
+    }
+    assert result["summary"]["incubation_summary"]["contract_reject_reason_counts"] == {
+        "missing_validation_profile": 1
+    }
+    assert result["summary"]["incubation_summary"]["feedback_control_mode_counts"] == {"cooldown": 1, "normal": 2}
+    assert result["summary"]["incubation_summary"]["feedback_target_pool_control_mode_counts"] == {
+        "freeze": 1,
+        "normal": 2,
+    }
+    assert result["summary"]["incubation_summary"]["feedback_generator_mode_control_mode_counts"] == {
+        "normal": 2,
+        "freeze": 1,
+    }
     assert result["summary"]["incubation_summary"]["family_mix"]["volatility_breakout"] == 1
     assert result["summary"]["incubation_summary"]["gate_hit"]["gate_3_passed"] == 1
     assert result["summary"]["incubation_summary"]["refresh_ratio"]["mode_counts"] == {
@@ -1255,6 +1412,26 @@ async def test_scheduler_summary_exposes_run_level_audit_metrics(monkeypatch):
     assert result["summary"]["live_ready_summary"]["gate_hit"]["promotion_review_count"] == 1
     assert result["summary"]["live_ready_summary"]["refresh_ratio"]["ratio"] == pytest.approx(1.0)
     assert result["summary"]["live_ready_summary"]["promotion_ratio"]["ratio"] == pytest.approx(1.0)
+    assert result["summary"]["feedback_summary"]["lifecycle_feedback_input_observed"] is True
+    assert (
+        result["summary"]["feedback_summary"]["lifecycle_feedback_input_contract_version"]
+        == "strategy_factory.lifecycle_feedback_input.v1"
+    )
+    assert result["summary"]["feedback_summary"]["family_count"] == 2
+    assert result["summary"]["feedback_summary"]["strategy_count"] == 2
+    assert result["summary"]["feedback_summary"]["target_pool_scope_count"] == 2
+    assert result["summary"]["feedback_summary"]["generator_mode_scope_count"] == 2
+    assert result["summary"]["feedback_summary"]["runtime_alert_count"] == 2
+    assert result["summary"]["feedback_summary"]["runtime_risk_event_count"] == 2
+    assert result["summary"]["feedback_summary"]["submission_control_mode_counts"] == {"cooldown": 1, "normal": 2}
+    assert result["summary"]["feedback_summary"]["submission_target_pool_control_mode_counts"] == {
+        "freeze": 1,
+        "normal": 2,
+    }
+    assert result["summary"]["feedback_summary"]["submission_generator_mode_control_mode_counts"] == {
+        "normal": 2,
+        "freeze": 1,
+    }
 
 
 @pytest.mark.asyncio
@@ -1275,6 +1452,64 @@ async def test_scheduler_marks_run_partial_when_run_persistence_fails(monkeypatc
     assert result["status"] == "partial"
     assert result["summary"]["persistence_failure_count"] == 1
     assert result["summary"]["persistence_failures"][0]["operation"] == "save_strategy_factory_run"
+
+
+def test_build_layered_run_summary_exposes_feedback_summary_contract():
+    summary = {
+        "lifecycle_feedback_input_contract_version": "strategy_factory.lifecycle_feedback_input.v1",
+        "lifecycle_feedback_input_available": True,
+        "budget_feedback_available": True,
+        "budget_feedback_family_count": 3,
+        "budget_feedback_strategy_count": 9,
+        "budget_feedback_target_pool_scope_count": 4,
+        "budget_feedback_generator_mode_scope_count": 2,
+        "budget_feedback_runtime_alert_count": 5,
+        "budget_feedback_runtime_risk_event_count": 6,
+        "blocked_feedback_task_count": 2,
+        "planned_feedback_cooldown_task_count": 1,
+        "planned_feedback_control_mode_counts": {"cooldown": 2, "normal": 1},
+        "planned_feedback_target_pool_control_mode_counts": {"freeze": 1},
+        "planned_feedback_generator_mode_control_mode_counts": {"suppress": 1},
+        "selected_feedback_control_mode_counts": {"cooldown": 1},
+        "selected_feedback_target_pool_control_mode_counts": {"freeze": 1},
+        "selected_feedback_generator_mode_control_mode_counts": {"normal": 1},
+        "feedback_control_mode_counts": {"cooldown": 1, "normal": 2},
+        "feedback_target_pool_control_mode_counts": {"freeze": 1, "normal": 2},
+        "feedback_generator_mode_control_mode_counts": {"freeze": 1, "normal": 2},
+        "suppressed_families": ["family_a"],
+        "suppressed_target_pools": ["pool_a"],
+        "suppressed_generator_modes": ["external_llm"],
+    }
+
+    layered = StrategyFactoryScheduler._build_layered_run_summary(summary, None)
+    feedback_summary = layered["feedback_summary"]
+
+    assert (
+        feedback_summary["lifecycle_feedback_input_contract_version"]
+        == "strategy_factory.lifecycle_feedback_input.v1"
+    )
+    assert feedback_summary["lifecycle_feedback_input_observed"] is True
+    assert feedback_summary["feedback_available"] is True
+    assert feedback_summary["family_count"] == 3
+    assert feedback_summary["strategy_count"] == 9
+    assert feedback_summary["target_pool_scope_count"] == 4
+    assert feedback_summary["generator_mode_scope_count"] == 2
+    assert feedback_summary["runtime_alert_count"] == 5
+    assert feedback_summary["runtime_risk_event_count"] == 6
+    assert feedback_summary["blocked_task_count"] == 2
+    assert feedback_summary["planned_cooldown_task_count"] == 1
+    assert feedback_summary["planned_control_mode_counts"] == {"cooldown": 2, "normal": 1}
+    assert feedback_summary["planned_target_pool_control_mode_counts"] == {"freeze": 1}
+    assert feedback_summary["planned_generator_mode_control_mode_counts"] == {"suppress": 1}
+    assert feedback_summary["selected_control_mode_counts"] == {"cooldown": 1}
+    assert feedback_summary["selected_target_pool_control_mode_counts"] == {"freeze": 1}
+    assert feedback_summary["selected_generator_mode_control_mode_counts"] == {"normal": 1}
+    assert feedback_summary["submission_control_mode_counts"] == {"cooldown": 1, "normal": 2}
+    assert feedback_summary["submission_target_pool_control_mode_counts"] == {"freeze": 1, "normal": 2}
+    assert feedback_summary["submission_generator_mode_control_mode_counts"] == {"freeze": 1, "normal": 2}
+    assert feedback_summary["suppressed_families"] == ["family_a"]
+    assert feedback_summary["suppressed_target_pools"] == ["pool_a"]
+    assert feedback_summary["suppressed_generator_modes"] == ["external_llm"]
 
 
 @pytest.mark.asyncio
@@ -1303,6 +1538,10 @@ async def test_cycle_runner_can_be_executed_without_scheduler_loop(monkeypatch):
     assert outcome.result["status"] == "skipped"
     assert outcome.result["summary"]["skip_reason"] == "runtime_disabled"
     assert outcome.result["stages"]["readiness"]["status"] == "skipped"
+    assert outcome.result["stages"]["readiness"]["decision"] == "blocked"
+    assert outcome.result["stages"]["readiness"]["blocking_reason_codes"] == ["runtime_disabled"]
+    assert outcome.result["summary"]["factory_readiness_decision"] == "blocked"
+    assert outcome.result["summary"]["factory_readiness_blocking_reason_codes"] == ["runtime_disabled"]
 
 
 @pytest.mark.asyncio
@@ -1527,7 +1766,7 @@ async def test_scheduler_run_once_attaches_governance_slo_and_architecture_revie
     assert architecture_review["cadence_due"] is True
     assert architecture_review["status"] == "attention_required"
     assert architecture_review["categories"]["contract_consistency"]["mismatch_count"] == 1
-    assert architecture_review["categories"]["validation_object_consistency"]["mismatch_count"] == 1
+    assert architecture_review["categories"]["validation_object_consistency"]["mismatch_count"] == 0
     assert architecture_review["categories"]["admission_consistency"]["mismatch_count"] == 1
     assert status["scheduler_slo"]["status"] == "critical"
     assert status["architecture_review"]["review_week"] == expected_review_week

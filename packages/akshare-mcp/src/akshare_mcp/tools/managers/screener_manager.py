@@ -70,6 +70,16 @@ PRESET_STRATEGIES = {
     }
 }
 
+_FUNDAMENTAL_CRITERIA_MAP = {
+    'pe_ratio': {'<': 'max_pe', '>': 'min_pe'},
+    'pb_ratio': {'<': 'max_pb', '>': 'min_pb'},
+    'roe': {'>': 'min_roe', '<': 'max_roe'},
+    'debt_ratio': {'<': 'max_debt_ratio'},
+    'revenue_growth': {'>': 'min_revenue_growth'},
+    'market_cap': {'>': 'min_market_cap', '<': 'max_market_cap'},
+    'dividend_yield': {'>': 'min_dividend_yield'},
+}
+
 
 def _normalize_kwargs(kwargs: dict) -> dict:
     params = kwargs.get("params")
@@ -95,6 +105,15 @@ def _safe_positive_int(value, default: int) -> int:
     return parsed if parsed > 0 else int(default)
 
 
+def _maybe_json_decode(value):
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value or "{}")
+    except Exception:
+        return value
+
+
 def _normalize_condition_list(value) -> list:
     if value is None:
         return []
@@ -103,6 +122,73 @@ def _normalize_condition_list(value) -> list:
     if isinstance(value, list):
         return value
     return []
+
+
+def _normalize_operator(value: Any) -> str:
+    op = str(value or '').strip()
+    if op in {'<', '<=', '≤'}:
+        return '<'
+    if op in {'>', '>=', '≥'}:
+        return '>'
+    return op
+
+
+def _coerce_fundamental_criteria(value: Any) -> dict:
+    normalized = _maybe_json_decode(value)
+    if isinstance(normalized, dict):
+        return dict(normalized)
+    if not isinstance(normalized, list):
+        return {}
+
+    criteria: dict[str, Any] = {}
+    for item in normalized:
+        if not isinstance(item, dict):
+            continue
+        field = str(item.get('field') or '').strip()
+        operator = _normalize_operator(item.get('operator'))
+        criteria_key = (_FUNDAMENTAL_CRITERIA_MAP.get(field) or {}).get(operator)
+        if not criteria_key:
+            continue
+        criteria[criteria_key] = item.get('value')
+    return criteria
+
+
+def _extract_fundamental_criteria(kwargs: dict) -> dict:
+    for key in ('fundamental_criteria', 'criteria', 'fundamental_conditions'):
+        if key in kwargs and kwargs.get(key) not in (None, '', [], {}):
+            return _coerce_fundamental_criteria(kwargs.get(key))
+    return {}
+
+
+def _build_stock_name_map(stocks: list[dict]) -> dict[str, str]:
+    name_map: dict[str, str] = {}
+    for stock in stocks:
+        if not isinstance(stock, dict):
+            continue
+        raw_code = stock.get('code') or stock.get('stock_code') or stock.get('symbol')
+        code = normalize_code(raw_code) if raw_code else None
+        if not code:
+            continue
+        name = str(stock.get('name') or stock.get('stock_name') or '').strip()
+        if name:
+            name_map[code] = name
+    return name_map
+
+
+def _fill_matched_names(matched: list[dict], *name_maps: dict[str, str]) -> list[dict]:
+    merged_name_map: dict[str, str] = {}
+    for item in name_maps:
+        if isinstance(item, dict):
+            merged_name_map.update({k: v for k, v in item.items() if str(v or '').strip()})
+
+    for stock in matched:
+        if not isinstance(stock, dict):
+            continue
+        raw_code = stock.get('code') or stock.get('stock_code') or stock.get('symbol')
+        code = normalize_code(raw_code) if raw_code else None
+        if code and not str(stock.get('name') or '').strip():
+            stock['name'] = merged_name_map.get(code) or code
+    return matched
 
 
 async def _get_stock_pool_with_klines(
@@ -129,6 +215,7 @@ async def _get_stock_pool_with_klines(
       5. 任何异常只记录不抛出，保证返回部分结果
     """
     from akshare_mcp.tools.formula_fallback import get_kline_for_formula_fallback
+    from ...data_source import data_source
 
     # 截断股票池
     truncated = len(stock_codes) > pool_cap
@@ -152,6 +239,11 @@ async def _get_stock_pool_with_klines(
             code = code.split('.')[0] if '.' in str(code) else str(code)
             code = normalize_code(code)
             try:
+                if not name and code:
+                    try:
+                        name = str(data_source._get_stock_name(code) or '').strip()
+                    except Exception:
+                        name = ""
                 klines = await asyncio.wait_for(
                     asyncio.to_thread(get_kline_for_formula_fallback, code, period, limit),
                     timeout=per_stock_timeout,
@@ -233,12 +325,7 @@ def register_screener_manager(mcp):
                 })
             
             elif action == 'screen':
-                criteria = kwargs.get('criteria', {})
-                if isinstance(criteria, str):
-                    try:
-                        criteria = json.loads(criteria)
-                    except Exception:
-                        criteria = {}
+                criteria = _extract_fundamental_criteria(kwargs)
                 
                 # 筛选条件
                 min_market_cap = criteria.get('min_market_cap', 0)
@@ -497,6 +584,7 @@ def register_screener_manager(mcp):
                 diagnostics = kline_result['diagnostics']
 
                 matched = screen_engine.scan(stock_data, condition_ids, logic, params)
+                matched = _fill_matched_names(matched, _build_stock_name_map(stock_data))
                 matched = matched[:result_limit]
 
                 return ok({
@@ -536,12 +624,7 @@ def register_screener_manager(mcp):
                     tech_conditions = kwargs.get('conditions', [])
                 tech_conditions = _normalize_condition_list(tech_conditions)
 
-                fundamental_criteria = kwargs.get('fundamental_criteria', {})
-                if isinstance(fundamental_criteria, str):
-                    try:
-                        fundamental_criteria = json.loads(fundamental_criteria)
-                    except Exception:
-                        fundamental_criteria = {}
+                fundamental_criteria = _extract_fundamental_criteria(kwargs)
 
                 logic = kwargs.get('logic', 'AND')
                 params = kwargs.get('params', {})
@@ -590,8 +673,12 @@ def register_screener_manager(mcp):
                     if isinstance(user_pool, str):
                         user_pool = [c.strip() for c in user_pool.split(',') if c.strip()]
 
-                    if user_pool:
-                        pool = user_pool
+                    normalized_user_pool = [normalize_code(code) for code in user_pool if normalize_code(code)]
+                    if normalized_user_pool and fundamental_codes is not None:
+                        allowed_codes = set(fundamental_codes)
+                        pool = [code for code in normalized_user_pool if code in allowed_codes]
+                    elif normalized_user_pool:
+                        pool = normalized_user_pool
                     elif fundamental_codes is not None:
                         pool = fundamental_codes
                     else:
@@ -603,6 +690,11 @@ def register_screener_manager(mcp):
                     diagnostics = kline_result['diagnostics']
 
                     matched = screen_engine.scan(stock_data, tech_conditions, logic, params)
+                    matched = _fill_matched_names(
+                        matched,
+                        _build_stock_name_map(stock_data),
+                        _build_stock_name_map(list(fundamental_stock_map.values())),
+                    )
                     for item in matched:
                         code = normalize_code(item.get('code') or item.get('stock_code') or '')
                         if code in fundamental_stock_map:
@@ -615,13 +707,14 @@ def register_screener_manager(mcp):
                     matched = list(fundamental_stock_map.values())
                     diagnostics = None
                 else:
-                    return fail('需要提供 tech_conditions / technical_conditions 或 fundamental_criteria')
+                    return fail('需要提供 tech_conditions / technical_conditions 或 fundamental_criteria / fundamental_conditions')
 
                 matched = matched[:result_limit]
                 result_data = {
                     'matched': matched,
                     'matched_count': len(matched),
                     'fundamental_criteria': fundamental_criteria,
+                    'criteria': fundamental_criteria,
                     'tech_conditions': tech_conditions,
                     'technical_conditions': tech_conditions,
                     'logic': logic,

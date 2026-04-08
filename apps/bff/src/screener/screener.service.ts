@@ -24,7 +24,7 @@ export class ScreenerService {
         }
 
         try {
-            const payload = await this.callTool('semantic_stock_search', { query, limit });
+            const { payload, sourceTool, fallbackReason } = await this.callSemanticToolWithFallback(query, limit);
             const items = this.extractItems(payload);
             const result = {
                 data: {
@@ -32,6 +32,10 @@ export class ScreenerService {
                     items,
                     count: items.length,
                     result: payload,
+                    sourceTool,
+                    ...(fallbackReason
+                        ? { fallback: { used: true, reason: fallbackReason } }
+                        : {}),
                 },
                 meta: { fetchedAt: new Date().toISOString(), cache: { hit: false, backend: 'none' as const, key: cacheKey, ttlSeconds } }
             };
@@ -43,6 +47,20 @@ export class ScreenerService {
                 message: '调用 MCP semantic_stock_search 失败',
                 detail: error instanceof Error ? error.message : String(error),
             });
+        }
+    }
+
+    private async callSemanticToolWithFallback(query: string, limit: number) {
+        try {
+            const payload = await this.mcp.callTool('semantic_stock_search', { query, limit });
+            const toolError = this.extractToolError(payload);
+            if (!toolError) {
+                return { payload, sourceTool: 'semantic_stock_search' as const, fallbackReason: null };
+            }
+            return this.buildSemanticFallback(query, limit, toolError);
+        } catch (error) {
+            const detail = this.describeError(error);
+            return this.buildSemanticFallback(query, limit, detail);
         }
     }
 
@@ -108,7 +126,7 @@ export class ScreenerService {
     private async callManager(action: string, payload: Record<string, unknown>) {
         return this.callTool('screener_manager', {
             action,
-            kwargs: JSON.stringify(payload),
+            params: payload,
         });
     }
 
@@ -127,6 +145,18 @@ export class ScreenerService {
                 detail: error instanceof Error ? error.message : String(error),
             });
         }
+    }
+
+    private async buildSemanticFallback(query: string, limit: number, reason: string) {
+        const payload = await this.callTool('search_stocks', {
+            keyword: query.trim(),
+            limit,
+        });
+        return {
+            payload,
+            sourceTool: 'search_stocks' as const,
+            fallbackReason: reason,
+        };
     }
 
     private extractItems(payload: unknown) {
@@ -159,6 +189,13 @@ export class ScreenerService {
             market_cap: record.market_cap ?? record.marketCap ?? null,
             pe: record.pe ?? record.pe_ratio ?? record.peRatio ?? null,
         };
+    }
+
+    private describeError(error: unknown) {
+        if (error instanceof Error) {
+            return error.message;
+        }
+        return String(error);
     }
 
     private resolveConditionMode(conditions: string[]) {

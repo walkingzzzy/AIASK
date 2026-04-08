@@ -12,6 +12,14 @@ FEEDBACK_METRIC_KEYS = (
     "capacity_crowding",
 )
 
+CONTROL_MODE_SEVERITY: dict[str, int] = {
+    "normal": 0,
+    "cooldown": 1,
+    "suppress": 2,
+    "freeze": 3,
+}
+LIFECYCLE_FEEDBACK_INPUT_CONTRACT_VERSION = "strategy_factory.lifecycle_feedback_input.v1"
+
 _METRIC_ALIASES: dict[str, tuple[str, ...]] = {
     "ema_submit_count": (
         "ema_submit_count",
@@ -60,12 +68,146 @@ def normalize_text(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _coerce_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    try:
+        return dict(value or {})
+    except Exception:
+        return {}
+
+
 def extract_feedback_root(snapshot_or_feedback: Any) -> dict[str, Any]:
-    payload = dict(snapshot_or_feedback or {})
+    payload = _coerce_mapping(snapshot_or_feedback)
+    if any(
+        key in payload for key in ("contract_version", "summary", "available", "reason")
+    ):
+        nested_feedback = payload.get("feedback")
+        if isinstance(nested_feedback, dict):
+            return extract_feedback_root(nested_feedback)
+        return {}
+    nested_contract = payload.get("lifecycle_feedback_input")
+    if isinstance(nested_contract, dict):
+        return extract_feedback_root(nested_contract)
+    nested_budget_feedback = payload.get("budget_feedback")
+    if isinstance(nested_budget_feedback, dict):
+        return extract_feedback_root(nested_budget_feedback)
     nested = payload.get("family_gate_feedback")
     if isinstance(nested, dict):
-        return dict(nested)
+        return extract_feedback_root(nested)
     return payload
+
+
+def _count_feedback_scopes(
+    feedback_root: dict[str, Any],
+    *,
+    scope_name: str,
+) -> int:
+    count = 0
+    for bucket in feedback_root.values():
+        if not isinstance(bucket, dict):
+            continue
+        count += len(dict(bucket.get(scope_name) or {}))
+    return count
+
+
+def _sum_feedback_metric(
+    feedback_root: dict[str, Any],
+    *,
+    metric_name: str,
+) -> int:
+    total = 0
+    for bucket in feedback_root.values():
+        if not isinstance(bucket, dict):
+            continue
+        total += _safe_int(bucket.get(metric_name))
+    return total
+
+
+def _merge_feedback_count_maps(*mappings: Any) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for mapping in mappings:
+        for key, value in dict(mapping or {}).items():
+            token = str(key or "").strip()
+            if not token:
+                continue
+            merged[token] = merged.get(token, 0) + _safe_int(value)
+    return merged
+
+
+def normalize_feedback_input_contract(
+    snapshot_or_feedback: Any,
+    *,
+    reason: str | None = None,
+    summary: dict[str, Any] | None = None,
+    available: bool | None = None,
+) -> dict[str, Any]:
+    payload = _coerce_mapping(snapshot_or_feedback)
+    feedback_root = extract_feedback_root(payload)
+    summary_payload = dict(payload.get("summary") or {})
+    if isinstance(summary, dict):
+        summary_payload.update(summary)
+    family_count = int(summary_payload.get("family_count") or len(feedback_root))
+    target_pool_scope_count = int(
+        summary_payload.get("target_pool_scope_count")
+        or _count_feedback_scopes(feedback_root, scope_name="target_pool_feedback")
+    )
+    generator_mode_scope_count = int(
+        summary_payload.get("generator_mode_scope_count")
+        or _count_feedback_scopes(feedback_root, scope_name="generator_mode_feedback")
+    )
+    contract_available = bool(feedback_root) if available is None else bool(available)
+    resolved_reason = str(
+        reason
+        if reason is not None
+        else payload.get("reason")
+        or ("feedback_unavailable" if not contract_available else "")
+    ).strip() or None
+    if contract_available and resolved_reason == "feedback_unavailable":
+        resolved_reason = None
+    normalized_summary = {
+        **summary_payload,
+        "family_count": family_count,
+        "seeded_family_count": int(summary_payload.get("seeded_family_count") or family_count),
+        "strategy_count": int(summary_payload.get("strategy_count") or 0),
+        "runtime_alert_count": int(summary_payload.get("runtime_alert_count") or 0),
+        "runtime_risk_event_count": int(summary_payload.get("runtime_risk_event_count") or 0),
+        "promotion_review_count": int(
+            summary_payload.get("promotion_review_count")
+            or _sum_feedback_metric(feedback_root, metric_name="promotion_review_count")
+        ),
+        "target_pool_scope_count": target_pool_scope_count,
+        "generator_mode_scope_count": generator_mode_scope_count,
+        "promotion_review_status_counts": (
+            _merge_feedback_count_maps(summary_payload.get("promotion_review_status_counts"))
+            if dict(summary_payload.get("promotion_review_status_counts") or {})
+            else _merge_feedback_count_maps(
+                *[
+                    dict(bucket.get("promotion_review_status_counts") or {})
+                    for bucket in feedback_root.values()
+                    if isinstance(bucket, dict)
+                ]
+            )
+        ),
+        "promotion_review_recommendation_counts": (
+            _merge_feedback_count_maps(summary_payload.get("promotion_review_recommendation_counts"))
+            if dict(summary_payload.get("promotion_review_recommendation_counts") or {})
+            else _merge_feedback_count_maps(
+                *[
+                    dict(bucket.get("promotion_review_recommendation_counts") or {})
+                    for bucket in feedback_root.values()
+                    if isinstance(bucket, dict)
+                ]
+            )
+        ),
+    }
+    return {
+        "contract_version": LIFECYCLE_FEEDBACK_INPUT_CONTRACT_VERSION,
+        "available": contract_available,
+        "reason": resolved_reason if not contract_available else resolved_reason,
+        "feedback": feedback_root,
+        "summary": normalized_summary,
+    }
 
 
 def extract_target_pool_id(payload: dict[str, Any] | None) -> str | None:
@@ -89,6 +231,53 @@ def extract_target_pool_id(payload: dict[str, Any] | None) -> str | None:
     return None
 
 
+def derive_target_pool_id(payload: dict[str, Any] | None) -> str | None:
+    explicit = extract_target_pool_id(payload)
+    if explicit:
+        return explicit
+
+    item = dict(payload or {})
+    research_task = dict(item.get("research_task") or {})
+    event_context = dict(item.get("event_context") or research_task.get("event_context") or {})
+
+    for value in (
+        item.get("theme_code"),
+        research_task.get("theme_code"),
+        event_context.get("theme_code"),
+        item.get("event_id"),
+        research_task.get("event_id"),
+        event_context.get("event_id"),
+    ):
+        token = str(value or "").strip()
+        if token:
+            return token
+
+    def _resolve_symbols(values: Any) -> list[str]:
+        try:
+            from ..domain.targets import _normalize_target_codes
+
+            return list(_normalize_target_codes(values, limit=12))
+        except Exception:
+            return []
+
+    stock_pool = dict(item.get("stock_pool") or research_task.get("stock_pool") or {})
+    selection_mode = str(stock_pool.get("selection_mode") or "").strip().lower()
+    symbols = _resolve_symbols(
+        [
+            stock_pool.get("symbols"),
+            stock_pool.get("target_symbols"),
+            item.get("target_symbols"),
+            research_task.get("target_symbols"),
+            event_context.get("target_symbols"),
+        ]
+    )
+    if selection_mode and symbols:
+        return f"{selection_mode}:{','.join(symbols)}"
+    if symbols:
+        return f"symbols:{','.join(symbols)}"
+    return None
+
+
 def extract_generator_mode(payload: dict[str, Any] | None) -> str | None:
     item = dict(payload or {})
     params = dict(item.get("params") or {})
@@ -106,6 +295,38 @@ def extract_generator_mode(payload: dict[str, Any] | None) -> str | None:
         if token:
             return token
     return None
+
+
+def extract_feedback_families(payload: dict[str, Any] | None) -> list[str]:
+    item = dict(payload or {})
+    params = dict(item.get("params") or {})
+    provenance = dict(params.get("candidate_provenance") or item.get("candidate_provenance") or {})
+    research_task = dict(item.get("research_task") or {})
+    strategy_profile = dict(item.get("strategy_profile") or {})
+
+    families: list[str] = []
+
+    def _append(value: Any) -> None:
+        token = normalize_text(value)
+        if token and token not in families:
+            families.append(token)
+
+    def _append_list(values: Any) -> None:
+        if isinstance(values, (list, tuple, set)):
+            for value in values:
+                _append(value)
+            return
+        if values not in (None, "", [], {}):
+            _append(values)
+
+    for source in (item, research_task, provenance, params, strategy_profile):
+        if not isinstance(source, dict):
+            continue
+        for key in ("candidate_family", "family", "strategy_family", "strategy_type"):
+            _append(source.get(key))
+        for key in ("strategy_preferences", "preferred_strategy_types", "allowed_strategy_types"):
+            _append_list(source.get(key))
+    return families
 
 
 def _metric_value(bucket: dict[str, Any], metric: str) -> float | None:
@@ -130,6 +351,164 @@ def _scope_bucket(family_bucket: dict[str, Any], scope_name: str, scope_key: str
     return dict(raw_scope.get(normalize_text(scope_key)) or raw_scope.get(str(scope_key).strip()) or {})
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return int(default)
+
+
+def _truthy_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    token = normalize_text(value)
+    return token in {"1", "true", "yes", "active", "on", "cooldown", "suppress", "freeze"}
+
+
+def _derive_scope_control(bucket: dict[str, Any], *, scope_name: str) -> dict[str, Any]:
+    payload = dict(bucket or {})
+    if not payload:
+        return {
+            "scope": scope_name,
+            "mode": "normal",
+            "severity": 0,
+            "cooldown_active": False,
+            "suppressed": False,
+            "freeze_active": False,
+            "reasons": [],
+        }
+
+    paper_hit_ratio = max(0.0, min(safe_float(_metric_value(payload, "paper_hit_ratio"), 0.5), 1.0))
+    runtime_alert_pressure = max(0.0, min(safe_float(_metric_value(payload, "runtime_alert_pressure"), 0.0), 1.0))
+    realized_turnover = max(0.0, min(safe_float(_metric_value(payload, "realized_turnover"), 0.0), 2.0))
+    capacity_crowding = max(0.0, min(safe_float(_metric_value(payload, "capacity_crowding"), 0.0), 2.0))
+    runtime_alert_count = _safe_int(payload.get("runtime_alert_count"))
+    runtime_risk_event_count = _safe_int(payload.get("runtime_risk_event_count"))
+    promotion_review_count = _safe_int(payload.get("promotion_review_count"))
+    promotion_review_score = max(
+        0.0,
+        min(safe_float(payload.get("promotion_review_score"), 0.5), 1.0),
+    )
+    promotion_review_status = normalize_text(payload.get("promotion_review_status"))
+    promotion_review_recommendation = normalize_text(payload.get("promotion_review_recommendation"))
+    freeze_active = any(
+        _truthy_flag(payload.get(key))
+        for key in (
+            "freeze",
+            "freeze_active",
+            "scope_freeze_active",
+            "hard_freeze",
+        )
+    )
+    suppressed = any(
+        _truthy_flag(payload.get(key))
+        for key in (
+            "suppress",
+            "suppress_active",
+            "suppressed",
+        )
+    )
+    cooldown_active = any(
+        _truthy_flag(payload.get(key))
+        for key in (
+            "cooldown",
+            "cooldown_active",
+        )
+    )
+    reasons: list[str] = []
+
+    if runtime_alert_pressure >= 0.88:
+        freeze_active = True
+        reasons.append(f"{scope_name}_runtime_alert_pressure_freeze")
+    elif runtime_alert_pressure >= 0.72:
+        suppressed = True
+        reasons.append(f"{scope_name}_runtime_alert_pressure_suppress")
+    elif runtime_alert_pressure >= 0.55:
+        cooldown_active = True
+        reasons.append(f"{scope_name}_runtime_alert_pressure_cooldown")
+
+    if paper_hit_ratio <= 0.18:
+        freeze_active = True
+        reasons.append(f"{scope_name}_paper_hit_ratio_collapse")
+    elif paper_hit_ratio <= 0.28:
+        suppressed = True
+        reasons.append(f"{scope_name}_paper_hit_ratio_suppress")
+    elif paper_hit_ratio < 0.40:
+        cooldown_active = True
+        reasons.append(f"{scope_name}_paper_hit_ratio_cooldown")
+
+    if realized_turnover >= 1.45 or capacity_crowding >= 1.20:
+        freeze_active = True
+        reasons.append(f"{scope_name}_turnover_or_crowding_freeze")
+    elif realized_turnover >= 1.15 or capacity_crowding >= 0.95:
+        suppressed = True
+        reasons.append(f"{scope_name}_turnover_or_crowding_suppress")
+    elif realized_turnover >= 0.90 or capacity_crowding >= 0.75:
+        cooldown_active = True
+        reasons.append(f"{scope_name}_turnover_or_crowding_cooldown")
+
+    if runtime_alert_count + runtime_risk_event_count >= 6:
+        freeze_active = True
+        reasons.append(f"{scope_name}_open_risk_load_freeze")
+    elif runtime_alert_count + runtime_risk_event_count >= 4:
+        suppressed = True
+        reasons.append(f"{scope_name}_open_risk_load_suppress")
+    elif runtime_alert_count + runtime_risk_event_count >= 2:
+        cooldown_active = True
+        reasons.append(f"{scope_name}_open_risk_load_cooldown")
+
+    if promotion_review_count > 0:
+        if (
+            promotion_review_status == "rejected"
+            or promotion_review_recommendation == "deprecate"
+        ):
+            freeze_active = True
+            reasons.append(f"{scope_name}_promotion_review_rejected")
+        elif (
+            promotion_review_status == "watch"
+            or promotion_review_recommendation == "observe"
+        ):
+            cooldown_active = True
+            reasons.append(f"{scope_name}_promotion_review_watch")
+        if promotion_review_score <= 0.2:
+            freeze_active = True
+            reasons.append(f"{scope_name}_promotion_review_score_freeze")
+        elif promotion_review_score <= 0.35:
+            suppressed = True
+            reasons.append(f"{scope_name}_promotion_review_score_suppress")
+        elif promotion_review_score < 0.5:
+            cooldown_active = True
+            reasons.append(f"{scope_name}_promotion_review_score_cooldown")
+
+    if freeze_active:
+        mode = "freeze"
+        severity = 3
+    elif suppressed:
+        mode = "suppress"
+        severity = 2
+    elif cooldown_active:
+        mode = "cooldown"
+        severity = 1
+    else:
+        mode = "normal"
+        severity = 0
+
+    deduped_reasons: list[str] = []
+    for reason in reasons:
+        if reason not in deduped_reasons:
+            deduped_reasons.append(reason)
+
+    return {
+        "scope": scope_name,
+        "mode": mode,
+        "severity": severity,
+        "cooldown_active": severity >= 1,
+        "suppressed": severity >= 2,
+        "freeze_active": freeze_active,
+        "reasons": deduped_reasons,
+    }
+
+
 def resolve_feedback_metrics(
     snapshot_or_feedback: Any,
     *,
@@ -146,6 +525,10 @@ def resolve_feedback_metrics(
         (target_pool_bucket, 0.8),
         (generator_bucket, 0.65),
     )
+    family_control = _derive_scope_control(family_bucket, scope_name="family")
+    target_pool_control = _derive_scope_control(target_pool_bucket, scope_name="target_pool")
+    generator_mode_control = _derive_scope_control(generator_bucket, scope_name="generator_mode")
+    scope_controls = (family_control, target_pool_control, generator_mode_control)
     resolved: dict[str, Any] = {
         "family": normalize_text(family) or "unknown",
         "target_pool_id": str(target_pool_id or "").strip() or None,
@@ -174,7 +557,256 @@ def resolve_feedback_metrics(
     resolved["budget_multiplier"] = compute_budget_multiplier(resolved)
     resolved["priority_adjustment"] = compute_priority_adjustment(resolved)
     resolved["failure_penalty_adjustment"] = compute_failure_penalty_adjustment(resolved)
+    highest_control = max(scope_controls, key=lambda item: int(item.get("severity") or 0))
+    control_reasons: list[str] = []
+    for scope_control in scope_controls:
+        for reason in list(scope_control.get("reasons") or []):
+            if reason not in control_reasons:
+                control_reasons.append(reason)
+    resolved["family_control_mode"] = family_control.get("mode")
+    resolved["target_pool_control_mode"] = target_pool_control.get("mode")
+    resolved["generator_mode_control_mode"] = generator_mode_control.get("mode")
+    resolved["control_mode"] = highest_control.get("mode") or "normal"
+    resolved["cooldown_active"] = bool(highest_control.get("severity", 0) >= 1)
+    resolved["suppressed"] = bool(highest_control.get("severity", 0) >= 2)
+    resolved["family_freeze_active"] = bool(family_control.get("freeze_active"))
+    resolved["target_pool_freeze_active"] = bool(target_pool_control.get("freeze_active"))
+    resolved["generator_mode_freeze_active"] = bool(generator_mode_control.get("freeze_active"))
+    resolved["control_reasons"] = control_reasons
+    resolved["promotion_review_count"] = max(
+        _safe_int(family_bucket.get("promotion_review_count")),
+        _safe_int(target_pool_bucket.get("promotion_review_count")),
+        _safe_int(generator_bucket.get("promotion_review_count")),
+    )
+    resolved["promotion_review_status"] = (
+        normalize_text(generator_bucket.get("promotion_review_status"))
+        or normalize_text(target_pool_bucket.get("promotion_review_status"))
+        or normalize_text(family_bucket.get("promotion_review_status"))
+        or None
+    )
+    resolved["promotion_review_recommendation"] = (
+        normalize_text(generator_bucket.get("promotion_review_recommendation"))
+        or normalize_text(target_pool_bucket.get("promotion_review_recommendation"))
+        or normalize_text(family_bucket.get("promotion_review_recommendation"))
+        or None
+    )
+    resolved["promotion_review_score"] = round(
+        max(
+            safe_float(family_bucket.get("promotion_review_score"), 0.0),
+            safe_float(target_pool_bucket.get("promotion_review_score"), 0.0),
+            safe_float(generator_bucket.get("promotion_review_score"), 0.0),
+        ),
+        4,
+    )
+    if resolved["control_mode"] == "cooldown":
+        resolved["budget_multiplier"] = round(min(safe_float(resolved.get("budget_multiplier"), 1.0), 0.55), 4)
+        resolved["priority_adjustment"] = round(min(safe_float(resolved.get("priority_adjustment")), -6.0), 4)
+        resolved["failure_penalty_adjustment"] = round(
+            max(safe_float(resolved.get("failure_penalty_adjustment")), 0.12),
+            4,
+        )
+    elif resolved["control_mode"] == "suppress":
+        resolved["budget_multiplier"] = 0.0
+        resolved["priority_adjustment"] = round(min(safe_float(resolved.get("priority_adjustment")), -18.0), 4)
+        resolved["failure_penalty_adjustment"] = round(
+            max(safe_float(resolved.get("failure_penalty_adjustment")), 0.22),
+            4,
+        )
+    elif resolved["control_mode"] == "freeze":
+        resolved["budget_multiplier"] = 0.0
+        resolved["priority_adjustment"] = round(min(safe_float(resolved.get("priority_adjustment")), -24.0), 4)
+        resolved["failure_penalty_adjustment"] = round(
+            max(safe_float(resolved.get("failure_penalty_adjustment")), 0.3),
+            4,
+        )
     return resolved
+
+
+def resolve_task_feedback_metrics(
+    snapshot_or_feedback: Any,
+    *,
+    task: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = dict(task or {})
+    family_candidates = extract_feedback_families(payload)
+    target_pool_id = derive_target_pool_id(payload)
+    generator_mode = extract_generator_mode(payload)
+    if not family_candidates:
+        family_candidates = ["unknown"]
+
+    resolved_candidates = [
+        resolve_feedback_metrics(
+            snapshot_or_feedback,
+            family=family,
+            target_pool_id=target_pool_id,
+            generator_mode=generator_mode,
+        )
+        for family in family_candidates
+    ]
+    resolved_candidates.sort(
+        key=lambda item: (
+            CONTROL_MODE_SEVERITY.get(normalize_text(item.get("control_mode")), 0),
+            -safe_float(item.get("budget_multiplier"), 1.0),
+            -safe_float(item.get("priority_adjustment"), 0.0),
+            str(item.get("family") or ""),
+        ),
+        reverse=True,
+    )
+    selected = dict(resolved_candidates[0] or {})
+    selected["family_candidates"] = list(family_candidates)
+    selected["family_control_modes"] = {
+        str(item.get("family") or "unknown"): str(item.get("control_mode") or "normal")
+        for item in resolved_candidates
+    }
+    return selected
+
+
+def apply_feedback_controls_to_task(
+    task: dict[str, Any] | None,
+    snapshot_or_feedback: Any,
+) -> dict[str, Any]:
+    payload = dict(task or {})
+    if not payload:
+        return {}
+
+    feedback = resolve_task_feedback_metrics(snapshot_or_feedback, task=payload)
+    control_mode = normalize_text(feedback.get("control_mode")) or "normal"
+    target_pool_control_mode = normalize_text(feedback.get("target_pool_control_mode")) or "normal"
+    generator_mode_control_mode = normalize_text(feedback.get("generator_mode_control_mode")) or "normal"
+
+    enriched = {
+        **payload,
+        "feedback_family": feedback.get("family"),
+        "feedback_family_candidates": list(feedback.get("family_candidates") or []),
+        "target_pool_id": feedback.get("target_pool_id") or derive_target_pool_id(payload),
+        "generator_mode": feedback.get("generator_mode") or extract_generator_mode(payload),
+        "feedback_control_mode": control_mode,
+        "feedback_target_pool_control_mode": target_pool_control_mode,
+        "feedback_generator_mode_control_mode": generator_mode_control_mode,
+        "feedback_control_reasons": list(feedback.get("control_reasons") or []),
+        "feedback_cooldown_active": bool(feedback.get("cooldown_active")),
+        "feedback_suppressed": bool(feedback.get("suppressed")),
+        "feedback_family_freeze_active": bool(feedback.get("family_freeze_active")),
+        "feedback_target_pool_freeze_active": bool(feedback.get("target_pool_freeze_active")),
+        "feedback_generator_mode_freeze_active": bool(feedback.get("generator_mode_freeze_active")),
+        "feedback_metrics": feedback,
+    }
+
+    try:
+        original_priority = int(enriched.get("priority") or 0)
+    except Exception:
+        original_priority = 0
+    try:
+        original_generation_limit = int(enriched.get("generation_limit") or 0)
+    except Exception:
+        original_generation_limit = 0
+
+    if control_mode == "cooldown":
+        adjusted_priority = original_priority + int(round(safe_float(feedback.get("priority_adjustment"), -6.0)))
+        enriched["priority"] = max(1, adjusted_priority) if original_priority > 0 else max(1, adjusted_priority)
+        if original_generation_limit > 0:
+            enriched["generation_limit"] = max(1, min(original_generation_limit, 1))
+        enriched["feedback_generation_limited"] = True
+    elif control_mode in {"suppress", "freeze"}:
+        enriched["feedback_generation_blocked"] = True
+        enriched["feedback_generation_block_reason"] = control_mode
+
+    return enriched
+
+
+def summarize_task_feedback_controls(tasks: list[dict[str, Any]] | None) -> dict[str, Any]:
+    control_mode_counts: dict[str, int] = {}
+    target_pool_control_mode_counts: dict[str, int] = {}
+    generator_mode_control_mode_counts: dict[str, int] = {}
+    suppressed_families: list[str] = []
+    suppressed_target_pools: list[str] = []
+    suppressed_generator_modes: list[str] = []
+    blocked_task_count = 0
+    cooldown_task_count = 0
+
+    def _append_unique(bucket: list[str], value: Any) -> None:
+        token = str(value or "").strip()
+        if token and token not in bucket:
+            bucket.append(token)
+
+    for item in list(tasks or []):
+        task = dict(item or {})
+        control_mode = normalize_text(task.get("feedback_control_mode")) or "normal"
+        target_pool_control_mode = normalize_text(task.get("feedback_target_pool_control_mode")) or "normal"
+        generator_mode_control_mode = normalize_text(task.get("feedback_generator_mode_control_mode")) or "normal"
+        control_mode_counts[control_mode] = control_mode_counts.get(control_mode, 0) + 1
+        target_pool_control_mode_counts[target_pool_control_mode] = (
+            target_pool_control_mode_counts.get(target_pool_control_mode, 0) + 1
+        )
+        generator_mode_control_mode_counts[generator_mode_control_mode] = (
+            generator_mode_control_mode_counts.get(generator_mode_control_mode, 0) + 1
+        )
+        if control_mode == "cooldown":
+            cooldown_task_count += 1
+        if control_mode in {"suppress", "freeze"} or bool(task.get("feedback_generation_blocked")):
+            blocked_task_count += 1
+            _append_unique(
+                suppressed_families,
+                task.get("feedback_family")
+                or (task.get("feedback_family_candidates") or [None])[0],
+            )
+            _append_unique(suppressed_target_pools, task.get("target_pool_id"))
+            _append_unique(suppressed_generator_modes, task.get("generator_mode"))
+
+    return {
+        "feedback_control_mode_counts": control_mode_counts,
+        "feedback_target_pool_control_mode_counts": target_pool_control_mode_counts,
+        "feedback_generator_mode_control_mode_counts": generator_mode_control_mode_counts,
+        "feedback_cooldown_task_count": cooldown_task_count,
+        "feedback_blocked_task_count": blocked_task_count,
+        "suppressed_families": suppressed_families,
+        "suppressed_target_pools": suppressed_target_pools,
+        "suppressed_generator_modes": suppressed_generator_modes,
+    }
+
+
+def collect_generator_mode_feedback_controls(
+    snapshot_or_feedback: Any,
+) -> dict[str, dict[str, Any]]:
+    feedback_root = extract_feedback_root(snapshot_or_feedback)
+    controls: dict[str, dict[str, Any]] = {}
+    for family_name, raw_bucket in feedback_root.items():
+        normalized_family = normalize_text(family_name) or "unknown"
+        family_bucket = dict(raw_bucket or {})
+        generator_scope = dict(family_bucket.get("generator_mode_feedback") or {})
+        for mode_name, mode_bucket in generator_scope.items():
+            normalized_mode = normalize_text(mode_name)
+            if not normalized_mode:
+                continue
+            scope_control = _derive_scope_control(
+                dict(mode_bucket or {}),
+                scope_name="generator_mode",
+            )
+            incoming_severity = int(scope_control.get("severity") or 0)
+            existing = dict(controls.get(normalized_mode) or {})
+            existing_mode = normalize_text(existing.get("control_mode")) or "normal"
+            existing_severity = CONTROL_MODE_SEVERITY.get(existing_mode, 0)
+            merged_reasons: list[str] = []
+            for reason in [*list(existing.get("control_reasons") or []), *list(scope_control.get("reasons") or [])]:
+                token = str(reason or "").strip()
+                if token and token not in merged_reasons:
+                    merged_reasons.append(token)
+            families: list[str] = []
+            for value in [*list(existing.get("families") or []), normalized_family]:
+                token = normalize_text(value)
+                if token and token not in families:
+                    families.append(token)
+            winner_mode = existing_mode
+            if incoming_severity >= existing_severity:
+                winner_mode = normalize_text(scope_control.get("mode")) or winner_mode
+            controls[normalized_mode] = {
+                "control_mode": winner_mode or "normal",
+                "control_reasons": merged_reasons,
+                "families": families,
+                "feedback_observed_count": int(existing.get("feedback_observed_count") or 0) + 1,
+                "source": "lifecycle_feedback",
+            }
+    return controls
 
 
 def compute_budget_multiplier(metrics: dict[str, Any]) -> float:
@@ -183,12 +815,33 @@ def compute_budget_multiplier(metrics: dict[str, Any]) -> float:
     realized_turnover = max(0.0, min(safe_float(metrics.get("realized_turnover"), 0.0), 2.0))
     capacity_crowding = max(0.0, min(safe_float(metrics.get("capacity_crowding"), 0.0), 2.0))
     ema_submit_count = max(0.0, min(safe_float(metrics.get("ema_submit_count"), 0.0), 8.0))
+    promotion_review_count = _safe_int(metrics.get("promotion_review_count"))
+    promotion_review_score = max(0.0, min(safe_float(metrics.get("promotion_review_score"), 0.5), 1.0))
+    promotion_review_status = normalize_text(metrics.get("promotion_review_status"))
+    promotion_review_recommendation = normalize_text(metrics.get("promotion_review_recommendation"))
 
     paper_bonus = (paper_hit_ratio - 0.5) * 0.7
     turnover_penalty = max(realized_turnover - 0.55, 0.0) * 0.25
     crowding_penalty = max(capacity_crowding - 0.45, 0.0) * 0.22
     submit_bonus = min(ema_submit_count / 10.0, 0.12)
-    multiplier = 1.0 + paper_bonus - runtime_alert_pressure * 0.42 - turnover_penalty - crowding_penalty + submit_bonus
+    promotion_review_adjustment = 0.0
+    if promotion_review_count > 0:
+        promotion_review_adjustment += (promotion_review_score - 0.5) * 0.18
+        if promotion_review_status == "approved" or promotion_review_recommendation == "promote":
+            promotion_review_adjustment += 0.05
+        elif promotion_review_status == "watch" or promotion_review_recommendation == "observe":
+            promotion_review_adjustment -= 0.06
+        elif promotion_review_status == "rejected" or promotion_review_recommendation == "deprecate":
+            promotion_review_adjustment -= 0.18
+    multiplier = (
+        1.0
+        + paper_bonus
+        - runtime_alert_pressure * 0.42
+        - turnover_penalty
+        - crowding_penalty
+        + submit_bonus
+        + promotion_review_adjustment
+    )
     return round(min(max(multiplier, 0.4), 1.75), 4)
 
 
@@ -198,15 +851,29 @@ def compute_priority_adjustment(metrics: dict[str, Any]) -> float:
     realized_turnover = max(0.0, min(safe_float(metrics.get("realized_turnover"), 0.0), 2.0))
     capacity_crowding = max(0.0, min(safe_float(metrics.get("capacity_crowding"), 0.0), 2.0))
     ema_submit_count = max(0.0, min(safe_float(metrics.get("ema_submit_count"), 0.0), 8.0))
+    promotion_review_count = _safe_int(metrics.get("promotion_review_count"))
+    promotion_review_score = max(0.0, min(safe_float(metrics.get("promotion_review_score"), 0.5), 1.0))
+    promotion_review_status = normalize_text(metrics.get("promotion_review_status"))
+    promotion_review_recommendation = normalize_text(metrics.get("promotion_review_recommendation"))
 
     turnover_penalty = max(realized_turnover - 0.55, 0.0)
     crowding_penalty = max(capacity_crowding - 0.45, 0.0)
+    promotion_review_adjustment = 0.0
+    if promotion_review_count > 0:
+        promotion_review_adjustment += (promotion_review_score - 0.5) * 6.0
+        if promotion_review_status == "approved" or promotion_review_recommendation == "promote":
+            promotion_review_adjustment += 3.0
+        elif promotion_review_status == "watch" or promotion_review_recommendation == "observe":
+            promotion_review_adjustment -= 5.0
+        elif promotion_review_status == "rejected" or promotion_review_recommendation == "deprecate":
+            promotion_review_adjustment -= 10.0
     adjustment = (
         (paper_hit_ratio - 0.5) * 14.0
         - runtime_alert_pressure * 8.5
         - turnover_penalty * 5.0
         - crowding_penalty * 4.5
         + min(ema_submit_count, 6.0) * 0.75
+        + promotion_review_adjustment
     )
     return round(adjustment, 4)
 
@@ -216,23 +883,51 @@ def compute_failure_penalty_adjustment(metrics: dict[str, Any]) -> float:
     runtime_alert_pressure = max(0.0, min(safe_float(metrics.get("runtime_alert_pressure"), 0.0), 1.0))
     realized_turnover = max(0.0, min(safe_float(metrics.get("realized_turnover"), 0.0), 2.0))
     capacity_crowding = max(0.0, min(safe_float(metrics.get("capacity_crowding"), 0.0), 2.0))
+    promotion_review_count = _safe_int(metrics.get("promotion_review_count"))
+    promotion_review_score = max(0.0, min(safe_float(metrics.get("promotion_review_score"), 0.5), 1.0))
+    promotion_review_status = normalize_text(metrics.get("promotion_review_status"))
+    promotion_review_recommendation = normalize_text(metrics.get("promotion_review_recommendation"))
 
     turnover_penalty = max(realized_turnover - 0.55, 0.0) * 0.08
     crowding_penalty = max(capacity_crowding - 0.45, 0.0) * 0.06
     paper_credit = max(paper_hit_ratio - 0.55, 0.0) * 0.08
-    adjustment = runtime_alert_pressure * 0.12 + turnover_penalty + crowding_penalty - paper_credit
+    promotion_review_penalty = 0.0
+    if promotion_review_count > 0:
+        promotion_review_penalty += max(0.5 - promotion_review_score, 0.0) * 0.12
+        if promotion_review_status == "watch" or promotion_review_recommendation == "observe":
+            promotion_review_penalty += 0.08
+        elif promotion_review_status == "rejected" or promotion_review_recommendation == "deprecate":
+            promotion_review_penalty += 0.14
+        elif promotion_review_status == "approved" or promotion_review_recommendation == "promote":
+            promotion_review_penalty -= 0.03
+    adjustment = (
+        runtime_alert_pressure * 0.12
+        + turnover_penalty
+        + crowding_penalty
+        - paper_credit
+        + promotion_review_penalty
+    )
     return round(min(max(adjustment, -0.06), 0.22), 4)
 
 
 __all__ = [
+    "CONTROL_MODE_SEVERITY",
+    "LIFECYCLE_FEEDBACK_INPUT_CONTRACT_VERSION",
+    "apply_feedback_controls_to_task",
     "FEEDBACK_METRIC_KEYS",
     "compute_budget_multiplier",
     "compute_failure_penalty_adjustment",
     "compute_priority_adjustment",
+    "collect_generator_mode_feedback_controls",
+    "derive_target_pool_id",
     "extract_feedback_root",
+    "extract_feedback_families",
     "extract_generator_mode",
     "extract_target_pool_id",
+    "normalize_feedback_input_contract",
     "normalize_text",
     "resolve_feedback_metrics",
+    "resolve_task_feedback_metrics",
     "safe_float",
+    "summarize_task_feedback_controls",
 ]

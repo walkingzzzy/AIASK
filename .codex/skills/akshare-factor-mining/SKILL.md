@@ -33,6 +33,7 @@ description: AI 因子挖掘、候选因子生成、候选验证、研究记忆�
 - 阶段 4（留痕与治理）：
   - 用 `quant_manager(action=factor_research_memory)` 做 `list|get|recall|stats`。
   - 用 `quant_manager(action=factor_candidate_registry)` 看 `summary|active_pool|get|list`，确认是否进入治理池。
+  - 如果需要回看候选 artifact 的落盘结果、阶段摘要或执行上下文，用 `ai_workflow_artifact` 补证据链。
   - 需要复盘时，用 `quant_manager(action=replay_factor_episode|factor_ic_history)`。
 - 阶段 5（调度与产品面）：
   - 用 `quant_manager(action=scheduler_status|scheduler_run_now)` 核查调度器是否健康。

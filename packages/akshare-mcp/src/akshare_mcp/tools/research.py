@@ -3,8 +3,9 @@
 与 news/research.py（Tushare 外部 API 版本）互补。
 """
 
+import time
 from datetime import date, timedelta
-from ..utils import ok, fail
+from .manager_protocol import ok_with_meta
 
 
 def register(mcp):
@@ -17,6 +18,7 @@ def register(mcp):
             stock_code: 股票代码
             days: 查询最近多少天（默认30）
         """
+        started_at = time.perf_counter()
         try:
             from ..storage import get_db
             db = get_db()
@@ -40,9 +42,23 @@ def register(mcp):
                 rows = await conn.fetch(query, *params)
 
             reports = [dict(r) for r in rows] if rows else []
-            return ok({'reports': reports, 'count': len(reports), 'keyword': keyword, 'stock_code': stock_code})
+            return ok_with_meta(
+                {'reports': reports, 'count': len(reports), 'keyword': keyword, 'stock_code': stock_code},
+                tool_name="search_research_db",
+                action="search",
+                started_at=started_at,
+                source_chain=["research.db"],
+                extra_meta={"quality": {"status": "available", "record_count": len(reports)}},
+            )
         except Exception as e:
-            return ok({'reports': [], 'count': 0, 'keyword': keyword, 'stock_code': stock_code, 'note': f'DB查询失败: {e}'})
+            return ok_with_meta(
+                {'reports': [], 'count': 0, 'keyword': keyword, 'stock_code': stock_code, 'note': f'DB查询失败: {e}'},
+                tool_name="search_research_db",
+                action="search",
+                started_at=started_at,
+                source_chain=["research.db"],
+                extra_meta={"degraded": True, "quality": {"status": "degraded", "reason": "db_query_failed"}},
+            )
 
     @mcp.tool()
     async def analyze_research_report(code: str):
@@ -51,6 +67,7 @@ def register(mcp):
         Args:
             code: 股票代码
         """
+        started_at = time.perf_counter()
         try:
             from ..storage import get_db
             db = get_db()
@@ -74,18 +91,32 @@ def register(mcp):
                 'institutions': institutions[:10],
                 'signals': [],
             }
-            return ok(analysis)
+            return ok_with_meta(
+                analysis,
+                tool_name="analyze_research_report",
+                action="analyze",
+                started_at=started_at,
+                source_chain=["research.db"],
+                extra_meta={"quality": {"status": "available", "report_count": len(reports)}},
+            )
         except Exception as e:
-            return ok({
-                'code': code,
-                'report_count': 0,
-                'latest_reports': [],
-                'rating_distribution': {},
-                'avg_target_price': None,
-                'institutions': [],
-                'signals': [],
-                'note': f'DB查询失败: {e}',
-            })
+            return ok_with_meta(
+                {
+                    'code': code,
+                    'report_count': 0,
+                    'latest_reports': [],
+                    'rating_distribution': {},
+                    'avg_target_price': None,
+                    'institutions': [],
+                    'signals': [],
+                    'note': f'DB查询失败: {e}',
+                },
+                tool_name="analyze_research_report",
+                action="analyze",
+                started_at=started_at,
+                source_chain=["research.db"],
+                extra_meta={"degraded": True, "quality": {"status": "degraded", "reason": "db_query_failed"}},
+            )
 
     @mcp.tool()
     async def get_research_summary(code: str, limit: int = 10):
@@ -95,6 +126,7 @@ def register(mcp):
             code: 股票代码
             limit: 返回数量上限（默认10）
         """
+        started_at = time.perf_counter()
         try:
             from ..storage import get_db
             db = get_db()
@@ -106,6 +138,20 @@ def register(mcp):
                 )
 
             summaries = [dict(r) for r in rows] if rows else []
-            return ok({'code': code, 'summaries': summaries, 'count': len(summaries)})
+            return ok_with_meta(
+                {'code': code, 'summaries': summaries, 'count': len(summaries)},
+                tool_name="get_research_summary",
+                action="summary",
+                started_at=started_at,
+                source_chain=["research.db"],
+                extra_meta={"quality": {"status": "available", "record_count": len(summaries)}},
+            )
         except Exception as e:
-            return ok({'code': code, 'summaries': [], 'count': 0, 'note': f'DB查询失败: {e}'})
+            return ok_with_meta(
+                {'code': code, 'summaries': [], 'count': 0, 'note': f'DB查询失败: {e}'},
+                tool_name="get_research_summary",
+                action="summary",
+                started_at=started_at,
+                source_chain=["research.db"],
+                extra_meta={"degraded": True, "quality": {"status": "degraded", "reason": "db_query_failed"}},
+            )

@@ -19,6 +19,21 @@ from strategy_factory.api.dto import (
     normalize_run_result_to_detail,
     normalize_run_result_to_summary,
 )
+from strategy_factory.application.research_plane_contract import (
+    CANDIDATE_ARTIFACT_CONTRACT_VERSION,
+    RESEARCH_ARTIFACT_CONTRACT_VERSION,
+    RESEARCH_EVIDENCE_ARTIFACT_CONTRACT_VERSION,
+    RESEARCH_PLANE_CONTRACT_VERSION,
+    TASK_ARTIFACT_CONTRACT_VERSION,
+)
+from strategy_factory.application.governance_plane_contract import (
+    DEDUP_ARTIFACT_CONTRACT_VERSION,
+    GATE_ARTIFACT_CONTRACT_VERSION,
+    GOVERNANCE_EVIDENCE_ARTIFACT_CONTRACT_VERSION,
+    GOVERNANCE_PLANE_CONTRACT_VERSION,
+    SUBMISSION_ARTIFACT_CONTRACT_VERSION,
+)
+from strategy_factory.application.run_models import build_stage_result
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +88,10 @@ class TestStageResultDTO:
         dto = StageResultDTO.from_dict("factor_research", {"status": "error"})
         assert dto.status == "failed"
 
+    def test_build_stage_result_has_contract_version(self):
+        payload = build_stage_result("collect", "trace_001", {"rows": 12}, status="completed")
+        assert payload["stage_contract_version"] == 1
+
 
 # ---------------------------------------------------------------------------
 # FactoryRunSummaryDTO
@@ -92,6 +111,10 @@ _SAMPLE_RUN_RESULT = {
         "eliminated": 1,
         "factory_readiness_score": 0.92,
         "factory_readiness_can_proceed": True,
+        "research_summary": {"research_plane_contract_version": "strategy_factory.research_plane.v1"},
+        "feedback_summary": {"family_count": 2, "feedback_available": True},
+        "incubation_summary": {"gate_3_passed": 2},
+        "live_ready_summary": {"live_ready_review_count": 1},
     },
     "_run_audit": {
         "hard_failure_count": 0,
@@ -197,6 +220,190 @@ class TestFactoryRunDetailDTO:
         d = dto.to_dict()
         assert "stages" in d
         assert isinstance(d["stages"], dict)
+
+    def test_to_dict_includes_layered_summaries(self):
+        dto = FactoryRunDetailDTO.from_dict(_SAMPLE_RUN_RESULT)
+        d = dto.to_dict()
+        assert d["research_summary"]["research_plane_contract_version"] == "strategy_factory.research_plane.v1"
+        assert d["feedback_summary"]["family_count"] == 2
+        assert d["incubation_summary"]["gate_3_passed"] == 2
+        assert d["live_ready_summary"]["live_ready_review_count"] == 1
+
+    def test_from_dict_reconstructs_research_plane_from_stage_artifacts(self):
+        data = {
+            **_SAMPLE_RUN_RESULT,
+            "research_plane": {},
+            "stages": {
+                "factor_research": {
+                    "status": "completed",
+                    "ok": True,
+                    "research_artifact": {
+                        "contract_version": RESEARCH_ARTIFACT_CONTRACT_VERSION,
+                        "available": True,
+                        "active_factor_count": 2,
+                    },
+                },
+                "autonomy": {
+                    "status": "completed",
+                    "ok": True,
+                    "task_artifact": {
+                        "contract_version": TASK_ARTIFACT_CONTRACT_VERSION,
+                        "available": True,
+                        "planned_task_count": 3,
+                    },
+                    "candidate_artifact": {
+                        "contract_version": CANDIDATE_ARTIFACT_CONTRACT_VERSION,
+                        "available": True,
+                        "candidate_count": 4,
+                    },
+                    "evidence_artifact": {
+                        "contract_version": RESEARCH_EVIDENCE_ARTIFACT_CONTRACT_VERSION,
+                        "available": True,
+                        "experiment_count": 2,
+                    },
+                },
+            },
+        }
+
+        dto = FactoryRunDetailDTO.from_dict(data)
+        d = dto.to_dict()
+
+        assert d["research_plane"]["contract_version"] == RESEARCH_PLANE_CONTRACT_VERSION
+        assert d["research_artifact"]["contract_version"] == RESEARCH_ARTIFACT_CONTRACT_VERSION
+        assert d["task_artifact"]["planned_task_count"] == 3
+        assert d["candidate_artifact"]["candidate_count"] == 4
+        assert d["evidence_artifact"]["experiment_count"] == 2
+
+    def test_from_dict_reconstructs_governance_plane_from_stage_artifacts(self):
+        data = {
+            **_SAMPLE_RUN_RESULT,
+            "governance_plane": {},
+            "quality_gate": {
+                "gate_0": {"passed_count": 5, "failed_count": 1},
+                "pre_gate": {"passed_count": 4, "failed_count": 1},
+                "gate_1": {"passed_count": 3, "failed_count": 1},
+                "gate_2": {"input_count": 3, "passed_count": 2, "failed_count": 1},
+                "gate_3": {
+                    "input_count": 2,
+                    "passed_count": 1,
+                    "failed_count": 1,
+                    "failure_reason_topn": [{"reason_code": "attempt_adjusted_penalty", "count": 1}],
+                },
+            },
+            "stages": {
+                "backtest": {
+                    "status": "completed",
+                    "ok": True,
+                    "summary": {
+                        "input_count": 3,
+                        "passed_count": 2,
+                        "failed_count": 1,
+                        "failed_reason_counts": {"capacity_guard": 1},
+                    },
+                },
+                "deduplicate": {
+                    "status": "completed",
+                    "ok": True,
+                    "summary": {
+                        "input_count": 2,
+                        "kept_count": 1,
+                        "dropped_count": 1,
+                        "refreshed_existing_count": 1,
+                    },
+                    "kept": [
+                        {
+                            "strategy_type": "momentum",
+                            "target_symbols": ["600519"],
+                            "dedup_result": {
+                                "duplicate": False,
+                                "refresh_existing": True,
+                                "refresh_mode": "refresh_metrics_only",
+                            },
+                        }
+                    ],
+                },
+                "submit": {
+                    "status": "completed",
+                    "ok": True,
+                    "submitted": 1,
+                    "gate_3_passed": 1,
+                    "gate_3_failed": 0,
+                    "strategies": [
+                        {
+                            "strategy_id": "sid_governance_1",
+                            "name": "治理候选",
+                            "status": "submitted",
+                            "submission_lane": "paper",
+                            "submission_action_type": "create",
+                            "primary_validation_layer": "target",
+                            "refresh_mode": "refresh_metrics_only",
+                            "task_signature": "event_driven|evt_1|ai||event_target_only|600519",
+                            "validation_profile": {
+                                "profile": "event_trade_validation",
+                                "validation_focus": "event_target_only",
+                                "primary_validation_layer": "target",
+                            },
+                            "constraint_check": {
+                                "constraint_violation": "strict_intersection_trimmed",
+                                "intersection_ratio": 0.5,
+                            },
+                            "committee_review": {
+                                "decision": "revise",
+                                "final_score": 0.6842,
+                                "execution_score": 0.48,
+                                "capacity_score": 0.55,
+                                "task_alignment_score": 0.44,
+                                "accept_blockers": [
+                                    "execution_floor_failed",
+                                    "task_alignment_floor_failed",
+                                ],
+                            },
+                            "event_window_config": {"lookback_days": 3, "forward_days": 5},
+                            "position_assumption": "single_name_full_notional",
+                            "attempt_adjustment": {"attempt_count": 4, "selection_ratio": 0.25, "penalty": 0.03},
+                            "vector_profile_id": "vp_1",
+                            "multiple_testing_registry": {"available": True},
+                            "multiple_testing_registry_record_id": "mt_1",
+                            "candidate_lineage_contract": {"lineage_id": "lineage_1"},
+                            "cost_assumptions": {"commission_bps": 8},
+                            "explicit_cost_breakdown": {"commission_cost": 120.0},
+                            "implicit_cost_breakdown": {"slippage_cost": 36.0},
+                            "execution_reality": {"tradability_filter": True},
+                        }
+                    ],
+                },
+            },
+        }
+
+        dto = FactoryRunDetailDTO.from_dict(data)
+        d = dto.to_dict()
+
+        assert d["governance_plane"]["contract_version"] == GOVERNANCE_PLANE_CONTRACT_VERSION
+        assert d["gate_artifact"]["contract_version"] == GATE_ARTIFACT_CONTRACT_VERSION
+        assert d["dedup_artifact"]["contract_version"] == DEDUP_ARTIFACT_CONTRACT_VERSION
+        assert d["submission_artifact"]["contract_version"] == SUBMISSION_ARTIFACT_CONTRACT_VERSION
+        assert (
+            d["governance_evidence_artifact"]["contract_version"]
+            == GOVERNANCE_EVIDENCE_ARTIFACT_CONTRACT_VERSION
+        )
+        assert d["gate_artifact"]["gate_3_passed"] == 1
+        assert d["dedup_artifact"]["kept_count"] == 1
+        assert d["submission_artifact"]["strategy_count"] == 1
+        assert d["submission_artifact"]["committee_review_count"] == 1
+        assert d["submission_artifact"]["committee_decision_counts"]["revise"] == 1
+        assert d["submission_artifact"]["constraint_check_count"] == 1
+        assert d["submission_artifact"]["strategy_briefs"][0]["primary_validation_layer"] == "target"
+        assert d["submission_artifact"]["strategy_briefs"][0]["refresh_mode"] == "refresh_metrics_only"
+        assert d["submission_artifact"]["strategy_briefs"][0]["committee_review"]["decision"] == "revise"
+        assert (
+            d["submission_artifact"]["strategy_briefs"][0]["committee_review"]["accept_blockers"]
+            == ["execution_floor_failed", "task_alignment_floor_failed"]
+        )
+        assert d["submission_artifact"]["strategy_briefs"][0]["has_committee_review"] is True
+        assert d["submission_artifact"]["strategy_briefs"][0]["task_signature"].startswith("event_driven|evt_1")
+        assert d["governance_evidence_artifact"]["committee_review_count"] == 1
+        assert d["governance_evidence_artifact"]["multiple_testing_registry_record_count"] == 1
+        assert d["governance_evidence_artifact"]["constraint_check_count"] == 1
 
 
 # ---------------------------------------------------------------------------

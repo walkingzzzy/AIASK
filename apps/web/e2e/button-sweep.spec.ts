@@ -38,6 +38,7 @@ type IssueCollector = ReturnType<typeof createPageIssueCollector>;
 
 type IssueSnapshot = {
   api5xx: number;
+  httpErrors: number;
   consoleErrors: number;
   pageErrors: number;
   requestFailures: number;
@@ -45,40 +46,40 @@ type IssueSnapshot = {
 
 const ROUTES: SweepRoute[] = [
   { name: '首页', path: '/', settleDelayMs: 1_400 },
-  { name: '行情看板', path: '/market?code=600519', heading: '行情看板' },
+  { name: '行情看板', path: '/market?code=600519', heading: /贵州茅台|600519/ },
   { name: '个股详情', path: '/stock?code=600519', heading: /股票详情|\d{6}/ },
-  { name: '基本面分析', path: '/fundamental?code=600519', heading: '基本面分析' },
-  { name: '技术分析', path: '/technical?code=600519', heading: '技术分析' },
-  { name: '资金流向', path: '/fund-flow?code=600519', heading: '资金流向' },
-  { name: '情绪分析', path: '/sentiment?code=600519', heading: '情绪分析' },
-  { name: '研报公告', path: '/research?code=600519', heading: '研报公告' },
-  { name: '估值分析', path: '/valuation?code=600519', heading: '估值分析' },
-  { name: '回测分析', path: '/backtest?code=600519', heading: '回测分析' },
-  { name: '因子研究', path: '/factor', heading: '因子研究' },
-  { name: '因子分析', path: '/factor-analysis?code=600519', heading: '因子分析' },
-  { name: '事件工作台', path: '/events?code=600519&days=7&type=all', heading: '事件日历' },
-  { name: '执行中心', path: '/execution?code=600519', heading: '执行中心' },
-  { name: '绩效中心', path: '/performance?mode=account&days=30', heading: '绩效中心' },
+  { name: '基本面分析', path: '/fundamental?code=600519', heading: /基本面分析(?:工作台)?/ },
+  { name: '技术分析', path: '/technical?code=600519', heading: /技术分析(?:工作台)?/ },
+  { name: '资金流向', path: '/fund-flow?code=600519', heading: /资金流向(?:工作台)?/ },
+  { name: '情绪分析', path: '/sentiment?code=600519', heading: /情绪分析(?:工作台)?/ },
+  { name: '研报公告', path: '/research?code=600519', heading: /研究工作台|研报公告/ },
+  { name: '估值分析', path: '/valuation?code=600519', heading: /估值分析(?:工作台)?/ },
+  { name: '回测分析', path: '/backtest?code=600519', heading: /回测分析(?:工作台)?/ },
+  { name: '因子研究', path: '/factor', heading: /因子研究(?:工作台)?/ },
+  { name: '因子分析', path: '/factor-analysis?code=600519', heading: /因子洞察工作台|因子分析/ },
+  { name: '事件工作台', path: '/events?code=600519&days=7&type=all', heading: /事件日历(?:工作台)?/ },
+  { name: '执行中心', path: '/execution?code=600519', heading: /执行工作台|执行中心/ },
+  { name: '绩效中心', path: '/performance?mode=account&days=30', heading: /绩效复盘工作台|绩效中心/ },
   { name: '条件选股', path: '/screener', heading: '条件选股' },
-  { name: '模拟交易', path: '/paper-trading?code=600519', heading: '模拟交易' },
-  { name: '投资组合', path: '/portfolio', heading: '投资组合' },
-  { name: '风险分析', path: '/risk?lookbackDays=252', heading: '风险分析' },
-  { name: '告警中心', path: '/alerts?code=600519', heading: '告警中心' },
+  { name: '模拟交易', path: '/paper-trading?code=600519', heading: /模拟交易(?:工作台)?/ },
+  { name: '投资组合', path: '/portfolio', heading: /组合管理工作台|投资组合|组合管理/ },
+  { name: '风险分析', path: '/risk?lookbackDays=252', heading: /风险分析(?:工作台)?/ },
+  { name: '告警中心', path: '/alerts?code=600519', heading: /告警中心(?:工作台)?/ },
   { name: '通知中心', path: '/notifications', heading: /通知中心/ },
   { name: '统一决策', path: '/decision?code=600519', heading: '统一决策工作台' },
-  { name: '智能助手', path: '/assistant?code=600519', heading: /AI 深度诊断报告生成器/ },
-  { name: 'AI 对话', path: '/chat', heading: 'AI 对话' },
+  { name: '智能助手', path: '/assistant?code=600519', heading: /AI 中心|AI 深度诊断报告生成器/ },
+  { name: 'AI 对话', path: '/chat', heading: /AI 中心|AI 对话/ },
   { name: '智能搜索', path: '/search?code=600519', heading: '智能搜索' },
   { name: '数据中心', path: '/data?code=600519', heading: '数据中心' },
   { name: '宏观分析', path: '/macro', heading: /宏观经济数据分析/ },
   { name: '期权分析', path: '/options?underlying=510050', heading: /期权全景分析/ },
-  { name: '我的自选', path: '/watchlist', heading: /我的自选/ },
-  { name: '用户中心', path: '/user', heading: '用户中心' },
+  { name: '我的自选', path: '/watchlist', heading: /自选股工作台|我的自选/ },
+  { name: '用户中心', path: '/user', heading: /用户中心(?:工作台)?/ },
   { name: '设置中心', path: '/settings', heading: '设置中心' },
   { name: '安全设置', path: '/settings/security', heading: /安全设置/, allowEmptyTargets: true },
   { name: '审计日志', path: '/settings/audit-log', heading: /操作审计日志/ },
   { name: '策略工作台', path: '/strategy', heading: '策略工作台' },
-  { name: '策略超市', path: '/strategy-market', heading: '策略超市' },
+  { name: '策略超市', path: '/strategy-market', heading: /先看筛选结果|策略超市/ },
   { name: '管理后台', path: '/admin', heading: '管理后台概览', allowEmptyTargets: true },
   { name: 'MCP 工具页', path: '/admin/tools', heading: /MCP 工具仪表盘/, allowEmptyTargets: true },
   { name: '缓存管理', path: '/admin/cache', heading: /缓存管理/, allowEmptyTargets: true },
@@ -318,6 +319,7 @@ async function clickSweepTarget(page: Page, route: SweepRoute, target: SweepTarg
 function takeIssueSnapshot(collector: IssueCollector): IssueSnapshot {
   return {
     api5xx: collector.api5xx.length,
+    httpErrors: collector.httpErrors.length,
     consoleErrors: collector.consoleErrors.length,
     pageErrors: collector.pageErrors.length,
     requestFailures: collector.requestFailures.length,
@@ -331,6 +333,7 @@ function assertNoNewCriticalIssues(
 ) {
   assertNoCriticalPageIssues({
     api5xx: collector.api5xx.slice(snapshot.api5xx),
+    httpErrors: collector.httpErrors.slice(snapshot.httpErrors),
     consoleErrors: collector.consoleErrors.slice(snapshot.consoleErrors),
     pageErrors: collector.pageErrors.slice(snapshot.pageErrors),
     requestFailures: collector.requestFailures.slice(snapshot.requestFailures),

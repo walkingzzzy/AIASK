@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,6 +11,7 @@ from akshare_mcp.services.strategy_autonomy_components import (
     CommitteeReviewService,
     ExperimentRecorder,
 )
+from akshare_mcp.storage.timescaledb.strategy_ai import StrategyAIMixin
 
 
 @pytest.mark.asyncio
@@ -82,6 +85,87 @@ async def test_candidate_generation_service_runs_bulk_stock_matrix_in_rule_only_
 
 
 @pytest.mark.asyncio
+async def test_candidate_generation_service_metadata_only_task_keeps_default_rule_generation():
+    service = CandidateGenerationService()
+    db = MagicMock()
+    db.list_strategies = AsyncMock(return_value=[])
+
+    service.rule_generator.generate = lambda *_args, **_kwargs: [
+        StrategySpec(strategy_type="momentum", params={"lookback": 20}, name="metadata-rule")
+    ]
+    service.llm_generator.generate = AsyncMock(return_value=[])
+    service.llm_generator.get_last_report = lambda: {}
+    service.optimizer.evolve = AsyncMock(return_value=[])
+
+    result = await service.generate(
+        db,
+        snapshot={"date": "2026-04-03", "fear_greed_index": 58},
+        limit=1,
+        research_task={"metadata": {"factor_research": {"degraded": False}}},
+    )
+
+    assert len(result["rule_specs"]) == 1
+    assert [spec.strategy_type for spec in result["merged_specs"]] == ["momentum"]
+
+
+@pytest.mark.asyncio
+async def test_candidate_generation_service_can_skip_external_llm_when_scheduler_blocks_provider():
+    service = CandidateGenerationService()
+    db = MagicMock()
+    db.list_strategies = AsyncMock(return_value=[])
+
+    service.rule_generator.generate = lambda *_args, **_kwargs: [
+        StrategySpec(strategy_type="momentum", params={"lookback": 20}, name="scheduler-blocked-rule")
+    ]
+    service.llm_generator.generate = AsyncMock(side_effect=AssertionError("scheduler-blocked task should skip llm"))
+    service.optimizer.evolve = AsyncMock(return_value=[])
+
+    result = await service.generate(
+        db,
+        snapshot={"date": "2026-04-03", "fear_greed_index": 58},
+        limit=3,
+        research_task={
+            "task_id": "task_provider_blocked",
+            "disable_external_llm": True,
+            "external_llm_skip_reason": "empty_200_false_success_detected",
+        },
+    )
+
+    assert [spec.strategy_type for spec in result["merged_specs"]] == ["momentum"]
+    assert result["llm_report"]["external_provider"]["status"] == "skipped"
+    assert result["llm_report"]["external_provider"]["skip_reason"] == "empty_200_false_success_detected"
+
+
+@pytest.mark.asyncio
+async def test_candidate_generation_service_can_skip_optimizer_when_scheduler_blocks_rl_mode():
+    service = CandidateGenerationService()
+    db = MagicMock()
+    db.list_strategies = AsyncMock(return_value=[])
+
+    service.rule_generator.generate = lambda *_args, **_kwargs: [
+        StrategySpec(strategy_type="momentum", params={"lookback": 20}, name="scheduler-blocked-rule")
+    ]
+    service.llm_generator.generate = AsyncMock(return_value=[])
+    service.llm_generator.get_last_report = lambda: {"external_provider": {"status": "skipped"}}
+    service.optimizer.evolve = AsyncMock(side_effect=AssertionError("scheduler-blocked task should skip optimizer"))
+
+    result = await service.generate(
+        db,
+        snapshot={"date": "2026-04-03", "fear_greed_index": 58},
+        limit=3,
+        research_task={
+            "task_id": "task_rl_mode_blocked",
+            "disable_optimizer": True,
+            "optimizer_skip_reason": "refresh_absorption_without_creation",
+        },
+    )
+
+    assert [spec.strategy_type for spec in result["merged_specs"]] == ["momentum"]
+    assert result["llm_report"]["optimizer"]["status"] == "skipped"
+    assert result["llm_report"]["optimizer"]["skip_reason"] == "refresh_absorption_without_creation"
+
+
+@pytest.mark.asyncio
 async def test_candidate_generation_service_bulk_rule_first_expands_same_family_variants():
     service = CandidateGenerationService()
     db = MagicMock()
@@ -151,6 +235,95 @@ async def test_candidate_generation_service_can_enable_bulk_stock_matrix_llm_and
     assert db.list_strategies.await_count == 2
     assert service.llm_generator.generate.await_count == 1
     assert service.optimizer.evolve.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_candidate_generation_service_honors_preferred_strategy_types_without_legacy_alias():
+    service = CandidateGenerationService()
+    db = MagicMock()
+    db.list_strategies = AsyncMock(return_value=[])
+    observed_preferred_types: list[list[str]] = []
+
+    def _generate(_snapshot, *, limit, preferred_types=None):
+        observed_preferred_types.append(list(preferred_types or []))
+        return [StrategySpec(strategy_type="rsi", params={"rsi_period": 6}, name="preferred-rule")]
+
+    service.rule_generator.generate = _generate
+    service.llm_generator.generate = AsyncMock(return_value=[])
+    service.llm_generator.get_last_report = lambda: {}
+    service.optimizer.evolve = AsyncMock(return_value=[])
+
+    result = await service.generate(
+        db,
+        snapshot={"date": "2026-04-08", "fear_greed_index": 49},
+        limit=3,
+        research_task={
+            "task_id": "task_new_contract_only",
+            "preferred_strategy_types": ["rsi", "value_factor"],
+            "allowed_strategy_types": ["rsi"],
+            "preference_strength": "hard",
+            "validation_focus": "candidate_target_only",
+        },
+    )
+
+    assert observed_preferred_types == [["rsi", "value_factor"]]
+    assert [spec.strategy_type for spec in result["merged_specs"]] == ["rsi"]
+
+
+def test_strategy_autonomy_service_llm_summary_exposes_provider_health_ratios():
+    summary = StrategyAutonomyService._summarize_llm_report(
+        {
+            "external_provider": {
+                "status": "fallback_only",
+                "requests": [
+                    {
+                        "status": "fallback",
+                        "error_type": "ProviderCompatibilityError",
+                        "error": "response missing extractable content",
+                        "request_metrics": {
+                            "attempt_count": 1,
+                            "status": "compatibility_failed",
+                            "empty_200_response": True,
+                        },
+                    },
+                    {
+                        "status": "compatibility_skip",
+                        "request_metrics": {"attempt_count": 0},
+                    },
+                ],
+            }
+        }
+    )
+
+    external = summary["external_provider"]
+    assert external["network_request_count"] == 1
+    assert external["real_request_count"] == 1
+    assert external["compatibility_skip_count"] == 1
+    assert external["compatibility_failure_count"] == 1
+    assert external["compatibility_failure_ratio"] == 1.0
+    assert external["effective_response_ratio"] == 0.0
+    assert external["empty_200_response_count"] == 1
+
+
+def test_strategy_autonomy_service_research_task_summary_exposes_normalized_preference_contract():
+    summary = StrategyAutonomyService._summarize_research_task(
+        {
+            "task_id": "task_contract_summary",
+            "preferred_strategy_types": ["rsi", "value_factor"],
+            "allowed_strategy_types": ["rsi", "ma_cross"],
+            "preference_strength": "hard",
+            "validation_focus": "candidate_target_only",
+            "target_symbols": ["300750"],
+        },
+        factor_research=None,
+    )
+
+    assert summary["preferred_strategy_types"] == ["rsi", "value_factor"]
+    assert summary["strategy_preferences"] == ["rsi", "value_factor"]
+    assert summary["allowed_strategy_types"] == ["rsi", "ma_cross"]
+    assert summary["preference_strength"] == "hard"
+    assert summary["validation_focus"] == "candidate_target_only"
+    assert summary["target_symbols"] == ["300750"]
 
 
 def test_rule_strategy_generator_prefers_task_requested_types_before_global_defaults():
@@ -368,6 +541,45 @@ async def test_experiment_recorder_continues_when_persistence_fails():
 
 
 @pytest.mark.asyncio
+async def test_experiment_recorder_summarizes_large_payload_without_writing_files(tmp_path):
+    recorder = ExperimentRecorder()
+    db = MagicMock()
+    db.save_strategy_generation_experiment = AsyncMock(side_effect=lambda payload: dict(payload))
+
+    spec = StrategySpec(
+        strategy_type="momentum",
+        params={"lookback": 15, "dsl": {"entry": {"any": [{"op": "gt", "value": "x" * 512}]}}},
+        name="externalize-me",
+        description="large experiment payload",
+        tags=["ai_generated"],
+        metadata={
+            "generator_type": "llm_proxy",
+            "research_task": {"task_id": "task_large_payload", "task_source": "snapshot"},
+            "llm_response": {
+                "provider": "mock",
+                "raw_response": "y" * 4096,
+                "request_metrics": {"attempt_count": 1, "response_chars": 4096},
+                "candidates": [{"name": "candidate-a"}],
+            },
+        },
+    )
+
+    payload = await recorder.record_experiment(
+        db,
+        spec,
+        source="test_component",
+        snapshot={"date": "2026-04-06"},
+        task_run={"id": 101},
+    )
+
+    assert payload["parameters"]["dsl_present"] is True
+    assert "raw_response" not in payload["evaluation"]["llm_response"]
+    assert payload["evaluation"]["llm_response"]["request_metrics"]["response_chars"] == 4096
+    assert "full_payload_storage" not in payload["evaluation"]
+    assert list(tmp_path.rglob("*.json")) == []
+
+
+@pytest.mark.asyncio
 async def test_strategy_autonomy_service_continues_when_task_run_and_event_persistence_fail():
     service = StrategyAutonomyService()
 
@@ -404,6 +616,172 @@ async def test_strategy_autonomy_service_continues_when_task_run_and_event_persi
     assert db.save_strategy_task_run.await_count == 1
     assert db.save_strategy_domain_event.await_count == 1
     db.update_strategy_task_run.assert_not_awaited()
+
+
+def test_strategy_ai_mixin_large_task_run_result_falls_back_to_safe_summary(monkeypatch):
+    monkeypatch.setenv("STRATEGY_TASK_RUN_RESULT_MAX_BYTES", "256")
+
+    encoded = StrategyAIMixin._encode_task_run_result_json(
+        {
+            "task_run_id": 11,
+            "status": "completed",
+            "source": "test",
+            "snapshot_date": "2026-04-06",
+            "generated_count": 3,
+            "full_result_artifact": {
+                "artifact_id": "artifact_task_run_11",
+                "path": "/tmp/task_run_11.json",
+                "format": "json",
+                "size_bytes": 8192,
+            },
+            "blob": "x" * 4096,
+        }
+    )
+
+    decoded = json.loads(encoded)
+    assert decoded["storage_mode"] == "inline_fallback_summary"
+    assert decoded["truncated"] is True
+    assert decoded["generated_count"] == 3
+    assert decoded["full_result_artifact"]["artifact_id"] == "artifact_task_run_11"
+    assert "blob" not in decoded
+
+
+def test_strategy_ai_mixin_large_generation_experiment_field_falls_back_to_safe_summary(monkeypatch):
+    monkeypatch.setenv("STRATEGY_GENERATION_EXPERIMENT_FIELD_MAX_BYTES", "256")
+
+    encoded = StrategyAIMixin._encode_generation_experiment_json(
+        "evaluation",
+        {
+            "source": "strategy_factory_submit",
+            "task_run_id": 77,
+            "committee_review": {
+                "decision": "accept",
+                "final_score": 0.91,
+                "rank": 1,
+            },
+            "submission_result": {
+                "passed": True,
+                "strategy_id": "sid_123",
+            },
+            "blob": "x" * 4096,
+        },
+    )
+
+    decoded = json.loads(encoded)
+    assert decoded["storage_mode"] == "inline_fallback_summary"
+    assert decoded["field_name"] == "evaluation"
+    assert decoded["task_run_id"] == 77
+    assert decoded["committee_review"]["decision"] == "accept"
+    assert decoded["submission_result"]["strategy_id"] == "sid_123"
+    assert "blob" not in decoded
+
+
+def test_strategy_ai_mixin_large_factory_run_stages_fall_back_to_safe_summary(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_RUN_STAGES_MAX_BYTES", "32768")
+
+    encoded = StrategyAIMixin._encode_factory_run_json(
+        "stages",
+        {
+            "autonomy": {
+                "stage": "autonomy",
+                "status": "partial",
+                "ok": True,
+                "task_count": 139,
+                "completed_task_count": 137,
+                "failed_task_count": 2,
+                "generated_count": 139,
+                "external_llm_status": "partial",
+                "task_source_counts": {"snapshot": 12, "event_driven": 27, "bulk_stock_matrix": 100},
+                "task_scan": {
+                    "summary": {
+                        "task_count": 139,
+                        "task_sources": {"snapshot": 12, "event_driven": 27, "bulk_stock_matrix": 100},
+                        "bulk_stock_matrix_enabled": True,
+                        "bulk_stock_matrix_stock_count": 100,
+                    },
+                    "tasks": [{"task_id": f"task_{idx}", "blob": "x" * 1024} for idx in range(80)],
+                },
+                "task_results": [
+                    {
+                        "task_run_id": idx,
+                        "status": "completed",
+                        "generated_count": 1,
+                        "reviewed_count": 1,
+                        "external_llm_status": "succeeded",
+                        "task": {
+                            "task_id": f"task_{idx}",
+                            "task_source": "bulk_stock_matrix",
+                            "opportunity_type": "momentum",
+                            "target_symbols": ["600000", "600036"],
+                            "generation_limit": 1,
+                        },
+                        "lifecycle_summary": {
+                            "state": "completed",
+                            "current_phase": "completed",
+                            "terminal_phase": "completed",
+                            "phase_status_counts": {"completed": 6},
+                        },
+                        "blob": "x" * 1024,
+                    }
+                    for idx in range(60)
+                ],
+                "blob": "x" * 8192,
+            }
+        },
+    )
+
+    decoded = json.loads(encoded)
+    assert decoded["storage_mode"] == "inline_fallback_summary"
+    assert decoded["field_name"] == "stages"
+    assert decoded["stage_count"] == 1
+    assert decoded["autonomy"]["task_count"] == 139
+    assert decoded["autonomy"]["task_result_count"] == 60
+    assert decoded["autonomy"]["task_scan"]["summary"]["bulk_stock_matrix_enabled"] is True
+    assert decoded["autonomy"]["task_results"][0]["task"]["task_id"] == "task_0"
+    assert "blob" not in decoded["autonomy"]
+
+
+def test_strategy_ai_mixin_large_factory_run_snapshot_summary_falls_back_to_safe_summary(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_RUN_SNAPSHOT_SUMMARY_MAX_BYTES", "1024")
+
+    encoded = StrategyAIMixin._encode_factory_run_json(
+        "snapshot_summary",
+        {
+            "date": "2026-04-06",
+            "fear_greed": 61,
+            "listed_count": 120,
+            "incubating_count": 8,
+            "degraded": False,
+            "completion_ratio": 0.98,
+            "factor_research": {
+                "summary": {
+                    "factor_source_mode": "governed_candidate_pool",
+                    "governed_candidate_pool_mode": "strict_governed",
+                    "active_candidate_count": 24,
+                    "governed_source_candidate_count": 18,
+                },
+                "active_candidate_pool": {
+                    "count": 24,
+                    "family_count": 5,
+                    "top_candidates": [
+                        {"name": "value_momentum_blend", "family": "momentum", "priority": 0.9, "score": 0.87},
+                        {"name": "quality_breakout", "family": "quality", "priority": 0.8, "score": 0.81},
+                    ],
+                },
+                "source_chain": ["governed_pool", "scheduler"],
+                "degraded": False,
+                "blob": "x" * 4096,
+            },
+        },
+    )
+
+    decoded = json.loads(encoded)
+    assert decoded["storage_mode"] == "inline_fallback_summary"
+    assert decoded["field_name"] == "snapshot_summary"
+    assert decoded["date"] == "2026-04-06"
+    assert decoded["factor_research"]["summary"]["factor_source_mode"] == "governed_candidate_pool"
+    assert decoded["factor_research"]["active_candidate_pool"]["top_candidates"][0]["name"] == "value_momentum_blend"
+    assert "blob" not in decoded["factor_research"]
 
 
 @pytest.mark.asyncio

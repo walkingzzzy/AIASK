@@ -27,6 +27,11 @@ interface PooledConnection {
   connectPromise: Promise<void> | null;
 }
 
+type HealthCacheEntry = {
+  value: McpHealth;
+  expiresAt: number;
+};
+
 type Waiter = {
   resolve: (conn: PooledConnection) => void;
   reject: (error: Error) => void;
@@ -43,9 +48,12 @@ export class McpGatewayService implements OnModuleDestroy {
   private readonly fullProfilePoolSlots: number;
   private readonly poolAcquireTimeoutMs: number;
   private readonly toolCallTimeoutMs: number;
+  private readonly healthCacheTtlMs: number;
   private waitQueue: Waiter[] = [];
   private dedicatedConnections = new Map<string, PooledConnection>();
   private dedicatedWaitQueues = new Map<string, Waiter[]>();
+  private healthCache: HealthCacheEntry | null = null;
+  private healthInFlight: Promise<McpHealth> | null = null;
   private initialized = false;
   private totalToolCalls = 0;
   private totalToolErrors = 0;
@@ -66,6 +74,10 @@ export class McpGatewayService implements OnModuleDestroy {
       1000,
       Number(this.configService.get<string>('MCP_TOOL_TIMEOUT_MS', '30000')),
     );
+    this.healthCacheTtlMs = Math.max(
+      1000,
+      Number(this.configService.get<string>('MCP_HEALTH_CACHE_TTL_MS', '10000')),
+    );
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -73,6 +85,26 @@ export class McpGatewayService implements OnModuleDestroy {
   }
 
   async checkAvailableTools(): Promise<McpHealth> {
+    const cached = this.getCachedHealth();
+    if (cached) {
+      return cached;
+    }
+
+    if (this.healthInFlight) {
+      return this.healthInFlight;
+    }
+
+    if (this.shouldServeStaleHealth() && this.healthCache) {
+      return this.healthCache.value;
+    }
+
+    this.healthInFlight = this.fetchAvailableTools().finally(() => {
+      this.healthInFlight = null;
+    });
+    return this.healthInFlight;
+  }
+
+  private async fetchAvailableTools(): Promise<McpHealth> {
     const configuredExpected = this.configService.get<string>('MCP_EXPECTED_TOOLS');
     const expectedTools = configuredExpected != null && configuredExpected !== ''
       ? Number(configuredExpected)
@@ -85,7 +117,7 @@ export class McpGatewayService implements OnModuleDestroy {
         const count = Array.isArray(tools?.tools) ? tools.tools.length : null;
         if (count !== null) {
           const resolvedExpectedTools = expectedTools ?? count;
-          return {
+          return this.cacheHealth({
             reachable: true,
             toolCount: count,
             expectedTools: resolvedExpectedTools,
@@ -94,7 +126,7 @@ export class McpGatewayService implements OnModuleDestroy {
             message: expectedTools == null ? 'ok(dynamic-runtime-baseline)' : 'ok',
             poolSize: this.poolSize,
             activeConnections: this.pool.length,
-          };
+          });
         }
       } finally {
         this.release(conn);
@@ -103,7 +135,7 @@ export class McpGatewayService implements OnModuleDestroy {
       // ignore and fallthrough
     }
 
-    return {
+    return this.cacheHealth({
       reachable: false,
       toolCount: null,
       expectedTools,
@@ -112,18 +144,23 @@ export class McpGatewayService implements OnModuleDestroy {
       message: 'MCP not reachable or available_tools response format unknown',
       poolSize: this.poolSize,
       activeConnections: this.pool.length,
-    };
+    });
   }
 
-  async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
+  async callTool(
+    name: string,
+    args: Record<string, unknown> = {},
+    options?: { timeoutMs?: number },
+  ): Promise<unknown> {
     const dedicated = McpGatewayService.DEDICATED_TOOL_CONNECTIONS.has(name);
     const conn = dedicated ? await this.acquireDedicated(name) : await this.acquire();
     const startedAt = performance.now();
+    const timeoutMs = Math.max(1000, Number(options?.timeoutMs ?? this.toolCallTimeoutMs));
     try {
       const result = await this.withTimeout(
         conn.client.callTool({ name, arguments: args }),
-        this.toolCallTimeoutMs,
-        `MCP tool ${name} timed out after ${this.toolCallTimeoutMs}ms`,
+        timeoutMs,
+        `MCP tool ${name} timed out after ${timeoutMs}ms`,
       );
       this.recordToolMetric(name, performance.now() - startedAt, false);
       return this.normalizeToolResult(result);
@@ -373,6 +410,8 @@ export class McpGatewayService implements OnModuleDestroy {
     this.pool = [];
     this.dedicatedConnections.clear();
     this.dedicatedWaitQueues.clear();
+    this.healthCache = null;
+    this.healthInFlight = null;
     this.initialized = false;
   }
 
@@ -431,6 +470,28 @@ export class McpGatewayService implements OnModuleDestroy {
         },
       );
     });
+  }
+
+  private cacheHealth(value: McpHealth): McpHealth {
+    this.healthCache = {
+      value,
+      expiresAt: Date.now() + this.healthCacheTtlMs,
+    };
+    return value;
+  }
+
+  private getCachedHealth(): McpHealth | null {
+    if (!this.healthCache) return null;
+    if (Date.now() > this.healthCache.expiresAt) {
+      return null;
+    }
+    return this.healthCache.value;
+  }
+
+  private shouldServeStaleHealth(): boolean {
+    if (!this.healthCache) return false;
+    const poolBusy = this.pool.length >= this.poolSize && this.pool.every((conn) => conn.busy);
+    return poolBusy || this.waitQueue.length > 0;
   }
 
   private resolveMcpCwd(): string {

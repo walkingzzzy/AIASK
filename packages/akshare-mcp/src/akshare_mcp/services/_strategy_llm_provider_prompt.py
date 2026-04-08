@@ -95,6 +95,38 @@ class _StrategyLLMProviderPromptMixin:
             compact_market_summary = cls._compact_market_summary(market_summary, compact_level=compact_level)
             compact_research_context = cls._compact_research_context(research_context, compact_level=compact_level)
             compact_task = cls._compact_research_task(research_task, compact_level=compact_level)
+            task_target_context = dict(compact_research_context.get('task_target_context') or {})
+            market_background_context = dict(compact_research_context.get('market_background_context') or {})
+            targeted_context_only = bool(task_target_context.get('targeted_task') or compact_task.get('target_symbols'))
+            if targeted_context_only and not task_target_context.get('requested_target_symbols'):
+                task_target_context = {
+                    **task_target_context,
+                    'targeted_task': True,
+                    'requested_target_symbols': list(compact_task.get('target_symbols') or []),
+                    'matched_target_symbols': cls._normalize_code_list([
+                        task_target_context.get('matched_target_symbols'),
+                        compact_research_context.get('candidate_universe_symbols'),
+                        compact_research_context.get('symbol_insight_codes'),
+                        compact_task.get('target_symbols'),
+                    ], limit=6),
+                }
+            prompt_research_context: dict[str, Any]
+            if targeted_context_only:
+                prompt_research_context = {
+                    'target_context_status': compact_research_context.get('target_context_status'),
+                    'blocked_by_target_universe': compact_research_context.get('blocked_by_target_universe'),
+                    'task_target_context': {
+                        key: value
+                        for key, value in task_target_context.items()
+                        if value not in (None, [], {}, "")
+                    },
+                }
+            else:
+                prompt_research_context = {
+                    key: value
+                    for key, value in compact_research_context.items()
+                    if value not in (None, [], {}, "")
+                }
             max_target_symbols = max(
                 1,
                 int(
@@ -119,10 +151,24 @@ class _StrategyLLMProviderPromptMixin:
                     f'不得扩展到 candidate_universe 或全市场；候选至少要覆盖 {max(1, min_target_overlap_count)} 只 research_task 目标，'
                     f'且 target_symbols 不得超过 {max_target_symbols} 只。'
                 )
+            target_context_only_rule = (
+                '这是定向任务，只能使用 research_context.task_target_context 中的标的证据；'
+                '不得引用 market_background_context，也不得借 broad candidate_universe 扩展 target_symbols；'
+                '不允许退回 candidate_universe。'
+                if targeted_context_only
+                else ''
+            )
+            explicit_same_theme_rule = (
+                '如果 research_task 显式提供 same_theme_symbols 或 theme_members，只能把它们视为 research_task 自带的辅助 target context 使用。'
+                if any(normalized_task.get(key) for key in ('same_theme_symbols', 'theme_members'))
+                else ''
+            )
 
             if compact_level >= 2:
                 example_symbols = cls._normalize_code_list([
                     compact_task.get('target_symbols'),
+                    task_target_context.get('candidate_universe_symbols') if targeted_context_only else market_background_context.get('candidate_universe_symbols'),
+                    task_target_context.get('symbol_insight_codes') if targeted_context_only else market_background_context.get('symbol_insight_codes'),
                     compact_research_context.get('candidate_universe_symbols'),
                     compact_research_context.get('symbol_insight_codes'),
                 ], limit=2)
@@ -166,6 +212,8 @@ class _StrategyLLMProviderPromptMixin:
                     '返回根对象 {"candidates":[...]}。',
                     'candidate 必须包含 name,strategy_type,hypothesis,holding_horizon,trade_plan,risk_rules,position_sizing,execution_notes,rebalance_rule,portfolio_spec,execution_assumptions,validation_profile,target_symbols,stock_pool,dsl,tags。',
                     'portfolio_spec / execution_assumptions / validation_profile 必须给出完整对象，不得省略，也不得依赖系统回填默认值。',
+                    target_context_only_rule,
+                    explicit_same_theme_rule,
                     'dsl 必须是对象，且必须包含 version,timeframe,entry,exit,metadata。',
                     'dsl.metadata 必须回填 target_symbols,stock_pool,portfolio_spec,execution_assumptions,validation_profile,targeting_policy,constraint_check。',
                     strict_snapshot_rule,
@@ -179,15 +227,15 @@ class _StrategyLLMProviderPromptMixin:
                     'prompt_profile': profile_name,
                     'limit': 1,
                     'research_task': compact_task,
-                    'market_hint': dict(compact_research_context.get('market_regime') or {}),
-                    'candidate_universe_symbols': list(compact_research_context.get('candidate_universe_symbols') or []),
+                    'research_context': prompt_research_context,
+                    'market_hint': dict(compact_research_context.get('market_regime') or {}) if not targeted_context_only else {},
                     'output_contract': output_contract,
                     'output_example': cls._minimal_output_example(example_symbols),
                 }
                 if not user_payload['market_hint']:
                     user_payload.pop('market_hint', None)
-                if not user_payload['candidate_universe_symbols']:
-                    user_payload.pop('candidate_universe_symbols', None)
+                if not user_payload['research_context']:
+                    user_payload.pop('research_context', None)
                 if not user_payload['research_task']:
                     user_payload.pop('research_task', None)
                 user_prompt = json.dumps(user_payload, ensure_ascii=False, default=str, separators=(',', ':'))
@@ -198,6 +246,11 @@ class _StrategyLLMProviderPromptMixin:
             candidate_priority_rule = '优先返回 1 个高置信、可执行候选；不要为了凑数量返回弱候选。' if compact_level >= 1 else '按 limit 返回高质量候选。'
             if strict_snapshot_target_pool:
                 context_rule = strict_snapshot_rule
+            elif targeted_context_only:
+                context_rule = (
+                    'target_symbols 必须来自 research_context.task_target_context.requested_target_symbols '
+                    '或 matched_target_symbols；如果 task_target_context 无法建立，不允许生成候选。'
+                )
             elif prompt_target_symbol_rule == 'strict_intersection_with_research_task':
                 context_rule = (
                     '如果 research_task.target_symbols 与 candidate_universe 有交集，'
@@ -207,11 +260,17 @@ class _StrategyLLMProviderPromptMixin:
                 )
             else:
                 context_rule = '如果 research_task.target_symbols 与 candidate_universe 有交集，target_symbols 必须只取交集；如果没有交集，才允许退回 candidate_universe。'
+            if target_context_only_rule:
+                context_rule = ''.join([target_context_only_rule, explicit_same_theme_rule, context_rule])
             event_rule = '如果 research_task 提供 event_id/theme_code/direction/evidence_summary，必须优先围绕该事件主题、方向和证据构建候选。'
             system_prompt = ''.join([
                 '你是量化策略研究员。必须输出严格 JSON，不要输出解释文本。',
                 '先基于输入的市场研究上下文给出结构化 analysis，再给出可执行的股票日频策略 DSL 候选。',
-                '你拿到的是程序从股票数据库扫描、聚合、压缩后的研究上下文，必须优先使用 candidate_universe 中的真实股票数据。',
+                (
+                    '你拿到的是程序整理后的定向研究上下文，必须只使用 research_context.task_target_context 中的真实标的证据。'
+                    if targeted_context_only
+                    else '你拿到的是程序从股票数据库扫描、聚合、压缩后的研究上下文，必须优先使用 market_background_context / candidate_universe 中的真实股票数据。'
+                ),
                 '每个候选策略必须明确目标股票或股票池，不允许只给抽象模板。',
                 '如果提供了 research_task，必须围绕该任务的市场机会、行业或目标股票池生成候选，而不是泛化输出。',
                 context_rule,
@@ -261,7 +320,7 @@ class _StrategyLLMProviderPromptMixin:
                 'limit': requested_limit,
                 'snapshot': cls._compact_snapshot(snapshot or {}, compact_level=compact_level),
                 'market_summary': compact_market_summary,
-                'research_context': compact_research_context,
+                'research_context': prompt_research_context,
                 'research_task': compact_task,
                 'output_contract': output_contract,
             }

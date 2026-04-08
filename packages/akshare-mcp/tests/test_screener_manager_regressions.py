@@ -1,7 +1,10 @@
 import pytest
 
+import akshare_mcp.data_source as data_source_pkg
 import akshare_mcp.tools.formula_fallback as formula_fallback_mod
 import akshare_mcp.tools.managers.screener_manager as screener_manager_mod
+from akshare_mcp.tools.semantic.query_parser import parse_selection_query
+from akshare_mcp.tools.tool_catalog import get_tool_contract
 from akshare_mcp.services import screen_conditions as _screen_conditions  # noqa: F401
 
 
@@ -203,3 +206,82 @@ async def test_combined_screen_should_preserve_technical_conditions_and_fill_nam
     assert result["data"]["matched"][0]["code"] == "600519"
     assert result["data"]["matched"][0]["name"] == "贵州茅台"
     assert result["data"]["matched"][0]["matched_conditions"] == ["upn", "fundamental_criteria"]
+
+
+@pytest.mark.asyncio
+async def test_get_stock_pool_with_klines_should_backfill_name_from_data_source(monkeypatch):
+    monkeypatch.setattr(formula_fallback_mod, "get_kline_for_formula_fallback", lambda *args, **kwargs: _make_upn_klines(4))
+    monkeypatch.setattr(data_source_pkg.data_source, "_get_stock_name", lambda code: "贵州茅台" if code == "600519" else "")
+
+    result = await screener_manager_mod._get_stock_pool_with_klines(
+        ["600519"],
+        per_stock_timeout=2.0,
+        total_timeout=5.0,
+        pool_cap=5,
+    )
+
+    assert result["stocks"][0]["code"] == "600519"
+    assert result["stocks"][0]["name"] == "贵州茅台"
+
+
+@pytest.mark.asyncio
+async def test_combined_screen_should_accept_fundamental_conditions_alias(monkeypatch):
+    mcp = _DummyMCP()
+    screener_manager_mod.register_screener_manager(mcp)
+    monkeypatch.setattr(screener_manager_mod, "get_db", lambda: _ScreenDB())
+
+    async def _fake_pool(stock_codes, *args, **kwargs):
+        assert "600519" in stock_codes
+        return {
+            "stocks": [
+                {"code": "600519", "name": "", "klines": _make_upn_klines(5)},
+            ],
+            "diagnostics": {
+                "pool_size": len(stock_codes),
+                "pool_truncated": False,
+                "original_pool_size": len(stock_codes),
+                "success_count": 1,
+                "timeout_count": 0,
+                "error_count": 0,
+                "elapsed_ms": 6,
+            },
+        }
+
+    monkeypatch.setattr(screener_manager_mod, "_get_stock_pool_with_klines", _fake_pool)
+
+    result = await mcp.screener_manager(
+        action="combined_screen",
+        kwargs={
+            "fundamental_conditions": [
+                {"field": "pe_ratio", "operator": "<", "value": 20.0},
+                {"field": "roe", "operator": ">", "value": 0.15},
+            ],
+            "technical_conditions": ["upn"],
+            "logic": "AND",
+            "params": {"n": 3},
+            "limit": 1,
+        },
+    )
+
+    assert result["success"] is True
+    assert result["data"]["fundamental_criteria"] == {"max_pe": 20.0, "min_roe": 0.15}
+    assert result["data"]["matched"][0]["name"] == "贵州茅台"
+    assert result["data"]["matched"][0]["matched_conditions"] == ["upn", "fundamental_criteria"]
+
+
+def test_parse_selection_query_should_parse_price_above_ma_with_period():
+    result = parse_selection_query("市盈率小于20且站上20日均线")
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["fundamental_conditions"] == [{"field": "pe_ratio", "operator": "<", "value": 20.0}]
+    assert data["technical_conditions"] == [{"id": "price_above_ma", "params": {"n": 20}}]
+    assert "price_above_ma" in data["suggestion"]
+
+
+def test_get_tool_contract_should_include_screener_manager():
+    contract = get_tool_contract("screener_manager")
+
+    assert contract is not None
+    assert contract["name"] == "screener_manager"
+    assert contract["category"] == "screening"

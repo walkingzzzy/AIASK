@@ -17,6 +17,46 @@ from ...domain.constants import (
     resolve_event_runtime_mode,
 )
 
+READINESS_CONTRACT_VERSION = "strategy_factory.readiness.v1"
+READINESS_AUTHORITY_CONTRACT_VERSION = "strategy_factory.readiness.authority.v1"
+
+
+def _dedupe_reason_codes(values: list[str] | None = None) -> list[str]:
+    codes: list[str] = []
+    for value in list(values or []):
+        code = str(value or "").strip()
+        if code and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def build_readiness_authority(
+    *,
+    can_proceed: bool,
+    hard_gate_enabled: bool,
+    blocking_reason_codes: list[str] | None = None,
+    critical_blocking_reason_codes: list[str] | None = None,
+    warning_reason_codes: list[str] | None = None,
+    skip_reason: str | None = None,
+    blocking_stage: str = "readiness",
+) -> dict[str, Any]:
+    blocked = not bool(can_proceed)
+    blocking_codes = _dedupe_reason_codes(blocking_reason_codes)
+    critical_codes = _dedupe_reason_codes(critical_blocking_reason_codes)
+    warning_codes = _dedupe_reason_codes(warning_reason_codes)
+    return {
+        "authority_contract_version": READINESS_AUTHORITY_CONTRACT_VERSION,
+        "decision": "proceed" if not blocked else "blocked",
+        "blocked": blocked,
+        "hard_gate": bool(hard_gate_enabled),
+        "gate_mode": "hard" if hard_gate_enabled else "soft",
+        "blocking_stage": blocking_stage if blocked else None,
+        "blocking_reason_codes": blocking_codes if blocked else [],
+        "critical_blocking_reason_codes": critical_codes if blocked else [],
+        "warning_reason_codes": warning_codes,
+        "skip_reason": (str(skip_reason or "").strip() or None) if blocked else None,
+    }
+
 
 def resolve_governed_pool_state(factor_summary: dict[str, Any] | None = None) -> dict[str, Any]:
     summary = dict(factor_summary or {})
@@ -131,7 +171,7 @@ def resolve_governed_pool_runtime_state(
         return "blocked_by_governed_pool"
     if auto_refresh_enabled and (refresh_attempted or factor_refresh_recommendation_reason):
         return "refreshing_pool"
-    return "seed_fallback"
+    return "blocked_by_governed_pool"
 
 
 class ReadinessService:
@@ -232,6 +272,11 @@ class ReadinessService:
         if governed_candidate_pool_provisional:
             warnings.append("governed_candidate_pool_provisional")
             score -= 0.04
+        if not governed_candidate_pool_active:
+            warnings.append("governed_candidate_pool_inactive")
+            blockers.append("governed_candidate_pool_required")
+            critical_blockers.append("governed_candidate_pool_required")
+            score -= 0.22
         if governed_blocked_candidate_count > 0:
             warnings.append("governed_candidate_pool_blocked_candidates")
         if governed_blocked_ratio >= 0.75:
@@ -280,8 +325,17 @@ class ReadinessService:
         can_proceed = not critical_blockers and (
             not hard_block or (score >= FACTORY_READINESS_MIN_SCORE and not blockers)
         )
+        authority = build_readiness_authority(
+            can_proceed=can_proceed,
+            hard_gate_enabled=hard_block,
+            blocking_reason_codes=blockers,
+            critical_blocking_reason_codes=critical_blockers,
+            warning_reason_codes=warnings,
+            skip_reason="readiness_blocked",
+        )
 
         return {
+            "readiness_contract_version": READINESS_CONTRACT_VERSION,
             "runtime_enabled": is_factory_runtime_enabled(),
             "event_runtime_mode": resolve_event_runtime_mode(),
             "auto_refresh_enabled": bool(
@@ -326,6 +380,19 @@ class ReadinessService:
             "factor_refresh_status": factor_refresh.get("refresh_status"),
             "factor_refresh_recommended": factor_refresh_recommendation_reason is not None,
             "factor_refresh_recommendation_reason": factor_refresh_recommendation_reason,
+            "authority": authority,
+            "authority_contract_version": authority.get("authority_contract_version"),
+            "decision": authority.get("decision"),
+            "blocked": authority.get("blocked"),
+            "hard_gate": authority.get("hard_gate"),
+            "gate_mode": authority.get("gate_mode"),
+            "blocking_stage": authority.get("blocking_stage"),
+            "blocking_reason_codes": list(authority.get("blocking_reason_codes") or []),
+            "critical_blocking_reason_codes": list(
+                authority.get("critical_blocking_reason_codes") or []
+            ),
+            "warning_reason_codes": list(authority.get("warning_reason_codes") or []),
+            "skip_reason": authority.get("skip_reason"),
         }
 
     @staticmethod
@@ -337,6 +404,9 @@ class ReadinessService:
 
 __all__ = [
     "ReadinessService",
+    "READINESS_AUTHORITY_CONTRACT_VERSION",
+    "READINESS_CONTRACT_VERSION",
+    "build_readiness_authority",
     "resolve_factor_refresh_trigger",
     "resolve_governed_pool_runtime_state",
     "resolve_governed_pool_state",

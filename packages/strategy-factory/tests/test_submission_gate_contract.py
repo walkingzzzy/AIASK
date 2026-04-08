@@ -70,7 +70,8 @@ async def test_submission_gate_uses_trade_profile_as_primary_gate_when_trade_aud
     )
 
     assert result["passed"] is True
-    assert result["gate_protocol"] == "trade_rule_validation:trade_primary"
+    assert result["gate_protocol"] == "trade_rule_validation:trade_primary_with_supplemental_audit"
+    assert result["primary_gate_protocol"] == "trade_rule_validation:trade_primary"
     assert result["reasons"] == []
     assert result["deflated_sharpe_proxy"] == pytest.approx(-0.2)
     assert result["supplemental_statistical_gate"]["passed"] is False
@@ -128,6 +129,107 @@ async def test_submission_gate_keeps_factor_profile_on_statistical_primary(monke
     assert result["gate_protocol"] == "factor_rank_validation:statistical_primary"
     assert stat_calls == ["factor_rank_validation"]
     assert trade_calls == []
+
+
+@pytest.mark.asyncio
+async def test_submission_gate_routes_single_target_bulk_factor_to_trade_primary(monkeypatch):
+    import strategy_factory.application.submission_gate as submission_gate_mod
+
+    stat_calls: list[str] = []
+    trade_calls: list[str] = []
+
+    async def _fake_statistical_gate(_db, _strategy, *, profile, klass):
+        stat_calls.append(profile["profile"])
+        assert klass is object
+        return {
+            "passed": False,
+            "reasons": ["Walk-Forward IC IR 0.000 < 0.050"],
+            "warnings": [],
+            "wf_ic_ir": 0.0,
+            "pkf_ic": 0.0,
+            "bootstrap_ci_lower": -0.05,
+            "param_sensitivity": 0.31,
+        }
+
+    def _fake_trade_gate(_strategy, profile, _backtest_metrics, _risk_report, *, admission_level="incubation", attempt_adjustment=None):
+        del attempt_adjustment
+        trade_calls.append(f"{profile['profile']}:{admission_level}")
+        return {
+            "passed": True,
+            "passed_strict": True,
+            "reasons": [],
+            "warnings": [],
+            "profile": profile["profile"],
+            "validation_focus": profile["validation_focus"],
+            "primary_validation_layer": profile["primary_validation_layer"],
+            "post_cost_sharpe": 0.84,
+            "target_layer_oos_return": 0.14,
+            "target_layer_abnormal_return": 0.03,
+            "trade_count": 10,
+            "max_drawdown": 0.07,
+            "avg_holding_days": 18,
+            "turnover_proxy": 10.5,
+            "event_window_hit_ratio": 1.0,
+            "post_event_decay": 0.0,
+            "trade_density": 0.4,
+            "parameter_perturbation_trade_stability": 0.71,
+            "thresholds": {},
+            "admission_level": admission_level,
+        }
+
+    monkeypatch.setattr(
+        submission_gate_mod,
+        "get_strategy_registry",
+        lambda: SimpleNamespace(get=lambda strategy_type: object if strategy_type == "quality_factor" else None),
+    )
+    monkeypatch.setattr(submission_gate_mod, "_run_statistical_gate", _fake_statistical_gate)
+    monkeypatch.setattr(submission_gate_mod, "_evaluate_trade_profile", _fake_trade_gate)
+
+    result = await run_submission_quality_gate(
+        MagicMock(),
+        {
+            "strategy_type": "quality_factor",
+            "target_symbols": ["002142"],
+            "research_task": {
+                "task_source": "bulk_stock_matrix",
+                "validation_focus": "candidate_target_only",
+                "target_symbols": ["002142"],
+            },
+            "params": {
+                "portfolio_spec": {
+                    "position_assumption": "single_name_full_notional",
+                    "target_weight_scheme": "single_name",
+                }
+            },
+        },
+        backtest_metrics={
+            "post_cost_sharpe": 0.84,
+            "trade_count": 10,
+            "avg_holding_days": 18,
+            "turnover_proxy": 10.5,
+            "target_layer_oos_return": 0.14,
+            "target_layer_abnormal_return": 0.03,
+            "event_window_hit_ratio": 1.0,
+            "post_event_decay": 0.0,
+            "trade_density": 0.4,
+            "parameter_perturbation_trade_stability": 0.71,
+            "primary_validation_layer": "target",
+            "max_drawdown": 0.07,
+        },
+        risk_report={"stress_loss_percent": -12.0},
+    )
+
+    assert result["passed"] is True
+    assert result["gate_protocol"] == "trade_rule_validation:trade_primary_with_supplemental_audit"
+    assert trade_calls == [
+        "trade_rule_validation:incubation",
+        "trade_rule_validation:research",
+        "trade_rule_validation:incubation",
+        "trade_rule_validation:live",
+    ]
+    assert stat_calls == ["trade_rule_validation"]
+    assert result["primary_validation_layer"] == "target"
+    assert result["incubation_candidate_ready"] is True
 
 
 @pytest.mark.asyncio
@@ -340,7 +442,8 @@ async def test_submission_gate_keeps_event_sample_audit_fields_on_trade_primary(
     )
 
     assert result["passed"] is True
-    assert result["gate_protocol"] == "event_trade_validation:trade_primary"
+    assert result["gate_protocol"] == "event_trade_validation:trade_primary_with_supplemental_audit"
+    assert result["primary_gate_protocol"] == "event_trade_validation:trade_primary"
     assert result["event_study_mode"] == "sample_driven"
     assert result["event_sample_count"] == 3
     assert result["event_anchor_count"] == 2
@@ -351,7 +454,7 @@ async def test_submission_gate_keeps_event_sample_audit_fields_on_trade_primary(
 
 
 @pytest.mark.asyncio
-async def test_submission_gate_marks_minimal_event_samples_as_soft_warning(monkeypatch):
+async def test_submission_gate_rejects_minimal_event_samples_from_auto_context(monkeypatch):
     import strategy_factory.application.submission_gate as submission_gate_mod
 
     async def _fake_statistical_gate(_db, _strategy, *, profile, klass):
@@ -404,13 +507,15 @@ async def test_submission_gate_marks_minimal_event_samples_as_soft_warning(monke
             "event_sample_source": "auto_context_minimal",
             "event_time_anchors": ["2026-03-10T09:30:00+08:00"],
             "traceable_to_event_samples": True,
+            "event_audit_incomplete": True,
         },
         risk_report={"stress_loss_percent": -10.0},
     )
 
-    assert result["passed"] is True
-    assert "event_sample_count_missing" not in result["warnings"]
-    assert "event_study_mode_sample_driven_minimal" in result["warnings"]
+    assert result["passed"] is False
+    assert "event_audit_incomplete" in result["reasons"]
+    assert "event_study_mode_sample_driven_minimal" in result["reasons"]
+    assert "event_sample_source_auto_context_minimal" in result["reasons"]
 
 
 @pytest.mark.asyncio
@@ -519,10 +624,12 @@ async def test_submission_gate_prefers_formal_multiple_testing_outputs(monkeypat
     assert registry["formal_coverage"] is True
     assert registry["formal_runtime_ready"] is True
     assert registry["candidate_contract_hash"]
+    assert registry["tested_object_hash"]
     assert registry["candidate_identity_signature"]
     assert registry["lineage_id"]
     assert registry["revision_mode"] == "baseline"
     assert registry["registry_axes"]["task"] == registry["task_key"]
+    assert registry["registry_axes"]["tested_object"] == registry["tested_object_key"]
     assert registry["multiple_testing"]["pbo_value"] == pytest.approx(0.21)
 
 

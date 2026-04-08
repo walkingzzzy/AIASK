@@ -44,6 +44,7 @@ _RUN_STATUS_ALIASES = {
     "skipped": FactoryRunStatus.SKIPPED,
     "failed": FactoryRunStatus.FAILED,
 }
+STAGE_RESULT_CONTRACT_VERSION = 1
 
 
 def normalize_stage_status(value: Any, default: StageStatus = StageStatus.COMPLETED) -> StageStatus:
@@ -84,6 +85,7 @@ class StageResult:
         result = {
             "stage": self.stage,
             "trace_id": self.trace_id,
+            "stage_contract_version": STAGE_RESULT_CONTRACT_VERSION,
             "status": self.status.value,
             "ok": bool(self.ok),
             "hard_failure": bool(self.hard_failure),
@@ -204,6 +206,7 @@ def resolve_run_status(
 __all__ = [
     "FactoryRunStatus",
     "StageResult",
+    "STAGE_RESULT_CONTRACT_VERSION",
     "StageStatus",
     "build_stage_result",
     "normalize_run_status",

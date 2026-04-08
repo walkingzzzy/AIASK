@@ -278,9 +278,23 @@ def candidate_signature(candidate: Optional[dict[str, Any]]) -> str:
         "task_attempt_count",
         "task_selected_count",
         "research_task",
+        "requested_target_symbols",
         "stock_pool",
         "target_symbols",
         "strategy_profile",
+        "candidate_contract_hash",
+        "candidate_contract_snapshot",
+        "candidate_identity_signature",
+        "candidate_lineage_contract",
+        "dsl_signature",
+        "entry_exit_signature",
+        "execution_contract_hash",
+        "factor_signature",
+        "logic_signature",
+        "legacy_identity_partial",
+        "resolved_candidate_envelope",
+        "tested_object_hash",
+        "tested_object_backfill_incomplete",
     ):
         params.pop(key, None)
     payload = {

@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 import httpx
 import pandas as pd
+from strategy_factory.application.precompile_contract import validate_precompile_candidate_contract
 from strategy_factory.domain.targets import (
     _apply_target_symbol_policy,
     _build_target_alignment_contract,
@@ -20,15 +21,12 @@ from strategy_factory.domain.targets import (
 
 from ..env_loader import load_mcp_env
 from .strategy_spec import (
-    _default_execution_assumptions,
     _default_holding_horizon,
-    _default_portfolio_spec,
     _default_position_sizing,
     _default_rebalance_rule,
     _default_risk_rules,
     _default_targeting_policy,
     _default_trade_plan,
-    _default_validation_profile,
 )
 
 
@@ -145,11 +143,25 @@ class _StrategyLLMProviderNormalizeMixin:
         def _extract_content(payload: dict[str, Any]) -> str:
             choices = list(payload.get("choices") or [])
             if choices:
-                message = dict((choices[0] or {}).get("message") or {})
+                first_choice = dict(choices[0] or {})
+                message = dict(first_choice.get("message") or {})
                 content = message.get("content")
                 if isinstance(content, list):
                     return "\n".join(str(item.get("text") or item) for item in content)
-                return str(content or "")
+                if content not in (None, ""):
+                    return str(content)
+                message_text = message.get("text")
+                if message_text not in (None, ""):
+                    return str(message_text)
+                choice_text = first_choice.get("text")
+                if choice_text not in (None, ""):
+                    return str(choice_text)
+                delta = dict(first_choice.get("delta") or {})
+                delta_content = delta.get("content")
+                if isinstance(delta_content, list):
+                    return "\n".join(str(item.get("text") or item) for item in delta_content)
+                if delta_content not in (None, ""):
+                    return str(delta_content)
             output = list(payload.get("output") or [])
             parts = []
             for item in output:
@@ -157,7 +169,12 @@ class _StrategyLLMProviderNormalizeMixin:
                     text = content.get("text") if isinstance(content, dict) else None
                     if text:
                         parts.append(str(text))
-            return "\n".join(parts)
+            if parts:
+                return "\n".join(parts)
+            output_text = payload.get("output_text")
+            if output_text not in (None, ""):
+                return str(output_text)
+            return ""
 
         @staticmethod
         def _normalize_analysis(analysis: Any) -> dict[str, Any]:
@@ -215,6 +232,31 @@ class _StrategyLLMProviderNormalizeMixin:
 
             visit(values)
             return codes[: max(1, min(int(limit or 12), 40))]
+
+        @staticmethod
+        def _contract_value_missing(value: Any) -> bool:
+            return value in (None, "", [], {})
+
+        @classmethod
+        def _require_explicit_contract_dict(
+            cls,
+            candidate: dict[str, Any],
+            field: str,
+            *,
+            required_keys: tuple[str, ...],
+        ) -> tuple[dict[str, Any], list[str]]:
+            payload = candidate.get(field)
+            if not isinstance(payload, dict) or not payload:
+                return {}, [f"{field}_missing"]
+            normalized = dict(payload)
+            missing_keys = [
+                key
+                for key in required_keys
+                if cls._contract_value_missing(normalized.get(key))
+            ]
+            if missing_keys:
+                return normalized, [f"{field}_missing_keys:{','.join(missing_keys)}"]
+            return normalized, []
 
         @classmethod
         def _normalize_candidate_payload(cls, candidate: Any, research_task: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
@@ -317,12 +359,29 @@ class _StrategyLLMProviderNormalizeMixin:
             constraint_check['coverage_ratio'] = coverage_ratio
             constraint_check['intersection_ratio'] = intersection_ratio
             constraint_check['target_overlap_count'] = int(overlap_count)
-            constraint_check['alignment_contract_ok'] = len(alignment_reject_reasons) == 0
-            constraint_check['alignment_contract_violation'] = alignment_reject_reasons[0] if alignment_reject_reasons else None
-            constraint_check['alignment_contract_reject_reasons'] = list(dict.fromkeys(alignment_reject_reasons))
-            constraint_check['target_alignment_contract'] = dict(target_alignment_contract)
-            if alignment_reject_reasons:
+            validation = validate_precompile_candidate_contract(
+                {
+                    **candidate,
+                    'research_task': dict(normalized_task),
+                    'strategy_type': str(candidate.get('strategy_type') or 'dsl_rule').strip() or 'dsl_rule',
+                    'target_symbols': list(target_symbols),
+                    'stock_pool': dict(stock_pool),
+                    'constraint_check': dict(constraint_check),
+                    'portfolio_spec': dict(candidate.get('portfolio_spec') or {}),
+                    'execution_assumptions': dict(candidate.get('execution_assumptions') or {}),
+                    'validation_profile': dict(candidate.get('validation_profile') or {}),
+                },
+                research_task=normalized_task,
+                source='external_llm',
+            )
+            constraint_check = dict(validation.constraint_check)
+            if not validation.accepted:
+                candidate["_normalize_reject_reasons"] = list(validation.reject_reasons)
+                candidate["_normalize_precompile_validation"] = validation.to_dict()
                 return None
+            portfolio_spec = dict(validation.portfolio_spec)
+            execution_assumptions = dict(validation.execution_assumptions)
+            validation_profile = dict(validation.validation_profile)
             metadata['target_symbols'] = list(target_symbols)
             metadata['stock_pool'] = stock_pool
             metadata['constraint_check'] = constraint_check
@@ -360,9 +419,6 @@ class _StrategyLLMProviderNormalizeMixin:
                 normalized_trade_plan = {'summary': str(trade_plan)}
             else:
                 normalized_trade_plan = _default_trade_plan(strategy_type, task_source)
-            execution_assumptions = dict(candidate.get('execution_assumptions') or {})
-            if not execution_assumptions:
-                execution_assumptions = _default_execution_assumptions(task_source)
             execution_notes = candidate.get('execution_notes')
             if execution_notes in (None, '', [], {}):
                 normalized_execution_notes = 'prefer liquid session execution with tradability filter'
@@ -370,9 +426,6 @@ class _StrategyLLMProviderNormalizeMixin:
                 normalized_execution_notes = [str(item) for item in execution_notes[:3] if str(item or '').strip()]
             else:
                 normalized_execution_notes = str(execution_notes)
-            portfolio_spec = dict(candidate.get('portfolio_spec') or {})
-            if not portfolio_spec:
-                portfolio_spec = _default_portfolio_spec(target_symbols)
             position_sizing = candidate.get('position_sizing')
             if isinstance(position_sizing, dict):
                 normalized_position_sizing = dict(position_sizing)
@@ -380,9 +433,6 @@ class _StrategyLLMProviderNormalizeMixin:
                 normalized_position_sizing = {'summary': str(position_sizing)}
             else:
                 normalized_position_sizing = _default_position_sizing(target_symbols)
-            validation_profile = dict(candidate.get('validation_profile') or {})
-            if not validation_profile:
-                validation_profile = _default_validation_profile(strategy_type, normalized_task, task_source)
             metadata['portfolio_spec'] = dict(portfolio_spec)
             metadata['execution_assumptions'] = dict(execution_assumptions)
             metadata['validation_profile'] = dict(validation_profile)
@@ -464,7 +514,11 @@ class _StrategyLLMProviderNormalizeMixin:
                     'rebalance_rule': {'mode': 'signal_rebalance'},
                     'portfolio_spec': {'position_assumption': 'single_name_full_notional', 'target_weight_scheme': 'single_name'},
                     'execution_assumptions': {'commission_rate': 0.00025, 'slippage_bps': 5, 'tradability_filter': True, 'slippage_model': 'fixed'},
-                    'validation_profile': {'profile': 'trade_rule_validation', 'validation_focus': 'target_plus_representative'},
+                    'validation_profile': {
+                        'profile': 'trade_rule_validation',
+                        'validation_focus': 'target_plus_representative',
+                        'primary_validation_layer': 'target',
+                    },
                     'target_symbols': list(symbols),
                     'stock_pool': stock_pool,
                     'dsl': {
@@ -701,6 +755,145 @@ class _StrategyLLMProviderNormalizeMixin:
             return payload
 
         @classmethod
+        def _compact_task_target_context(
+            cls,
+            context: dict[str, Any],
+            *,
+            compact_level: int,
+            symbol_limit: int,
+            candidate_limit: int,
+        ) -> dict[str, Any]:
+            task_target_context = dict(context.get("task_target_context") or {})
+            research_task = dict(context.get("research_task") or {})
+            requested_target_symbols = cls._normalize_code_list([
+                task_target_context.get("requested_target_symbols"),
+                research_task.get("target_symbols"),
+            ], limit=8)
+            target_symbol_set = set(requested_target_symbols)
+            raw_symbols = [dict(item or {}) for item in list(context.get("symbol_insights") or [])]
+            raw_candidates = [dict(item or {}) for item in list(context.get("candidate_universe") or [])]
+            compact_symbols = [dict(item or {}) for item in list(task_target_context.get("symbol_insights") or [])]
+            compact_candidates = [dict(item or {}) for item in list(task_target_context.get("candidate_universe") or [])]
+            if target_symbol_set:
+                filtered_symbols = [item for item in raw_symbols if str(item.get("code") or "").strip() in target_symbol_set]
+                filtered_candidates = [item for item in raw_candidates if str(item.get("code") or "").strip() in target_symbol_set]
+            else:
+                filtered_symbols = raw_symbols
+                filtered_candidates = raw_candidates
+            effective_symbols = filtered_symbols or compact_symbols
+            effective_candidates = filtered_candidates or compact_candidates
+            matched_target_symbols = cls._normalize_code_list([
+                task_target_context.get("matched_target_symbols"),
+                [
+                    item.get("code")
+                    for item in [*effective_symbols, *effective_candidates]
+                    if str(item.get("code") or "").strip()
+                ],
+            ], limit=8)
+            compact_payload = {
+                "targeted_task": bool(task_target_context.get("targeted_task") or requested_target_symbols),
+                "status": task_target_context.get("status") or context.get("target_context_status"),
+                "blocked_by_target_universe": bool(
+                    task_target_context.get("blocked_by_target_universe")
+                    or context.get("blocked_by_target_universe")
+                ),
+                "requested_target_symbols": requested_target_symbols,
+                "matched_target_symbols": matched_target_symbols,
+                "symbol_count": int(task_target_context.get("symbol_count") or len(effective_symbols)),
+                "candidate_universe_count": int(task_target_context.get("candidate_universe_count") or len(effective_candidates)),
+                "symbol_insight_codes": cls._normalize_code_list([
+                    task_target_context.get("symbol_insight_codes"),
+                    [item.get("code") for item in effective_symbols],
+                ], limit=max(2, symbol_limit)),
+                "candidate_universe_symbols": cls._normalize_code_list([
+                    task_target_context.get("candidate_universe_symbols"),
+                    [item.get("code") for item in effective_candidates],
+                ], limit=max(2, candidate_limit)),
+            }
+            if compact_level >= 2:
+                return {
+                    key: value
+                    for key, value in compact_payload.items()
+                    if value not in (None, [], {}, "")
+                }
+            compact_payload["symbol_insights"] = [
+                cls._compact_symbol_insight(item, compact_level=compact_level)
+                for item in effective_symbols[:symbol_limit]
+            ]
+            compact_payload["candidate_universe"] = [
+                cls._compact_candidate_universe_item(item, compact_level=compact_level)
+                for item in effective_candidates[:candidate_limit]
+            ]
+            return {
+                key: value
+                for key, value in compact_payload.items()
+                if value not in (None, [], {}, "")
+            }
+
+        @classmethod
+        def _compact_market_background_context(
+            cls,
+            context: dict[str, Any],
+            *,
+            compact_level: int,
+            symbol_limit: int,
+            candidate_limit: int,
+            targeted_task: bool,
+        ) -> dict[str, Any]:
+            market_background_context = dict(context.get("market_background_context") or {})
+            raw_symbols = [dict(item or {}) for item in list(market_background_context.get("symbol_insights") or [])]
+            raw_candidates = [dict(item or {}) for item in list(market_background_context.get("candidate_universe") or [])]
+            if not raw_symbols and not targeted_task:
+                raw_symbols = [dict(item or {}) for item in list(context.get("symbol_insights") or [])]
+            if not raw_candidates and not targeted_task:
+                raw_candidates = [dict(item or {}) for item in list(context.get("candidate_universe") or [])]
+            compact_payload = {
+                "available": bool(
+                    market_background_context.get("available")
+                    or raw_symbols
+                    or raw_candidates
+                    or market_background_context
+                ),
+                "symbol_count": int(market_background_context.get("symbol_count") or len(raw_symbols)),
+                "candidate_universe_count": int(
+                    market_background_context.get("candidate_universe_count") or len(raw_candidates)
+                ),
+                "symbol_insight_codes": cls._normalize_code_list([
+                    market_background_context.get("symbol_insight_codes"),
+                    [item.get("code") for item in raw_symbols],
+                ], limit=max(2, symbol_limit)),
+                "candidate_universe_symbols": cls._normalize_code_list([
+                    market_background_context.get("candidate_universe_symbols"),
+                    [item.get("code") for item in raw_candidates],
+                ], limit=max(2, candidate_limit)),
+                "total_stock_count": market_background_context.get("total_stock_count"),
+                "scanned_stock_count": market_background_context.get("scanned_stock_count"),
+                "data_ready_count": market_background_context.get("data_ready_count"),
+                "coverage_ratio": cls._round_number(market_background_context.get("coverage_ratio"), digits=4),
+                "top_industries": dict(list((market_background_context.get("top_industries") or {}).items())[:4]),
+                "cache_reused": bool(market_background_context.get("cache_reused")),
+            }
+            if compact_level >= 2:
+                return {
+                    key: value
+                    for key, value in compact_payload.items()
+                    if value not in (None, [], {}, "")
+                }
+            compact_payload["symbol_insights"] = [
+                cls._compact_symbol_insight(item, compact_level=compact_level)
+                for item in raw_symbols[:symbol_limit]
+            ]
+            compact_payload["candidate_universe"] = [
+                cls._compact_candidate_universe_item(item, compact_level=compact_level)
+                for item in raw_candidates[:candidate_limit]
+            ]
+            return {
+                key: value
+                for key, value in compact_payload.items()
+                if value not in (None, [], {}, "")
+            }
+
+        @classmethod
         def _compact_research_context(cls, research_context: Optional[dict[str, Any]], compact_level: int = 0) -> dict[str, Any]:
             context = dict(research_context or {})
             market_regime = dict(context.get("market_regime") or {})
@@ -713,22 +906,48 @@ class _StrategyLLMProviderNormalizeMixin:
             universe_scan = dict(context.get("universe_scan") or {})
             analysis_scope = dict(context.get("analysis_scope") or {})
             selection_framework = dict(context.get("selection_framework") or {})
+            task_target_context = cls._compact_task_target_context(
+                context,
+                compact_level=compact_level,
+                symbol_limit=symbol_limit,
+                candidate_limit=candidate_limit,
+            )
+            targeted_task = bool(task_target_context.get("targeted_task"))
+            market_background_context = cls._compact_market_background_context(
+                context,
+                compact_level=compact_level,
+                symbol_limit=symbol_limit,
+                candidate_limit=candidate_limit,
+                targeted_task=targeted_task,
+            )
+            primary_symbol_codes_source = (
+                task_target_context.get("symbol_insight_codes")
+                if targeted_task
+                else market_background_context.get("symbol_insight_codes")
+            )
+            primary_candidate_codes_source = (
+                task_target_context.get("candidate_universe_symbols")
+                if targeted_task
+                else market_background_context.get("candidate_universe_symbols")
+            )
+            primary_symbol_codes = list(primary_symbol_codes_source or [])
+            primary_candidate_codes = list(primary_candidate_codes_source or [])
             if compact_level >= 2:
                 return {
+                    "target_context_status": context.get("target_context_status") or task_target_context.get("status"),
+                    "blocked_by_target_universe": bool(context.get("blocked_by_target_universe")),
                     "market_regime": {
                         "fg_level": market_regime.get("fg_level"),
                         "fear_greed_index": cls._round_number(market_regime.get("fear_greed_index"), digits=4),
                     },
-                    "candidate_universe_symbols": cls._normalize_code_list([
-                        [item.get("code") for item in candidate_universe],
-                        [item.get("symbol") for item in candidate_universe],
-                    ], limit=4),
-                    "symbol_insight_codes": cls._normalize_code_list([
-                        [item.get("code") for item in symbols[:1]],
-                        [item.get("symbol") for item in symbols[:1]],
-                    ], limit=2),
+                    "task_target_context": task_target_context,
+                    "market_background_context": market_background_context,
+                    "candidate_universe_symbols": primary_candidate_codes[:4],
+                    "symbol_insight_codes": primary_symbol_codes[:2],
                 }
             return {
+                "target_context_status": context.get("target_context_status") or task_target_context.get("status"),
+                "blocked_by_target_universe": bool(context.get("blocked_by_target_universe")),
                 "market_regime": {
                     "fg_level": market_regime.get("fg_level"),
                     "fear_greed_index": cls._round_number(market_regime.get("fear_greed_index"), digits=4),
@@ -745,6 +964,10 @@ class _StrategyLLMProviderNormalizeMixin:
                 },
                 "symbol_insights": [cls._compact_symbol_insight(item, compact_level=compact_level) for item in symbols],
                 "candidate_universe": [cls._compact_candidate_universe_item(item, compact_level=compact_level) for item in candidate_universe],
+                "symbol_insight_codes": primary_symbol_codes,
+                "candidate_universe_symbols": primary_candidate_codes,
+                "task_target_context": task_target_context,
+                "market_background_context": market_background_context,
                 "universe_scan": {
                     "total_stock_count": universe_scan.get("total_stock_count"),
                     "scanned_stock_count": universe_scan.get("scanned_stock_count"),

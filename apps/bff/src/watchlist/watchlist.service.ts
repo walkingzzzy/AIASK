@@ -95,7 +95,7 @@ export class WatchlistService {
     private async callManager(action: string, payload: Record<string, unknown>) {
         return this.callTool('watchlist_manager', {
             action,
-            kwargs: JSON.stringify(payload),
+            params: payload,
         });
     }
 

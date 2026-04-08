@@ -46,16 +46,19 @@ export class OptionsController {
 
     @Get('chain/:symbol')
     async getOptionChain(@Param('symbol') symbol: string) {
-        return this.optionsService.getOptionChain(symbol);
+        const data = await this.optionsService.getOptionChain(symbol);
+        return { success: true, data };
     }
 
     @Get('greeks/:symbol')
     async getOptionGreeks(@Param('symbol') symbol: string, @Query() query: OptionGreeksQueryDto) {
-        return this.optionsService.getOptionGreeks(symbol, query);
+        const data = await this.optionsService.getOptionGreeks(symbol, query);
+        return { success: true, data };
     }
 
     @Get('smirk/:symbol')
     async getVolatilitySmirk(@Param('symbol') symbol: string) {
-        return this.optionsService.getVolatilitySmirk(symbol);
+        const data = await this.optionsService.getVolatilitySmirk(symbol);
+        return { success: true, data };
     }
 }

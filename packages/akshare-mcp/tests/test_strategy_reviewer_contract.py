@@ -109,3 +109,37 @@ def test_reviewer_keeps_novelty_as_secondary_signal():
 
     assert novel_review["novelty_score"] > grounded_review["novelty_score"]
     assert grounded_review["final_score"] > novel_review["final_score"]
+
+
+def test_reviewer_accept_guardrail_blocks_high_novelty_but_weak_execution():
+    reviewer = MultiAgentStrategyReviewer()
+
+    novelty_heavy_spec = StrategySpec(
+        strategy_type="dsl_rule",
+        params={
+            "dsl": {
+                "entry": {"all": []},
+                "exit": {"any": []},
+                "metadata": {"target_symbols": ["600519"]},
+            }
+        },
+        name="novelty-heavy",
+        tags=["external_llm"],
+        metadata={
+            "research_task": {
+                "preferred_strategy_types": ["dsl_rule"],
+                "allowed_strategy_types": ["dsl_rule"],
+                "target_symbols": ["600519"],
+            },
+            "target_symbols": ["600519"],
+            "stock_pool": {"selection_mode": "explicit", "symbols": ["600519"]},
+            "portfolio_spec": {"position_assumption": "single_name_full_notional"},
+        },
+    )
+
+    reviewed, review = reviewer.review(novelty_heavy_spec, {"fear_greed_index": 70})
+
+    assert reviewed is not None
+    assert review["decision"] == "revise"
+    assert "execution_floor_failed" in review["accept_blockers"]
+    assert review["novelty_score"] > 0.6

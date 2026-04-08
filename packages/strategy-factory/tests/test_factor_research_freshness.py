@@ -3,9 +3,41 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import strategy_factory.application.factor_research as factor_research_mod
+from strategy_factory.application._budget_feedback import (
+    LIFECYCLE_FEEDBACK_INPUT_CONTRACT_VERSION,
+)
 from strategy_factory.application.factor_research import FactorResearchBuilder
 from strategy_factory.application.opportunity import MarketOpportunityScanner
 from strategy_factory.domain.spawner import StrategySpawner
+
+
+def test_factor_research_family_plans_zero_budget_when_feedback_control_active():
+    plans = FactorResearchBuilder._build_family_plans(
+        ["momentum", "quality_factor"],
+        priority=0.72,
+        budget_feedback_root={
+            "momentum": {
+                "paper_hit_ratio": 0.16,
+                "runtime_alert_pressure": 0.9,
+                "realized_turnover": 1.5,
+                "capacity_crowding": 1.18,
+            },
+            "quality_factor": {
+                "paper_hit_ratio": 0.62,
+                "runtime_alert_pressure": 0.08,
+                "realized_turnover": 0.22,
+                "capacity_crowding": 0.16,
+            },
+        },
+    )
+
+    by_family = {plan["family"]: plan for plan in plans}
+
+    assert by_family["momentum"]["feedback_control_mode"] == "freeze"
+    assert by_family["momentum"]["feedback_suppressed"] is True
+    assert by_family["momentum"]["budget_weight"] == 0.0
+    assert by_family["quality_factor"]["feedback_control_mode"] == "normal"
+    assert by_family["quality_factor"]["budget_weight"] > 0.0
 
 
 @pytest.mark.asyncio
@@ -409,6 +441,112 @@ async def test_factor_research_surfaces_scheduler_provider_health(monkeypatch):
     assert artifact["summary"]["factor_llm_provider_rebuild_count"] == 2
     assert artifact["summary"]["factor_llm_provider_last_error_type"] == "ReadTimeout"
     assert "factor_llm_provider_degraded" in artifact["quality_flags"]
+
+
+@pytest.mark.asyncio
+async def test_factor_research_publishes_lifecycle_feedback_input_contract(monkeypatch):
+    db = MagicMock()
+    db.get_factor_ic_history = AsyncMock(return_value=[])
+    db.list_strategies = AsyncMock(
+        side_effect=lambda status, limit: (
+            [
+                {
+                    "id": "strategy_feedback_001",
+                    "candidate_family": "momentum",
+                    "target_pool_id": "theme:ai",
+                    "generator_mode": "external_llm",
+                }
+            ]
+            if status == "incubating"
+            else []
+        )
+    )
+    db.list_strategy_incubation_metrics = AsyncMock(
+        return_value=[
+            {
+                "hit_rate_5d": 0.72,
+                "turnover_rate": 0.18,
+                "exposure_rate": 0.12,
+            }
+        ]
+    )
+    db.list_strategy_runtime_risk_events = AsyncMock(
+        return_value=[{"status": "open", "severity": "medium", "reason": "crowding"}]
+    )
+    db.list_strategy_runtime_alerts = AsyncMock(
+        return_value=[{"status": "open", "severity": "low", "alert_key": "turnover_spike"}]
+    )
+    db.get_latest_strategy_promotion_review = AsyncMock(
+        return_value={
+            "status": "watch",
+            "recommendation": "observe",
+            "score": 0.34,
+        }
+    )
+
+    class _Scheduler:
+        def status(self):
+            return {"running": False, "quality_flags": [], "last_run": None, "freshness_sec": 0, "last_result": {}}
+
+    monkeypatch.setattr(factor_research_mod, "get_quant_manager_callable", lambda: None)
+    monkeypatch.setattr(factor_research_mod, "get_factor_scheduler_singleton", lambda: _Scheduler())
+
+    artifact = await FactorResearchBuilder.build(
+        db,
+        {
+            "date": "2026-04-05",
+            "factor_ic": {"value": 0.06},
+            "factor_ic_trend": {"value": "rising"},
+            "sources": {"factor_ic": {"status": "success"}},
+            "family_gate_feedback": {
+                "momentum": {
+                    "ema_submit_count": 3.4,
+                    "target_pool_feedback": {
+                        "theme:ai": {"ema_submit_count": 1.2}
+                    },
+                    "generator_mode_feedback": {
+                        "external_llm": {"ema_submit_count": 1.0}
+                    },
+                }
+            },
+        },
+    )
+
+    feedback_contract = dict(artifact.get("lifecycle_feedback_input") or {})
+    feedback_root = dict(feedback_contract.get("feedback") or {})
+    momentum_feedback = dict(feedback_root.get("momentum") or {})
+
+    assert feedback_contract["contract_version"] == LIFECYCLE_FEEDBACK_INPUT_CONTRACT_VERSION
+    assert feedback_contract["available"] is True
+    assert feedback_contract["summary"]["family_count"] == 1
+    assert feedback_contract["summary"]["seeded_family_count"] == 1
+    assert feedback_contract["summary"]["strategy_count"] == 1
+    assert feedback_contract["summary"]["promotion_review_count"] == 1
+    assert feedback_contract["summary"]["promotion_review_status_counts"] == {"watch": 1}
+    assert feedback_contract["summary"]["target_pool_scope_count"] == 1
+    assert feedback_contract["summary"]["generator_mode_scope_count"] == 1
+    assert momentum_feedback["ema_submit_count"] == pytest.approx(3.4)
+    assert momentum_feedback["strategy_count"] == 1
+    assert momentum_feedback["promotion_review_count"] == 1
+    assert momentum_feedback["promotion_review_status"] == "watch"
+    assert momentum_feedback["promotion_review_recommendation"] == "observe"
+    assert momentum_feedback["promotion_review_score"] == pytest.approx(0.34)
+    assert (
+        momentum_feedback["target_pool_feedback"]["theme:ai"]["strategy_count"] == 1
+    )
+    assert (
+        momentum_feedback["generator_mode_feedback"]["external_llm"]["strategy_count"] == 1
+    )
+    assert artifact["budget_feedback"] == feedback_root
+    assert (
+        artifact["summary"]["lifecycle_feedback_input_contract_version"]
+        == LIFECYCLE_FEEDBACK_INPUT_CONTRACT_VERSION
+    )
+    assert artifact["summary"]["lifecycle_feedback_input_available"] is True
+    assert artifact["summary"]["budget_feedback_target_pool_scope_count"] == 1
+    assert artifact["summary"]["budget_feedback_generator_mode_scope_count"] == 1
+    assert artifact["summary"]["budget_feedback_promotion_review_count"] == 1
+    assert artifact["summary"]["budget_feedback_promotion_review_status_counts"] == {"watch": 1}
 
 
 def test_spawner_factor_maps_can_use_governed_candidate_pool():

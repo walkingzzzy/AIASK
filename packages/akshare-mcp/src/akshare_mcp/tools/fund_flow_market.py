@@ -14,6 +14,7 @@ from ..core.rate_limiter import get_limiter
 from ..date_utils import get_latest_trading_date, format_date_dash
 from ..data_source import data_source
 from ..storage import get_db
+from .data_quality import build_quality_meta
 from .market.helpers import get_name_map as _get_cached_name_map
 
 from .fund_flow_common import _fetch_eastmoney_datacenter, _run_storage_call_sync
@@ -32,37 +33,63 @@ def get_dragon_tiger(date: str = "", stock_code: str = "") -> dict:
         stock_code: 指定股票代码，不传则返回当日所有
     """
     try:
-        date = (date or "").strip()
+        requested_date = (date or "").strip().replace("-", "")
+        if not requested_date:
+            requested_date = get_latest_trading_date()
+
+        candidate_dates = [requested_date]
         if not date:
-            date = get_latest_trading_date()
-        else:
-            date = date.replace("-", "")
+            try:
+                anchor = datetime.strptime(requested_date, "%Y%m%d")
+                for offset in range(1, 6):
+                    candidate_dates.append((anchor - timedelta(days=offset)).strftime("%Y%m%d"))
+            except ValueError:
+                pass
 
-        date_dash = format_date_dash(date)
-
+        resolved_date = requested_date
         results: list[dict] = []
         df = None
         source = "unknown"
+        fallback_reasons: list[str] = []
 
-        # 1. Try Sina first
-        try:
-            df = ak.stock_lhb_detail_daily_sina(date=date_dash)
-            if df is not None and not df.empty:
-                source = "sina"
-        except Exception:
-            pass
+        for candidate_date in candidate_dates:
+            date_dash = format_date_dash(candidate_date)
+            df = None
+            source = "unknown"
 
-        # 2. Fallback to EastMoney
-        if df is None or df.empty:
             try:
-                df = ak.stock_lhb_detail_em(start_date=date, end_date=date)
+                df = ak.stock_lhb_detail_daily_sina(date=date_dash)
+                if df is not None and not df.empty:
+                    source = "sina"
+                    resolved_date = candidate_date
+                    break
+            except Exception as exc:
+                fallback_reasons.append(f"sina:{candidate_date}:{exc}")
+
+            try:
+                df = ak.stock_lhb_detail_em(start_date=candidate_date, end_date=candidate_date)
                 if df is not None and not df.empty:
                     source = "eastmoney"
-            except Exception:
-                pass
+                    resolved_date = candidate_date
+                    break
+            except Exception as exc:
+                fallback_reasons.append(f"eastmoney:{candidate_date}:{exc}")
 
         if df is None or df.empty:
-            return fail(f"未获取到 {date} 龙虎榜数据 (尝试源: Sina, EastMoney)")
+            response = fail(f"未获取到 {requested_date} 龙虎榜数据 (尝试源: Sina, EastMoney)")
+            response.update(
+                build_quality_meta(
+                    source="none",
+                    source_chain=["dragon_tiger.sina", "dragon_tiger.eastmoney"],
+                    fallback_reason=fallback_reasons or f"未获取到 {requested_date} 龙虎榜数据",
+                    asof_value=requested_date,
+                    missing_fields=[],
+                    degraded=True,
+                    success=False,
+                )
+            )
+            response["requested_date"] = requested_date
+            return response
 
         target_code = normalize_code(stock_code) if stock_code else ""
 
@@ -113,9 +140,41 @@ def get_dragon_tiger(date: str = "", stock_code: str = "") -> dict:
             except Exception:
                 continue
 
-        return ok(results)
+        response = ok(results)
+        response.update(
+            build_quality_meta(
+                source=source,
+                source_chain=[f"dragon_tiger.{source}"],
+                fallback_reason=(
+                    [f"resolved_date={resolved_date}"]
+                    if resolved_date != requested_date
+                    else (fallback_reasons or None)
+                ),
+                asof_value=resolved_date,
+                missing_fields=[],
+                degraded=resolved_date != requested_date,
+                success=True,
+                accepted_count=len(results),
+                rejected_count=0,
+            )
+        )
+        response["requested_date"] = requested_date
+        response["resolved_date"] = resolved_date
+        return response
     except Exception as e:
-        return fail(e)
+        response = fail(e)
+        response.update(
+            build_quality_meta(
+                source="none",
+                source_chain=["dragon_tiger"],
+                fallback_reason=str(e),
+                asof_value=(date or "").strip().replace("-", "") or None,
+                missing_fields=[],
+                degraded=True,
+                success=False,
+            )
+        )
+        return response
 
 
 # =====================
@@ -511,6 +570,10 @@ def get_block_trades(date: str = "", stock_code: str = "", limit: int = 500) -> 
     try:
         limiter = get_limiter("fund_flow", max_calls=3, period=1.0)
         limiter.acquire()
+        if int(limit or 0) <= 0:
+            response = fail("limit 必须为正整数")
+            response["source"] = "none"
+            return response
 
         target = date or datetime.now().strftime("%Y-%m-%d")
         code = normalize_code(stock_code) if stock_code else ""

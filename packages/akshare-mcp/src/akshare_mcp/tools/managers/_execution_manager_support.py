@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import logging
 import json
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
@@ -28,6 +31,12 @@ _EXECUTION_CONFIG_ARTIFACT_ID = "execution_manager:soft_gate_config"
 _EXECUTION_CONFIG_ARTIFACT_STRATEGY = "execution_manager_config"
 _EXECUTION_ARTIFACT_SCAN_LIMIT = 400
 _RUNTIME_CONFIG_LOADED = False
+_REALTIME_QUOTE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_REALTIME_QUOTE_SKIP_UNTIL: dict[str, float] = {}
+_REALTIME_QUOTE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, int(os.getenv("EXECUTION_MANAGER_REALTIME_ENRICH_MAX_WORKERS", "4") or "4")),
+    thread_name_prefix="execution-realtime",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +336,7 @@ def _normalize_kwargs(kwargs: dict) -> dict:
 
     # Backward-compatible aliases
     if kwargs.get("total_shares") is None:
-        kwargs["total_shares"] = kwargs.get("total_quantity") or kwargs.get("quantity")
+        kwargs["total_shares"] = kwargs.get("total_quantity") or kwargs.get("quantity") or kwargs.get("qty")
     if kwargs.get("duration") is None:
         kwargs["duration"] = kwargs.get("duration_minutes") or kwargs.get("minutes")
     if kwargs.get("slices") is None and kwargs.get("slice_count") is not None:
@@ -571,11 +580,66 @@ def _build_cost_model(kwargs: dict, total_shares: int) -> dict:
         reference_price_fallback=reference_price,
     )
 
-def _enrich_kwargs_with_realtime(code: str, kwargs: dict) -> dict:
-    """从实时行情自动填充 reference_price / avg_minute_volume（P1-c）。"""
+def _get_cached_realtime_quote(code: str, now_monotonic: float, ttl_seconds: float) -> dict[str, Any] | None:
+    if ttl_seconds <= 0:
+        return None
+    cached = _REALTIME_QUOTE_CACHE.get(code)
+    if not cached:
+        return None
+    cached_at, payload = cached
+    if now_monotonic - cached_at > ttl_seconds:
+        return None
+    return payload
+
+def _load_realtime_quote_with_timeout(code: str) -> dict[str, Any] | None:
+    timeout_seconds = max(
+        0.0,
+        float(os.getenv("EXECUTION_MANAGER_REALTIME_ENRICH_TIMEOUT_MS", "1200") or "1200") / 1000.0,
+    )
+    cache_ttl_seconds = max(
+        0.0,
+        float(os.getenv("EXECUTION_MANAGER_REALTIME_QUOTE_CACHE_TTL_MS", "15000") or "15000") / 1000.0,
+    )
+    cooldown_seconds = max(
+        0.0,
+        float(os.getenv("EXECUTION_MANAGER_REALTIME_ENRICH_COOLDOWN_MS", "30000") or "30000") / 1000.0,
+    )
+    now_monotonic = time.monotonic()
+    cached = _get_cached_realtime_quote(code, now_monotonic, cache_ttl_seconds)
+    if cached is not None:
+        return cached
+    if timeout_seconds <= 0:
+        return None
+
+    skip_until = _REALTIME_QUOTE_SKIP_UNTIL.get(code, 0.0)
+    if skip_until > now_monotonic:
+        return None
+
     try:
         from ...data_source import data_source
-        quote = data_source.get_realtime_quote(code)
+
+        future = _REALTIME_QUOTE_EXECUTOR.submit(data_source.get_realtime_quote, code)
+        quote = future.result(timeout=timeout_seconds)
+        if isinstance(quote, dict) and quote:
+            _REALTIME_QUOTE_CACHE[code] = (time.monotonic(), quote)
+            _REALTIME_QUOTE_SKIP_UNTIL.pop(code, None)
+            return quote
+        return None
+    except FutureTimeoutError:
+        _REALTIME_QUOTE_SKIP_UNTIL[code] = time.monotonic() + cooldown_seconds
+        logger.warning("execution_manager realtime enrichment timed out for %s after %.3fs", code, timeout_seconds)
+        return None
+    except Exception as exc:
+        _REALTIME_QUOTE_SKIP_UNTIL[code] = time.monotonic() + cooldown_seconds
+        logger.warning("execution_manager realtime enrichment failed for %s: %s", code, exc)
+        return None
+
+def _enrich_kwargs_with_realtime(code: str, kwargs: dict) -> dict:
+    """从实时行情自动填充 reference_price / avg_minute_volume（P1-c）。"""
+    if kwargs.get("reference_price") and kwargs.get("avg_minute_volume"):
+        return kwargs
+    try:
+        quote = _load_realtime_quote_with_timeout(code)
         if not quote:
             return kwargs
         if not kwargs.get("reference_price"):

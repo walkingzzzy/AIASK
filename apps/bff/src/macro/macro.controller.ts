@@ -11,6 +11,7 @@ export class MacroController {
 
     @Get('indicator/:name')
     async getMacroIndicator(@Param('name') name: string) {
-        return this.macroService.getMacroIndicator(name);
+        const data = await this.macroService.getMacroIndicator(name);
+        return { success: true, data };
     }
 }

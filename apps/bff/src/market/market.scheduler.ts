@@ -13,6 +13,12 @@ import { WsGateway } from '../ws/ws.gateway';
 export class MarketScheduler implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(MarketScheduler.name);
     private static readonly QUOTE_BATCH_SIZE = 50;
+    private static readonly ENABLED = !['0', 'false', 'no'].includes(
+        String(
+            process.env.MARKET_SCHEDULER_ENABLED
+            ?? ((process.env.NODE_ENV !== 'production' && Number(process.env.MCP_POOL_SIZE ?? '8') <= 1) ? 'false' : 'true'),
+        ).trim().toLowerCase(),
+    );
     private quoteTimer: NodeJS.Timeout | null = null;
     private indexTimer: NodeJS.Timeout | null = null;
     private nextQuoteCursor = 0;
@@ -30,6 +36,11 @@ export class MarketScheduler implements OnModuleInit, OnModuleDestroy {
     ) { }
 
     onModuleInit() {
+        if (!MarketScheduler.ENABLED) {
+            this.logger.log('行情推送调度器已禁用');
+            return;
+        }
+
         // 每 10 秒推送批量行情
         this.quoteTimer = setInterval(() => {
             void this.pushBatchQuotes();

@@ -1,4 +1,5 @@
 from strategy_factory.application.opportunity import MarketOpportunityScanner
+from strategy_factory.application.research_plane_contract import TASK_ARTIFACT_CONTRACT_VERSION
 import pytest
 
 
@@ -101,3 +102,36 @@ async def test_market_opportunity_scanner_paginates_universe_before_selecting_ta
         for task in report["tasks"]
         for code in list(task.get("target_symbols") or [])
     )
+
+
+@pytest.mark.asyncio
+async def test_market_opportunity_scanner_emits_task_artifact_contract():
+    scanner = MarketOpportunityScanner()
+
+    class _DB:
+        async def list_stock_universe(self, limit=500, offset=0):
+            del limit, offset
+            return [
+                _row("300001", "算力", 120_000_000_000, pe=42.0, pb=4.2),
+                _row("600001", "银行", 88_000_000_000, pe=8.0, pb=0.9),
+            ]
+
+    report = await scanner.scan(
+        _DB(),
+        {
+            "date": "2026-04-03",
+            "fear_greed_index": 68,
+            "fg_level": "greed",
+            "hot_sectors": ["算力"],
+            "cold_sectors": ["银行"],
+            "factor_ic_trend": {"growth": "rising"},
+        },
+    )
+
+    task_artifact = report["task_artifact"]
+    assert task_artifact["contract_version"] == TASK_ARTIFACT_CONTRACT_VERSION
+    assert task_artifact["available"] is True
+    assert task_artifact["planned_task_count"] == report["summary"]["task_count"]
+    assert task_artifact["task_source_counts"] == report["summary"]["task_sources"]
+    assert report["summary"]["task_artifact_contract_version"] == TASK_ARTIFACT_CONTRACT_VERSION
+    assert report["summary"]["task_artifact_available"] is True

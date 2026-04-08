@@ -18,7 +18,7 @@ from .artifact_registry import register_experiment
 from .strategy_generators import LLMProxyStrategyGenerator, RuleStrategyGenerator
 from .strategy_optimizer import BanditParameterOptimizer
 from .strategy_reviewer import MultiAgentStrategyReviewer
-from .strategy_spec import StrategySpec
+from .strategy_spec import StrategySpec, _safe_normalize_research_task
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,43 @@ def _env_bool(*names: str, default: bool) -> bool:
     return bool(default)
 
 
+def _normalized_research_task_payload(research_task: Optional[dict[str, Any]]) -> dict[str, Any]:
+    normalized = _safe_normalize_research_task(research_task)
+    return dict(normalized or research_task or {})
+
+
+def _preferred_strategy_types(
+    research_task: Optional[dict[str, Any]],
+    *,
+    limit: int = 8,
+) -> list[str]:
+    task = _normalized_research_task_payload(research_task)
+    preferred: list[str] = []
+    for item in list(task.get("preferred_strategy_types") or task.get("strategy_preferences") or []):
+        token = str(item or "").strip()
+        if token and token not in preferred:
+            preferred.append(token)
+        if len(preferred) >= max(1, int(limit or 8)):
+            break
+    return preferred
+
+
+def _allowed_strategy_types(
+    research_task: Optional[dict[str, Any]],
+    *,
+    limit: int = 12,
+) -> list[str]:
+    task = _normalized_research_task_payload(research_task)
+    allowed: list[str] = []
+    for item in list(task.get("allowed_strategy_types") or []):
+        token = str(item or "").strip()
+        if token and token not in allowed:
+            allowed.append(token)
+        if len(allowed) >= max(1, int(limit or 12)):
+            break
+    return allowed
+
+
 class CandidateGenerationService:
     def __init__(
         self,
@@ -51,6 +88,28 @@ class CandidateGenerationService:
     @staticmethod
     def _task_source(research_task: Optional[dict[str, Any]]) -> str:
         return str((research_task or {}).get("task_source") or "").strip().lower()
+
+    @staticmethod
+    def _has_generation_task_constraints(research_task: Optional[dict[str, Any]]) -> bool:
+        task = dict(research_task or {})
+        for key in (
+            "task_id",
+            "task_key",
+            "task_source",
+            "opportunity_type",
+            "event_id",
+            "theme_code",
+            "target_symbols",
+            "stock_pool",
+            "strategy_preferences",
+            "preferred_strategy_types",
+            "allowed_strategy_types",
+            "candidate_family",
+            "factor_name",
+        ):
+            if task.get(key) not in (None, "", [], {}):
+                return True
+        return False
 
     @classmethod
     def _bulk_llm_enabled(cls) -> bool:
@@ -97,12 +156,8 @@ class CandidateGenerationService:
 
     @staticmethod
     def _bulk_primary_family(research_task: Optional[dict[str, Any]]) -> Optional[str]:
-        task = dict(research_task or {})
-        preferred = [
-            str(item or "").strip()
-            for item in list(task.get("strategy_preferences") or task.get("preferred_strategy_types") or [])
-            if str(item or "").strip()
-        ]
+        task = _normalized_research_task_payload(research_task)
+        preferred = _preferred_strategy_types(task)
         if preferred:
             return preferred[0]
         family = str(task.get("candidate_family") or "").strip()
@@ -306,6 +361,7 @@ class CandidateGenerationService:
         bulk_stock_matrix_task = task_source == "bulk_stock_matrix"
         bulk_llm_enabled = self._bulk_llm_enabled() if bulk_stock_matrix_task else True
         bulk_optimizer_enabled = self._bulk_optimizer_enabled() if bulk_stock_matrix_task else True
+        normalized_research_task = _normalized_research_task_payload(research_task)
         needs_parent_context = bool(parent_strategy_id or bulk_llm_enabled or bulk_optimizer_enabled or not bulk_stock_matrix_task)
         parents = (
             [dict(item or {}) for item in list(shared_generation_context.get("parent_strategies") or [])]
@@ -316,7 +372,7 @@ class CandidateGenerationService:
             parents = await self.select_parents(db, parent_strategy_id=parent_strategy_id)
         elif needs_parent_context and not parents:
             parents = await self.select_parents(db, parent_strategy_id=parent_strategy_id)
-        task_preferences = list(research_task.get("strategy_preferences") or [])
+        task_preferences = _preferred_strategy_types(normalized_research_task)
         effective_limit = max(1, min(int(limit or 3), 10))
         if bulk_stock_matrix_task:
             primary_family = self._bulk_primary_family(research_task)
@@ -342,7 +398,12 @@ class CandidateGenerationService:
                 limit=bulk_rule_limit,
             )
         else:
-            rule_limit = max(0, limit // 3) if research_task else max(1, limit // 2 or 1)
+            has_generation_task_constraints = self._has_generation_task_constraints(research_task)
+            rule_limit = (
+                max(0, limit // 3)
+                if has_generation_task_constraints
+                else max(1, limit // 2 or 1)
+            )
             rule_specs = (
                 self.rule_generator.generate(
                     snapshot,
@@ -353,7 +414,18 @@ class CandidateGenerationService:
                 else []
             )
         llm_specs: list[StrategySpec] = []
-        if bulk_stock_matrix_task and not bulk_llm_enabled:
+        llm_disabled_by_scheduler = bool(research_task.get("disable_external_llm"))
+        llm_skip_reason = str(research_task.get("external_llm_skip_reason") or "provider_health_blocked").strip()
+        optimizer_disabled_by_scheduler = bool(research_task.get("disable_optimizer"))
+        optimizer_skip_reason = str(research_task.get("optimizer_skip_reason") or "generator_mode_cooldown").strip()
+        if llm_disabled_by_scheduler:
+            llm_report = self._skipped_llm_report(
+                task_source=task_source,
+                requested_limit=effective_limit,
+                reason=llm_skip_reason or "provider_health_blocked",
+                optimizer_enabled=bulk_optimizer_enabled if bulk_stock_matrix_task else True,
+            )
+        elif bulk_stock_matrix_task and not bulk_llm_enabled:
             llm_report = self._skipped_llm_report(
                 task_source=task_source,
                 requested_limit=effective_limit,
@@ -377,8 +449,30 @@ class CandidateGenerationService:
                         "skip_reason": "bulk_stock_matrix_optimizer_disabled",
                     },
                 }
+            elif optimizer_disabled_by_scheduler:
+                llm_report = {
+                    **dict(llm_report or {}),
+                    "optimizer": {
+                        "status": "skipped",
+                        "skip_reason": optimizer_skip_reason or "generator_mode_cooldown",
+                    },
+                }
         evolved_specs: list[StrategySpec] = []
-        if bulk_stock_matrix_task and not bulk_optimizer_enabled:
+        if optimizer_disabled_by_scheduler:
+            llm_report = {
+                **dict(llm_report or {}),
+                "optimizer": {
+                    "status": "skipped",
+                    "skip_reason": optimizer_skip_reason or "generator_mode_cooldown",
+                },
+            }
+        if optimizer_disabled_by_scheduler:
+            logger.info(
+                "CandidateGenerationService: scheduler disabled optimizer for task %s (%s)",
+                research_task.get("task_id") or research_task.get("task_key") or "unknown",
+                optimizer_skip_reason or "generator_mode_cooldown",
+            )
+        elif bulk_stock_matrix_task and not bulk_optimizer_enabled:
             logger.info(
                 "CandidateGenerationService: bulk_stock_matrix task %s using rule-first generation without optimizer",
                 research_task.get("task_id") or research_task.get("task_key") or "unknown",
@@ -495,6 +589,234 @@ class CommitteeReviewService:
 
 
 class ExperimentRecorder:
+    _PREVIEW_LIMIT = 3
+
+    @staticmethod
+    def _compact_dict(payload: Optional[dict[str, Any]], *, keys: tuple[str, ...]) -> dict[str, Any]:
+        source = dict(payload or {})
+        return {
+            key: source.get(key)
+            for key in keys
+            if source.get(key) not in (None, "", [], {})
+        }
+
+    @classmethod
+    def _summarize_research_task(cls, research_task: Optional[dict[str, Any]]) -> dict[str, Any]:
+        task = _normalized_research_task_payload(research_task)
+        summary = cls._compact_dict(
+            task,
+            keys=(
+                "task_id",
+                "task_key",
+                "task_source",
+                "opportunity_type",
+                "theme_code",
+                "event_id",
+                "candidate_family",
+                "factor_name",
+                "generation_limit",
+                "source_candidate_artifact_id",
+                "evidence_count",
+                "preference_strength",
+                "validation_focus",
+            ),
+        )
+        target_symbols = list(task.get("target_symbols") or [])
+        if target_symbols:
+            summary["target_symbols"] = target_symbols[:12]
+        preferred_strategy_types = _preferred_strategy_types(task, limit=6)
+        if preferred_strategy_types:
+            summary["preferred_strategy_types"] = preferred_strategy_types
+            summary["strategy_preferences"] = list(preferred_strategy_types)
+        allowed_strategy_types = _allowed_strategy_types(task, limit=6)
+        if allowed_strategy_types:
+            summary["allowed_strategy_types"] = allowed_strategy_types
+        return summary
+
+    @classmethod
+    def _summarize_event_context(cls, event_context: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(event_context or {})
+        summary = cls._compact_dict(
+            payload,
+            keys=(
+                "task_source",
+                "event_id",
+                "theme_code",
+                "event_type",
+                "opportunity_type",
+                "candidate_family",
+                "factor_name",
+            ),
+        )
+        target_symbols = list(payload.get("target_symbols") or payload.get("symbols") or [])
+        if target_symbols:
+            summary["target_symbols"] = target_symbols[:12]
+        return summary
+
+    @classmethod
+    def _summarize_stock_pool(cls, stock_pool: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(stock_pool or {})
+        summary = cls._compact_dict(
+            payload,
+            keys=("selection_mode", "universe_scope", "source", "reason"),
+        )
+        symbols = list(payload.get("symbols") or payload.get("target_symbols") or [])
+        if symbols:
+            summary["symbol_count"] = len(symbols)
+            summary["symbols"] = symbols[:12]
+        return summary
+
+    @classmethod
+    def _summarize_selection_logic(cls, selection_logic: Optional[list[Any]]) -> dict[str, Any]:
+        items = list(selection_logic or [])
+        preview: list[Any] = []
+        for item in items[: cls._PREVIEW_LIMIT]:
+            if isinstance(item, dict):
+                preview.append({key: item.get(key) for key in list(item.keys())[:6]})
+            else:
+                preview.append(str(item))
+        return {
+            "count": len(items),
+            "preview": preview,
+        }
+
+    @classmethod
+    def _summarize_parameters(cls, spec: StrategySpec) -> dict[str, Any]:
+        params = dict(spec.params or {})
+        summary: dict[str, Any] = {}
+        for key, value in params.items():
+            if key in {"dsl", "research_task", "event_context"}:
+                continue
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                summary[key] = value
+            elif isinstance(value, list) and len(value) <= 12 and all(
+                isinstance(item, (str, int, float, bool)) or item is None for item in value
+            ):
+                summary[key] = value
+            elif key == "stock_pool" and isinstance(value, dict):
+                summary[key] = cls._summarize_stock_pool(value)
+        dsl_activity = dict(spec.metadata.get("dsl_activity") or {})
+        if dsl_activity:
+            summary["dsl_activity"] = dsl_activity
+        elif params.get("dsl") not in (None, {}, []):
+            summary["dsl_present"] = True
+        target_symbols = list(spec.metadata.get("target_symbols") or [])
+        if target_symbols:
+            summary["target_symbols"] = target_symbols[:12]
+        return summary
+
+    @classmethod
+    def _summarize_llm_research_context(cls, context: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(context or {})
+        summary = cls._compact_dict(
+            payload,
+            keys=(
+                "snapshot_date",
+                "fear_greed_index",
+                "task_source",
+                "candidate_family",
+                "factor_name",
+            ),
+        )
+        for key in ("target_symbols", "candidate_universe", "preferred_strategy_types", "top_factor_names"):
+            items = list(payload.get(key) or [])
+            if items:
+                summary[key] = items[:12]
+                summary[f"{key}_count"] = len(items)
+        for key in ("symbol_frames", "symbol_details", "parents", "history_summary"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                summary[f"{key}_count"] = len(value)
+            elif isinstance(value, list):
+                summary[f"{key}_count"] = len(value)
+        return summary
+
+    @classmethod
+    def _summarize_llm_response(cls, response: Optional[dict[str, Any]]) -> dict[str, Any]:
+        payload = dict(response or {})
+        request_metrics = dict(payload.get("request_metrics") or {})
+        summary = cls._compact_dict(
+            payload,
+            keys=("provider", "model"),
+        )
+        candidates = list(payload.get("candidates") or [])
+        if candidates:
+            summary["candidate_count"] = len(candidates)
+            summary["candidate_names"] = [
+                str((item or {}).get("name") or "")
+                for item in candidates[: cls._PREVIEW_LIMIT]
+            ]
+        analysis = dict(payload.get("analysis") or {})
+        if analysis:
+            summary["analysis"] = cls._compact_dict(
+                analysis,
+                keys=("style_bias", "market_regime", "theme", "direction", "confidence"),
+            )
+        if request_metrics:
+            summary["request_metrics"] = cls._compact_dict(
+                request_metrics,
+                keys=(
+                    "status",
+                    "requested_limit",
+                    "attempt_count",
+                    "prompt_profile",
+                    "prompt_chars",
+                    "response_chars",
+                    "selected_candidate_count",
+                    "elapsed_seconds",
+                    "last_error_type",
+                    "last_error",
+                ),
+            )
+        return summary
+
+    @classmethod
+    def _build_persisted_experiment_payload(
+        cls,
+        *,
+        spec: StrategySpec,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        research_task = dict((payload.get("strategy_spec") or {}).get("research_task") or {})
+        event_context = dict((payload.get("strategy_spec") or {}).get("event_context") or {})
+        strategy_spec = {
+            "strategy_type": spec.strategy_type,
+            "name": spec.name,
+            "description": spec.description,
+            "tags": list(spec.tags or []),
+            "params": cls._summarize_parameters(spec),
+            "target_symbols": list(spec.metadata.get("target_symbols") or [])[:12],
+            "stock_pool": cls._summarize_stock_pool(spec.metadata.get("stock_pool") or {}),
+            "selection_logic": cls._summarize_selection_logic(spec.metadata.get("selection_logic") or []),
+            "research_task": cls._summarize_research_task(research_task),
+            "event_context": cls._summarize_event_context(event_context),
+        }
+        evaluation = {
+            "source": payload.get("source"),
+            "task_run_id": payload.get("task_run_id"),
+            "generation_reason": dict(spec.metadata.get("generation_reason") or {}),
+            "committee_review": dict(spec.metadata.get("committee_review") or {}),
+            "llm_analysis": dict(spec.metadata.get("llm_analysis") or {}),
+            "llm_research_context": cls._summarize_llm_research_context(spec.metadata.get("llm_research_context") or {}),
+            "llm_response": cls._summarize_llm_response(spec.metadata.get("llm_response") or {}),
+            "target_symbols": list(spec.metadata.get("target_symbols") or [])[:12],
+            "stock_pool": cls._summarize_stock_pool(spec.metadata.get("stock_pool") or {}),
+            "selection_logic": cls._summarize_selection_logic(spec.metadata.get("selection_logic") or []),
+            "research_scope": cls._compact_dict(
+                spec.metadata.get("research_scope") or {},
+                keys=("scope", "symbol_count", "candidate_count", "source"),
+            ),
+            "research_task": cls._summarize_research_task(research_task),
+            "event_context": cls._summarize_event_context(event_context),
+        }
+        return {
+            **payload,
+            "parameters": cls._summarize_parameters(spec),
+            "strategy_spec": strategy_spec,
+            "evaluation": evaluation,
+            "result": dict(payload.get("result") or {}),
+        }
+
     async def record_experiment(self, db, spec: StrategySpec, source: str, snapshot: dict, task_run: dict) -> dict:
         experiment_id = f"exp_{int(time.time())}_{uuid4().hex[:8]}"
         hypothesis = spec.description or f"{source}:{spec.strategy_type}"
@@ -555,15 +877,19 @@ class ExperimentRecorder:
             "parent_experiment_id": None,
             "artifact_id": artifact.get("artifact_id"),
         }
+        persisted_payload = self._build_persisted_experiment_payload(
+            spec=spec,
+            payload=payload,
+        )
         try:
-            return await db.save_strategy_generation_experiment(payload)
+            return await db.save_strategy_generation_experiment(persisted_payload)
         except Exception as exc:
             logger.warning(
                 "ExperimentRecorder: save experiment failed, continuing without persistence: %s",
                 exc,
             )
             return {
-                **payload,
+                **persisted_payload,
                 "persistence_error": str(exc),
             }
 

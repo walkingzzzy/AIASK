@@ -61,6 +61,48 @@ class _FakeBacktestEngine:
             },
         }
 
+    @staticmethod
+    def run_portfolio_backtest(market_data, strategy_type, params):
+        del market_data, strategy_type
+        return {
+            "success": True,
+            "data": {
+                "portfolio_engine_used": True,
+                "aggregation_mode": "portfolio_engine_shared_cash",
+                "allocation_mode": "equal_weight",
+                "component_count": 3,
+                "sharpe_ratio": 0.9,
+                "total_return": 0.12,
+                "max_drawdown": 0.08,
+                "win_rate": 0.6,
+                "trades_count": 6,
+                "avg_holding_days": 9.0,
+                "turnover_proxy": 1.8,
+                "cost_assumptions": {
+                    "commission_rate": params.get("commission"),
+                    "implementation_shortfall_proxy": 18.4,
+                    "implementation_shortfall_model_source": "estimated",
+                },
+                "explicit_cost_breakdown": {"commission_rate": params.get("commission")},
+                "implicit_cost_breakdown": {"implementation_shortfall_proxy": 18.4},
+                "tradability_summary": {
+                    "tradability_filter": params.get("tradability_filter"),
+                    "tradable_ratio": 0.92,
+                },
+                "capacity_summary": {
+                    "capacity_participation_rate": params.get("capacity_participation_rate"),
+                    "adv_utilization": 1.5,
+                },
+                "implementation_shortfall_model_source": "estimated",
+                "implementation_shortfall_components": {
+                    "capacity_bps": 11.2,
+                    "effective_total_bps": 18.4,
+                },
+                "position_assumption": params.get("position_assumption"),
+                "equity_curve": [100000.0, 106000.0, 112000.0],
+            },
+        }
+
 
 class _PortfolioCurveBacktestEngine:
     CURVES = {
@@ -120,6 +162,29 @@ class _EventWindowBacktestEngine:
             },
         }
 
+    @classmethod
+    def run_portfolio_backtest(cls, market_data, strategy_type, params):
+        del market_data, strategy_type
+        return {
+            "success": True,
+            "data": {
+                "portfolio_engine_used": True,
+                "aggregation_mode": "portfolio_engine_shared_cash",
+                "allocation_mode": "equal_weight",
+                "component_count": 3,
+                "total_return": 0.15,
+                "max_drawdown": 0.05,
+                "sharpe_ratio": 1.1,
+                "win_rate": 0.66,
+                "trades_count": 9,
+                "avg_holding_days": 7.0,
+                "turnover_proxy": 1.1,
+                "cost_assumptions": {"commission_rate": params.get("commission")},
+                "equity_curve": [100000.0, 106000.0, 115000.0],
+                "position_assumption": params.get("position_assumption"),
+            },
+        }
+
 
 class _WeightedPortfolioBacktestEngine:
     CURVES = {
@@ -144,6 +209,29 @@ class _WeightedPortfolioBacktestEngine:
                 "avg_holding_days": 6.0,
                 "turnover_proxy": 1.2,
                 "equity_curve": curve,
+            },
+        }
+
+    @classmethod
+    def run_portfolio_backtest(cls, market_data, strategy_type, params):
+        del market_data, strategy_type
+        return {
+            "success": True,
+            "data": {
+                "portfolio_engine_used": True,
+                "aggregation_mode": "portfolio_weighted",
+                "allocation_mode": "target_weight_map",
+                "allocation_weights": {"600519": 0.75, "000858": 0.25},
+                "component_count": 2,
+                "sharpe_ratio": 0.92,
+                "total_return": 0.10,
+                "max_drawdown": 0.05,
+                "win_rate": 0.5,
+                "trades_count": 8,
+                "avg_holding_days": 6.0,
+                "turnover_proxy": 1.1,
+                "position_assumption": params.get("position_assumption"),
+                "equity_curve": [100000.0, 104000.0, 110000.0],
             },
         }
 
@@ -208,6 +296,25 @@ class _SharedCashPortfolioBacktestEngine:
         }
 
 
+class _LowTradeCountBacktestEngine:
+    @staticmethod
+    def run_backtest(code, klines, strategy_type, params):
+        del code, klines, strategy_type, params
+        return {
+            "success": True,
+            "data": {
+                "sharpe_ratio": 0.6,
+                "total_return": 0.05,
+                "max_drawdown": 0.08,
+                "win_rate": 0.5,
+                "trades_count": 3,
+                "avg_holding_days": 10.0,
+                "turnover_proxy": 0.6,
+                "equity_curve": [100.0, 103.0, 105.0],
+            },
+        }
+
+
 def _patch_runtime(monkeypatch, engine_cls=_FakeBacktestEngine):
     monkeypatch.setattr(backtest_filter_module, "get_backtest_engine_class", lambda: engine_cls)
     monkeypatch.setattr(backtest_filter_module, "_get_strategy_factory_package", lambda: SimpleNamespace(asyncio=asyncio))
@@ -252,6 +359,54 @@ async def test_backtest_filter_propagates_execution_audit_fields(monkeypatch):
     assert metrics["turnover_proxy"] == pytest.approx(1.8)
 
 
+def test_apply_result_to_candidate_compacts_large_curve_payloads():
+    candidate = {"strategy_type": "momentum", "params": {"lookback": 20}}
+    result = {
+        "passed": True,
+        "metrics": {"sharpe_ratio": 1.1, "total_return": 0.16, "max_drawdown": 0.08, "trades_count": 6},
+        "constraint_check": {"coverage_ratio": 1.0},
+        "validation_focus": "target_plus_representative",
+        "primary_validation_layer": "combined",
+        "event_window_config": {"event_window": {"pre_days": 0, "post_days": 20}},
+        "contamination_summary": {"representative_included": True},
+        "cost_assumptions": {"commission_bps": 8},
+        "execution_summary": {"order_attempt_count": 12},
+        "cash_curve": [100000.0, 101200.0, 102400.0],
+        "gross_exposure_curve": [0.0, 0.5, 0.6],
+        "net_exposure_curve": [0.0, 0.5, 0.55],
+        "layers": {
+            "target": {
+                "metrics": {
+                    "total_return": 0.18,
+                    "component_codes": ["600519", "000858"],
+                    "equity_curve": [100000.0, 102000.0, 104000.0],
+                }
+            },
+            "representative": {"metrics": {"total_return": 0.05}},
+            "combined": {
+                "metrics": {
+                    "total_return": 0.16,
+                    "cash_curve": [100000.0, 101000.0, 102000.0],
+                }
+            },
+        },
+        "event_window_metrics": {"hit_ratio": 0.5},
+        "backtest_assumptions": {"target_weight_scheme": "equal_weight"},
+    }
+    passed: list[dict] = []
+    failed: list[dict] = []
+
+    BacktestFilter()._apply_result_to_candidate(candidate, result, passed, failed)
+
+    metrics = passed[0]["backtest_metrics"]
+    assert metrics["cash_curve_summary"]["points"] == 3
+    assert metrics["cash_curve_summary"]["last"] == pytest.approx(102400.0)
+    assert "cash_curve" not in metrics
+    assert metrics["target_layer_metrics"]["equity_curve_summary"]["points"] == 3
+    assert "equity_curve" not in metrics["target_layer_metrics"]
+    assert metrics["combined_layer_metrics"]["cash_curve_summary"]["points"] == 3
+
+
 @pytest.mark.asyncio
 async def test_backtest_filter_event_target_only_excludes_representative_contamination(monkeypatch):
     _patch_runtime(monkeypatch)
@@ -268,6 +423,24 @@ async def test_backtest_filter_event_target_only_excludes_representative_contami
             "theme_code": "baijiu",
             "target_symbols": ["600519", "000858", "000001"],
             "validation_focus": "event_target_only",
+            "event_samples": [
+                {
+                    "sample_id": "sample_evt_1",
+                    "event_id": "evt_1",
+                    "event_time": "2026-03-01T09:30:00+08:00",
+                    "target_return": 0.10,
+                    "benchmark_return": 0.03,
+                    "abnormal_return": 0.07,
+                    "car": 0.065,
+                    "bhar": 0.068,
+                    "hit": True,
+                    "post_event_decay": -0.18,
+                    "pre_days": 2,
+                    "post_days": 5,
+                    "estimation_days": 30,
+                    "control_group": ["000300"],
+                },
+            ],
         },
     }
 
@@ -279,10 +452,78 @@ async def test_backtest_filter_event_target_only_excludes_representative_contami
     assert result["primary_validation_layer"] == "target"
     assert result["contamination_summary"]["representative_included"] is False
     assert result["layers"]["representative"]["sample_count"] == 0
+    assert result["event_window_metrics"]["traceable_to_event_samples"] is True
 
 
 @pytest.mark.asyncio
-async def test_backtest_filter_equal_weight_target_uses_portfolio_curve_aggregation(monkeypatch):
+async def test_backtest_filter_allows_single_target_bulk_matrix_candidate_with_target_only_validation(monkeypatch):
+    _patch_runtime(monkeypatch)
+    original_compat = backtest_filter_module._compat_setting
+
+    def _fake_compat(name, default):
+        if name == "REPRESENTATIVE_STOCKS":
+            return ["000858", "000001", "600000"]
+        return original_compat(name, default)
+
+    monkeypatch.setattr(backtest_filter_module, "_compat_setting", _fake_compat)
+    db = MagicMock()
+    db.get_klines = AsyncMock(return_value=_make_klines())
+
+    candidate = {
+        "strategy_type": "momentum",
+        "params": {"lookback": 20, "threshold": 0.02},
+        "target_symbols": ["600519"],
+        "research_task": {
+            "task_source": "bulk_stock_matrix",
+            "target_symbols": ["600519"],
+            "validation_focus": "candidate_target_only",
+            "allowed_strategy_types": ["momentum"],
+        },
+    }
+
+    passed = await BacktestFilter().filter([candidate], db)
+
+    assert len(passed) == 1
+    result = passed[0]["backtest_result"]
+    assert result["passed"] is True
+    assert result["primary_validation_layer"] == "target"
+    assert result["sample_count"] == 1
+    assert result["required_sample_count"] == 1
+    assert result["layers"]["combined"]["sample_count"] == 3
+    assert result["validation_focus"] == "candidate_target_only"
+
+
+@pytest.mark.asyncio
+async def test_backtest_filter_raises_trade_floor_for_single_target_bulk_matrix_candidates(monkeypatch):
+    _patch_runtime(monkeypatch, engine_cls=_LowTradeCountBacktestEngine)
+    db = MagicMock()
+    db.get_klines = AsyncMock(return_value=_make_klines())
+
+    candidate = {
+        "strategy_type": "ma_cross",
+        "params": {"short_window": 5, "long_window": 20},
+        "target_symbols": ["600519"],
+        "research_task": {
+            "task_source": "bulk_stock_matrix",
+            "target_symbols": ["600519"],
+            "validation_focus": "candidate_target_only",
+            "allowed_strategy_types": ["ma_cross"],
+        },
+    }
+
+    backtest = BacktestFilter()
+    passed = await backtest.filter([candidate], db)
+
+    assert passed == []
+    report = backtest.get_last_report()
+    assert report["summary"]["failed_reason_counts"]["trades_below_threshold"] == 1
+    failed_result = report["failed"][0]["backtest_result"]
+    assert failed_result["thresholds"]["trades_min"] == pytest.approx(4.0)
+    assert failed_result["metrics"]["trades_count"] == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_backtest_filter_requires_portfolio_engine_for_equal_weight_multi_target(monkeypatch):
     _patch_runtime(monkeypatch, engine_cls=_PortfolioCurveBacktestEngine)
     db = MagicMock()
     db.get_klines = AsyncMock(return_value=_make_klines())
@@ -292,8 +533,7 @@ async def test_backtest_filter_equal_weight_target_uses_portfolio_curve_aggregat
         "params": {"lookback": 20, "threshold": 0.02},
         "target_symbols": ["600519", "000858", "000001"],
         "research_task": {
-            "task_source": "event_driven",
-            "event_id": "evt_portfolio_curve",
+            "task_source": "snapshot",
             "target_symbols": ["600519", "000858", "000001"],
             "validation_focus": "event_target_only",
         },
@@ -303,26 +543,19 @@ async def test_backtest_filter_equal_weight_target_uses_portfolio_curve_aggregat
         },
     }
 
-    passed = await BacktestFilter().filter([candidate], db)
+    backtest = BacktestFilter()
+    passed = await backtest.filter([candidate], db)
 
-    assert len(passed) == 1
-    result = passed[0]["backtest_result"]
-    metrics = result["metrics"]
-    target_metrics = result["layers"]["target"]["metrics"]
-    expected_total_return = ((140.0 / 100.0) + (105.0 / 100.0) + (90.0 / 100.0)) / 3.0 - 1.0
-
-    assert metrics["aggregation_mode"] == "portfolio_equal_weight"
-    assert target_metrics["aggregation_mode"] == "portfolio_equal_weight"
-    assert metrics["component_count"] == 3
-    assert target_metrics["component_count"] == 3
-    assert metrics["trades_count"] == pytest.approx(18.0)
-    assert metrics["total_return"] == pytest.approx(expected_total_return, abs=1e-4)
-    assert target_metrics["total_return"] == pytest.approx(expected_total_return, abs=1e-4)
-    assert metrics["total_return"] > 0.10
+    assert passed == []
+    report = backtest.get_last_report()
+    assert report["summary"]["failed_reason_counts"]["portfolio_engine_required"] == 1
+    failed_result = report["failed"][0]["backtest_result"]
+    assert failed_result["reason_code"] == "portfolio_engine_required"
+    assert failed_result["portfolio_backtest_coverage"] == pytest.approx(1.0)
 
 
 @pytest.mark.asyncio
-async def test_backtest_filter_builds_real_event_window_metrics(monkeypatch):
+async def test_backtest_filter_rejects_event_window_metrics_without_traceable_samples(monkeypatch):
     _patch_runtime(monkeypatch, engine_cls=_EventWindowBacktestEngine)
     original_compat = backtest_filter_module._compat_setting
 
@@ -349,28 +582,25 @@ async def test_backtest_filter_builds_real_event_window_metrics(monkeypatch):
         },
     }
 
-    passed = await BacktestFilter().filter([candidate], db)
+    backtest = BacktestFilter()
+    passed = await backtest.filter([candidate], db)
 
-    assert len(passed) == 1
-    result = passed[0]["backtest_result"]
-    event_metrics = result["event_window_metrics"]
-    derived_metrics = passed[0]["backtest_metrics"]
+    assert passed == []
+    report = backtest.get_last_report()
+    assert report["summary"]["failed_reason_counts"]["event_samples_required"] == 1
+    failed_result = report["failed"][0]["backtest_result"]
+    event_metrics = failed_result["event_window_metrics"]
 
-    assert event_metrics["benchmark_source"] == "representative_curve"
-    assert event_metrics["post_days_used"] == 2
-    assert event_metrics["estimation_days_used"] == 2
-    assert event_metrics["abnormal_return"] == pytest.approx(0.1067, abs=1e-3)
-    assert event_metrics["car"] == pytest.approx(0.1036, abs=1e-3)
-    assert event_metrics["bhar"] == pytest.approx(0.1056, abs=1e-3)
-    assert event_metrics["hit_ratio"] == pytest.approx(1.0)
-    assert event_metrics["post_event_decay"] == pytest.approx(-0.356, abs=1e-2)
-    assert derived_metrics["target_layer_abnormal_return"] == pytest.approx(event_metrics["abnormal_return"], abs=1e-4)
-    assert derived_metrics["event_window_hit_ratio"] == pytest.approx(event_metrics["hit_ratio"], abs=1e-4)
+    assert failed_result["reason_code"] == "event_samples_required"
+    assert failed_result["portfolio_backtest_mode"] == "portfolio_engine_shared_cash"
+    assert event_metrics["aggregation_mode"] == "portfolio_engine_shared_cash"
+    assert event_metrics.get("traceable_to_event_samples") is not True
 
 
 @pytest.mark.asyncio
 async def test_backtest_filter_prefers_event_samples_over_curve_tail_proxy(monkeypatch):
-    _patch_runtime(monkeypatch, engine_cls=_FakeBacktestEngine)
+    _SharedCashPortfolioBacktestEngine.portfolio_calls = []
+    _patch_runtime(monkeypatch, engine_cls=_SharedCashPortfolioBacktestEngine)
     db = MagicMock()
     db.get_klines = AsyncMock(return_value=_make_klines())
 
@@ -434,10 +664,11 @@ async def test_backtest_filter_prefers_event_samples_over_curve_tail_proxy(monke
     assert event_metrics["hit_ratio"] == pytest.approx(0.5)
     assert event_metrics["control_group_count"] == 2
     assert event_metrics["traceable_to_event_samples"] is True
+    assert passed[0]["backtest_result"]["portfolio_backtest_mode"] == "portfolio_engine_shared_cash"
 
 
 @pytest.mark.asyncio
-async def test_backtest_filter_builds_minimal_event_samples_from_context(monkeypatch):
+async def test_backtest_filter_rejects_minimal_event_samples_from_context(monkeypatch):
     _patch_runtime(monkeypatch, engine_cls=_EventWindowBacktestEngine)
     db = MagicMock()
     db.get_klines = AsyncMock(return_value=_make_klines())
@@ -461,22 +692,26 @@ async def test_backtest_filter_builds_minimal_event_samples_from_context(monkeyp
         },
     }
 
-    passed = await BacktestFilter().filter([candidate], db)
+    backtest_filter = BacktestFilter()
+    passed = await backtest_filter.filter([candidate], db)
 
-    assert len(passed) == 1
-    event_metrics = passed[0]["backtest_result"]["event_window_metrics"]
+    assert passed == []
+    report = backtest_filter.get_last_report()
+    assert report["summary"]["failed_reason_counts"]["event_audit_incomplete"] == 1
+    failed_entry = report["failed"][0]
+    event_metrics = failed_entry["backtest_result"]["event_window_metrics"]
     assert event_metrics["event_study_mode"] == "sample_driven_minimal"
     assert event_metrics["event_sample_source"] == "auto_context_minimal"
     assert event_metrics["event_sample_count"] == 3
     assert event_metrics["event_anchor_count"] == 1
     assert event_metrics["benchmark_source"] == "event_context_control_group"
     assert event_metrics["control_group_count"] == 1
-    assert event_metrics["traceable_to_event_samples"] is True
-    assert event_metrics["event_sample_ids"] == [
+    assert event_metrics["traceable_to_event_samples"] is False
+    assert sorted(event_metrics["event_sample_ids"]) == sorted([
         "evt_auto_minimal:600519",
         "evt_auto_minimal:600000",
         "evt_auto_minimal:601318",
-    ]
+    ])
 
 
 def test_build_target_quality_gate_summary_flags_gate_1_sample_and_stability_risks():

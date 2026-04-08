@@ -495,7 +495,7 @@ async def test_insight_generate_report_contract(tmp_path):
     result = await insight_manager(
         action="generate_report",
         kwargs=(
-            '{"report_type":"daily","output_dir":"'
+            '{"report_type":"weekly","output_dir":"'
             + out_dir.replace("\\\\", "/")
             + '","data_window":"2026-01-01~2026-02-01","next_actions":["rebalance"]}'
         ),
@@ -504,7 +504,21 @@ async def test_insight_generate_report_contract(tmp_path):
     data = result["data"]
     artifacts = data["artifacts"]
     assert os.path.exists(artifacts["markdown"])
-    assert os.path.exists(artifacts["json"])
+    assert "json" not in artifacts
+    assert "required_fields" in data
+
+    json_result = await insight_manager(
+        action="generate_report",
+        kwargs=(
+            '{"report_type":"weekly","output_dir":"'
+            + out_dir.replace("\\\\", "/")
+            + '","include_json":true,"data_window":"2026-01-01~2026-02-01","next_actions":["rebalance"]}'
+        ),
+    )
+    assert json_result["success"] is True
+    json_artifacts = json_result["data"]["artifacts"]
+    assert os.path.exists(json_artifacts["markdown"])
+    assert os.path.exists(json_artifacts["json"])
     assert "required_fields" in data
 
 

@@ -48,6 +48,7 @@ from .run_models import (
     resolve_run_status,
     summarize_stage_results,
 )
+from .services.readiness_service import ReadinessService
 from .utils import _extract_event_context as _local_extract_event_context
 from ..domain.targets import _extract_target_codes_from_payload, _normalize_target_codes
 from ..infrastructure.mcp_services import get_autonomy_lifecycle_runtime, get_runtime_warmup_runner
@@ -171,6 +172,7 @@ class StrategyFactoryScheduler(_StrategyFactorySchedulerAnalysisMixin, _Strategy
         ):
             self.schedule_mode: str = FACTORY_SCHEDULE_MODE if FACTORY_SCHEDULE_MODE in ("continuous", "daily") else "continuous"
             self._market_timezone = _MARKET_TIMEZONE
+            self._readiness_service = ReadinessService()
             # daily 模式的运行时间
             if run_time is not None:
                 self.run_time = run_time
@@ -191,6 +193,9 @@ class StrategyFactoryScheduler(_StrategyFactorySchedulerAnalysisMixin, _Strategy
             self._daily_run_count: int = 0
             self._daily_run_date: Optional[str] = None  # "YYYY-MM-DD"
             self._cycle_count: int = 0
+            self._run_once_task: Optional[asyncio.Task] = None
+            self._run_once_task_lock: Optional[asyncio.Lock] = None
+            self._run_once_task_lock_loop: Optional[asyncio.AbstractEventLoop] = None
             # P2-D 孵化反馈：按 family 跟踪 Gate 通过率（指数平滑，α=0.3）
             self._family_gate_feedback: Dict[str, Dict[str, float]] = {}
             self._db_provider = db_provider
@@ -208,6 +213,13 @@ class StrategyFactoryScheduler(_StrategyFactorySchedulerAnalysisMixin, _Strategy
                 self._incubation_gateway = self._incubation_gateway or getattr(runtime_adapters, "incubation", None)
                 self._autonomy_gateway = self._autonomy_gateway or getattr(runtime_adapters, "autonomy", None)
                 self._factor_research_gateway = self._factor_research_gateway or getattr(runtime_adapters, "factor_research", None)
+
+        def _get_run_once_task_lock(self) -> asyncio.Lock:
+            loop = asyncio.get_running_loop()
+            if self._run_once_task_lock is None or self._run_once_task_lock_loop is not loop:
+                self._run_once_task_lock = asyncio.Lock()
+                self._run_once_task_lock_loop = loop
+            return self._run_once_task_lock
 
         def _now(self) -> datetime:
             return datetime.now(self._market_timezone)

@@ -806,6 +806,69 @@ class TestCandidateToSpec:
         assert LLMProxyStrategyGenerator._pipeline_candidate_to_spec(None, {}) is None
         assert LLMProxyStrategyGenerator._pipeline_candidate_to_spec({}, {}) is None  # empty dict lacks required fields
 
+    def test_pipeline_candidate_to_spec_rejects_single_target_snapshot_alignment_drift(self):
+        from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+        candidate = {
+            "name": "single_target_alignment_drift",
+            "strategy_type": "ma_cross",
+            "target_symbols": ["000001"],
+            "stock_pool": {"selection_mode": "explicit", "symbols": ["000001"]},
+            "params": {"short_period": 12, "long_period": 48},
+            "portfolio_spec": {
+                "position_assumption": "single_name_full_notional",
+                "target_weight_scheme": "single_name",
+            },
+            "execution_assumptions": {
+                "commission_rate": 0.00025,
+                "slippage_bps": 5,
+                "tradability_filter": True,
+                "slippage_model": "fixed",
+            },
+            "validation_profile": {
+                "profile": "trade_rule_validation",
+                "validation_focus": "target_plus_representative",
+                "primary_validation_layer": "combined",
+            },
+            "constraint_check": {
+                "coverage_ratio": 0.0,
+                "intersection_ratio": 0.0,
+                "target_overlap_count": 0,
+            },
+            "dsl": {
+                "version": "1.0",
+                "timeframe": "daily",
+                "entry": {
+                    "any": [{
+                        "op": "cross_above",
+                        "left": {"indicator": "sma", "field": "close", "window": 12},
+                        "right": {"indicator": "sma", "field": "close", "window": 48},
+                    }],
+                },
+                "exit": {
+                    "any": [{
+                        "op": "cross_below",
+                        "left": {"indicator": "sma", "field": "close", "window": 12},
+                        "right": {"indicator": "sma", "field": "close", "window": 48},
+                    }],
+                },
+            },
+            "research_task": {
+                "task_source": "snapshot",
+                "task_id": "task_single_target_alignment_guard",
+                "target_symbols": ["600519"],
+                "allowed_strategy_types": ["ma_cross"],
+            },
+        }
+
+        spec = LLMProxyStrategyGenerator._pipeline_candidate_to_spec(
+            candidate,
+            provenance={"pipeline_elapsed_sec": 0.4, "stage_count": 5},
+        )
+
+        assert spec is None
+        assert "target_universe_alignment_too_low" in candidate["_generator_precompile_reject_reasons"]
+
 
 # ===========================================================================
 # Test 7: PIPELINE_MODE 路由
@@ -921,6 +984,176 @@ class TestPipelineModeRouting:
             assert "ReadTimeout" in report["external_provider"]["last_error"]
             assert report["external_provider"]["requests"][0]["error_type"] == "ReadTimeout"
             assert "ReadTimeout" in report["pipeline_provenance"]["stages"]["event_recognition"]["llm_error"]
+
+    @pytest.mark.asyncio
+    async def test_staged_mode_marks_compatibility_skip_as_non_request(self, db):
+        """compatibility_skip 应与真实外部请求分开统计。"""
+        from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+        gen = LLMProxyStrategyGenerator()
+
+        mock_pipeline_result = PipelineResult(
+            candidates=[{
+                "name": "compat_skip_strategy",
+                "strategy_type": "ma_cross",
+                "target_symbols": ["600519"],
+                "dsl": {
+                    "version": "1.0",
+                    "timeframe": "daily",
+                    "entry": {"any": [{"op": "cross_above",
+                                       "left": {"indicator": "sma", "field": "close", "window": 5},
+                                       "right": {"indicator": "sma", "field": "close", "window": 20}}]},
+                    "exit": {"any": [{"op": "cross_below",
+                                      "left": {"indicator": "sma", "field": "close", "window": 5},
+                                      "right": {"indicator": "sma", "field": "close", "window": 20}}]},
+                    "metadata": {"target_symbols": ["600519"]},
+                },
+                "tags": ["ai_staged"],
+            }],
+            elapsed_sec=0.2,
+        )
+        mock_pipeline_result.stages = {
+            "event_recognition": StageResult(
+                stage_id="event_recognition",
+                output={"events": []},
+                used_fallback=True,
+                llm_attempted=True,
+                prompt_chars=80,
+                elapsed_sec=0.05,
+                llm_error="call_stage(event_recognition) skipped during compatibility cooldown",
+                llm_error_type="ProviderCompatibilityError",
+                llm_error_metrics={"status": "compatibility_skip", "attempt_count": 0},
+            ),
+        }
+
+        with patch("akshare_mcp.services.strategy_generators.PIPELINE_MODE", "staged"), \
+             patch("akshare_mcp.services.strategy_generators.get_strategy_pipeline") as mock_get_pipe:
+            mock_pipe = AsyncMock()
+            mock_pipe.run_pipeline.return_value = mock_pipeline_result
+            mock_get_pipe.return_value = mock_pipe
+
+            gen.external_provider = MagicMock()
+            gen.external_provider.is_enabled.return_value = True
+            gen.external_provider.config = MagicMock(provider="openai_compatible", model="test-model")
+
+            specs = await gen.generate(db, limit=1, snapshot=MOCK_SNAPSHOT)
+            report = gen.get_last_report()
+
+            assert specs
+            assert report["external_provider"]["stage_attempt_count"] == 1
+            assert report["external_provider"]["network_request_count"] == 0
+            assert report["external_provider"]["real_request_count"] == 0
+            assert report["external_provider"]["compatibility_skip_count"] == 1
+            assert report["external_provider"]["compatibility_failure_count"] == 0
+            assert report["external_provider"]["compatibility_failure_ratio"] == 0.0
+            assert report["external_provider"]["effective_response_ratio"] == 0.0
+            assert report["external_provider"]["empty_200_response_count"] == 0
+            assert report["external_provider"]["request_status_counts"]["compatibility_skip"] == 1
+            assert report["external_provider"]["requests"][0]["status"] == "compatibility_skip"
+            assert report["external_provider"]["requests"][0]["request_metrics"]["attempt_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_staged_mode_tracks_empty_200_compatibility_failure_in_provider_health(self, db):
+        from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+        gen = LLMProxyStrategyGenerator()
+
+        mock_pipeline_result = PipelineResult(
+            candidates=[{
+                "name": "compat_failure_strategy",
+                "strategy_type": "ma_cross",
+                "target_symbols": ["600519"],
+                "dsl": {
+                    "version": "1.0",
+                    "timeframe": "daily",
+                    "entry": {"any": [{"op": "cross_above",
+                                       "left": {"indicator": "sma", "field": "close", "window": 5},
+                                       "right": {"indicator": "sma", "field": "close", "window": 20}}]},
+                    "exit": {"any": [{"op": "cross_below",
+                                      "left": {"indicator": "sma", "field": "close", "window": 5},
+                                      "right": {"indicator": "sma", "field": "close", "window": 20}}]},
+                    "metadata": {"target_symbols": ["600519"]},
+                },
+                "tags": ["ai_staged"],
+            }],
+            elapsed_sec=0.2,
+        )
+        mock_pipeline_result.stages = {
+            "event_recognition": StageResult(
+                stage_id="event_recognition",
+                output={"events": []},
+                used_fallback=True,
+                llm_attempted=True,
+                prompt_chars=80,
+                elapsed_sec=0.05,
+                llm_error="call_stage(event_recognition): response missing extractable content",
+                llm_error_type="ProviderCompatibilityError",
+                llm_error_metrics={
+                    "status": "compatibility_failed",
+                    "attempt_count": 1,
+                    "empty_200_response": True,
+                    "last_error_status_code": 200,
+                },
+            ),
+        }
+
+        with patch("akshare_mcp.services.strategy_generators.PIPELINE_MODE", "staged"), \
+             patch("akshare_mcp.services.strategy_generators.get_strategy_pipeline") as mock_get_pipe:
+            mock_pipe = AsyncMock()
+            mock_pipe.run_pipeline.return_value = mock_pipeline_result
+            mock_get_pipe.return_value = mock_pipe
+
+            gen.external_provider = MagicMock()
+            gen.external_provider.is_enabled.return_value = True
+            gen.external_provider.config = MagicMock(provider="openai_compatible", model="test-model")
+
+            specs = await gen.generate(db, limit=1, snapshot=MOCK_SNAPSHOT)
+            report = gen.get_last_report()
+
+            assert specs
+            assert report["external_provider"]["network_request_count"] == 1
+            assert report["external_provider"]["real_request_count"] == 1
+            assert report["external_provider"]["compatibility_failure_count"] == 1
+            assert report["external_provider"]["compatibility_failure_ratio"] == 1.0
+            assert report["external_provider"]["effective_response_ratio"] == 0.0
+            assert report["external_provider"]["empty_200_response_count"] == 1
+            assert report["external_provider"]["requests"][0]["status"] == "fallback"
+            assert report["external_provider"]["requests"][0]["request_metrics"]["status"] == "compatibility_failed"
+            assert report["external_provider"]["requests"][0]["request_metrics"]["empty_200_response"] is True
+
+    @pytest.mark.asyncio
+    async def test_monolithic_request_report_preserves_compatibility_skip_status(self):
+        from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+        from akshare_mcp.services.strategy_llm_provider import StrategyLLMRequestError
+
+        gen = LLMProxyStrategyGenerator()
+        gen.external_provider = MagicMock()
+        gen.external_provider.generate_candidates = AsyncMock(
+            side_effect=StrategyLLMRequestError(
+                "external llm request skipped during compatibility cooldown",
+                metrics={
+                    "status": "compatibility_skip",
+                    "last_error_type": "ProviderCompatibilityError",
+                    "last_error": "response missing extractable content",
+                },
+            )
+        )
+
+        result = await gen._run_external_provider_request(
+            snapshot={},
+            frame=None,
+            frame_cache={},
+            research_context={},
+            parent_strategies=[],
+            history_summary=[],
+            research_task=None,
+            request_limit=2,
+            request_index=1,
+        )
+
+        assert result["status"] == "failed"
+        assert result["request_report"]["status"] == "compatibility_skip"
+        assert result["request_report"]["error_type"] == "ProviderCompatibilityError"
 
     @pytest.mark.asyncio
     async def test_monolithic_mode_skips_pipeline(self, db):
@@ -1221,6 +1454,70 @@ def test_strategy_llm_prompt_tightens_snapshot_target_pool_contract():
     assert contract["disallow_market_fallback"] is True
 
 
+def test_strategy_llm_prompt_compact_targeted_task_uses_task_target_context_only():
+    from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
+
+    provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
+
+    system_prompt, user_prompt = provider._build_prompt(
+        snapshot={"date": "2026-04-03"},
+        market_summary={"market_regime": {"risk_on": 0.6}},
+        research_context={
+            "target_context_status": "targeted_active",
+            "blocked_by_target_universe": False,
+            "symbol_insights": [{
+                "code": "600519",
+                "name": "贵州茅台",
+                "industry": "白酒",
+                "close": 10.0,
+                "return_20d": 0.05,
+                "trend_state": "uptrend",
+            }],
+            "candidate_universe": [{
+                "code": "600519",
+                "name": "贵州茅台",
+                "industry": "白酒",
+                "close": 10.0,
+                "return_20d": 0.05,
+                "trend_state": "uptrend",
+                "volume_ratio_20": 1.2,
+                "screen_score": 0.9,
+            }],
+            "task_target_context": {
+                "targeted_task": True,
+                "requested_target_symbols": ["600519"],
+                "matched_target_symbols": ["600519"],
+                "symbol_count": 1,
+                "candidate_universe_count": 1,
+            },
+            "market_background_context": {
+                "available": True,
+                "symbol_count": 3,
+                "candidate_universe_count": 3,
+                "symbol_insight_codes": ["000858", "601318"],
+                "candidate_universe_symbols": ["000858", "601318", "600036"],
+            },
+        },
+        parent_strategies=[],
+        history_summary=[],
+        limit=1,
+        research_task={
+            "task_source": "snapshot",
+            "task_id": "task_target_prompt_only",
+            "target_symbols": ["600519"],
+        },
+        compact_level=2,
+    )
+
+    payload = json.loads(user_prompt)
+
+    assert "只能使用 research_context.task_target_context" in system_prompt
+    assert "candidate_universe_symbols" not in payload
+    assert "market_hint" not in payload
+    assert payload["research_context"]["task_target_context"]["requested_target_symbols"] == ["600519"]
+    assert "market_background_context" not in payload["research_context"]
+
+
 def test_strategy_llm_normalize_rejects_low_alignment_snapshot_candidate():
     from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
 
@@ -1263,7 +1560,54 @@ def test_strategy_llm_normalize_rejects_low_alignment_snapshot_candidate():
     assert normalized is None
 
 
-def test_strategy_llm_normalize_materializes_complete_trade_contract():
+def test_strategy_llm_normalize_rejects_missing_explicit_trade_contract():
+    from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
+
+    provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
+    candidate = {
+        "name": "snapshot_rsi_missing_contract",
+        "strategy_type": "rsi",
+        "target_symbols": ["603855", "603279", "002833", "601766"],
+        "dsl": {
+            "version": "1.0",
+            "timeframe": "daily",
+            "entry": {
+                "any": [{
+                    "op": "lt",
+                    "left": {"indicator": "rsi", "field": "close", "window": 14},
+                    "right": {"value": 30},
+                }],
+            },
+            "exit": {
+                "any": [{
+                    "op": "gt",
+                    "left": {"indicator": "rsi", "field": "close", "window": 14},
+                    "right": {"value": 60},
+                }],
+            },
+            "metadata": {},
+        },
+    }
+
+    normalized = provider._normalize_candidate_payload(
+        candidate,
+        research_task={
+            "task_source": "snapshot",
+            "task_id": "task_pipeline_rsi_contract_missing",
+            "allowed_strategy_types": ["rsi"],
+            "target_symbols": ["603855", "603279", "002833", "601766", "600528", "600582", "600894", "920599"],
+        },
+    )
+
+    assert normalized is None
+    assert set(candidate["_normalize_reject_reasons"]) == {
+        "portfolio_spec_missing",
+        "execution_assumptions_missing",
+        "validation_profile_missing",
+    }
+
+
+def test_strategy_llm_normalize_keeps_complete_trade_contract_when_explicit_contracts_present():
     from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
 
     provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
@@ -1292,6 +1636,21 @@ def test_strategy_llm_normalize_materializes_complete_trade_contract():
                 },
                 "metadata": {},
             },
+            "portfolio_spec": {
+                "position_assumption": "equal_weight_proxy",
+                "target_weight_scheme": "equal_weight",
+            },
+            "execution_assumptions": {
+                "commission_rate": 0.00025,
+                "slippage_bps": 5,
+                "tradability_filter": True,
+                "slippage_model": "fixed",
+            },
+            "validation_profile": {
+                "profile": "trade_rule_validation",
+                "validation_focus": "target_plus_representative",
+                "primary_validation_layer": "target",
+            },
         },
         research_task={
             "task_source": "snapshot",
@@ -1308,6 +1667,7 @@ def test_strategy_llm_normalize_materializes_complete_trade_contract():
     assert normalized["position_sizing"]["position_assumption"] == normalized["portfolio_spec"]["position_assumption"]
     assert normalized["execution_assumptions"]["tradability_filter"] is True
     assert normalized["validation_profile"]["profile"] == "trade_rule_validation"
+    assert normalized["validation_profile"]["primary_validation_layer"] == "target"
     assert normalized["params"]["holding_horizon"] == normalized["holding_horizon"]
     assert normalized["params"]["portfolio_spec"] == normalized["portfolio_spec"]
     assert normalized["params"]["execution_assumptions"] == normalized["execution_assumptions"]
@@ -1316,6 +1676,262 @@ def test_strategy_llm_normalize_materializes_complete_trade_contract():
     assert normalized["dsl"]["metadata"]["execution_assumptions"] == normalized["execution_assumptions"]
     assert normalized["dsl"]["metadata"]["validation_profile"] == normalized["validation_profile"]
     assert normalized["dsl"]["metadata"]["targeting_policy"] == normalized["targeting_policy"]
+
+
+def test_external_candidate_to_spec_rejects_when_contract_normalize_fails():
+    from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+    spec = LLMProxyStrategyGenerator._external_candidate_to_spec(
+        {
+            "name": "raw_candidate_without_contract",
+            "strategy_type": "rsi",
+            "target_symbols": ["603855", "603279", "002833", "601766"],
+            "dsl": {
+                "version": "1.0",
+                "timeframe": "daily",
+                "entry": {
+                    "any": [{
+                        "op": "lt",
+                        "left": {"indicator": "rsi", "field": "close", "window": 14},
+                        "right": {"value": 30},
+                    }],
+                },
+                "exit": {
+                    "any": [{
+                        "op": "gt",
+                        "left": {"indicator": "rsi", "field": "close", "window": 14},
+                        "right": {"value": 60},
+                    }],
+                },
+                "metadata": {},
+            },
+        },
+        {
+            "provider": "test",
+            "research_task": {
+                "task_source": "snapshot",
+                "task_id": "task_pipeline_external_contract_guard",
+                "allowed_strategy_types": ["rsi"],
+                "target_symbols": ["603855", "603279", "002833", "601766", "600528", "600582", "600894", "920599"],
+            },
+            "analysis": {},
+            "research_context": {},
+        },
+    )
+
+    assert spec is None
+
+
+def test_strategy_llm_normalize_rejects_outside_allowed_strategy_types():
+    from akshare_mcp.services.strategy_llm_provider import StrategyLLMProvider
+
+    provider = StrategyLLMProvider.__new__(StrategyLLMProvider)
+    candidate = {
+        "name": "snapshot_rsi_type_guard",
+        "strategy_type": "rsi",
+        "target_symbols": ["603855", "603279", "002833", "601766"],
+        "dsl": {
+            "version": "1.0",
+            "timeframe": "daily",
+            "entry": {
+                "any": [{
+                    "op": "lt",
+                    "left": {"indicator": "rsi", "field": "close", "window": 14},
+                    "right": {"value": 30},
+                }],
+            },
+            "exit": {
+                "any": [{
+                    "op": "gt",
+                    "left": {"indicator": "rsi", "field": "close", "window": 14},
+                    "right": {"value": 60},
+                }],
+            },
+            "metadata": {},
+        },
+        "portfolio_spec": {
+            "position_assumption": "equal_weight_proxy",
+            "target_weight_scheme": "equal_weight",
+        },
+        "execution_assumptions": {
+            "commission_rate": 0.00025,
+            "slippage_bps": 5,
+            "tradability_filter": True,
+            "slippage_model": "fixed",
+        },
+        "validation_profile": {
+            "profile": "trade_rule_validation",
+            "validation_focus": "target_plus_representative",
+            "primary_validation_layer": "target",
+        },
+    }
+
+    normalized = provider._normalize_candidate_payload(
+        candidate,
+        research_task={
+            "task_source": "snapshot",
+            "task_id": "task_pipeline_type_guard",
+            "allowed_strategy_types": ["ma_cross"],
+            "target_symbols": ["603855", "603279", "002833", "601766"],
+        },
+    )
+
+    assert normalized is None
+    assert candidate["_normalize_reject_reasons"] == ["outside_allowed_strategy_types"]
+
+
+@pytest.mark.asyncio
+async def test_llm_generator_build_research_context_blocks_targeted_task_without_universe_match():
+    from akshare_mcp.services.strategy_autonomy import LLMProxyStrategyGenerator
+
+    generator = LLMProxyStrategyGenerator()
+    db = MagicMock()
+    db.list_stock_universe = AsyncMock(
+        return_value=[
+            {"code": "600519", "name": "贵州茅台", "industry": "白酒", "sector": "消费", "market": "SH"},
+            {"code": "000858", "name": "五粮液", "industry": "白酒", "sector": "消费", "market": "SZ"},
+        ]
+    )
+    db.count_stock_universe = AsyncMock(return_value=2)
+    db.get_klines = AsyncMock(return_value=[])
+
+    context = await generator._build_research_context(
+        db,
+        {"date": "2026-04-03", "fear_greed_index": 56},
+        research_task={
+            "task_source": "snapshot",
+            "task_id": "task_target_blocked",
+            "target_symbols": ["688981", "002371"],
+        },
+    )
+
+    assert context["blocked_by_target_universe"] is True
+    assert context["target_context_status"] == "blocked_by_target_universe"
+    assert context["symbol_insights"] == []
+    assert context["candidate_universe"] == []
+    assert context["task_target_context"]["requested_target_symbols"] == ["688981", "002371"]
+
+
+@pytest.mark.asyncio
+async def test_llm_generator_market_frame_does_not_fallback_for_targeted_task_without_target_data():
+    from akshare_mcp.services.strategy_autonomy import LLMProxyStrategyGenerator
+
+    generator = LLMProxyStrategyGenerator()
+    db = MagicMock()
+    db.get_klines = AsyncMock(return_value=[])
+    db.list_stock_universe = AsyncMock(return_value=[{"code": "601398"}])
+
+    frame = await generator._build_market_frame(
+        db,
+        research_task={
+            "task_source": "snapshot",
+            "target_symbols": ["688981"],
+        },
+    )
+
+    assert frame is None
+
+
+def test_llm_generator_synthetic_market_frame_targeted_task_uses_target_context_only():
+    from akshare_mcp.services.strategy_autonomy import LLMProxyStrategyGenerator
+
+    generator = LLMProxyStrategyGenerator()
+
+    frame = generator._build_synthetic_market_frame(
+        {
+            "research_task": {
+                "task_source": "snapshot",
+                "target_symbols": ["600519"],
+            },
+            "task_target_context": {
+                "targeted_task": True,
+                "requested_target_symbols": ["600519"],
+                "matched_target_symbols": ["600519"],
+            },
+            "symbol_insights": [
+                {"code": "000858", "close": 1000.0, "volume": 2000000},
+                {"code": "600519", "close": 10.0, "volume": 100000},
+            ],
+            "candidate_universe": [
+                {"code": "000858", "close": 900.0, "volume": 1500000},
+            ],
+        }
+    )
+
+    assert frame is not None
+    assert float(frame["close"].max()) < 20.0
+
+
+def test_research_context_summary_marks_target_only_and_market_background_counts():
+    from akshare_mcp.services.strategy_autonomy import LLMProxyStrategyGenerator
+
+    generator = LLMProxyStrategyGenerator()
+
+    summary = generator._summarize_research_context(
+        {
+            "target_context_status": "targeted_active",
+            "blocked_by_target_universe": False,
+            "market_breadth": {"symbol_count": 1},
+            "candidate_universe": [{"code": "600519"}],
+            "task_target_context": {
+                "targeted_task": True,
+                "requested_target_symbols": ["600519"],
+                "matched_target_symbols": ["600519"],
+                "symbol_count": 1,
+                "candidate_universe_count": 1,
+            },
+            "market_background_context": {
+                "available": True,
+                "symbol_count": 4,
+                "candidate_universe_count": 6,
+            },
+        }
+    )
+
+    assert summary["context_mode"] == "target_only"
+    assert summary["target_context_symbol_count"] == 1
+    assert summary["target_context_candidate_count"] == 1
+    assert summary["market_background_available"] is True
+    assert summary["market_background_symbol_count"] == 4
+    assert summary["market_background_candidate_count"] == 6
+
+
+@pytest.mark.asyncio
+async def test_llm_generator_generate_skips_all_paths_when_target_context_blocked():
+    from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+
+    db = _MockDB()
+    gen = LLMProxyStrategyGenerator()
+    gen.external_provider = MagicMock()
+    gen.external_provider.is_enabled.return_value = True
+    gen.external_provider.config = MagicMock(strict=False, provider="openai_compatible", model="test-model")
+    gen.external_provider.generate_candidates = AsyncMock(return_value={"candidates": [], "analysis": {}, "request_metrics": {}})
+
+    with patch("akshare_mcp.services.strategy_generators.PIPELINE_MODE", "staged"), \
+         patch("akshare_mcp.services.strategy_generators.get_strategy_pipeline") as mock_get_pipe:
+        mock_pipe = AsyncMock()
+        mock_get_pipe.return_value = mock_pipe
+
+        specs = await gen.generate(
+            db,
+            limit=1,
+            snapshot=MOCK_SNAPSHOT,
+            research_task={
+                "task_source": "snapshot",
+                "task_id": "task_target_blocked_generate",
+                "target_symbols": ["688981", "002371"],
+            },
+        )
+
+    report = gen.get_last_report()
+
+    assert specs == []
+    mock_pipe.run_pipeline.assert_not_awaited()
+    gen.external_provider.generate_candidates.assert_not_awaited()
+    assert report["external_provider"]["status"] == "skipped_target_context_blocked"
+    assert report["local_generator"]["status"] == "skipped_target_context_blocked"
+    assert report["research_context_summary"]["context_mode"] == "blocked_target_context"
+    assert report["pipeline_staged_fallback_reason"] == "target_context_blocked"
 
 
 # ===========================================================================

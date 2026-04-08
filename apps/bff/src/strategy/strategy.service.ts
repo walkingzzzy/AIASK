@@ -11,17 +11,44 @@ import type { StrategyManagerAction, StrategyManagerErrorCode } from '@aiask/sha
 import { McpGatewayService } from '../mcp-gateway/mcp-gateway.service';
 import { CommonCacheService } from '../common/cache.service';
 
+type StrategyManagerCallOptions = {
+  timeoutMs?: number;
+};
+
+type BackgroundFactoryRunStatus = 'queued' | 'running' | 'success' | 'failed';
+
+type BackgroundFactoryRunState = {
+  request_id: string;
+  status: BackgroundFactoryRunStatus;
+  started_at: string;
+  completed_at: string | null;
+  message: string;
+  error: string | null;
+  upstream_run_id?: string | null;
+};
+
 @Injectable()
 export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   private static readonly RANKING_TTL = 1500; // 25 min
   private static readonly FACTORY_RUNS_TTL = 60;
   private static readonly FACTORY_RUN_DETAIL_TTL = 60;
+  private static readonly FACTORY_RUN_TIMEOUT_MS = Math.max(
+    30_000,
+    Number(process.env.STRATEGY_FACTORY_RUN_TIMEOUT_MS ?? '240000'),
+  );
+  private static readonly FACTORY_RUN_STATE_TTL_MS = Math.max(
+    15_000,
+    Number(process.env.STRATEGY_FACTORY_RUN_STATE_TTL_MS ?? '300000'),
+  );
   private static readonly AUTO_REFRESH_CHECK_MS = 5 * 60 * 1000; // 5 min
   private static readonly AUTO_REFRESH_HOUR = 15;
   private static readonly AUTO_REFRESH_MINUTE = 5;
   private static readonly AUTO_REFRESH_TIMEZONE = process.env.STRATEGY_MARKET_TIMEZONE || 'Asia/Shanghai';
   private static readonly AUTO_REFRESH_ENABLED = !['0', 'false', 'no'].includes(
-    String(process.env.STRATEGY_MARKET_AUTO_REFRESH_ENABLED ?? (process.env.NODE_ENV === 'test' ? '0' : '1'))
+    String(
+      process.env.STRATEGY_MARKET_AUTO_REFRESH_ENABLED
+      ?? ((process.env.NODE_ENV === 'test' || (process.env.NODE_ENV !== 'production' && Number(process.env.MCP_POOL_SIZE ?? '8') <= 1)) ? '0' : '1'),
+    )
       .trim()
       .toLowerCase(),
   );
@@ -29,6 +56,9 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(StrategyMarketService.name);
   private autoRefreshTimer?: ReturnType<typeof setInterval>;
   private lastAutoRefreshDate?: string;
+  private backgroundFactoryRunState: BackgroundFactoryRunState | null = null;
+  private backgroundFactoryRunPromise: Promise<void> | null = null;
+  private backgroundFactoryRunClearTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
     private readonly mcp: McpGatewayService,
@@ -47,6 +77,10 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     if (this.autoRefreshTimer) {
       clearInterval(this.autoRefreshTimer);
       this.autoRefreshTimer = undefined;
+    }
+    if (this.backgroundFactoryRunClearTimer) {
+      clearTimeout(this.backgroundFactoryRunClearTimer);
+      this.backgroundFactoryRunClearTimer = undefined;
     }
   }
 
@@ -104,12 +138,22 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async call(action: StrategyManagerAction, params: Record<string, unknown> = {}) {
+  private async call(
+    action: StrategyManagerAction,
+    params: Record<string, unknown> = {},
+    options: StrategyManagerCallOptions = {},
+  ) {
     try {
-      const result = await this.mcp.callTool('strategy_manager', {
-        action,
-        params,
-      });
+      const result = await this.mcp.callTool(
+        'strategy_manager',
+        {
+          action,
+          params,
+        },
+        {
+          timeoutMs: options.timeoutMs,
+        },
+      );
       if (result && typeof result === 'object') {
         const obj = result as Record<string, unknown>;
         if (obj.success === false) {
@@ -416,6 +460,134 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private cloneBackgroundFactoryRunState() {
+    return this.backgroundFactoryRunState ? { ...this.backgroundFactoryRunState } : null;
+  }
+
+  private setBackgroundFactoryRunState(
+    next: Partial<BackgroundFactoryRunState> & Pick<BackgroundFactoryRunState, 'request_id'>,
+  ) {
+    const current = this.backgroundFactoryRunState;
+    if (!current || current.request_id !== next.request_id) return;
+    this.backgroundFactoryRunState = {
+      ...current,
+      ...next,
+    };
+  }
+
+  private scheduleBackgroundFactoryRunCleanup(requestId: string) {
+    if (this.backgroundFactoryRunClearTimer) {
+      clearTimeout(this.backgroundFactoryRunClearTimer);
+    }
+    this.backgroundFactoryRunClearTimer = setTimeout(() => {
+      if (this.backgroundFactoryRunState?.request_id !== requestId) return;
+      if (this.backgroundFactoryRunState.status === 'queued' || this.backgroundFactoryRunState.status === 'running') {
+        return;
+      }
+      this.backgroundFactoryRunState = null;
+      this.backgroundFactoryRunPromise = null;
+      this.backgroundFactoryRunClearTimer = undefined;
+    }, StrategyMarketService.FACTORY_RUN_STATE_TTL_MS);
+  }
+
+  private mergeFactoryStatusWithBackgroundRun<T>(payload: T): T {
+    const backgroundRun = this.cloneBackgroundFactoryRunState();
+    if (!backgroundRun || !payload || typeof payload !== 'object') return payload;
+
+    const data = payload as Record<string, unknown>;
+    return {
+      ...(data as object),
+      running:
+        backgroundRun.status === 'queued' || backgroundRun.status === 'running'
+          ? true
+          : Boolean(data.running),
+      local_background_run: backgroundRun,
+    } as T;
+  }
+
+  private mergeFactoryRunsWithBackgroundRun<T>(payload: T, limit?: number): T {
+    const backgroundRun = this.cloneBackgroundFactoryRunState();
+    if (!backgroundRun || !payload || typeof payload !== 'object') return payload;
+
+    const data = payload as Record<string, unknown>;
+    const items = Array.isArray(data.items) ? [...data.items] : [];
+    const alreadyIncluded = items.some((item) => {
+      if (!item || typeof item !== 'object') return false;
+      return String((item as Record<string, unknown>).run_id ?? '') === backgroundRun.request_id;
+    });
+
+    if (!alreadyIncluded) {
+      items.unshift(
+        this.normalizeFactoryRun({
+          run_id: backgroundRun.request_id,
+          status:
+            backgroundRun.status === 'queued' || backgroundRun.status === 'running'
+              ? 'running'
+              : backgroundRun.status,
+          started_at: backgroundRun.started_at,
+          completed_at: backgroundRun.completed_at,
+          error: backgroundRun.error,
+          summary: {
+            run_id: backgroundRun.upstream_run_id ?? backgroundRun.request_id,
+            status: backgroundRun.status,
+            source: 'bff_background_dispatch',
+          },
+          trace_id: backgroundRun.request_id,
+          local_background_run: backgroundRun,
+        }),
+      );
+    }
+
+    const boundedItems = items.slice(0, Math.max(1, Math.min(200, Number(limit) || items.length || 20)));
+    const baseCount = Number.isFinite(Number(data.count)) ? Number(data.count) : 0;
+    return {
+      ...(data as object),
+      items: boundedItems,
+      latest: boundedItems[0] ?? null,
+      count: Math.max(baseCount, boundedItems.length),
+      local_background_run: backgroundRun,
+    } as T;
+  }
+
+  private async runFactoryOnceInBackground(requestId: string) {
+    this.setBackgroundFactoryRunState({
+      request_id: requestId,
+      status: 'running',
+      message: '策略工厂正在后台运行，可在运行态面板查看最新批次。',
+      error: null,
+    });
+
+    try {
+      const result = await this.call('factory_run_once', {}, { timeoutMs: StrategyMarketService.FACTORY_RUN_TIMEOUT_MS });
+      const resultRecord = this.asRecord(result);
+      await this.clearFactoryRunCaches();
+      this.setBackgroundFactoryRunState({
+        request_id: requestId,
+        status: 'success',
+        completed_at: new Date().toISOString(),
+        message: '策略工厂后台运行完成，最新批次已可查看。',
+        error: null,
+        upstream_run_id:
+          resultRecord.run_id == null
+            ? undefined
+            : String(resultRecord.run_id),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`策略工厂后台运行失败 request_id=${requestId}: ${message}`);
+      this.setBackgroundFactoryRunState({
+        request_id: requestId,
+        status: 'failed',
+        completed_at: new Date().toISOString(),
+        message: '策略工厂后台运行失败，请查看错误详情后重试。',
+        error: message,
+      });
+    } finally {
+      this.backgroundFactoryRunPromise = null;
+      this.scheduleBackgroundFactoryRunCleanup(requestId);
+    }
+  }
+
   async list(params: { status?: string; strategy_type?: string; limit?: number; offset?: number }) {
     return this.call('list', params);
   }
@@ -568,17 +740,51 @@ export class StrategyMarketService implements OnModuleInit, OnModuleDestroy {
   }
 
   async factoryStatus() {
-    return this.call('factory_status');
+    return this.mergeFactoryStatusWithBackgroundRun(await this.call('factory_status'));
   }
 
   async factoryRunOnce() {
-    const result = await this.call('factory_run_once');
-    await this.clearFactoryRunCaches();
-    return result;
+    const activeRun = this.cloneBackgroundFactoryRunState();
+    if (activeRun && (activeRun.status === 'queued' || activeRun.status === 'running')) {
+      return {
+        accepted: true,
+        already_running: true,
+        queued: false,
+        request_id: activeRun.request_id,
+        status: activeRun.status,
+        started_at: activeRun.started_at,
+        message: activeRun.message,
+      };
+    }
+
+    const requestId = `factory_bg_${Date.now()}`;
+    if (this.backgroundFactoryRunClearTimer) {
+      clearTimeout(this.backgroundFactoryRunClearTimer);
+      this.backgroundFactoryRunClearTimer = undefined;
+    }
+    this.backgroundFactoryRunState = {
+      request_id: requestId,
+      status: 'queued',
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      message: '策略工厂请求已受理，正在后台调度。',
+      error: null,
+    };
+    this.backgroundFactoryRunPromise = this.runFactoryOnceInBackground(requestId);
+    void this.backgroundFactoryRunPromise;
+
+    return {
+      accepted: true,
+      queued: true,
+      request_id: requestId,
+      status: 'queued',
+      started_at: this.backgroundFactoryRunState.started_at,
+      message: this.backgroundFactoryRunState.message,
+    };
   }
 
   async factoryRuns(limit?: number) {
-    return this.fetchFactoryRunsWithCache(limit);
+    return this.mergeFactoryRunsWithBackgroundRun(await this.fetchFactoryRunsWithCache(limit), limit);
   }
 
   async factoryRunDetail(runId: string) {

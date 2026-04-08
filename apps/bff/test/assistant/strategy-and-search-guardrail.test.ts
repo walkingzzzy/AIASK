@@ -175,3 +175,79 @@ test('strategy factory observability merges factory and factor governance snapsh
   assert.equal(result.factor_governance.retrain_queue[0]?.artifact_id, 'retrain_1');
   assert.deepEqual(result.errors, []);
 });
+
+test('strategy factory run-once is accepted asynchronously and exposed in status/runs', async () => {
+  const cache = {
+    resolveTtl: () => 60,
+    getWithMeta: async () => ({ value: null, meta: { backend: 'memory' } }),
+    set: async () => undefined,
+    del: async () => undefined,
+    clear: async () => undefined,
+  };
+
+  let resolveRun!: (value: unknown) => void;
+  const runPromise = new Promise((resolve) => {
+    resolveRun = resolve;
+  });
+
+  const service = new StrategyMarketService(
+    {
+      callTool: async (name: string, args: Record<string, unknown>) => {
+        if (name !== 'strategy_manager') {
+          throw new Error(`unexpected tool call ${name}`);
+        }
+        const action = String(args.action ?? '');
+        if (action === 'factory_status') {
+          return {
+            data: {
+              running: false,
+              last_summary: {},
+            },
+          };
+        }
+        if (action === 'factory_runs') {
+          return {
+            data: {
+              items: [],
+              count: 0,
+            },
+          };
+        }
+        if (action === 'factory_run_once') {
+          return runPromise;
+        }
+        throw new Error(`unexpected strategy action ${action}`);
+      },
+    } as never,
+    cache as never,
+  );
+
+  const accepted = await service.factoryRunOnce() as {
+    accepted: boolean;
+    queued: boolean;
+    request_id: string;
+  };
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.queued, true);
+
+  const status = await service.factoryStatus() as {
+    running?: boolean;
+    local_background_run?: { request_id?: string };
+  };
+  assert.equal(status.running, true);
+  assert.equal(status.local_background_run?.request_id, accepted.request_id);
+
+  const runs = await service.factoryRuns(5) as {
+    items?: Array<{ run_id?: string; status?: string }>;
+  };
+  assert.equal(runs.items?.[0]?.run_id, accepted.request_id);
+  assert.equal(runs.items?.[0]?.status, 'running');
+
+  resolveRun({ data: { run_id: 'factory_run_001', status: 'success' } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const backgroundState = (service as unknown as { backgroundFactoryRunState?: { status?: string; upstream_run_id?: string } })
+    .backgroundFactoryRunState;
+  assert.equal(backgroundState?.status, 'success');
+  assert.equal(backgroundState?.upstream_run_id, 'factory_run_001');
+});
