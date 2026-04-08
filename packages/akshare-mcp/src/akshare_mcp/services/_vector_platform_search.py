@@ -101,8 +101,31 @@ class _StrategyVectorPlatformSearchMixin:
             index_name: str = 'strategy_behavior',
             limit_versions: int = 20,
             include_hnsw_indexes: bool = False,
+            include_embedding_smoke_check: bool = False,
+            force_embedding_smoke_check: bool = False,
         ) -> dict:
             started_at = time.perf_counter()
+            embedding_service = (
+                await self._ensure_text_embedding_service()
+                if include_embedding_smoke_check
+                else self._bind_text_embedding_service()
+            )
+            embedding_status_fn = getattr(embedding_service, 'status', None)
+            embedding_status = (
+                dict(embedding_status_fn() or {})
+                if callable(embedding_status_fn)
+                else {
+                    'enabled': bool(getattr(embedding_service, 'is_enabled', lambda: False)()),
+                    'client_closed': bool(self._embedding_service_is_closed(embedding_service)),
+                }
+            )
+            embedding_smoke = None
+            smoke_check = getattr(embedding_service, 'smoke_check', None)
+            if include_embedding_smoke_check and callable(smoke_check):
+                result = smoke_check(force=force_embedding_smoke_check)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                embedding_smoke = dict(result or {})
             unified_result = await self._build_unified_health(
                 db,
                 index_name=index_name,
@@ -121,6 +144,10 @@ class _StrategyVectorPlatformSearchMixin:
                 return {
                     **unified_result,
                     'active_index': active_index,
+                    'text_embedding': {
+                        'service': embedding_status,
+                        'smoke_check': embedding_smoke,
+                    },
                     **audit,
                 }
             if not hasattr(db, 'get_strategy_vector_health'):
@@ -134,6 +161,10 @@ class _StrategyVectorPlatformSearchMixin:
                 return {
                     'index_name': index_name,
                     'active_index': None,
+                    'text_embedding': {
+                        'service': embedding_status,
+                        'smoke_check': embedding_smoke,
+                    },
                     **audit,
                 }
             result = await db.get_strategy_vector_health(
@@ -152,6 +183,10 @@ class _StrategyVectorPlatformSearchMixin:
             return {
                 **result,
                 'active_index': active_index,
+                'text_embedding': {
+                    'service': embedding_status,
+                    'smoke_check': embedding_smoke,
+                },
                 **audit,
             }
 

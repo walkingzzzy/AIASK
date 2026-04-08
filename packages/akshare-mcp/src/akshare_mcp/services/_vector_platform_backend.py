@@ -21,6 +21,34 @@ logger = logging.getLogger(__name__)
 
 
 class _StrategyVectorPlatformBackendMixin:
+        @staticmethod
+        def _embedding_service_is_closed(service: Any) -> bool:
+            if service is None:
+                return True
+            is_closed = getattr(service, 'is_closed', None)
+            if callable(is_closed):
+                try:
+                    return bool(is_closed())
+                except Exception:
+                    return False
+            return False
+
+        def _bind_text_embedding_service(self):
+            service = getattr(self, 'text_embedding_service', None)
+            if service is None or self._embedding_service_is_closed(service):
+                service = get_strategy_text_embedding_service()
+                self.text_embedding_service = service
+            return service
+
+        async def _ensure_text_embedding_service(self):
+            service = self._bind_text_embedding_service()
+            ensure_client = getattr(service, 'ensure_client', None)
+            if callable(ensure_client):
+                result = ensure_client()
+                if asyncio.iscoroutine(result):
+                    await result
+            return getattr(self, 'text_embedding_service', service)
+
         def _resolved_preferred_backend(self) -> str:
             requested = str(self.preferred_backend or '').strip().lower()
             if requested in {'pgvector', 'index', 'python'}:
@@ -130,7 +158,8 @@ class _StrategyVectorPlatformBackendMixin:
             }
 
         def default_vector_method(self) -> str:
-            return 'text_embedding' if getattr(self.text_embedding_service, 'prefers_text_embedding_default', lambda: self.text_embedding_service.is_enabled())() else 'price_volume'
+            service = self._bind_text_embedding_service()
+            return 'text_embedding' if getattr(service, 'prefers_text_embedding_default', lambda: service.is_enabled())() else 'price_volume'
 
         def resolve_vector_method(self, vector_method: Optional[str]) -> str:
             normalized = str(vector_method or '').strip().lower()
@@ -142,7 +171,8 @@ class _StrategyVectorPlatformBackendMixin:
 
         def ensure_vector_method_available(self, vector_method: Optional[str]) -> str:
             resolved = self.resolve_vector_method(vector_method)
-            if resolved == 'text_embedding' and not self.text_embedding_service.is_enabled():
+            service = self._bind_text_embedding_service()
+            if resolved == 'text_embedding' and not service.is_enabled():
                 raise RuntimeError('text_embedding requested but provider not configured')
             if resolved not in self.SUPPORTED_NUMERIC_METHODS and resolved != 'text_embedding':
                 raise ValueError(f'unsupported vector_method: {resolved}')
@@ -391,6 +421,7 @@ class _StrategyVectorPlatformBackendMixin:
             if series is None or len(series) < 30:
                 return np.asarray([], dtype=np.float64), {}, vector_method
             if vector_method == 'text_embedding':
+                service = await self._ensure_text_embedding_service()
                 document = self._build_text_embedding_document(
                     strategy,
                     panels,
@@ -400,15 +431,15 @@ class _StrategyVectorPlatformBackendMixin:
                 )
                 text_meta = {
                     'embedding_source': 'strategy_text_profile',
-                    'embedding_provider': getattr(getattr(self.text_embedding_service, 'config', None), 'provider', 'openai_compatible'),
-                    'embedding_model': getattr(getattr(self.text_embedding_service, 'config', None), 'model', None),
+                    'embedding_provider': getattr(getattr(service, 'config', None), 'provider', 'openai_compatible'),
+                    'embedding_model': getattr(getattr(service, 'config', None), 'model', None),
                     'embedding_text_preview': document[:240],
                     'embedding_text_hash': hashlib.sha1(document.encode('utf-8')).hexdigest(),
                     'sample_length': int(len(series)),
                     'pattern_length': int(min(len(series), 60)),
                 }
                 try:
-                    embedding = np.asarray(await self.text_embedding_service.embed_text(document), dtype=np.float64)
+                    embedding = np.asarray(await service.embed_text(document), dtype=np.float64)
                     return embedding, {
                         **text_meta,
                         'requested_vector_method': 'text_embedding',

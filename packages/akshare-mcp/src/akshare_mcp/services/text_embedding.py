@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import math
 import os
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Optional
 
 import httpx
@@ -30,6 +33,10 @@ class StrategyTextEmbeddingConfig:
     connect_timeout_sec: float = 8.0
     write_timeout_sec: float = 10.0
     pool_timeout_sec: float = 5.0
+    retry_count: int = 2
+    retry_backoff_sec: float = 0.75
+    smoke_check_enabled: bool = True
+    smoke_check_ttl_sec: float = 300.0
     max_text_chars: int = 6000
     normalize_embeddings: bool = True
     hash_dimensions: int = 256
@@ -93,6 +100,10 @@ class StrategyTextEmbeddingConfig:
             connect_timeout_sec=_env_float("STRATEGY_EMBEDDING_CONNECT_TIMEOUT_SEC", "STRATEGY_LLM_CONNECT_TIMEOUT_SEC", min(timeout_sec, 8.0)),
             write_timeout_sec=_env_float("STRATEGY_EMBEDDING_WRITE_TIMEOUT_SEC", "STRATEGY_LLM_WRITE_TIMEOUT_SEC", min(timeout_sec, 10.0)),
             pool_timeout_sec=_env_float("STRATEGY_EMBEDDING_POOL_TIMEOUT_SEC", "STRATEGY_LLM_POOL_TIMEOUT_SEC", min(timeout_sec, 5.0)),
+            retry_count=max(0, _env_int("STRATEGY_EMBEDDING_RETRY_COUNT", "STRATEGY_LLM_RETRY_COUNT", 2)),
+            retry_backoff_sec=max(0.0, _env_float("STRATEGY_EMBEDDING_RETRY_BACKOFF_SEC", "STRATEGY_LLM_RETRY_BACKOFF_SEC", 0.75)),
+            smoke_check_enabled=_env_bool("STRATEGY_EMBEDDING_SMOKE_CHECK_ENABLED", default=True),
+            smoke_check_ttl_sec=max(0.0, _env_float("STRATEGY_EMBEDDING_SMOKE_CHECK_TTL_SEC", default=300.0)),
             max_text_chars=max(512, _env_int("STRATEGY_EMBEDDING_MAX_TEXT_CHARS", default=6000)),
             normalize_embeddings=_env_bool("STRATEGY_EMBEDDING_NORMALIZE", default=True),
             hash_dimensions=max(32, min(_env_int("STRATEGY_EMBEDDING_HASH_DIMENSIONS", default=256), 2048)),
@@ -104,12 +115,51 @@ class StrategyTextEmbeddingService:
     def __init__(self, config: Optional[StrategyTextEmbeddingConfig] = None):
         self.config = config or StrategyTextEmbeddingConfig.from_env()
         self._cache: dict[str, list[float]] = {}
-        self._client = httpx.AsyncClient(follow_redirects=True, http2=False)
+        self._client = self._build_client()
         self._sentence_transformer = None
+        self._created_at = datetime.now().astimezone()
+        self._last_request_at: Optional[datetime] = None
+        self._last_success_at: Optional[datetime] = None
+        self._last_error_at: Optional[datetime] = None
+        self._last_error: Optional[str] = None
+        self._last_error_type: Optional[str] = None
+        self._last_latency_ms: Optional[float] = None
+        self._request_count = 0
+        self._success_count = 0
+        self._consecutive_failures = 0
+        self._rebuild_count = 0
+        self._last_rebuild_at: Optional[datetime] = None
+        self._last_smoke_check_at: Optional[datetime] = None
+        self._last_smoke_check_ok_at: Optional[datetime] = None
+        self._last_smoke_check_error: Optional[str] = None
+
+    def _build_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(follow_redirects=True, http2=False)
+
+    def is_closed(self) -> bool:
+        client = self._client
+        if client is None:
+            return True
+        try:
+            return bool(getattr(client, "is_closed"))
+        except Exception:
+            return False
+
+    async def ensure_client(self) -> None:
+        if not self.is_closed():
+            return
+        self._client = self._build_client()
+        self._rebuild_count += 1
+        self._last_rebuild_at = datetime.now().astimezone()
 
     async def close(self) -> None:
+        client = self._client
+        self._client = None
+        if client is None:
+            self._sentence_transformer = None
+            return
         try:
-            await self._client.aclose()
+            await client.aclose()
         except Exception:
             pass
         self._sentence_transformer = None
@@ -143,6 +193,103 @@ class StrategyTextEmbeddingService:
         if self.config.allow_hash_fallback:
             return "hash_fallback"
         raise StrategyTextEmbeddingError("text embedding provider not configured")
+
+    @staticmethod
+    def _isoformat(value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            observed = value if value.tzinfo is not None else value.astimezone()
+        except Exception:
+            observed = value
+        return observed.isoformat()
+
+    @staticmethod
+    def _error_text(exc: Exception) -> str:
+        text = str(exc or "").strip()
+        return text or exc.__class__.__name__
+
+    def _configured(self) -> bool:
+        provider = str(self.config.provider or "openai_compatible").strip().lower()
+        if provider == "openai_compatible":
+            return bool(self.config.base_url and self.config.api_key and self.config.model)
+        if provider == "ollama":
+            return bool(self.config.base_url and self.config.model)
+        if provider == "sentence_transformers":
+            return bool(self.config.local_model_path or self.config.model)
+        return provider == "hash_fallback"
+
+    def _health_status(self) -> str:
+        if not bool(self.config.enabled):
+            return "disabled"
+        if not self._configured():
+            return "misconfigured"
+        if self.is_closed():
+            return "closed"
+        if self._consecutive_failures > 0:
+            return "degraded"
+        return "ready"
+
+    def _rebuild_recommended(self) -> bool:
+        last_error_type = str(self._last_error_type or "").lower()
+        return bool(
+            self.is_closed()
+            or self._consecutive_failures > 0
+            or last_error_type in {"httperror", "httpstatuserror", "connecterror", "readerror", "jsondecodeerror"}
+        )
+
+    def _mark_success(self, *, latency_ms: float) -> None:
+        now = datetime.now().astimezone()
+        self._request_count += 1
+        self._success_count += 1
+        self._consecutive_failures = 0
+        self._last_request_at = now
+        self._last_success_at = now
+        self._last_latency_ms = round(float(latency_ms), 2)
+        self._last_error = None
+        self._last_error_type = None
+
+    def _mark_failure(self, exc: Exception, *, latency_ms: float) -> None:
+        now = datetime.now().astimezone()
+        self._request_count += 1
+        self._consecutive_failures += 1
+        self._last_request_at = now
+        self._last_error_at = now
+        self._last_latency_ms = round(float(latency_ms), 2)
+        self._last_error_type = exc.__class__.__name__
+        self._last_error = self._error_text(exc)
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "provider": str(self.config.provider or "openai_compatible"),
+            "model": str(self.config.model or ""),
+            "enabled": bool(self.config.enabled),
+            "configured": self._configured(),
+            "ready": bool(
+                self.is_enabled()
+                and not self.is_closed()
+                and self._consecutive_failures == 0
+            ),
+            "client_closed": bool(self.is_closed()),
+            "health_status": self._health_status(),
+            "rebuild_recommended": self._rebuild_recommended(),
+            "request_count": int(self._request_count),
+            "success_count": int(self._success_count),
+            "consecutive_failures": int(self._consecutive_failures),
+            "rebuild_count": int(self._rebuild_count),
+            "created_at": self._isoformat(self._created_at),
+            "last_request_at": self._isoformat(self._last_request_at),
+            "last_success_at": self._isoformat(self._last_success_at),
+            "last_error_at": self._isoformat(self._last_error_at),
+            "last_error_type": self._last_error_type,
+            "last_error": self._last_error,
+            "last_latency_ms": self._last_latency_ms,
+            "last_rebuild_at": self._isoformat(self._last_rebuild_at),
+            "smoke_check_enabled": bool(self.config.smoke_check_enabled),
+            "last_smoke_check_at": self._isoformat(self._last_smoke_check_at),
+            "last_smoke_check_ok_at": self._isoformat(self._last_smoke_check_ok_at),
+            "last_smoke_check_error": self._last_smoke_check_error,
+        }
 
     def _timeout(self) -> httpx.Timeout:
         timeout_sec = max(float(self.config.timeout_sec or 20.0), 5.0)
@@ -178,6 +325,62 @@ class StrategyTextEmbeddingService:
             return base
         return f"{base}/api/embed"
 
+    @staticmethod
+    def _status_code_from_error(exc: Exception) -> Optional[int]:
+        try:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            return int(status_code) if status_code is not None else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _retry_after_seconds(exc: Exception) -> Optional[float]:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return None
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+        if raw in (None, ""):
+            return None
+        try:
+            return max(0.0, float(raw))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _response_text(exc: Exception) -> str:
+        try:
+            response = getattr(exc, "response", None)
+            if response is None:
+                return ""
+            return str(getattr(response, "text", "") or "")
+        except Exception:
+            return ""
+
+    def _is_retryable_unknown_model_error(self, exc: Exception) -> bool:
+        if self._status_code_from_error(exc) != 400:
+            return False
+        text = self._response_text(exc).lower()
+        if "unknown model" not in text:
+            return False
+        return any(marker in text for marker in ("-global", "-data"))
+
+    def _should_retry_request_error(self, exc: Exception) -> bool:
+        if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError)):
+            return True
+        status_code = self._status_code_from_error(exc)
+        if status_code in {429, 502, 503, 504, 529}:
+            return True
+        return self._is_retryable_unknown_model_error(exc)
+
+    def _retry_backoff_delay(self, attempt: int, exc: Exception, *, base_delay: float, max_delay: float = 10.0) -> float:
+        retry_after = self._retry_after_seconds(exc)
+        if retry_after is not None:
+            return min(max(retry_after, base_delay), max_delay)
+        multiplier = 2.0 if self._status_code_from_error(exc) in {429, 502, 503, 504, 529} else 1.0
+        delay = max(0.0, float(base_delay or 0.0)) * max(1.0, multiplier * (2 ** max(int(attempt) - 1, 0)))
+        return min(delay, max_delay)
+
     async def _embed_openai_compatible(self, normalized: str, *, model: str) -> list[float]:
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
@@ -185,16 +388,37 @@ class StrategyTextEmbeddingService:
             "Accept": "application/json",
         }
         payload = {"model": model, "input": normalized, "encoding_format": "float"}
-        response = await self._client.post(self._endpoint_openai(), headers=headers, json=payload, timeout=self._timeout())
-        response.raise_for_status()
-        body = response.json()
-        rows = list(body.get("data") or []) if isinstance(body, dict) else []
-        if not rows:
-            raise StrategyTextEmbeddingError("embedding response missing data")
-        embedding = rows[0].get("embedding") if isinstance(rows[0], dict) else None
-        if not isinstance(embedding, list) or not embedding:
-            raise StrategyTextEmbeddingError("embedding response missing vector")
-        return [float(item) for item in embedding]
+        attempts = max(1, int(self.config.retry_count or 0) + 1)
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await self._client.post(self._endpoint_openai(), headers=headers, json=payload, timeout=self._timeout())
+                response.raise_for_status()
+                try:
+                    body = response.json()
+                except json.JSONDecodeError as exc:
+                    raise StrategyTextEmbeddingError(f"embedding response invalid json: {exc}") from exc
+                rows = list(body.get("data") or []) if isinstance(body, dict) else []
+                if not rows:
+                    raise StrategyTextEmbeddingError("embedding response missing data")
+                embedding = rows[0].get("embedding") if isinstance(rows[0], dict) else None
+                if not isinstance(embedding, list) or not embedding:
+                    raise StrategyTextEmbeddingError("embedding response missing vector")
+                return [float(item) for item in embedding]
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError, httpx.HTTPStatusError) as exc:
+                last_exc = exc
+                if attempt >= attempts or not self._should_retry_request_error(exc):
+                    raise
+                await asyncio.sleep(
+                    self._retry_backoff_delay(
+                        attempt,
+                        exc,
+                        base_delay=float(self.config.retry_backoff_sec or 0.0),
+                    )
+                )
+        if last_exc is not None:
+            raise last_exc
+        raise StrategyTextEmbeddingError("embedding request failed without response")
 
     async def _embed_ollama(self, normalized: str, *, model: str) -> list[float]:
         payload = {"model": model, "input": normalized}
@@ -254,6 +478,69 @@ class StrategyTextEmbeddingService:
             vector[bucket] += sign
         return vector
 
+    async def smoke_check(self, *, force: bool = False) -> dict[str, Any]:
+        if not self.is_enabled():
+            return {"status": "disabled"}
+        if not bool(self.config.smoke_check_enabled) and not force:
+            return {"status": "disabled"}
+
+        now = datetime.now().astimezone()
+        ttl_sec = max(0.0, float(self.config.smoke_check_ttl_sec or 0.0))
+        if (
+            not force
+            and self._last_smoke_check_ok_at is not None
+            and ttl_sec > 0
+            and (now - self._last_smoke_check_ok_at).total_seconds() <= ttl_sec
+        ):
+            self._last_smoke_check_at = now
+            return {
+                "status": "cached_success",
+                "last_smoke_check_ok_at": self._isoformat(self._last_smoke_check_ok_at),
+                "smoke_check_ttl_sec": ttl_sec,
+            }
+
+        provider = self._resolve_provider()
+        resolved_model = str(self.config.model or self.config.local_model_path or "").strip()
+        normalized = self._normalize_text("strategy text embedding smoke check")
+        started = time.perf_counter()
+        try:
+            if provider in {"openai_compatible", "ollama"}:
+                await self.ensure_client()
+            if provider == "openai_compatible":
+                values = await self._embed_openai_compatible(normalized, model=resolved_model)
+            elif provider == "ollama":
+                values = await self._embed_ollama(normalized, model=resolved_model)
+            elif provider == "sentence_transformers":
+                values = await self._embed_sentence_transformers(normalized)
+            else:
+                values = self._embed_hash_fallback(normalized)
+            normalized_values = self._normalize_vector(values)
+            latency_ms = (time.perf_counter() - started) * 1000
+            self._mark_success(latency_ms=latency_ms)
+            self._last_smoke_check_at = now
+            self._last_smoke_check_ok_at = now
+            self._last_smoke_check_error = None
+            return {
+                "status": "passed",
+                "provider": provider,
+                "model": resolved_model or None,
+                "vector_length": len(normalized_values),
+                "latency_ms": round(latency_ms, 2),
+            }
+        except Exception as exc:
+            latency_ms = (time.perf_counter() - started) * 1000
+            self._mark_failure(exc, latency_ms=latency_ms)
+            self._last_smoke_check_at = now
+            self._last_smoke_check_error = self._error_text(exc)
+            return {
+                "status": "failed",
+                "provider": provider,
+                "model": resolved_model or None,
+                "error_type": exc.__class__.__name__,
+                "error": self._error_text(exc),
+                "latency_ms": round(latency_ms, 2),
+            }
+
     async def embed_text(self, text: str, *, model: Optional[str] = None) -> list[float]:
         normalized = self._normalize_text(text)
         if not normalized:
@@ -264,19 +551,27 @@ class StrategyTextEmbeddingService:
         cached = self._cache.get(cache_key)
         if cached is not None:
             return list(cached)
-        if provider == "openai_compatible":
-            values = await self._embed_openai_compatible(normalized, model=resolved_model)
-        elif provider == "ollama":
-            values = await self._embed_ollama(normalized, model=resolved_model)
-        elif provider == "sentence_transformers":
-            values = await self._embed_sentence_transformers(normalized)
-        elif provider == "hash_fallback":
-            values = self._embed_hash_fallback(normalized)
-        else:
-            raise StrategyTextEmbeddingError(f"unsupported embedding provider: {provider}")
-        normalized_values = self._normalize_vector(values)
-        self._cache[cache_key] = normalized_values
-        return list(normalized_values)
+        started = time.perf_counter()
+        try:
+            if provider in {"openai_compatible", "ollama"}:
+                await self.ensure_client()
+            if provider == "openai_compatible":
+                values = await self._embed_openai_compatible(normalized, model=resolved_model)
+            elif provider == "ollama":
+                values = await self._embed_ollama(normalized, model=resolved_model)
+            elif provider == "sentence_transformers":
+                values = await self._embed_sentence_transformers(normalized)
+            elif provider == "hash_fallback":
+                values = self._embed_hash_fallback(normalized)
+            else:
+                raise StrategyTextEmbeddingError(f"unsupported embedding provider: {provider}")
+            normalized_values = self._normalize_vector(values)
+            self._cache[cache_key] = normalized_values
+            self._mark_success(latency_ms=(time.perf_counter() - started) * 1000)
+            return list(normalized_values)
+        except Exception as exc:
+            self._mark_failure(exc, latency_ms=(time.perf_counter() - started) * 1000)
+            raise
 
 
 _text_embedding_service: Optional[StrategyTextEmbeddingService] = None

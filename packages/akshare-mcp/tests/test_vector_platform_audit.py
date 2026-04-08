@@ -2,6 +2,7 @@ import pytest
 import numpy as np
 
 from akshare_mcp.services.vector_platform import StrategyVectorPlatform
+import akshare_mcp.services._vector_platform_backend as vector_backend_mod
 
 
 class _VectorAuditDb:
@@ -165,6 +166,40 @@ async def test_unified_health_check_reports_hnsw_indexes():
 
 
 @pytest.mark.asyncio
+async def test_health_check_includes_text_embedding_status_and_smoke():
+    platform = StrategyVectorPlatform()
+    db = _UnifiedHealthDb()
+
+    class _EmbeddingService:
+        def status(self):
+            return {
+                "enabled": True,
+                "ready": True,
+                "health_status": "ready",
+            }
+
+        async def smoke_check(self, *, force: bool = False):
+            return {
+                "status": "passed",
+                "force": bool(force),
+                "vector_length": 1536,
+            }
+
+    platform.text_embedding_service = _EmbeddingService()
+
+    result = await platform.health_check(
+        db,
+        index_name="strategy_behavior",
+        include_embedding_smoke_check=True,
+        force_embedding_smoke_check=True,
+    )
+
+    assert result["text_embedding"]["service"]["ready"] is True
+    assert result["text_embedding"]["smoke_check"]["status"] == "passed"
+    assert result["text_embedding"]["smoke_check"]["force"] is True
+
+
+@pytest.mark.asyncio
 async def test_build_strategy_profile_handles_numpy_panels_for_text_embedding(monkeypatch):
     import strategy_factory
 
@@ -285,3 +320,96 @@ async def test_build_strategy_profile_falls_back_when_text_embedding_request_fai
     assert db.saved_profile["metadata"]["fallback_used"] is True
     assert db.saved_profile["metadata"]["fallback_reason"] == "text_embedding_request_failed"
     assert db.saved_profile["metadata"]["fallback_error_type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_build_strategy_profile_rebinds_closed_text_embedding_service(monkeypatch):
+    import strategy_factory
+
+    class _ClosedEmbeddingService:
+        def __init__(self):
+            self.config = type("Cfg", (), {"provider": "openai_compatible", "model": "text-embedding-3-small"})()
+            self.embed_calls = 0
+
+        def is_enabled(self):
+            return True
+
+        def is_closed(self):
+            return True
+
+        async def ensure_client(self):
+            raise AssertionError("closed stale service should be replaced, not revived in place")
+
+        async def embed_text(self, _text: str):
+            self.embed_calls += 1
+            raise AssertionError("stale service should not be used after rebind")
+
+    class _FreshEmbeddingService:
+        def __init__(self):
+            self.config = type("Cfg", (), {"provider": "openai_compatible", "model": "text-embedding-3-small"})()
+            self.ensure_calls = 0
+            self.embed_calls = 0
+
+        def is_enabled(self):
+            return True
+
+        def is_closed(self):
+            return False
+
+        async def ensure_client(self):
+            self.ensure_calls += 1
+
+        async def embed_text(self, _text: str):
+            self.embed_calls += 1
+            return [0.1, 0.2, 0.3]
+
+    class _ProfileDb:
+        def __init__(self):
+            self.saved_profile = None
+            self.saved_registry = None
+
+        def supports_pgvector(self):
+            return False
+
+        async def save_strategy_vector_profile(self, payload):
+            self.saved_profile = dict(payload)
+            return dict(payload)
+
+        async def save_vector_index_registry(self, payload):
+            self.saved_registry = dict(payload)
+            return dict(payload)
+
+    async def _fake_build_strategy_panels(*_args, **_kwargs):
+        return {
+            "strategy_returns": np.linspace(0.001, 0.04, 40, dtype=np.float64),
+            "holdings": [{"code": "600519", "weight": 0.4}],
+            "factor_panel": np.ones((40, 3), dtype=np.float64),
+            "return_panel": np.full((40, 3), 0.01, dtype=np.float64),
+        }
+
+    monkeypatch.setattr(strategy_factory, "build_strategy_panels", _fake_build_strategy_panels)
+
+    stale_service = _ClosedEmbeddingService()
+    fresh_service = _FreshEmbeddingService()
+    monkeypatch.setattr(vector_backend_mod, "get_strategy_text_embedding_service", lambda: fresh_service)
+
+    platform = StrategyVectorPlatform()
+    platform.text_embedding_service = stale_service
+    db = _ProfileDb()
+
+    profile = await platform.build_strategy_profile(
+        db,
+        {"id": "sid_rebind", "name": "Rebind Profile", "strategy_type": "momentum", "params": {"lookback": 20}},
+        vector_method="text_embedding",
+    )
+
+    assert profile is not None
+    assert platform.text_embedding_service is fresh_service
+    assert stale_service.embed_calls == 0
+    assert fresh_service.ensure_calls == 1
+    assert fresh_service.embed_calls == 1
+    assert db.saved_profile is not None
+    assert db.saved_profile["vector_method"] == "text_embedding"
+    assert db.saved_profile["metadata"]["requested_vector_method"] == "text_embedding"
+    assert db.saved_profile["metadata"]["effective_vector_method"] == "text_embedding"
+    assert db.saved_profile["metadata"]["fallback_used"] is False

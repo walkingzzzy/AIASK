@@ -22,6 +22,8 @@ import os
 from datetime import datetime, date, timedelta
 from typing import Dict, Any, List, Optional
 
+from ..env_loader import load_mcp_env
+
 logger = logging.getLogger(__name__)
 
 # 核心表清单
@@ -44,6 +46,10 @@ class StartupValidator:
         retry_count: int = DEFAULT_RETRY_COUNT,
         retry_delay: float = DEFAULT_RETRY_DELAY_SECONDS,
     ):
+        load_mcp_env(
+            override=False,
+            only_prefixes=("STARTUP_", "STRATEGY_EMBEDDING_", "STRATEGY_LLM_"),
+        )
         # 从环境变量覆盖默认值
         self.freshness_threshold_days = int(
             os.getenv("STARTUP_FRESHNESS_DAYS", str(freshness_threshold_days))
@@ -57,6 +63,12 @@ class StartupValidator:
         self.retry_delay = float(
             os.getenv("STARTUP_DB_RETRY_DELAY", str(retry_delay))
         )
+        self.embedding_check_enabled = str(
+            os.getenv("STARTUP_EMBEDDING_CHECK_ENABLED", "0")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self.embedding_check_force = str(
+            os.getenv("STARTUP_EMBEDDING_CHECK_FORCE", "1")
+        ).strip().lower() in {"1", "true", "yes", "on"}
 
         # 校验结果
         self.last_report: Optional[Dict[str, Any]] = None
@@ -102,6 +114,7 @@ class StartupValidator:
             "tables_ok": False,
             "data_stale": True,
             "coverage_low": True,
+            "embedding_ready": None,
             "details": {},
         }
 
@@ -120,8 +133,18 @@ class StartupValidator:
         # ---- 4. 股票池覆盖率 ----
         await self._check_coverage(db, report)
 
+        # ---- 5. Embedding 健康检查（可选） ----
+        await self._check_text_embedding(report)
+
         # 汇总状态
-        if report["db_available"] and report["tables_ok"] and not report["data_stale"] and not report["coverage_low"]:
+        embedding_blocked = bool(self.embedding_check_enabled and report.get("embedding_ready") is False)
+        if (
+            report["db_available"]
+            and report["tables_ok"]
+            and not report["data_stale"]
+            and not report["coverage_low"]
+            and not embedding_blocked
+        ):
             report["status"] = "healthy"
         elif report["db_available"]:
             report["status"] = "degraded"
@@ -308,6 +331,40 @@ class StartupValidator:
             report["coverage_low"] = True
             report["details"]["coverage"] = {"error": str(e)}
 
+    async def _check_text_embedding(self, report: Dict[str, Any]) -> None:
+        if not self.embedding_check_enabled:
+            report["details"]["text_embedding"] = {"status": "skipped", "enabled": False}
+            return
+        try:
+            from .text_embedding import get_strategy_text_embedding_service
+
+            service = get_strategy_text_embedding_service()
+            smoke_check = getattr(service, "smoke_check", None)
+            smoke_result = None
+            if callable(smoke_check):
+                smoke_result = smoke_check(force=self.embedding_check_force)
+                if inspect.isawaitable(smoke_result):
+                    smoke_result = await smoke_result
+            status_fn = getattr(service, "status", None)
+            service_status = dict(status_fn() or {}) if callable(status_fn) else {}
+            ready = str((smoke_result or {}).get("status") or "").strip().lower() in {"passed", "cached_success"}
+            if smoke_result is None:
+                ready = bool(service_status.get("ready"))
+            report["embedding_ready"] = ready
+            report["details"]["text_embedding"] = {
+                "enabled": True,
+                "service": service_status,
+                "smoke_check": dict(smoke_result or {}),
+            }
+            if ready:
+                logger.info("[StartupValidator] ✓ Embedding 健康检查通过")
+            else:
+                logger.warning("[StartupValidator] ✗ Embedding 健康检查失败")
+        except Exception as e:
+            logger.error("[StartupValidator] Embedding 健康检查异常: %s", e)
+            report["embedding_ready"] = False
+            report["details"]["text_embedding"] = {"enabled": True, "error": str(e)}
+
     # ------------------------------------------------------------------
     # 日志输出
     # ------------------------------------------------------------------
@@ -319,6 +376,8 @@ class StartupValidator:
         logger.info("[StartupValidator]   核心表: %s", "✓" if report.get("tables_ok") else "✗")
         logger.info("[StartupValidator]   数据新鲜: %s", "✗ 过期" if report.get("data_stale") else "✓")
         logger.info("[StartupValidator]   覆盖率: %s", "✗ 不足" if report.get("coverage_low") else "✓")
+        if self.embedding_check_enabled:
+            logger.info("[StartupValidator]   Embedding: %s", "✓" if report.get("embedding_ready") else "✗")
 
     # ------------------------------------------------------------------
     # 持久化校验报告到 sync_tasks 表

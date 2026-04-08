@@ -361,6 +361,14 @@ async def _handle_vector_health(db, params: dict) -> dict:
         index_name=str(params.get("index_name") or 'strategy_behavior'),
         limit_versions=min(max(int(params.get("limit_versions", 20)), 1), 200),
         include_hnsw_indexes=parse_bool(params.get("include_hnsw_indexes"), False),
+        include_embedding_smoke_check=parse_bool(
+            params.get("include_embedding_smoke_check") or params.get("embedding_smoke_check"),
+            False,
+        ),
+        force_embedding_smoke_check=parse_bool(
+            params.get("force_embedding_smoke_check"),
+            False,
+        ),
     )
     if result.get("fallback_reason") == "health_unsupported":
         return fail("vector health unsupported")

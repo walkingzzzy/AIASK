@@ -59,6 +59,12 @@ def _make_healthy_mock_db(stock_count=500, latest_kline_date=None):
     return mock_db
 
 
+@pytest.fixture(autouse=True)
+def _reset_embedding_startup_env(monkeypatch):
+    monkeypatch.setenv("STARTUP_EMBEDDING_CHECK_ENABLED", "0")
+    monkeypatch.setenv("STARTUP_EMBEDDING_CHECK_FORCE", "0")
+
+
 # ============================================================================
 # Test 1: DB 不可达
 # ============================================================================
@@ -216,3 +222,29 @@ async def test_report_has_required_fields():
 
     required_keys = {"timestamp", "db_available", "tables_ok", "data_stale", "coverage_low", "details", "status"}
     assert required_keys.issubset(report.keys()), f"Missing keys: {required_keys - report.keys()}"
+
+
+@pytest.mark.asyncio
+async def test_startup_validator_can_include_text_embedding_check(monkeypatch):
+    monkeypatch.setenv("STARTUP_EMBEDDING_CHECK_ENABLED", "1")
+    monkeypatch.setenv("STARTUP_EMBEDDING_CHECK_FORCE", "1")
+    validator = _make_validator()
+    mock_db = _make_healthy_mock_db(stock_count=500)
+
+    class _EmbeddingService:
+        def status(self):
+            return {"enabled": True, "ready": True, "health_status": "ready"}
+
+        async def smoke_check(self, *, force: bool = False):
+            return {"status": "passed", "force": bool(force), "vector_length": 1536}
+
+    with patch(PATCH_GET_DB, return_value=mock_db), patch(
+        "akshare_mcp.services.text_embedding.get_strategy_text_embedding_service",
+        return_value=_EmbeddingService(),
+    ):
+        report = await validator._run_all_checks()
+
+    assert report["status"] == "healthy"
+    assert report["embedding_ready"] is True
+    assert report["details"]["text_embedding"]["service"]["ready"] is True
+    assert report["details"]["text_embedding"]["smoke_check"]["status"] == "passed"
